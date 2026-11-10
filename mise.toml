@@ -1,4 +1,15 @@
 # ──────────────────────────────────────────────
+# Fenced features
+# ──────────────────────────────────────────────
+# Unreleased work stays behind off-by-default features that CI still lints
+# and tests (lint:rust, test:rust); no release turns them on. `fleet`: the
+# lobby, scene runs, satellites and mDNS; `board`: the
+# tether's board link; `collect`: the cockpit's episode collection.
+[vars]
+fenced_test = "rlmesh-tether/board,rlmesh-cockpit/collect,rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet"
+fenced_lint = "rlmesh-tether/board,rlmesh-cockpit/collect,rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet,rlmesh-python/fleet,rlmesh-node/fleet"
+
+# ──────────────────────────────────────────────
 # Tools
 # ──────────────────────────────────────────────
 [tools]
@@ -136,11 +147,11 @@ run = "uv run --no-sync ruff format --check"
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings and examples (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/src/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/transport/*.h integrations/esp32/transport/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
 
 [tasks."fmt:check:cxx"]
 description = "Check the C/C++ binding and example formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/src/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/transport/*.h integrations/esp32/transport/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
@@ -174,9 +185,12 @@ description = "Lint source files without modifying them"
 depends = ["lint:rust", "lint:python", "lint:proto", "lint:spelling", "lint:deps"]
 
 [tasks."lint:rust"]
-description = "Lint Rust code"
+description = "Lint Rust code, and again with the unreleased features (fleet, gateway) on"
 env = { CARGO_TARGET_DIR = "target/clippy", CARGO_INCREMENTAL = "0" }
-run = "cargo clippy --workspace --all-targets -- -D warnings"
+run = [
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo clippy --workspace --all-targets --features {{vars.fenced_lint}} -- -D warnings",
+]
 
 [tasks."lint:python"]
 description = "Lint Python code"
@@ -265,7 +279,7 @@ run = [
 ]
 
 [tasks."protocol:baseline-regen"]
-description = "Re-snapshot the frozen proto baseline for the current protocol generation"
+description = "Re-snapshot a governed realtime protocol baseline"
 run = "python scripts/protocol_baseline.py regen"
 
 [tasks."protocol:baseline-verify"]
@@ -331,6 +345,7 @@ wait_for = ["setup:python"]
 run = '''
 export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" &&
   cargo nextest run --workspace --all-targets -E 'not (binary(parity_fixtures) | binary(parity_defaults))' &&
+  cargo nextest run -p rlmesh-tether -p rlmesh-cockpit -p rlmesh-session-core -p rlmesh-session -p rlmesh-cli -p rlmesh-device --all-targets --features {{vars.fenced_test}} &&
   cargo test --workspace --doc
 '''
 
@@ -354,7 +369,7 @@ description = "Run Python integration tests"
 run = "uv run pytest python/rlmesh/tests/integration -q"
 
 [tasks."test:python:conformance"]
-description = "Run Python conformance gates: adapter-spec vectors (cross-engine parity) and Gymnasium (served envs behave as plain gymnasium, over gRPC and lockstep)"
+description = "Run Python conformance gates: adapter-spec vectors (cross-engine parity) and Gymnasium (served envs behave as plain gymnasium, over lockstep)"
 run = "uv run pytest python/rlmesh/tests/conformance -q"
 
 [tasks."test:python:perf"]
@@ -435,7 +450,7 @@ run = [
 ]
 
 [tasks."bench:js:native"]
-description = "Benchmark the Node binding against Python's rlmesh.v2: a 1 kHz robot loop and a 50 Hz policy with a camera, in one process each (BENCH_SECONDS, default 10)"
+description = "Benchmark the Node binding against Python's rlmesh.realtime: a 1 kHz robot loop and a 50 Hz policy with a camera, in one process each (BENCH_SECONDS, default 10)"
 depends = ["setup:js"]
 run = [
   "mise run build:js:native",
@@ -480,7 +495,7 @@ description = "Remove installed-artifact system venvs, logs, and reports"
 run = "uv run rlmesh-system clean"
 
 # The cockpit (protocol v2): one live session's channels, rates, timeline and
-# arm/e-stop. ADDRESS is what `rlmesh.v2.Host.address` prints; `--replay FILE`
+# arm/e-stop. ADDRESS is what `rlmesh.realtime.Host.address` prints; `--replay FILE`
 # opens a recording instead.
 [tasks."cockpit"]
 description = "Open the cockpit on a running v2 session or a recording: mise run cockpit -- ADDRESS | --replay FILE"
@@ -579,10 +594,11 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set m
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
 env = { RLMESH_RELEASE_BUILD = "1" }
-# Packaged together, so the facade resolves rlmesh-session from this tree.
-# Skipped: the bindings' crates (rlmesh-wasm, rlmesh-node, rlmesh-python, a
-# wasm package, an addon and a maturin wheel) and the cockpit.
-run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wasm --exclude rlmesh-node --exclude rlmesh-cockpit --exclude rlmesh-python'
+# Packaged together, so the facade resolves rlmesh-session from this tree
+# and the CLI its optional cockpit. Skipped: the bindings' crates
+# (rlmesh-wasm, rlmesh-node, rlmesh-python: a wasm package, an addon and a
+# maturin wheel).
+run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wasm --exclude rlmesh-node --exclude rlmesh-python'
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"

@@ -1,4 +1,4 @@
-//! Machine pairing's messages (design §3, §8.8): what a laptop and rlmeshd
+//! Machine pairing's messages: what a laptop and rlmeshd
 //! exchange on [`PAIR_KEY`]. The XX messages and the sealed bodies are
 //! opaque here; [`crate::auth::pairing`] runs the exchange.
 

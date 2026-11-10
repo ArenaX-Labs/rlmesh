@@ -1,4 +1,4 @@
-// What `rlmesh tether gen eyes.json` writes for the map below (spec §9.2),
+// What `rlmesh tether gen eyes.json` writes for the map below,
 // by hand until the generator lands. Regenerate it for your own board: a
 // `BOARD_ID` must be unique to one board.
 //

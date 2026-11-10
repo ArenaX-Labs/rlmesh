@@ -1,4 +1,4 @@
-//! Delivery contracts, action grids and publication plans (§8.2, §9.2).
+//! Delivery contracts, action grids and publication plans.
 //!
 //! A controller's binding states one [`StreamContract`] per bound input
 //! stream and one [`ActionGrid`] per commanded part. The host admits the
@@ -30,7 +30,7 @@ pub enum ContractMode {
     Every,
 }
 
-/// One subscriber's contract on one stream (§8.2).
+/// One subscriber's contract on one stream.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamContract {
     /// The stream: a part's, or a commandable part's `_applied`.
@@ -41,7 +41,7 @@ pub struct StreamContract {
     pub delivery_hz: f64,
     /// The deepest window on the stream (1: none).
     pub history: u32,
-    /// The effective freshness bound after precedence (§8.7); `None` for
+    /// The effective freshness bound after precedence; `None` for
     /// events, which are never stale.
     pub max_age: Option<Duration>,
     /// Whether the bound was declared (policy or robot) rather than
@@ -50,7 +50,7 @@ pub struct StreamContract {
 }
 
 /// The action grid a binding declared for one commanded part: a chunk with
-/// `dt_ns = 0` takes this `dt` (§9.2).
+/// `dt_ns = 0` takes this `dt`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ActionGrid {
     /// The commandable part.

@@ -1,4 +1,4 @@
-//! Attaching through the handshake (design §2, §8.3, §8.6), sans-IO:
+//! Attaching through the handshake, sans-IO:
 //!
 //! - a participant's [`Credential`] (its device's static key and the host's
 //!   static key), which runs the IK handshake ([`Credential::start`],
@@ -16,12 +16,12 @@
 //! - the host's per-generation [`RequestWindow`]: request ids and the
 //!   reply cache that makes a retried verb idempotent;
 //! - the keys the host delivers besides the handshake's ([`keyring`] on
-//!   each holder, [`issuer`] at the host, §8.4, §8.5): a lease's `k_cmd` and
+//!   each holder, [`issuer`] at the host): a lease's `k_cmd` and
 //!   `k_obs`, a stream's `k_stream`. A [`Link`] holds its participant's
 //!   [`Keyring`], installs what the host delivers (`KeyDelivery`, the keys a
 //!   reply carries), and seals and opens chunks, samples, history and
 //!   lockstep under them;
-//! - machine pairing's exchanges ([`pairing`], §3): rlmeshd's pending
+//! - machine pairing's exchanges ([`pairing`]): rlmeshd's pending
 //!   exchanges and the owner's approval, and the laptop's side.
 //!
 //! What a participant sends under its keys, the host accepts only from the
@@ -59,9 +59,9 @@ use crate::wire::heartbeat::{Heartbeat, HeartbeatEcho};
 use crate::wire::tick::VirtualTick;
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, AuthorityView, Command, CtlError, CtlReply, CtlStatus,
-    DeviceView, Epoch, EstopSignal, HandshakeAccept, HandshakeRequest, HistoryQuery, KeysAck,
-    LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Request, Sample, SampleBatch,
-    SampleMeta, ViewReply,
+    DeviceView, Epoch, EstopSignal, HandshakeAccept, HandshakeRequest, HistoryQuery, HostHealth,
+    KeysAck, LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Request, Sample,
+    SampleBatch, SampleMeta, ViewReply,
 };
 
 /// The device of every process holding an embedded host's address.
@@ -123,8 +123,7 @@ impl Credential {
     }
 
     /// The same device's key against another host's static key: a robot's
-    /// IK with a satellite's run host, whose key its `Join` names (scene
-    /// design §3.3).
+    /// IK with a satellite's run host, whose key its `Join` names.
     pub fn with_host(&self, host_static: [u8; 32]) -> Self {
         Self::new(self.device.clone(), host_static)
     }
@@ -235,7 +234,7 @@ pub enum LinkError {
     #[error("a page for history query {0}, not this one")]
     OtherQuery(u64),
     /// Request `0` is still unanswered, and a new id would put it below the
-    /// host's window (§8.6).
+    /// host's window.
     #[error("request {0} is still unanswered: {REQUEST_WINDOW} requests are outstanding")]
     Outstanding(u64),
 }
@@ -300,7 +299,25 @@ pub fn open_tick(
     Ok(codec::decode_tick(host.verify(keyexpr, msg)?.body)?)
 }
 
-/// A participant generation's link to the host (design §8.2, §8.6, §8.7):
+/// Verifies the host's `host/health` broadcast received on `keyexpr` under
+/// `host`: signed by the host instance, newer than the last one taken, and a
+/// health message (kind 23).
+///
+/// # Errors
+/// [`LinkError`].
+pub fn open_health(
+    host: &mut SignedReceiver,
+    keyexpr: &str,
+    msg: &[u8],
+) -> Result<HostHealth, LinkError> {
+    let verified = host.verify(keyexpr, msg)?;
+    if verified.header.kind != SignedKind::HostHealth {
+        return Err(SignedError::UnknownKind(verified.header.kind.as_u8()).into());
+    }
+    Ok(codec::decode_health(verified.body)?)
+}
+
+/// A participant generation's link to the host:
 /// `k_up` for its verbs and heartbeats, `k_down` for the replies and echoes
 /// it opens, its request ids, and the host's key, instance and last
 /// publication for the broadcasts it verifies. Sans-IO: key expressions
@@ -314,7 +331,7 @@ pub struct Link {
     host: SignedReceiver,
     last_request: u64,
     /// Request ids sent and not yet answered: a caller that timed out
-    /// leaves its id here, to retry until answered (§8.6).
+    /// leaves its id here, to retry until answered.
     unanswered: alloc::collections::BTreeSet<u64>,
     last_history: u64,
     keyring: Keyring,
@@ -554,7 +571,7 @@ impl Link {
     }
 
     /// Seals this participant's e-stop signal on `keyexpr`
-    /// (`…/estop/{participant}`) under its generation's `k_estop` (§6):
+    /// (`…/estop/{participant}`) under its generation's `k_estop`:
     /// kind 13, integrity only.
     ///
     /// # Errors
@@ -630,7 +647,7 @@ impl Link {
     }
 
     /// Seals `command` again as request `request_id`, under a fresh `seq`:
-    /// a retry, which the host answers from its reply cache (§8.6).
+    /// a retry, which the host answers from its reply cache.
     ///
     /// # Errors
     /// [`LinkError::Seal`].
@@ -692,8 +709,8 @@ impl Link {
         }
     }
 
-    /// [`Self::reply`] for a robot that asked for its device view (scene
-    /// design §3.4): the host answers it with its view and no authority
+    /// [`Self::reply`] for a robot that asked for its device view: the host answers it
+    /// with its view and no authority
     /// state, and this path never calls the state's decoder, so a board
     /// that only takes views doesn't link it. The answer's keys are
     /// installed and its view observed at `now_ns`.
@@ -749,6 +766,23 @@ impl Link {
             Kind::Heartbeat,
             keyexpr,
             &codec::encode_heartbeat(heartbeat),
+        )?)
+    }
+
+    /// Seals an observer report on `keyexpr` (the participant's `report`)
+    /// for the host, which relays it in its signed health.
+    ///
+    /// # Errors
+    /// [`LinkError::Seal`].
+    pub fn report(
+        &mut self,
+        keyexpr: &str,
+        report: &crate::wire::ParticipantReport,
+    ) -> Result<Vec<u8>, LinkError> {
+        Ok(self.up.seal(
+            Kind::ParticipantReport,
+            keyexpr,
+            &codec::encode_report(report),
         )?)
     }
 
@@ -826,7 +860,7 @@ impl HostIdentity {
 
     /// The identity of these secrets (its static X25519 private key, its
     /// Ed25519 seed and its local secret), which are wiped in place: what a
-    /// launcher hands the host it starts in a container (design §10, the
+    /// launcher hands the host it starts in a container (the
     /// workload spec).
     pub fn from_secrets(noise: &mut [u8; 32], sign: &mut [u8; 32], local: &mut [u8; 32]) -> Self {
         let noise = StaticKeypair::from_private(noise);
@@ -848,7 +882,7 @@ impl HostIdentity {
         self.noise.public()
     }
 
-    /// The host id (design §3): `rlm-` and 6 hex digits of
+    /// The host id: `rlm-` and 6 hex digits of
     /// `BLAKE2s(lp("rlmesh/v2 host id") ‖ static key ‖ signing key)`. A
     /// name for files and messages only: whoever pairs or is provisioned
     /// keeps the static key itself.
@@ -894,7 +928,7 @@ impl HostIdentity {
 }
 
 /// A device the host accepts handshakes from besides `local`: its id, its
-/// static public key and its entry (design §4, §9). An embedded host takes
+/// static public key and its entry. An embedded host takes
 /// them from its config; rlmeshd will read them from `devices.toml`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
@@ -924,7 +958,7 @@ pub struct Candidate {
     pub down: SealSender,
 }
 
-/// A robot name's pin (design §4, tether spec §7).
+/// A robot name's pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pin {
     /// The device that embodies it, checked at every handshake.
@@ -946,7 +980,7 @@ pub struct HostAuth {
     devices: BTreeMap<[u8; 32], String>,
     /// Participant id → the device it is bound to, for this host instance.
     names: BTreeMap<ParticipantId, String>,
-    /// Robot name → its pin (rlmeshd's, design §4): the device, checked at
+    /// Robot name → its pin (rlmeshd's): the device, checked at
     /// every handshake, and the board, at every declare.
     pins: BTreeMap<ParticipantId, Pin>,
     /// Participant id → the generation in effect.
@@ -983,7 +1017,7 @@ impl HostAuth {
         }
     }
 
-    /// The host's key schedule (§8.4, §8.5).
+    /// The host's key schedule.
     pub fn issuer(&mut self) -> &mut KeyIssuer {
         &mut self.issuer
     }
@@ -1015,7 +1049,7 @@ impl HostAuth {
     }
 
     /// Whether `robot`, embodied by `device`, may declare its parts from
-    /// the board `board_id` (tether spec §7): its pin names no board, or
+    /// the board `board_id`: its pin names no board, or
     /// this one.
     ///
     /// # Errors
@@ -1193,7 +1227,7 @@ pub enum Admit<'a, R> {
     Expired,
 }
 
-/// One participant generation's request ids (§8.6): a window of
+/// One participant generation's request ids: a window of
 /// [`REQUEST_WINDOW`] ids from a floor, each absent, pending or answered
 /// (with its reply). The host applies verbs one at a time; only a grant
 /// stays pending past its turn, while its robots install its keys.
@@ -1380,6 +1414,7 @@ mod tests {
             last_chunk_applied: 0,
             queue_depth: 0,
             health: crate::wire::heartbeat::Health::Ok,
+            rejected: Vec::new(),
         };
         let mut hb = link.heartbeat("hb", &heartbeat).expect("seal");
         assert_eq!(

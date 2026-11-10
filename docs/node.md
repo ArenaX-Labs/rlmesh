@@ -1,12 +1,14 @@
 # The Node binding
 
 Status: Experimental (protocol v2). The `rlmesh` npm package
-(`javascript/rlmesh`) ships with each release; the API may change.
+(`javascript/rlmesh`) is fenced for 0.2: CI builds and tests it, but the release
+workflow does not publish npm packages. Build from source to experiment; the API
+may change.
 
 In Node 22+ and Electron's main process, `rlmesh` runs real-time sessions
 in-process: a session host, robots with their edges, and bound policies, on
 the session's own transport (Zenoh, one session per traffic class). It is
-Python's `rlmesh.v2`, one to one, over a Node-API addon
+Python's `rlmesh.realtime`, one to one, over a Node-API addon
 (`javascript/rlmesh/native`, napi-rs) that binds `rlmesh-session`
 (its edge included) directly, as PyO3 does. Every rule (normalisation, binding,
 conversions, leases, the edge, the run loop) runs in Rust.
@@ -55,33 +57,28 @@ try {
 ```
 
 On Node 24 and later, `await using host = await Host.open()` (and the same
-for `Robot`, `Policy` and `Recorder`) closes each one at the end of the
+for `Robot`, `Policy` and `SessionRecorder`) closes each one at the end of the
 block instead of the `finally`.
 
 ## How it maps to Python
 
-| Python (`rlmesh.v2`)                               | Node (`rlmesh`)                                               |
-| -------------------------------------------------- | ------------------------------------------------------------- |
-| `with Host() as host`                              | `const host = await Host.open()` … `await host.close()`       |
-| `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`         |
-| `robot.publish("arm", pos=q, vel=dq)`              | `robot.publish('arm', { pos: q, vel: dq })`                   |
-| `robot.due("arm").value` (NumPy array)             | `robot.due('arm').value` (`{ dtype, shape, data }`)           |
-| `robot.arm()`, `estop(reason)`, `clear_estop()`    | `await robot.arm()`, `estop(reason)`, `clearEstop()`          |
-| `robot.now_ns()` (`time.monotonic_ns()`)           | `robot.nowNs()` (`process.hrtime.bigint()`)                   |
-| `Policy(map, session=host).bind(robot, **opts)`    | `await new Policy(map, { session: host }).bind(robot, opts)`  |
-| `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                             |
-| `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }` |
-| `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                  |
-| `policy.acquire()` → `{"arm": token}`              | `await policy.acquire()` → `{ arm: token }` (`bigint`)        |
-| `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                 |
-| `with Recorder(path, session=host)`                | `const rec = await Recorder.start(path, { session: host })`   |
-| `read_recording(path)`                             | `await readRecording(path)`                                   |
-| `Robot.wait_in_lobby(name, parts, home=h)`         | `await Robot.waitInLobby(name, parts, { home: h })`           |
-| `robot.leaving`                                    | `robot.leaving`                                               |
-| `with run_scene(path, home=h) as scene`            | `await using scene = await runScene(path, { home: h })`       |
-| `scene.address`, `scene.wait_until("running")`     | `await scene.address()`, `await scene.waitUntil('running')`   |
-| `scene.arm()`, `scene.stop()`                      | `await scene.arm()`, `await scene.stop()`                     |
-| `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                |
+| Python (`rlmesh.realtime`)                         | Node (`rlmesh`)                                                    |
+| -------------------------------------------------- | ------------------------------------------------------------------ |
+| `with Host() as host`                              | `const host = await Host.open()` … `await host.close()`            |
+| `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`              |
+| `robot.publish("arm", pos=q, vel=dq)`              | `robot.publish('arm', { pos: q, vel: dq })`                        |
+| `robot.due("arm").value` (NumPy array)             | `robot.due('arm').value` (`{ dtype, shape, data }`)                |
+| `robot.arm()`, `estop(reason)`, `clear_estop()`    | `await robot.arm()`, `estop(reason)`, `clearEstop()`               |
+| `robot.now_ns()` (`time.monotonic_ns()`)           | `robot.nowNs()` (`process.hrtime.bigint()`)                        |
+| `Policy(map, session=host).bind(robot, **opts)`    | `await new Policy(map, { session: host }).bind(robot, opts)`       |
+| `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                                  |
+| `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }`      |
+| `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                       |
+| `policy.acquire()` → `{"arm": token}`              | `await policy.acquire()` → `{ arm: token }` (`bigint`)             |
+| `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                      |
+| `with SessionRecorder(path, session=host)`         | `const rec = await SessionRecorder.start(path, { session: host })` |
+| `read_recording(path)`                             | `await readRecording(path)`                                        |
+| `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                     |
 
 The rules are R-30 in the [parity spec](specs/language-parity/rules.md).
 
@@ -96,7 +93,7 @@ are encoded on a thread of the robot's own (encoding a 1280x720 frame takes
 about 6 ms, which on the JS thread would cost a 1 kHz loop one tick in four),
 so `publish` returns `null` for them at once.
 
-`policy.run` runs the run loop (§8.9) on a native thread of its own. At each
+`policy.run` runs the run loop on a native thread of its own. At each
 start it hands the observation to `predict` on the JS thread and waits for
 the answer; `predict` may be `async` (a model on another thread, a GPU
 call), and one inference is in flight at a time. If it throws or rejects, the

@@ -1,4 +1,4 @@
-//! USB provisioning of a networked board (spec §14): the tether's framing
+//! USB provisioning of a networked board: the tether's framing
 //! carries a device key one way and the home host's details the other.
 //!
 //! Errors and receivers are the tether's ([`MsgError`], [`Receiver`]): the
@@ -11,9 +11,11 @@ use crate::msg::{MsgError, Receiver};
 /// `GET_DEVICE`'s and `DEVICE_INFO`'s magic.
 pub const MAGIC: [u8; 4] = *b"RLMP";
 /// The provisioning version this crate speaks.
-pub const VERSION: u8 = 1;
-/// The longest host id or robot name.
+pub const VERSION: u8 = 2;
+/// The longest host id.
 pub const MAX_ID: usize = 32;
+/// The longest robot participant id; the entire record must also fit a frame.
+pub const MAX_NAME: usize = 128;
 /// The most addresses in a `PROVISION`.
 pub const MAX_ADDRESSES: usize = 4;
 /// The longest address.
@@ -64,7 +66,7 @@ pub struct DeviceInfo<'a> {
     pub device_key: [u8; 32],
     /// The stored host id, empty when not provisioned.
     pub host_id: &'a [u8],
-    /// The compiled robot name, UTF-8.
+    /// The stored robot participant id, empty when not provisioned.
     pub name: &'a [u8],
 }
 
@@ -104,6 +106,8 @@ pub struct Provision<'a> {
     pub host_key: [u8; 32],
     /// The host id, UTF-8.
     pub host_id: &'a [u8],
+    /// The robot participant id assigned over USB.
+    pub name: &'a [u8],
     /// Its base addresses.
     pub addresses: Addresses<'a>,
 }
@@ -150,6 +154,15 @@ pub fn valid_address(a: &[u8]) -> bool {
     host_ok && port_ok
 }
 
+/// Whether `name` is a participant id: 1–128 bytes of `[A-Za-z0-9._-]`.
+pub fn valid_name(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME
+        && name
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(b))
+}
+
 /// The CRC a board answers a `PROVISION` with: CRC-32/ISO-HDLC of its
 /// payload.
 pub fn record_crc(payload: &[u8]) -> u32 {
@@ -184,6 +197,9 @@ pub fn decode<'a>(frame: &Frame<'a>, receiver: Receiver) -> Result<Prov<'a>, Msg
         return Err(MsgError::Direction);
     }
     let p = frame.payload;
+    if p.len() > MAX_PAYLOAD {
+        return Err(MsgError::Length);
+    }
     match frame.ty {
         ty::GET_DEVICE => {
             if p.len() < 4 || p[..4] != MAGIC {
@@ -222,7 +238,7 @@ pub fn decode<'a>(frame: &Frame<'a>, receiver: Receiver) -> Result<Prov<'a>, Msg
             if flags & !device_flags::ALL != 0 {
                 return Err(MsgError::Reserved);
             }
-            if host_len > MAX_ID || name_len == 0 || name_len > MAX_ID {
+            if host_len > MAX_ID || (name_len != 0 && !valid_name(&p[43 + host_len..])) {
                 return Err(MsgError::Range);
             }
             let host_id = &p[42..42 + host_len];
@@ -260,9 +276,12 @@ pub fn decode<'a>(frame: &Frame<'a>, receiver: Receiver) -> Result<Prov<'a>, Msg
             if p.len() < 36 + host_len {
                 return Err(MsgError::Length);
             }
-            let count = usize::from(p[35 + host_len]);
+            let name_len = usize::from(p[35 + host_len]);
+            let name_end = 36 + host_len + name_len;
+            let name = p.get(36 + host_len..name_end).ok_or(MsgError::Length)?;
+            let count = usize::from(*p.get(name_end).ok_or(MsgError::Length)?);
             // Walk the addresses: their lengths frame the payload.
-            let mut at = 36 + host_len;
+            let mut at = name_end + 1;
             let mut list = [&[][..]; MAX_ADDRESSES];
             for i in 0..count {
                 let len = usize::from(*p.get(at).ok_or(MsgError::Length)?);
@@ -276,7 +295,12 @@ pub fn decode<'a>(frame: &Frame<'a>, receiver: Receiver) -> Result<Prov<'a>, Msg
             if p[1] != 0 {
                 return Err(MsgError::Reserved);
             }
-            if host_len == 0 || host_len > MAX_ID || count == 0 || count > MAX_ADDRESSES {
+            if host_len == 0
+                || host_len > MAX_ID
+                || !valid_name(name)
+                || count == 0
+                || count > MAX_ADDRESSES
+            {
                 return Err(MsgError::Range);
             }
             if !list[..count].iter().all(|a| valid_address(a)) {
@@ -288,6 +312,7 @@ pub fn decode<'a>(frame: &Frame<'a>, receiver: Receiver) -> Result<Prov<'a>, Msg
                 flags: p[1],
                 host_key: key(&p[2..]),
                 host_id,
+                name,
                 addresses: Addresses { list, count },
             }))
         }
@@ -332,7 +357,7 @@ pub fn payload(msg: &Prov<'_>, buf: &mut [u8; MAX_PAYLOAD]) -> Result<usize, Msg
             if d.flags & !device_flags::ALL != 0 {
                 return Err(MsgError::Reserved);
             }
-            if d.host_id.len() > MAX_ID || d.name.is_empty() || d.name.len() > MAX_ID {
+            if d.host_id.len() > MAX_ID || (!d.name.is_empty() && !valid_name(d.name)) {
                 return Err(MsgError::Range);
             }
             utf8(d.host_id)?;
@@ -342,7 +367,7 @@ pub fn payload(msg: &Prov<'_>, buf: &mut [u8; MAX_PAYLOAD]) -> Result<usize, Msg
             put(&d.lib_version.to_le_bytes())?;
             put(&[d.arch, d.flags])?;
             put(&d.device_key)?;
-            // At most MAX_ID (32) bytes each, checked above.
+            // Host id and participant id bounds checked above.
             put(&[d.host_id.len() as u8])?;
             put(d.host_id)?;
             put(&[d.name.len() as u8])?;
@@ -359,6 +384,7 @@ pub fn payload(msg: &Prov<'_>, buf: &mut [u8; MAX_PAYLOAD]) -> Result<usize, Msg
             let list = p.addresses.as_slice();
             if p.host_id.is_empty()
                 || p.host_id.len() > MAX_ID
+                || !valid_name(p.name)
                 || list.is_empty()
                 || !list.iter().all(|a| valid_address(a))
             {
@@ -371,6 +397,8 @@ pub fn payload(msg: &Prov<'_>, buf: &mut [u8; MAX_PAYLOAD]) -> Result<usize, Msg
             // most MAX_ADDRESS (63) bytes: checked above.
             put(&[p.host_id.len() as u8])?;
             put(p.host_id)?;
+            put(&[p.name.len() as u8])?;
+            put(p.name)?;
             put(&[list.len() as u8])?;
             for a in list {
                 put(&[a.len() as u8])?;

@@ -1,7 +1,9 @@
 # The browser binding and its gateway
 
 Status: Experimental (protocol v2). The `rlmesh` npm package
-(`javascript/rlmesh`) ships with each release; the API may change.
+(`javascript/rlmesh`) is fenced for 0.2: CI builds and tests it, but the release
+workflow does not publish npm packages. Build from source to experiment; the API
+may change.
 
 A browser page cannot open a v2 session's own transport: it has no raw TCP
 or UDP, so neither Zenoh nor gRPC can run there. The browser binding is
@@ -146,7 +148,7 @@ by default (`crates/rlmesh-session/src/gateway/security.rs`):
     `--max-priority` at most;
   - **a paired browser token**: `rlmesh pair HOST --browser [--name NAME]`
     on the machine whose gateway serves the browser pairs it with the
-    robot's rlmeshd as machines pair (design §3, §5): it shows a code, the
+    robot's rlmeshd as machines pair: it shows a code, the
     owner types `rlmesh pair approve CODE [--max CLASS]` on the robot, and
     rlmeshd enrolls a device of `kind = "browser"` (default cap `model`,
     or `observer`), with its own `parts` and `verbs` (`rlmesh devices

@@ -1,4 +1,4 @@
-//! Serve an environment over gRPC.
+//! Serve an environment in a session.
 //!
 //! This is the Rust side of the quickstart loop. It hosts a tiny environment on
 //! a socket; any RLMesh client can then step it from another process, in any
@@ -6,8 +6,8 @@
 //! Python client in `examples/python/quickstart/eval.py`.
 //!
 //! ```bash
-//! cargo run -p rlmesh --example serve_env            # 127.0.0.1:5555
-//! cargo run -p rlmesh --example serve_env 0.0.0.0:7000
+//! cargo run -p rlmesh --example serve_env            # :5555/env
+//! cargo run -p rlmesh --example serve_env :7000/env
 //! ```
 #![allow(clippy::print_stdout)]
 
@@ -73,7 +73,7 @@ impl Env for CounterEnv {
 fn main() -> rlmesh::Result<()> {
     let address = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:5555".to_string());
+        .unwrap_or_else(|| ":5555/env".to_string());
 
     // The server binds at construction, so the resolved address is known
     // before serving. `serve()` blocks; Ctrl-C drains and closes the env.

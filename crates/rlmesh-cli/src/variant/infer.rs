@@ -12,7 +12,7 @@ use super::requires::{Requirement, Requires, requires_vendor};
 use crate::image_check::{CheckReport, DESCRIBE_LABEL, ImageConfig};
 
 /// What an image says about its accelerator without declaring it, read the
-/// way the platform reads an undeclared image.
+/// way the parser reads an undeclared image.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inferred {
     /// `accel` (`cuda`, `rocm`, `cpu`; absent when the image carries both
@@ -141,7 +141,7 @@ fn read_toolkit_markers(config: &ImageConfig, out: &mut Inferred, evidence: &mut
 }
 
 /// The first `cuda>=X.Y` anywhere in an `NVIDIA_REQUIRE_CUDA` value, as the
-/// platform reads it.
+/// parser reads it.
 fn cuda_floor(value: &str) -> Option<String> {
     value.match_indices("cuda>=").find_map(|(at, _)| {
         let rest = &value[at + "cuda>=".len()..];

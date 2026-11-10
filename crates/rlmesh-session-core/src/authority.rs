@@ -1,4 +1,4 @@
-//! Authority state (§9.7, §10.5, §11): epoch, roster, mode, e-stop latch,
+//! Authority state: epoch, roster, mode, e-stop latch,
 //! the part table, bindings and the lease table, with the session host as
 //! its single writer.
 //!
@@ -17,8 +17,8 @@
 //!   ([`Command::GrantLease`]) and bound to the holder's current
 //!   **binding**: chunks must carry its fingerprint, and a rebinding
 //!   re-issues the holder's leases under a fresh token, so in-flight chunks
-//!   of the old binding are fenced (Codex finding 2).
-//! - **Delivery contracts** (§8.2) come with a binding, one per bound input
+//!   of the old binding are fenced.
+//! - **Delivery contracts** come with a binding, one per bound input
 //!   stream. The host admits them ([`crate::spec::contract::admit`]), derives
 //!   one publication plan per stream from every attached controller's
 //!   contracts and publishes it as a [`Demand`]; the stream's publisher
@@ -34,10 +34,10 @@
 //!   leased at a time. A member held by an equal or higher class, or by the
 //!   requester without releasing it in the same request, is `GROUP_BUSY`; a
 //!   lower class's member is preempted. `release` switches members
-//!   atomically (Codex finding 3).
+//!   atomically.
 //! - Leases have a TTL, renewed by every heartbeat from the holder on the
 //!   current epoch; a lapse while ACTIVE takes the session SAFE.
-//! - **Presence** is heartbeats only (DESIGN §7): a participant silent for
+//! - **Presence** is heartbeats only: a participant silent for
 //!   `presence_grace` is lost. A liveliness put never makes anyone present;
 //!   a delete is only a hint ([`Authority::presence_hint`]) that loses the
 //!   participant unless a heartbeat arrives within `lease_grace` of it. A
@@ -47,16 +47,18 @@
 //! - ESTOP is accepted from anyone (refusing an e-stop is never safer) and
 //!   latches; only an embodiment's local clear releases the latch, and then a
 //!   disarm and an arm (a fresh epoch) are needed.
-//! - **Reasons** (DESIGN §7): every mode change records a structured
+//! - **Reasons**: every mode change records a structured
 //!   [`Reason`] (`mode_reason`), every lease ending goes into a bounded ring
 //!   of [`LeaseEnd`]s, and `last_stop` marks the last entry into SAFE,
 //!   DISARMED or ESTOP, so clients never infer why. An embodiment's
 //!   `EnterSafe` takes ACTIVE, ARMED and DISARMED to SAFE; SAFE and ESTOP
 //!   stay and record its reason.
-//! - **Scenes** ([`scene`]): a session a daemon runs for a scene admits
-//!   only its members, each from its device, publishes its places, refuses
-//!   declarations whose placed paths collide, and closes in one revision
-//!   ([`Authority::close_scene`]).
+//! - **Places** ([`AuthorityConfig::places`]) go out in every snapshot, so
+//!   every binder builds the same view of several robots; a declaration
+//!   whose placed paths collide is refused (`INCOMPATIBLE`).
+//! - **Scenes** (`scene`, feature `fleet`): a session a daemon runs for a
+//!   scene admits only its members, each from its device, and closes in one
+//!   revision (`Authority::close_scene`).
 //! - In **virtual** clock mode the authority also runs the tick barrier
 //!   ([`crate::virtual_clock`]); the ticks it emits are drained with
 //!   [`Authority::take_ticks`].
@@ -75,15 +77,19 @@ use crate::wire::version::{PROTOCOL_MINOR, missing_features};
 use crate::wire::{
     AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command, CtlError,
     CtlStatus, Demand, Epoch, FenceError, Fingerprint, LastStop, Lease, LeaseEnd, LeaseToken, Mode,
-    ParticipantId, ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, SceneInfo,
+    ParticipantId, ParticipantInfo, Place, PriorityClass, Reason, ReasonCode, Request, Role,
     SessionId,
 };
 
 use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
 
 pub mod access;
+#[cfg(not(feature = "fleet"))]
+mod no_scene;
+#[cfg(feature = "fleet")]
 pub mod scene;
 pub use access::{Access, DeviceAccess, Verb};
+#[cfg(feature = "fleet")]
 pub use scene::{Member, SceneConfig};
 
 /// The highest replan rate a binding declares.
@@ -311,18 +317,27 @@ pub struct AuthorityConfig {
     pub presence_grace_ns: u64,
     /// The features the session implements (see [`crate::wire::version`]).
     pub supports: Vec<String>,
-    /// Virtual clock mode (§11.3); `None` is wall mode.
+    /// Virtual clock mode; `None` is wall mode.
     pub virtual_clock: Option<VirtualConfig>,
-    /// The parts whose streams, chunks and lockstep traffic are encrypted
-    /// (design §8.2); every other part is signed.
+    /// The parts whose streams, chunks and lockstep traffic are encrypted; every other
+    /// part is signed.
     pub seal: SealPolicy,
-    /// What each device may do (design §4); `local` may do everything.
+    /// What each device may do; `local` may do everything.
     pub access: Access,
+    /// Whether a robot that went safe, restarted or came back from a loss
+    /// may be leased again at once. Off by default: its leases ended and it
+    /// waits for the next `Arm`, which re-arms it alone in an ARMED or
+    /// ACTIVE session. Other robots never stop for it either way.
+    pub rearm_robots: bool,
+    /// Where each placed robot's parts appear in the view: one binding drives several
+    /// robots through it. Empty: no view.
+    pub places: Vec<Place>,
     /// The scene this session runs, when a daemon started it for one.
+    #[cfg(feature = "fleet")]
     pub scene: Option<SceneConfig>,
 }
 
-/// Which parts a session seals (encrypts) rather than signs (§8.2, §8.8).
+/// Which parts a session seals (encrypts) rather than signs.
 /// A robot that declares a part it can't seal (`DeclareParts.seal`) is
 /// refused; a level is never lowered silently.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -363,12 +378,15 @@ impl Default for AuthorityConfig {
             virtual_clock: None,
             seal: SealPolicy::None,
             access: Access::default(),
+            rearm_robots: false,
+            places: Vec::new(),
+            #[cfg(feature = "fleet")]
             scene: None,
         }
     }
 }
 
-/// Who sent a verb, as the host's handshake authenticated it (§8.3).
+/// Who sent a verb, as the host's handshake authenticated it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Identity {
     /// The sender's device.
@@ -396,6 +414,8 @@ pub struct Authority {
     revision: u64,
     mode: Mode,
     estop_latched: bool,
+    /// Who latched the e-stop: only that robot, or `local`, clears it.
+    estop_by: Option<ParticipantId>,
     mode_reason: Reason,
     /// The latest lease endings, oldest first.
     ended: VecDeque<LeaseEnd>,
@@ -412,7 +432,7 @@ pub struct Authority {
     /// The last channel id assigned; ids only grow.
     last_channel: u32,
     bindings: BTreeMap<ParticipantId, BindingRecord>,
-    /// Each robot's declaration fingerprint (§3.3).
+    /// Each robot's declaration fingerprint.
     contract: BTreeMap<ParticipantId, Fingerprint>,
     /// The publication plan per stream some attached binding contracts.
     demands: BTreeMap<ChannelId, Demand>,
@@ -424,19 +444,19 @@ pub struct Authority {
     needed: BTreeMap<(ParticipantId, ChannelId), u64>,
     last_token: u64,
     /// The token the verb being applied mints, reserved before its keys
-    /// were delivered (§8.5).
+    /// were delivered.
     minting: Option<LeaseToken>,
     /// The streams (parts and their applied streams) that are sealed.
     sealed: BTreeSet<ChannelId>,
     clock: Option<VirtualClock>,
     /// Virtual ticks to publish.
     ticks: Vec<VirtualTick>,
-    /// Why the scene is ending, once it is.
-    closing: Option<Reason>,
-    /// Scene members lost and not back yet (a robot is back once it
-    /// declared again), and when the run stops waiting for them.
-    rejoining: BTreeSet<ParticipantId>,
-    rejoin_until_ns: Option<i64>,
+    /// Robots stopped on their own (a fallback, a restart, a loss) and not
+    /// re-armed yet: their parts take no lease until the next `Arm`.
+    held: BTreeMap<ParticipantId, Reason>,
+    /// The scene run's closing and rejoin window.
+    #[cfg(feature = "fleet")]
+    scene: scene::SceneState,
 }
 
 impl Authority {
@@ -453,6 +473,7 @@ impl Authority {
             revision: 0,
             mode: Mode::Disarmed,
             estop_latched: false,
+            estop_by: None,
             mode_reason: Reason::default(),
             ended: VecDeque::with_capacity(ENDED),
             // A fresh session is stopped (DISARMED) in its first epoch.
@@ -476,10 +497,16 @@ impl Authority {
             sealed: BTreeSet::new(),
             clock,
             ticks: Vec::new(),
-            closing: None,
-            rejoining: BTreeSet::new(),
-            rejoin_until_ns: None,
+            held: BTreeMap::new(),
+            #[cfg(feature = "fleet")]
+            scene: scene::SceneState::default(),
         }
+    }
+
+    /// Why `robot` waits for an `Arm` before its parts take a lease, if it
+    /// does.
+    pub fn held(&self, robot: &ParticipantId) -> Option<&Reason> {
+        self.held.get(robot)
     }
 
     /// The session.
@@ -599,19 +626,8 @@ impl Authority {
             mode_reason: self.mode_reason.clone(),
             ended: self.ended.iter().cloned().collect(),
             last_stop: self.last_stop,
-            places: self
-                .config
-                .scene
-                .as_ref()
-                .map(|s| s.places.clone())
-                .unwrap_or_default(),
-            scene: self.config.scene.as_ref().map(|s| {
-                Box::new(SceneInfo {
-                    closing: self.closing.clone(),
-                    rejoin_until_ns: self.rejoin_until_ns,
-                    ..s.info.clone()
-                })
-            }),
+            places: self.config.places.clone(),
+            scene: self.scene_info(),
         }
     }
 
@@ -635,16 +651,7 @@ impl Authority {
     ) -> Result<Applied, CtlError> {
         self.now_ns = now_ns;
         let mut applied = Applied::default();
-        // A closing scene is over (scene design §4.2): nothing arms it or
-        // takes a lease in it again, a grant waiting for its keys included.
-        if let Some(closing) = &self.closing
-            && matches!(request.command, Command::Arm | Command::GrantLease { .. })
-        {
-            return Err(CtlError::new(
-                CtlStatus::InvalidTransition,
-                format!("the scene's run is closing ({})", closing.code),
-            ));
-        }
+        self.scene_refuses(&request.command)?;
         let from = request.from;
         match request.command {
             Command::Attach {
@@ -674,9 +681,7 @@ impl Authority {
                 self.config
                     .access
                     .check_attach(&sender.device, &roles, priority)?;
-                if let Some(scene) = &self.config.scene {
-                    scene.admit(&from, &sender.device, &roles, priority)?;
-                }
+                self.scene_admit(&from, sender, &roles, priority)?;
                 // A re-attach of the same generation (a reconnect) keeps the
                 // participant's leases; a new generation replaces the old.
                 if self
@@ -684,15 +689,10 @@ impl Authority {
                     .get(&from)
                     .is_some_and(|p| p.generation != sender.generation)
                 {
-                    // A scene member's restart is its loss and rejoin
-                    // (scene design §4.3), seen or not: SAFE, waited for
+                    // A scene member's restart is its loss and rejoin, seen or not:
+                    // SAFE, waited for
                     // until it declared again, and armed only when asked.
-                    if self
-                        .config
-                        .scene
-                        .as_ref()
-                        .is_some_and(|s| s.members.contains_key(&from))
-                    {
+                    if self.scene_member(&from) {
                         // The old generation ends as any replaced one does,
                         // not as a detach of the new one.
                         let before = applied.events.len();
@@ -713,7 +713,7 @@ impl Authority {
                     .roster
                     .get(&from)
                     .and_then(|p| p.left.clone())
-                    .filter(|_| self.rejoining.contains(&from));
+                    .filter(|_| self.scene_rejoining(&from));
                 if left.is_none() {
                     self.rejoined(&from);
                 }
@@ -743,7 +743,7 @@ impl Authority {
                         hint_ns: None,
                     },
                 );
-                // A robot carries its latch into a new session (§6): it
+                // A robot carries its latch into a new session: it
                 // starts in ESTOP.
                 if let Some(latch) = estop.filter(|_| roles.contains(&Role::Embodiment)) {
                     let code = match latch.code {
@@ -772,14 +772,7 @@ impl Authority {
             Command::Arm => {
                 self.require_attached(&from)?;
                 self.config.access.check_verb(&sender.device, Verb::Arm)?;
-                if let Some(member) = self.rejoining.first() {
-                    return Err(CtlError::new(
-                        CtlStatus::NotReady,
-                        format!(
-                            "{member} has not rejoined the run: it arms once every member is back"
-                        ),
-                    ));
-                }
+                self.scene_arm_ready()?;
                 match self.mode {
                     Mode::Disarmed | Mode::Safe => {
                         self.epoch = self.epoch.next();
@@ -801,12 +794,20 @@ impl Authority {
                             "leaving ESTOP needs a disarm before arm",
                         ));
                     }
+                    // Re-arms the robots stopped on their own; the others
+                    // and their leases are untouched.
+                    Mode::Armed | Mode::Active if !self.held.is_empty() => {
+                        self.held.clear();
+                    }
                     Mode::Armed | Mode::Active => {
                         return Err(CtlError::new(
                             CtlStatus::InvalidTransition,
                             format!("already {}", self.mode),
                         ));
                     }
+                }
+                if matches!(self.mode, Mode::Armed) {
+                    self.held.clear();
                 }
             }
             Command::Disarm => {
@@ -922,7 +923,25 @@ impl Authority {
                         "no latched e-stop to clear",
                     ));
                 }
+                // The robot that latched it clears it, or this machine's
+                // own robot process (`local`); no other robot can.
+                if sender.device != crate::auth::LOCAL_DEVICE
+                    && self.estop_by.as_ref() != Some(&from)
+                {
+                    let by = self
+                        .estop_by
+                        .as_ref()
+                        .map_or_else(|| "someone else".into(), ToString::to_string);
+                    return Err(CtlError::new(
+                        CtlStatus::Forbidden,
+                        format!(
+                            "{by} latched this e-stop: only {by}, or a robot process on the \
+                             host's own machine, clears it"
+                        ),
+                    ));
+                }
                 self.estop_latched = false;
+                self.estop_by = None;
                 self.mode_reason = self.reason(ReasonCode::EstopCleared, &from, "");
                 applied
                     .events
@@ -938,11 +957,16 @@ impl Authority {
                 }
                 let why = self.reason(code, &from, &reason);
                 match self.mode {
-                    // A device fault between episodes is visible at once,
-                    // and the next drive needs an arm.
+                    // Only this robot stops: its leases end, and it waits
+                    // for an arm (unless robots re-arm on their own). The
+                    // session and the other robots go on.
                     Mode::Active | Mode::Armed | Mode::Disarmed => {
-                        self.revoke_all(ReasonCode::VoidedBySafe, &why, &mut applied.events);
-                        self.set_mode(Mode::Safe, why, &mut applied.events);
+                        self.stop_robot(&from, ReasonCode::VoidedBySafe, &why, &mut applied.events);
+                        self.settle_after_release(
+                            &from,
+                            "its robot went safe",
+                            &mut applied.events,
+                        );
                     }
                     Mode::Safe | Mode::Estop => {
                         self.mode_reason = why.clone();
@@ -970,9 +994,15 @@ impl Authority {
                 }
             }
             // Key verbs change no authority state: the host's key schedule
-            // answers them (§8.5).
+            // answers them.
             Command::KeysAck(_) | Command::GetKeys => {
                 self.require_attached(&from)?;
+            }
+            // The host keeps the recording once the sender checks out:
+            // whoever may arm may keep.
+            Command::Keep { .. } => {
+                self.require_attached(&from)?;
+                self.config.access.check_verb(&sender.device, Verb::Arm)?;
             }
             // The home daemon's `_lobby` host answers these before they
             // reach the authority; every other session refuses them.
@@ -1096,17 +1126,7 @@ impl Authority {
         if !self.is_attached(id) {
             return;
         }
-        let scene = self
-            .config
-            .scene
-            .as_ref()
-            .filter(|s| s.members.contains_key(id));
-        let in_scene = scene.is_some();
-        if let Some(scene) = scene {
-            self.rejoining.insert(id.clone());
-            let until = self.now_ns.saturating_add_unsigned(scene.rejoin_ns);
-            self.rejoin_until_ns.get_or_insert(until);
-        }
+        let in_scene = self.scene_lost(id);
         self.seen.remove(id);
         let before = events.len();
         let held = self.reason(ReasonCode::HolderLost, id, "");
@@ -1134,15 +1154,19 @@ impl Authority {
                 info.present = false;
                 info.left = Some(why.clone());
             }
-            self.enter_safe(why, events);
+            // Only this robot stops; it is re-armed once it is back.
+            if !self.config.rearm_robots {
+                self.held.insert(id.clone(), why);
+            }
+            self.settle_after_release(id, "its robot was lost", events);
         } else {
             self.roster.remove(id);
             if lapsed {
                 self.enter_safe(held, events);
             }
         }
-        // In a scene's run an ARMED session goes SAFE too (scene design
-        // §4.3): once the member is back, leases would otherwise take it
+        // In a scene's run an ARMED session goes SAFE too: once the member is back,
+        // leases would otherwise take it
         // ACTIVE with no explicit arm.
         if in_scene && self.mode == Mode::Armed {
             let code = if robot {
@@ -1177,6 +1201,7 @@ impl Authority {
         };
         self.revoke_all(ReasonCode::VoidedByEstop, &why, events);
         self.estop_latched = true;
+        self.estop_by = Some(by.clone());
         events.push(AuthorityEvent::EstopLatched {
             by: by.clone(),
             reason,
@@ -1220,7 +1245,7 @@ impl Authority {
         self.barrier_gone(id, self.now_ns);
     }
 
-    /// The owner changed `device`'s entry (design §4, §8.5, decision 17):
+    /// The owner changed `device`'s entry:
     /// its participants that embody a robot keep attached and lose every
     /// lease they hold; the others are detached, to re-attach under the new
     /// entry. Both with `ACCESS_CHANGED`. Returns what it caused and who it
@@ -1262,35 +1287,7 @@ impl Authority {
         (events, detached)
     }
 
-    /// Closes the scene this session runs (scene design §4.2) with `code`
-    /// (`SCENE_ENDED`, or `SCENE_FAILED` with the stage's error in
-    /// `detail`), `by` whoever stopped it, in one revision: the mode goes
-    /// DISARMED (ESTOP stays), every lease ends with the reason, and
-    /// `scene.closing` is set, which tells robots to detach and return to the
-    /// lobby. Nothing happens outside a scene or once it is closing.
-    pub fn close_scene(
-        &mut self,
-        code: ReasonCode,
-        by: &str,
-        detail: &str,
-        now_ns: i64,
-    ) -> Vec<AuthorityEvent> {
-        self.now_ns = now_ns;
-        let mut events = Vec::new();
-        if self.config.scene.is_none() || self.closing.is_some() {
-            return events;
-        }
-        let why = self.reason(code, by, detail);
-        self.revoke_all(code, &why, &mut events);
-        if self.mode != Mode::Estop {
-            self.set_mode(Mode::Disarmed, why.clone(), &mut events);
-        }
-        self.closing = Some(why);
-        self.revision += 1;
-        events
-    }
-
-    /// The owner revoked `device` (design §4, §8.5): its entry goes, and
+    /// The owner revoked `device`: its entry goes, and
     /// every participant of it is detached (`REVOKED`), robots it embodies
     /// too. Returns what it caused and who it detached.
     pub fn revoke(
@@ -1316,7 +1313,7 @@ impl Authority {
         (events, members)
     }
 
-    /// A new process attached as `id` (a new generation, §8.3): the old one
+    /// A new process attached as `id` (a new generation): the old one
     /// ends. A robot's restart is the identity half of an embodiment swap: a
     /// new epoch voids every lease, and ACTIVE becomes ARMED; no other mode
     /// changes, so a restart never stands in for an arm or a clear. Anyone
@@ -1324,15 +1321,11 @@ impl Authority {
     /// SAFE.
     fn replace_generation(&mut self, id: &ParticipantId, events: &mut Vec<AuthorityEvent>) {
         if self.parts.values().any(|p| &p.owner == id) {
+            // Its new process may be another embodiment: its own leases end
+            // and it waits for an arm. Every other robot goes on.
             let why = self.reason(ReasonCode::VoidedByEpoch, id, "the robot restarted");
-            self.epoch = self.epoch.next();
-            if let Some(clock) = &mut self.clock {
-                clock.reset(self.epoch, self.now_ns);
-            }
-            self.revoke_all(ReasonCode::VoidedByEpoch, &why, events);
-            if self.mode == Mode::Active {
-                self.set_mode(Mode::Armed, why, events);
-            }
+            self.stop_robot(id, ReasonCode::VoidedByEpoch, &why, events);
+            self.settle_after_release(id, "its robot restarted", events);
         } else {
             let why = self.reason(
                 ReasonCode::HolderDetached,
@@ -1344,14 +1337,6 @@ impl Authority {
             if events.len() > before {
                 self.enter_safe(why, events);
             }
-        }
-    }
-
-    /// `id` is back in the run: the window closes once every lost member
-    /// is.
-    fn rejoined(&mut self, id: &ParticipantId) {
-        if self.rejoining.remove(id) && self.rejoining.is_empty() {
-            self.rejoin_until_ns = None;
         }
     }
 
@@ -1427,7 +1412,7 @@ impl Authority {
         if self.sealed.contains(&channel) {
             crate::wire::Security::Seal
         } else {
-            crate::wire::Security::Sign
+            crate::wire::Security::Mac
         }
     }
 
@@ -1468,20 +1453,8 @@ impl Authority {
             ));
         }
         let fingerprint = crate::spec::normalise::fingerprint(&declared);
-        // A scene's robot keeps its map for the run: bindings were made
-        // against it (scene design §4.3).
-        if self.config.scene.is_some()
-            && let Some(before) = self.contract.get(from).filter(|f| **f != fingerprint)
-        {
-            return Err(CtlError::new(
-                CtlStatus::Incompatible,
-                format!(
-                    "{from} declared another map (contract {fingerprint}, and this run's is \
-                     {before}): flash the map it ran with, or start a new run"
-                ),
-            ));
-        }
-        if let Some(scene) = self.config.scene.as_ref().filter(|s| !s.places.is_empty()) {
+        self.scene_keeps_map(from, &fingerprint)?;
+        if !self.config.places.is_empty() {
             let mut session: Vec<PartSpec> = self
                 .parts
                 .values()
@@ -1489,7 +1462,7 @@ impl Authority {
                 .cloned()
                 .collect();
             session.extend(declared.iter().cloned());
-            crate::spec::view::parts(&session, &scene.places)
+            crate::spec::view::parts(&session, &self.config.places)
                 .map_err(|why| CtlError::new(CtlStatus::Incompatible, why))?;
         }
         let current: BTreeMap<&str, &PartSpec> = self
@@ -1499,17 +1472,17 @@ impl Authority {
             .map(|p| (p.path.as_str(), p))
             .collect();
         let armed = matches!(self.mode, Mode::Armed | Mode::Active);
-        let refuse_armed = |path: &str| {
+        // A part under a lease never changes; anything else may, armed or
+        // not: a robot joins or comes back into an armed session.
+        let refuse_leased = |path: &str| {
             CtlError::new(
                 CtlStatus::InvalidTransition,
-                format!(
-                    "{path}: a commandable part is not re-declared while {}; disarm first",
-                    self.mode
-                ),
+                format!("{path}: a commandable part is not re-declared while it is leased"),
             )
         };
         let mut keep = BTreeSet::new();
         let mut fresh = Vec::new();
+        let mut commands = false;
         for mut spec in declared {
             match current.get(spec.path.as_str()) {
                 Some(old) => {
@@ -1519,15 +1492,14 @@ impl Authority {
                         keep.insert(old.channel);
                         continue;
                     }
-                    if armed && (old.command.is_some() || spec.command.is_some()) {
-                        return Err(refuse_armed(spec.path.as_str()));
+                    if self.leases.contains_key(&old.channel) {
+                        return Err(refuse_leased(spec.path.as_str()));
                     }
+                    commands |= old.command.is_some() || spec.command.is_some();
                     fresh.push(spec);
                 }
                 None => {
-                    if armed && spec.command.is_some() {
-                        return Err(refuse_armed(spec.path.as_str()));
-                    }
+                    commands |= spec.command.is_some();
                     fresh.push(spec);
                 }
             }
@@ -1536,13 +1508,23 @@ impl Authority {
             .values()
             .filter(|p| !keep.contains(&p.channel))
             .map(|p| {
-                if armed && p.command.is_some() && !fresh.iter().any(|f| f.path == p.path) {
-                    Err(refuse_armed(p.path.as_str()))
+                if self.leases.contains_key(&p.channel) && !fresh.iter().any(|f| f.path == p.path) {
+                    Err(refuse_leased(p.path.as_str()))
                 } else {
                     Ok(p.channel)
                 }
             })
             .collect::<Result<_, _>>()?;
+        // New commands in an armed session wait for an arm, unless robots
+        // re-arm on their own.
+        if armed && commands && !self.config.rearm_robots {
+            let why = self.reason(
+                ReasonCode::Unspecified,
+                from,
+                "declared commandable parts while armed",
+            );
+            self.held.insert(from.clone(), why);
+        }
         // Validated: mutate.
         let mut added = Vec::with_capacity(fresh.len());
         for mut spec in fresh {
@@ -1748,7 +1730,7 @@ impl Authority {
         })
     }
 
-    /// Admission (§8.2): every contract names a stream once and is one the
+    /// Admission: every contract names a stream once and is one the
     /// stream can meet, the rings fit the cap, and every grid is on a
     /// commanded part.
     fn admit_contracts(&self, record: &BindingRecord) -> Result<(), CtlError> {
@@ -1960,6 +1942,24 @@ impl Authority {
             let Some(part) = self.commandable(*channel) else {
                 return Err(invalid(format!("{channel} is not a commandable part")));
             };
+            if !self.is_attached(&part.owner) {
+                return Err(CtlError::new(
+                    CtlStatus::NotReady,
+                    format!(
+                        "{} is not present: its parts take a lease once it is back",
+                        part.owner
+                    ),
+                ));
+            }
+            if let Some(why) = self.held.get(&part.owner) {
+                return Err(CtlError::new(
+                    CtlStatus::NotReady,
+                    format!(
+                        "{} stopped on its own ({}): arm to drive it again",
+                        part.owner, why.code
+                    ),
+                ));
+            }
             // Before pre-emption and busy checks: a device pre-empts only
             // with a class it is authorized for on that part.
             self.config
@@ -1987,7 +1987,7 @@ impl Authority {
                 format!("{outside} is outside binding {}", record.fingerprint),
             ));
         }
-        // Install before authority (§8.2).
+        // Install before authority.
         for c in &record.contracts {
             let needed = self.needed.get(&(from.clone(), c.channel)).copied();
             let installed = self
@@ -2337,6 +2337,36 @@ impl Authority {
         }
     }
 
+    /// Ends every lease on `robot`'s parts (`code`, carrying who and why
+    /// from `cause`) and, unless robots re-arm on their own, holds it until
+    /// the next `Arm`.
+    fn stop_robot(
+        &mut self,
+        robot: &ParticipantId,
+        code: ReasonCode,
+        cause: &Reason,
+        events: &mut Vec<AuthorityEvent>,
+    ) {
+        let channels: Vec<ChannelId> = self
+            .parts
+            .values()
+            .filter(|p| &p.owner == robot)
+            .map(|p| p.channel)
+            .collect();
+        for channel in channels {
+            if let Some(lease) = self.leases.remove(&channel) {
+                let why = Reason {
+                    code,
+                    ..cause.clone()
+                };
+                self.end(lease, why, events);
+            }
+        }
+        if !self.config.rearm_robots {
+            self.held.insert(robot.clone(), cause.clone());
+        }
+    }
+
     /// ACTIVE with no lease left drops back to ARMED.
     fn settle_after_release(
         &mut self,
@@ -2612,7 +2642,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 7 + 6, "every stream id is distinct");
 
-        // The snapshot carries the declaration fingerprint (§3.3).
+        // The snapshot carries the declaration fingerprint.
         let contract = |f: &Fixture| {
             f.auth
                 .snapshot(Vec::new(), 0)
@@ -2655,14 +2685,25 @@ mod tests {
             r#""cmd1": {"kind": "joints", "hz": 500"#,
             r#""cmd1": {"kind": "joints", "hz": 250"#,
         );
+        // A sensor hot-plug holds nothing: the robot is leased at once.
+        let lease = f.grant("policy", "cmd1", 3).expect("lease");
         assert_eq!(
             Fixture::status(f.run("robot", declare(&changed), 3)),
             CtlStatus::InvalidTransition,
-            "a commandable part is not re-declared while armed"
+            "a commandable part is not re-declared while it is leased"
         );
-        f.run("operator", Command::Disarm, 4).expect("disarm");
+        f.run(
+            "policy",
+            Command::ReleaseLease {
+                channels: vec![lease.channel],
+                token: lease.token,
+            },
+            4,
+        )
+        .expect("release");
         let cmd1 = f.ch("cmd1");
-        f.run("robot", declare(&changed), 5).expect("disarmed");
+        f.run("robot", declare(&changed), 5)
+            .expect("no longer leased");
         assert!(f.ch("cmd1") > cmd1);
         assert!(f.auth.part(cmd1).is_none());
 
@@ -3222,7 +3263,7 @@ mod tests {
     }
 
     #[test]
-    fn an_embodiments_fallback_goes_safe_from_any_mode_and_estop_records_it() {
+    fn an_embodiments_fallback_stops_its_robot_alone_until_an_arm_and_estop_records_it() {
         let mut f = Fixture::new();
         let safe = |code| Command::EnterSafe {
             reason: "board link".into(),
@@ -3237,39 +3278,45 @@ mod tests {
                 }
             );
         };
-        // Between episodes too: DISARMED and ARMED go SAFE, so a device
-        // fault is visible at once and the next drive needs an arm.
+        // Between episodes: the robot is held, the session's mode stays,
+        // and its next drive needs an arm.
         f.run("robot", safe(ReasonCode::DeviceWatchdog), 1)
             .expect("from DISARMED");
-        assert_eq!(f.auth.mode(), Mode::Safe);
-        let reason = f.auth.mode_reason();
+        assert_eq!(f.auth.mode(), Mode::Disarmed);
+        let held = f.auth.held(&pid("robot")).expect("held");
         assert_eq!(
-            (reason.code, reason.by.as_str(), reason.revision),
-            (ReasonCode::DeviceWatchdog, "robot", f.auth.revision())
+            (held.code, held.by.as_str()),
+            (ReasonCode::DeviceWatchdog, "robot")
         );
-        stopped_now(&f);
         f.run("operator", Command::Arm, 2).expect("arm");
-        assert_eq!(f.auth.last_stop().epoch.next(), f.auth.epoch(), "kept");
-        f.run("robot", safe(ReasonCode::DeviceWatchdog), 3)
-            .expect("from ARMED");
-        assert_eq!(f.auth.mode(), Mode::Safe);
-        stopped_now(&f);
-        f.run("operator", Command::Arm, 4).expect("arm");
-        f.grant("policy", "cmd1", 4).expect("lease");
+        assert!(f.auth.held(&pid("robot")).is_none(), "an arm re-arms it");
+        f.grant("policy", "cmd1", 2).expect("lease");
+        f.grant("script", "cmd2", 2).expect("lease");
         assert_eq!(
-            Fixture::status(f.run("policy", safe(ReasonCode::QueueDry), 5)),
+            Fixture::status(f.run("policy", safe(ReasonCode::QueueDry), 3)),
             CtlStatus::Forbidden
         );
-        f.run("robot", safe(ReasonCode::QueueDry), 6)
+        // From ACTIVE: only this robot's leases end; the session goes on.
+        let epoch = f.auth.epoch();
+        f.run("robot", safe(ReasonCode::QueueDry), 4)
             .expect("from ACTIVE");
-        assert_eq!(f.auth.mode(), Mode::Safe);
-        stopped_now(&f);
-        assert!(f.auth.lease(f.ch("cmd1")).is_none(), "SAFE revokes leases");
-        let ended = f.auth.snapshot(Vec::new(), 6).ended;
+        assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Armed, epoch));
+        assert!(f.auth.lease(f.ch("cmd1")).is_none(), "its leases end");
+        let ended = f.auth.snapshot(Vec::new(), 4).ended;
         assert_eq!(
             ended.last().map(|e| (e.reason.code, e.reason.by.as_str())),
             Some((ReasonCode::VoidedBySafe, "robot"))
         );
+        assert_eq!(
+            Fixture::status(f.grant("policy", "cmd1", 5)),
+            CtlStatus::NotReady,
+            "held until an arm"
+        );
+        // An arm in an armed session re-arms the robot alone, in its epoch.
+        f.run("operator", Command::Arm, 6)
+            .expect("re-arm the robot");
+        assert_eq!(f.auth.epoch(), epoch);
+        f.grant("policy", "cmd1", 6).expect("leased again");
         // ESTOP stays ESTOP and records the cause; recording is no new stop.
         let estop = Command::Estop {
             reason: "button".into(),
@@ -3365,11 +3412,12 @@ mod tests {
         f.auth.presence_hint(&pid("robot"), 150);
         beat(&mut f, &everyone[1..], 200);
         f.auth.expire(251);
-        assert_eq!(f.auth.mode(), Mode::Safe);
-        let reason = f.auth.mode_reason();
+        // Only the robot stops: its lease ends and it is held; the session
+        // has no lease left, so it is ARMED.
+        assert_eq!(f.auth.mode(), Mode::Armed);
         assert_eq!(
-            (reason.code, reason.by.as_str()),
-            (ReasonCode::RobotLost, "robot")
+            f.auth.held(&pid("robot")).map(|r| (r.code, r.by.as_str())),
+            Some((ReasonCode::RobotLost, "robot"))
         );
         let view = f.auth.snapshot(Vec::new(), 251);
         let robot = view.participant(&pid("robot")).expect("kept");
@@ -3414,6 +3462,92 @@ mod tests {
         assert_eq!(f.auth.mode(), Mode::Armed);
         f.run("policy", Command::Detach, 2).expect("detach");
         assert!(f.auth.binding(&pid("policy")).is_none());
+    }
+
+    #[test]
+    fn only_the_robot_that_latched_an_estop_or_local_clears_it() {
+        let mut f = Fixture::new();
+        let mut access = Access::default();
+        for board in ["eye-1", "eye-2"] {
+            access.set(board, DeviceAccess::new(Some(PriorityClass::Model)));
+        }
+        f.auth.config.access = access;
+        let as_board = |f: &mut Fixture, board: &str, command: Command, now: i64| {
+            let sender = Identity {
+                device: board.into(),
+                generation: 1,
+            };
+            f.auth.apply_from(
+                Request {
+                    from: pid(board),
+                    epoch: None,
+                    request_id: 0,
+                    command,
+                },
+                &sender,
+                now,
+            )
+        };
+        for (board, now) in [("eye-1", 1), ("eye-2", 2)] {
+            as_board(
+                &mut f,
+                board,
+                attach(board, vec![Role::Embodiment], PriorityClass::Scripted),
+                now,
+            )
+            .expect("attach");
+        }
+        let estop = Command::Estop {
+            reason: "button".into(),
+            code: ReasonCode::EstopLocal,
+            origin: None,
+            at_ns: 0,
+        };
+        as_board(&mut f, "eye-1", estop, 3).expect("eye 1 latches");
+        assert_eq!(
+            Fixture::status(as_board(&mut f, "eye-2", Command::Clear, 4)),
+            CtlStatus::Forbidden,
+            "another robot never clears it"
+        );
+        assert!(f.auth.estop_latched());
+        as_board(&mut f, "eye-1", Command::Clear, 5).expect("the robot that latched it");
+        assert!(!f.auth.estop_latched());
+
+        // A local robot process clears any latch.
+        let estop = Command::Estop {
+            reason: "button".into(),
+            code: ReasonCode::EstopLocal,
+            origin: None,
+            at_ns: 0,
+        };
+        as_board(&mut f, "eye-2", estop, 6).expect("eye 2 latches");
+        f.run("robot", Command::Clear, 7).expect("local clears");
+    }
+
+    #[test]
+    fn a_device_attaches_only_with_the_roles_its_entry_allows() {
+        let mut access = Access::default();
+        access.set(
+            "eye-1",
+            DeviceAccess {
+                roles: vec![Role::Embodiment, Role::Observer],
+                ..DeviceAccess::new(Some(PriorityClass::Model))
+            },
+        );
+        let status = |r: Result<(), CtlError>| r.err().map(|e| e.status);
+        assert_eq!(
+            status(access.check_attach("eye-1", &[Role::Embodiment], PriorityClass::Scripted)),
+            None
+        );
+        assert_eq!(
+            status(access.check_attach("eye-1", &[Role::Observer], PriorityClass::Scripted)),
+            None
+        );
+        assert_eq!(
+            status(access.check_attach("eye-1", &[Role::Controller], PriorityClass::Model)),
+            Some(CtlStatus::NotAuthorized),
+            "a stolen board never drives other robots"
+        );
     }
 
     #[test]
@@ -3628,18 +3762,18 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fleet")]
     #[test]
     fn closing_a_scene_disarms_ends_every_lease_and_reaches_the_device_view() {
         let mut f = Fixture::new();
         f.auth.config.scene = Some(SceneConfig {
-            info: SceneInfo {
+            info: crate::wire::SceneInfo {
                 run: "r-7k2m".into(),
                 name: "eyeball-rig".into(),
                 fingerprint: Fingerprint::from(7),
                 closing: None,
                 rejoin_until_ns: None,
             },
-            places: Vec::new(),
             members: BTreeMap::new(),
             rejoin_ns: 0,
         });
@@ -3683,6 +3817,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fleet")]
     #[test]
     fn a_lost_scene_member_is_waited_for_and_back_only_with_its_map_and_an_explicit_arm() {
         let mut f = Fixture::new();
@@ -3691,14 +3826,13 @@ mod tests {
             max_priority: PriorityClass::Operator,
         };
         f.auth.config.scene = Some(SceneConfig {
-            info: SceneInfo {
+            info: crate::wire::SceneInfo {
                 run: "r-7k2m".into(),
                 name: "rig".into(),
                 fingerprint: Fingerprint::from(7),
                 closing: None,
                 rejoin_until_ns: None,
             },
-            places: Vec::new(),
             members: [
                 (
                     pid("robot"),

@@ -73,14 +73,7 @@ highlight = "simplest-path"
 # rlmesh-cli reads only CURRENT_WORKFLOW_EDITION, to report the build's
 # protocol identity in `rlmesh version`. The facade's v2 lockstep
 # compatibility path converts v1 Join requests and replies.
-deny = [
-  { name = "rlmesh-proto", wrappers = [
-    "rlmesh",
-    "rlmesh-cli",
-    "rlmesh-grpc",
-    "rlmesh-python",
-  ] },
-]
+deny = [{ name = "rlmesh-proto", wrappers = ["rlmesh", "rlmesh-cli", "rlmesh-python"] }]
 
 [sources]
 unknown-registry = "deny"

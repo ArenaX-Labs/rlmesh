@@ -214,18 +214,12 @@ void current_error_masked(const std::string &value, const std::string &mask) {
 }
 // A run refuses an https:// env endpoint (v1) before any dial.
 void https_env(Model &model) {
-  EnvServer server(Counter{std::make_shared<Script>()},
-                   EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
-  server.start();
-  const std::string address = server.address();
-  const std::string port = address.substr(address.rfind(':') + 1);
   try {
-    model.run("https://127.0.0.1:" + port);
+    model.run("https://127.0.0.1:1");
     REQUIRE(false);
   } catch (...) {
-    current_error_masked(port, "PORT");
+    current_error_masked(":1", ":PORT");
   }
-  server.shutdown();
 }
 // A model served as the participant "policy" of a session this process
 // hosts, reached by its address and driving a local env.
@@ -341,7 +335,7 @@ int main(int argc, char **argv) {
   try {
     if (op == "dict_error") {
       EnvServer server(Counter{state},
-                       EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+                       EnvServerOptions{}.with_address(":0/env"));
       server.start();
       RemoteEnv remote(RemoteEnvOptions{}.with_address(server.address()));
       remote.reset(0);
@@ -545,8 +539,7 @@ int main(int argc, char **argv) {
       if (!serving)
         token.cancel();
       try {
-        factory.serve("tcp://127.0.0.1:0",
-                      EnvFactoryServeOptions{}.with_cancel(token));
+        factory.serve(":0/env", EnvFactoryServeOptions{}.with_cancel(token));
         REQUIRE(false);
       } catch (const ext::CancelledError &e) {
         error(e, "KeyboardInterrupt");

@@ -10,8 +10,7 @@
 //! width of its declared output. The binder then resolves the model against
 //! the stand-in exactly as it would against a real env.
 //!
-//! Ported from the managed probe (`probe/synth.rs`, and the stand-in leaves of
-//! `rlmesh-transfer`'s `stand_in.rs`); [`StandIn`] is new: the 0.2 binder
+//! The binder
 //! drives an [`Env`], so the stand-in serves scripted observations and keeps
 //! the actions it receives.
 

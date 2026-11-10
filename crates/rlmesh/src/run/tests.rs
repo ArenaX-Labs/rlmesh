@@ -257,7 +257,6 @@ fn a_run_dials_an_address_or_an_env_server() {
 /// One model served in process answers four routes at once. The route whose
 /// env dies mid-episode fails alone; its siblings finish, and their trials
 /// and seeds are the ones a single route over the whole range would draw.
-#[cfg(feature = "lockstep")]
 #[test]
 fn a_failed_route_leaves_its_siblings_running_against_a_shared_served_model() {
     use crate::binding::routes::{Route, merge_results, run_routes};
@@ -775,9 +774,9 @@ fn a_binding_reaches_a_served_env_and_refuses_what_it_cannot_drive() {
         .bind("127.0.0.1:1", BindOptions::default())
         .unwrap_err();
     assert_eq!(error.class(), ErrorClass::ValueError);
-    let v1 = crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
-        .unwrap();
-    let error = bind(&v1, &server, BindOptions::default()).unwrap_err();
+    let error =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
+            .unwrap_err();
     assert_eq!(error.class(), ErrorClass::ValueError);
     server.shutdown().unwrap();
 }
@@ -823,7 +822,7 @@ fn results_print_as_python_does() {
     );
     assert_eq!(result.success_rate(), None);
     // An unknown outcome beside a reported one counts as a failure, as the
-    // platform and `rlmesh eval report` count it.
+    // report and `rlmesh eval report` count it.
     assert_eq!(crate::run::success_rate_of([Some(true), None]), Some(0.5));
     assert_eq!(crate::run::success_rate_of([]), None);
     assert_eq!(
@@ -955,7 +954,6 @@ fn steps_server() -> EnvServer {
 
 /// A `base_seed` derives the same reset seeds on every run, in any process on
 /// any machine: these values follow from `(4242, the env's id, slot)` alone.
-#[cfg(feature = "lockstep")]
 #[tokio::test]
 async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
     use crate::model::random::RandomSampleHandler;
@@ -978,7 +976,6 @@ async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
     assert_eq!(seeds, [Some(3_549_056_084), Some(3_732_510_325)]);
 }
 
-#[cfg(feature = "lockstep")]
 #[tokio::test]
 async fn a_v2_handle_connects_and_drops_inside_a_current_thread_runtime() {
     let server = crate::EnvServer::new(Steps::new(), quick()).unwrap();
@@ -992,46 +989,6 @@ async fn a_v2_handle_connects_and_drops_inside_a_current_thread_runtime() {
     server.shutdown_async().await.unwrap();
 }
 
-#[cfg(not(feature = "lockstep"))]
-#[test]
-fn a_native_run_dials_a_borrowed_remote_env_s_address() {
-    let server = steps_server();
-    let mut remote =
-        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
-            .unwrap();
-    // An idle handle holds no session slot: the run dials its address.
-    let result = ones()
-        .run(
-            &mut remote,
-            RunOptions {
-                episodes: Some(1),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert_eq!(result.num_episodes(), 1);
-    // A handle that was driven holds the slot, and the run says so.
-    remote.reset(None, None).unwrap();
-    let err = ones()
-        .run(
-            &mut remote,
-            RunOptions {
-                episodes: Some(1),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::RuntimeError, "{err}");
-    assert!(
-        err.to_string()
-            .starts_with("the target env already has an active session"),
-        "{err}"
-    );
-    remote.close().unwrap();
-    server.shutdown().unwrap();
-}
-
-#[cfg(feature = "lockstep")]
 #[test]
 fn a_native_run_through_an_open_v2_handle_says_the_handle_holds_the_env() {
     let server = steps_server();
@@ -1352,36 +1309,6 @@ fn closure_resolution_does_not_consume_the_authored_warning() {
     drop(authored.bind(&mut env, BindOptions::default()).unwrap());
     crate::set_warning_handler(None);
     assert_eq!(warnings.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn plaintext_api_keys_warn_once_per_address() {
-    let _lock = crate::warnings::tests::HANDLER_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
-    let record = Arc::clone(&seen);
-    crate::warnings::set_warning_handler(Some(Box::new(move |w: &crate::Warning| {
-        record.lock().unwrap().push(w.message.clone());
-        Ok(())
-    })));
-    let address = "10.255.255.7:5555";
-    for _ in 0..2 {
-        crate::RemoteModel::new(
-            crate::RemoteModelOptions::default()
-                .address(address)
-                .api_key("some-key"),
-        )
-        .unwrap();
-    }
-    crate::warnings::set_warning_handler(None);
-    assert_eq!(
-        seen.lock().unwrap().as_slice(),
-        [
-            "api_key is sent unencrypted to tcp://10.255.255.7:5555; use an https:// address to \
-          keep it private"
-        ]
-    );
 }
 
 #[test]

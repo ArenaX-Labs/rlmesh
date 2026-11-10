@@ -108,9 +108,7 @@ pub fn reset_options_for(
 /// before the driver runs it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeSessionSpec {
-    /// Correlation label only; OSS does not key on it (the managed layer owns
-    /// session lifecycle). Kept as plumbing for telemetry/logs — its removal is
-    /// the deferred closed split, out of scope here.
+    /// Correlation label for telemetry and logs; routing uses `env_id`.
     pub session_id: String,
     /// The connected env container, UUIDv7 (minted by the runtime on attach).
     /// The single routing key: replaces the old `route_id` + positional lane.
@@ -132,7 +130,7 @@ pub struct RuntimeSessionSpec {
     /// What a `base_seed` derivation keys on besides the base and the episode's
     /// slot (see [`episode_seed`](super::episode_seed)): the environment, never
     /// the model or a per-launch id, so two models over one environment draw
-    /// the same episodes. The managed platform passes its environment id.
+    /// the same episodes. An environment id is a suitable key.
     pub seed_key: String,
     /// Explicit per-episode reset seeds, consumed in episode-start order (a
     /// vector reset claims one per lane). Overrides `base_seed` derivation when

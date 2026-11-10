@@ -60,7 +60,27 @@ fi
 export TMPDIR="${TMPDIR:-$repo_root/target/cxx-tmp}"
 mkdir -p "$TMPDIR"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+# The scratch holds the binaries under test, so it goes only once nothing runs
+# from it. With an EXIT trap alone, bash runs it the moment SIGTERM arrives,
+# even mid-command: when a sibling task of `test` fails, mise stops this one,
+# and a pytest that survives the signal goes on to fail on binaries deleted
+# under it, burying the real failure. Trapping the signals defers the exit
+# until the running command returns; background compiles are stopped first.
+cleanup() {
+  local running
+  running="$(jobs -p)"
+  if [ -n "$running" ]; then
+    # shellcheck disable=SC2086 # one pid per word
+    kill $running 2>/dev/null || true
+    wait 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+for signal in INT TERM HUP; do
+  # shellcheck disable=SC2064 # the exit status is fixed per signal now
+  trap "exit $((128 + $(kill -l "$signal")))" "$signal"
+done
 
 # The C++ translation units take seconds and up to a GiB each to compile, so
 # they compile in parallel (`bg`, up to 8 at a time) and `joined` waits for

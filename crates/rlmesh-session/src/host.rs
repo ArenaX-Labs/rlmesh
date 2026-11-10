@@ -9,7 +9,7 @@
 //! inflate the measured round trip. Their publishers are declared when a
 //! participant attaches, so the echo path never resolves a key per message.
 //!
-//! **Who is speaking** (design §8.3): a participant attaches through the
+//! **Who is speaking**: a participant attaches through the
 //! Noise IK handshake on `hs`, which gives each process (a generation) its
 //! own `k_up` and `k_down`. Every `ctl` request and heartbeat must be
 //! sealed under the `k_up` of the generation in effect, and every reply and
@@ -17,11 +17,10 @@
 //! A handshake makes a candidate, which takes effect when the host accepts
 //! its sealed `Attach`; a newer generation of a participant supersedes the
 //! older one. Request ids and a per-generation reply cache make a retried
-//! verb idempotent (§8.6). `host/state` and `host/tick` are signed with the
-//! host's Ed25519 key, under the host instance and one publication counter
-//! (§8.7).
+//! verb idempotent. `host/state` and `host/tick` are signed with the
+//! host's Ed25519 key, under the host instance and one publication counter.
 //!
-//! **Keys** (§8.4, §8.5): the host draws every other key, delivers it on
+//! **Keys**: the host draws every other key, delivers it on
 //! `p/{participant}/keys` sealed under the recipient's `k_down`, and
 //! retries until the recipient's `KeysAck` (its
 //! [`KeyIssuer`](crate::auth::KeyIssuer)). Each part's
@@ -33,7 +32,7 @@
 //! its keys in the reply. Meanwhile the host keeps dispatching; a retry of
 //! the pending request joins it.
 //!
-//! The host also keeps the session's **history store** (§8.8): for every
+//! The host also keeps the session's **history store**: for every
 //! declared stream (bulk streams only when configured) it subscribes to the
 //! samples and keeps a bounded ring per stream, in the current epoch only,
 //! served on `h/{robot}/{path}`. A controller queries it on attach, on a
@@ -44,10 +43,10 @@
 //! first carrying `truncated` (retention ran out before the range) and the
 //! gaps the store knows of. A query must be sealed under the requester's
 //! `k_up`, and its pages are sealed under its `k_down` with the query's
-//! request id (§8.6); the store opens every sample under its stream's key
+//! request id; the store opens every sample under its stream's key
 //! and keeps only the session's current epoch.
 //!
-//! In a virtual-clock session the host also runs the tick barrier (§11.3)
+//! In a virtual-clock session the host also runs the tick barrier
 //! and publishes its ticks on `host/tick`.
 //!
 //! The host is a library ([`SessionHost::start`] on any [`Transport`]);
@@ -63,9 +62,9 @@ use crate::wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
 use crate::wire::version::VIEW_DEVICE;
 use crate::wire::{
     Applied, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
-    DeviceView, Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId,
-    ReasonCode, Role, SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec,
-    TenantId, ViewReply,
+    DeviceView, Epoch, HeartbeatEcho, HistoryQuery, HostHealth, IssuedKey, Lease, LeaseToken,
+    LinkHealth, ParticipantId, ParticipantReport, Role, SampleBatch, SampleMeta, SeqRange,
+    SessionId, SessionKeys, StreamSpec, TenantId, ViewReply,
 };
 use bytes::Bytes;
 use rlmesh_session_core::auth::issuer::{
@@ -89,16 +88,22 @@ use zenoh::sample::SampleKind;
 
 use crate::authority::{
     Access, Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, DeviceAccess,
-    Identity, SceneConfig, SealPolicy, Verb,
+    Identity, SealPolicy,
 };
+#[cfg(feature = "fleet")]
+use crate::authority::{SceneConfig, Verb};
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
+use crate::edge::core::Rejection;
 use crate::error::SessionError;
+#[cfg(feature = "fleet")]
 use crate::lobby::{LobbyAnswer, LobbyReply, LobbyResult, LobbyService, is_lobby_verb};
 use crate::metrics::{LinkStats, ParticipantHealth, Report};
 use crate::transport::{
     CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, TrafficClass, Transport,
 };
 use crate::virtual_clock::VirtualConfig;
+#[cfg(feature = "fleet")]
+use crate::wire::ReasonCode;
 
 /// Heartbeats queued between the Zenoh callback and the host task. Beyond
 /// this the host is overloaded and drops them (the echo was already sent).
@@ -142,7 +147,7 @@ pub struct HistoryConfig {
     /// Keep bulk streams (cameras) too. Off by default: a raw camera ring is
     /// large, and windows on bulk streams are rare.
     pub bulk: bool,
-    /// Samples kept per stream: the policy-side history cap (§3.4).
+    /// Samples kept per stream: the policy-side history cap.
     pub depth: usize,
 }
 
@@ -184,38 +189,65 @@ pub struct HostConfig {
     pub supports: Vec<String>,
     /// The history store.
     pub history: HistoryConfig,
-    /// Virtual clock mode (§11.3); `None` is wall mode.
+    /// Virtual clock mode; `None` is wall mode.
     pub virtual_clock: Option<VirtualConfig>,
     /// The parts whose streams, chunks and lockstep traffic are encrypted
-    /// rather than signed (§8.2): none by default.
+    /// rather than signed: none by default.
     pub seal: SealPolicy,
     /// The host's keys, shared by every session a multi-session host runs:
     /// participants handshake with its static key, and it signs its
     /// broadcasts with its Ed25519 key. Holders of its local secret (the
     /// address's key) attach as device `local`.
     pub identity: Arc<HostIdentity>,
-    /// The devices besides `local` it accepts, each with its entry (design
-    /// §4); none by default. One listed as `local` is another key of that
-    /// device, its entry unused: the home machine's on a satellite's run
-    /// (scene design §4.4). Change them at runtime with
+    /// The devices besides `local` it accepts, each with its entry; none by default.
+    /// One listed as `local` is another key of that
+    /// device, its entry unused: the home machine's on a satellite's run. Change them
+    /// at runtime with
     /// [`SessionHost::set_access`], [`SessionHost::admit`] and
     /// [`SessionHost::revoke`].
     pub devices: Vec<Device>,
-    /// Robot name → its pin (rlmeshd's `[robots.*]`, design §4): the
+    /// Robot name → its pin (rlmeshd's `[robots.*]`): the
     /// device, checked at the handshake, and a tethered board, checked at
     /// `DeclareParts`. None by default, so a name binds to its first
     /// embodiment's device for the host instance. Change one at runtime with
     /// [`SessionHost::pin`].
     pub pins: BTreeMap<ParticipantId, Pin>,
-    /// The scene this session runs (scene design §4): its places, its
-    /// member table and its identity. `None` by default: an ordinary
-    /// session. [`crate::scene::Scene::host`] builds one from a scene file.
+    /// Whether a robot that went safe, restarted or came back from a loss
+    /// may be leased again at once ([`AuthorityConfig::rearm_robots`]).
+    /// Off by default: it waits for the next arm. Other robots never stop
+    /// for it either way.
+    pub rearm_robots: bool,
+    /// Where each placed robot's parts appear in the session's view: one binding drives
+    /// every placed robot. Empty by default:
+    /// no view.
+    pub places: Vec<crate::wire::Place>,
+    /// The scene this session runs: its member table and
+    /// its identity. `None` by default: an ordinary session.
+    /// `crate::scene::Scene::host` builds one from a scene file.
+    #[cfg(feature = "fleet")]
     pub scene: Option<SceneConfig>,
-    /// The home daemon's lobby (scene design §3), on its `_lobby` session
+    /// The home daemon's lobby, on its `_lobby` session
     /// only: the lobby verbs go to it. `None` by default: the session
     /// refuses them.
+    #[cfg(feature = "fleet")]
     pub lobby: Option<Arc<dyn LobbyService>>,
+    /// Answers `Keep` (the cockpit's Keep): keeps the session's recent
+    /// recording, and says where. `None` by default: refused UNSUPPORTED. A
+    /// recording [`crate::server::SessionServer`] sets it.
+    pub keep: Option<KeepRecording>,
 }
+
+/// Keeps `session`'s recent recording as an incident named `label`: where
+/// it went, or why not.
+pub type KeepRecording = Arc<dyn Fn(SessionId, &str) -> Result<String, String> + Send + Sync>;
+
+/// The least time between two Keeps of one session: each links the last
+/// minutes of segments out of the purge's reach, so a flood would hold the
+/// disk.
+const KEEP_EVERY: Duration = Duration::from_secs(5);
+
+/// The longest label a Keep may carry.
+const KEEP_LABEL_MAX: usize = 64;
 
 impl HostConfig {
     /// Defaults for `session` in `tenant`: wall mode, a 250 ms lease grace,
@@ -248,8 +280,13 @@ impl HostConfig {
             seal: SealPolicy::None,
             devices: Vec::new(),
             pins: BTreeMap::new(),
+            rearm_robots: false,
+            places: Vec::new(),
+            #[cfg(feature = "fleet")]
             scene: None,
+            #[cfg(feature = "fleet")]
             lobby: None,
+            keep: None,
         }
     }
 
@@ -284,8 +321,8 @@ impl HostConfig {
 
 impl std::fmt::Debug for HostConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HostConfig")
-            .field("tenant", &self.tenant)
+        let mut f = f.debug_struct("HostConfig");
+        f.field("tenant", &self.tenant)
             .field("session", &self.session)
             .field("lease_grace", &self.lease_grace)
             .field("presence_grace", &self.presence_grace)
@@ -299,9 +336,12 @@ impl std::fmt::Debug for HostConfig {
             .field("seal", &self.seal)
             .field("devices", &self.devices)
             .field("pins", &self.pins)
-            .field("scene", &self.scene)
-            .field("lobby", &self.lobby.is_some())
-            .finish_non_exhaustive()
+            .field("rearm_robots", &self.rearm_robots)
+            .field("places", &self.places);
+        #[cfg(feature = "fleet")]
+        f.field("scene", &self.scene)
+            .field("lobby", &self.lobby.is_some());
+        f.finish_non_exhaustive()
     }
 }
 
@@ -321,7 +361,7 @@ pub struct SessionHost {
 /// A runtime change of the device table, and who is told it applied.
 type AccessChange = (Change, oneshot::Sender<Result<(), SessionError>>);
 
-/// One change of the device table (design §4, §8.5).
+/// One change of the device table.
 #[derive(Debug)]
 enum Change {
     /// A device's new entry.
@@ -333,6 +373,7 @@ enum Change {
     /// A robot name's new pin, or none.
     Pin(ParticipantId, Option<Pin>),
     /// The scene closes: the reason's code, who, and why.
+    #[cfg(feature = "fleet")]
     Close(ReasonCode, String, String),
 }
 
@@ -340,6 +381,7 @@ impl SessionHost {
     /// Declares the host's queryables, subscribers and liveliness token, and
     /// starts its task. The authority snapshot is queryable once this
     /// returns.
+    #[allow(clippy::needless_update)]
     pub async fn start(transport: Transport, config: HostConfig) -> Result<Self, SessionError> {
         config.validate()?;
         let keys = SessionKeys::new(&config.tenant, config.session);
@@ -357,7 +399,13 @@ impl SessionHost {
                 virtual_clock: config.virtual_clock,
                 seal: config.seal.clone(),
                 access: access.clone(),
+                rearm_robots: config.rearm_robots,
+                places: config.places.clone(),
+                #[cfg(feature = "fleet")]
                 scene: config.scene.clone(),
+                // The core's `scene`, when another crate turned its `fleet`
+                // on (a board's) and this crate's is off.
+                ..AuthorityConfig::default()
             },
         );
         let epoch = Arc::new(AtomicU64::new(authority.epoch().0));
@@ -398,6 +446,16 @@ impl SessionHost {
                 }
             })
             .await?;
+        // Observer reports, sealed to the host: the newest per generation is
+        // relayed in `host/health`.
+        let reports = transport
+            .session(TrafficClass::Data)
+            .declare_subscriber(keys.reports())
+            .callback({
+                let (keys, peers) = (keys.clone(), peers.clone());
+                move |sample| on_report_sample(&keys, &peers, &sample)
+            })
+            .await?;
         let handshakes = control.declare_queryable(keys.handshake()).await?;
         let ctl = control.declare_queryable(keys.ctl()).await?;
         let state = control.declare_queryable(keys.host_state()).await?;
@@ -418,6 +476,12 @@ impl SessionHost {
             .priority(CONTROL_PRIORITY)
             .congestion_control(CONTROL_CONGESTION)
             .express(true)
+            .await?;
+        // Observers only: a dropped health message is replaced within a
+        // second, so it never blocks control traffic.
+        let health_out = control
+            .declare_publisher(keys.host_health())
+            .congestion_control(zenoh::qos::CongestionControl::Drop)
             .await?;
         let host_keys = Arc::new(Mutex::new(Keyring::new(None, 0)));
         let store = HistoryStore {
@@ -448,7 +512,8 @@ impl SessionHost {
         let (events, _) = broadcast::channel(256);
         let cancel = CancellationToken::new();
         let (access_tx, access_rx) = mpsc::unbounded_channel();
-        let (lobby_done, lobby_rx) = mpsc::unbounded_channel();
+        #[cfg_attr(not(feature = "fleet"), allow(unused_variables))]
+        let (lobby_done, lobby_rx) = mpsc::unbounded_channel::<LobbyDone>();
 
         let identity = config.identity.clone();
         let mut actor = HostActor {
@@ -465,6 +530,7 @@ impl SessionHost {
             epoch,
             publisher,
             ticks,
+            health_out,
             snapshot_tx,
             health_tx,
             events: events.clone(),
@@ -473,7 +539,10 @@ impl SessionHost {
             host_keys,
             waiting: HashMap::new(),
             failed: Vec::new(),
+            last_keep: None,
+            #[cfg(feature = "fleet")]
             lobby: HashMap::new(),
+            #[cfg(feature = "fleet")]
             lobby_done,
         };
         actor.publish().await;
@@ -496,6 +565,7 @@ impl SessionHost {
                 // host that no longer answers, then the rest.
                 drop(token);
                 drop(heartbeats);
+                drop(reports);
                 drop(history);
                 actor.recorded.clear();
                 actor.store.clear();
@@ -514,7 +584,7 @@ impl SessionHost {
         })
     }
 
-    /// Changes `device`'s entry at runtime (design §4, §8.5): its
+    /// Changes `device`'s entry at runtime: its
     /// participants that embody a robot lose every lease they hold, the
     /// others are detached (`ACCESS_CHANGED`) and re-attach under the new
     /// entry, and every stream key it can no longer read rotates.
@@ -539,7 +609,7 @@ impl SessionHost {
         self.change(Change::Admit(device)).await
     }
 
-    /// Revokes `device` (design §4, §8.5): its handshakes are refused from
+    /// Revokes `device`: its handshakes are refused from
     /// now on, every participant of it is detached (`REVOKED`), robots it
     /// embodies too, and every stream key it could read rotates. The names
     /// it is bound to stay bound.
@@ -551,8 +621,8 @@ impl SessionHost {
     }
 
     /// Pins robot name `robot`, or unpins it (`None`): its device is checked
-    /// at every handshake and its board at every declare (design §4, tether
-    /// spec §7). A moved or removed pin detaches the robot's current
+    /// at every handshake and its board at every declare. A moved or removed pin
+    /// detaches the robot's current
     /// embodiment as lost (`ROBOT_LOST`: an ACTIVE session goes SAFE); a
     /// first pin to the device that embodies it changes nothing.
     ///
@@ -562,7 +632,8 @@ impl SessionHost {
         self.change(Change::Pin(robot.clone(), pin)).await
     }
 
-    /// Closes the scene this session runs (scene design §4.2), in one
+    #[cfg(feature = "fleet")]
+    /// Closes the scene this session runs, in one
     /// revision: DISARMED (ESTOP stays) with `code` (`SCENE_ENDED`, or
     /// `SCENE_FAILED` with the error in `detail`) and `by`, every lease
     /// ended with it, and `scene.closing` set in the state and every device
@@ -650,7 +721,7 @@ struct Peer {
     identity: Identity,
     /// Host clock at the handshake.
     created_ns: i64,
-    /// `k_up`: requests and heartbeats.
+    /// `k_up`: requests, heartbeats and reports.
     up: Mutex<SealReceiver>,
     /// `k_down`: replies and echoes. One lock per key: a seq is allocated
     /// and its message sent under it.
@@ -660,6 +731,8 @@ struct Peer {
     requests: Mutex<RequestWindow<Vec<u8>>>,
     /// The echo publisher, once in effect.
     echo: std::sync::OnceLock<zenoh::pubsub::Publisher<'static>>,
+    /// Its latest observer report, relayed in `host/health`.
+    report: Mutex<Option<ParticipantReport>>,
 }
 
 /// Every generation with keys.
@@ -672,6 +745,37 @@ struct Peers {
 }
 
 type SharedPeers = Arc<RwLock<Peers>>;
+
+/// How often the host publishes `host/health`.
+const HEALTH_PERIOD: Duration = Duration::from_secs(1);
+
+/// The report callback: open it under the sender's `k_up` and keep it as
+/// that generation's latest. Anything that doesn't open is dropped.
+fn on_report_sample(keys: &SessionKeys, peers: &SharedPeers, sample: &zenoh::sample::Sample) {
+    let key = sample.key_expr().as_str();
+    let Some(id) = keys.participant_of(key) else {
+        return;
+    };
+    let Some(peer) = peers.read().ok().and_then(|p| p.current.get(&id).cloned()) else {
+        return;
+    };
+    let mut bytes = sample.payload().to_bytes().into_owned();
+    let report = match lock(&peer.up).open(&keys.report(&id), &mut bytes) {
+        Ok(opened) if opened.header.kind == Kind::ParticipantReport => {
+            codec::decode_report(opened.body)
+        }
+        Ok(_) => return,
+        Err(err) => {
+            debug!(%id, %err, "report dropped");
+            return;
+        }
+    };
+    match report {
+        Ok(report) if report.participant == id => *lock(&peer.report) = Some(report),
+        Ok(_) => warn!(%id, "report key and body disagree"),
+        Err(err) => debug!(%id, %err, "undecodable report"),
+    }
+}
 
 type HeartbeatTx = mpsc::Sender<(ParticipantId, crate::wire::Heartbeat, i64)>;
 
@@ -763,7 +867,7 @@ struct RingState {
 struct Ring {
     spec: StreamSpec,
     state: Mutex<RingState>,
-    /// The session's epoch: the only one a sample is kept in (§8.5).
+    /// The session's epoch: the only one a sample is kept in.
     epoch: Arc<AtomicU64>,
     /// Samples kept.
     depth: usize,
@@ -933,7 +1037,7 @@ struct HistoryStore {
 impl HistoryStore {
     /// Replies to an `h/{robot}/{path}` query, sealed under the `k_up` of a
     /// generation in effect, with its pages sealed under that generation's
-    /// `k_down` (§8.6). Anything else is dropped unanswered.
+    /// `k_down`. Anything else is dropped unanswered.
     fn serve(&self, keys: &SessionKeys, query: &Query) {
         let key = query.key_expr().as_str();
         let Some((robot, path)) = keys.history_of(key) else {
@@ -1051,6 +1155,8 @@ struct Link {
     generation: u32,
     estimator: OffsetEstimator,
     stats: LinkStats,
+    /// Edges: chunks refused since attach, by reason (its latest heartbeat).
+    rejected: Vec<(Rejection, u64)>,
 }
 
 type Fifo<T> = zenoh::handlers::FifoChannelHandler<T>;
@@ -1075,6 +1181,8 @@ struct HostActor {
     epoch: Arc<AtomicU64>,
     publisher: zenoh::pubsub::Publisher<'static>,
     ticks: zenoh::pubsub::Publisher<'static>,
+    /// Signed `host/health`.
+    health_out: zenoh::pubsub::Publisher<'static>,
     snapshot_tx: watch::Sender<AuthoritySnapshot>,
     health_tx: watch::Sender<Vec<ParticipantHealth>>,
     events: broadcast::Sender<AuthorityEvent>,
@@ -1087,18 +1195,31 @@ struct HostActor {
     waiting: HashMap<GrantId, Waiting>,
     /// Grants a participant's end failed, still to answer.
     failed: Vec<GrantId>,
+    /// Host clock at the last Keep.
+    last_keep: Option<i64>,
     /// Lobby verbs waiting for their answer (a long poll), by sender
     /// generation and request id.
+    #[cfg(feature = "fleet")]
     lobby: HashMap<LobbyKey, LobbyWaiting>,
     /// Where a waiting lobby verb's answer comes back to the host task.
-    lobby_done: mpsc::UnboundedSender<(LobbyKey, LobbyResult)>,
+    #[cfg(feature = "fleet")]
+    lobby_done: mpsc::UnboundedSender<LobbyDone>,
 }
 
 /// A lobby verb: its sender, the sender's generation and the request id.
+#[cfg(feature = "fleet")]
 type LobbyKey = (ParticipantId, u32, u64);
+
+/// A waiting lobby verb's answer, back at the host task. Without `fleet`
+/// nothing waits: the channel never yields.
+#[cfg(feature = "fleet")]
+type LobbyDone = (LobbyKey, LobbyResult);
+#[cfg(not(feature = "fleet"))]
+type LobbyDone = std::convert::Infallible;
 
 /// A lobby verb waiting for its answer, and the latest query asking for it
 /// (a retry replaces it: the earlier one's caller has timed out).
+#[cfg(feature = "fleet")]
 struct LobbyWaiting {
     peer: Arc<Peer>,
     query: Option<Query>,
@@ -1125,8 +1246,10 @@ enum Outcome {
     /// A grant waiting for its robots: answered once they acknowledged.
     Deferred(GrantId),
     /// A lobby verb, answered now.
+    #[cfg(feature = "fleet")]
     Lobby(LobbyResult),
     /// A lobby verb answered later (a long poll).
+    #[cfg(feature = "fleet")]
     Later(tokio::sync::oneshot::Receiver<LobbyResult>),
 }
 
@@ -1136,13 +1259,63 @@ impl Outcome {
     }
 }
 
+/// Whether the expiry tick may judge silence. A host that did not run for a
+/// while (its process was descheduled or frozen) was not listening in that
+/// time: heartbeats sent meanwhile are still on their way to it, and
+/// participants in its own process stalled with it. Judging on the first
+/// tick back would lapse the leases of healthy holders, so that tick starts
+/// one lease grace of listening instead. The judgement after it always
+/// runs, so a host that keeps stalling still expires what is silent.
+struct Heard {
+    last: tokio::time::Instant,
+    listening_until: Option<tokio::time::Instant>,
+    stall: Duration,
+    grace: Duration,
+}
+
+impl Heard {
+    fn new(now: tokio::time::Instant, tick: Duration, grace: Duration) -> Self {
+        Self {
+            last: now,
+            listening_until: None,
+            // Well past a late tick, well short of a lapse.
+            stall: (grace / 2).max(tick * 4),
+            grace,
+        }
+    }
+
+    /// Whether the host is listening after a stall.
+    fn listening(&self) -> bool {
+        self.listening_until.is_some()
+    }
+
+    /// Whether the tick at `now` judges leases and presence.
+    fn judge(&mut self, now: tokio::time::Instant) -> bool {
+        let gap = now.saturating_duration_since(self.last);
+        self.last = now;
+        match self.listening_until {
+            Some(until) if now < until => false,
+            Some(_) => {
+                self.listening_until = None;
+                true
+            }
+            None if gap > self.stall => {
+                debug!(?gap, "host stalled: listening before judging leases");
+                self.listening_until = Some(now + self.grace);
+                false
+            }
+            None => true,
+        }
+    }
+}
+
 impl HostActor {
     async fn run(
         &mut self,
         cancel: CancellationToken,
         mut heartbeats: mpsc::Receiver<(ParticipantId, crate::wire::Heartbeat, i64)>,
         mut access: mpsc::UnboundedReceiver<AccessChange>,
-        mut lobby: mpsc::UnboundedReceiver<(LobbyKey, LobbyResult)>,
+        mut lobby: mpsc::UnboundedReceiver<LobbyDone>,
         (handshakes, ctl, state, views): (Queries, Queries, Queries, Queries),
         presence: zenoh::pubsub::Subscriber<Fifo<zenoh::sample::Sample>>,
     ) {
@@ -1152,9 +1325,15 @@ impl HostActor {
             interval
         };
         let mut tick = interval(self.config.tick);
+        let mut heard = Heard::new(
+            tokio::time::Instant::now(),
+            self.config.tick,
+            self.config.lease_grace,
+        );
         let mut republish = interval(self.config.republish);
         let health_log = self.config.health_log;
         let mut health = interval(health_log.unwrap_or(Duration::from_secs(1)));
+        let mut health_out = interval(HEALTH_PERIOD);
 
         loop {
             tokio::select! {
@@ -1182,7 +1361,7 @@ impl HostActor {
                 Some((id, heartbeat, t2)) = heartbeats.recv() => {
                     self.on_heartbeat(id, heartbeat, t2);
                 }
-                Some((key, result)) = lobby.recv() => self.finish_lobby(key, result).await,
+                Some(done) = lobby.recv() => self.finish_lobby(done).await,
                 Some((change, done)) = access.recv() => {
                     let applied = match change {
                         Change::Access(device, entry) => self.set_access(&device, entry).await,
@@ -1192,6 +1371,7 @@ impl HostActor {
                             self.pin(&robot, pin).await;
                             Ok(())
                         }
+                        #[cfg(feature = "fleet")]
                         Change::Close(code, by, detail) => {
                             self.close_scene(code, &by, &detail).await
                         }
@@ -1209,12 +1389,19 @@ impl HostActor {
                     while let Ok((id, heartbeat, t2)) = heartbeats.try_recv() {
                         self.on_heartbeat(id, heartbeat, t2);
                     }
-                    let events = self.authority.expire(self.now());
-                    self.record(events).await;
+                    if heard.judge(tokio::time::Instant::now()) {
+                        let events = self.authority.expire(self.now());
+                        self.record(events).await;
+                    }
                     self.publish_ticks().await;
-                    self.publish_renewals().await;
+                    // Back from a stall, every edge's copy of its lease has
+                    // run out by its own clock: each renewal the returning
+                    // heartbeats bring goes out on the tick it arrives,
+                    // not a quarter grace later.
+                    self.publish_renewals(heard.listening()).await;
                 }
                 _ = republish.tick() => self.publish().await,
+                _ = health_out.tick() => self.publish_health().await,
                 _ = health.tick() => {
                     let rows = self.health_rows();
                     if health_log.is_some() {
@@ -1224,7 +1411,7 @@ impl HostActor {
                     }
                     self.health_tx.send_replace(rows);
                     // A missed acknowledgement never detaches anyone: the
-                    // step waits, and says for whom (§8.5).
+                    // step waits, and says for whom.
                     for step in self.auth.issuer().pending() {
                         info!(
                             robot = %step.robot,
@@ -1349,6 +1536,7 @@ impl HostActor {
                     down: Mutex::new(candidate.down),
                     requests: Mutex::default(),
                     echo: std::sync::OnceLock::new(),
+                    report: Mutex::default(),
                 });
                 if let Ok(mut peers) = self.peers.write() {
                     let Peers { by_key, current } = &mut *peers;
@@ -1425,11 +1613,13 @@ impl HostActor {
             Admit::Execute => None,
         };
         // A retry of a lobby verb still waiting joins it.
+        #[cfg(feature = "fleet")]
         let lobby_key = (
             peer.participant.clone(),
             peer.identity.generation,
             request_id,
         );
+        #[cfg(feature = "fleet")]
         if admitted.is_none()
             && let Some(waiting) = self.lobby.get_mut(&lobby_key)
             && Arc::ptr_eq(&waiting.peer, &peer)
@@ -1477,6 +1667,7 @@ impl HostActor {
                         return;
                     }
                     Outcome::Reply(result, leases, keys) => (result, leases, keys),
+                    #[cfg(feature = "fleet")]
                     Outcome::Lobby(result) => {
                         let encoded = self.answer_lobby(&peer.participant, result, request_id);
                         lock(&peer.requests).complete(request_id, encoded.clone());
@@ -1490,6 +1681,7 @@ impl HostActor {
                         }
                         return;
                     }
+                    #[cfg(feature = "fleet")]
                     Outcome::Later(answer) => {
                         lock(&peer.requests).begin(request_id);
                         let done = self.lobby_done.clone();
@@ -1560,6 +1752,7 @@ impl HostActor {
             }
         }
         debug!(from = %request.from, command = ?request.command, "ctl");
+        #[cfg(feature = "fleet")]
         if is_lobby_verb(&request.command)
             && let Some(lobby) = self.config.lobby.clone()
         {
@@ -1583,6 +1776,7 @@ impl HostActor {
             Command::GrantLease { .. } | Command::DeclareBinding { .. } => {
                 return self.mint(peer, request).await;
             }
+            Command::Keep { .. } => return self.keep(peer, request, now),
             Command::DeclareParts { board_id, .. } => {
                 if let Err(err) = self.auth.check_board(
                     &peer.participant,
@@ -1619,10 +1813,54 @@ impl HostActor {
         }
     }
 
+    /// `Keep`: the authority checks the sender, then the recording is kept.
+    fn keep(&mut self, peer: &Arc<Peer>, request: crate::wire::Request, now: i64) -> Outcome {
+        let Command::Keep { label } = &request.command else {
+            return Outcome::Drop;
+        };
+        let Some(keep) = self.config.keep.clone() else {
+            return Outcome::refused(CtlError::new(
+                CtlStatus::Unsupported,
+                "this host records nothing to keep",
+            ));
+        };
+        if label.len() > KEEP_LABEL_MAX {
+            return Outcome::refused(CtlError::new(
+                CtlStatus::InvalidRequest,
+                format!("a Keep label has at most {KEEP_LABEL_MAX} bytes"),
+            ));
+        }
+        let every = i64::try_from(KEEP_EVERY.as_nanos()).unwrap_or(i64::MAX);
+        if self
+            .last_keep
+            .is_some_and(|t| now.saturating_sub(t) < every)
+        {
+            return Outcome::refused(CtlError::new(
+                CtlStatus::NotReady,
+                format!("kept less than {} s ago", KEEP_EVERY.as_secs()),
+            ));
+        }
+        let label = label.clone();
+        if let Err(err) = self.authority.apply_from(request, &peer.identity, now) {
+            info!(status = ?err.status, "ctl refused: {}", err.message);
+            return Outcome::refused(err);
+        }
+        self.last_keep = Some(now);
+        match keep(self.config.session, &label) {
+            Ok(dir) => {
+                info!(by = %peer.participant, %dir, "recording kept");
+                Outcome::Reply(Ok(()), Vec::new(), Vec::new())
+            }
+            Err(why) => {
+                warn!(by = %peer.participant, %why, "recording not kept");
+                Outcome::refused(CtlError::new(CtlStatus::NotReady, why))
+            }
+        }
+    }
+
     /// A verb that may mint a lease token (a grant, a rebind): tried on a
     /// copy of the authority with a reserved token. Minting nothing, it is
-    /// applied at once; otherwise its keys go to its robots and it waits
-    /// (§8.5 Grant).
+    /// applied at once; otherwise its keys go to its robots and it waits.
     async fn mint(&mut self, peer: &Arc<Peer>, request: crate::wire::Request) -> Outcome {
         let now = self.now();
         let token = self.authority.reserve_token();
@@ -1824,7 +2062,7 @@ impl HostActor {
         }
     }
 
-    /// Keeps one stream key slot per declared part (§8.4).
+    /// Keeps one stream key slot per declared part.
     fn sync_streams(&mut self) {
         let streams: Vec<StreamSlot> = self
             .authority
@@ -1967,6 +2205,7 @@ impl HostActor {
     }
 
     /// Closes the scene: see [`SessionHost::close_scene`].
+    #[cfg(feature = "fleet")]
     async fn close_scene(
         &mut self,
         code: ReasonCode,
@@ -2048,16 +2287,18 @@ impl HostActor {
         keys: Vec<IssuedKey>,
         request_id: u64,
     ) -> Vec<u8> {
-        self.answer_with(to, result, (leases, keys), request_id, None)
+        self.answer_with(to, result, (leases, keys), request_id, (None, None))
     }
 
     /// A lobby verb's reply: its order or its run's state.
+    #[cfg(feature = "fleet")]
     fn answer_lobby(&self, to: &ParticipantId, result: LobbyResult, request_id: u64) -> Vec<u8> {
-        let (result, reply) = match result {
-            Ok(reply) => (Ok(()), Some(reply)),
-            Err(err) => (Err(err), None),
+        let (result, lobby) = match result {
+            Ok(LobbyReply::Assignment(assignment)) => (Ok(()), (Some(assignment), None)),
+            Ok(LobbyReply::Run(run)) => (Ok(()), (None, Some(run))),
+            Err(err) => (Err(err), (None, None)),
         };
-        self.answer_with(to, result, (Vec::new(), Vec::new()), request_id, reply)
+        self.answer_with(to, result, (Vec::new(), Vec::new()), request_id, lobby)
     }
 
     fn answer_with(
@@ -2066,16 +2307,14 @@ impl HostActor {
         result: Result<(), CtlError>,
         (leases, keys): (Vec<Lease>, Vec<IssuedKey>),
         request_id: u64,
-        lobby: Option<LobbyReply>,
+        (assignment, run): (
+            Option<crate::wire::Assignment>,
+            Option<crate::wire::RunState>,
+        ),
     ) -> Vec<u8> {
-        let (assignment, run) = match lobby {
-            Some(LobbyReply::Assignment(assignment)) => (Some(assignment), None),
-            Some(LobbyReply::Run(run)) => (None, Some(run)),
-            None => (None, None),
-        };
         let state = self.snapshot();
-        // A robot that takes its device view gets it in place of the state
-        // (scene design §3.4): a board never decodes the state.
+        // A robot that takes its device view gets it in place of the state: a board
+        // never decodes the state.
         if asks_for_view(&state, to) {
             return codec::encode_view_reply(&ViewReply {
                 result,
@@ -2099,7 +2338,8 @@ impl HostActor {
     }
 
     /// Hands a lobby verb to the lobby: `RunScene`, `StopScene` and
-    /// `ArmScene` need the `arm` verb (scene design §3.2).
+    /// `ArmScene` need the `arm` verb.
+    #[cfg(feature = "fleet")]
     fn lobby_verb(&self, peer: &Peer, lobby: &dyn LobbyService, command: Command) -> Outcome {
         if matches!(
             command,
@@ -2120,7 +2360,16 @@ impl HostActor {
 
     /// Answers a lobby verb that waited, once, if its sender is still the
     /// generation that sent it.
-    async fn finish_lobby(&mut self, key: LobbyKey, result: LobbyResult) {
+    #[cfg(not(feature = "fleet"))]
+    #[allow(clippy::unused_async)]
+    async fn finish_lobby(&mut self, done: LobbyDone) {
+        match done {}
+    }
+
+    /// Answers a lobby verb that waited, once, if its sender is still the
+    /// generation that sent it.
+    #[cfg(feature = "fleet")]
+    async fn finish_lobby(&mut self, (key, result): LobbyDone) {
         let Some(waiting) = self.lobby.remove(&key) else {
             return;
         };
@@ -2197,7 +2446,7 @@ impl HostActor {
         due
     }
 
-    /// The snapshot as a `Signed` broadcast (§8.7).
+    /// The snapshot as a `Signed` broadcast.
     fn sign_state(&mut self, snapshot: &AuthoritySnapshot) -> Option<Vec<u8>> {
         self.signer
             .sign(
@@ -2228,6 +2477,7 @@ impl HostActor {
             return;
         };
         link.stats.on_heartbeat(t2);
+        link.rejected = heartbeat.rejected;
         link.stats.on_report(Report {
             last_seq_seen: heartbeat.last_seq_seen,
             last_chunk_accepted: heartbeat.last_chunk_accepted,
@@ -2282,6 +2532,7 @@ impl HostActor {
                                 generation,
                                 estimator: OffsetEstimator::new(offset),
                                 stats: LinkStats::new(offset.window),
+                                rejected: Vec::new(),
                             },
                         );
                     }
@@ -2290,6 +2541,7 @@ impl HostActor {
                     self.links.remove(participant);
                     // Its waiting lobby verbs end with it: the lobby sees
                     // their answers' receivers closed.
+                    #[cfg(feature = "fleet")]
                     self.lobby.retain(|(id, _, _), waiting| {
                         let keep = id != participant;
                         if !keep {
@@ -2352,6 +2604,66 @@ impl HostActor {
         self.authority.snapshot(clocks, now)
     }
 
+    /// What `host/health` says now.
+    fn health(&self, now: i64) -> HostHealth {
+        let peers = self.peers.read().ok();
+        let links = self
+            .links
+            .iter()
+            .map(|(id, link)| {
+                let row = link.stats.health(id, link.estimator.estimate(now), now);
+                let report = peers
+                    .as_ref()
+                    .and_then(|p| p.current.get(id))
+                    .and_then(|peer| lock(&peer.report).clone());
+                LinkHealth {
+                    participant: Some(id.clone()),
+                    heartbeats: row.heartbeats,
+                    rtt_ns: row.rtt_ns.unwrap_or(0),
+                    jitter_ns: row.jitter_ns,
+                    heartbeat_gap_max_ns: row.heartbeat_gap_max_ns,
+                    last_heartbeat_age_ns: row.last_heartbeat_age_ns.unwrap_or(0),
+                    offset: row.offset.map(|o| (o.offset_ns, o.error_ns)),
+                    last_chunk_accepted: row.report.last_chunk_accepted,
+                    last_chunk_applied: row.report.last_chunk_applied,
+                    queue_depth: row.report.queue_depth,
+                    health: row.report.health,
+                    rejected: link.rejected.clone(),
+                    report,
+                    last_seq_seen: row.report.last_seq_seen,
+                }
+            })
+            .collect();
+        HostHealth {
+            epoch: self.authority.epoch(),
+            host_ns: now,
+            links,
+        }
+    }
+
+    /// Signs and publishes `host/health`: every attached participant's link
+    /// as measured here, its edge counters and its latest observer report.
+    async fn publish_health(&mut self) {
+        let now = self.now();
+        let health = self.health(now);
+        let signed = self.signer.sign(
+            SignedKind::HostHealth,
+            &self.keys.host_health(),
+            &codec::encode_health(&health),
+        );
+        let sent = match signed {
+            Ok(signed) => self
+                .health_out
+                .put(signed)
+                .await
+                .map_err(|err| err.to_string()),
+            Err(err) => Err(err.to_string()),
+        };
+        if let Err(err) = sent {
+            debug!(%err, "health publish failed");
+        }
+    }
+
     fn health_rows(&self) -> Vec<ParticipantHealth> {
         let now = self.now();
         self.links
@@ -2393,12 +2705,12 @@ impl HostActor {
     /// Heartbeats renew leases without a structural change; while any lease
     /// is held, republish often enough that an edge's local expiry never
     /// runs ahead of the host's renewals.
-    async fn publish_renewals(&mut self) {
+    async fn publish_renewals(&mut self, every_tick: bool) {
         if self.authority.lease_count() == 0 {
             return;
         }
         let quarter = i64::try_from(self.config.lease_grace.as_nanos() / 4).unwrap_or(i64::MAX);
-        if self.now().saturating_sub(self.last_publish_ns) >= quarter {
+        if every_tick || self.now().saturating_sub(self.last_publish_ns) >= quarter {
             self.publish().await;
         }
     }
@@ -2461,6 +2773,26 @@ pub(crate) async fn token_declared(
 mod tests {
     use super::*;
     use crate::wire::{Encoding, FieldSpec, Layout, Sample};
+
+    #[test]
+    fn a_stalled_host_listens_for_a_lease_grace_before_it_judges() {
+        let ms = Duration::from_millis;
+        let start = tokio::time::Instant::now();
+        let mut heard = Heard::new(start, ms(10), ms(250));
+        // On-time and merely late ticks judge.
+        assert!(heard.judge(start + ms(10)));
+        assert!(heard.judge(start + ms(100)));
+        // The first tick after a stall does not, nor any within the grace.
+        let back = start + ms(700);
+        assert!(!heard.judge(back));
+        assert!(!heard.judge(back + ms(10)));
+        assert!(!heard.judge(back + ms(240)));
+        // The judgement after the grace runs however late its tick is, so
+        // a host that keeps stalling still expires what is silent.
+        assert!(heard.judge(back + ms(900)));
+        assert!(!heard.judge(back + ms(1500)));
+        assert!(heard.judge(back + ms(1760)));
+    }
 
     fn ring(fields: Vec<FieldSpec>) -> Ring {
         Ring {

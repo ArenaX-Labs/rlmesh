@@ -1,5 +1,5 @@
 // Real-time sessions (protocol v2) in-process, over the native addon (Node >= 22, Electron, Bun):
-// a host, robots and policies on Zenoh directly, the twin of Python's `rlmesh.v2`.
+// a host, robots and policies on Zenoh directly, the twin of Python's `rlmesh.realtime`.
 //
 //   import { Host, Robot, Policy, Rate } from 'rlmesh';
 //   const host = await Host.open();  // Node 24: `await using host = ...` closes it for you
@@ -61,13 +61,13 @@ export class SessionRefused extends SessionException {
   override name = 'SessionRefused';
   status = '';
 }
-/** The binder refused a policy: the message is the refuse-and-explain text (§6.7). */
+/** The binder refused a policy: the message is the refuse-and-explain text. */
 export class BindingRefused extends SessionException {
   override name = 'BindingRefused';
   /** `[code, 'input' | 'action', entry]` per problem. */
   problems: [string, string, string][] = [];
 }
-/** A policy start was skipped (§8.8). */
+/** A policy start was skipped. */
 export class StartSkipped extends SessionException {
   override name = 'StartSkipped';
   /** `waiting_for`, `stale_input` or `window_gap`. */
@@ -123,12 +123,14 @@ interface NativeStats {
 }
 interface NativeHost { readonly address: string; close(): Promise<void> }
 interface NativeRobot {
-  readonly name: string; readonly mode: string; readonly modeReason: string; readonly leaving: string | null;
+  readonly name: string; readonly mode: string; readonly modeReason: string; readonly leaving?: string | null;
   parts(): NativePart[];
   publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
+  publishJpeg(path: string, jpeg: Uint8Array, captureNs?: bigint | null): void;
   due(path: string): NativeDue | null;
   handoverDone(path: string): void;
-  arm(): Promise<void>; disarm(): Promise<void>; estop(reason: string): void; clearEstop(): void;
+  arm(): Promise<void>; disarm(): Promise<void>; keep(label: string): Promise<void>;
+  estop(reason: string): void; clearEstop(): void;
   reportSafe(reason: string): void;
   nowNs(): bigint;
   edgeStats(path: string): NativeEdgeStats;
@@ -136,6 +138,8 @@ interface NativeRobot {
 }
 interface NativePolicy {
   readonly name: string; readonly table: string; readonly tableJson: string; readonly fingerprint: string;
+  publishedParts(): NativePart[];
+  publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
   readonly warnings: string[]; readonly replanHz: number;
   observe(): NativeObservation;
   send(values: NativeEntry[], observation: NativeObservation): { entry: string; seq?: number | null }[];
@@ -163,9 +167,10 @@ interface NativeScene {
 interface Addon {
   openHost(address: string, leaseGraceMs: number): Promise<NativeHost>;
   connectRobot(address: string, name: string, robotJson: string, timeoutS: number): Promise<NativeRobot>;
-  robotFromLobby(home: string | null, name: string, robotJson: string, timeoutS: number | null): Promise<NativeRobot>;
-  runScene(home: string | null, sceneToml: string, manualArm: boolean, timeoutS: number): Promise<NativeScene>;
-  bindPolicy(address: string, name: string, policyJson: string, robot: string, options: object): Promise<NativePolicy>;
+  // The lobby and scene runs: only in an addon built with the `fleet` feature (unreleased).
+  robotFromLobby?(home: string | null, name: string, robotJson: string, timeoutS: number | null): Promise<NativeRobot>;
+  runScene?(home: string | null, sceneToml: string, manualArm: boolean, timeoutS: number): Promise<NativeScene>;
+  bindPolicy(address: string, name: string, policyJson: string, robot: string | null, options: object): Promise<NativePolicy>;
   NativeRate: new (hz: number) => NativeRate;
   startRecorder(address: string, path: string, name: string, timeoutS: number): Promise<NativeRecorder>;
   readRecording(path: string): Promise<RecordingSummary>;
@@ -413,6 +418,43 @@ export interface EdgeStats {
 
 type PublishValue = TypedArray | ArrayLike<number> | number | boolean | string;
 
+/** One sample of `owner`'s part `path` as its fields' buffers, in declaration order. */
+function sample(
+  owner: string,
+  parts: Map<string, NativeField[]>,
+  path: string,
+  value: PublishValue | Record<string, PublishValue>,
+): (string | Uint8Array)[] {
+  const declared = parts.get(path);
+  if (!declared) throw new RangeError(`${owner} has no part '${path}' (its parts: ${[...parts.keys()].join(', ')})`);
+  let values: Record<string, PublishValue>;
+  if (value !== null && typeof value === 'object' && !isTyped(value) && !Array.isArray(value)) {
+    values = value as Record<string, PublishValue>;
+  } else {
+    if (declared.length !== 1) {
+      throw new TypeError(`${path} has fields ${declared.map((f) => f.name).join(', ')}: publish('${path}', { ${declared[0]!.name}: ... })`);
+    }
+    values = { [declared[0]!.name]: value as PublishValue };
+  }
+  const unknown = Object.keys(values).filter((k) => !declared.some((f) => f.name === k));
+  const missing = declared.filter((f) => !(f.name in values)).map((f) => f.name);
+  if (unknown.length || missing.length) {
+    throw new TypeError(
+      `${path}: fields ${declared.map((f) => f.name).join(', ')} (missing ${missing.join(', ') || 'none'}, unknown ${unknown.join(', ') || 'none'})`,
+    );
+  }
+  return declared.map((field) => {
+    const item = values[field.name];
+    if (field.dtype === 'utf8') {
+      if (typeof item !== 'string') throw new TypeError(`${path} is text: publish a string`);
+      return item;
+    }
+    if (typeof item === 'string') throw new TypeError(`${path}.${field.name}: publish numbers, not a string`);
+    const elements = field.shape.reduce((n, d) => n * d, 1);
+    return bytes(cast(`${path}.${field.name}`, item, field.dtype as DType, elements));
+  });
+}
+
 /**
  * One robot: its map declared, its parts published, its commands served. The robot's control loop
  * publishes its sensors and asks `due` what to dispatch on each control tick. `onHandover(group,
@@ -433,7 +475,7 @@ export class Robot implements AsyncDisposable {
     }
   }
 
-  /** Attach as `name`, declare `parts` (the robot map, §3) and start its publishers and edges. */
+  /** Attach as `name`, declare `parts` (the robot map) and start its publishers and edges. */
   static async connect(
     name: string,
     parts: Record<string, unknown>,
@@ -454,7 +496,7 @@ export class Robot implements AsyncDisposable {
     parts: Record<string, unknown>,
     opts: { home?: string; timeout?: number; onHandover?: (group: string, from: string, to: string) => void } = {},
   ): Promise<Robot> {
-    const robot = await wait(() => native().robotFromLobby(opts.home ?? null, name, JSON.stringify(parts), opts.timeout ?? null));
+    const robot = await wait(() => fleet('robotFromLobby')(opts.home ?? null, name, JSON.stringify(parts), opts.timeout ?? null));
     return new Robot(robot, opts.onHandover);
   }
 
@@ -496,35 +538,17 @@ export class Robot implements AsyncDisposable {
    * sample's seq, or null when it was coalesced or handed to the image encoder.
    */
   publish(path: string, value: PublishValue | Record<string, PublishValue>, opts: { captureNs?: bigint } = {}): number | null {
-    const declared = this.fields.get(path);
-    if (!declared) throw new RangeError(`${this.name} has no part '${path}' (its parts: ${[...this.fields.keys()].join(', ')})`);
-    let values: Record<string, PublishValue>;
-    if (value !== null && typeof value === 'object' && !isTyped(value) && !Array.isArray(value)) {
-      values = value as Record<string, PublishValue>;
-    } else {
-      if (declared.length !== 1) {
-        throw new TypeError(`${path} has fields ${declared.map((f) => f.name).join(', ')}: publish('${path}', { ${declared[0]!.name}: ... })`);
-      }
-      values = { [declared[0]!.name]: value as PublishValue };
-    }
-    const unknown = Object.keys(values).filter((k) => !declared.some((f) => f.name === k));
-    const missing = declared.filter((f) => !(f.name in values)).map((f) => f.name);
-    if (unknown.length || missing.length) {
-      throw new TypeError(
-        `${path}: fields ${declared.map((f) => f.name).join(', ')} (missing ${missing.join(', ') || 'none'}, unknown ${unknown.join(', ') || 'none'})`,
-      );
-    }
-    const buffers = declared.map((field) => {
-      const item = values[field.name];
-      if (field.dtype === 'utf8') {
-        if (typeof item !== 'string') throw new TypeError(`${path} is text: publish a string`);
-        return item;
-      }
-      if (typeof item === 'string') throw new TypeError(`${path}.${field.name}: publish numbers, not a string`);
-      const elements = field.shape.reduce((n, d) => n * d, 1);
-      return bytes(cast(`${path}.${field.name}`, item, field.dtype as DType, elements));
-    });
+    const buffers = sample(this.name, this.fields, path, value);
     return call(() => this.native.publish(path, buffers, opts.captureNs ?? null));
+  }
+
+  /**
+   * Publish one camera frame already encoded as JPEG, sent as it is (a camera's MJPEG output: no
+   * decode, no re-encode). `path` is a camera declared `encoding: 'jpeg'`; the frame's header must
+   * give its declared width and height. Never blocks on the network.
+   */
+  publishJpeg(path: string, jpeg: Uint8Array, opts: { captureNs?: bigint } = {}): void {
+    call(() => this.native.publishJpeg(path, jpeg, opts.captureNs ?? null));
   }
 
   /**
@@ -563,6 +587,11 @@ export class Robot implements AsyncDisposable {
   /** Back to DISARMED. */
   disarm(): Promise<void> {
     return wait(() => this.native.disarm());
+  }
+
+  /** Ask the host to keep its recording of the last minutes as an incident named `label` (at most every 5 s). */
+  keep(label = 'keep'): Promise<void> {
+    return wait(() => this.native.keep(label));
   }
 
   /**
@@ -651,8 +680,8 @@ export class Observation {
   }
 }
 
-/** A binding table (§6.8): what each entry is bound to and how it is delivered. */
-export class Binding {
+/** A binding table: what each entry is bound to and how it is delivered. */
+export class BindingTable {
   /** The human table, as the cockpit shows it. */
   readonly table: string;
   /** The binding fingerprint (16 hex digits). */
@@ -678,7 +707,7 @@ export class Binding {
   }
 }
 
-/** Starts, completions, skips by reason, chunks sent and latency (§8.10). */
+/** Starts, completions, skips by reason, chunks sent and latency. */
 export interface RunStats {
   /** The input whose publication the starts are phased just after (wall clock). */
   alignedTo: string | null;
@@ -720,37 +749,56 @@ export interface BindOptions {
   names?: Record<string, 'positional'>;
   /** Conversions allowed for every entry. */
   allow?: string[];
-  /** Fills `{name}` segments (§6.4). */
+  /** Fills `{name}` segments. */
   captures?: Record<string, string>;
 }
 
 /**
- * A policy map (§6) and, once bound, the controller that runs it. `priority` is the lease class it
+ * A policy map and, once bound, the controller that runs it. `priority` is the lease class it
  * attaches with: `model` (default), `operator` (preempts models: teleop), `safety` or `scripted`.
  */
 export class Policy implements AsyncDisposable {
   private native: NativePolicy | null = null;
-  private bound: Binding | null = null;
+  private bound: BindingTable | null = null;
   private readonly policyJson: string;
   // A true private field: the address carries the session's key, which an inspected Policy must not show.
   readonly #address: string;
   readonly name: string;
   private readonly priority: Priority;
   private readonly timeout: number;
+  private readonly publishesJson: string | undefined;
+  private fields = new Map<string, NativeField[]>();
 
+  /**
+   * `publishes` declares parts of the policy's own to `publish` annotations on, in the robot map's
+   * form, none commandable: `{ target: { kind: 'x/target', hz: 30, fields: { xy: ['float32',
+   * [2]] } } }`. They appear under the policy's name (`tracker/target`): recorded, shown in the
+   * cockpit, readable by other policies, and never bound to this one.
+   */
   constructor(
     policy: Record<string, unknown>,
-    opts: { session: Host | string; name?: string; priority?: Priority; timeout?: number },
+    opts: {
+      session: Host | string;
+      name?: string;
+      priority?: Priority;
+      timeout?: number;
+      publishes?: Record<string, unknown>;
+    },
   ) {
     this.policyJson = JSON.stringify(policy);
+    this.publishesJson = opts.publishes ? JSON.stringify(opts.publishes) : undefined;
     this.#address = address(opts.session);
     this.name = opts.name ?? 'policy';
     this.priority = opts.priority ?? 'model';
     this.timeout = opts.timeout ?? 10;
   }
 
-  /** Attach, bind to `robot`'s parts and declare the binding. Rejects with `BindingRefused` (§6.7). */
-  async bind(robot: string, opts: BindOptions = {}): Promise<Binding> {
+  /**
+   * Attach, bind to `robot`'s parts and declare the binding. Rejects with `BindingRefused`.
+   * With no robot it binds the session's view of every robot, each under its name, so one policy
+   * drives several: its actions name their robot (`eye-1:eyes`).
+   */
+  async bind(robot?: string | null, opts: BindOptions = {}): Promise<BindingTable> {
     if (this.native) throw new SessionException(`policy ${this.name} is already bound`);
     const positional = Object.entries(opts.names ?? {}).map(([entry, mode]) => {
       if (mode !== 'positional') {
@@ -759,7 +807,7 @@ export class Policy implements AsyncDisposable {
       return entry;
     });
     this.native = await wait(() =>
-      native().bindPolicy(this.#address, this.name, this.policyJson, robot, {
+      native().bindPolicy(this.#address, this.name, this.policyJson, robot ?? null, {
         priority: this.priority,
         under: opts.under,
         at: opts.at,
@@ -767,10 +815,24 @@ export class Policy implements AsyncDisposable {
         allow: opts.allow,
         captures: opts.captures,
         timeoutS: this.timeout,
+        publishesJson: this.publishesJson,
       }),
     );
-    this.bound = new Binding(this.native);
+    for (const part of this.native.publishedParts()) this.fields.set(part.path, part.fields);
+    this.bound = new BindingTable(this.native);
     return this.bound;
+  }
+
+  /**
+   * Publish one sample of one of the policy's own parts (`publishes`), after `bind`. Takes values
+   * the way `Robot.publish` does, and never blocks on the network. Returns the sample's seq, or
+   * null when it was coalesced.
+   */
+  publish(path: string, value: PublishValue | Record<string, PublishValue>, opts: { captureNs?: bigint } = {}): number | null {
+    const native = this.nat();
+    if (this.fields.size === 0) throw new RangeError(`policy ${this.name} publishes nothing: pass publishes`);
+    const buffers = sample(this.name, this.fields, path, value);
+    return call(() => native.publish(path, buffers, opts.captureNs ?? null));
   }
 
   private nat(): NativePolicy {
@@ -779,12 +841,12 @@ export class Policy implements AsyncDisposable {
   }
 
   /** The binding table (after `bind`). */
-  get binding(): Binding {
+  get binding(): BindingTable {
     this.nat();
     return this.bound!;
   }
 
-  /** A policy start now; throws `StartSkipped` when one is skipped (§8.8). */
+  /** A policy start now; throws `StartSkipped` when one is skipped. */
   observe(): Observation {
     return new Observation(call(() => this.nat().observe()));
   }
@@ -815,7 +877,7 @@ export class Policy implements AsyncDisposable {
   }
 
   /**
-   * Run the policy loop (§8.9) until `duration` seconds or `stop()`; resolves to the run's counters.
+   * Run the policy loop until `duration` seconds or `stop()`; resolves to the run's counters.
    * The loop runs on a native thread; `predict(obs)` runs on this one, at most at the replan rate
    * with one inference in flight (a start that falls while it runs is skipped, never queued). If
    * `predict` throws or rejects, the policy stops sending, releases its leases (the robot holds,
@@ -852,7 +914,7 @@ export class Policy implements AsyncDisposable {
     call(() => this.nat().stop());
   }
 
-  /** Starts, completions, skips by reason, chunks sent and latency (§8.10). */
+  /** Starts, completions, skips by reason, chunks sent and latency. */
   stats(): RunStats {
     return runStats(call(() => this.nat().stats()));
   }
@@ -926,19 +988,19 @@ export interface RecordingSummary {
 }
 
 /**
- * An MCAP recording of the session (§13), attached as an observer. Records every robot's streams
+ * An MCAP recording of the session, attached as an observer. Records every robot's streams
  * (`/{robot}/{path}`, with the edge's `/{robot}/{path}/_applied`), every action chunk sent to an
  * edge (`/{robot}/{path}/_chunks`), and the authority and binding changes (`/_session/authority`,
  * `/_session/bindings`), each envelope as it travelled. `close()` finishes the file.
  */
-export class Recorder implements AsyncDisposable {
+export class SessionRecorder implements AsyncDisposable {
   /** The finished file's counters, once closed. */
   stats: RecordStats | null = null;
 
   private constructor(private native: NativeRecorder) {}
 
-  static async start(path: string, opts: { session: Host | string; name?: string; timeout?: number }): Promise<Recorder> {
-    return new Recorder(await wait(() => native().startRecorder(address(opts.session), path, opts.name ?? 'recorder', opts.timeout ?? 10)));
+  static async start(path: string, opts: { session: Host | string; name?: string; timeout?: number }): Promise<SessionRecorder> {
+    return new SessionRecorder(await wait(() => native().startRecorder(address(opts.session), path, opts.name ?? 'recorder', opts.timeout ?? 10)));
   }
 
   /** The MCAP file. */
@@ -985,7 +1047,7 @@ function runState(s: RunState): RunState {
 export class Scene implements AsyncDisposable {
   constructor(private native: NativeScene) {}
 
-  /** The run's id (`r-7k2m`), as `rlmesh stop` takes it. */
+  /** The run's id (`r-7k2m`), as `rlmesh scene stop` takes it. */
   get run(): string {
     return this.native.run;
   }
@@ -1038,7 +1100,15 @@ export async function runScene(
   const arm = opts.arm ?? 'auto';
   if (arm !== 'auto' && arm !== 'manual') throw new RangeError(`arm ${String(arm)}: auto or manual`);
   const text = await readFile(path, 'utf8');
-  return new Scene(await wait(() => native().runScene(opts.home ?? null, text, arm === 'manual', opts.timeout ?? 10)));
+  return new Scene(await wait(() => fleet('runScene')(opts.home ?? null, text, arm === 'manual', opts.timeout ?? 10)));
+}
+
+/** A lobby or scene call of the addon, which only a `fleet` build has (unreleased). */
+function fleet<K extends 'robotFromLobby' | 'runScene'>(name: K): NonNullable<Addon[K]> {
+  const addon = native();
+  const f = addon[name];
+  if (f === undefined) throw new Error(`${name}: this rlmesh build has no lobby or scenes (the unreleased fleet feature)`);
+  return f.bind(addon) as NonNullable<Addon[K]>;
 }
 
 /** Read a recording back: messages per topic, time ordering, the lease timeline. */
@@ -1052,12 +1122,19 @@ export function readRecording(path: string): Promise<RecordingSummary> {
   });
 }
 
-/** Bind `policy` to `robot` and run `predict` until `duration` (§6.4 options). Shorthand for `Policy` + `bind` + `run`. */
-export async function run(
+/** Bind `policy` to `robot` (`null`: every robot's view) and drive it with `predict` until `duration`. Shorthand for `Policy` + `bind` + `run`. */
+export async function drive(
   policy: Record<string, unknown>,
-  robot: string,
+  robot: string | null,
   predict: Predict,
-  opts: BindOptions & { session: Host | string; name?: string; priority?: Priority; duration?: number; timeout?: number },
+  opts: BindOptions & {
+    session: Host | string;
+    name?: string;
+    priority?: Priority;
+    duration?: number;
+    timeout?: number;
+    publishes?: Record<string, unknown>;
+  },
 ): Promise<RunStats> {
   await using p = new Policy(policy, opts);
   await p.bind(robot, opts);

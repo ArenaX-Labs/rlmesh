@@ -106,9 +106,8 @@ def _handshake_describe(
 ) -> str | None:
     """The served target's describe envelope, for ``PeerInfo.extra``.
 
-    The managed platform reads it off the handshake when an image carries no
-    describe label, so a plain ``python -m rlmesh.serve`` image is enough to
-    probe. ``workflow_edition`` is the declaration the server resolved (``""``
+    Clients can read it during the handshake even when an image carries no
+    describe label. ``workflow_edition`` is the declaration the server resolved (``""``
     for none), so the envelope's ``runtime.preferred_workflow_edition`` is the
     wire value. Best-effort: a target ``describe()`` cannot cover still
     serves, without the envelope, and says so once on stderr.
@@ -416,8 +415,7 @@ def _warn_without_spec(model: object) -> None:
     """Say once, on stderr, when the served model declares no ``ModelSpec``.
 
     Serving still works (a spec-less model serves its own predict), but the
-    managed platform's probe cannot synthesize inputs for it, so the image lands
-    as not-runnable there. ``rlmesh check <module:Class>`` fails on the same
+    ``rlmesh doctor`` cannot synthesize inputs for it without a reference env. ``rlmesh check <module:Class>`` fails on the same
     condition before the build.
     """
     from .adapters.specs import ModelSpec
@@ -425,8 +423,9 @@ def _warn_without_spec(model: object) -> None:
     if isinstance(getattr(model, "spec", None), ModelSpec):
         return
     print(
-        "RLMesh: the served model declares no spec; the managed probe cannot "
-        "synthesize inputs for it. Set `spec = ModelSpec(...)` on the class.",
+        "RLMesh: the served model declares no spec; the managed platform cannot "
+        "test it with generated inputs when you onboard it. Set "
+        "`spec = ModelSpec(...)` on the class.",
         file=sys.stderr,
         flush=True,
     )

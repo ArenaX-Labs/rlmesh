@@ -6,13 +6,18 @@ RLMesh aims to feel familiar in whichever language you use it from. Python, Rust
 
 Writing C++? Use [`rlmesh.hpp`](README-cpp.md), the C++17 API over this header, with RAII handles and exceptions.
 
+> **Fenced for 0.2.** CI still builds and tests this API, but 0.2 publishes no
+> C/C++ package. Build from source to experiment. ABI 7 is cut when the native
+> bindings ship; development still reports ABI 6.
+
 ## Install
 
 ### Prebuilt package
 
-Each [GitHub Release](https://github.com/ArenaX-Labs/rlmesh/releases) carries `rlmesh-<version>-x86_64-unknown-linux-gnu.tar.gz` (Linux x86_64, glibc 2.34 or newer) and its `.sha256`. It holds `rlmesh.h` and `rlmesh.hpp`, the shared library (`librlmesh_capi.so.6`) and a static archive, plus CMake and pkg-config metadata. No Rust toolchain is needed.
+The retained packaging task can produce `rlmesh-<version>-x86_64-unknown-linux-gnu.tar.gz` (Linux x86_64, glibc 2.34 or newer) and its `.sha256`. It holds `rlmesh.h` and `rlmesh.hpp`, the shared library (`librlmesh_capi.so.6`) and a static archive, plus CMake and pkg-config metadata. No Rust toolchain is needed.
 
-With CMake, fetch it at configure time:
+The following download recipe applies only to a release that actually published
+the native package; it does not apply to 0.2. With CMake:
 
 ```cmake
 include(FetchContent)
@@ -43,7 +48,7 @@ cc -std=c11 serve.c $(pkg-config --cflags --libs rlmesh) -o serve
 
 ### Windows (MSVC)
 
-Releases also carry `rlmesh-<version>-x86_64-pc-windows-msvc.tar.gz` and its `.sha256`, built with the MSVC toolchain against the UCRT (Windows 10 or later). It holds the headers, `bin/rlmesh_capi.dll` (with its `.pdb`), the import library `lib/rlmesh_capi.lib` and the CMake metadata; there is no static library or pkg-config file. Windows 10 and later unpack it with the built-in `tar -xf`.
+The retained Windows packaging task can produce `rlmesh-<version>-x86_64-pc-windows-msvc.tar.gz` and its `.sha256`, built with the MSVC toolchain against the UCRT (Windows 10 or later). It holds the headers, `bin/rlmesh_capi.dll` (with its `.pdb`), the import library `lib/rlmesh_capi.lib` and the CMake metadata; there is no static library or pkg-config file. Windows 10 and later unpack it with the built-in `tar -xf`.
 
 The CMake snippets above work unchanged with the Windows tarball's URL. `rlmesh::rlmesh` links the import library; copy `bin/rlmesh_capi.dll` beside your `.exe`, for example with a post-build step:
 
@@ -71,7 +76,7 @@ cc -std=c11 -I crates/rlmesh-capi/include serve.c \
   -L target/release -lrlmesh_capi -Wl,-rpath,"$PWD/target/release" -lpthread -ldl -lm -o serve
 ```
 
-`mise run release:cxx:package` assembles the same package as a release for the host platform, under `target/capi-pkg/`. `mise run release:cxx:package --target windows` cross-builds the Windows package from Linux or macOS with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), which needs `clang` and downloads the MSVC CRT and Windows SDK, accepting Microsoft's license for them.
+`mise run release:cxx:package` assembles a local native package (unpublished in 0.2) for the host platform, under `target/capi-pkg/`. `mise run release:cxx:package --target windows` cross-builds the Windows package from Linux or macOS with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), which needs `clang` and downloads the MSVC CRT and Windows SDK, accepting Microsoft's license for them.
 
 ## Quickstart
 
@@ -344,7 +349,7 @@ rlmesh_binding_free(binding);
 
 ### Remote clients
 
-`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an env server with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately in the options) still serve and connect remote clients until v1 is removed; a run refuses them.
+`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an env server with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. 0.2 rejects the removed v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
 
 ```c
 RLMeshRemoteEnvOptions options = RLMESH_REMOTE_ENV_OPTIONS_INIT;
@@ -422,19 +427,18 @@ static RLMeshStatus arm_step(void* self, const RLMeshValue* action, RLMeshValue*
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (the `workflow_edition` field of `RLMeshServeOptions`, the model vtable, or the run and session options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. `rlmesh_current_workflow_edition()` returns the edition to declare. See the [documentation](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (the `workflow_edition` field of `RLMeshServeOptions`, the model vtable, or the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. `rlmesh_current_workflow_edition()` returns the edition to declare. See the [documentation](https://rlmesh.dev/docs/).
 
 ## C-only extras
 
 Additions that exist only for native callers carry the `rlmesh_ext_` prefix (types `RLMeshExt...`):
 
 - Cancellation: `rlmesh_ext_cancel_token_new`, `_clone`, `_cancel` and `_free`. Put a token in the `cancel` field of run or serve options and cancel it from any thread; the call in flight returns `RLMESH_ERR_CANCELLED`. Remote clients expose their token through `_cancel_handle`.
-- Bearer-token endpoints: `RLMeshExtEnvServerOptions` and `RLMeshExtModelServeOptions` (through the `ext` field of the serve options) set the token a server expects; clients send it as `api_key`.
 - `rlmesh_ext_env_server_describe_json` for a served env's describe envelope, `rlmesh_ext_register_entrypoint` for trusted custom adapter transforms, and helpers such as `rlmesh_ext_dtype_size`.
 
 ## Compatibility
 
-The C API is **Experimental**. Binary compatibility is tracked by the ABI generation, currently 6: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.6` SONAME and the CMake package version all carry it. An incompatible change (a struct layout, an enum value, a signature or a removed symbol) bumps the generation, which can happen in any minor release; a binary built for another generation will not load. Within a generation, structs grow only by appending optional fields whose zero bytes mean the default, so code compiled against an older header keeps working. Call `rlmesh_abi_check()` at startup if you load the library with `dlopen` or otherwise bypass the SONAME. `RLMESH_VERSION` is the header's package version and `rlmesh_build_info()` reports the linked library's. See the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/).
+The C API is **fenced for 0.2** and is not released; the next released ABI will be 7. The current development ABI remains 6. Binary compatibility is tracked by the ABI generation, currently 6: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.6` SONAME and the CMake package version all carry it. An incompatible change (a struct layout, an enum value, a signature or a removed symbol) bumps the generation, which can happen in any minor release; a binary built for another generation will not load. Within a generation, structs grow only by appending optional fields whose zero bytes mean the default, so code compiled against an older header keeps working. Call `rlmesh_abi_check()` at startup if you load the library with `dlopen` or otherwise bypass the SONAME. `RLMESH_VERSION` is the header's package version and `rlmesh_build_info()` reports the linked library's. See the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/).
 
 The header is C11 and also compiles warning-free as C++98, C++17 and C++20. It bundles the upstream DLPack 1.0 header (license in [`include/dlpack.LICENSE`](include/dlpack.LICENSE)). Creating a model or env handle ignores `SIGPIPE` on POSIX unless your program installed its own handler, so a peer that disconnects mid-write cannot kill the process.
 

@@ -439,7 +439,7 @@ impl Recorder {
         );
         let tap = match options.record.take().zip(root) {
             Some((record, root)) => {
-                // The platform's attempt tree, positional as there: workload
+                // The attempt tree, ordered by: workload
                 // `c0001` is the first, and a local run is its one attempt.
                 let workload = format!("c{:04}", index + 1);
                 let tap: ArtifactTap = Arc::new(Mutex::new(EpisodeArtifacts::new(

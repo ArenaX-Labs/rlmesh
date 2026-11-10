@@ -4,7 +4,7 @@
 //! its [`Link`], the command edge its [`EdgeCore`]; the host normalises the
 //! map. This only puts them in the participant's order.
 //!
-//! The order (design §8.3): subscribe to the host's state, ticks, this
+//! The order: subscribe to the host's state, ticks, this
 //! robot's heartbeat echo and key deliveries; read the host instance from
 //! the state; handshake on `hs`; `Attach` and `DeclareParts` sealed on
 //! `ctl`; then build an edge per command group, subscribe to each part's
@@ -40,7 +40,7 @@ pub const QUERY_MS: u32 = 2000;
 /// The pause before starting over after a failure.
 pub const RETRY_MS: u32 = 1000;
 /// With no heartbeat echo and no valid signed state for this long, the host
-/// counts as lost (scene design §3.5).
+/// counts as lost.
 pub const HOST_LOST_MS: u32 = 5000;
 /// The longest pause between rounds of home addresses.
 const MAX_BACKOFF_MS: u32 = 30_000;
@@ -53,7 +53,7 @@ const GET_KEYS_MS: u64 = 250;
 pub const CLASS_CONTROL: u8 = 0;
 
 /// Subscription ids, for [`Robot::sample`]: `host/view/{id}`, this robot's
-/// signed device view (scene design §3.4).
+/// signed device view.
 pub const SUB_VIEW: u8 = 0;
 /// `host/tick`.
 pub const SUB_TICK: u8 = 1;
@@ -76,13 +76,13 @@ pub struct Config {
     /// This robot's participant id and display name.
     pub name: ParticipantId,
     /// Its device key and the host's static key: from the address's key
-    /// (device `local`), or provisioned (tether spec §14).
+    /// (device `local`), or provisioned.
     pub credential: Credential,
     /// The robot's map, as authored JSON.
     pub robot_json: String,
     /// The heartbeat period.
     pub heartbeat_ms: u32,
-    /// Wait in the home's lobby for runs (scene design §3): `tenant` and
+    /// Wait in the home's lobby for runs: `tenant` and
     /// `session` are then the lobby's, and each run's come with its join.
     pub lobby: bool,
     /// The home's base addresses (`host`, first port), tried in order: the
@@ -90,6 +90,49 @@ pub struct Config {
     pub homes: Vec<(String, u16)>,
     /// The home's host id (`rlm-…`), for discovery: empty when not known.
     pub home_id: String,
+}
+
+impl Config {
+    /// A board provisioned for its home: its device key,
+    /// and the robot name, home's static key, host id and addresses from the stored
+    /// `record`. It joins the home's default session directly, so every
+    /// board runs the same firmware and only its provisioning differs; a
+    /// `fleet` build waits in the home's lobby instead (unreleased).
+    ///
+    /// # Errors
+    /// [`ConfigError::NoHome`] when the record has no usable address, or
+    /// [`ConfigError::Name`] when its robot name is invalid.
+    pub fn provisioned(
+        device_key: &[u8; 32],
+        record: &crate::provision::Record,
+        robot_json: String,
+        heartbeat_ms: u32,
+    ) -> Result<Self, ConfigError> {
+        let homes: Vec<(String, u16)> = record
+            .addresses
+            .iter()
+            .filter_map(|a| crate::address::host_port(a))
+            .collect();
+        if homes.is_empty() {
+            return Err(ConfigError::NoHome);
+        }
+        let mut private = zeroize::Zeroizing::new(*device_key);
+        Ok(Self {
+            tenant: TenantId::new(crate::address::TENANT)
+                .map_err(|_| ConfigError::Map(String::from("tenant")))?,
+            session: SessionId::named(crate::address::DEFAULT_SESSION),
+            name: ParticipantId::new(record.name.clone()).map_err(|_| ConfigError::Name)?,
+            credential: Credential::new(
+                rlmesh_session_core::crypto::StaticKeypair::from_private(&mut private),
+                record.host_key,
+            ),
+            robot_json,
+            heartbeat_ms,
+            lobby: cfg!(feature = "fleet"),
+            homes,
+            home_id: record.host_id.clone(),
+        })
+    }
 }
 
 /// Why a [`Config`] can't make a robot.
@@ -102,6 +145,8 @@ pub enum ConfigError {
     Heartbeat,
     /// No home address.
     NoHome,
+    /// An invalid provisioned robot participant id.
+    Name,
 }
 
 /// What the transport is asked to do, on traffic class `class` (0 control,
@@ -236,7 +281,7 @@ pub struct Robot {
     tenant: TenantId,
     session: SessionId,
     keys: SessionKeys,
-    /// Between runs (scene design §3): what its next wait reports.
+    /// Between runs: what its next wait reports.
     lobby: Option<Lobby>,
     /// The run it joined, while in one.
     run: Option<Join>,
@@ -307,7 +352,7 @@ pub struct Robot {
     last_get_keys: Option<u64>,
     accepted: u64,
     applied: u64,
-    /// This robot's e-stop latch (DESIGN §6): its own stop (`ESTOP_LOCAL`)
+    /// This robot's e-stop latch: its own stop (`ESTOP_LOCAL`)
     /// or a member's signal (`ESTOP_SIGNAL`). It outlives a session, and the
     /// next attach carries it.
     estop: Option<Reason>,
@@ -921,8 +966,31 @@ impl Robot {
     }
 
     /// Latches the e-stop for `reason`, and queues its report to the host
-    /// (in order: before any `Clear` queued after it).
+    /// (in order: before any `Clear` queued after it). Already latched, it
+    /// keeps the first reason and queues nothing: a held button or a stream
+    /// of e-stop signals never floods the control queue.
+    /// Chunks its edges refused, by reason (nonzero only): a compact report
+    /// riding each heartbeat.
+    fn rejected(&self) -> Vec<(rlmesh_session_core::edge::Rejection, u64)> {
+        use rlmesh_session_core::edge::Rejection;
+        Rejection::ALL
+            .iter()
+            .map(|r| {
+                let n = self
+                    .edges
+                    .iter()
+                    .map(|e| e.core.stats().rejected(*r))
+                    .sum::<u64>();
+                (*r, n)
+            })
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+
     fn latch(&mut self, reason: Reason) {
+        if self.estop.is_some() {
+            return;
+        }
         let origin = (reason.code == ReasonCode::EstopSignal)
             .then(|| ParticipantId::new(&reason.by).ok())
             .flatten();
@@ -1274,6 +1342,7 @@ impl Robot {
             last_chunk_applied: self.applied,
             queue_depth,
             health: Health::Ok,
+            rejected: self.rejected(),
         };
         let key = self.keys.heartbeat(&self.config.name);
         let Some(link) = self.link.as_mut() else {
@@ -1305,7 +1374,7 @@ impl Robot {
         if let Some(join) = self.run.take() {
             // A run's join that failed is reported in the next wait; a run
             // whose host went quiet is left. Either way, back to the lobby
-            // at once (scene design §3.5).
+            // at once.
             if joining && let Some(lobby) = self.lobby.as_mut() {
                 lobby.failed(&join.run, fault_error(&fault));
             }
@@ -1325,6 +1394,11 @@ impl Robot {
         if refused {
             pause = self.refused_ms;
             self.refused_ms = (self.refused_ms * 2).min(MAX_BACKOFF_MS);
+        } else if matches!(self.fault, Some(Fault::Internal | Fault::HostLost)) {
+            // A host that keeps going quiet, or a fault of its own: back off
+            // (1 s doubling to 30 s) until it reaches its home again.
+            pause = self.backoff_ms;
+            self.backoff_ms = (self.backoff_ms * 2).min(MAX_BACKOFF_MS);
         }
         if unreachable && self.config.homes.len() > 1 {
             // The home's next address, at once; after a whole round,
@@ -1459,7 +1533,7 @@ impl Robot {
         }
     }
 
-    /// Leaves the run it is in when the view says so (scene design §3.5).
+    /// Leaves the run it is in when the view says so.
     fn check_leave(&mut self, now_us: u64) {
         if self.run.is_none() || self.phase != Phase::Running {
             return;

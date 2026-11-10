@@ -1,4 +1,4 @@
-//! The virtual clock's run loop (§11.3): the embodiment's and the
+//! The virtual clock's run loop: the embodiment's and the
 //! controller's side of the host's tick barrier.
 //!
 //! The host runs the barrier (`rlmesh_session::virtual_clock`); this
@@ -20,7 +20,7 @@
 //!   tick k + d, the robot runs its previous actions meanwhile, and real
 //!   computation is never raced.
 //! - [`Faults`]: seeded channel faults (drop, freeze, delay) keyed by
-//!   `(seed, channel, seq)`, handed to the decision as faulted inputs; §8.8
+//!   `(seed, channel, seq)`, handed to the decision as faulted inputs; the input cache
 //!   decides what a stale input does (`hold` or skip).
 //!
 //! A barrier that does not move within its timeout ends the episode
@@ -35,7 +35,7 @@ use rlmesh_session::{Participant, SessionError, TickStream};
 /// Why a virtual episode ended early.
 #[derive(Debug, thiserror::Error)]
 pub enum Interrupted {
-    /// A barrier did not move within its timeout (§11.3).
+    /// A barrier did not move within its timeout.
     #[error("interrupted: TIMEOUT (no tick {phase} for tick {tick} within {waited:?})")]
     Timeout {
         /// The tick it waited on.
@@ -140,7 +140,7 @@ pub enum Fault {
     Delay(u64),
 }
 
-/// Seeded channel faults (§11.3), in parts per million of samples.
+/// Seeded channel faults, in parts per million of samples.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Faults {
     /// The seed.

@@ -1,4 +1,4 @@
-//! The keys a process holds besides its pairwise ones (design §8.4, §8.5),
+//! The keys a process holds besides its pairwise ones,
 //! sans-IO: what the host delivered to a participant, or what the host
 //! keeps to open its members' streams. One [`Keyring`] per participant
 //! generation (inside its [`Link`](super::Link)), one in the host.
@@ -40,7 +40,7 @@ use crate::wire::{
 };
 
 /// How long a fixed key waits for its token to appear in authority state
-/// before it is discarded (§8.5).
+/// before it is discarded.
 pub const UNSEEN_TTL_NS: i64 = 4_000_000_000;
 
 /// The kinds a key of `purpose` carries.
@@ -49,7 +49,6 @@ pub fn kinds(purpose: KeyPurpose) -> KindSet {
         KeyPurpose::Command => KindSet::of(&[Kind::ActionChunk, Kind::LockstepRequest]),
         KeyPurpose::LockstepReply => KindSet::of(&[Kind::LockstepReply]),
         KeyPurpose::Stream => KindSet::of(&[Kind::Sample, Kind::Applied]),
-        KeyPurpose::SessionStream => KindSet::of(&[Kind::HostSessionStream]),
         KeyPurpose::Estop => KindSet::of(&[Kind::EstopSignal]),
     }
 }
@@ -136,7 +135,7 @@ struct Held {
 }
 
 /// One subscription's replay windows over a stream, by key and kind, and
-/// the newest key version it accepted (design §8.5: the first valid
+/// the newest key version it accepted (the first valid
 /// message under a newer version restarts the stream's sample high-water).
 #[derive(Debug, Default)]
 pub struct StreamWindows {
@@ -726,7 +725,7 @@ impl Keyring {
     /// Opens `msg` (which must be `kind`) and returns its body, sliced from
     /// the buffer without a copy, and its key's scope.
     /// Seals this participant's e-stop signal on `keyexpr`
-    /// (`estop/{me}`) under its generation's `k_estop` (§6, §8.4).
+    /// (`estop/{me}`) under its generation's `k_estop`.
     ///
     /// # Errors
     /// [`KeyError::NoKey`] without it: this generation isn't attached.
@@ -814,14 +813,14 @@ mod tests {
 
     #[test]
     fn a_reader_without_the_key_cannot_read_a_sealed_part_and_a_signed_one_still_verifies() {
-        for security in [Security::Sign, Security::Seal] {
+        for security in [Security::Mac, Security::Seal] {
             let mut robot = Keyring::new(Some(pid("arm")), 1);
             let mut reader = Keyring::new(Some(pid("policy")), 1);
             robot.install(&stream_key(9, 1, true, security), 0);
             reader.install(&stream_key(9, 1, false, security), 0);
             let sealed = robot.seal_sample(KEY, &sample(1), false).expect("seal");
             let clear = sealed.windows(8).any(|w| w == b"wrench!!");
-            assert_eq!(clear, security == Security::Sign, "{security:?}");
+            assert_eq!(clear, security == Security::Mac, "{security:?}");
             // The keyed reader opens and verifies it either way.
             let opened = reader.open_sample(KEY, sealed.clone(), &pid("arm"), false);
             assert_eq!(opened.expect("open").payload, sample(1).payload);
@@ -852,15 +851,15 @@ mod tests {
     fn rotation_installs_above_the_floor_then_the_first_newer_message_and_retire_drop_the_old() {
         let mut robot_v1 = Keyring::new(Some(pid("arm")), 1);
         let mut reader = Keyring::new(Some(pid("policy")), 1);
-        robot_v1.install(&stream_key(9, 1, true, Security::Sign), 0);
-        reader.install(&stream_key(9, 1, false, Security::Sign), 0);
+        robot_v1.install(&stream_key(9, 1, true, Security::Mac), 0);
+        reader.install(&stream_key(9, 1, false, Security::Mac), 0);
         let old = robot_v1.seal_sample(KEY, &sample(1), false).expect("seal");
         // The robot's new generation gets version 2; the reader installs it
         // first, and a send key for another generation is refused.
         let mut robot_v2 = Keyring::new(Some(pid("arm")), 2);
         let v2 = |send| IssuedKey {
             generation: 2,
-            ..stream_key(12, 2, send, Security::Sign)
+            ..stream_key(12, 2, send, Security::Mac)
         };
         assert_eq!(reader.install(&v2(false), 0), Some(false));
         assert_eq!(
@@ -893,7 +892,7 @@ mod tests {
         assert_eq!(ack.retired, vec![9]);
         // Recovery never reinstalls a retired or superseded version.
         assert_eq!(
-            reader.install(&stream_key(9, 1, false, Security::Sign), 0),
+            reader.install(&stream_key(9, 1, false, Security::Mac), 0),
             None
         );
         assert!(reader.holds(12));
@@ -911,7 +910,7 @@ mod tests {
             version: 0,
             key: KeyBytes([id as u8; 32]),
             send: false,
-            security: Security::Sign,
+            security: Security::Mac,
             generation: 1,
         };
         let mut edge = Keyring::new(Some(pid("arm")), 1);
@@ -954,8 +953,8 @@ mod tests {
     fn each_subscription_gets_every_sample_once_and_a_newer_key_restarts_it() {
         let mut robot = Keyring::new(Some(pid("arm")), 1);
         let mut reader = Keyring::new(Some(pid("policy")), 1);
-        robot.install(&stream_key(9, 1, true, Security::Sign), 0);
-        reader.install(&stream_key(9, 1, false, Security::Sign), 0);
+        robot.install(&stream_key(9, 1, true, Security::Mac), 0);
+        reader.install(&stream_key(9, 1, false, Security::Mac), 0);
         let msg = robot.seal_sample(KEY, &sample(1), false).expect("seal");
         let mut subscriptions = [StreamWindows::default(), StreamWindows::default()];
         let open = |reader: &mut Keyring, windows: &mut StreamWindows, msg: &[u8]| {
@@ -975,7 +974,7 @@ mod tests {
         // The robot's next generation, its seqs from 1 under version 2.
         let v2 = IssuedKey {
             generation: 2,
-            ..stream_key(12, 2, true, Security::Sign)
+            ..stream_key(12, 2, true, Security::Mac)
         };
         let mut restarted = Keyring::new(Some(pid("arm")), 2);
         restarted.install(&v2, 0);

@@ -1,4 +1,4 @@
-//! `rlmesh scene check scene.toml` (scene design §2, §4.1 stage 1): a scene
+//! `rlmesh scene check scene.toml` (stage 1): a scene
 //! file checked offline against this machine's rlmeshd, its device table
 //! and robot pins ([`crate::devices`]), as `RunScene` will check it.
 //!
@@ -15,14 +15,14 @@
 //!
 //! Whether the machines are attached to the lobby is known only at run.
 //!
-//! `rlmesh run`, `rlmesh lobby`, `rlmesh stop` and `rlmesh arm` are clients
+//! `rlmesh scene run`, `scene stop`, `scene arm` and `rlmesh lobby` are clients
 //! of the home daemon's lobby ([`crate::lobby`]).
 
 use std::io::Write;
 
 use anyhow::{Context, Result};
 use rlmesh_session::auth::LOCAL_DEVICE;
-use rlmesh_session::scene::{Problem, Refusal, Role, Scene, Source};
+use rlmesh_session::scene::{Problem, Refusal, Role, Scene};
 use rlmesh_session::wire::{CtlStatus, PriorityClass};
 
 use std::time::Duration;
@@ -115,15 +115,11 @@ pub fn check(scene: &Scene, table: &Table) -> Vec<Problem> {
                 (None, _) => {}
             },
             Role::Controller {
-                source,
+                device,
                 max_priority,
                 ..
             } => {
-                let (device, key) = match source {
-                    Source::Device(device) => (device.as_str(), "device"),
-                    Source::Serve { on, .. } if on == "home" => (LOCAL_DEVICE, "on"),
-                    Source::Serve { on, .. } => (on.as_str(), "on"),
-                };
+                let (device, key) = (device.as_str(), "device");
                 let Some(entry) = table.devices.get(device) else {
                     if device != LOCAL_DEVICE {
                         refuse(
@@ -170,14 +166,17 @@ pub fn check(scene: &Scene, table: &Table) -> Vec<Problem> {
     problems
 }
 
-/// `rlmesh scene`: 0 for a scene that would pass stage 1, 1 with every
-/// problem printed otherwise.
-pub fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
+/// `rlmesh scene`. `check`: 0 for a scene that would pass stage 1, 1 with
+/// every problem printed otherwise.
+pub async fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
     match &args.command {
+        SceneCommand::Run(run_args) => run(run_args, stdout).await,
+        SceneCommand::Stop(id) => stop(id, stdout).await,
+        SceneCommand::Arm(id) => arm(id, stdout).await.map(|()| 0),
         SceneCommand::Check { file } => {
             let text = std::fs::read_to_string(file)
                 .with_context(|| format!("reading {}", file.display()))?;
-            let dir = crate::daemon::state_dir(args.state_dir.as_deref())?;
+            let dir = crate::host::state_dir(args.state_dir.as_deref())?;
             let table = Table::read(&dir)?;
             let refusal = match Scene::parse(&text) {
                 Ok(scene) => {
@@ -290,7 +289,7 @@ async fn follow(lobby: &LobbyClient, mut state: RunState, stdout: &mut impl Writ
     Ok(i32::from(state.stage == RunStage::Failed))
 }
 
-/// `rlmesh run`: starts the scene and follows it until it ends.
+/// `rlmesh scene run`: starts the scene and follows it until it ends.
 pub async fn run(args: &RunArgs, stdout: &mut impl Write) -> Result<i32> {
     let manual = match args.arm.as_str() {
         "auto" => false,
@@ -334,7 +333,7 @@ pub async fn lobby(args: &HomeArgs, stdout: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-/// `rlmesh stop`: stops a run and waits until it ended.
+/// `rlmesh scene stop`: stops a run and waits until it ended.
 pub async fn stop(args: &RunIdArgs, stdout: &mut impl Write) -> Result<i32> {
     let lobby = connect(&args.home).await?;
     let state = lobby.stop(&args.run).await?;
@@ -360,7 +359,7 @@ pub async fn stop(args: &RunIdArgs, stdout: &mut impl Write) -> Result<i32> {
     Ok(0)
 }
 
-/// `rlmesh arm`: arms a run waiting for it.
+/// `rlmesh scene arm`: arms a run waiting for it.
 pub async fn arm(args: &RunIdArgs, stdout: &mut impl Write) -> Result<()> {
     let lobby = connect(&args.home).await?;
     let state = lobby.arm(&args.run).await?;
@@ -374,7 +373,8 @@ mod tests {
     use super::*;
     use rlmesh_session::auth::address::base32;
 
-    /// The scene design's §2 example, as written there.
+    /// A scene with two eyes, a skull and a fixed camera, without `record` and
+    /// served member.
     const EYEBALL_RIG: &str = include_str!("../tests/fixtures/eyeball-rig.toml");
 
     fn devices(skull_board: &str) -> Table {
@@ -450,7 +450,7 @@ device = "local"
         );
         assert!(
             text.contains(
-                "  [NOT_AUTHORIZED] line 23, members.arm.device: arm is pinned to local, not arm-pc\n    fix: if it moved, on rig-pi.local: rlmesh devices move arm --to arm-pc; a scene never moves a pin"
+                "  [NOT_AUTHORIZED] line 22, members.arm.device: arm is pinned to local, not arm-pc\n    fix: if it moved, on rig-pi.local: rlmesh devices move arm --to arm-pc; a scene never moves a pin"
             ),
             "{text}"
         );

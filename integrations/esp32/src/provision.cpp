@@ -1,10 +1,10 @@
 // rlmesh::Provisioning: the device key and the provisioning record in NVS
-// (Preferences), and the tether spec §14 responder on a serial port.
+// (Preferences), and the USB provisioning responder on a serial port.
 
 #include <Preferences.h>
 #include <string.h>
 
-#include "RLMeshESP32.h"
+#include "RLMesh.h"
 
 namespace rlmesh {
 
@@ -14,7 +14,7 @@ const char kNamespace[] = "rlmesh";
 const char kKey[] = "key";
 const char kRecord[] = "record";
 
-#if defined(CONFIG_IDF_TARGET_ESP32)
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 const uint8_t kArch = 4;  // Xtensa
 #else
 const uint8_t kArch = 3;  // RISC-V
@@ -27,7 +27,7 @@ Provisioning::~Provisioning() {
   memset(key_, 0, sizeof key_);
 }
 
-bool Provisioning::begin(const char* name) {
+bool Provisioning::begin() {
   rlmesh_device_provision_free(responder_);
   responder_ = nullptr;
   Preferences nvs;
@@ -45,10 +45,12 @@ bool Provisioning::begin(const char* name) {
   recordLen_ = nvs.getBytesLength(kRecord);
   if (recordLen_ > sizeof record_ || nvs.getBytes(kRecord, record_, recordLen_) != recordLen_ ||
       !rlmesh_device_record_valid(record_, recordLen_)) {
+    if (recordLen_ > 0)
+      Serial.println("RLMesh: invalid or old provisioning record; provision again");
     recordLen_ = 0;
   }
   nvs.end();
-  return rlmesh_device_provision_new(name, key_, kArch, record_, recordLen_, &responder_) ==
+  return rlmesh_device_provision_new(key_, kArch, record_, recordLen_, &responder_) ==
          RLMESH_DEVICE_OK;
 }
 

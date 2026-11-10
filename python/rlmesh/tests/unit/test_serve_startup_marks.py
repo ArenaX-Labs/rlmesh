@@ -85,7 +85,7 @@ def test_serving_a_model_puts_its_describe_envelope_on_the_handshake(
     envelope = json.loads(stamped[rlmesh.DESCRIBE_METADATA_KEY])
     assert envelope["kind"] == "model"
     assert envelope["target"]["qualname"].endswith("Tiny")
-    # Tiny declares no spec: the managed probe cannot drive it, and serve says so.
+    # Tiny declares no spec, and serve warns that inputs cannot be synthesized.
     err = capsys.readouterr().err
     assert err.count("\n") == 1 and "declares no spec" in err, err
 

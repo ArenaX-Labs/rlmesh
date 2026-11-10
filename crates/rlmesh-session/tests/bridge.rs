@@ -266,6 +266,7 @@ fn heartbeat(me: &ParticipantId, seq: u64, epoch: Epoch, t1_ns: i64) -> Vec<u8> 
             last_chunk_applied: 0,
             queue_depth: 0,
             health: Health::Ok,
+            rejected: Vec::new(),
         }),
     )
 }
@@ -573,7 +574,18 @@ async fn revoking_a_browser_token_detaches_exactly_its_browser() {
     world.host.revoke("web-a").await.unwrap();
     assert_eq!(closed_with(&mut control_a).await, 4409);
     assert_eq!(closed_with(&mut state_a).await, 4409);
-    // Its reconnect is refused: the host no longer knows its key.
+    // The other browser is untouched: its heartbeats are echoed. Checked
+    // before the refused reconnect below, which takes longer than this
+    // browser may stay silent (a refused handshake waits out a possible
+    // host restart).
+    control_b
+        .send(tg::Message::binary(heartbeat(&me_b, 1, state.epoch, 42)))
+        .await
+        .unwrap();
+    let echo = frame_with(&mut control_b, frame::ECHO).await;
+    assert_eq!(codec::decode_echo(&echo[1..]).unwrap().t1_ns, 42);
+    // The revoked browser's reconnect is refused: the host no longer knows
+    // its key.
     let mut again = world.socket_with("control", &a).await;
     again
         .send(tg::Message::text(
@@ -582,13 +594,6 @@ async fn revoking_a_browser_token_detaches_exactly_its_browser() {
         .await
         .unwrap();
     assert_eq!(closed_with(&mut again).await, 4401);
-    // The other browser is untouched: its heartbeats are echoed.
-    control_b
-        .send(tg::Message::binary(heartbeat(&me_b, 1, state.epoch, 42)))
-        .await
-        .unwrap();
-    let echo = frame_with(&mut control_b, frame::ECHO).await;
-    assert_eq!(codec::decode_echo(&echo[1..]).unwrap().t1_ns, 42);
 }
 
 /// A `tracing` writer into a shared buffer.

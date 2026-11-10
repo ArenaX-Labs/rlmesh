@@ -2671,65 +2671,41 @@ typedef struct RLMeshVectorEnv RLMeshVectorEnv;
 typedef struct RLMeshEnvServer RLMeshEnvServer;
 typedef struct RLMeshEnvTags RLMeshEnvTags;
 /* Returned tags are owned. */
-typedef enum RLMeshTransport {
-  RLMESH_TRANSPORT_INVALID = 0,
-  RLMESH_TRANSPORT_TCP = 1,
-  RLMESH_TRANSPORT_UNIX = 2
-} RLMeshTransport;
-RLMESH_API const char* rlmesh_transport_str(RLMeshTransport transport);
-
 /* Every sized input requires at least MIN_SIZE. NULL options means INIT;
  * unknown trailing bytes must be zero. {0} is refused. Explicit reserved
  * fields keep the layout free of implicit padding for later append-only fields. */
 typedef struct RLMeshServeOptions {
   size_t struct_size;
-  bool allow_remote_shutdown;
-  bool has_idle_timeout_seconds;
-  bool has_drain_timeout_seconds;
   bool has_close_timeout_seconds;
-  bool compress_responses;
-  uint8_t _reserved[3];
-  double idle_timeout_seconds;
-  double drain_timeout_seconds;
+  uint8_t _reserved[7];
   double close_timeout_seconds;
   const char* workflow_edition;
 } RLMeshServeOptions;
-#define RLMESH_SERVE_OPTIONS_INIT \
-  {sizeof(RLMeshServeOptions), false, false, false, false, false, {0, 0, 0}, 0.0, 0.0, 0.0, NULL}
+#define RLMESH_SERVE_OPTIONS_INIT {sizeof(RLMeshServeOptions), false, {0}, 0.0, NULL}
 #define RLMESH_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshServeOptions)
 
 typedef struct RLMeshExtEnvServerOptions {
   size_t struct_size;
-  const char* token;
-  const RLMeshValue* peer_info_extra;
   const char* host_runtime_json;
   bool publish_describe;
   uint8_t _reserved[sizeof(size_t) - 1];
 } RLMeshExtEnvServerOptions;
 #define RLMESH_EXT_ENV_SERVER_OPTIONS_INIT \
-  {sizeof(RLMeshExtEnvServerOptions), NULL, NULL, RLMESH_HOST_RUNTIME_JSON, false, {0}}
+  {sizeof(RLMeshExtEnvServerOptions), RLMESH_HOST_RUNTIME_JSON, false, {0}}
 #define RLMESH_EXT_ENV_SERVER_OPTIONS_MIN_SIZE sizeof(RLMeshExtEnvServerOptions)
 
 typedef struct RLMeshEnvServerOptions {
   size_t struct_size;
-  /* A session participant address (":0/env", "host:port/session/name"), or a
-   * v1 tcp:// or unix:// endpoint; NULL with no helper is ":0/env". */
+  /* Session participant address; NULL defaults to ":0/env". */
   const char* address;
-  const char* host;
-  const char* path;
   const RLMeshServeOptions* options;
   const RLMeshEnvTags* tags;
   const RLMeshExtEnvServerOptions* ext;
-  uint16_t port;
-  bool has_port;
-  bool has_transport;
-  RLMeshTransport transport;
   bool close_env_on_shutdown;
   uint8_t _reserved[7];
 } RLMeshEnvServerOptions;
-#define RLMESH_ENV_SERVER_OPTIONS_INIT                                                  \
-  {sizeof(RLMeshEnvServerOptions), NULL, NULL, NULL, NULL, NULL, NULL, 0, false, false, \
-   RLMESH_TRANSPORT_INVALID,       true, {0}}
+#define RLMESH_ENV_SERVER_OPTIONS_INIT \
+  {sizeof(RLMeshEnvServerOptions), NULL, NULL, NULL, NULL, true, {0}}
 #define RLMESH_ENV_SERVER_OPTIONS_MIN_SIZE sizeof(RLMeshEnvServerOptions)
 
 typedef struct RLMeshEnvAttributes {
@@ -3137,7 +3113,6 @@ typedef struct RLMeshModelOptions {
 
 typedef struct RLMeshExtModelServeOptions {
   size_t struct_size;
-  const char* token;
   size_t predict_concurrency;
   bool has_predict_concurrency;
   uint8_t _reserved[sizeof(size_t) - 1];
@@ -3145,7 +3120,7 @@ typedef struct RLMeshExtModelServeOptions {
   uint8_t _reserved1[sizeof(size_t) - 1];
 } RLMeshExtModelServeOptions;
 #define RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT \
-  {sizeof(RLMeshExtModelServeOptions), NULL, 0, false, {0}, false, {0}}
+  {sizeof(RLMeshExtModelServeOptions), 0, false, {0}, false, {0}}
 
 typedef struct RLMeshModelServeOptions {
   size_t struct_size;
@@ -3685,49 +3660,16 @@ RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_step(RLMeshRemoteVectorEnv*
 typedef struct RLMeshRemoteEnvOptions {
   size_t struct_size;
   const char* address;
-  const char* host;
-  bool has_port;
-  uint16_t port;
-  const char* path;
-  bool has_transport;
-  RLMeshTransport transport;
   bool has_connect_timeout_seconds;
   double connect_timeout_seconds;
   bool has_request_timeout_seconds;
   double request_timeout_seconds;
   const char* workflow_edition;
-  /* Appended after ABI 5 (read only when struct_size covers them; NULL is the
-   * default). _reserved (0) starts exactly at the ABI-5 sizeof on every
-   * target, so the fields after it never overlap an ABI-5 caller's tail
-   * padding. api_key is sent as `authorization: Bearer <key>`; NULL reads
-   * RLMESH_API_KEY for an https:// address only, "" sends none. tls_ca_file
-   * is a PEM bundle an https:// dial trusts instead of the system roots. */
-  uint64_t _reserved;
-  const char* api_key;
-  const char* tls_ca_file;
 } RLMeshRemoteEnvOptions;
-/* The ABI-5 sizeof. */
-#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE offsetof(RLMeshRemoteEnvOptions, _reserved)
+#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE sizeof(RLMeshRemoteEnvOptions)
 #define RLMESH_REMOTE_ENV_OPTIONS_INIT \
-  {sizeof(RLMeshRemoteEnvOptions),     \
-   NULL,                               \
-   NULL,                               \
-   false,                              \
-   0,                                  \
-   NULL,                               \
-   false,                              \
-   RLMESH_TRANSPORT_INVALID,           \
-   false,                              \
-   0.0,                                \
-   false,                              \
-   0.0,                                \
-   NULL,                               \
-   0,                                  \
-   NULL,                               \
-   NULL}
-/* Env construction connects. Remote I/O
- * is exclusive, while immutable accessors/cancellation may overlap any call.
- * Accessor pointers remain borrowed until free, including after close. */
+  {sizeof(RLMeshRemoteEnvOptions), NULL, false, 0.0, false, 0.0, NULL}
+
 RLMESH_API RLMeshStatus rlmesh_remote_env_new(const RLMeshRemoteEnvOptions* options,
                                               RLMeshRemoteEnv** out);
 RLMESH_API RLMeshStatus rlmesh_remote_vector_env_new(const RLMeshRemoteEnvOptions* options,
@@ -3757,8 +3699,6 @@ RLMESH_API RLMeshStatus rlmesh_remote_env_cancel_handle(const RLMeshRemoteEnv* r
                                                         RLMeshExtCancelToken** out);
 RLMESH_API RLMeshStatus rlmesh_remote_env_render(RLMeshRemoteEnv* remote_env, uint64_t env_index,
                                                  RLMeshValue** out_frame);
-RLMESH_API RLMeshStatus rlmesh_remote_env_shutdown(RLMeshRemoteEnv* remote_env, const char* reason,
-                                                   bool* out_accepted);
 RLMESH_API RLMeshStatus rlmesh_remote_env_close(RLMeshRemoteEnv* remote_env);
 RLMESH_API void rlmesh_remote_env_free(RLMeshRemoteEnv* remote_env);
 RLMESH_API RLMeshStatus
@@ -3786,8 +3726,6 @@ RLMESH_API RLMeshStatus rlmesh_remote_vector_env_cancel_handle(
 RLMESH_API RLMeshStatus rlmesh_remote_vector_env_render(RLMeshRemoteVectorEnv* remote_vector_env,
                                                         uint64_t env_index,
                                                         RLMeshValue** out_frame);
-RLMESH_API RLMeshStatus rlmesh_remote_vector_env_shutdown(RLMeshRemoteVectorEnv* remote_vector_env,
-                                                          const char* reason, bool* out_accepted);
 RLMESH_API RLMeshStatus rlmesh_remote_vector_env_close(RLMeshRemoteVectorEnv* remote_vector_env);
 RLMESH_API void rlmesh_remote_vector_env_free(RLMeshRemoteVectorEnv* remote_vector_env);
 RLMESH_API uint64_t

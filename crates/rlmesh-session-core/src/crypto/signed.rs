@@ -1,4 +1,4 @@
-//! The host's `Signed` broadcasts (§8.7): authority state, virtual ticks and
+//! The host's `Signed` broadcasts: authority state, virtual ticks and
 //! device views, in clear, signed with the host's Ed25519 key.
 //!
 //! | Offset | Size | Field |
@@ -32,8 +32,10 @@ pub enum SignedKind {
     AuthorityState = 20,
     /// `VirtualTick` on `host/tick`.
     VirtualTick = 21,
-    /// `DeviceView` on `host/view/{robot}` (scene design §3.4).
+    /// `DeviceView` on `host/view/{robot}`.
     DeviceView = 22,
+    /// `HostHealth` on `host/health`.
+    HostHealth = 23,
 }
 
 impl SignedKind {
@@ -43,6 +45,7 @@ impl SignedKind {
             20 => Some(Self::AuthorityState),
             21 => Some(Self::VirtualTick),
             22 => Some(Self::DeviceView),
+            23 => Some(Self::HostHealth),
             _ => None,
         }
     }
@@ -56,6 +59,9 @@ impl SignedKind {
         usize::from(self.as_u8() - 20)
     }
 }
+
+/// How many kinds there are.
+const KINDS: usize = 4;
 
 /// A parsed `Signed` header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +142,7 @@ pub enum SignedError {
 }
 
 /// A broadcast's header and body, **unverified**: for a participant's
-/// bootstrap read of `host_instance` before its handshake (§8.3), and for
+/// bootstrap read of `host_instance` before its handshake, and for
 /// readers that hold no host key. Never a basis for acting.
 ///
 /// # Errors
@@ -246,7 +252,7 @@ pub struct Verified<'m> {
 pub struct SignedReceiver {
     key: VerifyingKey,
     host_instance: u64,
-    last: [Option<u64>; 3],
+    last: [Option<u64>; KINDS],
 }
 
 impl SignedReceiver {
@@ -263,7 +269,7 @@ impl SignedReceiver {
         Ok(Self {
             key,
             host_instance,
-            last: [None; 3],
+            last: [None; KINDS],
         })
     }
 
@@ -415,7 +421,7 @@ mod tests {
         let mut bad = msg.clone();
         bad[0] = 0;
         assert_eq!(rx.verify(STATE, &bad), Err(SignedError::Version(0)));
-        for kind in [0, 19, 23] {
+        for kind in [0, 19, 24] {
             let mut bad = msg.clone();
             bad[1] = kind;
             assert_eq!(rx.verify(STATE, &bad), Err(SignedError::UnknownKind(kind)));
@@ -424,6 +430,28 @@ mod tests {
             rx.verify(STATE, &msg[..msg.len() - 1]),
             Err(SignedError::Truncated)
         );
+    }
+
+    #[test]
+    fn every_kind_has_its_own_window() {
+        let mut tx = host();
+        let mut rx = SignedReceiver::new(&tx.verifying_key(), 77).unwrap();
+        let kinds = [
+            SignedKind::AuthorityState,
+            SignedKind::VirtualTick,
+            SignedKind::DeviceView,
+            SignedKind::HostHealth,
+        ];
+        let signed: Vec<_> = kinds
+            .iter()
+            .map(|&kind| (kind, tx.sign(kind, STATE, b"").unwrap()))
+            .collect();
+        // Taken newest first: an older seq of another kind still verifies.
+        for (kind, msg) in signed.iter().rev() {
+            assert_eq!(rx.verify(STATE, msg).unwrap().header.kind, *kind);
+            assert!(matches!(rx.verify(STATE, msg), Err(SignedError::Stale(_))));
+        }
+        assert_eq!(kinds.len(), KINDS);
     }
 
     #[test]

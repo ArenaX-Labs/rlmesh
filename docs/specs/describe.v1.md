@@ -76,7 +76,7 @@ _format_ is shared.
     "package_version": "0.2.0a0",
     "os": "linux", "os_version": "...", "arch": "x86_64",
     "framework_versions": { "numpy": "...", "torch": "..." },
-    "protocol_generation": "rlmesh-wire-v1",
+    "protocol_generation": "rlmesh-realtime-v1",
     "supported_workflow_editions": ["2026.06-0.2.0-alpha.0", "2026.06"],
     "preferred_workflow_edition": "2026.06",
     "workflow_edition_error": "..."          # only when the declaration cannot be run

@@ -221,7 +221,7 @@ def test_serve_keeps_the_env_on_the_calling_thread(
 
     # Simulators such as Isaac Sim only work from the thread that created them,
     # usually the main thread: a blocking serve() leaves that thread to the env
-    # (scalar or lockstep vector) and runs the gRPC server elsewhere.
+    # (scalar or lockstep vector) and runs the session server elsewhere.
     assert result.returncode == 0, result.stderr
     assert "ON_MAIN" in result.stdout, result.stdout
     assert "CLOSE_CALLED" in result.stdout
@@ -300,8 +300,8 @@ def test_shutdown_detaches_the_finalizer() -> None:
 
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
 def test_non_finite_serve_timeouts_raise_value_error(value: float) -> None:
-    with pytest.raises(ValueError, match="idle_timeout_seconds"):
-        rlmesh.ServeOptions(idle_timeout_seconds=value)
+    with pytest.raises(ValueError, match="close_timeout_seconds"):
+        rlmesh.ServeOptions(close_timeout_seconds=value)
 
 
 def test_serve_cli_reports_a_clean_stop_on_ctrl_c(

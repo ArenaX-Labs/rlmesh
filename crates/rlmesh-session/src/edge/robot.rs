@@ -1,16 +1,16 @@
 //! The embodiment runtime language bindings wrap: one robot map declared,
 //! every part published, every commandable part served by an edge.
 //!
-//! [`Robot::declare`] sends the authored map (the host normalises it, §3.3),
+//! [`Robot::declare`] sends the authored map (the host normalises it),
 //! then declares a publisher for every part (an image publisher, with its
 //! bitrate budget and JPEG encoder, for `u8 [H, W, 3]` images) and one
 //! [`Edge`] per command group (or per ungrouped commandable part).
 //! Publishers exist from the start, so the host's publication plans are
 //! installed and acknowledged before any controller asks for a lease
-//! (§8.2, install before authority).
+//! (install before authority).
 //!
 //! The robot's control loop calls [`Robot::due`] once per control tick per
-//! command group: that call *is* the edge tick (§9), so what it returns is
+//! command group: that call *is* the edge tick, so what it returns is
 //! exactly what the `_applied` stream records. Nothing here calls back into
 //! the robot's code from another thread: a group handover is returned with
 //! the tick, the robot switches its control mode, then calls
@@ -36,7 +36,7 @@ enum Outlet {
     Image(ImagePublisher),
 }
 
-/// A handover between two members of a command group (§9.7), by path.
+/// A handover between two members of a command group, by path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Handover {
     /// The group.
@@ -66,28 +66,27 @@ pub struct Due {
     pub handover: Option<Handover>,
 }
 
-/// One declared robot: see the module docs.
-pub struct Robot {
-    participant: Participant,
+/// A participant's declared parts and a publisher for each: what a robot
+/// publishes through, and a policy its annotations
+/// (`rlmesh.realtime.Policy(publishes=...)`).
+pub struct Published {
+    owner: crate::wire::ParticipantId,
     parts: Vec<PartSpec>,
     paths: BTreeMap<ChannelId, String>,
     outlets: BTreeMap<String, Outlet>,
-    edges: Vec<Edge>,
-    edge_of: BTreeMap<String, usize>,
 }
 
-impl Robot {
-    /// Declares `robot_json` (the authored robot map) through
-    /// `participant`, then its publishers and edges.
+impl Published {
+    /// Declares `robot_json` (the authored map) through `participant`, then
+    /// a publisher for every part (an image publisher for `u8 [H, W, 3]`).
     pub async fn declare(
-        participant: Participant,
+        participant: &Participant,
         robot_json: &str,
-        config: EdgeConfig,
-    ) -> Result<Self, EdgeError> {
+    ) -> Result<Self, SessionError> {
         // The host lists parts by channel id, and a re-declared part gets a
         // new, higher one: keep the authored order to put them back. The
         // host parses the map the same way, so a map it would accept parses.
-        let authored = authored_paths(robot_json).map_err(SessionError::from)?;
+        let authored = authored_paths(robot_json)?;
         let view = participant.declare_parts(robot_json).await?;
         let me = participant.id().clone();
         let mut parts: Vec<PartSpec> = view
@@ -113,38 +112,15 @@ impl Robot {
             };
             outlets.insert(path, outlet);
         }
-        let mut edges: Vec<Edge> = Vec::new();
-        let mut edge_of = BTreeMap::new();
-        for part in parts.iter().filter(|p| p.command.is_some()) {
-            let path = part.path.to_string();
-            if edge_of.contains_key(&path) {
-                continue;
-            }
-            let edge = Edge::attach(&participant, &path, config, None).await?;
-            let index = edges.len();
-            for channel in edge.channels() {
-                if let Some(member) = parts.iter().find(|p| p.channel == *channel) {
-                    edge_of.insert(member.path.to_string(), index);
-                }
-            }
-            edges.push(edge);
-        }
         Ok(Self {
+            owner: me,
             paths: parts
                 .iter()
                 .map(|p| (p.channel, p.path.to_string()))
                 .collect(),
-            participant,
             parts,
             outlets,
-            edges,
-            edge_of,
         })
-    }
-
-    /// The participant.
-    pub fn participant(&self) -> &Participant {
-        &self.participant
     }
 
     /// The parts as the host normalised them, in authored order.
@@ -157,7 +133,7 @@ impl Robot {
         self.parts.iter().find(|p| p.path.as_str() == path)
     }
 
-    /// The path of one of this robot's streams.
+    /// The path of one of these streams.
     pub fn path_of(&self, channel: ChannelId) -> Option<&str> {
         self.paths.get(&channel).map(String::as_str)
     }
@@ -165,7 +141,7 @@ impl Robot {
     /// Publishes one sample of the part at `path`, captured at `capture_ns`
     /// (this participant's clock), from each field's bytes in declaration
     /// order (one for a single-field part; UTF-8 for text). Copies the
-    /// values, so the caller may reuse its buffers at once (§8.11). Returns
+    /// values, so the caller may reuse its buffers at once. Returns
     /// the sample's seq, or `None` when the plan coalesced it or an image
     /// went to its encoder (which assigns the seq when it sends).
     pub fn publish(
@@ -198,7 +174,7 @@ impl Robot {
         }
     }
 
-    /// Publishes one value of the part at `path` already packed (§10.6):
+    /// Publishes one value of the part at `path` already packed:
     /// for a single-field part whose size is a multiple of 8, the field's
     /// bytes. Sent without a further copy; an image goes to its encoder.
     pub fn publish_packed(
@@ -213,10 +189,126 @@ impl Robot {
         }
     }
 
+    /// Publishes one frame of the camera at `path` already encoded as JPEG
+    /// (a camera's MJPEG output), sent without decoding: for a part declared
+    /// `encoding: jpeg`, at its declared size ([`ImagePublisher::offer_jpeg`]).
+    pub fn publish_jpeg(
+        &self,
+        path: &str,
+        capture_ns: i64,
+        jpeg: Bytes,
+    ) -> Result<(), SessionError> {
+        match self.outlet(path)? {
+            Outlet::Image(publisher) => publisher.offer_jpeg(capture_ns, jpeg).map(|_| ()),
+            Outlet::Sample(publisher) => Err(SessionError::WrongChannel {
+                channel: publisher.spec().channel,
+                reason: format!("{path} is not a camera"),
+            }),
+        }
+    }
+
     fn outlet(&self, path: &str) -> Result<&Outlet, SessionError> {
         self.outlets
             .get(path)
-            .ok_or_else(|| SessionError::UnknownPart(format!("{}/{path}", self.participant.id())))
+            .ok_or_else(|| SessionError::UnknownPart(format!("{}/{path}", self.owner)))
+    }
+}
+
+/// One declared robot: see the module docs.
+pub struct Robot {
+    participant: Participant,
+    published: Published,
+    edges: Vec<Edge>,
+    edge_of: BTreeMap<String, usize>,
+}
+
+impl Robot {
+    /// Declares `robot_json` (the authored robot map) through
+    /// `participant`, then its publishers and edges.
+    pub async fn declare(
+        participant: Participant,
+        robot_json: &str,
+        config: EdgeConfig,
+    ) -> Result<Self, EdgeError> {
+        let published = Published::declare(&participant, robot_json).await?;
+        let parts = &published.parts;
+        let mut edges: Vec<Edge> = Vec::new();
+        let mut edge_of = BTreeMap::new();
+        for part in parts.iter().filter(|p| p.command.is_some()) {
+            let path = part.path.to_string();
+            if edge_of.contains_key(&path) {
+                continue;
+            }
+            let edge = Edge::attach(&participant, &path, config, None).await?;
+            let index = edges.len();
+            for channel in edge.channels() {
+                if let Some(member) = parts.iter().find(|p| p.channel == *channel) {
+                    edge_of.insert(member.path.to_string(), index);
+                }
+            }
+            edges.push(edge);
+        }
+        Ok(Self {
+            participant,
+            published,
+            edges,
+            edge_of,
+        })
+    }
+
+    /// The participant.
+    pub fn participant(&self) -> &Participant {
+        &self.participant
+    }
+
+    /// Its parts and their publishers.
+    pub fn published(&self) -> &Published {
+        &self.published
+    }
+
+    /// The parts as the host normalised them, in authored order.
+    pub fn parts(&self) -> &[PartSpec] {
+        self.published.parts()
+    }
+
+    /// The part at `path`.
+    pub fn part(&self, path: &str) -> Option<&PartSpec> {
+        self.published.part(path)
+    }
+
+    /// The path of one of this robot's streams.
+    pub fn path_of(&self, channel: ChannelId) -> Option<&str> {
+        self.published.path_of(channel)
+    }
+
+    /// [`Published::publish`].
+    pub fn publish(
+        &self,
+        path: &str,
+        capture_ns: i64,
+        fields: &[&[u8]],
+    ) -> Result<Option<u64>, SessionError> {
+        self.published.publish(path, capture_ns, fields)
+    }
+
+    /// [`Published::publish_packed`].
+    pub fn publish_packed(
+        &self,
+        path: &str,
+        capture_ns: i64,
+        value: Bytes,
+    ) -> Result<Option<u64>, SessionError> {
+        self.published.publish_packed(path, capture_ns, value)
+    }
+
+    /// [`Published::publish_jpeg`].
+    pub fn publish_jpeg(
+        &self,
+        path: &str,
+        capture_ns: i64,
+        jpeg: Bytes,
+    ) -> Result<(), SessionError> {
+        self.published.publish_jpeg(path, capture_ns, jpeg)
     }
 
     fn edge_index(&self, path: &str) -> Result<usize, SessionError> {
@@ -246,7 +338,7 @@ impl Robot {
         if tick.action.is_none() && tick.safe_behavior.is_none() && tick.handover.is_none() {
             return None;
         }
-        let path_of = |c: ChannelId| self.paths.get(&c).cloned().unwrap_or_default();
+        let path_of = |c: ChannelId| self.path_of(c).map(str::to_string).unwrap_or_default();
         Some(Due {
             path: tick.channel.map(path_of).unwrap_or_default(),
             mode: tick.mode,
@@ -292,12 +384,12 @@ impl Robot {
     pub async fn detach(self) -> Result<(), SessionError> {
         let Self {
             participant,
-            outlets,
+            published,
             edges,
             ..
         } = self;
         drop(edges);
-        drop(outlets);
+        drop(published);
         participant.detach().await
     }
 }

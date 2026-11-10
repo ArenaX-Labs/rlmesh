@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+#[cfg(not(feature = "fleet"))]
+use rlmesh_device::provision::Record;
 use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot};
 use rlmesh_session::address::AddressKey;
 use rlmesh_session::auth::{Credential, Device, HostIdentity};
@@ -341,8 +343,16 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
 async fn a_board_latched_before_it_joins_still_joins_and_reports_the_latch() {
     let world = World::start().await;
     let mut robot = world.robot(AddressKey::of(&world.identity));
-    // Its e-stop pin held at boot: latched before it has a link.
+    // Its e-stop pin held at boot: latched before it has a link, and read
+    // as pressed on every loop after. One latch, its first reason.
     robot.estop("pin held at boot", 0);
+    for t in 1..1000 {
+        robot.estop("pin still held", t);
+    }
+    assert_eq!(
+        robot.estop_reason().map(|r| r.detail.as_str()),
+        Some("pin held at boot")
+    );
     let robot = drive(
         &world,
         robot,
@@ -500,7 +510,7 @@ async fn a_board_with_another_hosts_key_is_refused() {
     );
 }
 
-/// A board provisioned for the host (tether spec §14) joins with its own
+/// A board provisioned for the host joins with its own
 /// device key, under the access the daemon enrolled it with; an unenrolled
 /// key may do nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -551,4 +561,260 @@ async fn a_provisioned_board_joins_with_its_device_key() {
         "{:?}",
         robot.fault()
     );
+}
+
+/// A board provisioned for its home joins the home's default session
+/// directly, with its own device key and no lobby (only a `fleet` build
+/// waits there), so one firmware serves every eye.
+#[cfg(not(feature = "fleet"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_provisioned_board_joins_its_homes_default_session_without_the_lobby() {
+    let private = [0x43_u8; 32];
+    let board = Device {
+        id: "board-eye-1".into(),
+        public: rlmesh_device::provision::public_key(&private),
+        access: DeviceAccess::new(Some(PriorityClass::Model)),
+    };
+    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        .await
+        .expect("host transport");
+    let tenant = TenantId::new(rlmesh_device::address::TENANT).expect("tenant");
+    let session = SessionId::named(rlmesh_device::address::DEFAULT_SESSION);
+    let mut config = HostConfig::new(tenant.clone(), session);
+    config.devices = vec![board];
+    let identity = config.identity.clone();
+    let host = SessionHost::start(transport, config).await.expect("host");
+    let world = World {
+        tenant,
+        session,
+        base,
+        identity,
+        host,
+    };
+    let record = Record {
+        name: "eye-1".into(),
+        payload: Vec::new(),
+        host_key: *world.identity.static_public(),
+        host_id: world.identity.host_id(),
+        addresses: vec![base.to_string()],
+    };
+    let config =
+        Config::provisioned(&private, &record, MAP.to_owned(), 50).expect("a provisioned config");
+    let robot = Robot::new(config).expect("a valid map");
+    let robot = drive(
+        &world,
+        robot,
+        Duration::from_secs(10),
+        Arc::default(),
+        |r| r.phase() == Phase::Running,
+    )
+    .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    let eye = world
+        .host
+        .snapshot()
+        .roster
+        .into_iter()
+        .find(|p| p.id.as_str() == "eye-1")
+        .expect("the board is in the default session");
+    assert_eq!(eye.device, "board-eye-1");
+}
+
+/// One policy for eyes `eye-1` and `eye-2`: no robot named, so it binds
+/// the session's view, each action naming its eye.
+const EYES_POLICY: &str = r#"{
+    "hz": 25,
+    "actions": {
+        "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 50,
+                "horizon": 5},
+        "two": {"kind": "joints", "at": "eye-2:eyes", "command": "position", "hz": 50,
+                "horizon": 5}
+    }
+}"#;
+
+/// Both eyes to 0.25 rad pan and tilt, for the whole horizon.
+struct Gaze;
+
+impl rlmesh_session::Predictor for Gaze {
+    type Error = String;
+
+    fn predict(
+        &mut self,
+        _: rlmesh_session::Observation,
+        _: i64,
+    ) -> Result<Vec<(String, rlmesh_session::spec::apply::Value)>, String> {
+        use rlmesh_session::spec::apply::{Tensor, Value};
+        use rlmesh_session::wire::DType;
+        let gaze = || Value::Tensor(Tensor::from_f64(DType::F32, vec![5, 2], &[0.25; 10]));
+        Ok(vec![("one".into(), gaze()), ("two".into(), gaze())])
+    }
+}
+
+/// Two boards and one policy driving both: board 2 goes off the network
+/// (its loop stops) and the host loses it, board 1 keeps moving, and once
+/// board 2 is back it rejoins on its own and, with robots re-arming on
+/// their own, is driven again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_driven_again() {
+    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        .await
+        .expect("host transport");
+    let tenant = TenantId::new("test").expect("tenant");
+    let session = SessionId::new();
+    let mut config = HostConfig::new(tenant.clone(), session);
+    config.rearm_robots = true;
+    let identity = config.identity.clone();
+    let host = SessionHost::start(transport, config).await.expect("host");
+    let world = Arc::new(World {
+        tenant,
+        session,
+        base,
+        identity,
+        host,
+    });
+    let board = |name: &str| {
+        Robot::new(Config {
+            tenant: world.tenant.clone(),
+            session: world.session,
+            name: ParticipantId::new(name).expect("id"),
+            credential: AddressKey::of(&world.identity).credential(),
+            robot_json: MAP.to_owned(),
+            heartbeat_ms: 50,
+            lobby: false,
+            homes: vec![(world.base.ip().to_string(), world.base.port())],
+            home_id: String::new(),
+        })
+        .expect("a valid map")
+    };
+    let (seen_one, seen_two): (Arc<Mutex<Seen>>, Arc<Mutex<Seen>>) = Default::default();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let one = tokio::spawn({
+        let (world, seen, stop) = (world.clone(), seen_one.clone(), stop.clone());
+        let robot = board("eye-1");
+        async move {
+            drive(&world, robot, Duration::from_secs(60), seen, move |_| {
+                stop.load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .await
+        }
+    });
+    // Board 2 runs until both boards are driven, then drops off.
+    let driven = |seen: &Arc<Mutex<Seen>>| {
+        let seen = seen.lock().expect("seen");
+        seen.actions
+            .iter()
+            .rev()
+            .take(3)
+            .filter(|(mode, value)| *mode == EdgeMode::Driving && value[..] == pos(0.25, 0.25))
+            .count()
+            == 3
+    };
+    let two_session = tokio::spawn({
+        let (world, seen, seen_one) = (world.clone(), seen_two.clone(), seen_one.clone());
+        let robot = board("eye-2");
+        async move {
+            drive(&world, robot, WAIT, seen.clone(), move |_| {
+                driven(&seen) && driven(&seen_one)
+            })
+            .await
+        }
+    });
+    let arm = world.controller().await;
+    arm.arm().await.expect("arm");
+    let policy = {
+        let mut config = ParticipantConfig::new(
+            world.tenant.clone(),
+            world.session,
+            ParticipantId::new("tracker").expect("id"),
+            vec![Role::Controller],
+            PriorityClass::Model,
+        );
+        config.heartbeat_period = Duration::from_millis(20);
+        config.credential = Some(world.host.credential());
+        let p = Participant::attach(world.transport().await, config)
+            .await
+            .expect("tracker");
+        rlmesh_session::Controller::bind(
+            Arc::new(p),
+            &rlmesh_session::spec::Policy::parse(EYES_POLICY).expect("policy"),
+            &rlmesh_session::spec::RunOptions::named("tracker"),
+            rlmesh_session::ControllerConfig::default(),
+        )
+        .await
+        .expect("one binding over both boards")
+    };
+    let policy = Arc::new(policy);
+    let run = std::thread::spawn({
+        let policy = policy.clone();
+        move || policy.run(&mut Gaze, Some(Duration::from_secs(60)))
+    });
+    let two = two_session.await.expect("board 2");
+    assert_eq!(two.phase(), Phase::Running, "fault: {:?}", two.fault());
+
+    // Board 2 is off the network: the host loses it, board 1 goes on.
+    let eye_two = ParticipantId::new("eye-2").expect("id");
+    let started = Instant::now();
+    while world
+        .host
+        .snapshot()
+        .participant(&eye_two)
+        .is_some_and(|p| p.present)
+    {
+        assert!(started.elapsed() < WAIT, "the host never lost board 2");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Board 1 takes more actions with board 2 gone, however slowly a loaded
+    // machine delivers them.
+    let before = seen_one.lock().expect("seen").actions.len();
+    let started = Instant::now();
+    while seen_one.lock().expect("seen").actions.len() <= before + 10 {
+        assert!(
+            started.elapsed() < WAIT,
+            "board 1 keeps moving while board 2 is gone"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        driven(&seen_one),
+        "board 1 keeps moving while board 2 is gone"
+    );
+    assert_ne!(world.host.snapshot().mode, Mode::Safe);
+
+    // Back: it finds the host gone quiet, joins again and is driven again.
+    seen_two.lock().expect("seen").actions.clear();
+    let two = drive(
+        &world,
+        two,
+        Duration::from_secs(40),
+        seen_two.clone(),
+        |_| driven(&seen_two),
+    )
+    .await;
+    let snapshot = world.host.snapshot();
+    assert!(
+        driven(&seen_two),
+        "board 2 is driven again: phase {:?}, fault {:?}, last {:?}; host: {:?} roster {:?}, \
+         leases {:?}, policy holds {:?}",
+        two.phase(),
+        two.fault(),
+        seen_two.lock().expect("seen").actions.last(),
+        snapshot.mode,
+        snapshot
+            .roster
+            .iter()
+            .map(|p| (p.id.to_string(), p.present, p.generation))
+            .collect::<Vec<_>>(),
+        snapshot
+            .leases
+            .iter()
+            .map(|l| (l.channel, l.token))
+            .collect::<Vec<_>>(),
+        policy.leases().len()
+    );
+    assert!(driven(&seen_one), "board 1 never stopped");
+
+    policy.stop();
+    run.join().expect("run thread").expect("a clean stop");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    one.await.expect("board 1");
 }

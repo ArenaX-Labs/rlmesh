@@ -8,8 +8,8 @@ use crate::{EnvironmentError, ErrorCode};
 /// A lockstep failure.
 #[derive(Debug, thiserror::Error)]
 pub enum GymError {
-    /// A Gym env cannot be mapped to a robot (§12.5), or a robot to a Gym
-    /// view (§12.6).
+    /// A Gym env cannot be mapped to a robot, or a robot to a Gym
+    /// view.
     #[error("{0}")]
     Map(String),
     /// A message or payload does not fit the map.

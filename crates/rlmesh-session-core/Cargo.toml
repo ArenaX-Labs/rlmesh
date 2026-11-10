@@ -32,7 +32,7 @@ serde_path_to_error = { version = "0.1", default-features = false }
 thiserror = { version = "2", default-features = false }
 uuid = { version = "1", default-features = false }
 libm = "0.2"
-# The envelopes and handshakes of `crypto` (design §8). snow only runs the
+# The envelopes and handshakes of `crypto`. snow only runs the
 # handshakes; its randomness is the caller's (`crypto::Rng`), so neither
 # `use-getrandom` nor snow's `std` (which turns on getrandom and ring) is used.
 blake2 = { version = "0.10", default-features = false }
@@ -54,6 +54,9 @@ zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 [features]
 default = ["std"]
+# Unreleased: the lobby and scene runs. Off in every
+# release; CI builds and tests it.
+fleet = []
 std = [
   "blake2/std",
   "blake3/std",

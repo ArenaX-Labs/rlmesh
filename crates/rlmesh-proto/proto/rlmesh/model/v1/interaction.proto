@@ -12,8 +12,7 @@ import "rlmesh/spaces/v1/value.proto";
 // `episode_info` vector (see PredictRequest) when the observation/action payload
 // is batched; the lane/slot positional index is no longer a wire concept.
 message AdapterContext {
-  // Correlation only; OSS does not key on it (the managed layer owns session
-  // lifecycle). Kept on the wire so closed can correlate.
+  // Correlation label for telemetry and logs; routing uses `env_id`.
   string session_id = 1;
   // The connected env container this adapter serves (UUIDv7, minted by the
   // runtime on env attach). The single model-facing routing key; replaces the

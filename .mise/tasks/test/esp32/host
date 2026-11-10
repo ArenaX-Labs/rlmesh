@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run the ESP32 library's transport (integrations/esp32/src/rlmesh_zenoh.c, over zenoh-pico) and the device robot on Linux against a real session host (rlmesh-device's examples/test_host, ungated: zenoh-pico can't present an embedded host's usrpwd link gate): the board's loop with Linux's clock and randomness"
+#MISE description="Run the ESP32 library's transport (integrations/esp32/transport/rlmesh_zenoh.c, over zenoh-pico) and the device robot on Linux against a real session host (rlmesh-device's examples/test_host, ungated: zenoh-pico can't present an embedded host's usrpwd link gate): the board's loop with Linux's clock and randomness"
 #MISE dir="{{ config_root }}"
 # Local only: it fetches and builds zenoh-pico.
 set -euo pipefail
@@ -23,8 +23,8 @@ echo "==> the board's loop"
 # The header the library compiles against, staged as build:esp32 does.
 cp crates/rlmesh-device/include/rlmesh_device.h integrations/esp32/src/
 cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -DZENOH_LINUX -DZENOH_C_STANDARD=11 \
-  -I"$zp_build/include" -I"$zp_src/include" -Iintegrations/esp32/src \
-  integrations/esp32/test/host_robot.c integrations/esp32/src/rlmesh_zenoh.c \
+  -I"$zp_build/include" -I"$zp_src/include" -Iintegrations/esp32/src -Iintegrations/esp32/transport \
+  integrations/esp32/test/host_robot.c integrations/esp32/transport/rlmesh_zenoh.c \
   "$target_dir/debug/librlmesh_device.a" "$zp_build/lib/libzenohpico.a" -lpthread -ldl -lm \
   -o "$out/host_robot"
 
@@ -42,3 +42,12 @@ case "$address" in
   *) echo "the test host printed no address:" >&2; cat "$log" >&2; exit 1 ;;
 esac
 "$out/host_robot" "$address" 15
+
+for _ in $(seq 50); do
+  grep -q 'commands confirmed:' "$log" && { cat "$log"; exit 0; }
+  kill -0 "$host" 2>/dev/null || break
+  sleep 0.1
+done
+cat "$log" >&2
+echo 'controller did not receive the applied command targets' >&2
+exit 1

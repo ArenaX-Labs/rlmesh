@@ -15,8 +15,9 @@ use rlmesh_session::crypto::sealed::Header;
 use rlmesh_session::crypto::{
     Key, Kind, KindSet, Rng, RngError, SealSender, Security, StaticKeypair, signed,
 };
-use rlmesh_session::media::{decode_image, synthetic_frame};
+use rlmesh_session::media::{Offer, decode_image, encode_jpeg, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
+#[cfg(feature = "fleet")]
 use rlmesh_session::scene::Scene;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
@@ -648,13 +649,15 @@ async fn a_lost_robot_stays_in_the_roster_and_a_lost_host_is_reported() {
     let transport = robot.transport().clone();
     drop(robot);
     transport.close().await.expect("close");
+    // Only the robot stops: its lease ends, and the session, with no lease
+    // left, is ARMED again.
     let view = policy
-        .wait_for("SAFE after the robot's loss", WAIT, |s| {
-            s.mode == Mode::Safe
+        .wait_for("the robot lost", WAIT, |s| {
+            s.participant(&id).is_some_and(|p| !p.present)
         })
         .await
-        .expect("safe");
-    assert_eq!(view.mode_reason.code, ReasonCode::RobotLost);
+        .expect("lost");
+    assert_eq!(view.mode, Mode::Armed);
     let entry = view.participant(&id).expect("kept in the roster");
     assert!(!entry.present);
     assert_eq!(
@@ -699,7 +702,7 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
             key_id,
             Key::from_bytes([7; 32]),
             KindSet::ALL,
-            Security::Sign,
+            Security::Mac,
         );
         let sealed = forger.seal(Kind::EstopSignal, &key, &signal).expect("seal");
         let put = operator.transport().control().put(&key, sealed).await;
@@ -1470,6 +1473,42 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
         stats.coalesced > 0 && stats.encoded + stats.coalesced == 10,
         "{stats:?}"
     );
+
+    // A frame the camera already encoded goes out as it is, byte for byte.
+    synthetic_frame(64, 48, 11, &mut frame);
+    let jpeg = bytes::Bytes::from(encode_jpeg(&frame, 64, 48, 70).expect("encode"));
+    let before = frames.lock().map(|f| f.len()).unwrap_or(0);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(matches!(
+        images.offer_jpeg(robot.clock().now_ns(), jpeg.clone()),
+        Ok(Offer::Queued { .. })
+    ));
+    wait_until("the encoded frame arrives", || {
+        frames.lock().map(|f| f.len()).unwrap_or(0) > before
+    })
+    .await;
+    let passed = frames
+        .lock()
+        .expect("frames")
+        .last()
+        .cloned()
+        .expect("frame");
+    assert_eq!(passed.payload, jpeg);
+    assert_eq!(images.stats().passed_through, 1);
+    // One of another size is refused before it is sent.
+    synthetic_frame(32, 24, 0, &mut frame);
+    let small = bytes::Bytes::from(encode_jpeg(&frame, 32, 24, 70).expect("encode"));
+    let refused = images
+        .offer_jpeg(robot.clock().now_ns(), small)
+        .expect_err("another size");
+    assert!(refused.to_string().contains("32x24"), "{refused}");
+    let refused = images
+        .offer_jpeg(
+            robot.clock().now_ns(),
+            bytes::Bytes::from_static(b"not a jpeg"),
+        )
+        .expect_err("not a jpeg");
+    assert!(refused.to_string().contains("not a JPEG"), "{refused}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1597,16 +1636,33 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
     let observer = world
         .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
-    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let _sub = observer
+    // Reports are sealed to the host: nothing an observer reads off the
+    // wire decodes as one.
+    let plaintext = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let _raw = observer
         .transport()
         .session(TrafficClass::Data)
         .declare_subscriber(observer.keys().reports())
         .callback({
-            let reports = reports.clone();
+            let plaintext = plaintext.clone();
             move |sample| {
-                let report = codec::decode_report(&sample.payload().to_bytes()).expect("decode");
-                reports.lock().expect("reports").push(report);
+                if codec::decode_report(&sample.payload().to_bytes())
+                    .is_ok_and(|r| !r.participant.as_str().is_empty())
+                {
+                    plaintext.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        })
+        .await
+        .expect("subscribe");
+    // The host relays each participant's newest one in its signed health.
+    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _health = observer
+        .host_health({
+            let reports = reports.clone();
+            move |health| {
+                let mut reports = reports.lock().expect("reports");
+                reports.extend(health.links.into_iter().filter_map(|l| l.report));
             }
         })
         .await
@@ -1646,6 +1702,7 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
             .iter()
             .any(|r| r.participant.as_str() == "cockpit")
     );
+    assert_eq!(plaintext.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1892,8 +1949,9 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
         CtlStatus::Unauthenticated
     );
 
-    // A robot's new process: a new epoch voids every lease, and ACTIVE
-    // becomes ARMED (never more).
+    // A robot's new process: its own leases end (it may be another
+    // embodiment), and with no lease left ACTIVE becomes ARMED (never
+    // more). The epoch stays: other robots never stop for it.
     let rearmed = twin.call(71, Command::Arm).await.state;
     let binding = rearmed
         .binding(policy.id())
@@ -1921,10 +1979,7 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     let swapped = robot.call(1, attach("robot", Role::Embodiment)).await;
     swapped.result.expect("attached");
     let swapped = swapped.state;
-    assert_eq!(
-        (swapped.mode, swapped.epoch),
-        (Mode::Armed, rearmed.epoch.next())
-    );
+    assert_eq!((swapped.mode, swapped.epoch), (Mode::Armed, rearmed.epoch));
     assert!(swapped.leases.is_empty());
     assert!(swapped.ended.iter().any(|e| {
         e.lease.token == granted.leases[0].token && e.reason.code == ReasonCode::VoidedByEpoch
@@ -2176,6 +2231,7 @@ async fn a_devices_entry_bounds_its_class_verbs_and_reads_and_a_change_detaches_
     );
 }
 
+#[cfg(feature = "fleet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_scene_admits_its_members_binds_its_view_and_closes_into_every_device_view() {
     const SCENE: &str = r#"
@@ -2198,7 +2254,11 @@ device = "local"
     const EYE: &str = r#"{"gaze": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"],
         "hz": 50, "command": "position"}}"#;
     let scene = Scene::parse(SCENE).unwrap_or_else(|refusal| panic!("{refusal}"));
-    let world = World::start_with(|c| c.scene = Some(scene.host("r-7k2m", &c.pins))).await;
+    let world = World::start_with(|c| {
+        c.scene = Some(scene.host("r-7k2m", &c.pins));
+        c.places = scene.places();
+    })
+    .await;
     let eye_l = ParticipantId::new("eye-l").expect("id");
     let mut config = world.config("eye-l", vec![Role::Embodiment], PriorityClass::Scripted, 0);
     config.supports.push(VIEW_DEVICE.into());
@@ -2292,4 +2352,51 @@ device = "local"
         view.closing.map(|r| (r.code, r.by)),
         Some((ReasonCode::SceneEnded, "cli.1a2b3c4d".to_string()))
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keep_is_a_host_verb_rate_limited_and_refused_by_a_host_that_records_nothing() {
+    // A host that records nothing.
+    let world = World::start().await;
+    let cockpit = world
+        .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
+        .await;
+    assert_eq!(
+        status(cockpit.keep("froze").await.expect_err("nothing to keep")),
+        CtlStatus::Unsupported
+    );
+    drop(cockpit);
+    drop(world);
+
+    let kept: Arc<std::sync::Mutex<Vec<(SessionId, String)>>> = Arc::default();
+    let world = World::start_with({
+        let kept = kept.clone();
+        move |config| {
+            config.keep = Some(Arc::new(move |session, label| {
+                kept.lock()
+                    .expect("kept")
+                    .push((session, label.to_string()));
+                Ok(format!("incidents/{session}/{label}"))
+            }));
+        }
+    })
+    .await;
+    let cockpit = world
+        .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
+        .await;
+    cockpit.keep("eye-2 froze").await.expect("kept");
+    assert_eq!(
+        *kept.lock().expect("kept"),
+        [(world.session, "eye-2 froze".to_string())]
+    );
+    // At most every 5 s, and a label of at most 64 bytes.
+    assert_eq!(
+        status(cockpit.keep("again").await.expect_err("too soon")),
+        CtlStatus::NotReady
+    );
+    assert_eq!(
+        status(cockpit.keep(&"x".repeat(65)).await.expect_err("too long")),
+        CtlStatus::InvalidRequest
+    );
+    assert_eq!(kept.lock().expect("kept").len(), 1);
 }

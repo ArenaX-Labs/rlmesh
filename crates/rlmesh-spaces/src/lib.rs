@@ -18,7 +18,7 @@
 //!
 //! This crate carries no `rlmesh-proto` dependency: the [`DType`] and
 //! [`SpaceType`] discriminants are kept byte-identical to the proto enums and
-//! cross-checked in `rlmesh-grpc`. Sampling and the scalar byte codec are the
+//! cross-checked in `rlmesh`. Sampling and the scalar byte codec are the
 //! single cross-language implementations, so a given seed or value encodes to
 //! identical bytes in Rust and the Python bindings.
 

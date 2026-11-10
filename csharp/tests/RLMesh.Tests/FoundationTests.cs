@@ -520,7 +520,7 @@ public sealed unsafe class FoundationTests
         var authored = new Counter();
         Assert.Throws<ConnectionError>(() => new EnvServer(authored, new() { Address = live.Address }));
         using var recovered = Env.For(authored);
-        Assert.Throws<ValueError>(() => new EnvServer(new Counter(), new() { Address = "tcp://127.0.0.1:0\0bad" }));
+        Assert.Throws<ValueError>(() => new EnvServer(new Counter(), new() { Address = ":0/env\0bad" }));
         Assert.Throws<ValueError>(() => new EnvServer(new Counter(), new() { Ext = new() { HostRuntimeJson = "\uD800" } }));
         using var valid = new EnvServer(new Counter());
         Assert.Throws<ValueError>(() => valid.Wait(TimeSpan.FromTicks(-1)));

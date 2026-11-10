@@ -91,7 +91,9 @@
     "rlmesh.types",
     "rlmesh.specs",
     "rlmesh.managed",
-    "rlmesh.recorder"
+    "rlmesh.recorder",
+    "rlmesh.realtime",
+    "rlmesh.realtime.parts"
   ],
   "modules": {
     "rlmesh": {
@@ -159,6 +161,18 @@
       "description": "Portable evaluation bundles, recorded workloads, episodes, and media references.",
       "stability": "Stable",
       "status": "Stable recording and bundle schema."
+    },
+    "rlmesh.realtime": {
+      "title": "rlmesh.realtime",
+      "description": "Real-time sessions: robots, policies with timed action chunks, the edge, recordings.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.realtime.parts": {
+      "title": "rlmesh.realtime.parts",
+      "description": "Typed constructors for robot map parts, returning the plain dicts the map takes.",
+      "stability": "Experimental",
+      "status": "Experimental."
     }
   },
   "exports": {

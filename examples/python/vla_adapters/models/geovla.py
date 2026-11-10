@@ -40,8 +40,10 @@ ROT6D_COLSWAP = adapt.CustomEncoding(
 )
 
 SPEC = adapt.ModelSpec(
+    # This study deliberately permits the projections described in README.md.
+    allow=("drop_action",),
     input={
-        "image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
+        "image": adapt.Image(adapt.IMAGE_PRIMARY, size=224, fit="stretch"),
         "eef_rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_COLSWAP),
         "proprio": adapt.Concat(
             adapt.EEF_POS,

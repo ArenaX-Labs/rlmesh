@@ -1,5 +1,5 @@
-//! Conformance fixtures (Appendix B, wave 2): every §15 policy bound against
-//! the §14 reference robots, and every §6.7 refusal, as golden binding
+//! Conformance fixtures: every policy bound against
+//! the reference robots, and every refusal, as golden binding
 //! tables and refusal messages under `tests/golden/`.
 //!
 //! `RLMESH_BLESS=1 cargo test -p rlmesh-session-core --test bind` rewrites the
@@ -12,9 +12,7 @@ use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status};
 use rlmesh_session_core::spec::policy::Allow;
 use rlmesh_session_core::spec::{Policy, RunOptions, Target, bind, bind_in, normalise};
 use rlmesh_session_core::wire::version::SPEC_VERSION;
-use rlmesh_session_core::wire::{
-    ChannelId, ClockMode, ContractMode, PartSpec, ParticipantId, Place, Pose,
-};
+use rlmesh_session_core::wire::{ChannelId, ContractMode, PartSpec, ParticipantId, Place, Pose};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
@@ -264,7 +262,7 @@ fn force_policy_on_ur10e() {
         [
             ("ft".into(), ContractMode::History, 50.0),
             ("q".into(), ContractMode::Latest, 50.0),
-            // D = 50 is at or above the camera's S = 30: every (§8.2).
+            // D = 50 is at or above the camera's S = 30: deliver every sample.
             ("wrist".into(), ContractMode::Every, 50.0),
             ("last".into(), ContractMode::Latest, 50.0),
         ]
@@ -502,6 +500,27 @@ fn two_actions_on_one_command_group_are_refused() {
 }
 
 #[test]
+fn a_part_that_cannot_hold_its_target_needs_chunks_that_outlast_a_replan() {
+    // A velocity command runs its safe behaviour whenever nothing is due:
+    // one 20 Hz action per 20 Hz replan leaves it waiting between chunks.
+    let text = refusal_text(
+        r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
+            "hz": 20, "horizon": 1}}}"#,
+        "go2",
+    );
+    assert!(
+        text.contains("can't hold its target between chunks") && text.contains("\"horizon\": 3"),
+        "{text}"
+    );
+    inline(
+        r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
+            "hz": 20, "horizon": 3}}}"#,
+        "go2",
+    )
+    .expect("three actions outlast a replan");
+}
+
+#[test]
 fn conversions_need_allow_unless_lossless() {
     // Degrees convert automatically; millimetres need allow units.
     let ok = inline(
@@ -729,8 +748,13 @@ fn captures_scope_and_qualified_selectors() {
             "actions": {"legs": {"kind": "joints", "at": "legs", "horizon": 1}}}"#,
     )
     .expect("policy");
+    // No robot named: the session's view, every robot under its name, so
+    // an unqualified path names no part and the refusal says which.
     let err = bind(&policy, &session, &RunOptions::named("loco")).expect_err("which robot");
-    assert!(err.to_string().contains("pass robot="), "{err}");
+    assert!(
+        err.to_string().contains(r#"at={"legs": "go2/legs"}"#),
+        "{err}"
+    );
     let b = bind(
         &policy,
         &session,
@@ -766,7 +790,7 @@ fn fingerprints_follow_the_table() {
     );
 }
 
-/// The scene design's eyeball rig: two eyes, a skull and a fixed camera,
+/// The eyeball rig: two eyes, a skull and a fixed camera,
 /// each its own robot with channel ids unique across the session, placed
 /// in one view; `extra` robots join unplaced.
 fn eyeball_rig(extra: &[(&str, &str)]) -> (Vec<PartSpec>, Vec<Place>) {
@@ -817,7 +841,6 @@ fn one_policy_binds_across_placed_robots() {
     let target = Target {
         parts: &parts,
         places: &places,
-        ..Target::default()
     };
     let b = bind_in(
         &policy("eyeball_tracker"),
@@ -858,10 +881,9 @@ fn one_policy_binds_across_placed_robots() {
 #[test]
 fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
     let (parts, places) = eyeball_rig(&[("ur10e", "ur10e")]);
-    let mut target = Target {
+    let target = Target {
         parts: &parts,
         places: &places,
-        ..Target::default()
     };
     let spans = Policy::parse(
         r#"{"hz": 30, "actions": {
@@ -881,27 +903,4 @@ fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
         ]
     );
     golden("spans__eyeball_rig__refused", &refusal.to_string());
-
-    target.clock_mode = ClockMode::Lockstep;
-    let refusal = match bind_in(
-        &policy("eyeball_tracker"),
-        &target,
-        &RunOptions::named("tracker"),
-    ) {
-        Err(BindError::Refused(refusal)) => *refusal,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(
-        codes(&refusal),
-        [
-            (Code::Incompatible, "right".into()),
-            (Code::Incompatible, "jaw".into())
-        ]
-    );
-    assert!(
-        refusal
-            .to_string()
-            .contains("action \"jaw\": targets skull, but action \"left\" targets eye-l."),
-        "{refusal}"
-    );
 }

@@ -173,7 +173,7 @@ mod unknown_kind_tests {
 
     #[test]
     fn bare_unknown_field_on_known_kind_taints_at_resolve() {
-        // §8 central asymmetry: a bare additive field on a recognized kind is
+        // Central asymmetry: a bare additive field on a recognized kind is
         // must-understand — fail closed at resolve even though the leaf is
         // referenced and otherwise valid.
         let env_tags = format!(
@@ -307,7 +307,7 @@ mod unknown_kind_tests {
 
 /// The C14 geometry rules, exercised directly on [`check_geometry`] so each of
 /// the five cases is pinned once rather than through a full resolve.
-/// The `part` identity rules (section 3 of the parts design), end to end.
+/// The `part` identity rules, end to end.
 mod part_tests {
     use crate::error::ErrorCode;
     use crate::lower::resolve;
@@ -593,7 +593,7 @@ mod part_tests {
     }
 }
 
-/// The `labels` layout rules (section 3 of the design), end to end, on the
+/// The `labels` layout rules, end to end, on the
 /// Go2: SDK motor order on the env, Isaac order on a model.
 mod labels_tests {
     use std::collections::BTreeMap;
@@ -1031,7 +1031,7 @@ mod labels_tests {
         assert!((obs[10] + 0.8).abs() < 1e-6, "{obs:?}");
     }
 
-    /// The design's Go2 pairing complete: the body model plus a part reading
+    /// The complete Go2 pairing: the body model plus a part reading
     /// the model's own previous action, 45 wide.
     fn go2_full_model(previous: &str) -> String {
         go2_body_model("").replacen(

@@ -6,7 +6,7 @@
 //!
 //! 1. is skipped outright when the stream's publication plan (or its `send`
 //!    rate ceiling) would coalesce it, or while the bitrate budget (`send:
-//!    latest(max_mbps=…)`, §8.5) is spent, before any encoding work. The
+//!    latest(max_mbps=…)`) is spent, before any encoding work. The
 //!    bucket refills at the budget; its capacity is the larger of 100 ms of
 //!    budget and one maximum-size frame, a frame is admitted while the
 //!    bucket is positive, and its actual bytes are then subtracted (debt);
@@ -60,6 +60,9 @@ pub struct MediaStats {
     pub coalesced: u64,
     /// Frames encoded.
     pub encoded: u64,
+    /// Frames offered already encoded ([`ImagePublisher::offer_jpeg`]),
+    /// passed through without decoding.
+    pub passed_through: u64,
     /// Encoded, then replaced by a newer frame before the sender got to it.
     pub superseded: u64,
     /// Frames sent.
@@ -248,21 +251,8 @@ impl ImagePublisher {
                 reason: format!("frame is {} bytes, not {expected}", rgb.len()),
             });
         }
-        inner.bump(|s| s.offered += 1);
-        let now = inner.now_ns();
-        // The rate gate runs on the publisher's clock, not the bucket's.
-        if !inner.publisher.due(inner.publisher.now_ns()) {
-            inner.bump(|s| s.coalesced += 1);
-            return Ok(Offer::Coalesced);
-        }
-        let budget = inner
-            .bucket
-            .lock()
-            .map(|mut b| b.has_budget(now))
-            .unwrap_or(true);
-        if !budget {
-            inner.bump(|s| s.skipped_over_budget += 1);
-            return Ok(Offer::OverBudget);
+        if let Some(skipped) = self.admit() {
+            return Ok(skipped);
         }
         let started = Instant::now();
         let bytes = match self.spec().encoding {
@@ -273,8 +263,90 @@ impl ImagePublisher {
         };
         let encode_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let len = bytes.len();
+        let superseded = self.enqueue(capture_ns, bytes);
+        inner.bump(|s| {
+            s.encoded += 1;
+            s.encode_ns_total += encode_ns;
+            s.encode_ns_max = s.encode_ns_max.max(encode_ns);
+            s.superseded += u64::from(superseded);
+        });
+        Ok(Offer::Queued { bytes: len })
+    }
+
+    /// Offers one frame captured at `capture_ns` already encoded as JPEG (a
+    /// camera's MJPEG output, say), sent as it is: for a part declared
+    /// `encoding: jpeg`. Its header must give the declared width and
+    /// height, in 1 (grey) or 3 components. Never blocks on the link.
+    pub fn offer_jpeg(&self, capture_ns: i64, jpeg: Bytes) -> Result<Offer, SessionError> {
+        let inner = &self.inner;
+        let channel = self.spec().channel;
+        if !matches!(self.spec().encoding, Encoding::Jpeg { .. }) {
+            return Err(SessionError::WrongChannel {
+                channel,
+                reason: "a JPEG frame for a part not declared `encoding: jpeg`".into(),
+            });
+        }
+        let max = usize::from(inner.width) * usize::from(inner.height) * 3 + MAX_ENCODED_OVERHEAD;
+        let header = jpeg_header(&jpeg).ok_or_else(|| SessionError::InvalidValue {
+            channel,
+            reason: "not a JPEG (no start-of-frame header)".into(),
+        })?;
+        if (header.height, header.width) != (inner.height, inner.width)
+            || !matches!(header.components, 1 | 3)
+            || jpeg.len() > max
+        {
+            return Err(SessionError::InvalidValue {
+                channel,
+                reason: format!(
+                    "jpeg is {}x{} in {} components ({} bytes), declared {}x{} rgb (at most {max})",
+                    header.width,
+                    header.height,
+                    header.components,
+                    jpeg.len(),
+                    inner.width,
+                    inner.height,
+                ),
+            });
+        }
+        if let Some(skipped) = self.admit() {
+            return Ok(skipped);
+        }
+        let len = jpeg.len();
+        let superseded = self.enqueue(capture_ns, jpeg);
+        inner.bump(|s| {
+            s.passed_through += 1;
+            s.superseded += u64::from(superseded);
+        });
+        Ok(Offer::Queued { bytes: len })
+    }
+
+    /// Counts the offer; the skip, when the plan or the budget skips it.
+    fn admit(&self) -> Option<Offer> {
+        let inner = &self.inner;
+        inner.bump(|s| s.offered += 1);
+        let now = inner.now_ns();
+        // The rate gate runs on the publisher's clock, not the bucket's.
+        if !inner.publisher.due(inner.publisher.now_ns()) {
+            inner.bump(|s| s.coalesced += 1);
+            return Some(Offer::Coalesced);
+        }
+        let budget = inner
+            .bucket
+            .lock()
+            .map(|mut b| b.has_budget(now))
+            .unwrap_or(true);
+        if !budget {
+            inner.bump(|s| s.skipped_over_budget += 1);
+            return Some(Offer::OverBudget);
+        }
+        None
+    }
+
+    /// Hands `bytes` to the sender; whether it replaced an unsent frame.
+    fn enqueue(&self, capture_ns: i64, bytes: Bytes) -> bool {
+        let inner = &self.inner;
         if let Ok(mut bucket) = inner.bucket.lock() {
-            bucket.spend(len);
+            bucket.spend(bytes.len());
         }
         let replaced = inner
             .slot
@@ -288,15 +360,56 @@ impl ImagePublisher {
         {
             bucket.refund(old.bytes.len());
         }
-        inner.bump(|s| {
-            s.encoded += 1;
-            s.encode_ns_total += encode_ns;
-            s.encode_ns_max = s.encode_ns_max.max(encode_ns);
-            if replaced.is_some() {
-                s.superseded += 1;
-            }
-        });
-        Ok(Offer::Queued { bytes: len })
+        replaced.is_some()
+    }
+}
+
+/// What a JPEG's start-of-frame header says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct JpegHeader {
+    width: u16,
+    height: u16,
+    components: u8,
+}
+
+/// Reads the start-of-frame header of a JPEG, without decoding it: the
+/// markers up to the first SOFn, skipping each segment by its length.
+fn jpeg_header(jpeg: &[u8]) -> Option<JpegHeader> {
+    if !jpeg.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut at = 2;
+    loop {
+        // Fill bytes (0xFF) may precede a marker.
+        while *jpeg.get(at)? == 0xFF && *jpeg.get(at + 1)? == 0xFF {
+            at += 1;
+        }
+        if *jpeg.get(at)? != 0xFF {
+            return None;
+        }
+        let marker = *jpeg.get(at + 1)?;
+        at += 2;
+        match marker {
+            // Standalone markers: TEM, RSTn.
+            0x01 | 0xD0..=0xD7 => continue,
+            // End of image or start of scan before any frame header.
+            0xD9 | 0xDA => return None,
+            _ => {}
+        }
+        let length = usize::from(u16::from_be_bytes([*jpeg.get(at)?, *jpeg.get(at + 1)?]));
+        // SOF0..SOF15, less DHT (C4), JPG (C8) and DAC (CC).
+        if matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            let sof = jpeg.get(at + 2..at + 8)?;
+            return Some(JpegHeader {
+                height: u16::from_be_bytes([sof[1], sof[2]]),
+                width: u16::from_be_bytes([sof[3], sof[4]]),
+                components: sof[5],
+            });
+        }
+        if length < 2 {
+            return None;
+        }
+        at += length;
     }
 }
 
@@ -435,6 +548,39 @@ mod tests {
             })
             .count();
         assert!((3..=5).contains(&sent), "{sent} raw frames in 3 s");
+    }
+
+    #[test]
+    fn the_jpeg_header_gives_the_frame_size_without_decoding() {
+        let mut frame = Vec::new();
+        synthetic_frame(64, 48, 0, &mut frame);
+        let jpeg = encode_jpeg(&frame, 64, 48, 80).expect("encode");
+        assert_eq!(
+            jpeg_header(&jpeg),
+            Some(JpegHeader {
+                width: 64,
+                height: 48,
+                components: 3
+            })
+        );
+        // Fill bytes before a marker, and a progressive frame header (SOF2).
+        let mut padded = vec![0xFF, 0xD8, 0xFF, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00];
+        padded.extend([0xFF, 0xC2, 0x00, 0x0B, 0x08, 0x00, 0x10, 0x00, 0x20, 0x01]);
+        assert_eq!(
+            jpeg_header(&padded),
+            Some(JpegHeader {
+                width: 32,
+                height: 16,
+                components: 1
+            })
+        );
+        assert_eq!(jpeg_header(b"not a jpeg"), None);
+        assert_eq!(
+            jpeg_header(&jpeg[..20]),
+            None,
+            "cut before its frame header"
+        );
+        assert_eq!(jpeg_header(&[0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02]), None);
     }
 
     #[test]

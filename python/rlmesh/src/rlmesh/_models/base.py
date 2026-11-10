@@ -494,12 +494,11 @@ class BatchOptions:
 
     ``max_batch_size=1`` turns batching off. ``max_in_flight_batches=2`` lets
     the next batch assemble while one runs; 1 assembles only while the model is
-    idle. ``batch_records`` appends one JSON line per batch, in the managed
-    platform's ``telemetry/batches.jsonl`` shape.
+    idle. ``batch_records`` appends one JSON line per batch, with batch size,
+    queue wait, forward timing and outcome fields.
 
     A field left ``None`` takes the native default, Rust's
-    ``BatchOptions::default()``: the managed platform's values, kept there
-    only.
+    ``BatchOptions::default()``.
     """
 
     max_batch_size: int | None = None
@@ -1437,7 +1436,7 @@ class ModelBase(Generic[ObsT, ActT]):
         <rlmesh.EnvFactory.reset_options>` (an env that did not never sees
         it) and reports it on :attr:`EpisodeResult.trial
         <rlmesh.EpisodeResult.trial>`, so a local eval walks the same states
-        as a platform shard given the same base (a non-zero base needs the
+        across runs given the same base (a non-zero base needs the
         runtime to own resets, like ``seeds``). A per-call
         ``trust_entrypoints`` override applies to this run only. On the
         result, each episode's ``predict_ms`` / ``step_ms`` are that episode's

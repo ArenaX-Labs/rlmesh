@@ -5,6 +5,8 @@ Docker, no external weights) is exercised here, so a change that breaks one
 fails CI. The rest of the set is typechecked but not executed:
 
 - ``byo_container/``: Docker image entrypoints; the env/model servers block forever.
+- ``isaacsim/``: needs Docker, Isaac Sim and an RTX GPU; also excluded from
+  typechecking because its Kit imports need that runtime.
 - ``sandbox/``: starts owned Docker containers.
 - ``vla_adapters/``: model x simulator study; real runs need weights and simulators.
 - ``v2/session_bench.py``: a latency benchmark (30 s per run by default).

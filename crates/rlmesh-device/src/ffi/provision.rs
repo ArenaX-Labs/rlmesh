@@ -1,9 +1,9 @@
-//! USB provisioning's C ABI (tether spec §14): `rlmesh_device_key_public`
+//! USB provisioning's C ABI: `rlmesh_device_key_public`
 //! and `rlmesh_device_provision_*`.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char, c_int};
+use core::ffi::c_int;
 
 use super::{RLMESH_DEVICE_ERR_ARG, RLMESH_DEVICE_OK};
 use crate::provision::{self, Record, Responder, Step};
@@ -44,30 +44,25 @@ pub struct DeviceProvision {
     out: Vec<u8>,
 }
 
-/// A responder for robot `name` (NUL-terminated) with device key
+/// A responder with device key
 /// `device_key` (32 bytes), holding the stored `record` (`record_len`
 /// bytes; null or 0 when not provisioned, or when it isn't valid). `arch`
 /// as in the tether's `HELLO`: 3 RISC-V, 4 Xtensa.
 ///
 /// # Safety
-/// `name` is null or NUL-terminated; `device_key` null or 32 bytes;
+/// `device_key` null or 32 bytes;
 /// `record` null or `record_len` bytes; `out` null or valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_device_provision_new(
-    name: *const c_char,
     device_key: *const u8,
     arch: u8,
     record: *const u8,
     record_len: usize,
     out: *mut *mut DeviceProvision,
 ) -> c_int {
-    if name.is_null() || device_key.is_null() || out.is_null() {
+    if device_key.is_null() || out.is_null() {
         return RLMESH_DEVICE_ERR_ARG;
     }
-    // SAFETY: per the contract.
-    let Ok(name) = unsafe { CStr::from_ptr(name) }.to_str() else {
-        return RLMESH_DEVICE_ERR_ARG;
-    };
     let mut key = [0_u8; 32];
     // SAFETY: 32 bytes, per the contract.
     key.copy_from_slice(unsafe { core::slice::from_raw_parts(device_key, 32) });
@@ -75,7 +70,7 @@ pub unsafe extern "C" fn rlmesh_device_provision_new(
         // SAFETY: `record_len` bytes, per the contract.
         .then(|| unsafe { core::slice::from_raw_parts(record, record_len) })
         .and_then(Record::parse);
-    let responder = Responder::new(name, &key, arch, record.as_ref());
+    let responder = Responder::new(&key, arch, record.as_ref());
     zeroize::Zeroize::zeroize(&mut key);
     let p = Box::new(DeviceProvision {
         responder,
@@ -205,16 +200,8 @@ mod tests {
         assert_eq!(public, provision::public_key(&key));
 
         let mut p = core::ptr::null_mut();
-        let rc = unsafe {
-            rlmesh_device_provision_new(
-                c"eye-3".as_ptr(),
-                key.as_ptr(),
-                4,
-                core::ptr::null(),
-                0,
-                &mut p,
-            )
-        };
+        let rc =
+            unsafe { rlmesh_device_provision_new(key.as_ptr(), 4, core::ptr::null(), 0, &mut p) };
         assert_eq!(rc, RLMESH_DEVICE_OK);
         let mut wire_bytes = Vec::new();
         wire::write(
@@ -222,6 +209,7 @@ mod tests {
                 flags: 0,
                 host_key: [9; 32],
                 host_id: b"rlm-3f9a2c",
+                name: b"eye-3",
                 addresses: Addresses::new(&[b"192.168.1.20:7447"]).unwrap(),
             }),
             0,

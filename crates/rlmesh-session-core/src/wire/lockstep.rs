@@ -1,4 +1,4 @@
-//! The lockstep fast path (§12): one request/reply per step between the
+//! The lockstep fast path: one request/reply per step between the
 //! driver (the controller side) and the env (the embodiment side), on
 //! `l/{robot}`, with no host round trip and no pacing.
 //!
@@ -7,7 +7,7 @@
 //! driver ◀──LockstepReply{step, observations, reward, terminated, truncated, episode_ids}── env
 //! ```
 //!
-//! Payloads use §10.6 packing with a leading lane axis: a [`PartValues`] is
+//! Payloads use packing with a leading lane axis: a [`PartValues`] is
 //! an N-lane slab, `lanes × stride`. The Gym view that drives these is wave
 //! 5; the messages live here so it builds on a fixed wire.
 
@@ -84,7 +84,7 @@ pub struct LockstepReply {
     pub timing: Option<EndpointTiming>,
 }
 
-/// What a lockstep request asks (§8.6): carried in the authenticated body.
+/// What a lockstep request asks: carried in the authenticated body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LockstepOp {
     /// One step.

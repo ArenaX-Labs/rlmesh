@@ -1,4 +1,4 @@
-//! rlmeshd as a satellite (scene design §1, §4.4): on a machine paired with
+//! rlmeshd as a satellite: on a machine paired with
 //! another rlmeshd, it waits in that home daemon's lobby as
 //! `rlmeshd.<device>` and takes its orders, one at a time:
 //! - `HostOrder`: host the run's session here, under host keys made here
@@ -200,10 +200,7 @@ impl Satellite {
                     }
                 }
                 Assignment::Stop(order) => self.stop(home, order).await,
-                // TODO: serve members are refused at home until a catalog
-                // model can bind as a scene controller; start `serve` here
-                // then.
-                Assignment::Serve(_) | Assignment::Join(_) => {}
+                Assignment::Join(_) => {}
             }
         }
     }
@@ -233,9 +230,9 @@ impl Satellite {
                 id: record.id.clone(),
                 public: record.public_key,
                 access: DeviceAccess {
-                    max_priority: record.max_priority,
                     parts: record.parts.clone(),
                     verbs: verbs(&record.verbs),
+                    ..DeviceAccess::new(record.max_priority)
                 },
             })
             .collect();
@@ -260,6 +257,7 @@ impl Satellite {
         config.lease_grace = LEASE_GRACE;
         config.health_log = None;
         config.scene = Some(scene.host(&order.run, &pins));
+        config.places = scene.places();
         config.seal = scene.seal();
         config.devices = devices;
         config.pins = pins;

@@ -43,7 +43,7 @@ pub enum RuntimeError {
         recoverable: bool,
         /// The structured underlying error, preserved so callers can downcast
         /// or inspect the chain. The driver does not name
-        /// `rlmesh-grpc`'s types, so the concrete type is erased here.
+        /// the driver's types, so the concrete type is erased here.
         #[source]
         source: Option<BoxError>,
     },
@@ -121,7 +121,7 @@ impl RuntimeError {
     }
 
     /// Constructs an [`EnvRpc`](Self::EnvRpc) error with an explicit
-    /// recoverability flag (e.g. from `GrpcError::is_recoverable`), preserving
+    /// recoverability flag (e.g. from `EnvironmentError::is_recoverable`), preserving
     /// the structured source.
     pub fn env_rpc_with_recoverability<E>(
         operation: &'static str,

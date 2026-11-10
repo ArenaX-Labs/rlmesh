@@ -87,9 +87,9 @@ def _ensure_distribution_marker(
 
 
 def daemon_main(argv: list[str] | None = None) -> int:
-    """The rlmeshd entrypoint: ``rlmesh daemon`` under its own name."""
+    """The rlmeshd entrypoint: ``rlmesh host`` under its own name."""
     argv = sys.argv[1:] if argv is None else argv
-    return main(["daemon", *argv])
+    return main(["host", *argv])
 
 
 def credential_helper_main(argv: list[str] | None = None) -> int:

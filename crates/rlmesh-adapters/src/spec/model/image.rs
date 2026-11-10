@@ -312,7 +312,7 @@ pub struct Image {
     /// `[height, width]` (a bare integer on the wire is the square shorthand).
     ///
     /// An **assertion**, not a request: the core never resizes a camera to
-    /// reach it. The platform binds the env's camera dial from it (via the
+    /// reach it. Callers can set the env's camera dial from it (via the
     /// package's `renderParams` label, fed by
     /// [`render_requests`](crate::v1::render_requests)); resolution then checks
     /// that the camera it actually bound really does render at this size and

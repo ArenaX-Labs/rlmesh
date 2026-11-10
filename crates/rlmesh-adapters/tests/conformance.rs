@@ -579,7 +579,7 @@ fn conformance_vectors() {
 }
 
 /// The `zeros(n)` / `, pad to N` wording predates constant parts and fills, and
-/// PR-12's new describe tokens (`const(n)=v`, `fill(n)=v`, `(post_rotate)`,
+/// Describe tokens (`const(n)=v`, `fill(n)=v`, `(post_rotate)`,
 /// `(*s +o)`) must render only when the new fields are used. Pinning the text
 /// here as a literal catches a rewrite that `UPDATE_VECTORS=1` would happily
 /// bless into the vector itself.

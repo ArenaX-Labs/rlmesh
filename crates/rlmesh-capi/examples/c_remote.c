@@ -1,4 +1,5 @@
-/* Remote clients (real gRPC, cache identity, vector buffers) and a served model by address. */
+/* Remote clients (realtime sessions, cache identity, vector buffers) and a served model by address.
+ */
 #define _POSIX_C_SOURCE 200809L
 #include <math.h>
 #include <pthread.h>
@@ -87,14 +88,7 @@ int main(void) {
   eo.connect_timeout_seconds = NAN;
   CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_ERR_INVALID_ARGUMENT && remote == NULL);
   eo.connect_timeout_seconds = 0;
-  eo.has_transport = true;
-  eo.transport = RLMESH_TRANSPORT_TCP;
   CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_ERR_INVALID_ARGUMENT);
-  eo.has_transport = false;
-  eo.api_key = " hidden-endpoint-token";
-  CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_ERR_INVALID_ARGUMENT && remote == NULL);
-  CHECK(strstr(rlmesh_last_error_message(), "hidden-endpoint-token") == NULL);
-  eo.api_key = NULL;
   RLMeshBytes bytes = {NULL, 0, 0};
   char* address = NULL;
   RLMeshDiscrete* space = NULL;
@@ -110,10 +104,9 @@ int main(void) {
   RLMeshEnv* env = NULL;
   CHECK(rlmesh_env_new(&ev, &state, &attrs, &env) == RLMESH_OK);
   RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
-  so.address = "tcp://127.0.0.1:0";
+  so.address = ":0/env";
   so.close_env_on_shutdown = false;
   RLMeshServeOptions serve = RLMESH_SERVE_OPTIONS_INIT;
-  serve.allow_remote_shutdown = true;
   so.options = &serve;
   RLMeshEnvServer* server = NULL;
   CHECK(rlmesh_env_server_new(&env, 1, &so, &server) == RLMESH_OK);
@@ -122,10 +115,10 @@ int main(void) {
   address = text(bytes);
   eo.address = address;
   eo.workflow_edition = rlmesh_current_workflow_edition();
-  CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_OK);
-  state.remote = remote;
   CHECK(rlmesh_remote_vector_env_new(&eo, &vector) == RLMESH_ERR_INVALID_ARGUMENT &&
         vector == NULL);
+  CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_OK);
+  state.remote = remote;
   const RLMeshSpace* cached = rlmesh_remote_env_observation_space(remote);
   CHECK(cached == rlmesh_remote_env_observation_space(remote));
   CHECK(rlmesh_env_contract_num_envs(rlmesh_remote_env_env_contract(remote)) == 1);
@@ -349,9 +342,6 @@ int main(void) {
   rlmesh_ext_cancel_token_free(token);
   rlmesh_value_free(actions);
   rlmesh_value_free(action);
-  bool accepted = false;
-  CHECK(rlmesh_remote_vector_env_shutdown(vector, NULL, &accepted) == RLMESH_OK && accepted);
-  CHECK(rlmesh_remote_vector_env_render(vector, 0, &obs) == RLMESH_ERR_RUNTIME);
   CHECK(rlmesh_remote_vector_env_close(vector) == RLMESH_OK);
   rlmesh_remote_vector_env_free(vector);
   rlmesh_env_server_free(server);

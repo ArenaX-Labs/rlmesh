@@ -1,26 +1,21 @@
 # Workflow Editions
 
-A workflow edition is a named behavioral contract for RLMesh workflow semantics. The base edition (`YYYY.MM`) identifies one spec document in this section; prerelease and local builds offer a cohort suffix so moving builds fail closed unless both sides are from the same cohort. Exactly one edition governs a session, reconciled by the runtime after the handshake.
+A workflow edition is a named behavioral contract for RLMesh workflow semantics. The base edition (`YYYY.MM`) identifies one spec document in this section; prerelease and local builds offer a cohort suffix so moving builds fail closed unless both sides are from the same cohort. Exactly one edition governs a session, reconciled by the session driver.
 
 > [!NOTE]
 > The bare `2026.06` edition sealed at 0.1.0. rlmesh 0.2 runs the provisional `2026.10`, which seals at 0.2.0, and no longer offers `2026.06` (see [Support Window](#support-window)). Prerelease and local builds use exact cohort suffixes (for example `2026.10-dev.<git>`) so moving builds fail closed rather than guess they are compatible.
 
-Editions answer a different question than the protocol generation. The protocol generation (`rlmesh-wire-v1`) names the wire shape: which services, messages, and fields exist. The edition names what a conforming interaction over that shape _means_: lifecycle, ordering, episode accounting, and error semantics.
+Editions answer a different question than the protocol generation. The protocol generation (`rlmesh-realtime-v1`) names the session wire shape. The edition names what a conforming interaction over that shape _means_: lifecycle, ordering, episode accounting, and error semantics.
 
 ## Negotiation
-
-The client **declares** every edition it can operate under in `HandshakeRequest.supported_workflow_editions`, and the one it wants in `preferred_workflow_edition`; the server replies with its own supported set in `HandshakeResponse.supported_workflow_editions` and its own declaration in `preferred_workflow_edition` (see [Declaring an Edition](#declaring-an-edition)). A peer that declares nothing is read as wanting the newest edition it supports, which is what every build made before the field existed means. A declaration is a ceiling, and its shape says what kind: a bare `YYYY.MM` base is a base-level ceiling that admits every cohort of that base (and anything older), so `2026.06` selects a dev build's `2026.06-dev.<git>` when that is what both sides offer; a declaration with a cohort suffix uses the full edition ordering as its ceiling. CAN membership still requires an exact spelling, and a prerelease or dev build does not offer the official current edition: its CAN set is its own cohort plus only the _older_ sealed editions it retains (see [Support Window](#support-window)). Differing cohorts of the same base therefore share nothing unless an older sealed edition is retained by both sides; with no sealed edition retained, as on 0.2, a dev build interoperates only with the identical build (see [local development](../local-dev.md#dev-builds-and-the-dev-cohort)). The handshake decides only protocol-generation compatibility; it selects no edition, and there is no `HandshakeResponse.selected_workflow_edition` field. The runtime is the sole edition authority because only it sees every participant: after the handshake it takes the floor across env, model, and runtime (`negotiate_session_floor`, reached through `env_floor`) and pins that edition on `ResolveAdapterRequest.selected_workflow_edition` and on `ConfigureEnvRequest.selected_workflow_edition`, the env's first Join message (an env must still accept a session that opens with `Reset`: a runtime built before the pin existed sends none). A matching suffixed cohort wins over any older sealed edition both sides offer; if cohorts differ, peers can only interoperate through an older sealed edition that both sides advertise. The runtime reads every edition-governed default from a per-edition table keyed by the selected edition and refuses a name it has no row for (see [compatibility](../compatibility.md) for what that does and does not yet prove).
-
-- An empty intersection does not set `compatible = false`, which reflects protocol generation alone: such a peer handshakes successfully and the session then fails at the runtime's floor, with a diagnostic naming what each tier (env, model, runtime) offered. The response lists the server's supported editions for that diagnostic, but there is no second round trip because the client's offer was already complete.
-- Servers accept only editions they explicitly support. A server never accepts an unknown edition on the assumption that it is probably compatible; forward compatibility lives in the client's offer set, not in server leniency.
 
 On a session (rlmesh 0.2) the same offers travel without a handshake. A served model declares its edition and every one it runs on `Attach` (`workflow_edition`, `workflow_editions`), and the session's roster shows them; an env publishes its offer in its env info. The driver takes the floor across the env, the model and itself and pins it on the model's `ModelResolve.workflow_edition`. A model that declares no editions in the roster is pinned to the env's edition. Nothing pins the env yet: with one edition, the floor is always the env's own.
 
 ## Declaring an Edition
 
-An edition is a **sticky declaration**: you write down the edition you authored against, and upgrading the rlmesh package never changes how your env or model behaves. It is the same idea as NixOS's `system.stateVersion`. Declare it once, in source, and leave it there until you deliberately move it.
+An edition is a **sticky declaration**: you write down the edition you authored against, and upgrading within its release line keeps its declared defaults. Before 1.0, a new minor release may drop that edition or replace the wire. It is the same idea as NixOS's `system.stateVersion`. Declare it once, in source, and leave it there until you deliberately move it.
 
-Paste the value `rlmesh.current_workflow_edition()` reports on the build you are authoring against: the bare base (`2026.10`), on every build of that edition. It names the contract, not a particular build of it, so it selects whichever spelling both sides offer — the sealed name on a release, the build's own cohort (`2026.06-dev.<git>`, what `rlmesh.build_info().workflow_edition` reports) on a prerelease or source build. A cohort spelling is also accepted when its ceiling admits an edition this build offers. It can select an older sealed edition both sides offer; it does not promise to reproduce an arbitrary prerelease build. Use the bare base for a durable declaration.
+Paste the value `rlmesh.current_workflow_edition()` reports on the build you are authoring against: the bare base (`2026.10`), on every build of that edition. It names the contract, not a particular build of it, so it selects whichever spelling both sides offer — the sealed name on a release, the build's own cohort (`2026.10-dev.<git>`, what `rlmesh.build_info().workflow_edition` reports) on a prerelease or source build. A cohort spelling is also accepted when its ceiling admits an edition this build offers. It can select an older sealed edition both sides offer; it does not promise to reproduce an arbitrary prerelease build. Use the bare base for a durable declaration.
 
 ```python
 import rlmesh
@@ -40,18 +35,18 @@ Every participant declares independently. The highest declaration that all of th
 
 Highest first. The two sticky homes are the ones that travel with your source.
 
-| Surface                                                       | Scope           | Sticky?                               |
-| ------------------------------------------------------------- | --------------- | ------------------------------------- |
-| `run(workflow_edition=...)` / `session(workflow_edition=...)` | one call        | no                                    |
-| `RLMESH_WORKFLOW_EDITION`                                     | one process     | no — a deployment override            |
-| `ServeOptions(workflow_edition=...)` / `--workflow-edition`   | one served peer | no                                    |
-| `EnvFactory.workflow_edition` / `Model.workflow_edition`      | the class       | **yes — source-resident**             |
-| `[tool.rlmesh] workflow_edition` in `pyproject.toml`          | the project     | **yes — project-resident**            |
-| nothing declared                                              | —               | floats to this build's newest edition |
+| Surface                                                     | Scope           | Sticky?                               |
+| ----------------------------------------------------------- | --------------- | ------------------------------------- |
+| `run(workflow_edition=...)` / `bind(workflow_edition=...)`  | one call        | no                                    |
+| `RLMESH_WORKFLOW_EDITION`                                   | one process     | no — a deployment override            |
+| `ServeOptions(workflow_edition=...)` / `--workflow-edition` | one served peer | no                                    |
+| `EnvFactory.workflow_edition` / `Model.workflow_edition`    | the class       | **yes — source-resident**             |
+| `[tool.rlmesh] workflow_edition` in `pyproject.toml`        | the project     | **yes — project-resident**            |
+| nothing declared                                            | —               | floats to this build's newest edition |
 
 A value this build cannot run a session at is refused where you typed it, naming the value and the editions this build offers. Accepted are the bare base of every edition the build retains (`rlmesh.current_workflow_edition()` and any older sealed edition), plus any cohort spelling that admits one of its offers. Anything else — a base no release implements, or a stale prerelease cohort that sorts below everything this build offers — raises there and then.
 
-Declaring nothing is allowed. A participant with a home for the declaration -- an authored `EnvFactory`/`Model` subclass, or anything served -- warns once per process (`rlmesh.WorkflowEditionWarning`), naming the edition it floated to: an undeclared peer's behavior follows whatever rlmesh you happen to have installed. An ad hoc callable in a local `run`/`session` floats quietly. Set `RLMESH_WORKFLOW_EDITION` to an empty string to float deliberately: resolution stops at that rung -- no class or project declaration below it is consulted -- and the warning stays quiet. That is what this repository's own test suites do, since they exercise whatever they were built from rather than a sealed contract.
+Declaring nothing is allowed. A participant with a home for the declaration -- an authored `EnvFactory`/`Model` subclass, or anything served -- warns once per process (`rlmesh.WorkflowEditionWarning`), naming the edition it floated to: an undeclared peer's behavior follows whatever rlmesh you happen to have installed. An ad hoc callable in a local `run`/`bind` floats quietly. Set `RLMESH_WORKFLOW_EDITION` to an empty string to float deliberately: resolution stops at that rung -- no class or project declaration below it is consulted -- and the warning stays quiet. That is what this repository's own test suites do, since they exercise whatever they were built from rather than a sealed contract.
 
 ## Edition vs. Capability vs. Bug Fix
 
@@ -63,36 +58,41 @@ Most development never touches the edition:
 
 ## Lifecycle: Provisional, Then Sealed
 
-An edition is **provisional** while no stable release has shipped it: prerelease builds use exact release-cohort names (`YYYY.MM-X.Y.Z-beta.N`), and local source builds use exact `dev.<git>` cohort names. This prevents accidental interoperability between moving builds that have not had stable-release scrutiny. The first stable release that ships an edition **seals** the bare `YYYY.MM` name permanently: the spec document becomes immutable (enforced by checksum), and any later semantic change mints a new edition.
+An edition is **provisional** while no stable release has shipped it: prerelease builds use exact release-cohort names (`YYYY.MM-X.Y.Z-beta.N`), and local source builds use exact `dev.<git>` cohort names. This prevents accidental interoperability between moving builds that have not had stable-release scrutiny. The first stable release that ships an edition **seals** the bare `YYYY.MM` name: the spec document becomes immutable (enforced by checksum), and any later semantic change mints a new edition.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Provisional: prerelease / local cohort
     Provisional --> Sealed: first stable release seals the bare YYYY.MM name
-    Sealed --> Sealed: spec immutable, valid indefinitely
+    Sealed --> Sealed: spec immutable, offered through its release line
 ```
 
-`2026.06` used provisional cohorts through the 0.1 prerelease series and sealed at v0.1.0. After sealing, it remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on a schedule. `2026.10` is the 0.2 redesign: it uses `2026.10-0.2.0-<prerelease>` cohorts and seals at v0.2.0.
+`2026.06` used provisional cohorts through the 0.1 prerelease series and sealed at v0.1.0. Its spec never changes after sealing; every 0.1.x release offers it. A new edition is minted only by a deliberate semantic redesign, never on a schedule. `2026.10` is the 0.2 redesign: it uses `2026.10-0.2.0-<prerelease>` cohorts and seals at v0.2.0.
 
 ## Support Window
 
-Sealing freezes an edition's spec by checksum. Every later release keeps offering and accepting a sealed edition, including betas for a later edition, and sealed editions are never pruned: `rlmesh.toml` is the retained list, the crates generate their offer from it, and `mise run policy:check` fails if a sealed edition leaves it or if the list lost an edition the last release tag had sealed. The wire-v1 and sealed-edition commitments apply from v0.1.0; broader API stabilization remains on the roadmap (see [compatibility](../compatibility.md)). A provisional cohort, which no stable release has sealed, may change or be dropped and interoperates only with the same cohort unless both sides advertise an older sealed edition. A prerelease or dev build never offers the official current edition (the first line of `crates/rlmesh-proto/supported_editions.txt`), so it does not meet a stable release of the edition it builds on.
+Sealing freezes an edition's spec by checksum. Sealed editions are retained within a release line: every later release of the line keeps offering and accepting a sealed edition, including betas for a later edition. `rlmesh.toml` is the retained list, the crates generate their offer from it, and `mise run policy:check` fails if a sealed edition leaves it or if the list lost an edition the last release tag had sealed. The 0.1 wire remains available in the published 0.1 crates; 0.2 uses sessions only; broader API stabilization remains on the roadmap (see [compatibility](../compatibility.md)). A provisional cohort, which no stable release has sealed, may change or be dropped and interoperates only with the same cohort unless both sides advertise an older sealed edition. A prerelease or dev build never offers the official current edition (the first line of `crates/rlmesh-proto/supported_editions.txt`), so it does not meet a stable release of the edition it builds on.
 
-The one exception is a deliberate major break. `[workflow.dropped_editions]` in `rlmesh.toml` names each sealed edition a release stops offering, with the reason; `policy:check` exempts exactly those from the retention rule, and requires that each keeps its sealed record (so its spec checksum is still verified) and is not also offered. 0.2 uses it once: 0.2 is a major break; the managed platform keeps 2026.06 through its 0.1 stack. A 0.2 build therefore offers only `2026.10`; managed users who stay on `2026.06` keep it through the platform's 0.1 runner.
+Only a new major line (each 0.x minor, before 1.0) may drop one. `[workflow.dropped_editions]` in `rlmesh.toml` names each sealed edition a release stops offering, with the reason; `policy:check` exempts exactly those from the retention rule, and requires that each keeps its sealed record (so its spec checksum is still verified) and is not also offered. 0.2 uses it once: 0.2 replaces the 0.1 gRPC protocol with realtime sessions. A 0.2 build therefore offers only `2026.10`; components that need `2026.06` must use a compatible 0.1 release. Interoperation between the 0.1 and 0.2 protocols is not implemented.
+
+Before 1.0, then, an edition protects a participant across releases of one line, not across every future release; keeping editions across lines is the goal for 1.0.
 
 ## Enforcement
 
-`rlmesh.toml` records the base edition, current official release cohort, supported editions, and each edition's `status` (`provisional` or `sealed`) plus `spec` path. A sealed edition also records `sealed_in` and `spec_sha256`. `scripts/check_rlmesh_policy.py` verifies sealed spec checksums, rejects provisional editions in stable releases, and checks that prerelease cohorts match the workspace SemVer. Local dev cohorts are generated at build time and are not committed to the manifest.
+`rlmesh.toml` records the base edition, current official release cohort, supported editions, and each edition's `status` (`provisional` or `sealed`) plus `spec` path. A sealed edition also records `sealed_in` and `spec_sha256`. `scripts/check_rlmesh_policy.py` verifies sealed spec checksums and pins the sealed records (`status`, `spec`, `sealed_in`, `spec_sha256`) against the nearest reachable `v*` release tag, including dropped editions. Checksums use BOM-free UTF-8, LF line endings and exactly one trailing newline; Markdown content is not normalized. Without Git history or a reachable release tag, only the current manifest checksum is checked. It rejects provisional editions in stable releases, and checks that prerelease cohorts match the workspace SemVer. Local dev cohorts are generated at build time and are not committed to the manifest.
 
-### Additive-forever rules
+### Wire governance
 
-`rlmesh-wire-v1` only grows, and `policy:check` pins the shapes an older peer cannot absorb silently. The `[wire]` table in `rlmesh.toml` records the gRPC message cap (`max_message_bytes`, 256 MiB, equal to `rlmesh_grpc::MAX_MESSAGE_SIZE`), the value count of every proto enum (`[wire.enums]`), and the arm count of the `MetaValue.kind` and `SpaceSpec.spec` oneofs (`[wire.oneofs]`). The check fails when the live protos or the constant differ from the manifest, so a new enum value, a new oneof arm, or a different cap lands only with a deliberate manifest edit in the same change. The retention rule also compares against the previous release tag: no edition that tag sealed may leave `supported_editions`.
+`rlmesh-realtime-v1` is the only governed wire contract in 0.2. It is
+provisional until 0.2.0 freezes it. `rlmesh.toml` records its proto tree,
+baseline and freeze tag under `[protocols."rlmesh-realtime-v1"]`.
+`protocol:baseline-verify` and `protocol:breaking` enforce the frozen contract;
+buf lint and session byte goldens protect it while provisional.
 
-The manifest edit is the paperwork; the house rule is on the emitter. A peer built before a value existed does not refuse every new shape cleanly: an unknown `DataType`, `AutoresetMode`, or `SpaceSpec` arm is a decode error, but an unknown `EnvErrorCode` or `ModelErrorCode` folds to `UNSPECIFIED`, and an unknown `MetaValue.kind` arm reads as `null`. So a new enum value, dtype, or oneof arm is emitted only when the target leg's edition (or an advertised capability) covers it; to any other peer the runtime refuses cleanly or converts, and never forwards the new shape. The two error-code vocabularies are frozen for wire-v1: error semantics never ride a new code.
-
-The live protos are also mirrored byte for byte in `crates/rlmesh-proto/baselines/rlmesh-wire-v1` (`protocol:baseline-verify`). An additive, gated change regenerates that snapshot in the same commit (`mise run protocol:baseline-regen`); it proves nothing about compatibility on its own, which is `protocol:breaking`'s job against the immutable `v0.1.0` tag.
+`rlmesh-proto` retains internal data messages and edition logic for the run
+driver. Its messages are not a remote protocol and carry no wire-v1 promise.
 
 ## Editions
 
 - [2026.10](2026.10.md) (provisional; seals at 0.2.0)
-- [2026.06](2026.06.md) (sealed at 0.1.0; not offered by 0.2)
+- [2026.06](2026.06.md) (sealed at 0.1.0; not offered by 0.2); [post-release errata](2026.06-errata.md)

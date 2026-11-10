@@ -1,4 +1,4 @@
-"""The v2 lockstep path (§12) from Python.
+"""The v2 lockstep path from Python.
 
 - Existing Gymnasium envs and v1 models run unchanged at participant
   addresses: the same env and model over v2 (lockstep) leave the traces the
@@ -26,7 +26,7 @@ gym = pytest.importorskip("gymnasium")
 
 import rlmesh  # noqa: E402
 import rlmesh.numpy  # noqa: E402
-import rlmesh.v2 as v2  # noqa: E402
+import rlmesh.realtime as v2  # noqa: E402
 
 
 def _digest(value: Any) -> str:
@@ -317,6 +317,7 @@ def test_remote_env_drives_a_lockstep_robot() -> None:
             robot.close()
 
 
+@pytest.mark.perf
 def test_a_remote_env_view_step_is_not_delayed_by_the_signal_poll() -> None:
     # Blocked calls poll for Ctrl-C on a timer. Its first tick used to be
     # awaited before the call started, and it waited for the timer's next

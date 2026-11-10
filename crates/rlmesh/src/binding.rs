@@ -39,39 +39,7 @@ pub fn resolve_workflow_edition(
     crate::editions::resolve_native(sources, authored)
 }
 
-use crate::{Error, Metadata, Result, ServeOptions, Tensor, Value};
-
-/// The transport's options for `options` and an env endpoint `token` (the env
-/// server the Python binding hosts itself).
-pub fn serve_options_to_grpc(
-    options: ServeOptions,
-    token: Option<String>,
-) -> rlmesh_grpc::ServeOptions {
-    options.to_grpc(crate::serve_options::WireExtras {
-        token,
-        ..Default::default()
-    })
-}
-
-/// The env endpoint token `RLMESH_ENV_ENDPOINT_TOKEN` sets, checked as every
-/// env server checks it (an invalid value is the `RLMeshException` class).
-pub fn env_endpoint_token() -> Result<Option<String>> {
-    crate::serve_options::env_endpoint_token(None)
-}
-
-/// Refuses what a session-served model cannot honor: those options and an
-/// `RLMESH_MODEL_ENDPOINT_TOKEN`.
-pub fn check_session_model_serve(options: &crate::ServeOptions) -> Result<()> {
-    options.check_session()?;
-    crate::serve_options::check_session_token(crate::serve_options::MODEL_ENDPOINT_TOKEN_ENV, false)
-}
-
-/// Refuses what a session-served env cannot honor: those options and an
-/// `RLMESH_ENV_ENDPOINT_TOKEN`.
-pub fn check_session_env_serve(options: &crate::ServeOptions) -> Result<()> {
-    options.check_session()?;
-    crate::serve_options::check_session_token(crate::serve_options::ENV_ENDPOINT_TOKEN_ENV, false)
-}
+use crate::{Error, Metadata, Result, Tensor, Value};
 
 /// The shared [`crate::spaces::SpaceSpec`] for a wire spec.
 pub fn space_spec_from_wire(spec: rlmesh_spaces::SpaceSpec) -> crate::spaces::SpaceSpec {
@@ -181,9 +149,8 @@ pub mod report {
     pub use crate::run::report::*;
 }
 
-/// Evaluation plans: a request compiled into workloads under the managed
-/// platform's rules, so it draws the same episodes locally as on the
-/// platform. Drives the CLI's `eval run` (R-25); the request file is the
+/// Evaluation plans: a request compiled into local workloads. Drives the CLI's `eval
+/// run` (R-25); the request file is the
 /// surface, the plan types are not.
 pub mod plan {
     pub use crate::run::plan::*;
@@ -199,18 +166,17 @@ pub mod routes {
 }
 
 /// The per-episode artifact tree (`episodes/epNNNNNN/`, the managed
-/// platform's evaluation-artifacts layout), its records, invariants and the
+/// evaluation-artifacts layout), its records, invariants and the
 /// hardware stamp: [`crate::Recorder`]'s `record` capture and the managed
 /// runner write through it (R-25). C and C++ are deferred.
 pub mod artifacts {
     pub use crate::recorder::artifacts::*;
 }
 
-/// `rlmesh doctor` and `rlmesh bench`: the platform's probe on one machine,
-/// against a served env or model, reporting in the platform's
+/// `rlmesh doctor` and `rlmesh bench`: checks and benchmarks on one machine,
+/// against a served env or model, reporting in the
 /// `probe-report.json` shape. Drives the CLI (R-25); no language binding
 /// reaches it in 0.2.
-#[cfg(feature = "lockstep")]
 pub mod doctor {
     pub use crate::doctor::*;
 }
@@ -259,7 +225,7 @@ pub mod managed {
     }
 }
 
-/// The runtime driver itself, for in-repo tests and the managed runner.
+/// The runtime driver itself, for tests and custom runners.
 #[doc(hidden)]
 pub use crate::run::runtime;
 
@@ -303,7 +269,7 @@ pub fn env_contract_to_wire(contract: &crate::EnvContract) -> Result<rlmesh_spac
 /// serve: SIGTERM stops the server through `trigger` and the previous
 /// disposition is restored when the scope drops; SIGINT stays Python's.
 pub fn foreground_sigterm_scope(
-    trigger: rlmesh_grpc::lifecycle::ShutdownTrigger,
+    trigger: crate::lifecycle::ShutdownTrigger,
 ) -> crate::env::signals::SignalScope {
     crate::env::signals::enter_with(trigger, false)
 }
@@ -365,7 +331,6 @@ impl AttachedError {
         Error::Attached(attached)
     }
 
-    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     pub(crate) fn authored_message(&self) -> Option<&str> {
         self.message.as_deref()
     }
@@ -496,7 +461,7 @@ pub fn env_factory_native_start<F: crate::EnvFactory>(
     // Validate inputs before subscribing: a refused call must not consume a
     // pre-fired token. These reads invoke no C factory hooks.
     if !crate::address::is_v2(address) {
-        crate::ext::BindAddress::parse(address)?;
+        crate::ext::ConnectAddress::parse(address)?;
     }
     if let Some(edition) = options
         .workflow_edition
@@ -539,21 +504,15 @@ pub fn env_factory_native_start<F: crate::EnvFactory>(
     Ok(server)
 }
 
-pub use crate::credentials::ClientAuth;
-
-/// Resolve a client's credentials for `address` (binding plumbing): the
-/// explicit `api_key`, else `RLMESH_API_KEY` for an `https://` address, and
-/// the `tls_ca_file` trust. With `warn`, an explicit key for a plaintext
-/// non-loopback host warns. The ValueError class for a key a header cannot
-/// carry or an unusable CA bundle.
-pub fn client_auth(
-    address: &str,
-    api_key: Option<&str>,
-    tls_ca_file: Option<&std::path::Path>,
-    warn: bool,
-) -> Result<ClientAuth> {
-    crate::credentials::resolve(address, api_key, tls_ca_file, warn)
-}
-
 /// Explicit per-call cancellation for native bindings.
 pub mod calls;
+
+/// Internal driver data conversions; no transport or wire contract.
+pub mod data {
+    pub use crate::data::*;
+}
+
+/// Shared shutdown primitives for native bindings.
+pub mod lifecycle {
+    pub use crate::lifecycle::*;
+}

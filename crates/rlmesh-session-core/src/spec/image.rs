@@ -1,4 +1,4 @@
-//! The image operations of bound camera and depth inputs (§7.2) and of v1
+//! The image operations of bound camera and depth inputs and of v1
 //! adapters, one implementation with v1's pinned semantics: an un-suffixed kernel has cv2/torch semantics, an
 //! `_aa` kernel PIL's (an antialiased filter whose support widens with the
 //! downscale factor). `bilinear` is the 4-tap half-pixel-center sampler;

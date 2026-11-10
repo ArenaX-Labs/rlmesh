@@ -21,9 +21,14 @@ ignored = ["napi-build"]
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# Unreleased: the lobby and scene runs. Never in a release addon; CI builds it.
+fleet = ["rlmesh-session/fleet"]
+
 [dependencies]
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt"] }
 napi-derive = "3"
+bytes = { workspace = true }
 rlmesh-session = { workspace = true, features = ["record"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 

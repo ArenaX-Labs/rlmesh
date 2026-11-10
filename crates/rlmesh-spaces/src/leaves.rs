@@ -3,7 +3,7 @@
 //! [`flatten_leaves`](crate::flatten_leaves)/[`leaf_specs`](crate::leaf_specs)/
 //! [`assemble_value`](crate::assemble_value) give the canonical pre-order;
 //! this module turns each fundamental leaf into raw little-endian bytes and
-//! back. See `value-transport-redesign.md` §3–§5.
+//! back.
 //!
 //! Single value: one `Bytes` per leaf, each the raw leaf bytes (Text = raw
 //! UTF-8, self-framed by the element length). Batch: one `Bytes` per leaf
@@ -29,10 +29,10 @@ pub enum LeafError {
     /// Bytes that do not decode as their leaf space.
     #[error("decode error: {0}")]
     Decode(String),
-    /// An integer value did not fit its declared dtype on encode (§4 range-check).
+    /// An integer value did not fit its declared dtype on encode.
     #[error("out of range: {0}")]
     OutOfRange(String),
-    /// A leaf or batch-slab byte length did not match the spec (§4/§5 exact-length).
+    /// A leaf or batch-slab byte length did not match the spec.
     #[error("length mismatch: {0}")]
     LengthMismatch(String),
 }

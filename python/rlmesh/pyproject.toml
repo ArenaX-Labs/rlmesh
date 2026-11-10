@@ -48,10 +48,12 @@ gym = ["gym>=0.22.0"]
 numpy = ["numpy>=1.22"]
 torch = ["torch>=1.11"]
 jax = ["jax>=0.4.24", "jaxlib>=0.4.24"]
+# Real-time sessions (rlmesh.realtime): robots, policies, the edge,
+# recordings. NumPy is the only extra they need.
+robot = ["numpy>=1.22"]
 
 # Host-side hf:// artifact resolution (container-less local runs) needs
-# huggingface_hub. Optional so the core stays dependency-free; in a sandbox the
-# managed sidecar materializes inputs and the eval container never imports it.
+# huggingface_hub. Keep it optional so the core stays dependency-free.
 hf = ["huggingface_hub"]
 
 [project.scripts]

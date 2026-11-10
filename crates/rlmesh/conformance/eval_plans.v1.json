@@ -936,7 +936,7 @@
       }
     }
   ],
-  "description": "eval_plans v1: an evaluation request and the package labels and describe envelopes of the images it names, in; the workloads the managed platform's run builder compiles, out (model, task, shard, episodes, seed base, seed key, slot offset, trial base, episode cap, env make kwargs, each episode's seed), or an error. The expected workloads come from the platform's builder.",
+  "description": "eval_plans v1: an evaluation request and the package labels and describe envelopes of the images it names, in; the local workload plan, out (model, task, shard, episodes, seed base, seed key, slot offset, trial base, episode cap, env make kwargs, each episode's seed), or an error. The expected workloads pin request expansion and episode assignment.",
   "images": {
     "envs": {
       "prebuilt/libero": {

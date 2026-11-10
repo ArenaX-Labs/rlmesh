@@ -20,12 +20,12 @@ use crate::view::{Recording, View, clocks};
 /// The central panel's tabs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
-    /// Declared vs measured (§8.10).
+    /// Declared vs measured.
     #[default]
     Measured,
     /// Every mode, lease, binding and roster change.
     Timeline,
-    /// The binding tables (§6.8).
+    /// The binding tables.
     Bindings,
 }
 
@@ -157,14 +157,17 @@ pub enum LiveAction {
     Resume,
     /// Keep the host's recent recording as an incident.
     Keep,
-    /// Start an episode of [`LiveBar::task`].
+    /// Start an episode of `LiveBar::task`.
+    #[cfg(feature = "collect")]
     Start,
     /// End the episode and collect it, a success or not.
+    #[cfg(feature = "collect")]
     Finish {
         /// The operator's verdict.
         success: bool,
     },
     /// End the episode and drop it.
+    #[cfg(feature = "collect")]
     Discard,
 }
 
@@ -173,21 +176,83 @@ pub enum LiveAction {
 pub struct LiveBar {
     /// Showing the recent history, not the session now.
     pub paused: bool,
-    /// The host records into this machine's recordings directory, so Keep
-    /// and episodes work.
+    /// The host records into this machine's recordings directory, so
+    /// episodes work.
     pub local: bool,
     /// The next or running episode's task.
+    #[cfg(feature = "collect")]
     pub task: String,
     /// Seconds into the running episode.
+    #[cfg(feature = "collect")]
     pub episode_s: Option<f64>,
     /// The last Keep's or episode's answer.
     pub note: Option<Result<String, String>>,
 }
 
-/// A live session's bar: pause or resume, Keep, and the episode controls
-/// (start with a task; success, fail or discard).
+/// The episode controls: start with a task; success, fail or discard.
+#[cfg(feature = "collect")]
+fn episode_controls(
+    ui: &mut egui::Ui,
+    bar: &mut LiveBar,
+    local_only: &str,
+    action: &mut Option<LiveAction>,
+) {
+    ui.separator();
+    match bar.episode_s {
+        None => {
+            ui.add_enabled(
+                bar.local,
+                egui::TextEdit::singleline(&mut bar.task)
+                    .hint_text("task")
+                    .desired_width(260.0),
+            )
+            .on_hover_text("The episode's task, as a policy is told it");
+            if ui
+                .add_enabled(bar.local, Button::new("Start episode"))
+                .on_hover_text("Collect from now until Success, Fail or Discard")
+                .on_disabled_hover_text(local_only)
+                .clicked()
+            {
+                *action = Some(LiveAction::Start);
+            }
+        }
+        Some(seconds) => {
+            ui.label(
+                RichText::new(format!("EPISODE {seconds:.1} s"))
+                    .strong()
+                    .color(tone_color(Tone::Bad)),
+            );
+            ui.label(RichText::new(&bar.task).weak());
+            if ui
+                .add(Button::new("Success").fill(tone_color(Tone::Good)))
+                .clicked()
+            {
+                *action = Some(LiveAction::Finish { success: true });
+            }
+            if ui
+                .button("Fail")
+                .on_hover_text("Collected, marked failed")
+                .clicked()
+            {
+                *action = Some(LiveAction::Finish { success: false });
+            }
+            if ui
+                .button("Discard")
+                .on_hover_text("A bad take: not collected")
+                .clicked()
+            {
+                *action = Some(LiveAction::Discard);
+            }
+        }
+    }
+}
+
+/// A live session's bar: pause or resume, Keep (a host verb), and, with `collect`
+/// (unreleased), the episode controls (start with a task; success, fail or
+/// discard).
 pub fn live_bar(ui: &mut egui::Ui, bar: &mut LiveBar) -> Option<LiveAction> {
     let mut action = None;
+    #[cfg(feature = "collect")]
     let local_only = "The host does not record into this machine's recordings";
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -213,61 +278,16 @@ pub fn live_bar(ui: &mut egui::Ui, bar: &mut LiveBar) -> Option<LiveAction> {
             action = Some(LiveAction::Pause);
         }
         if ui
-            .add_enabled(bar.local, Button::new("Keep"))
-            .on_hover_text("Keep the host's recording of the last 2 minutes as an incident")
-            .on_disabled_hover_text(local_only)
+            .button("Keep")
+            .on_hover_text(
+                "Ask the host to keep its recording of the last 2 minutes as an incident",
+            )
             .clicked()
         {
             action = Some(LiveAction::Keep);
         }
-        ui.separator();
-        match bar.episode_s {
-            None => {
-                ui.add_enabled(
-                    bar.local,
-                    egui::TextEdit::singleline(&mut bar.task)
-                        .hint_text("task")
-                        .desired_width(260.0),
-                )
-                .on_hover_text("The episode's task, as a policy is told it");
-                if ui
-                    .add_enabled(bar.local, Button::new("Start episode"))
-                    .on_hover_text("Collect from now until Success, Fail or Discard")
-                    .on_disabled_hover_text(local_only)
-                    .clicked()
-                {
-                    action = Some(LiveAction::Start);
-                }
-            }
-            Some(seconds) => {
-                ui.label(
-                    RichText::new(format!("EPISODE {seconds:.1} s"))
-                        .strong()
-                        .color(tone_color(Tone::Bad)),
-                );
-                ui.label(RichText::new(&bar.task).weak());
-                if ui
-                    .add(Button::new("Success").fill(tone_color(Tone::Good)))
-                    .clicked()
-                {
-                    action = Some(LiveAction::Finish { success: true });
-                }
-                if ui
-                    .button("Fail")
-                    .on_hover_text("Collected, marked failed")
-                    .clicked()
-                {
-                    action = Some(LiveAction::Finish { success: false });
-                }
-                if ui
-                    .button("Discard")
-                    .on_hover_text("A bad take: not collected")
-                    .clicked()
-                {
-                    action = Some(LiveAction::Discard);
-                }
-            }
-        }
+        #[cfg(feature = "collect")]
+        episode_controls(ui, bar, local_only, &mut action);
         match &bar.note {
             Some(Ok(note)) => {
                 ui.label(RichText::new(note).weak());
@@ -439,6 +459,9 @@ fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<V
             }
         });
     });
+    if let Some(reason) = &h.mode_reason {
+        ui.label(format!("why: {reason}"));
+    }
     if let Some(note) = &h.estop_note {
         ui.label(RichText::new(note).strong().color(tone_color(Tone::Bad)));
     }
@@ -607,7 +630,7 @@ fn measured(ui: &mut egui::Ui, view: &View) {
         &format!(
             "Hz, each on its own clock: declared ({}), produced and published ({}), \
              admitted delivery (contract), unique received ({}), per capture second ({}), \
-             and each subscriber's seq advance (its heartbeats).",
+             and each subscriber's seq advance (its heartbeats, as the host relays them).",
             clocks::DECLARED,
             clocks::PUBLISHER,
             clocks::COCKPIT,
@@ -771,7 +794,7 @@ fn measured(ui: &mut egui::Ui, view: &View) {
         "Edges",
         &format!(
             "control rate ({}); a deadline miss is a tick more than two control periods \
-             after the previous one (§9.1), seq gaps excluded.",
+             after the previous one, seq gaps excluded.",
             clocks::EDGE
         ),
     );
@@ -785,6 +808,8 @@ fn measured(ui: &mut egui::Ui, view: &View) {
             "recent",
             "longest gap ms",
             "mode",
+            "why",
+            "refused",
             "dispatched",
             "lease",
             "coverage ms",
@@ -811,6 +836,15 @@ fn measured(ui: &mut egui::Ui, view: &View) {
                 ),
                 None => ui.label("—"),
             };
+            ui.label(r.reason.as_deref().unwrap_or("—"));
+            if r.rejected.is_empty() {
+                ui.label("0");
+            } else {
+                let total: u64 = r.rejected.iter().map(|(_, n)| n).sum();
+                let by: Vec<String> = r.rejected.iter().map(|(w, n)| format!("{n} {w}")).collect();
+                ui.label(RichText::new(total.to_string()).color(tone_color(Tone::Warn)))
+                    .on_hover_text(by.join(", "));
+            }
             ui.label(format!("{}/{}", r.present.0, r.present.1));
             ui.label(r.holder.as_deref().unwrap_or("free"))
                 .on_hover_text(r.last_chunk.as_deref().map_or_else(
@@ -828,7 +862,8 @@ fn measured(ui: &mut egui::Ui, view: &View) {
     section(
         ui,
         "Participants",
-        "clock mapping (session = participant + offset, ± error) and heartbeats",
+        "clock mapping (session = participant + offset, ± error) and heartbeats, \
+         as the host measures them",
     );
     Grid::new("participants").striped(true).show(ui, |ui| {
         for h in [
@@ -840,6 +875,8 @@ fn measured(ui: &mut egui::Ui, view: &View) {
             "rtt ms",
             "health",
             "heartbeat ms ago",
+            "jitter ms",
+            "max gap ms",
         ] {
             ui.label(RichText::new(h).strong());
         }
@@ -853,6 +890,11 @@ fn measured(ui: &mut egui::Ui, view: &View) {
             ui.label(r.rtt_ms.map_or_else(|| "—".into(), |v| format!("{v:.3}")));
             ui.label(r.health.as_deref().unwrap_or("—"));
             ui.label(ms(r.heartbeat_age_ms));
+            ui.label(
+                r.jitter_ms
+                    .map_or_else(|| "—".into(), |v| format!("{v:.3}")),
+            );
+            ui.label(ms(r.heartbeat_gap_max_ms));
             ui.end_row();
         }
     });

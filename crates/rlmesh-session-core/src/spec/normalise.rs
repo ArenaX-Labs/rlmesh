@@ -1,5 +1,5 @@
-//! The shared normaliser (§3): an embodiment's authored robot map (JSON) to
-//! [`PartSpec`]s, with the §3.4 validation, the kind table's defaults
+//! The shared normaliser: an embodiment's authored robot map (JSON) to
+//! [`PartSpec`]s, with validation, the kind table's defaults
 //! expanded, and the declaration fingerprint.
 //!
 //! The participant sends only the authored map; the host normalises it, so
@@ -26,10 +26,10 @@
 //! kind declares its fields as an object of `name: [dtype, shape]`, in
 //! payload order (an order-keeping parse; duplicate keys are refused).
 //!
-//! # Canonical form and fingerprint (§3.3)
+//! # Canonical form and fingerprint
 //!
 //! [`canonical()`] is the normalised map (defaults expanded, host-assigned
-//! fields omitted, units spelled per §5.1) as JSON: an array of parts in
+//! fields omitted, units normalised) as JSON: an array of parts in
 //! authored order, each part's fields an array in payload order. RFC 8785
 //! sorts object members, so nothing whose order matters is an object.
 //! [`fingerprint`] is BLAKE3 over its RFC 8785 bytes, first 8 bytes.
@@ -94,7 +94,7 @@ pub mod attrs {
     pub const LAYOUT: &str = "layout";
     /// Free text for the cockpit.
     pub const DOC: &str = "doc";
-    /// Gym compatibility (§12.4): the original Gym space of the part's
+    /// Gym compatibility: the original Gym space of the part's
     /// leaves (JSON).
     pub const GYM_SPACE: &str = "gym_space";
     /// Gym compatibility: the v1 EnvTags tag of the part's leaves (JSON).
@@ -237,7 +237,7 @@ struct PartDecl {
 
 /// Keys every streaming kind takes.
 const STREAMING: &[&str] = &["kind", "hz", "send", "priority", "doc", "max_age_ms"];
-/// Keys of a commandable part (§3.2), less the kind-specific ones.
+/// Keys of a commandable part, less the kind-specific ones.
 const COMMAND: &[&str] = &[
     "command",
     "control_hz",
@@ -1249,7 +1249,7 @@ pub fn canonical(parts: &[PartSpec]) -> Value {
     Value::Array(parts.iter().map(part_json).collect())
 }
 
-/// The declaration fingerprint (§3.3): BLAKE3 over the RFC 8785 bytes of
+/// The declaration fingerprint: BLAKE3 over the RFC 8785 bytes of
 /// [`canonical()`], first 8 bytes.
 pub fn fingerprint(parts: &[PartSpec]) -> Fingerprint {
     canonical::fingerprint(&canonical(parts))

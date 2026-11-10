@@ -113,7 +113,7 @@ pub async fn run_container_async(
     let bootstrap_json = render_bootstrap_json(spec)?;
     let host_port = free_session_ports()?;
     // The container hosts its session under keys made here, so this process
-    // knows the address's key (design §10: the workload spec). The value
+    // knows the address's key (the workload spec). The value
     // rides docker's own environment, never its argv.
     let (identity, key) = launch_identity()?;
     let output = Command::new("docker")

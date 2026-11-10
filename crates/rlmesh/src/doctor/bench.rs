@@ -1,9 +1,8 @@
 //! The batch sweep: how a served model's throughput grows with the number of
 //! sessions predicting at once, and the `max_batch_size` it recommends.
 //!
-//! Ported from the managed probe's `batch_sweep`. The 0.1 probe sent one
-//! grouped predict of N lanes; on 0.2 a served model's batcher groups the
-//! predicts of concurrent sessions itself, so a sweep point is N routes
+//! A served model's batcher groups the predicts of concurrent sessions
+//! itself, so a sweep point is N routes
 //! driven at once ([`run_routes`]), each a one-lane stand-in env, and its
 //! latency the per-step predict time the routes see.
 
@@ -18,7 +17,7 @@ use crate::binding::routes::{Route, merge_results, run_routes};
 use crate::{RemoteModel, RemoteModelOptions, RunHooks, RunOptions, StepEvent, TelemetryRow};
 
 const BENCH_CHECK_NAMES: &[&str] = &["handshake", "batch_sweep"];
-/// The sweep's batch sizes: the platform's.
+/// The sweep's batch sizes.
 pub const SWEEP_SIZES: [u32; 6] = [1, 2, 4, 8, 16, 32];
 const SWEEP_WARMUP: u32 = 3;
 const SWEEP_ITERATIONS: u32 = 20;

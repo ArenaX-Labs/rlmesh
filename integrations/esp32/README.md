@@ -1,165 +1,121 @@
-# RLMeshESP32
+# RLMesh for ESP32
 
-An ESP32 on Wi-Fi joins an RLMesh session as a robot, with no computer in
-between. The session's protocol and crypto are RLMesh's Rust core
-(`crates/rlmesh-device`), linked into the sketch as a precompiled
-library. This library adds the board's clock and randomness, and its
-network: [zenoh-pico](https://github.com/eclipse-zenoh/zenoh-pico) at the
-version of the host's Zenoh.
+Two servos, Wi-Fi, and a policy on your PC. Install **one Arduino library**,
+include `<RLMesh.h>`, and use the `rlmesh::` C++ API. The library contains
+RLMesh's Rust device runtime and a private copy of
+[zenoh-pico](https://github.com/eclipse-zenoh/zenoh-pico); no second library
+or `-DZENOH_*` flags are needed.
 
-> **Work in progress.** A board waits in its home's lobby, joins the scene
-> runs it is assigned, takes commands and publishes samples, all sealed or
-> signed per part (`examples/Robot`), and latches every member's e-stop.
-> Lockstep and serving history come next.
+## Board quickstart
 
-For a board without a network (a Nano, Uno or UNO R4 on a USB cable), see
-[RLMeshTether](../arduino).
+1. Install Espressif's **esp32** Arduino core 3.3.12. Download the release ZIP
+   for your chip: `RLMesh-esp32.zip` (classic ESP32 / WROOM-32),
+   `RLMesh-esp32s3.zip`, or `RLMesh-esp32c6.zip`. In Arduino IDE, choose
+   **Sketch → Include Library → Add .ZIP Library**. Replace an older RLMesh
+   installation when changing chips.
+2. Open **File → Examples → RLMesh → Robot**. Set the Wi-Fi credentials,
+   select your board and **Minimal SPIFFS** partition scheme, and upload.
+   Connect pan to GPIO 18 and tilt to GPIO 19, adjusting pins for your board.
+   Power the servos separately from the board's 3.3 V supply, with common ground.
+3. Start `rlmesh host` on your PC. With the board running and Serial Monitor
+   closed, provision it once over USB:
 
-## Boards
+   ```sh
+   rlmesh devices provision --port /dev/ttyUSB0 --name eye-3
+   ```
 
-On the Espressif Arduino core 3.x:
+4. The board remembers its device key and home in NVS and joins the host's
+   session with its own key after every reboot. Run your policy on the PC
+   (`Policy.bind()` with no robot drives every eye at once); `Robot` applies
+   pan/tilt targets at 50 Hz.
 
-| Board                                  | Rust toolchain                            |
-| -------------------------------------- | ----------------------------------------- |
-| ESP32-C6 (RISC-V)                      | Upstream stable. CI checks that it builds |
-| Classic ESP32 (ESP32-WROOM-32, Xtensa) | Espressif's fork. Built locally only      |
+[Real-time sessions](../../docs/realtime.md) walks through the whole setup: the host, two eyes, a camera and one policy driving both.
 
-Any other board fails to build. The ESP32-C3 lacks the atomics the core needs. The ESP32-S3 would need its own build.
+Every eye runs the same firmware. USB provisioning assigns its robot name
+(`eye-3`, `eye-4`, …), stored with the home's key, id and addresses in NVS.
+Names are 1–128 bytes of `[A-Za-z0-9._-]`; the whole record must fit 252 bytes.
+Provision again with a new `--name` to rename a board: it keeps its device key,
+and the host moves its pin if the board still owns the old name.
+Old provisioning records are refused: provision again after upgrading.
 
-## Building
+The sketch must run before the first provisioning exchange. Later uploads
+keep NVS unless you explicitly erase all flash. A full erase makes a new device
+key; revoke a lost board with `rlmesh devices revoke`.
 
-The precompiled library isn't checked in. `mise run build:esp32` builds
-it for each board and stages it into `src/`. It needs the `esp32:esp32`
-Arduino core for that core's binutils. It also fetches zenoh-pico and
-assembles it as an Arduino library in `target/zenoh-pico/arduino`, with its
-platform defines passed to the compile (`-DZENOH_ARDUINO_ESP32
--DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11`). The classic ESP32 also needs
-Espressif's Rust toolchain (`espup install`) and a nightly toolchain
-(`rustup toolchain install nightly`); without them it's skipped.
+## Flash layout
 
-```sh
-mise run build:esp32
-```
+Each example includes `partitions.csv` for 4 MB flash: two **1,966,080-byte**
+app slots, 128 KiB SPIFFS, NVS, OTA metadata, and a core-dump partition.
+The spare app slot is retained; this library adds no OTA updater. Select
+**Minimal SPIFFS** so Arduino's size check agrees with the bundled layout.
+Keep `partitions.csv` when copying an example into another sketch folder.
+`build:esp32` prints measured sizes and explains a partition overflow.
 
-It also compiles each example with `arduino-cli` when that's available
-(pass `ARDUINO_CLI` for a binary off `PATH`). The firmware keeps its own
-`memcpy`, `memset` and math in IRAM or ROM. The task fails if the archive
-exports any C name but its own, or if the linked `memcpy` runs from flash.
+## C++ loop
 
-## Joining a session
-
-A board joins its **home**, the `rlmesh daemon` it was provisioned for, as
-its own device. Provision it once over USB, on the daemon's computer, with
-the board running a sketch that answers (`examples/Robot`) and the Serial
-Monitor closed:
-
-```sh
-rlmesh devices provision --port /dev/ttyUSB0 --name eyes
-```
-
-- **The device key:** the board makes it on first boot, after Wi-Fi starts (the RNG needs the radio), and keeps it in NVS.
-- **The exchange:** provisioning reads the public key and checks the name compiled into the sketch, then writes the home's key, id and addresses to NVS (tether spec §14). It enrolls the key with the daemon and pins the robot to it.
-- **Afterwards:** the board waits in its home's lobby, at once and on every boot after. Provisioning again keeps the device; a full flash erase makes a new one.
-
-### Runs
-
-A provisioned board waits in its home's **lobby** until a scene run assigns
-it, then joins the run, declares its parts, and comes back when the run
-ends (scene design §3):
-
-```sh
-rlmesh lobby                       # eyes  (from eyes)
-rlmesh run eyes.toml --arm manual  # r-dtqh: hosting, assigning, declaring, arming
-rlmesh arm r-dtqh
-rlmesh stop r-dtqh                 # eyes: returned
-```
-
-- **In the lobby** the board is attached and heartbeating, and asks for an order every 10 s; it never declares there.
-- **Leaving a run:** when the run closes it detaches and goes back to the lobby. If the run's host loses it (a Wi-Fi drop, a reset), it goes back to the lobby too, and the home sends the same join again, so the run continues once someone arms it again. If another board takes its name, it stays safe and stops until reset.
-- **A run hosted on another machine** (a satellite daemon): the board connects to the run's addresses, in order, and handshakes with the run's own host key; if none answers, the run shows the failure and the board goes back to the lobby at home.
-- **Finding home:** the board tries each stored address in turn, then backs off (1 s doubling to 30 s). While none answers it asks mDNS for `_rlmesh._tcp` and keeps only the daemon whose TXT `id` is the one it was provisioned with; a wrong answer only fails the handshake.
-- **Its map** must be the same on every join: a rejoin with another one is refused.
-- `robot.status()` shows `in_run`, phase 6 while it waits in the lobby, `left` (why it last left a run) and `home_unreachable`.
-- **At rest:** anyone with the board in hand can read its key from flash; revoke the device (`rlmesh devices revoke`) if one goes missing.
-
-For a one-off host instead, run one on the computer's LAN address and put
-the address it prints in `kAddress`:
-
-```sh
-rlmesh host --insecure --listen 192.168.1.20:7447
-```
-
-`--insecure` lets anyone who can reach those ports try the host; the
-handshake and sealing still decide who joins. A host on a LAN address takes
-the board's plain TCP links (a loopback host gates its links with a key
-zenoh-pico can't present).
-
-Put your Wi-Fi and the robot's map in `examples/Robot`, flash it, and open
-the Serial Monitor at 115200:
+After Wi-Fi starts, call `provisioning.begin()` and then
+`robot.begin(provisioning, kMap)`. The stored record supplies the robot name;
+no name is compiled into the provisioned path.
 
 ```cpp
+#include <RLMesh.h>
+
 rlmesh::Robot robot;
-int eyes;
-
-void setup() {
-  WiFi.begin(ssid, password);  // first: the RNG needs the radio on
-  // ... wait for WL_CONNECTED
-  robot.begin(address, "eyes", robotJson);
-  eyes = robot.part("eyes");
-}
-
-void loop() {
-  robot.poll();  // every loop
-  // At the part's control rate:
-  rlmesh_device_tick_t t;
-  if (robot.tick(eyes, t) && t.has_action) {
-    // t.value: the action, in the part's dense command layout
+// After Wi-Fi starts, begin provisioning and the robot as in examples/Robot.
+// Call robot.poll() every loop; at the part's control rate:
+void controlTick(int eyes) {
+  rlmesh_device_tick_t tick;
+  switch (robot.tick(eyes, tick)) {
+    case rlmesh::TickResult::Ready:
+      // tick.has_action: dispatch tick.value in the part's dense layout.
+      // tick.safe: run the declared safe behaviour; Robot declares "hold".
+      // tick.handover: switch control modes, then call handoverDone(eyes).
+      break;
+    case rlmesh::TickResult::Idle:
+    case rlmesh::TickResult::NotReady:
+    case rlmesh::TickResult::InvalidArgument:
+      break;
   }
-  robot.publish(eyes, state);  // its dense sample layout
 }
 ```
 
-- **Joining:**
-  - the board reads the host's signed state;
-  - it runs the handshake with the address's key;
-  - it attaches and declares its parts, sealed;
-  - it takes the keys the host delivers.
+`publish()` returns `RLMESH_DEVICE_ERR_NOT_READY` until the robot runs and its
+stream key arrives. `robot.status()` reports the phase, fault, mode, accepted
+chunks, and heartbeat echoes. `examples/Timing` measures the crypto costs
+on the board; build sizes and a host test do not establish real-board timing.
 
-  `robot.status()` says where it is, and why it last started over.
+An optional normally closed e-stop button in `Robot` latches the board's
+stop. The example clears it only after BOOT is held for two seconds with
+the e-stop released. Disarm and arm the session before driving again.
+A controller's e-stop also reaches the board through the session transport.
 
-- **Commands:** `tick()` is the edge of session-core, as on any robot: an action under the lease, a hold, or the part's declared safe behaviour (`t.safe`) when the lease, the host or the commands lapse. It tells the host when it goes safe on its own account, and publishes what it applied.
-- **Samples:** `publish()` returns `RLMESH_DEVICE_ERR_NOT_READY` until the robot runs and its stream key has arrived.
-- **E-stop:** the board latches every member's e-stop signal at once, with or without the host. `robot.estop()` latches its own (an e-stop pin: `kEstopPin` in the example). Only `robot.clearEstop()`, a local action with the button released (the example: hold BOOT for 2 s), clears it; the host then stays in ESTOP until disarmed and armed. A latch carries into the board's next session.
-- **Starting over:** any failure (no reply, a refusal, nothing from the host for 5 s) starts over from the handshake after a second.
-- **The address's key is a secret.** Anyone holding it can join the session.
-- **Ports:** the host listens on four consecutive ports, one per traffic class. The board opens a session to each one it uses (control, and its parts' classes), when it first uses it.
+The board tries its stored home addresses in order, authenticating the host
+by the key it was provisioned with. Four consecutive TCP ports from the
+host's base port must be reachable.
 
-The Rust side of this (`crates/rlmesh-device`'s `robot`) is tested against
-a real host. `mise run test:esp32:host` runs this library's transport
-(`src/rlmesh_zenoh.c`) on Linux against `rlmesh host`, as the board runs
-it.
+## Building and verifying from source
 
-## Timing
+```sh
+mise run setup:esp32
+mise run dev:heavy -- mise exec arduino-cli@1.5.1 -- mise run build:esp32
+mise run dev:heavy -- mise run test:esp32:host
+```
 
-`examples/Timing` prints the mean cost of each operation a robot runs:
+`setup:esp32` installs pinned Arduino CLI, the Arduino core, Espressif's Rust
+fork, and nightly Cargo. The C6 uses upstream Rust; classic ESP32 and S3 use
+Espressif's Xtensa targets. Without the fork, local builds explicitly skip
+Xtensa; CI and releases set `RLMESH_ESP32_REQUIRE_XTENSA=1` to fail instead.
+Other chips are unsupported; the C3 lacks the atomics the runtime needs.
 
-| Operation                               | When                  |
-| --------------------------------------- | --------------------- |
-| Handshake msg 1 and msg 2               | Each attach           |
-| Verify a signed authority state (1 KiB) | Each authority change |
-| Open a chunk (256 B), signed or sealed  | Each chunk            |
-| Seal a sample (64 B), signed            | Each sample           |
+Pass `ARDUINO_CLI=/path/to/arduino-cli` if the binary is off PATH, and
+`ESP_EXPORT=/path/to/export-esp.sh` for a nonstandard toolchain installation.
+The task stages archives in `src/<chip>/`, compiles both examples without
+transport flags, and writes installable ZIPs in `target/esp32/dist/`.
+It checks that private transport symbols are local and firmware `memcpy`
+comes from ESP-IDF's IRAM or ROM. ZIPs include zenoh-pico's license and notice.
 
-It then sums one 100 Hz control tick (a chunk and a sample) as a share of
-a core. Flash it, and open the Serial Monitor at 115200.
-
-## Notes
-
-- **Randomness.** The ESP32's hardware RNG is cryptographic only with the
-  radio on. Start Wi-Fi before anything draws keys.
-- **Flash.** `examples/Robot` is about 1.5 MB (1.6 MB on the C6), past the
-  default app partition. Choose a larger one (Tools → Partition Scheme,
-  "Huge APP"). The crypto alone adds about 205 KB to a Wi-Fi sketch (189 KB
-  on the C6).
-- **Panics.** A fault in the Rust core calls `abort()`, so the board
-  restarts, which stops its PWM outputs.
+`test:esp32:host` compiles the same C transport on Linux. A real loopback
+session host and controller send two distinct action targets; the board loop
+asserts their values, applies them, and publishes them back for the controller
+to verify. It also checks joining, heartbeat echoes, and transport failures.
+No hardware is needed. For a board without Wi-Fi, see [RLMeshTether](../arduino).

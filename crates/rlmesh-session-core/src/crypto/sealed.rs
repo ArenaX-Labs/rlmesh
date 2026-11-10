@@ -1,4 +1,4 @@
-//! The `Sealed` envelope (§8.2): a 15-byte header, the body (encrypted or
+//! The `Sealed` envelope: a 15-byte header, the body (encrypted or
 //! not) and a Poly1305 tag, under ChaCha20-Poly1305.
 //!
 //! | Offset | Size | Field |
@@ -42,7 +42,7 @@ pub const OVERHEAD: usize = HEADER_LEN + TAG_LEN;
 /// `flags` bit 0: the body is encrypted.
 pub const FLAG_ENCRYPTED: u8 = 1;
 
-/// What a `Sealed` carries (§8.2). Unknown kinds are rejected.
+/// What a `Sealed` carries. Unknown kinds are rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Kind {
@@ -72,17 +72,15 @@ pub enum Kind {
     LockstepReply = 12,
     /// An e-stop signal.
     EstopSignal = 13,
-    /// A host session stream entry.
-    HostSessionStream = 14,
     /// A history query.
     HistoryQuery = 15,
-    /// Pairing: `PairCommit` (§3).
+    /// Pairing: `PairCommit`.
     PairCommit = 16,
-    /// Pairing: `PairNonce` (§3).
+    /// Pairing: `PairNonce`.
     PairNonce = 17,
-    /// Pairing: `PairReveal` (§3).
+    /// Pairing: `PairReveal`.
     PairReveal = 18,
-    /// Pairing: `PairWait` and its `PairResult` reply (§3).
+    /// Pairing: `PairWait` and its `PairResult` reply.
     PairWait = 19,
 }
 
@@ -97,7 +95,7 @@ pub enum Protection {
     Configured,
 }
 
-/// The level of a key's configured kinds (`Key.security`, §8.2, §8.5):
+/// The level of a key's configured kinds (`Key.security`):
 /// `sign` (integrity only) or `seal` (encrypted). The level is per key: the
 /// host issues `Seal` when any part the key's scope covers is `seal`, and
 /// `Sign` otherwise. So a `k_cmd` or `k_obs` for a lease mixing `sign` and
@@ -106,8 +104,9 @@ pub enum Protection {
 /// (their kinds are always encrypted anyway).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Security {
-    /// Integrity only.
-    Sign,
+    /// Integrity only: a MAC under the key, so every holder of the key (a
+    /// stream's readers too) can make one. Not a per-sender signature.
+    Mac,
     /// Encrypted.
     Seal,
 }
@@ -130,7 +129,6 @@ impl Kind {
             11 => LockstepRequest,
             12 => LockstepReply,
             13 => EstopSignal,
-            14 => HostSessionStream,
             15 => HistoryQuery,
             16 => PairCommit,
             17 => PairNonce,
@@ -147,7 +145,7 @@ impl Kind {
 
     /// The kind's level: kinds under `k_up`/`k_down` (1–6, 10, 15) and
     /// pairing (16–19) are always encrypted, e-stop signals (13) never, and
-    /// 7, 8, 9, 11, 12 and 14 follow their key's [`Security`].
+    /// 7, 8, 9, 11 and 12 follow their key's [`Security`]. 14 is unassigned.
     pub fn protection(self) -> Protection {
         use Kind::*;
         match self {
@@ -156,8 +154,9 @@ impl Kind {
                 Protection::Encrypted
             }
             EstopSignal => Protection::IntegrityOnly,
-            ActionChunk | Sample | Applied | LockstepRequest | LockstepReply
-            | HostSessionStream => Protection::Configured,
+            ActionChunk | Sample | Applied | LockstepRequest | LockstepReply => {
+                Protection::Configured
+            }
         }
     }
 
@@ -177,7 +176,7 @@ impl Kind {
 
 const KINDS: usize = 19;
 
-/// The kinds a key may carry (its purpose and scope, §8.5). A message of
+/// The kinds a key may carry (its purpose and scope). A message of
 /// any other kind under that key is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KindSet(u32);
@@ -380,7 +379,7 @@ pub enum OpenError {
 }
 
 /// The sending side of one key: a dense `seq` counter per kind, from 1.
-/// One sender per key (§8.2); callers sharing it across tasks hold one lock
+/// One sender per key; callers sharing it across tasks hold one lock
 /// per (key, kind) across sealing and enqueuing.
 pub struct SealSender {
     aead: ChaCha20Poly1305,
@@ -723,7 +722,7 @@ mod tests {
 
     #[test]
     fn round_trips_at_each_level() {
-        let (mut tx, mut rx) = pair(Security::Sign);
+        let (mut tx, mut rx) = pair(Security::Mac);
         let mut msg = tx.seal(Kind::CtlRequest, KEYEXPR, b"attach").unwrap();
         assert_eq!(msg.len(), OVERHEAD + 6);
         assert_ne!(
@@ -772,7 +771,7 @@ mod tests {
 
     #[test]
     fn counters_are_dense_per_kind() {
-        let (mut tx, _) = pair(Security::Sign);
+        let (mut tx, _) = pair(Security::Mac);
         let seqs: Vec<u64> = [Kind::Sample, Kind::Sample, Kind::Applied, Kind::Sample]
             .into_iter()
             .map(|k| {
@@ -837,17 +836,16 @@ mod tests {
         // A sender holding the key at `sign` while receivers expect `seal`
         // (or a flag flipped on the wire): never lowered silently.
         let key = || Key::from_bytes([7; 32]);
-        let mut sign = SealSender::new(1, key(), KindSet::ALL, Security::Sign);
+        let mut sign = SealSender::new(1, key(), KindSet::ALL, Security::Mac);
         let mut seal = SealSender::new(1, key(), KindSet::ALL, Security::Seal);
         let mut want_seal = SealReceiver::new(1, key(), KindSet::ALL, Security::Seal);
-        let mut want_sign = SealReceiver::new(1, key(), KindSet::ALL, Security::Sign);
+        let mut want_sign = SealReceiver::new(1, key(), KindSet::ALL, Security::Mac);
         for kind in [
             Kind::ActionChunk,
             Kind::Sample,
             Kind::Applied,
             Kind::LockstepRequest,
             Kind::LockstepReply,
-            Kind::HostSessionStream,
         ] {
             let mut clear = sign.seal(kind, KEYEXPR, b"x").unwrap();
             assert_eq!(
@@ -870,12 +868,12 @@ mod tests {
             tx.seal(Kind::CtlRequest, KEYEXPR, b"x"),
             Err(SealError::WrongKind(Kind::CtlRequest))
         );
-        let mut any = SealSender::new(1, key(), KindSet::ALL, Security::Sign);
+        let mut any = SealSender::new(1, key(), KindSet::ALL, Security::Mac);
         let mut rx = SealReceiver::new(
             1,
             key(),
             KindSet::of(&[Kind::Sample, Kind::Applied]),
-            Security::Sign,
+            Security::Mac,
         );
         let mut msg = any.seal(Kind::ActionChunk, KEYEXPR, b"x").unwrap();
         assert_eq!(
@@ -893,7 +891,7 @@ mod tests {
 
     #[test]
     fn rejects_the_wrong_key() {
-        for security in [Security::Sign, Security::Seal] {
+        for security in [Security::Mac, Security::Seal] {
             let mut tx = SealSender::new(42, Key::from_bytes([7; 32]), KindSet::ALL, security);
             let mut rx = SealReceiver::new(42, Key::from_bytes([8; 32]), KindSet::ALL, security);
             let mut msg = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
@@ -906,7 +904,7 @@ mod tests {
 
     #[test]
     fn rejects_the_wrong_key_expression() {
-        for security in [Security::Sign, Security::Seal] {
+        for security in [Security::Mac, Security::Seal] {
             let (mut tx, mut rx) = pair(security);
             let msg = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
             for other in [
@@ -928,9 +926,9 @@ mod tests {
     #[test]
     fn rejects_any_tampered_byte() {
         for (kind, security) in [
-            (Kind::Sample, Security::Sign),
+            (Kind::Sample, Security::Mac),
             (Kind::Sample, Security::Seal),
-            (Kind::CtlReply, Security::Sign),
+            (Kind::CtlReply, Security::Mac),
         ] {
             let (mut tx, mut rx) = pair(security);
             let msg = tx.seal(kind, KEYEXPR, b"body!").unwrap();
@@ -965,7 +963,7 @@ mod tests {
 
     #[test]
     fn rejects_replays() {
-        let (mut tx, mut rx) = pair(Security::Sign);
+        let (mut tx, mut rx) = pair(Security::Mac);
         let msgs: Vec<Vec<u8>> = (0..70)
             .map(|_| tx.seal(Kind::Sample, KEYEXPR, b"s").unwrap())
             .collect();
@@ -990,7 +988,7 @@ mod tests {
 
     #[test]
     fn a_forgery_does_not_move_the_window() {
-        let (mut tx, mut rx) = pair(Security::Sign);
+        let (mut tx, mut rx) = pair(Security::Mac);
         let mut far = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
         far[7..15].copy_from_slice(&1000u64.to_le_bytes());
         assert_eq!(rx.open(KEYEXPR, &mut far), Err(OpenError::Auth));
@@ -1000,7 +998,7 @@ mod tests {
 
     #[test]
     fn seq_exhaustion_stops_the_flow() {
-        let (mut tx, mut rx) = pair(Security::Sign);
+        let (mut tx, mut rx) = pair(Security::Mac);
         tx.set_next(Kind::Sample, u64::MAX);
         let mut last = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
         assert_eq!(Header::parse(&last).unwrap().seq, u64::MAX);

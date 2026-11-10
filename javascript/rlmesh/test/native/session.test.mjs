@@ -1,11 +1,12 @@
 // The native binding on loopback: a Node robot and Node policies in one session, the twin of
-// python/rlmesh/tests/integration/test_v2_session.py. The robot is the §14.1 UR10e (the conformance
+// python/rlmesh/tests/integration/test_v2_session.py. The robot is the UR10e (the conformance
 // fixture), faked: its control loop publishes joints, wrench, gripper and two cameras, and applies
 // whatever its edge says is due. The policies bind to it by kind and path, lease its parts and
 // stream timed chunks. Needs dist/node.js and the addon (`mise run test:js:native`).
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -67,7 +68,7 @@ function skipped(policy) {
 const hold = (target, horizon = 10) => ({ arm: { data: new Float32Array(horizon * 6).fill(target), shape: [horizon, 6] } });
 const first = (due) => due.value.data[0];
 
-/** The §14.1 UR10e without physics: commanded joints become measured ones. */
+/** The UR10e without physics: commanded joints become measured ones. */
 class FakeUR10e {
   q = HOME.slice();
   gripper = 1;
@@ -273,7 +274,7 @@ test('a recorder writes the session to MCAP and reads it back', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rlmesh-record-'));
   try {
     const path = join(dir, 'session.mcap');
-    const recorder = await rlmesh.Recorder.start(path, { session: host });
+    const recorder = await rlmesh.SessionRecorder.start(path, { session: host });
     {
       await using ur = await FakeUR10e.start(host);
       await using model = new rlmesh.Policy(HOLD, { session: host, name: 'model' });
@@ -303,6 +304,74 @@ test('a recorder writes the session to MCAP and reads it back', async () => {
     const arm = summary.leases.filter((l) => l.part === 'ur10e/arm');
     assert.equal(arm[0].holder, 'model');
     assert.equal(arm[0].priority, 'model');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a camera publishes frames it already encoded', async () => {
+  // A 16x8 JPEG, as a webcam in MJPEG mode hands it out.
+  const frame = Buffer.from(
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAAIABADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDHooorhPqD/9k=',
+    'base64',
+  );
+  const dir = mkdtempSync(join(tmpdir(), 'rlmesh-jpeg-'));
+  try {
+    const path = join(dir, 'jpeg.mcap');
+    const recorder = await rlmesh.SessionRecorder.start(path, { session: host });
+    {
+      await using camera = await rlmesh.Robot.connect(
+        'webcam',
+        { cam: { kind: 'camera', width: 16, height: 8, hz: 20, encoding: 'jpeg' } },
+        { session: host },
+      );
+      for (let i = 0; i < 10; i++) {
+        camera.publishJpeg('cam', frame);
+        await sleep(60);
+      }
+      assert.throws(() => camera.publishJpeg('cam', Buffer.from('not a jpeg')), /not a JPEG/);
+    }
+    await recorder.close();
+    const topics = Object.fromEntries((await rlmesh.readRecording(path)).topics.map((t) => [t.topic, t]));
+    assert.ok(topics['/webcam/cam']?.messages > 0);
+    assert.equal(topics['/webcam/cam'].undecodable, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a policy publishes annotations under its name and never binds them', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rlmesh-annotate-'));
+  try {
+    const path = join(dir, 'tracked.mcap');
+    const recorder = await rlmesh.SessionRecorder.start(path, { session: host });
+    {
+      await using eye = await rlmesh.Robot.connect(
+        'eye-1',
+        { eyes: { kind: 'joints', names: ['pan', 'tilt'], fields: ['pos'], hz: 200, command: 'position' } },
+        { session: host },
+      );
+      await using tracker = new rlmesh.Policy(
+        { hz: 25, actions: { gaze: { kind: 'joints', at: 'eyes', command: 'position', hz: 50 } } },
+        { session: host, name: 'tracker', publishes: { target: { kind: 'x/target', hz: 25, fields: { xy: ['float32', [2]] } } } },
+      );
+      // One robot besides the tracker's own parts: bound with no robot named, the eye alone.
+      const binding = await tracker.bind();
+      assert.match(binding.toString(), /binding tracker on eye-1/);
+      assert.throws(() => tracker.publish('boxes', Float32Array.of(0, 0)), /no part 'boxes'/);
+      // For half a second: the recorder subscribes to a new part once it sees it.
+      for (let i = 0; i < 25; i++) {
+        tracker.publish('target', Float32Array.of(0.01 * i, 0.5));
+        await sleep(20);
+      }
+      void eye;
+    }
+    await recorder.close();
+    const summary = await rlmesh.readRecording(path);
+    const target = summary.topics.find((t) => t.topic === '/tracker/target');
+    assert.ok(target, summary.topics.map((t) => t.topic).join(', '));
+    assert.ok(target.messages >= 1);
+    assert.equal(target.undecodable, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -378,7 +447,7 @@ async function freeBase() {
   throw new Error('no four free ports');
 }
 
-/** An rlmeshd on loopback, whose `local.key` this process attaches with (Python's `rlmesh daemon`). */
+/** A host with its lobby on loopback, whose `local.key` this process attaches with (`rlmesh host --lobby`). */
 async function startDaemon() {
   const { spawn } = await import('node:child_process');
   // Short: its local channel is a Unix socket in there.
@@ -386,14 +455,14 @@ async function startDaemon() {
   process.env.RLMESH_STATE_DIR = state;
   const base = await freeBase();
   const repo = new URL('../../../../', import.meta.url).pathname;
-  const proc = spawn('uv', ['run', '--no-sync', 'python', '-m', 'rlmesh', 'daemon', '--listen', `127.0.0.1:${base}`], {
+  const proc = spawn('uv', ['run', '--no-sync', 'python', '-m', 'rlmesh', 'host', '--lobby', '--no-record', '--listen', `127.0.0.1:${base}`], {
     cwd: repo,
     env: process.env,
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise((resolve, reject) => {
-    proc.stdout.once('data', (line) => (String(line).includes('rlmeshd on') ? resolve() : reject(new Error(String(line)))));
-    proc.once('exit', (code) => reject(new Error(`rlmeshd exited with ${code}`)));
+    proc.stdout.once('data', (line) => (String(line).includes('rlmesh host on') ? resolve() : reject(new Error(String(line)))));
+    proc.once('exit', (code) => reject(new Error(`rlmesh host exited with ${code}`)));
   });
   return {
     home: `127.0.0.1:${base}`,
@@ -406,7 +475,11 @@ async function startDaemon() {
   };
 }
 
-test('a scene runs a lobby robot and a Node policy on one machine', async () => {
+// The lobby and scenes are unreleased (`fleet`): only an addon built with it runs this.
+const fleetAddon = typeof createRequire(import.meta.url)(
+  process.env.RLMESH_NATIVE ?? `../../dist/rlmesh.${process.platform}-${process.arch}.node`,
+).runScene === 'function';
+test('a scene runs a lobby robot and a Node policy on one machine', { skip: !fleetAddon && 'needs an addon built with fleet' }, async () => {
   await using daemon = await startDaemon();
   const dir = mkdtempSync(join(tmpdir(), 'rlmesh-scene-'));
   const path = join(dir, 'bench.toml');

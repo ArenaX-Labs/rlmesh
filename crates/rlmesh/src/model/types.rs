@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rlmesh_grpc::wire::Bytes;
+use bytes::Bytes;
 
 use crate::binding::spaces;
 use crate::{Error, Result};
@@ -193,8 +193,8 @@ impl ModelObservation {
             .observation_space
             .as_ref()
             .ok_or_else(|| Error::model("env contract missing observation space"))?;
-        let value = rlmesh_grpc::wire::leaves_value(leaves.to_vec());
-        rlmesh_grpc::wire::decode_batched_partial_values(Some(&value), space, rows)
+        let value = crate::data::leaves_value(leaves.to_vec());
+        crate::data::decode_batched_partial_values(Some(&value), space, rows)
             .map_err(|err| Error::model(err.to_string()))
     }
 
@@ -251,7 +251,7 @@ mod tests {
     /// A `ModelObservation` carrying `values` encoded against `obs_space()`.
     fn observation(values: &[SpaceValue]) -> ModelObservation {
         let space = obs_space();
-        let wire = rlmesh_grpc::wire::encode_batched_partial_values(values, &space).unwrap();
+        let wire = crate::data::encode_batched_partial_values(values, &space).unwrap();
         let contract = spaces::EnvContract {
             id: "T".into(),
             action_space: None,

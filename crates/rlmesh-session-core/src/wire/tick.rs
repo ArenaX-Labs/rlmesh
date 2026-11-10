@@ -1,4 +1,4 @@
-//! The virtual-mode tick protocol (§11.3): what the host publishes on
+//! The virtual-mode tick protocol: what the host publishes on
 //! `host/tick`. Embodiments answer with [`Command::Ready`], due controllers
 //! with [`Command::Decided`].
 //!
@@ -64,8 +64,7 @@ impl VirtualTick {
     }
 
     /// Where it falls in the host's order: (epoch, tick, phase), observe
-    /// before step. A receiver drops a tick at or below the last it took
-    /// (§8.7).
+    /// before step. A receiver drops a tick at or below the last it took.
     pub fn order(&self) -> (Epoch, u64, u8) {
         let phase = match self {
             Self::Observe(_) => 0,

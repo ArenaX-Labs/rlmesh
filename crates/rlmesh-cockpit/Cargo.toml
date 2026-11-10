@@ -12,8 +12,9 @@ readme = "README.md"
 license = { workspace = true }
 categories = { workspace = true }
 keywords = { workspace = true }
-# Not released until the v0.2 wire spec freezes.
-publish = false
+# Published as an internal crate: `rlmesh cockpit` (rlmesh-cli's `cockpit`
+# feature) links it.
+publish = true
 
 [[bin]]
 name = "rlmesh-cockpit"
@@ -40,6 +41,10 @@ zenoh = { workspace = true }
 bytes = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu"] }
 image = { workspace = true, features = ["png"] }
+
+[features]
+# Unreleased: episode collection into a dataset from the live bar.
+collect = []
 
 [lints]
 workspace = true

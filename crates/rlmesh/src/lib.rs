@@ -1,8 +1,7 @@
 //! Rust SDK for RLMesh model-environment evaluation workflows.
 //!
 //! RLMesh connects a model to an environment over a session: participant
-//! addresses such as `:0/env` (the `lockstep` feature), or `tcp://` and
-//! `unix://` addresses on the v1 gRPC bridge. This crate is the Rust facade
+//! addresses such as `:0/env`. This crate is the Rust facade
 //! over the transport, wire, and runtime crates. RLMesh uses
 //! the same nouns and constructs in every language, following each
 //! language's conventions. Use this crate to serve or drive environments
@@ -19,7 +18,7 @@
 //!
 //! - **Run a model against an env.** [`Model::run`] (or [`run`]) drives
 //!   episodes on the native loop and returns a [`RunResult`]; [`RunHooks`]
-//!   observe it. `Model::bind` (with the `lockstep` feature) binds it to
+//!   observe it. `Model::bind` binds it to
 //!   one env to step by hand.
 //!
 //! Use [`RemoteEnv`] when you want to step an environment server directly.
@@ -91,7 +90,7 @@
 //! };
 //! let server = EnvServer::new(
 //!     env,
-//!     EnvServerOptions { address: Some("tcp://127.0.0.1:0".into()), ..Default::default() },
+//!     EnvServerOptions { address: Some(":0/env".into()), ..Default::default() },
 //! )?;
 //! println!("listening on {}", server.address());
 //! server.serve()
@@ -121,7 +120,7 @@
 //!
 //! # fn run() -> rlmesh::Result<()> {
 //! let model = Model::new(Counter, ModelOptions::default())?;
-//! model.serve("tcp://127.0.0.1:50051", ModelServeOptions::default())?;
+//! model.serve(":50051/model", ModelServeOptions::default())?;
 //! // A closure is a policy too.
 //! let greedy = Model::new(|_observation: Value| Ok(Value::Int(0)), ModelOptions::default())?;
 //! # drop(greedy);
@@ -135,21 +134,20 @@ pub mod adapters;
 mod address;
 #[doc(hidden)]
 pub mod binding;
-mod bound;
 mod build_info;
-mod credentials;
+mod data;
 mod describe;
 mod dlpack;
-#[cfg(feature = "lockstep")]
 mod doctor;
 mod dtype;
 mod editions;
 pub mod env;
 mod error;
 pub mod ext;
+mod floor;
+mod lifecycle;
 /// The v2 session protocol engine the bindings drive (R-25 binding
 /// plumbing, like [`binding`]): hidden and semver-exempt.
-#[cfg(feature = "lockstep")]
 #[doc(hidden)]
 pub mod lockstep;
 #[cfg(feature = "managed")]
@@ -172,7 +170,7 @@ mod view;
 pub mod viewer;
 mod warnings;
 
-pub(crate) use address::{BindAddress, ConnectAddress};
+pub(crate) use address::ConnectAddress;
 pub use build_info::{BuildInfo, BuildSource, VERSION, build_info};
 pub use describe::{
     Describable, DescribeJsonOptions, DescribeKind, DescribeOptions, describe, describe_json,
@@ -190,8 +188,8 @@ pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VE
 pub use crate::run::runtime::ENV_RESET_OPTIONS_KEY;
 pub use env::{
     Env, EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, EnvServer, EnvServerOptions, MadeEnv,
-    RemoteEnv, RemoteEnvOptions, RemoteVectorEnv, ServedEnv, TagParam, Transport, Variant,
-    VariantOptions, VectorEnv, VectorSeed, trial_index,
+    RemoteEnv, RemoteEnvOptions, RemoteVectorEnv, ServedEnv, TagParam, Variant, VariantOptions,
+    VectorEnv, VectorSeed, trial_index,
 };
 pub use error::{
     EnvironmentError, Error, ErrorClass, ErrorCode, InvalidArgumentError, ModelError,
@@ -210,7 +208,6 @@ pub use run::{
     ReadFn, ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult,
     RunResultSaveOptions, StepEvent, TelemetryRow, run, run_async,
 };
-#[cfg(feature = "lockstep")]
 pub use run::{Binding, bind};
 pub use serve_options::{BatchOptions, ServeOptions};
 pub use specs::EnvContract;

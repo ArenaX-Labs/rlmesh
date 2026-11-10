@@ -1,4 +1,4 @@
-//! Clock domains and NTP-style offset estimation (design §3.1-3.2).
+//! Clock domains and NTP-style offset estimation.
 //!
 //! Every participant stamps with its own monotonic clock. In wall mode the
 //! session clock is the host's monotonic clock, and the host keeps, per

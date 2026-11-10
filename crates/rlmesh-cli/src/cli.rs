@@ -12,6 +12,14 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// `rlmesh cockpit` in a build without the window.
+#[cfg(not(feature = "cockpit"))]
+#[derive(Args, Debug)]
+pub struct NoCockpitArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+    pub args: Vec<String>,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Print RLMesh CLI version and distribution details
@@ -37,42 +45,41 @@ pub enum Command {
     /// Check an env or model class for packaging and contract mistakes before
     /// building its image (runs the Python describe; exits 1 on a failure).
     Check(CheckArgs),
-    /// Check a built image's config the way the platform's admission will,
+    /// Check a built image's config for packaging and contract mistakes,
     /// before pushing (docker image inspect; exits 1 on a failure).
     CheckImage(CheckImageArgs),
     /// Print a class's describe envelope, or its `dev.rlmesh.describe` label
     /// for a custom-entrypoint image build.
     Describe(DescribeArgs),
-    /// Host v2 sessions on this machine until Ctrl-C: the default session,
-    /// and any other a participant names. Prints the address it listens on.
+    /// Host real-time sessions on this machine until Ctrl-C (also installed
+    /// as `rlmeshd`, to run as a service): on the LAN, under a host identity
+    /// kept in its state directory, admitting the devices of its device
+    /// table.
     Host(HostArgs),
-    /// Run rlmeshd in the foreground (also installed as `rlmeshd`): v2
-    /// sessions on the LAN under this machine's host identity, admitting the
-    /// devices of its device table.
-    Daemon(DaemonArgs),
+    /// Open the cockpit on a live session (`rlmesh cockpit ADDRESS`) or a
+    /// recording (`--replay FILE`): live channels, rates, why each robot is
+    /// or isn't moving, the timeline, and arm and e-stop.
+    #[cfg(feature = "cockpit")]
+    Cockpit(Box<rlmesh_cockpit::CockpitArgs>),
+    /// Open the cockpit (not in this build: install `rlmesh` on a desktop
+    /// machine).
+    #[cfg(not(feature = "cockpit"))]
+    Cockpit(NoCockpitArgs),
     /// List and change the devices and robot pins of this machine's
     /// rlmeshd, and provision boards over USB; it applies a change at once.
     #[command(visible_alias = "device")]
     Devices(DevicesArgs),
-    /// Check scene files against this machine's rlmeshd: its devices and
-    /// robot pins.
+    /// Check, run, stop and arm scenes on their robots' home rlmeshd.
+    #[cfg(feature = "fleet")]
     Scene(SceneArgs),
-    /// Run a scene on its robots' home rlmeshd and follow its stages until
-    /// it ends; Ctrl-C stops it.
-    Run(RunArgs),
     /// List the robots waiting in the home rlmeshd's lobby.
+    #[cfg(feature = "fleet")]
     Lobby(HomeArgs),
-    /// Stop a run.
-    Stop(RunIdArgs),
-    /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
-    /// lost member rejoined).
-    Arm(RunIdArgs),
     /// Pair this machine with a robot's rlmeshd (shows a code to type on
     /// the robot), or, on the robot, approve a machine by its code.
     Pair(PairArgs),
-    /// Run an env or model image and check it the way the platform's probe
-    /// does: handshake, describe, conformance, reproducibility, and an env's
-    /// preview clip (exits 1 on a failed check).
+    /// Run an env or model image and check its handshake, describe,
+    /// conformance, reproducibility, and preview clip (exits 1 on a failed check).
     Doctor(DoctorArgs),
     /// Run a model image and sweep how many concurrent sessions it serves,
     /// recommending `max_batch_size` (exits 1 when no size runs).
@@ -416,7 +423,7 @@ pub struct ProbeImageArgs {
     /// Seconds the image gets to start serving and to answer each call.
     #[arg(long, value_name = "SECONDS", default_value_t = 120)]
     pub timeout: u64,
-    /// Print the report as JSON, in the platform's `probe-report.json` shape.
+    /// Print the report as JSON, in the `probe-report.json` shape.
     #[arg(long)]
     pub json: bool,
 }
@@ -462,8 +469,14 @@ pub struct BenchArgs {
 /// Flags for `rlmesh host`.
 #[derive(Args, Debug)]
 pub struct HostArgs {
-    /// Listen here (this port and the next three) instead of 127.0.0.1 on
-    /// the well-known port (`RLMESH_PORT`, else 7447). Port 0: OS-assigned.
+    /// Keep the host's keys and device table here (default: `rlmesh/daemon`
+    /// in the user state directory). They are made on first start and
+    /// kept, so boards provisioned for this host stay valid across restarts.
+    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
+    pub state_dir: Option<std::path::PathBuf>,
+    /// Listen here (this port and the next three) instead of every
+    /// interface on the well-known port (`RLMESH_PORT`, else 7447). Only the
+    /// devices in `devices.toml` (and this user, `local`) can attach.
     #[arg(long, value_name = "ADDR")]
     pub listen: Option<std::net::SocketAddr>,
     /// Record every session here, always on: the newest 30 minutes or
@@ -474,24 +487,119 @@ pub struct HostArgs {
     /// Do not record.
     #[arg(long, conflicts_with = "record_dir")]
     pub no_record: bool,
-    /// Listen beyond loopback anyway (`--listen 0.0.0.0:…`): anyone who can
-    /// reach it can try this host. Sessions for other machines are
-    /// rlmeshd's.
+    /// How much of each session to keep recorded (`30m`, `2h`; default
+    /// 30m): older segments go.
+    #[arg(long, value_name = "SPAN", value_parser = span, conflicts_with = "no_record")]
+    pub record_keep: Option<std::time::Duration>,
+    /// How much disk the rolling recordings may use in all (`20GB`,
+    /// `500MB`; default 20GB): the oldest segments go first.
+    #[arg(long, value_name = "SIZE", value_parser = size, conflicts_with = "no_record")]
+    pub record_max_size: Option<u64>,
+    /// Pause recording while the disk has less free than this (default
+    /// 2GB).
+    #[arg(long, value_name = "SIZE", value_parser = size, conflicts_with = "no_record")]
+    pub record_min_free: Option<u64>,
+    /// How long kept incidents stay (`14d`, `48h`; default 14d).
+    #[arg(long, value_name = "SPAN", value_parser = span, conflicts_with = "no_record")]
+    pub incidents_keep: Option<std::time::Duration>,
+    /// How much disk kept incidents may use in all (default 10GB): the
+    /// oldest go first.
+    #[arg(long, value_name = "SIZE", value_parser = size, conflicts_with = "no_record")]
+    pub incidents_max_size: Option<u64>,
+    /// How long a participant's heartbeats may stop before it is lost
+    /// (`3s`, `1500ms`; default 1 s). Raise it for robots on Wi-Fi.
+    #[arg(long, value_name = "DURATION", value_parser = duration)]
+    pub presence_grace: Option<std::time::Duration>,
+    /// How long a lease holder's heartbeats may stop before its leases lapse
+    /// (default 250 ms).
+    #[arg(long, value_name = "DURATION", value_parser = duration)]
+    pub lease_grace: Option<std::time::Duration>,
+    /// A robot that went safe, restarted or came back from a loss is driven
+    /// again at once, instead of waiting for the next arm. Other robots
+    /// never stop for one either way.
     #[arg(long)]
-    pub insecure: bool,
+    pub rearm_robots: bool,
+    /// Only authenticate parts' samples and chunks (a MAC every reader of a
+    /// part can make) instead of encrypting them. Beyond loopback a host
+    /// seals (encrypts) every part by default; on loopback it MACs.
+    #[arg(long)]
+    pub no_seal: bool,
+    /// Host at most this many sessions: the default one and those its
+    /// participants name. A session no participant attaches to within 10 s
+    /// stops.
+    #[arg(long, value_name = "N", default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_sessions: u32,
+    /// Also host the lobby and run scenes (unreleased).
+    #[cfg(feature = "fleet")]
+    #[arg(long)]
+    pub lobby: bool,
 }
 
-/// Flags for `rlmesh daemon`.
-#[derive(Args, Debug)]
-pub struct DaemonArgs {
-    /// Keep the host's keys and device table here (default: `rlmesh/daemon`
-    /// in the user state directory).
-    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
-    pub state_dir: Option<std::path::PathBuf>,
-    /// Listen here (this port and the next three) instead of every
-    /// interface on the well-known port (`RLMESH_PORT`, else 7447).
-    #[arg(long, value_name = "ADDR")]
-    pub listen: Option<std::net::SocketAddr>,
+/// A duration flag: a number with `ms` or `s` (`250ms`, `1.5s`).
+fn duration(text: &str) -> Result<std::time::Duration, String> {
+    let (number, scale) = if let Some(ms) = text.strip_suffix("ms") {
+        (ms, 1e-3)
+    } else if let Some(s) = text.strip_suffix('s') {
+        (s, 1.0)
+    } else {
+        return Err(format!("{text:?}: a duration with its unit, 250ms or 1.5s"));
+    };
+    let value: f64 = number
+        .trim()
+        .parse()
+        .map_err(|_| format!("{text:?}: a duration with its unit, 250ms or 1.5s"))?;
+    if !value.is_finite() || value <= 0.0 || value * scale > 3600.0 {
+        return Err(format!("{text:?}: between 1ms and 1 hour"));
+    }
+    Ok(std::time::Duration::from_secs_f64(value * scale))
+}
+
+/// A span flag: a number with `s`, `m`, `h` or `d` (`30m`, `14d`).
+fn span(text: &str) -> Result<std::time::Duration, String> {
+    let wrong = || format!("{text:?}: a span with its unit, 90s, 30m, 2h or 14d");
+    let unit = text.chars().last().ok_or_else(wrong)?;
+    let scale = match unit {
+        's' => 1.0,
+        'm' => 60.0,
+        'h' => 3600.0,
+        'd' => 86_400.0,
+        _ => return Err(wrong()),
+    };
+    let value: f64 = text[..text.len() - 1].trim().parse().map_err(|_| wrong())?;
+    if !value.is_finite() || value <= 0.0 || value * scale > 366.0 * 86_400.0 {
+        return Err(format!("{text:?}: between 1s and a year"));
+    }
+    Ok(std::time::Duration::from_secs_f64(value * scale))
+}
+
+/// A size flag: a number with `B`, `KB`, `MB`, `GB` or `TB` (powers of
+/// 1000; `KiB` to `TiB` for powers of 1024).
+fn size(text: &str) -> Result<u64, String> {
+    let wrong = || format!("{text:?}: a size with its unit, 500MB or 20GB");
+    let upper = text.trim().to_ascii_uppercase();
+    let digits = upper
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .ok_or_else(wrong)?;
+    let (number, unit) = upper.split_at(digits);
+    let scale: f64 = match unit.trim() {
+        "B" => 1.0,
+        "KB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        "TB" => 1e12,
+        "KIB" => 1024.0,
+        "MIB" => 1024.0 * 1024.0,
+        "GIB" => 1024.0 * 1024.0 * 1024.0,
+        "TIB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => return Err(wrong()),
+    };
+    let value: f64 = number.parse().map_err(|_| wrong())?;
+    let bytes = value * scale;
+    if !bytes.is_finite() || bytes < 1.0 || bytes > 1e18 {
+        return Err(format!("{text:?}: between 1B and 1000PB"));
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(bytes as u64)
 }
 
 /// Flags for `rlmesh devices`.
@@ -524,6 +632,10 @@ pub enum DevicesCommand {
         /// The verbs it may send besides estop: arm, disarm, comma-separated.
         #[arg(long, value_name = "VERBS", value_delimiter = ',')]
         verbs: Option<Vec<String>>,
+        /// The day (YYYY-MM-DD, UTC) from which it may no longer attach, or
+        /// `never`.
+        #[arg(long, value_name = "DATE")]
+        expires: Option<String>,
     },
     /// Remove a device: it is detached at once, and its robot pins stay.
     Revoke {
@@ -551,14 +663,14 @@ pub enum DevicesCommand {
         robot: String,
     },
     /// Provision a networked board (an ESP32) plugged in over USB: give it
-    /// this rlmeshd's key, id and addresses, enroll its key as a board and
+    /// a robot name and this rlmeshd's key, id and addresses, enroll its key as a board and
     /// pin its robot name to it. Run it on the robot's machine, with
     /// rlmeshd running; the board keeps its key when provisioned again.
     Provision {
         /// The board's serial port (`/dev/ttyUSB0`, `/dev/ttyACM0`).
         #[arg(long, value_name = "TTY")]
         port: std::path::PathBuf,
-        /// The robot name compiled into the board's sketch.
+        /// Assign this robot name (1–128 bytes of [A-Za-z0-9._-]); may rename a board.
         #[arg(long, value_name = "ROBOT")]
         name: String,
         /// The highest class it may attach and lease at (default: model,
@@ -568,6 +680,7 @@ pub enum DevicesCommand {
     },
 }
 
+#[cfg(feature = "fleet")]
 /// Flags for `rlmesh scene`.
 #[derive(Args, Debug)]
 pub struct SceneArgs {
@@ -579,6 +692,7 @@ pub struct SceneArgs {
     pub command: SceneCommand,
 }
 
+#[cfg(feature = "fleet")]
 #[derive(Subcommand, Debug)]
 pub enum SceneCommand {
     /// Check a scene file offline, as a run's first stage will: its
@@ -590,8 +704,17 @@ pub enum SceneCommand {
         #[arg(value_name = "SCENE.TOML")]
         file: std::path::PathBuf,
     },
+    /// Run a scene on its robots' home rlmeshd and follow its stages until
+    /// it ends; Ctrl-C stops it.
+    Run(RunArgs),
+    /// Stop a run.
+    Stop(RunIdArgs),
+    /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
+    /// lost member rejoined).
+    Arm(RunIdArgs),
 }
 
+#[cfg(feature = "fleet")]
 /// Where the home rlmeshd is.
 #[derive(Args, Debug)]
 pub struct HomeArgs {
@@ -602,23 +725,25 @@ pub struct HomeArgs {
     pub home: Option<String>,
 }
 
-/// Flags for `rlmesh run`.
+#[cfg(feature = "fleet")]
+/// Flags for `rlmesh scene run`.
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// The scene file.
     #[arg(value_name = "SCENE.TOML")]
     pub file: std::path::PathBuf,
-    /// `manual`: wait for `rlmesh arm` even when the scene arms itself.
+    /// `manual`: wait for `rlmesh scene arm` even when the scene arms itself.
     #[arg(long, value_name = "auto|manual", default_value = "auto")]
     pub arm: String,
     #[command(flatten)]
     pub home: HomeArgs,
 }
 
-/// Flags for `rlmesh stop` and `rlmesh arm`.
+#[cfg(feature = "fleet")]
+/// Flags for `rlmesh scene stop` and `rlmesh scene arm`.
 #[derive(Args, Debug)]
 pub struct RunIdArgs {
-    /// The run (`r-7k2m`), as `rlmesh run` printed it.
+    /// The run (`r-7k2m`), as `rlmesh scene run` printed it.
     pub run: String,
     #[command(flatten)]
     pub home: HomeArgs,
@@ -670,7 +795,31 @@ pub struct DescribeArgs {
     /// Print `dev.rlmesh.describe=<envelope>`, ready for `docker build --label`.
     /// Run it inside the built image (`docker run --rm --entrypoint rlmesh IMAGE
     /// describe ... --label`): the envelope records the machine it ran on, and
-    /// the platform fails a label generated off linux.
+    /// labels generated off linux fail validation.
     #[arg(long)]
     pub label: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{size, span};
+
+    #[test]
+    fn spans_and_sizes_read_with_their_units() {
+        assert_eq!(span("30m"), Ok(Duration::from_secs(1800)));
+        assert_eq!(span("14d"), Ok(Duration::from_secs(14 * 86_400)));
+        assert_eq!(span("1.5h"), Ok(Duration::from_secs(5400)));
+        for bad in ["", "30", "m", "0s", "-1h", "400d", "1w"] {
+            assert!(span(bad).is_err(), "{bad}");
+        }
+        assert_eq!(size("20GB"), Ok(20_000_000_000));
+        assert_eq!(size("500 mb"), Ok(500_000_000));
+        assert_eq!(size("1.5GiB"), Ok(1_610_612_736));
+        assert_eq!(size("512B"), Ok(512));
+        for bad in ["", "20", "GB", "0GB", "1XB", "1e30TB"] {
+            assert!(size(bad).is_err(), "{bad}");
+        }
+    }
 }

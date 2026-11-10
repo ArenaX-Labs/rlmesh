@@ -1,6 +1,6 @@
-//! The policy map (§6.1-§6.3) and run-time options (§6.4), parsed and
+//! The policy map and run-time options, parsed and
 //! normalised: shorthands expanded, defaults that do not depend on a
-//! candidate filled in, `allow` merged, caps checked (§3.4).
+//! candidate filled in, `allow` merged, caps checked.
 //!
 //! ```json
 //! {
@@ -48,7 +48,7 @@ const MAX_MS: f64 = 60_000.0;
 /// The largest target image side.
 const MAX_IMAGE_SIDE: u32 = 8192;
 
-/// A conversion a policy may allow (§7.2).
+/// A conversion a policy may allow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Allow {
     /// Resample an image to the target size.
@@ -164,7 +164,7 @@ impl Allows {
         names.iter().try_fold(Self::default(), |set, name| {
             Allow::from_name(name)
                 .map(|a| set.with(a))
-                .ok_or_else(|| format!("{where_}: allow {name:?} is not a conversion (§7.2)"))
+                .ok_or_else(|| format!("{where_}: allow {name:?} is not a conversion"))
         })
     }
 
@@ -279,7 +279,7 @@ pub enum Source {
     /// The part's own stream.
     #[default]
     Published,
-    /// What the edge dispatched to it (`{path}/_applied`, §9.4).
+    /// What the edge dispatched to it (`{path}/_applied`).
     Applied,
 }
 
@@ -332,7 +332,7 @@ pub struct Entry {
     pub schema: Option<Vec<FieldSpec>>,
 }
 
-/// An input entry (§6.2).
+/// An input entry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Input {
     /// The common keys.
@@ -367,7 +367,7 @@ pub struct Input {
     pub source: Source,
 }
 
-/// An action entry (§6.3).
+/// An action entry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Action {
     /// The common keys.
@@ -940,7 +940,7 @@ impl Policy {
     }
 }
 
-/// How a policy is run (§6.4): the overrides `rlmesh.run(...)` takes.
+/// How a policy is run: the overrides `rlmesh.run(...)` takes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunOptions {
     /// The policy's name, for the table and refusals.

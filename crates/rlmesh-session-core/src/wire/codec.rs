@@ -39,6 +39,7 @@ use bytes::Bytes;
 use prost::Message as _;
 use prost::encoding::encode_varint;
 
+use crate::edge::Rejection;
 use crate::wire::action::{ActionChunk, ChunkRef, InputRange};
 use crate::wire::authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
@@ -47,6 +48,7 @@ use crate::wire::authority::{
 };
 use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 use crate::wire::error::WireError;
+use crate::wire::health::{HostHealth, LinkHealth};
 use crate::wire::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
 use crate::wire::key::{IssuedKey, KeyBytes, KeyDelivery, KeyPurpose, KeysAck, Security};
@@ -70,7 +72,7 @@ use crate::wire::sample::{
 };
 use crate::wire::scene::{
     Assignment, DeviceRecord, HostOrder, HostStarted, Join, LobbyWait, MemberStage, MemberState,
-    Place, Pose, RobotPin, RunStage, RunState, SceneInfo, ServeOrder, StopOrder,
+    Place, Pose, RobotPin, RunStage, RunState, SceneInfo, StopOrder,
 };
 use crate::wire::tick::{Step, TickState, VirtualTick};
 use crate::wire::timing::EndpointTiming;
@@ -85,7 +87,7 @@ mod pb {
 
 /// The `rlmesh.session.v2` protobuf descriptors (a serialized
 /// `google.protobuf.FileDescriptorSet`): the schema a recording names for
-/// each envelope it stores (§13).
+/// each envelope it stores.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/session_descriptor.bin"));
 
@@ -103,6 +105,8 @@ pub mod schema {
     pub const HEARTBEAT: &str = "rlmesh.session.v2.Heartbeat";
     /// A participant's observer telemetry (`p/{id}/report`).
     pub const PARTICIPANT_REPORT: &str = "rlmesh.session.v2.ParticipantReport";
+    /// The host's link and edge health (`host/health`).
+    pub const HOST_HEALTH: &str = "rlmesh.session.v2.HostHealth";
 }
 
 // --- control messages --------------------------------------------------------
@@ -236,7 +240,7 @@ pub fn decode_reply(buf: &[u8]) -> Result<CtlReply, WireError> {
     })
 }
 
-/// Encodes a key delivery (§8.5).
+/// Encodes a key delivery.
 pub fn encode_key_delivery(delivery: &KeyDelivery) -> Vec<u8> {
     pb::KeyDelivery {
         keys: delivery.keys.iter().map(key_to_pb).collect(),
@@ -277,11 +281,10 @@ fn key_to_pb(k: &IssuedKey) -> pb::Key {
         KeyPurpose::Command => pb::KeyPurpose::Command,
         KeyPurpose::LockstepReply => pb::KeyPurpose::LockstepReply,
         KeyPurpose::Stream => pb::KeyPurpose::Stream,
-        KeyPurpose::SessionStream => pb::KeyPurpose::SessionStream,
         KeyPurpose::Estop => pb::KeyPurpose::Estop,
     };
     let security = match k.security {
-        Security::Sign => pb::Security::Sign,
+        Security::Mac => pb::Security::Mac,
         Security::Seal => pb::Security::Seal,
     };
     pb::Key {
@@ -312,12 +315,11 @@ fn key_from_pb(k: pb::Key) -> Result<IssuedKey, WireError> {
         Ok(pb::KeyPurpose::Command) => KeyPurpose::Command,
         Ok(pb::KeyPurpose::LockstepReply) => KeyPurpose::LockstepReply,
         Ok(pb::KeyPurpose::Stream) => KeyPurpose::Stream,
-        Ok(pb::KeyPurpose::SessionStream) => KeyPurpose::SessionStream,
         Ok(pb::KeyPurpose::Estop) => KeyPurpose::Estop,
         _ => return Err(bad_enum("key purpose", k.purpose)),
     };
     let security = match pb::Security::try_from(k.security) {
-        Ok(pb::Security::Sign) => Security::Sign,
+        Ok(pb::Security::Mac) => Security::Mac,
         Ok(pb::Security::Seal) => Security::Seal,
         _ => return Err(bad_enum("key security", k.security)),
     };
@@ -695,14 +697,53 @@ pub fn encode_heartbeat(hb: &Heartbeat) -> Vec<u8> {
         last_chunk_accepted: hb.last_chunk_accepted,
         last_chunk_applied: hb.last_chunk_applied,
         queue_depth: hb.queue_depth,
-        health: match hb.health {
-            Health::Unknown => pb::Health::Unspecified,
-            Health::Ok => pb::Health::Ok,
-            Health::Degraded => pb::Health::Degraded,
-            Health::Unhealthy => pb::Health::Unhealthy,
-        } as i32,
+        health: health_to_pb(hb.health) as i32,
+        rejected: rejected_to_pb(&hb.rejected),
     }
     .encode_to_vec()
+}
+
+fn health_to_pb(health: Health) -> pb::Health {
+    match health {
+        Health::Unknown => pb::Health::Unspecified,
+        Health::Ok => pb::Health::Ok,
+        Health::Degraded => pb::Health::Degraded,
+        Health::Unhealthy => pb::Health::Unhealthy,
+    }
+}
+
+/// An unknown (newer) health value reads as unknown, not an error.
+fn health_from_pb(raw: i32) -> Health {
+    match pb::Health::try_from(raw) {
+        Ok(pb::Health::Ok) => Health::Ok,
+        Ok(pb::Health::Degraded) => Health::Degraded,
+        Ok(pb::Health::Unhealthy) => Health::Unhealthy,
+        _ => Health::Unknown,
+    }
+}
+
+/// Rejection counts on the wire: the reason's stats index plus one.
+fn rejected_to_pb(rejected: &[(Rejection, u64)]) -> Vec<pb::RejectionCount> {
+    rejected
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(reason, count)| pb::RejectionCount {
+            reason: i32::try_from(reason.index() + 1).unwrap_or(0),
+            count: *count,
+        })
+        .collect()
+}
+
+/// An unknown (newer) reason is skipped, not an error: counters are
+/// telemetry.
+fn rejected_from_pb(rejected: Vec<pb::RejectionCount>) -> Vec<(Rejection, u64)> {
+    rejected
+        .into_iter()
+        .filter_map(|r| {
+            let index = usize::try_from(r.reason).ok()?.checked_sub(1)?;
+            Some((*Rejection::ALL.get(index)?, r.count))
+        })
+        .collect()
 }
 
 /// Decodes a heartbeat.
@@ -723,13 +764,8 @@ pub fn decode_heartbeat(buf: &[u8]) -> Result<Heartbeat, WireError> {
         last_chunk_accepted: hb.last_chunk_accepted,
         last_chunk_applied: hb.last_chunk_applied,
         queue_depth: hb.queue_depth,
-        // An unknown (newer) health value reads as unknown, not an error.
-        health: match pb::Health::try_from(hb.health) {
-            Ok(pb::Health::Ok) => Health::Ok,
-            Ok(pb::Health::Degraded) => Health::Degraded,
-            Ok(pb::Health::Unhealthy) => Health::Unhealthy,
-            _ => Health::Unknown,
-        },
+        health: health_from_pb(hb.health),
+        rejected: rejected_from_pb(hb.rejected),
     })
 }
 
@@ -759,6 +795,10 @@ pub fn decode_echo(buf: &[u8]) -> Result<HeartbeatEcho, WireError> {
 
 /// Encodes a participant report.
 pub fn encode_report(report: &ParticipantReport) -> Vec<u8> {
+    report_to_pb(report).encode_to_vec()
+}
+
+fn report_to_pb(report: &ParticipantReport) -> pb::ParticipantReport {
     pb::ParticipantReport {
         participant: report.participant.to_string(),
         epoch: report.epoch.0,
@@ -788,12 +828,14 @@ pub fn encode_report(report: &ParticipantReport) -> Vec<u8> {
             drifting: r.drifting,
         }),
     }
-    .encode_to_vec()
 }
 
 /// Decodes a participant report.
 pub fn decode_report(buf: &[u8]) -> Result<ParticipantReport, WireError> {
-    let report = pb::ParticipantReport::decode(buf)?;
+    report_from_pb(pb::ParticipantReport::decode(buf)?)
+}
+
+fn report_from_pb(report: pb::ParticipantReport) -> Result<ParticipantReport, WireError> {
     Ok(ParticipantReport {
         participant: ParticipantId::new(report.participant)?,
         epoch: Epoch(report.epoch),
@@ -822,6 +864,83 @@ pub fn decode_report(buf: &[u8]) -> Result<ParticipantReport, WireError> {
             latency_p99_ns: r.latency_p99_ns,
             drifting: r.drifting,
         }),
+    })
+}
+
+/// Encodes the host's health message.
+pub fn encode_health(health: &HostHealth) -> Vec<u8> {
+    pb::HostHealth {
+        epoch: health.epoch.0,
+        host_ns: health.host_ns,
+        links: health
+            .links
+            .iter()
+            .map(|l| pb::LinkHealth {
+                participant: l
+                    .participant
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+                heartbeats: l.heartbeats,
+                rtt_ns: l.rtt_ns,
+                jitter_ns: l.jitter_ns,
+                heartbeat_gap_max_ns: l.heartbeat_gap_max_ns,
+                last_heartbeat_age_ns: l.last_heartbeat_age_ns,
+                mapped: l.offset.is_some(),
+                offset_ns: l.offset.map_or(0, |o| o.0),
+                offset_error_ns: l.offset.map_or(0, |o| o.1),
+                last_chunk_accepted: l.last_chunk_accepted,
+                last_chunk_applied: l.last_chunk_applied,
+                queue_depth: l.queue_depth,
+                health: health_to_pb(l.health) as i32,
+                rejected: rejected_to_pb(&l.rejected),
+                report: l.report.as_ref().map(report_to_pb),
+                last_seq_seen: l
+                    .last_seq_seen
+                    .iter()
+                    .map(|&(channel, seq)| pb::ChannelSeq {
+                        channel: channel.0,
+                        seq,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes the host's health message.
+pub fn decode_health(buf: &[u8]) -> Result<HostHealth, WireError> {
+    let health = pb::HostHealth::decode(buf)?;
+    Ok(HostHealth {
+        epoch: Epoch(health.epoch),
+        host_ns: health.host_ns,
+        links: health
+            .links
+            .into_iter()
+            .map(|l| {
+                Ok(LinkHealth {
+                    participant: Some(ParticipantId::new(l.participant)?),
+                    heartbeats: l.heartbeats,
+                    rtt_ns: l.rtt_ns,
+                    jitter_ns: l.jitter_ns,
+                    heartbeat_gap_max_ns: l.heartbeat_gap_max_ns,
+                    last_heartbeat_age_ns: l.last_heartbeat_age_ns,
+                    offset: l.mapped.then_some((l.offset_ns, l.offset_error_ns)),
+                    last_chunk_accepted: l.last_chunk_accepted,
+                    last_chunk_applied: l.last_chunk_applied,
+                    queue_depth: l.queue_depth,
+                    health: health_from_pb(l.health),
+                    rejected: rejected_from_pb(l.rejected),
+                    report: l.report.map(report_from_pb).transpose()?,
+                    last_seq_seen: l
+                        .last_seq_seen
+                        .into_iter()
+                        .map(|c| (ChannelId(c.channel), c.seq))
+                        .collect(),
+                })
+            })
+            .collect::<Result<_, WireError>>()?,
     })
 }
 
@@ -1254,7 +1373,7 @@ fn lockstep_reply_from_pb(r: pb::LockstepReply) -> LockstepReply {
     }
 }
 
-/// Encodes a lockstep request (§8.6).
+/// Encodes a lockstep request.
 pub fn encode_lockstep_request(request: &LockstepRequest) -> Vec<u8> {
     use pb::lockstep_request::Op;
     let op = match &request.op {
@@ -1666,7 +1785,6 @@ fn clock_mode_to_pb(mode: ClockMode) -> pb::ClockMode {
     match mode {
         ClockMode::Wall => pb::ClockMode::Wall,
         ClockMode::Virtual => pb::ClockMode::Virtual,
-        ClockMode::Lockstep => pb::ClockMode::Lockstep,
     }
 }
 
@@ -1674,7 +1792,6 @@ fn clock_mode_from_pb(raw: i32) -> Result<ClockMode, WireError> {
     match pb::ClockMode::try_from(raw) {
         Ok(pb::ClockMode::Wall | pb::ClockMode::Unspecified) => Ok(ClockMode::Wall),
         Ok(pb::ClockMode::Virtual) => Ok(ClockMode::Virtual),
-        Ok(pb::ClockMode::Lockstep) => Ok(ClockMode::Lockstep),
         Err(_) => Err(bad_enum("clock mode", raw)),
     }
 }
@@ -1724,63 +1841,36 @@ fn applied_from_pb(a: pb::Applied) -> Result<Applied, WireError> {
 
 /// Every code with its wire value, so both directions read one table.
 const REASON_CODES: [(ReasonCode, pb::ReasonCode); 30] = [
-    (ReasonCode::Unspecified, pb::ReasonCode::ReasonUnspecified),
-    (ReasonCode::Armed, pb::ReasonCode::ReasonArmed),
-    (ReasonCode::Disarmed, pb::ReasonCode::ReasonDisarmed),
-    (ReasonCode::FirstLease, pb::ReasonCode::ReasonFirstLease),
-    (ReasonCode::LastRelease, pb::ReasonCode::ReasonLastRelease),
-    (ReasonCode::EstopRemote, pb::ReasonCode::ReasonEstopRemote),
-    (ReasonCode::EstopLocal, pb::ReasonCode::ReasonEstopLocal),
-    (ReasonCode::EstopSignal, pb::ReasonCode::ReasonEstopSignal),
-    (ReasonCode::EstopCleared, pb::ReasonCode::ReasonEstopCleared),
-    (ReasonCode::HolderLost, pb::ReasonCode::ReasonHolderLost),
-    (
-        ReasonCode::HeartbeatLapse,
-        pb::ReasonCode::ReasonHeartbeatLapse,
-    ),
-    (ReasonCode::QueueDry, pb::ReasonCode::ReasonQueueDry),
-    (
-        ReasonCode::EdgeLeaseLapsed,
-        pb::ReasonCode::ReasonEdgeLeaseLapsed,
-    ),
-    (
-        ReasonCode::HandoverTimeout,
-        pb::ReasonCode::ReasonHandoverTimeout,
-    ),
-    (
-        ReasonCode::DeviceWatchdog,
-        pb::ReasonCode::ReasonDeviceWatchdog,
-    ),
-    (ReasonCode::RobotLost, pb::ReasonCode::ReasonRobotLost),
-    (ReasonCode::HostLost, pb::ReasonCode::ReasonHostLost),
-    (ReasonCode::Released, pb::ReasonCode::ReasonReleased),
-    (ReasonCode::Preempted, pb::ReasonCode::ReasonPreempted),
-    (ReasonCode::Rebound, pb::ReasonCode::ReasonRebound),
-    (ReasonCode::VoidedBySafe, pb::ReasonCode::ReasonVoidedBySafe),
-    (
-        ReasonCode::VoidedByEstop,
-        pb::ReasonCode::ReasonVoidedByEstop,
-    ),
-    (
-        ReasonCode::VoidedByDisarm,
-        pb::ReasonCode::ReasonVoidedByDisarm,
-    ),
-    (
-        ReasonCode::VoidedByEpoch,
-        pb::ReasonCode::ReasonVoidedByEpoch,
-    ),
-    (ReasonCode::PartRemoved, pb::ReasonCode::ReasonPartRemoved),
-    (
-        ReasonCode::HolderDetached,
-        pb::ReasonCode::ReasonHolderDetached,
-    ),
-    (ReasonCode::Revoked, pb::ReasonCode::ReasonRevoked),
-    (
-        ReasonCode::AccessChanged,
-        pb::ReasonCode::ReasonAccessChanged,
-    ),
-    (ReasonCode::SceneEnded, pb::ReasonCode::ReasonSceneEnded),
-    (ReasonCode::SceneFailed, pb::ReasonCode::ReasonSceneFailed),
+    (ReasonCode::Unspecified, pb::ReasonCode::Unspecified),
+    (ReasonCode::Armed, pb::ReasonCode::Armed),
+    (ReasonCode::Disarmed, pb::ReasonCode::Disarmed),
+    (ReasonCode::FirstLease, pb::ReasonCode::FirstLease),
+    (ReasonCode::LastRelease, pb::ReasonCode::LastRelease),
+    (ReasonCode::EstopRemote, pb::ReasonCode::EstopRemote),
+    (ReasonCode::EstopLocal, pb::ReasonCode::EstopLocal),
+    (ReasonCode::EstopSignal, pb::ReasonCode::EstopSignal),
+    (ReasonCode::EstopCleared, pb::ReasonCode::EstopCleared),
+    (ReasonCode::HolderLost, pb::ReasonCode::HolderLost),
+    (ReasonCode::HeartbeatLapse, pb::ReasonCode::HeartbeatLapse),
+    (ReasonCode::QueueDry, pb::ReasonCode::QueueDry),
+    (ReasonCode::EdgeLeaseLapsed, pb::ReasonCode::EdgeLeaseLapsed),
+    (ReasonCode::HandoverTimeout, pb::ReasonCode::HandoverTimeout),
+    (ReasonCode::DeviceWatchdog, pb::ReasonCode::DeviceWatchdog),
+    (ReasonCode::RobotLost, pb::ReasonCode::RobotLost),
+    (ReasonCode::HostLost, pb::ReasonCode::HostLost),
+    (ReasonCode::Released, pb::ReasonCode::Released),
+    (ReasonCode::Preempted, pb::ReasonCode::Preempted),
+    (ReasonCode::Rebound, pb::ReasonCode::Rebound),
+    (ReasonCode::VoidedBySafe, pb::ReasonCode::VoidedBySafe),
+    (ReasonCode::VoidedByEstop, pb::ReasonCode::VoidedByEstop),
+    (ReasonCode::VoidedByDisarm, pb::ReasonCode::VoidedByDisarm),
+    (ReasonCode::VoidedByEpoch, pb::ReasonCode::VoidedByEpoch),
+    (ReasonCode::PartRemoved, pb::ReasonCode::PartRemoved),
+    (ReasonCode::HolderDetached, pb::ReasonCode::HolderDetached),
+    (ReasonCode::Revoked, pb::ReasonCode::Revoked),
+    (ReasonCode::AccessChanged, pb::ReasonCode::AccessChanged),
+    (ReasonCode::SceneEnded, pb::ReasonCode::SceneEnded),
+    (ReasonCode::SceneFailed, pb::ReasonCode::SceneFailed),
 ];
 
 fn reason_code_to_pb(code: ReasonCode) -> i32 {
@@ -2376,6 +2466,9 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
         Command::StopScene { run } => Verb::StopScene(pb::StopScene { run: run.clone() }),
         Command::HostStarted(started) => Verb::HostStarted(host_started_to_pb(started)),
         Command::ArmScene { run } => Verb::ArmScene(pb::ArmScene { run: run.clone() }),
+        Command::Keep { label } => Verb::Keep(pb::Keep {
+            label: label.clone(),
+        }),
     };
     pb::CtlRequest {
         participant: r.from.to_string(),
@@ -2484,6 +2577,7 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
         Verb::StopScene(s) => Command::StopScene { run: s.run },
         Verb::HostStarted(h) => Command::HostStarted(host_started_from_pb(h)?),
         Verb::ArmScene(a) => Command::ArmScene { run: a.run },
+        Verb::Keep(k) => Command::Keep { label: k.label },
     };
     Ok(Request {
         from: ParticipantId::new(r.participant)?,
@@ -2541,8 +2635,6 @@ fn command_to_pb(c: &CommandSpec) -> pb::Command {
         max_action_age_ns: duration_ns(c.max_action_age),
         merge: match c.merge {
             MergePolicy::Replace => pb::MergePolicy::Replace,
-            MergePolicy::Blend => pb::MergePolicy::Blend,
-            MergePolicy::RtcPrefix => pb::MergePolicy::RtcPrefix,
         } as i32,
         reference: c.reference.clone(),
         group: c.group.clone().unwrap_or_default(),
@@ -2570,8 +2662,6 @@ fn command_from_pb(c: pb::Command) -> Result<CommandSpec, WireError> {
         max_action_age: Duration::from_nanos(c.max_action_age_ns),
         merge: match pb::MergePolicy::try_from(c.merge) {
             Ok(pb::MergePolicy::Replace | pb::MergePolicy::Unspecified) => MergePolicy::Replace,
-            Ok(pb::MergePolicy::Blend) => MergePolicy::Blend,
-            Ok(pb::MergePolicy::RtcPrefix) => MergePolicy::RtcPrefix,
             Err(_) => return Err(bad_enum("merge policy", c.merge)),
         },
         reference: c.reference,
@@ -2730,14 +2820,6 @@ fn assignment_to_pb(a: &Assignment) -> pb::Assignment {
                 })
                 .collect(),
         }),
-        Assignment::Serve(s) => Order::Serve(pb::ServeOrder {
-            run: s.run.clone(),
-            member: s.member.to_string(),
-            model: s.model.clone(),
-            session: s.session.to_string(),
-            addresses: s.addresses.clone(),
-            host_key: Bytes::copy_from_slice(&s.host_key),
-        }),
         Assignment::Stop(s) => Order::Stop(pb::StopOrder {
             run: s.run.clone(),
             reason: Some(reason_to_pb(&s.reason)),
@@ -2785,14 +2867,6 @@ fn assignment_from_pb(a: pb::Assignment) -> Result<Assignment, WireError> {
                         board_id: board_id_from_pb("robot pin", &p.board_id)?,
                     })
                 })?,
-            }),
-            Order::Serve(s) => Assignment::Serve(ServeOrder {
-                run: s.run,
-                member: ParticipantId::new(s.member)?,
-                model: s.model,
-                session: s.session.parse()?,
-                addresses: s.addresses,
-                host_key: bytes32("serve order", "host_key", &s.host_key)?,
             }),
             Order::Stop(s) => Assignment::Stop(StopOrder {
                 run: s.run,
@@ -2980,9 +3054,57 @@ mod tests {
     use crate::wire::part::tests::{arm, camera, pid};
     use crate::wire::version::PROTOCOL_MINOR;
 
+    /// Byte-level goldens of the v2 wire: every message a round-trip test
+    /// encodes, in order, as hex in `tests/vectors/wire/{test}.txt`. A
+    /// change to one is a wire change: regenerate with
+    /// `RLMESH_REGENERATE_WIRE_VECTORS=1 cargo test -p rlmesh-session-core
+    /// --lib wire::codec` only when the change is deliberate.
+    struct Goldens {
+        test: &'static str,
+        lines: Vec<String>,
+        seen: alloc::collections::BTreeMap<&'static str, usize>,
+    }
+
+    impl Goldens {
+        fn new(test: &'static str) -> Self {
+            Self {
+                test,
+                lines: Vec::new(),
+                seen: alloc::collections::BTreeMap::new(),
+            }
+        }
+
+        fn add<'a>(&mut self, message: &'static str, bytes: &'a [u8]) -> &'a [u8] {
+            let n = self.seen.entry(message).or_default();
+            *n += 1;
+            let hex: String = bytes.iter().map(|b| alloc::format!("{b:02x}")).collect();
+            self.lines.push(alloc::format!("{message}#{n} {hex}"));
+            bytes
+        }
+
+        fn check(self) {
+            extern crate std;
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/vectors/wire")
+                .join(alloc::format!("{}.txt", self.test));
+            let mut text = self.lines.join("\n");
+            text.push('\n');
+            if std::env::var_os("RLMESH_REGENERATE_WIRE_VECTORS").is_some() {
+                std::fs::create_dir_all(path.parent().expect("dir")).expect("mkdir");
+                std::fs::write(&path, &text).expect("write");
+            }
+            let want = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                want == text,
+                "{}: the v2 wire bytes changed (a wire change); regenerate only when it is deliberate",
+                path.display()
+            );
+        }
+    }
+
     fn snapshot() -> AuthoritySnapshot {
         AuthoritySnapshot {
-            session: SessionId::new(),
+            session: SessionId::named("wire-goldens"),
             epoch: Epoch(3),
             revision: 9,
             mode: Mode::Active,
@@ -3133,6 +3255,7 @@ mod tests {
 
     #[test]
     fn a_device_view_decodes_on_its_own_path() {
+        let mut g = Goldens::new("device_view");
         let state = snapshot();
         let view = DeviceView {
             robot: pid("ur10e"),
@@ -3161,6 +3284,7 @@ mod tests {
             closing: Some(Reason::new(ReasonCode::SceneEnded)),
         };
         let bytes = encode_view(&view);
+        g.add("view", &bytes);
         assert_eq!(decode_view(&bytes).expect("decode"), view);
         // The view is its own message, not a state a board could misread.
         assert!(decode_state(&bytes).is_err());
@@ -3177,6 +3301,7 @@ mod tests {
             run: None,
         };
         let bytes = encode_view_reply(&reply);
+        g.add("view_reply", &bytes);
         assert_eq!(decode_view_reply(&bytes).expect("decode"), reply);
         assert!(decode_reply(&bytes).is_err(), "no state in it");
         let full = encode_reply(&CtlReply {
@@ -3190,14 +3315,17 @@ mod tests {
         });
         let read = decode_view_reply(&full).expect("decode");
         assert_eq!((read.request_id, read.view), (14, None));
+        g.check();
     }
 
     #[test]
     fn binding_records_round_trip() {
+        let mut g = Goldens::new("binding");
         let state = snapshot();
         let binding = &state.bindings[0];
-        let decoded = decode_binding(&encode_binding(binding)).expect("decodes");
+        let decoded = decode_binding(g.add("binding", &encode_binding(binding))).expect("decodes");
         assert_eq!(&decoded, binding);
+        g.check();
     }
 
     #[test]
@@ -3217,6 +3345,7 @@ mod tests {
 
     #[test]
     fn control_messages_round_trip() {
+        let mut g = Goldens::new("control");
         let requests = [
             Command::Attach {
                 name: "Operator".into(),
@@ -3329,6 +3458,9 @@ mod tests {
                 run: "r-7k2m".into(),
                 result: Err(CtlError::new(CtlStatus::NotPresent, "no GPU")),
             }),
+            Command::Keep {
+                label: "eye-2 froze".into(),
+            },
         ];
         for command in requests {
             let request = Request {
@@ -3338,13 +3470,16 @@ mod tests {
                 command,
             };
             assert_eq!(
-                decode_request(&encode_request(&request)).expect("decode"),
+                decode_request(g.add("request", &encode_request(&request))).expect("decode"),
                 request
             );
         }
 
         let state = snapshot();
-        assert_eq!(decode_state(&encode_state(&state)).expect("decode"), state);
+        assert_eq!(
+            decode_state(g.add("state", &encode_state(&state))).expect("decode"),
+            state
+        );
         for result in [
             Ok(()),
             Err(CtlError::new(CtlStatus::GroupBusy, "busy")),
@@ -3372,9 +3507,12 @@ mod tests {
                 assignment: None,
                 run: None,
             };
-            assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
+            assert_eq!(
+                decode_reply(g.add("reply", &encode_reply(&reply))).expect("decode"),
+                reply
+            );
         }
-        let session = SessionId::new();
+        let session = SessionId::named("wire-goldens");
         let assignments = [
             Assignment::Join(Join {
                 run: "r-7k2m".into(),
@@ -3408,14 +3546,6 @@ mod tests {
                         board_id: None,
                     },
                 ],
-            }),
-            Assignment::Serve(ServeOrder {
-                run: "r-7k2m".into(),
-                member: pid("grasp"),
-                model: "prebuilt/smolvla/so100".into(),
-                session,
-                addresses: vec!["10.0.0.3:7447".into()],
-                host_key: [9; 32],
             }),
             Assignment::Stop(StopOrder {
                 run: "r-7k2m".into(),
@@ -3468,7 +3598,10 @@ mod tests {
                 assignment,
                 run,
             };
-            assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
+            assert_eq!(
+                decode_reply(g.add("reply", &encode_reply(&reply))).expect("decode"),
+                reply
+            );
         }
 
         let hello = HandshakeRequest {
@@ -3476,7 +3609,8 @@ mod tests {
             noise: vec![1, 2, 3],
         };
         assert_eq!(
-            decode_handshake_request(&encode_handshake_request(&hello)).expect("decode"),
+            decode_handshake_request(g.add("handshake_request", &encode_handshake_request(&hello)))
+                .expect("decode"),
             hello
         );
         for reply in [
@@ -3484,7 +3618,8 @@ mod tests {
             Err(CtlError::new(CtlStatus::Unauthenticated, "unknown key")),
         ] {
             assert_eq!(
-                decode_handshake_reply(&encode_handshake_reply(&reply)).expect("decode"),
+                decode_handshake_reply(g.add("handshake_reply", &encode_handshake_reply(&reply)))
+                    .expect("decode"),
                 reply
             );
         }
@@ -3498,7 +3633,8 @@ mod tests {
             down_key_id: 4,
         };
         assert_eq!(
-            decode_handshake_accept(&encode_handshake_accept(&accept)).expect("decode"),
+            decode_handshake_accept(g.add("handshake_accept", &encode_handshake_accept(&accept)))
+                .expect("decode"),
             accept
         );
 
@@ -3520,9 +3656,10 @@ mod tests {
             last_chunk_applied: 2,
             queue_depth: 40,
             health: Health::Degraded,
+            rejected: vec![(Rejection::StaleToken, 3), (Rejection::TooOld, 1)],
         };
         assert_eq!(
-            decode_heartbeat(&encode_heartbeat(&hb)).expect("decode"),
+            decode_heartbeat(g.add("heartbeat", &encode_heartbeat(&hb))).expect("decode"),
             hb
         );
         let echo = HeartbeatEcho {
@@ -3532,7 +3669,10 @@ mod tests {
             t3_ns: 11,
             epoch: Epoch(3),
         };
-        assert_eq!(decode_echo(&encode_echo(&echo)).expect("decode"), echo);
+        assert_eq!(
+            decode_echo(g.add("echo", &encode_echo(&echo))).expect("decode"),
+            echo
+        );
         for run in [
             None,
             Some(RunCounters {
@@ -3563,8 +3703,54 @@ mod tests {
                 run,
             };
             assert_eq!(
-                decode_report(&encode_report(&report)).expect("decode"),
+                decode_report(g.add("report", &encode_report(&report))).expect("decode"),
                 report
+            );
+        }
+        let report = ParticipantReport {
+            participant: pid("policy"),
+            epoch: Epoch(3),
+            sent_ns: -9,
+            streams: vec![PublisherCounters {
+                channel: ChannelId(4),
+                published: 600,
+                coalesced: 300,
+            }],
+            run: None,
+        };
+        for health in [
+            HostHealth::default(),
+            HostHealth {
+                epoch: Epoch(3),
+                host_ns: 1_000,
+                links: vec![
+                    LinkHealth {
+                        participant: Some(pid("eye-1")),
+                        heartbeats: 40,
+                        rtt_ns: 2_000_000,
+                        jitter_ns: 300_000,
+                        heartbeat_gap_max_ns: 120_000_000,
+                        last_heartbeat_age_ns: 50_000_000,
+                        offset: Some((-7, 900)),
+                        last_chunk_accepted: 12,
+                        last_chunk_applied: 11,
+                        queue_depth: 3,
+                        health: Health::Degraded,
+                        rejected: vec![(Rejection::Unauthenticated, 2), (Rejection::NoLease, 5)],
+                        report: None,
+                        last_seq_seen: vec![(ChannelId(2), 77)],
+                    },
+                    LinkHealth {
+                        participant: Some(pid("policy")),
+                        report: Some(report.clone()),
+                        ..LinkHealth::default()
+                    },
+                ],
+            },
+        ] {
+            assert_eq!(
+                decode_health(g.add("health", &encode_health(&health))).expect("decode"),
+                health
             );
         }
         assert!(
@@ -3593,7 +3779,10 @@ mod tests {
                 }],
             }),
         ] {
-            assert_eq!(decode_tick(&encode_tick(&tick)).expect("decode"), tick);
+            assert_eq!(
+                decode_tick(g.add("tick", &encode_tick(&tick))).expect("decode"),
+                tick
+            );
         }
         let query = HistoryQuery {
             epoch: Epoch(2),
@@ -3603,9 +3792,11 @@ mod tests {
             request_id: 0,
         };
         assert_eq!(
-            decode_history_query(&encode_history_query(&query)).expect("decode"),
+            decode_history_query(g.add("history_query", &encode_history_query(&query)))
+                .expect("decode"),
             query
         );
+        g.check();
     }
 
     #[test]
@@ -3649,8 +3840,10 @@ mod tests {
 
     #[test]
     fn samples_are_plain_protobuf_with_the_payload_neither_copied_on_send_nor_on_receipt() {
+        let mut g = Goldens::new("sample");
         let sample = applied_sample();
         let encoded = encode_sample(&sample);
+        g.add("sample", &encoded.to_vec());
         assert!(
             encoded
                 .segments
@@ -3686,10 +3879,12 @@ mod tests {
         });
         assert!(decode_sample(Bytes::from(bad.encode_to_vec())).is_err());
         assert!(decode_sample(Bytes::from_static(b"\xff\xff")).is_err());
+        g.check();
     }
 
     #[test]
     fn batches_round_trip_with_their_gaps() {
+        let mut g = Goldens::new("batch");
         let batch = SampleBatch {
             channel: ChannelId(2),
             epoch: Epoch(3),
@@ -3714,12 +3909,14 @@ mod tests {
             request_id: 0,
         };
         let buf = Bytes::from(encode_batch(&batch).expect("encode").to_vec());
+        g.add("batch", &buf);
         let decoded = decode_batch(buf.clone()).expect("decode");
         assert_eq!(decoded, batch);
         assert!(buf.as_ptr_range().contains(&decoded.payload.as_ptr()));
         let mut huge = batch;
         huge.samples = vec![huge.samples[0]; MAX_BATCH + 1];
         assert!(encode_batch(&huge).is_err());
+        g.check();
     }
 
     fn chunk() -> ActionChunk {
@@ -3751,8 +3948,10 @@ mod tests {
 
     #[test]
     fn chunks_round_trip_through_plain_protobuf_without_copying_the_actions() {
+        let mut g = Goldens::new("chunk");
         let chunk = chunk();
         let encoded = encode_chunk(&chunk).expect("encode");
+        g.add("chunk", &encoded.to_vec());
         let buf = Bytes::from(encoded.to_vec());
         let plain = pb::ActionChunk::decode(&buf[..]).expect("plain protobuf");
         assert_eq!((plain.count, plain.actions.len()), (5, 120));
@@ -3773,10 +3972,12 @@ mod tests {
         let mut no_binding = pb::ActionChunk::decode(&buf[..]).expect("plain");
         no_binding.binding = Bytes::new();
         assert!(decode_chunk(Bytes::from(no_binding.encode_to_vec())).is_err());
+        g.check();
     }
 
     #[test]
     fn lockstep_messages_round_trip() {
+        let mut g = Goldens::new("lockstep");
         let reset = LockstepReset {
             epoch: Epoch(2),
             lanes: vec![0, 3],
@@ -3812,6 +4013,7 @@ mod tests {
             }],
         };
         let buf = Bytes::from(encode_lockstep_step(&step));
+        g.add("lockstep_step", &buf);
         let decoded = decode_lockstep_step(buf.clone()).expect("decode");
         assert_eq!(decoded, step);
         assert!(
@@ -3837,7 +4039,10 @@ mod tests {
             }),
         };
         assert_eq!(
-            decode_lockstep_reply(Bytes::from(encode_lockstep_reply(&reply))).expect("decode"),
+            decode_lockstep_reply(Bytes::copy_from_slice(
+                g.add("lockstep_reply", &encode_lockstep_reply(&reply),)
+            ))
+            .expect("decode"),
             reply
         );
         for result in [
@@ -3850,12 +4055,15 @@ mod tests {
                 result,
             };
             let buf = Bytes::from(encode_lockstep_response(&response));
+            g.add("lockstep_response", &buf);
             assert_eq!(decode_lockstep_response(buf).expect("decode"), response);
         }
+        g.check();
     }
 
     #[test]
     fn model_messages_round_trip() {
+        let mut g = Goldens::new("model");
         let slab = |b: u8| vec![Bytes::from(vec![b; 8]), Bytes::from(vec![b; 3])];
         let episode = |id: &str| ModelEpisode {
             id: id.into(),
@@ -3901,7 +4109,9 @@ mod tests {
                 session: "10.0.0.5:7447/bench".into(),
             },
         ] {
-            let decoded = decode_model_request(Bytes::from(encode_model_request(&request)));
+            let decoded = decode_model_request(Bytes::copy_from_slice(
+                g.add("model_request", &encode_model_request(&request)),
+            ));
             assert_eq!(decoded.expect("decode"), request);
         }
         let fault = ModelFault {
@@ -3927,11 +4137,13 @@ mod tests {
                 held_episodes: Some(2),
                 ..EndpointTiming::default()
             };
-            let decoded =
-                decode_model_reply(Bytes::from(encode_model_reply(&reply, Some(&timing))));
+            let decoded = decode_model_reply(Bytes::copy_from_slice(
+                g.add("model_reply", &encode_model_reply(&reply, Some(&timing))),
+            ));
             assert_eq!(decoded.expect("decode"), (reply, Some(timing)));
         }
         assert!(decode_model_request(Bytes::new()).is_err());
+        g.check();
     }
 
     #[test]

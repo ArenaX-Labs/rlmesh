@@ -1,9 +1,9 @@
-//! A board's provisioning responder (tether spec §14) on a serial device,
+//! A board's provisioning responder on a serial device,
 //! with a file for its NVS: rehearses `rlmesh devices provision` without a
 //! board, over a pseudo-terminal pair (`socat`).
 //!
 //! ```sh
-//! cargo run -p rlmesh-device --example fake_board -- <tty> <nvs-file> [name]
+//! cargo run -p rlmesh-device --example fake_board -- <tty> <nvs-file>
 //! ```
 //!
 //! The file holds the device key (32 bytes), then the record. Linux and
@@ -20,10 +20,9 @@ use rlmesh_device::provision::{Record, Responder, Step, public_key};
 fn main() {
     let mut args = std::env::args().skip(1);
     let (Some(tty), Some(nvs)) = (args.next(), args.next()) else {
-        eprintln!("usage: fake_board <tty> <nvs-file> [name]");
+        eprintln!("usage: fake_board <tty> <nvs-file>");
         std::process::exit(2);
     };
-    let name = args.next().unwrap_or_else(|| "eyes".into());
     let flag = if cfg!(target_os = "macos") {
         "-f"
     } else {
@@ -51,7 +50,10 @@ fn main() {
         .map(|b| format!("{b:02x}"))
         .collect();
     println!(
-        "board {name}, device key {hex}, provisioned: {}",
+        "board {}, device key {hex}, provisioned: {}",
+        record
+            .as_ref()
+            .map_or("unassigned", |record| record.name.as_str()),
         record.is_some()
     );
 
@@ -61,7 +63,7 @@ fn main() {
         .open(&tty)
         .expect("open the port");
     let mut reader = port.try_clone().expect("clone");
-    let mut responder = Responder::new(&name, &key, 4, record.as_ref());
+    let mut responder = Responder::new(&key, 4, record.as_ref());
     // The sketch's text, as a board prints at boot.
     port.write_all(b"booted\r\n").expect("write");
     let mut buf = [0_u8; 256];
@@ -76,8 +78,8 @@ fn main() {
                     file.extend_from_slice(&record.payload);
                     let ok = std::fs::write(&nvs, file).is_ok();
                     println!(
-                        "stored: host {} at {:?} ({ok})",
-                        record.host_id, record.addresses
+                        "stored: robot {}, host {} at {:?} ({ok})",
+                        record.name, record.host_id, record.addresses
                     );
                     port.write_all(&responder.stored(&record, ok))
                         .expect("write");

@@ -7,7 +7,7 @@ pub(crate) mod status;
 /// handler. Called when a model or env handle is created.
 ///
 /// A Rust binary starts with SIGPIPE ignored, and so does Python, but a C/C++
-/// host keeps the default action: terminate. The gRPC transport writes sockets
+/// host keeps the default action: terminate. The session transport writes sockets
 /// with vectored writes, which (unlike `send`) cannot opt out of the signal, so
 /// a peer that hangs up mid-write would kill the host instead of failing that
 /// one write with `EPIPE`.

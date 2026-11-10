@@ -34,8 +34,8 @@ jpeg-encoder = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true, optional = true }
 # rlmeshd's mDNS advertisement, and finding a paired host by its id.
-mdns-sd = { workspace = true }
-# Session recordings (§13), feature `record`.
+mdns-sd = { workspace = true, optional = true }
+# Session recordings, feature `record`.
 mcap = { workspace = true, optional = true }
 # The OS RNG: host keys and handshake ephemerals.
 rand = { workspace = true }
@@ -56,8 +56,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"], optional = true }
 # One Zenoh session per traffic class: no `transport_multilink` (it pulls
 # `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`). `unstable` is
-# for per-publisher reliability, the only way Zenoh 1.10 sets it (§10.2).
-# `auth_usrpwd`: the loopback link gate (design §5).
+# for per-publisher reliability, the only way Zenoh 1.10 sets it.
+# `auth_usrpwd`: the loopback link gate.
 zenoh = { workspace = true, features = [
   "auth_usrpwd",
   "transport_tcp",
@@ -82,7 +82,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 # The library's optional parts are on for the crate itself (its binaries
 # and tests); the workspace dependency turns them off, so a binding opts in
 # to what it ships.
-default = ["gateway", "record"]
+default = ["record"]
 # The browser gateway (`gateway`, bin `rlmesh-gateway`): one WebSocket per
 # traffic class, each browser a session participant.
 gateway = [
@@ -96,11 +96,11 @@ gateway = [
   "dep:tracing-subscriber",
   "tokio/net",
 ]
+# Unreleased: the lobby, scene runs, satellites and mDNS
+# (`fleet`). Off in every release; CI builds and tests it.
+fleet = ["dep:mdns-sd", "rlmesh-session-core/fleet"]
 # MCAP recording of a session (`record`).
 record = ["dep:mcap"]
-# QUIC links (one stream per Zenoh priority, so one connection can carry
-# every class across NAT); needs TLS certificates.
-quic = ["zenoh/transport_quic"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

@@ -1,6 +1,6 @@
 # Release Process
 
-RLMesh is versioned, gated, and tagged from a maintainer's machine; pushing the tag hands off to CI (`.github/workflows/release.yml`), which builds the wheel matrix on Linux and macOS runners and publishes everything. SemVer is the source of truth (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The version contract is in [versioning](versioning.md).
+RLMesh is versioned, gated, and tagged from a maintainer's machine; pushing the tag hands off to CI (`.github/workflows/release.yml`), which builds the wheel matrix on Linux and macOS runners and publishes the Python wheels to PyPI and the Rust crates to crates.io. SemVer is the source of truth (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The version contract is in [versioning](versioning.md).
 
 The mechanical steps are scripted. You still own the changelog prose and the version number. The one irreversible action, pushing the tag, never runs without you asking.
 
@@ -15,14 +15,14 @@ git push origin HEAD --tags                 # you push; CI does the rest
 
 `release.py` refuses to proceed if the working tree is dirty, the `vX.Y.Z` tag already exists, the changelog still has `<!-- DRAFT -->` markers, or there is no `## [X.Y.Z]` changelog section.
 
-The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and ships crates.io, PyPI, npm, the GitHub Release, and (once configured) nuget.org through trusted publishing. Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions, and the GitHub Release upload preserves already-published assets.
+The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and publishes to crates.io and PyPI through trusted publishing, then creates the GitHub Release with the curated release notes. Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions. In 0.2 the GitHub Release has no native distribution assets.
 
 ## Prerequisites
 
-- **v0.2 Unity release gate:** complete the [Unity release checklist](unity-release-checklist.md): Linux IL2CPP player smoke, Mono Editor reload, and failed-barrier reload. Unity support must not be claimed until all three pass; .NET tests and NativeAOT do not substitute for Unity verification.
+- **Future Unity release gate (outside 0.2):** complete the [Unity release checklist](unity-release-checklist.md): Linux IL2CPP player smoke, Mono Editor reload, and failed-barrier reload. Unity support must not be claimed until all three pass; .NET tests and NativeAOT do not substitute for Unity verification.
 
-- Nothing local: no publish tokens. crates.io, PyPI and npm all authenticate via OIDC trusted publishing scoped to `release.yml` and the `release` GitHub environment; the GitHub Release uses the workflow's own token.
-- One-time registry setup: a trusted publisher configured on the PyPI `rlmesh` project and on each of the eight published `rlmesh*` crates and the six npm packages (`rlmesh` and the five `@rlmesh/{platform}-{arch}`; see [npm](#npm)) (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`), plus the `release` environment created in the repository settings (add required reviewers there if you want a manual approval gate before publish).
+- Nothing local: no publish tokens. crates.io and PyPI authenticate via OIDC trusted publishing scoped to `release.yml` and the `release` GitHub environment; the GitHub Release uses the workflow's own token.
+- One-time registry setup: a trusted publisher configured on the PyPI `rlmesh` project and on each of the nine published `rlmesh*` crates (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`), plus the `release` environment created in the repository settings (add required reviewers there if you want a manual approval gate before publish).
 - Break-glass local publish, from the tagged commit: no single host builds the full wheel matrix anymore, so first assemble `python/rlmesh/dist` from the release run's artifacts (`gh run download <run-id> -p 'wheels-*'`, then move the `.whl` files in) or build each half on its own host without re-running `release:python:prepare` in between (it wipes dist). Then `python scripts/release.py X.Y.Z --publish-crates` (needs `CARGO_REGISTRY_TOKEN`) and `--github-release` (needs `gh` auth); wheels would need a manual `twine upload`.
 
 ## Curate the changelog
@@ -45,6 +45,14 @@ mise run bump X.Y.Z
 
 It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort (`YYYY.MM-X.Y.Z-beta.N`); a stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See [workflow editions](editions/index.md).
 
+## Freeze a wire protocol
+
+The real-time session protocol (`rlmesh.session.v2`, `[protocols."rlmesh-realtime-v1"]` in `rlmesh.toml`) is provisional until the 0.2.0 release freezes it. Anything in `session.proto` then is permanent, so delete dead messages and values before. In the release commit:
+
+1. Set its `status = "frozen"` and `frozen_in = "v0.2.0"`.
+2. Run `mise run protocol:baseline-regen rlmesh-realtime-v1` to snapshot `crates/rlmesh-session-core/baselines/rlmesh-realtime-v1`.
+3. Run `mise run check`. From then on `protocol:baseline-verify` keeps the live tree byte-identical to the baseline, and `protocol:breaking` checks it against the tag. The byte goldens (`crates/rlmesh-session-core/tests/vectors/wire`) already catch any change to an encoding.
+
 ## Tag scheme
 
 One unscoped annotated tag per release: `vX.Y.Z`. The legacy `rust/v*` and `python/v*` tags are history — do not add more.
@@ -60,33 +68,35 @@ RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are 
 
 ## Publish order
 
-The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-proto`, `rlmesh-spaces`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cli`, `rlmesh-grpc`, `rlmesh`), then uploads the wheels to PyPI, publishes NuGet packages when configured, publishes the npm packages, then cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh-cli`, `rlmesh`), then uploads the wheels to PyPI and cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
 
 ## GitHub Releases
 
-Every release gets a GitHub Release built from its tag. The Linux wheel runner
-produces `rlmesh-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz` and
-`rlmesh-X.Y.Z-x86_64-pc-windows-msvc.tar.gz` via `release:cxx:package` and
-`release:cxx:package --target windows`. The macOS wheel runner produces
-`rlmesh-X.Y.Z-universal-apple-darwin.tar.gz` via `release:cxx:package --target macos`.
-All three tarballs and their `.sha256` files are attached alongside the C# packages.
-A rerun uploads only missing assets and never replaces one: CMake `FetchContent`
-users pin their SHA-256. A break-glass `--github-release` needs all three tarballs
-and the final NuGet/UPM packages downloaded from the original build first.
-Prereleases (`-beta.N`, `-rc.N`) are marked `--prerelease` so they stay out of
-"Latest"; a final `X.Y.Z` becomes Latest automatically.
+Every release gets a GitHub Release built from its tag and curated changelog.
+For 0.2, the published distributions are the Python wheels and the nine Rust
+crates above. C/C++, C#, Unity, Unreal, npm and board-library release assets are
+fenced; their code and existing CI build/test coverage remain in the tree.
+C ABI 7 is cut only when the native bindings ship.
 
-**Re-run failed jobs only** for releases. Keep the successful builder artifacts
-from the original run. Rebuilding a successful macOS job changes signing timestamps
-and therefore tarball/nupkg bytes; nuget.org skips the already-published version,
-while a later GitHub upload could otherwise attach a different rebuild of that
-same version. Retry only the failed publish job with the original inputs. If a
-successful builder must be replaced after publishing began, stop and plan a new
-version instead of rebuilding the release in place.
+`release.py --github-release` does not require or attach native packages in 0.2,
+even if they exist locally. Prereleases (`-beta.N`, `-rc.N`) are marked
+`--prerelease` so they stay out of "Latest"; a final `X.Y.Z` becomes Latest.
+
+**Re-run failed jobs only** for releases, preserving successful builder artifacts.
+If a successful builder must be replaced after publishing began, stop and plan
+a new version instead of rebuilding the release in place.
+
+## Fenced distribution machinery
+
+The sections below document retained packaging machinery for future releases.
+These release workflow steps are disabled in 0.2, including signing, artifact
+assembly, uploads and registry authentication. Configuring credentials or
+`NUGET_USER` does not enable them; re-enabling publication needs a separate
+release decision and the relevant integration gates.
 
 ## C# and Unity distributions
 
-The Linux builder also runs `csharp:pack` and `csharp:upm`, installing the scoped
+When re-enabled, the Linux builder also runs `csharp:pack` and `csharp:upm`, installing the scoped
 dotnet SDK only for packaging. These preliminary Linux/Windows packages verify
 assembly locally on that builder and are not uploaded; publish rebuilds the final
 packages after downloading both builders' C tarballs. Final assembly uses
@@ -100,7 +110,7 @@ settings; no source compilation or asmdef is required for a prebuilt DLL.
 
 ### Enable nuget.org trusted publishing
 
-The existing tag-only publish job uses GitHub OIDC via `NuGet/login` (pinned to
+The fenced tag-only publish steps use GitHub OIDC via `NuGet/login` (pinned to
 v1.2.0's full commit SHA), then pushes the nupkg and snupkg to
 `https://api.nuget.org/v3/index.json` with `--skip-duplicate`. It already grants
 `id-token: write` and uses the GitHub environment **release**. There is no
@@ -136,7 +146,7 @@ package and symbol versions. Until configured, use GitHub's nupkg as a local fee
 
 ### macOS signing and notarization
 
-Only the existing tag-only `wheels-macos` job builds macOS artifacts. It builds
+The retained native macOS steps belong to the tag-only `wheels-macos` job. It builds
 `rlmesh-capi` for `aarch64-apple-darwin` and `x86_64-apple-darwin`, combines both
 the dylib and static archive with `lipo`, and changes the dylib ID only if it
 differs from `@rpath/librlmesh_capi.dylib`, before signing. `release:cxx:package --target macos`
@@ -202,7 +212,7 @@ only a supplement.
 
 ## npm
 
-The Linux builder runs `build:js` (the wasm and the bundles) and
+When re-enabled, the Linux builder runs `build:js` (the wasm and the bundles) and
 `release:js:native` for `linux-x64`, `linux-arm64` (cargo-zigbuild, glibc 2.28,
 Node 22's own floor) and `win32-x64` (cargo-xwin); the macOS builder adds
 `darwin-arm64` and `darwin-x64`. Publish runs `release:js:package --require-all`,
@@ -229,14 +239,7 @@ python -m venv /tmp/rlmesh-smoke
 
 ## Publish the docs
 
-rlmesh.dev/docs is built from the platform repo, which keeps a frozen copy of the docs for the latest release at `/docs/` and the working copy for `main` at `/docs/dev/`. After a final `X.Y.Z` release, cut the docs there with this checkout at the tag:
-
-```bash
-RLMESH_OSS_DIR=/path/to/rlmesh mise run docs:cut -- X.Y.Z   # OSS checkout at vX.Y.Z
-RLMESH_OSS_DIR=/path/to/rlmesh mise run gen:api-snapshot:dev   # OSS checkout back on main
-```
-
-Open the result as a `docs: cut X.Y.Z` PR in the platform repo. It goes live on the next platform promote. Skip this for pre-releases.
+The published user documentation is at [rlmesh.dev/docs](https://rlmesh.dev/docs/). Generate the Python API reference from the release tag with `uv run rlmesh-api-surface docs-api-surface --output-dir <dir>` so it describes the released package.
 
 The Rust, C, and C++ API references are early access and come from the same extractor: `uv run rlmesh-api-surface docs-api-surface --language rust|c|cpp --output-dir <dir>`. Rust documents the `rlmesh` facade crate from rustdoc JSON (it runs `cargo rustdoc` itself); C and C++ parse `rlmesh.h` and `rlmesh.hpp` with libclang, one page per `---- section ----` divider. Each snapshot carries the `access` label and summary from `[api_surface.<language>]` in `rlmesh.toml`, and the extractor warns about every undocumented item.
 

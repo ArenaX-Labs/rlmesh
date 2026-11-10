@@ -802,11 +802,11 @@ def _as_callable(obj: object) -> Callable[..., object]:
 
 # ---- pre-push checks (rlmesh check / check-image) --------------------------
 
-#: OCI config labels the managed platform's probe reads off a pushed image.
+#: OCI config labels used to validate a built image.
 DESCRIBE_LABEL = "dev.rlmesh.describe"
 PACKAGE_LABEL = "dev.rlmesh.package"
 
-#: The platform drops checkpoints whose name can't be a workload reference
+#: Checkpoint names must be valid workload references
 #: (DNS label); mirror its pattern so the failure happens before the push.
 _CHECKPOINT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
@@ -876,7 +876,7 @@ class CheckReport:
 
 
 def check_target(target: object, *, kind: str | None = None) -> CheckReport:
-    """Check an env/model class the way the platform will, before it is built.
+    """Check an env/model class before it is built.
 
     ``target`` is a ``"module:Class"`` entrypoint, a class, or an instance
     (see :func:`describe`). Fails on: a spec/tags that does not resolve, tags
@@ -884,8 +884,8 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
     without tags, a broken ``model_spec`` / ``env_tags``, an edition
     declaration this build cannot run, or a target that does not import. Warns
     on an untagged env (it runs, but only against spec-less models), on a model with no class-level ``spec`` (one set in ``load()`` serves fine
-    and rides the handshake, but a baked label will not carry it; the managed
-    probe cannot synthesize inputs without a ``ModelSpec``), on ad hoc roles a
+    and rides the handshake, but a baked label will not carry it;
+    ``rlmesh doctor`` needs a ``ModelSpec`` to synthesize inputs without a reference env), on ad hoc roles a
     curated publish gate would refuse, and on best-effort badges elsewhere in
     the envelope (variants, a non-default contract branch's spaces). ``not_checked``
     when building the env for its spaces needed a GPU, a display, or assets
@@ -902,16 +902,14 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
 
 
 def check_labels(labels: Mapping[str, str] | None) -> CheckReport:
-    """Validate a built image's rlmesh labels the way the platform probe will.
+    """Validate a built image's rlmesh labels.
 
-    A missing ``dev.rlmesh.describe`` label is a note, not a failure: the
-    platform reads describe off the ``rlmesh.serve`` handshake, so a plain
-    ``python -m rlmesh.serve`` image with no labels probes fine (run
-    :func:`check_target` on the class for the class-level checks). A present
-    label gets the same checks as :func:`check_target` with the platform's
-    verdicts for a baked envelope: an ``env_spec`` / ``model_spec`` error
-    badge fails (the platform fails it, whatever caused it), an ``env_tags``
-    badge warns. A ``dev.rlmesh.package`` label is checked for well-formed
+    A missing ``dev.rlmesh.describe`` label is a note, not a failure:
+    ``rlmesh.serve`` also exposes describe during the handshake. Run
+    :func:`check_target` on the class for the class-level checks. A present
+    label gets the same checks as :func:`check_target`, with stricter checks
+    for a baked envelope: an ``env_spec`` / ``model_spec`` error badge fails,
+    and an ``env_tags`` badge warns. A ``dev.rlmesh.package`` label is checked for well-formed
     checkpoints.
     """
     report = CheckReport()
@@ -951,8 +949,8 @@ def _check_envelope(
     """The class-level checks, shared by a fresh envelope and a baked label.
 
     ``where`` prefixes every message (the label name for a label check, empty
-    for a class check). ``baked`` selects the platform's verdict for an
-    ``env_spec`` badge: in a label it fails admission whatever caused it; on
+    for a class check). ``baked`` selects the verdict for an
+    ``env_spec`` badge: in a label it fails validation whatever caused it; on
     a class checked before the build, a badge that only says this machine
     lacks a GPU, a driver, or an in-image dependency is ``not_checked``.
     """
@@ -981,8 +979,8 @@ def _check_envelope(
             report.warnings.append(
                 f"{where}model_spec: {name} declares no class-level spec. Set in "
                 "load()? Fine for a label-less image (the handshake carries it); "
-                "a baked label will not carry it, and the managed probe cannot "
-                "synthesize inputs without a ModelSpec"
+                "a baked label will not carry it, and the managed platform cannot "
+                "test a model without a ModelSpec when you onboard it"
             )
         elif isinstance(spec, Mapping) and "error" in spec:
             badge = cast("Mapping[str, object]", spec)["error"]
@@ -995,8 +993,8 @@ def _check_envelope(
         if tags is None and branched:
             report.failed.append(
                 f"{where}env_tags: {name} declares tag_params but its default "
-                "branch has no tags; the platform probe fails a contract branch "
-                "without EnvTags"
+                "branch has no tags; the managed platform rejects a contract branch "
+                "without EnvTags when you onboard the image"
             )
         elif tags is None:
             report.warnings.append(
@@ -1005,7 +1003,7 @@ def _check_envelope(
                 "it without EnvTags (set `tags = EnvTags(...)` on the class)"
             )
         elif isinstance(tags, Mapping) and "error" in tags:
-            # The platform warns on a tags badge (it can still read the spaces).
+            # A tags badge warns because the spaces can still be read.
             badge = cast("Mapping[str, object]", tags)["error"]
             report.warnings.append(f"{where}env_tags: {badge}")
         else:
@@ -1024,8 +1022,8 @@ def _check_envelope(
             elif _needs_local_resources(error_type, badge):
                 report.not_checked.append(
                     f"{where}env_spec: could not build the env on this machine "
-                    f"({error_type}: {badge}); the platform probe builds it in the "
-                    "container. Do not bake a describe label from this machine: it "
+                    f"({error_type}: {badge}); the managed platform builds it in the "
+                    "container when you onboard the image. Do not bake a describe label from this machine: it "
                     "would carry this badge and fail admission"
                 )
             else:
@@ -1048,8 +1046,7 @@ def _needs_local_resources(error_type: str, message: str) -> bool:
     Decided by the exception type first (see :data:`_NEVER_SOFTENED` and
     :data:`_SOFTENED_TYPES`), then by a CUDA-named type, then by whole-word
     GPU/driver/display hints in the message. Only ``rlmesh check`` on a class
-    consults this; a badge baked into a label always fails, as it does on the
-    platform.
+    consults this; a badge baked into a label always fails validation.
     """
     if error_type in _NEVER_SOFTENED:
         return False
@@ -1091,8 +1088,7 @@ def _check_branches(
 ) -> None:
     """Each non-default contract branch needs tags that fit its own spaces.
 
-    A branch without tags, or whose tags are an error badge, fails: the platform
-    probe fails a branch without EnvTags.
+    A branch without tags, or whose tags are an error badge, fails validation.
 
     The default branch is the top-level ``env_tags``/``env_spec`` pair, checked
     by :func:`_check_specs`.
@@ -1111,14 +1107,15 @@ def _check_branches(
         tags = branch_map.get("env_tags")
         if tags is None:
             report.failed.append(
-                f"{where}{key}: this contract branch has no tags; the platform "
-                "probe fails a branch without EnvTags"
+                f"{where}{key}: this contract branch has no tags; the managed "
+                "platform rejects a branch without EnvTags when you onboard the image"
             )
         elif isinstance(tags, Mapping) and "error" in tags:
             badge = cast("Mapping[str, object]", tags)["error"]
             report.failed.append(
                 f"{where}{key}: this contract branch's tags could not be read "
-                f"({badge}); the platform probe fails a branch without EnvTags"
+                f"({badge}); the managed platform rejects a branch without EnvTags when "
+                "you onboard the image"
             )
         elif isinstance(tags, Mapping):
             _check_join(
@@ -1165,7 +1162,8 @@ def _check_runtime(
     if not runtime.get("supported_workflow_editions"):
         report.not_checked.append(
             f"{where}runtime: describe carries no workflow editions (built with an "
-            "older rlmesh); the runtime probe verifies the handshake"
+            "older rlmesh); the managed platform checks the handshake when you "
+            "onboard the image"
         )
         return
     error = runtime.get("workflow_edition_error")
@@ -1396,8 +1394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         metavar="IMAGE",
-        help="validate a built image's rlmesh labels the way the platform probe "
-        "will, before pushing",
+        help="validate a built image's rlmesh labels before pushing",
     )
     parser.add_argument(
         "--check-labels",

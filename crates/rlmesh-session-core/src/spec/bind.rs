@@ -1,8 +1,8 @@
-//! Binding (§6.5): a policy map against the robot maps in a session, to a
+//! Binding: a policy map against the robot maps in a session, to a
 //! binding table or the full list of refusals.
 //!
 //! 1. **Normalise** the policy ([`Policy::parse`]).
-//! 2. **Selectors** (§6.4), with run-time `at=` overrides.
+//! 2. **Selectors**, with run-time `at=` overrides.
 //! 3. **Structural candidates**: parts whose path matches and whose kind
 //!    equals the entry's (custom kinds by exact name); other parts of the
 //!    kind are kept for diagnostics.
@@ -14,16 +14,16 @@
 //! 5. **Optional entries** under the chosen assignment: absent binds `blank`
 //!    (inputs) or `drop` (actions) when allowed.
 //! 6. **Compatibility** against the one candidate: each difference is
-//!    automatic (§7.1), allowed (§7.2), or refused (`not_allowed`, naming the
+//!    automatic, allowed, or refused (`not_allowed`, naming the
 //!    conversion, or `incompatible`).
 //! 7. **Duplicate targets**: two actions on one part, or on two members of
 //!    one command group.
-//! 8. **Emit** the table, its delivery contracts (§8.2), its action grids and
+//! 8. **Emit** the table, its delivery contracts, its action grids and
 //!    its fingerprint (BLAKE3 over the canonical table).
 //!
 //! Lease availability is not part of binding.
 //!
-//! In a scene (scene design §5), a run that names no robot binds against the
+//! In a scene, a run that names no robot binds against the
 //! view ([`crate::spec::view`]): selectors resolve from the view root, a
 //! qualified selector (`eye-l:gaze`) in that robot's own map, and actions may
 //! target any placed robot, aligned by `t0` only. Lockstep sessions keep
@@ -38,8 +38,7 @@ use core::time::Duration;
 
 use crate::wire::part::{DType, Encoding, FieldSpec, MAX_CHUNK_BYTES, PartSpec};
 use crate::wire::{
-    ActionGrid, AuthoritySnapshot, ChannelId, ClockMode, Fingerprint, ParticipantId, Place,
-    StreamContract,
+    ActionGrid, AuthoritySnapshot, ChannelId, Fingerprint, ParticipantId, Place, StreamContract,
 };
 use serde_json::{Value, json};
 
@@ -117,7 +116,7 @@ impl Status {
 }
 
 /// A binder diagnostic code (lowercase; wire statuses are uppercase and
-/// never share a name, §6.5).
+/// never share a name).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Code {
     /// A required entry has no candidate.
@@ -166,7 +165,7 @@ pub(crate) struct NamesClash {
     pub(crate) robot: Vec<String>,
 }
 
-/// One refusal (§6.7).
+/// One refusal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Problem {
     /// Its code.
@@ -293,7 +292,7 @@ pub struct ActionRow {
     pub t0: ChunkStart,
 }
 
-/// A binding table (§6.8).
+/// A binding table.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
     /// The policy.
@@ -329,7 +328,7 @@ impl Binding {
             .collect()
     }
 
-    /// The action grid per commanded part (§9.2).
+    /// The action grid per commanded part.
     pub fn grids(&self) -> Vec<ActionGrid> {
         self.actions
             .iter()
@@ -679,7 +678,6 @@ struct Binder<'a> {
     /// The view's parts under their view paths, when binding a view.
     view: Option<&'a [PartSpec]>,
     places: &'a [Place],
-    lockstep: bool,
     scope: Vec<String>,
     run: RunCall,
     problems: Vec<Problem>,
@@ -687,16 +685,13 @@ struct Binder<'a> {
 }
 
 /// What a policy binds against: every robot's parts and, when the session
-/// runs a scene, its place table (scene design §5).
+/// runs a scene, its place table.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Target<'a> {
     /// Every declared part.
     pub parts: &'a [PartSpec],
     /// Where each placed robot's parts appear in the view.
     pub places: &'a [Place],
-    /// How session time advances: a lockstep session's actions stay on one
-    /// robot.
-    pub clock_mode: ClockMode,
 }
 
 impl<'a> Target<'a> {
@@ -705,7 +700,6 @@ impl<'a> Target<'a> {
         Self {
             parts: &state.parts,
             places: &state.places,
-            clock_mode: state.clock_mode,
         }
     }
 }
@@ -736,18 +730,27 @@ pub fn bind_in(
     options: &RunOptions,
 ) -> Result<Binding, BindError> {
     let parts = target.parts;
-    let view = match options.robot {
-        None if !target.places.is_empty() => {
-            Some(view::parts(parts, target.places).map_err(BindError::Options)?)
-        }
-        _ => None,
-    };
     let mut owners: Vec<&ParticipantId> = Vec::new();
     for part in parts {
         if !owners.contains(&&part.owner) {
             owners.push(&part.owner);
         }
     }
+    // A plain session's several robots with no robot named: each in the
+    // view under its own name, so one policy drives them all (its actions
+    // name their robots: `eye-1:gaze`).
+    let implicit;
+    let places: &[Place] =
+        if target.places.is_empty() && options.robot.is_none() && owners.len() > 1 {
+            implicit = view::each_at_its_name(&owners);
+            &implicit
+        } else {
+            target.places
+        };
+    let view = match options.robot {
+        None if !places.is_empty() => Some(view::parts(parts, places).map_err(BindError::Options)?),
+        _ => None,
+    };
     let robot = match (&options.robot, owners.as_slice()) {
         (None, _) if view.is_some() => {
             ParticipantId::new(VIEW).map_err(|e| BindError::Options(e.to_string()))?
@@ -787,8 +790,7 @@ pub fn bind_in(
         robot,
         parts,
         view: view.as_deref(),
-        places: if view.is_some() { target.places } else { &[] },
-        lockstep: target.clock_mode == ClockMode::Lockstep,
+        places: if view.is_some() { places } else { &[] },
         scope: options
             .under
             .as_ref()
@@ -1204,9 +1206,8 @@ impl<'a> Binder<'a> {
             }
         }
 
-        // Step 7: duplicate targets, and one robot per lockstep policy.
+        // Step 7: duplicate targets.
         self.duplicates(&slots, &actions);
-        self.lockstep_robots(&slots, &actions);
 
         // Contracts, one per bound input stream.
         let contracts = self.contracts(&slots, &inputs, replan);
@@ -1329,7 +1330,7 @@ impl<'a> Binder<'a> {
             .push(problem(Code::Incompatible, slot, head, body));
     }
 
-    /// Frame identities (§5.2): `frame`, pose `child`, wrench `point`.
+    /// Frame identities: `frame`, pose `child`, wrench `point`.
     fn frames(&mut self, slot: &Slot<'_>, part: &PartSpec, point: Option<&String>) -> bool {
         let kind = Kind::parse(&part.kind).unwrap_or(Kind::Custom);
         let path = part.path.as_str();
@@ -1386,7 +1387,7 @@ impl<'a> Binder<'a> {
         ok
     }
 
-    /// Joint names (§6.2): the order the model's elements take from the
+    /// Joint names: the order the model's elements take from the
     /// robot's, or a refusal.
     fn names(&mut self, slot: &Slot<'_>, part: &PartSpec, n: u32, path: &str) -> Option<Order> {
         let entry = slot.entry;
@@ -1494,7 +1495,7 @@ impl<'a> Binder<'a> {
                                 index.len(),
                                 part.names.len()
                             ),
-                            vec!["    Commanding a subset of a part (scatter) is Later (§19); declare the subset as its own part.".into()],
+                            vec!["    Commanding a subset of a part (scatter) is Later; declare the subset as its own part.".into()],
                         );
                         return None;
                     }
@@ -1827,7 +1828,7 @@ impl<'a> Binder<'a> {
                             slot.name(),
                             part.kind
                         ),
-                        vec!["    A custom kind binds only by exact name and a matching fields schema (§4.2).".into()],
+                        vec!["    A custom kind binds only by exact name and a matching fields schema.".into()],
                     );
                     return None;
                 }
@@ -2070,7 +2071,7 @@ impl<'a> Binder<'a> {
                         hz(trained),
                         hz(source_hz)
                     ),
-                    vec!["    Resampling a window to another rate is Later (§19).".into()],
+                    vec!["    Resampling a window to another rate is Later.".into()],
                 );
                 return None;
             }
@@ -2111,7 +2112,7 @@ impl<'a> Binder<'a> {
         })
     }
 
-    /// The image pipeline (§7.4): decode → rotate180 → declared crop →
+    /// The image pipeline: decode → rotate180 → declared crop →
     /// aspect fit + resize → bgr → layout → dtype or range.
     #[allow(clippy::too_many_arguments)]
     fn image(
@@ -2174,7 +2175,7 @@ impl<'a> Binder<'a> {
                         source_format.name(),
                         input.format.name()
                     ),
-                    vec!["    Mono ↔ RGB conversion is Later (§19).".into()],
+                    vec!["    Mono ↔ RGB conversion is Later.".into()],
                 );
                 return None;
             }
@@ -2554,9 +2555,7 @@ impl<'a> Binder<'a> {
                     slot.robot,
                     self.robot
                 ),
-                vec![
-                    "    All of a policy's action entries target one robot in v0.2 (§6.6).".into(),
-                ],
+                vec!["    All of a policy's action entries target one robot in v0.2.".into()],
             );
             return None;
         }
@@ -2788,8 +2787,14 @@ impl<'a> Binder<'a> {
             if !matches {
                 self.incompatible(
                     slot,
-                    format!("{}: {path}'s command fields do not match the declared schema.", slot.name()),
-                    vec!["    A custom kind binds only by exact name and a matching fields schema (§4.2).".into()],
+                    format!(
+                        "{}: {path}'s command fields do not match the declared schema.",
+                        slot.name()
+                    ),
+                    vec![
+                        "    A custom kind binds only by exact name and a matching fields schema."
+                            .into(),
+                    ],
                 );
                 return None;
             }
@@ -2806,12 +2811,34 @@ impl<'a> Binder<'a> {
                     hz(grid_hz),
                     hz(part.control_hz)
                 ),
-                vec!["    At most one delta is dispatched per control tick (§9.3).".into()],
+                vec!["    At most one delta is dispatched per control tick.".into()],
             );
             return None;
         }
         let span = dt * action.horizon;
         let valid = action.ttl.map_or(span, |ttl| ttl.min(span));
+        // A part that can't hold its target (a velocity, a torque; not a
+        // delta, which keeps its target) runs its safe behaviour whenever
+        // no action is due: each chunk must outlast the replan period, or
+        // the robot stutters between chunks and goes safe after hold_max.
+        let period = Duration::from_secs_f64(1.0 / replan);
+        if !command.hold_last && !command.is_delta() && valid <= period {
+            let needed = period.as_nanos() / dt.as_nanos().max(1) + 2;
+            self.incompatible(
+                slot,
+                format!(
+                    "{}: a chunk covers {} ms, no longer than the replan period of {} ms, and {path} can't hold its target between chunks.",
+                    slot.name(),
+                    ms(valid),
+                    ms(period)
+                ),
+                vec![format!(
+                    "    fix: \"horizon\": {needed} (or more) on {:?}, so each chunk outlasts the next replan.",
+                    slot.entry.name
+                )],
+            );
+            return None;
+        }
         let stride = command.layout().ok().and_then(|l| l.stride()).unwrap_or(0);
         if (action.horizon as usize).saturating_mul(stride) > MAX_CHUNK_BYTES {
             self.incompatible(
@@ -2905,44 +2932,6 @@ impl<'a> Binder<'a> {
                     ],
                 ));
             }
-        }
-    }
-
-    /// A lockstep session steps one robot (§12): a view's actions there
-    /// target one robot (scene design §5).
-    fn lockstep_robots(&mut self, slots: &[Slot<'a>], actions: &[ActionRow]) {
-        if !self.lockstep {
-            return;
-        }
-        let mut targets = actions
-            .iter()
-            .filter_map(|a| a.part.as_ref().map(|p| (a, &p.owner)));
-        let Some((first, robot)) = targets.next() else {
-            return;
-        };
-        for (a, other) in targets.filter(|(_, o)| *o != robot) {
-            let Some(slot) = slots
-                .iter()
-                .find(|s| s.dir == Dir::Out && s.entry.name == a.entry)
-            else {
-                continue;
-            };
-            self.problems.push(problem(
-                Code::Incompatible,
-                slot,
-                format!(
-                    "{}: targets {other}, but action {:?} targets {robot}.",
-                    slot.name(),
-                    first.entry
-                ),
-                vec![
-                    "    A lockstep session steps one robot, so a policy's actions target one robot there.".into(),
-                    format!(
-                        "    fix: bind each robot on its own: rlmesh.run(..., robot={:?})",
-                        robot.as_str()
-                    ),
-                ],
-            ));
         }
     }
 

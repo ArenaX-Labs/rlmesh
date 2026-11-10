@@ -1,4 +1,4 @@
-//! The board's half of USB provisioning (tether spec §14), sans-IO: bytes
+//! The board's half of USB provisioning, sans-IO: bytes
 //! from the serial port go in, and out come replies to write back, or a
 //! record for the platform to store before the board confirms it. The
 //! messages are `rlmesh-tether`'s, so the board and the daemon share one
@@ -24,6 +24,8 @@ pub struct Record {
     pub host_key: [u8; 32],
     /// Its host id.
     pub host_id: String,
+    /// The robot participant id assigned over USB.
+    pub name: String,
     /// Its base addresses, `host:port`, in order.
     pub addresses: Vec<String>,
 }
@@ -43,6 +45,7 @@ impl Record {
             payload: payload.to_vec(),
             host_key: p.host_key,
             host_id: String::from(core::str::from_utf8(p.host_id).ok()?),
+            name: String::from(core::str::from_utf8(p.name).ok()?),
             addresses: p
                 .addresses
                 .as_slice()
@@ -91,14 +94,14 @@ pub fn public_key(private: &[u8; 32]) -> [u8; 32] {
 }
 
 impl Responder {
-    /// A responder for robot `name` with device key `private`, holding
+    /// A responder with device key `private`, holding
     /// `record` if provisioned. `arch` as in `HELLO`.
-    pub fn new(name: &str, private: &[u8; 32], arch: u8, record: Option<&Record>) -> Self {
+    pub fn new(private: &[u8; 32], arch: u8, record: Option<&Record>) -> Self {
         let v = |s: &str| s.parse::<u16>().unwrap_or(0);
         Self {
             decoder: Decoder::new(),
             seq: 0,
-            name: String::from(name),
+            name: record.map(|r| r.name.clone()).unwrap_or_default(),
             // Major and minor, a byte each.
             lib_version: (v(env!("CARGO_PKG_VERSION_MAJOR")) << 8)
                 | v(env!("CARGO_PKG_VERSION_MINOR")),
@@ -111,7 +114,7 @@ impl Responder {
 
     /// One byte from the serial port: what to do about it, if anything.
     /// Everything that isn't a valid `GET_DEVICE` or `PROVISION` is
-    /// ignored (§14.4), the sketch's own text included.
+    /// ignored, the sketch's own text included.
     pub fn push(&mut self, byte: u8) -> Option<Step> {
         let decoded = match self.decoder.push(byte) {
             Some(Ok(decoded)) => decoded.to_vec(),
@@ -157,6 +160,7 @@ impl Responder {
         let crc = self.storing.take().unwrap_or(0);
         if ok {
             self.host_id = Some(record.host_id.clone());
+            self.name = record.name.clone();
             self.reply(status::STORED, crc)
         } else {
             self.reply(status::STORAGE_FAILED, crc)
@@ -206,7 +210,7 @@ mod tests {
     #[test]
     fn a_board_identifies_then_stores_and_confirms_its_record() {
         let private = [7; 32];
-        let mut board = Responder::new("eye-3", &private, 4, None);
+        let mut board = Responder::new(&private, 4, None);
         // The sketch's text before the frame changes nothing.
         let mut wire = b"booted\r\n".to_vec();
         wire.extend(send(&Prov::GetDevice));
@@ -223,7 +227,7 @@ mod tests {
         let Ok(Prov::DeviceInfo(info)) = provision::decode(&f, Receiver::Bridge) else {
             panic!("DEVICE_INFO");
         };
-        assert_eq!(info.name, b"eye-3");
+        assert!(info.name.is_empty());
         assert_eq!(info.flags, 0);
         assert_eq!(info.device_key, public_key(&private));
 
@@ -231,6 +235,7 @@ mod tests {
             flags: 0,
             host_key: [9; 32],
             host_id: b"rlm-3f9a2c",
+            name: b"eye-3",
             addresses: Addresses::new(&[b"192.168.1.20:7447"]).unwrap(),
         });
         let wire = send(&p);
@@ -239,6 +244,7 @@ mod tests {
             panic!("{steps:?}");
         };
         assert_eq!(record.host_id, "rlm-3f9a2c");
+        assert_eq!(record.name, "eye-3");
         assert_eq!(record.addresses, ["192.168.1.20:7447"]);
         assert_eq!(Record::parse(&record.payload).as_ref(), Some(record));
         let (t, payload) = decode(&board.stored(record, true));
@@ -262,6 +268,7 @@ mod tests {
         let Ok(Prov::DeviceInfo(info)) = provision::decode(&f, Receiver::Bridge) else {
             panic!("DEVICE_INFO");
         };
+        assert_eq!(info.name, b"eye-3");
         assert_eq!(
             (info.flags, info.host_id),
             (device_flags::PROVISIONED, &b"rlm-3f9a2c"[..])
@@ -270,13 +277,14 @@ mod tests {
 
     #[test]
     fn a_failed_store_and_an_invalid_record_are_reported() {
-        let mut board = Responder::new("eye-3", &[7; 32], 4, None);
+        let mut board = Responder::new(&[7; 32], 4, None);
         let record = Record::parse(&{
             let mut buf = [0; 252];
             let p = Prov::Provision(Provision {
                 flags: 0,
                 host_key: [9; 32],
                 host_id: b"h",
+                name: b"eye-3",
                 addresses: Addresses::new(&[b"h:1"]).unwrap(),
             });
             let n = provision::payload(&p, &mut buf).unwrap();
@@ -288,7 +296,7 @@ mod tests {
         // A PROVISION with port 0, framed by hand: refused, nothing stored.
         let mut p = alloc::vec![provision::VERSION, 0];
         p.extend([9; 32]);
-        p.extend([1, b'h', 1, 3, b'h', b':', b'0']);
+        p.extend([1, b'h', 1, b'e', 1, 3, b'h', b':', b'0']);
         let mut wire = alloc::vec![0];
         rlmesh_tether::frame::write(ty::PROVISION, 0, &[&p], |b| wire.push(b));
         let steps = feed(&mut board, &wire);
@@ -301,10 +309,65 @@ mod tests {
 
     #[test]
     fn tether_frames_and_noise_are_ignored() {
-        let mut board = Responder::new("eye-3", &[7; 32], 4, None);
+        let mut board = Responder::new(&[7; 32], 4, None);
         let mut ping = alloc::vec![0];
-        rlmesh_tether::frame::write(rlmesh_tether::msg::ty::PING, 0, &[&[1]], |b| ping.push(b));
+        // A tether `PING` (type 0x85): not a provisioning frame.
+        rlmesh_tether::frame::write(0x85, 0, &[&[1]], |b| ping.push(b));
         assert!(feed(&mut board, &ping).is_empty());
         assert!(feed(&mut board, b"\x00garbage\x00\x01\x00").is_empty());
+    }
+    #[test]
+    fn stored_names_survive_reload_and_failed_renames() {
+        fn record(name: &[u8]) -> Record {
+            let p = Prov::Provision(Provision {
+                name,
+                flags: 0,
+                host_key: [9; 32],
+                host_id: b"h",
+                addresses: Addresses::new(&[b"h:1"]).unwrap(),
+            });
+            let mut payload = [0; 252];
+            let n = provision::payload(&p, &mut payload).unwrap();
+            Record::parse(&payload[..n]).unwrap()
+        }
+        let old = record(b"eye-3");
+        let new = record(b"eye-4");
+        let mut board = Responder::new(&[7; 32], 4, Some(&old));
+        board.stored(&new, false);
+        let steps = feed(&mut board, &send(&Prov::GetDevice));
+        let [Step::Reply(reply)] = &steps[..] else {
+            panic!("reply")
+        };
+        let (ty, payload) = decode(reply);
+        let frame = Frame {
+            ty,
+            seq: 0,
+            payload: &payload,
+        };
+        let Prov::DeviceInfo(info) = provision::decode(&frame, Receiver::Bridge).unwrap() else {
+            panic!("info")
+        };
+        assert_eq!(info.name, b"eye-3");
+        board.stored(&new, true);
+        let reloaded = Record::parse(&new.payload).unwrap();
+        let mut board = Responder::new(&[7; 32], 4, Some(&reloaded));
+        let steps = feed(&mut board, &send(&Prov::GetDevice));
+        let [Step::Reply(reply)] = &steps[..] else {
+            panic!("reply")
+        };
+        let (ty, payload) = decode(reply);
+        let frame = Frame {
+            ty,
+            seq: 0,
+            payload: &payload,
+        };
+        let Prov::DeviceInfo(info) = provision::decode(&frame, Receiver::Bridge).unwrap() else {
+            panic!("info")
+        };
+        assert_eq!(info.name, b"eye-4");
+        let mut legacy = old.payload;
+        legacy[0] = 1;
+        legacy.drain(36..42);
+        assert!(Record::parse(&legacy).is_none());
     }
 }

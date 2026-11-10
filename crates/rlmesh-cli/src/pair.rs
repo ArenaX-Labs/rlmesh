@@ -1,4 +1,4 @@
-//! `rlmesh pair` (design §3 item 2): on a laptop, `rlmesh pair HOST` runs
+//! `rlmesh pair`: on a laptop, `rlmesh pair HOST` runs
 //! the pairing exchange with the robot's rlmeshd, shows the 6-digit code,
 //! and once the owner approves on the robot keeps the host's key, id and
 //! addresses with this machine's new device key in
@@ -7,8 +7,8 @@
 //! approve [CODE]` approves the machine showing the code, which rlmeshd
 //! enrolls in `devices.toml` as a `machine` (default cap `operator`).
 //!
-//! `rlmesh pair HOST --browser` pairs a browser token the same way (design
-//! §5), on the machine whose gateway will serve the browser (a
+//! `rlmesh pair HOST --browser` pairs a browser token the same way, on the machine
+//! whose gateway will serve the browser (a
 //! laptop's own): rlmeshd enrolls a `browser` (default cap `model`), and
 //! this machine keeps the token's hash and its device key in
 //! `~/.config/rlmesh/browsers.toml` ([`BrowserToken`]) and prints the
@@ -31,9 +31,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{PairArgs, PairCommand};
 
+/// How long a pairing lasts before the machine pairs again.
+const PAIRED_DAYS: i64 = 180;
+
 /// The local channel's socket in rlmeshd's state directory.
 pub const SOCKET: &str = "pair.sock";
-/// The default cap of a device of `kind` (design §12 decision 6):
+/// The default cap of a device of `kind`:
 /// `operator` for a machine approved on the robot, `model` for a browser.
 fn default_cap(kind: &str) -> &'static str {
     if kind == BROWSER { "model" } else { "operator" }
@@ -91,7 +94,7 @@ pub async fn pair(args: &PairArgs, stdout: &mut impl Write) -> Result<()> {
             max,
             state_dir,
         }) => {
-            let dir = crate::daemon::state_dir(state_dir.as_deref())?;
+            let dir = crate::host::state_dir(state_dir.as_deref())?;
             approve(&dir, code.as_deref(), max.as_deref(), stdout)
         }
         None => {
@@ -373,6 +376,9 @@ async fn approve_local(local: &Local, code: u32, max: Option<&str>) -> Answer {
             max_priority: max.to_string(),
             parts: None,
             verbs: None,
+            roles: None,
+            // A paired machine or browser pairs again within half a year.
+            expires: Some(crate::devices::date_in(PAIRED_DAYS)),
         };
         table.devices.insert(id.clone(), entry);
         Ok(id)

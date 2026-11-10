@@ -1,4 +1,4 @@
-//! A board waiting in its home's lobby (scene design §3), with this program
+//! A board waiting in its home's lobby, with this program
 //! as its transport: rehearses the lobby against a real `rlmesh daemon`
 //! without a board. It prints each phase as it reaches it, until killed.
 //!

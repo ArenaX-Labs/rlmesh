@@ -1,11 +1,11 @@
-//! What a bound entry does to its samples: the ordered conversion steps of
-//! §7.4 and the shape `predict` sees.
+//! What a bound entry does to its samples: the ordered conversion steps
+//! and the shape `predict` sees.
 //!
 //! Inputs apply decode → fields → reorder/select → units → rotation →
 //! rotate180 → declared crop → aspect fit + resize → bgr → layout → dtype
 //! or range normalisation → declared scale/offset → history window. Actions
 //! apply declared scale/offset → rescale → rotation → units → reorder, and
-//! the edge then validates and clamps. Automatic steps (§7.1) are marked
+//! the edge then validates and clamps. Automatic steps are marked
 //! `auto`.
 
 #[allow(unused_imports)]
@@ -53,7 +53,7 @@ fn gcd(a: u32, b: u32) -> u32 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-/// How an image is fitted to another aspect ratio (§7.2, v1 `fit`
+/// How an image is fitted to another aspect ratio (v1 `fit`
 /// semantics).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fit {
@@ -149,7 +149,7 @@ pub enum Step {
         to: Size,
     },
     /// Resample to the target, through an aspect fit when the aspect
-    /// ratios differ (one step, §7.4 "aspect fit + resize").
+    /// ratios differ (one step, "aspect fit + resize").
     Resize {
         /// The kernel.
         kernel: Resample,
@@ -213,7 +213,7 @@ pub enum Step {
 }
 
 impl Step {
-    /// An automatic step (§7.1), shown with `auto`.
+    /// An automatic step, shown with `auto`.
     pub fn is_auto(&self) -> bool {
         match self {
             Self::Names(Order::Reorder(_)) | Self::Chw => true,
@@ -354,7 +354,7 @@ pub struct Delivered {
     pub shape: Vec<u32>,
 }
 
-/// What `predict` receives for an input, or returns for an action (§6.1).
+/// What `predict` receives for an input, or returns for an action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delivery {
     /// One array: a single field, or 1-D fields of one dtype concatenated

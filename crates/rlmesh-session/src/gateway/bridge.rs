@@ -7,7 +7,7 @@
 //!   published, once their signature verifies (the browser gets the plain
 //!   snapshot: the wasm holds no keys).
 //! - Every browser socket is a participant attached with its token's
-//!   credential ([`Bearer`], design §5): a paired browser token's own
+//!   credential ([`Bearer`]): a paired browser token's own
 //!   device key, so the host applies that device's cap, parts and verbs,
 //!   or, for this machine's page token, the gateway's. Each runs its own
 //!   handshake, and the gateway seals and opens for it (it holds that
@@ -40,8 +40,8 @@
 //! Dropping a link drops its participant: its heartbeats stop, so the host
 //! ends its leases (the edge holds, then goes safe) and nothing is
 //! resumed by a reconnect, which attaches a new participant. A participant
-//! the host detaches (its device revoked or its entry changed, design
-//! §8.5) closes its socket ([`detached`]).
+//! the host detaches (its device revoked or its entry changed) closes its socket
+//! ([`detached`]).
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -373,7 +373,7 @@ impl Gateway {
 }
 
 /// Resolves once the host detached `participant`: its view no longer lists
-/// it (design §8.5: its device revoked, or its entry changed).
+/// it (its device revoked, or its entry changed).
 pub async fn detached(participant: &Participant) {
     let id = participant.id().clone();
     let mut view = participant.watch();
@@ -410,7 +410,7 @@ fn commandable(view: &AuthoritySnapshot) -> Vec<ChannelId> {
 }
 
 /// Declares an identity binding over `channels` (a controller that commands
-/// paths directly, §6.5), when they differ from `bound`.
+/// paths directly), when they differ from `bound`.
 async fn rebind(
     participant: &Participant,
     bound: &Mutex<Vec<ChannelId>>,
@@ -728,6 +728,7 @@ fn verb_name(command: &Command) -> &'static str {
         Command::EnterSafe { .. } => "enter_safe",
         Command::Ready { .. } => "ready",
         Command::Decided { .. } => "decided",
+        Command::Keep { .. } => "keep",
         _ => "this verb",
     }
 }

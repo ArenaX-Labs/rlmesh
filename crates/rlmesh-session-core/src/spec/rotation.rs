@@ -1,4 +1,4 @@
-//! Rotation encodings (§5.3) and the one codec between them.
+//! Rotation encodings and the one codec between them.
 //!
 //! `quat_xyzw` is canonical (decided Q2). `quat_xyzw ↔ quat_wxyz` is a
 //! component permutation that keeps the sign and is automatic; every other

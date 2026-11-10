@@ -1,7 +1,8 @@
 /* The board's loop on Linux: the device robot over rlmesh_zenoh, against a
  * real session host (rlmesh-device's test host), with Linux's clock and randomness where a
  * board has esp_timer and its RNG. Passes once the robot has joined, had 20
- * heartbeats echoed and published samples under its delivered stream key.
+ * heartbeats echoed, applied two distinct controller targets, and published
+ * the applied values under its delivered stream key.
  *
  *   host_robot <host:port#secret.hostkey> [seconds]
  *
@@ -9,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/random.h>
 #include <time.h>
 
@@ -62,7 +64,9 @@ int main(int argc, char** argv) {
   rlmesh_device_robot_status_t status;
   uint64_t start = now_us(), joined = 0, next_sample = 0;
   uint8_t phase = 255;
-  unsigned published = 0;
+  unsigned published = 0, applied[2] = {0, 0};
+  float position[2] = {0.1f, 0.2f};
+  static const float targets[2][2] = {{0.25f, -0.1f}, {-0.2f, 0.15f}};
   int ok = 0;
   while (now_us() - start < (uint64_t)seconds * 1000000u) {
     rlmesh_zenoh_poll(&z);
@@ -77,15 +81,32 @@ int main(int argc, char** argv) {
     if (status.phase == 4 && now_us() >= next_sample) {
       /* A sample of the eyes, sealed under the stream key the host delivered:
        * NOT_READY until it arrives. */
-      static const float kPos[2] = {0.1f, 0.2f};
+      rlmesh_device_tick_t tick;
+      int result = rlmesh_device_robot_tick(robot, (uint8_t)eyes, now_us(), &tick);
+      if (result == 1 && tick.has_action) {
+        if (tick.mode != RLMESH_DEVICE_DRIVING || tick.value_len != sizeof position) {
+          fprintf(stderr, "invalid action: mode %u, %zu bytes\n", tick.mode, tick.value_len);
+          break;
+        }
+        int target = memcmp(tick.value, targets[0], sizeof position) == 0   ? 0
+                     : memcmp(tick.value, targets[1], sizeof position) == 0 ? 1
+                                                                            : -1;
+        if (target < 0) {
+          fprintf(stderr, "unexpected command target\n");
+          break;
+        }
+        memcpy(position, tick.value, sizeof position);
+        applied[target]++;
+      }
       next_sample = now_us() + 20000;
       uint64_t t = now_us();
-      if (rlmesh_device_robot_publish(robot, (uint8_t)eyes, t, (const uint8_t*)kPos, sizeof kPos,
-                                      t) == RLMESH_DEVICE_OK) {
+      if (rlmesh_device_robot_publish(robot, (uint8_t)eyes, t, (const uint8_t*)position,
+                                      sizeof position, t) == RLMESH_DEVICE_OK) {
         published++;
       }
     }
-    if (status.phase == 4 && status.echoes >= 20 && published >= 5) {
+    if (status.phase == 4 && status.echoes >= 20 && published >= 5 && applied[0] >= 1 &&
+        applied[1] >= 5) {
       ok = 1;
       break;
     }
@@ -95,6 +116,7 @@ int main(int argc, char** argv) {
   printf("joined in %.3f s, %llu echoes, %u samples, mode %u, epoch %llu, %u transport failures\n",
          joined ? (double)(joined - start) / 1e6 : -1.0, (unsigned long long)status.echoes,
          published, status.mode, (unsigned long long)status.epoch, z.failed);
+  printf("applied targets: %u, %u ticks\n", applied[0], applied[1]);
   /* A subscription or token the transport couldn't declare fails it too. */
   if (z.failed != 0) ok = 0;
   rlmesh_zenoh_close(&z);

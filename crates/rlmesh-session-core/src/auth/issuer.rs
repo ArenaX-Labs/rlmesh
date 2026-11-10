@@ -1,4 +1,4 @@
-//! The host's key schedule (design §8.4, §8.5), sans-IO: every key it drew,
+//! The host's key schedule, sans-IO: every key it drew,
 //! who holds it, what each member still has to acknowledge, stream key
 //! rotations and the pending grants whose keys are on their way to the
 //! robots.
@@ -31,7 +31,7 @@
 //! - **E-stop keys.** Each generation gets a `k_estop` when it takes
 //!   effect: it sends under it (the key comes back in its `Attach` reply,
 //!   [`KeyIssuer::estop_key`]) and every robot member receives it, so its
-//!   edges latch the member's signal with no host (§6, §8.4). Nothing waits
+//!   edges latch the member's signal with no host. Nothing waits
 //!   on their acknowledgements: until an edge has the key, it drops the
 //!   signal and the ctl `Estop` still stops the session.
 //!
@@ -49,9 +49,9 @@ use crate::wire::{
 };
 
 /// How long a rotation waits for receivers to install a new version after
-/// the host did, before it switches the sender (§8.5 step 2).
+/// the host did, before it switches the sender.
 pub const INSTALL_WAIT_NS: i64 = 500_000_000;
-/// How long a grant waits for its robots to install its keys (§8.5).
+/// How long a grant waits for its robots to install its keys.
 pub const GRANT_WAIT_NS: i64 = 2_000_000_000;
 /// How often an unacknowledged delivery is sent again.
 pub const RETRY_NS: i64 = 250_000_000;
@@ -373,7 +373,7 @@ impl KeyIssuer {
             Some(_) => self.detach(participant),
             None => Vec::new(),
         };
-        let mut estop = self.draw(rng, KeyPurpose::Estop, Security::Sign)?;
+        let mut estop = self.draw(rng, KeyPurpose::Estop, Security::Mac)?;
         estop.sender = Some(participant.clone());
         estop.generation = generation;
         let estop_id = estop.key_id;
@@ -592,7 +592,7 @@ impl KeyIssuer {
 
     /// A device's entry changed: every slot a device that holds one of its
     /// versions may no longer read rotates, once, to the members still
-    /// allowed (design §8.5). A slot is never rotated for its own sender.
+    /// allowed. A slot is never rotated for its own sender.
     ///
     /// # Errors
     /// [`CtlError`] when no key could be drawn.
@@ -730,7 +730,7 @@ impl KeyIssuer {
     }
 
     /// Every rotation step still waiting, and for whom: what a revocation
-    /// report names (§8.5).
+    /// report names.
     pub fn pending(&self) -> Vec<PendingStep> {
         self.slots
             .iter()
@@ -957,7 +957,7 @@ impl KeyIssuer {
         let security = if request.parts.iter().any(|p| p.security == Security::Seal) {
             Security::Seal
         } else {
-            Security::Sign
+            Security::Mac
         };
         let mut keys = Vec::new();
         for robot in &robots {
@@ -989,7 +989,7 @@ impl KeyIssuer {
                 self.keys.insert(key.key_id, key);
             }
             // A lockstep reply carries every part the robot publishes: only
-            // a holder that may read them all gets one (§8.6).
+            // a holder that may read them all gets one.
             if !request.reads_all.contains(robot) {
                 continue;
             }
@@ -1155,7 +1155,7 @@ mod tests {
             robot: pid("arm"),
             path: "j".into(),
             channels: vec![ChannelId(1), ChannelId(2)],
-            security: Security::Sign,
+            security: Security::Mac,
         }]
     }
 
@@ -1408,7 +1408,7 @@ mod tests {
                 robot: pid("arm"),
                 channel: ChannelId(1),
                 priority: ChannelPriority::Realtime,
-                security: Security::Sign,
+                security: Security::Mac,
             }],
             reads_all: vec![pid("arm")],
         };

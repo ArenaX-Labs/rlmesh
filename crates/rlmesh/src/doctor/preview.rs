@@ -1,5 +1,5 @@
 //! The short random-action clip an environment probe captures from its scene
-//! camera. Ported from the managed probe (`probe/preview.rs`); the clip is
+//! camera. The clip is
 //! encoded with the recorder's in-process AV1 writer, so no ffmpeg is needed.
 
 use std::path::Path;

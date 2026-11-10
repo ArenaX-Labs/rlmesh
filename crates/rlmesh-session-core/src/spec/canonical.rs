@@ -1,5 +1,5 @@
 //! Canonical JSON (RFC 8785, the JSON Canonicalization Scheme) and the
-//! fingerprints taken over it (§3.3, §6.5).
+//! fingerprints taken over it.
 //!
 //! A fingerprint is the first 8 bytes of BLAKE3 over the canonical bytes.
 //! Only Rust computes fingerprints, so every language agrees on them.

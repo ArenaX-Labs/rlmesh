@@ -1,4 +1,4 @@
-//! The lobby and scenes (scene design §3, §4, §5): a waiting participant's
+//! The lobby and scenes: a waiting participant's
 //! assignment, the orders a home daemon sends satellites, a run's state, and
 //! the places and scene a session's authority state carries.
 
@@ -25,8 +25,6 @@ pub enum Assignment {
     Join(Join),
     /// A satellite's: host a scene's session.
     Host(HostOrder),
-    /// A satellite's: serve a model as a scene member.
-    Serve(ServeOrder),
     /// A satellite's: close what it runs for a run.
     Stop(StopOrder),
 }
@@ -64,23 +62,6 @@ pub struct HostOrder {
     pub devices: Vec<DeviceRecord>,
     /// The robots' pins.
     pub pins: Vec<RobotPin>,
-}
-
-/// A satellite's order to serve a catalog model as a scene member.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServeOrder {
-    /// The run.
-    pub run: String,
-    /// The member it serves as.
-    pub member: ParticipantId,
-    /// The catalog model (`prebuilt/smolvla/so100`).
-    pub model: String,
-    /// The run's session.
-    pub session: SessionId,
-    /// The scene host's base addresses.
-    pub addresses: Vec<String>,
-    /// The scene host's static X25519 key.
-    pub host_key: [u8; 32],
 }
 
 /// A satellite's order to close what it runs for `run`.
@@ -125,11 +106,11 @@ pub struct RobotPin {
     pub robot: ParticipantId,
     /// Its device.
     pub device: String,
-    /// The tethered board's id (tether spec §7).
+    /// The tethered board's id.
     pub board_id: Option<[u8; 8]>,
 }
 
-/// Where a run is (scene design §4.1).
+/// Where a run is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RunStage {
     /// Checking the scene against devices and pins.
@@ -152,7 +133,7 @@ pub enum RunStage {
     Ended,
     /// Failed.
     Failed,
-    /// Waiting for a lost member (§4.3).
+    /// Waiting for a lost member.
     Rejoining,
 }
 
@@ -210,7 +191,7 @@ pub struct RunState {
     pub scene_fingerprint: Option<Fingerprint>,
 }
 
-/// One robot's place in a scene's view (§5).
+/// One robot's place in a scene's view.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Place {
     /// The robot.

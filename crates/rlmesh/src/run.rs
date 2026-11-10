@@ -8,7 +8,6 @@ pub(crate) mod drive;
 pub(crate) mod hooks;
 mod read;
 pub use read::{FrameSources, ReadFn, ReadItem, Reader, RenderFn};
-#[cfg(feature = "lockstep")]
 mod bind;
 mod lent;
 mod native;
@@ -23,7 +22,6 @@ mod targets;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "lockstep")]
 pub use bind::Binding;
 pub use hooks::{RunContext, RunFrame, RunHooks};
 pub(crate) use options::check_horizon;
@@ -82,7 +80,6 @@ impl Model {
     /// Bind this model to `env` and step it by hand, as Python's
     /// `Model.bind`: connects now, serving a local env in this process for
     /// the binding's life. Closing the binding never closes the model.
-    #[cfg(feature = "lockstep")]
     pub fn bind<'a>(
         &'a self,
         target: impl Into<EnvTarget<'a>>,
@@ -117,7 +114,6 @@ pub async fn run_async<'a>(
 fn driven(model: ModelTarget<'_>) -> Result<native::Driven<'_>> {
     Ok(match model.0 {
         ModelKind::Model(model) => native::Driven::Local(model),
-        #[cfg(feature = "lockstep")]
         ModelKind::Remote(model) if crate::address::is_v2(model.address()) => {
             native::Driven::Served(model)
         }
@@ -134,7 +130,6 @@ fn driven(model: ModelTarget<'_>) -> Result<native::Driven<'_>> {
 }
 
 /// Bind `model` to `env` (see [`Model::bind`]).
-#[cfg(feature = "lockstep")]
 pub fn bind<'a>(
     model: impl Into<ModelTarget<'a>>,
     env: impl Into<EnvTarget<'a>>,
@@ -159,7 +154,6 @@ pub(crate) fn run_prepared(
     ))
 }
 
-#[cfg(feature = "lockstep")]
 pub(crate) fn bind_prepared<'a>(
     model: crate::binding::model::PreparedModel,
     env: EnvTarget<'a>,

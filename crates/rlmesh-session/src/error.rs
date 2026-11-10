@@ -29,7 +29,7 @@ pub enum SessionError {
     #[error("no reply from the session host within {0:?}")]
     NoReply(Duration),
     /// The host did not answer a verb in time, and it stays pending: its
-    /// outcome is unknown until [`Pending::reply`] resolves (§8.6).
+    /// outcome is unknown until [`Pending::reply`] resolves.
     #[error(
         "no reply from the session host within {timeout:?}: request {} is pending, its outcome unknown",
         .pending.id()
@@ -75,7 +75,7 @@ pub enum SessionError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     /// A message under a delivered key was refused, or there is no key to
-    /// send it under yet (§8.5).
+    /// send it under yet.
     #[error("keys: {0}")]
     Key(String),
     /// The session (or one of its tasks) has stopped.

@@ -12,15 +12,18 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use rlmesh_session::wire::{
-    ActionChunk, AuthoritySnapshot, ChannelId, EdgeMode, Heartbeat, PartSpec, ParticipantId,
-    ParticipantReport, PublisherCounters, RunCounters, Sample, StreamSpec,
+    ActionChunk, AuthoritySnapshot, ChannelId, EdgeMode, HostHealth, LinkHealth, PartSpec,
+    ParticipantId, ParticipantReport, PublisherCounters, ReasonCode, RunCounters, Sample,
+    StreamSpec,
 };
+
+use rlmesh_session::edge::Rejection;
 
 use crate::meter::{CounterRate, RateMeter, window_for};
 use crate::timeline::{Entry, Kind, Timeline, Tone};
 use crate::values::{self, Value};
 
-/// A verb the cockpit sends through the host (§11.1). A latched e-stop is
+/// A verb the cockpit sends through the host. A latched e-stop is
 /// cleared only by the embodiment (a local clear), so there is no clear
 /// here: after it, disarm and arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -31,6 +34,8 @@ pub enum Verb {
     Disarm,
     /// Emergency stop: latches until the robot clears it.
     Estop,
+    /// Keep the host's recent recording as an incident.
+    Keep,
 }
 
 impl Verb {
@@ -40,6 +45,7 @@ impl Verb {
             Self::Arm => "arm",
             Self::Disarm => "disarm",
             Self::Estop => "e-stop",
+            Self::Keep => "keep",
         }
     }
 }
@@ -65,17 +71,12 @@ pub enum Input {
         /// Cockpit clock at receipt.
         receive_ns: i64,
     },
-    /// A participant's heartbeat.
-    Heartbeat {
-        /// The heartbeat.
-        heartbeat: Heartbeat,
-        /// Cockpit clock at receipt.
-        receive_ns: i64,
-    },
-    /// A participant's observer report.
-    Report {
-        /// The report.
-        report: ParticipantReport,
+    /// The host's health message (`host/health`, signed): every link as
+    /// the host measures it, each edge's counters and each participant's
+    /// latest observer report.
+    Health {
+        /// The message.
+        health: HostHealth,
         /// Cockpit clock at receipt.
         receive_ns: i64,
     },
@@ -118,7 +119,8 @@ impl Default for ModelConfig {
             plot_window: Duration::from_secs(10),
             plot_every: Duration::from_millis(20),
             thumbnail_every: Duration::from_millis(200),
-            counter_window: Duration::from_secs(2),
+            // Reports arrive with the host's health, about once a second.
+            counter_window: Duration::from_secs(4),
             recent: Duration::from_secs(10),
             lane_window: Duration::from_secs(60),
             timeline_len: 512,
@@ -171,13 +173,15 @@ pub(crate) struct EdgeState {
     pub(crate) last: Option<(u64, i64)>,
     /// Cockpit clock when the newest tick arrived.
     pub(crate) last_receive_ns: i64,
-    /// Ticks later than two control periods (§9.1).
+    /// Ticks later than two control periods.
     pub(crate) misses: u64,
     /// Cockpit clock of each recent miss.
     pub(crate) recent_misses: VecDeque<i64>,
     /// The longest gap between consecutive ticks.
     pub(crate) longest_gap_ns: i64,
     pub(crate) mode: Option<(EdgeMode, i64)>,
+    /// Why the edge is in its mode, as its newest tick says.
+    pub(crate) reason: ReasonCode,
     pub(crate) present: u64,
     pub(crate) total: u64,
 }
@@ -232,10 +236,14 @@ pub struct Model {
     /// By the commandable part's channel.
     pub(crate) chunks: BTreeMap<ChannelId, ChunkState>,
     pub(crate) controllers: BTreeMap<ParticipantId, ControllerState>,
-    /// The newest heartbeat per participant, with its receipt time.
-    pub(crate) heartbeats: BTreeMap<ParticipantId, (Heartbeat, i64)>,
+    /// Each attached participant's link as the host's newest health message
+    /// has it, with that message's receipt time.
+    pub(crate) links: BTreeMap<ParticipantId, (LinkHealth, i64)>,
+    /// The `sent_ns` of each participant's newest report taken: the host
+    /// relays the same report until a newer one arrives.
+    pub(crate) reported: BTreeMap<ParticipantId, i64>,
     /// How fast each participant's newest seen seq of each stream advances,
-    /// on its clock (heartbeat `last_seq_seen`).
+    /// on the host's clock (its links' `last_seq_seen`).
     pub(crate) heard: BTreeMap<(ParticipantId, ChannelId), CounterRate>,
     /// `(receive_ns, newest capture_ns)`: session time against the
     /// cockpit's clock, for the real-time factor.
@@ -259,7 +267,8 @@ impl Model {
             edges: BTreeMap::new(),
             chunks: BTreeMap::new(),
             controllers: BTreeMap::new(),
-            heartbeats: BTreeMap::new(),
+            links: BTreeMap::new(),
+            reported: BTreeMap::new(),
             heard: BTreeMap::new(),
             progress: VecDeque::new(),
             last_outcome: None,
@@ -300,11 +309,7 @@ impl Model {
                 capture_local_ns,
             } => self.on_sample(&sample, receive_ns, capture_local_ns),
             Input::Chunk { chunk, receive_ns } => self.on_chunk(&chunk, receive_ns),
-            Input::Heartbeat {
-                heartbeat,
-                receive_ns,
-            } => self.on_heartbeat(heartbeat, receive_ns),
-            Input::Report { report, receive_ns } => self.on_report(&report, receive_ns),
+            Input::Health { health, receive_ns } => self.on_health(health, receive_ns),
             Input::Outcome { verb, result } => {
                 let (tone, text) = match &result {
                     Ok(()) => (
@@ -482,6 +487,7 @@ impl Model {
             recent_misses: VecDeque::new(),
             longest_gap_ns: 0,
             mode: None,
+            reason: ReasonCode::Unspecified,
             present: 0,
             total: 0,
         });
@@ -512,6 +518,7 @@ impl Model {
         edge.last = Some((sample.seq, sample.capture_ns));
         edge.last_receive_ns = receive_ns;
         let changed = edge.mode.is_none_or(|(mode, _)| mode != applied.mode);
+        edge.reason = applied.reason;
         if changed {
             let from = edge.mode.map(|(m, _)| m);
             edge.mode = Some((applied.mode, receive_ns));
@@ -522,9 +529,13 @@ impl Model {
                 applied.mode.to_string(),
                 tone,
             );
+            let why = match applied.reason {
+                ReasonCode::Unspecified => String::new(),
+                reason => format!(" ({reason})"),
+            };
             let text = match from {
-                Some(from) => format!("edge {label}: {from} -> {}", applied.mode),
-                None => format!("edge {label}: {}", applied.mode),
+                Some(from) => format!("edge {label}: {from} -> {}{why}", applied.mode),
+                None => format!("edge {label}: {}{why}", applied.mode),
             };
             self.push(receive_ns, Kind::Edge, tone, text);
         }
@@ -589,16 +600,56 @@ impl Model {
         }
     }
 
-    fn on_heartbeat(&mut self, heartbeat: Heartbeat, receive_ns: i64) {
+    fn on_health(&mut self, health: HostHealth, receive_ns: i64) {
         let window = self.config.counter_window;
-        for &(channel, seq) in &heartbeat.last_seq_seen {
-            self.heard
-                .entry((heartbeat.participant.clone(), channel))
-                .or_insert_with(|| CounterRate::new(window))
-                .record(heartbeat.t1_ns, seq, receive_ns);
+        let mut links = BTreeMap::new();
+        for link in health.links {
+            let Some(id) = link.participant.clone() else {
+                continue;
+            };
+            for &(channel, seq) in &link.last_seq_seen {
+                self.heard
+                    .entry((id.clone(), channel))
+                    .or_insert_with(|| CounterRate::new(window))
+                    .record(health.host_ns, seq, receive_ns);
+            }
+            if let Some(report) = &link.report
+                && self.reported.get(&id) != Some(&report.sent_ns)
+            {
+                self.reported.insert(id.clone(), report.sent_ns);
+                self.on_report(report, receive_ns);
+            }
+            self.on_rejected(&id, &link, receive_ns);
+            links.insert(id, (link, receive_ns));
         }
-        self.heartbeats
-            .insert(heartbeat.participant.clone(), (heartbeat, receive_ns));
+        // Who the host no longer measures is gone (or restarted: its
+        // counters start again).
+        self.reported.retain(|id, _| links.contains_key(id));
+        self.links = links;
+    }
+
+    /// An edge that refused chunks since the last message says so on the
+    /// timeline, by reason: the chunks reached it, and why they did not
+    /// move it.
+    fn on_rejected(&mut self, id: &ParticipantId, link: &LinkHealth, receive_ns: i64) {
+        let before = self.links.get(id).map(|(l, _)| l.rejected.as_slice());
+        let mut refused = Vec::new();
+        for &(reason, count) in &link.rejected {
+            let was = before
+                .and_then(|b| b.iter().find(|(r, _)| *r == reason))
+                .map_or(0, |(_, n)| *n);
+            if count > was {
+                refused.push(format!("{} {}", count - was, rejection_name(reason)));
+            }
+        }
+        if !refused.is_empty() {
+            self.push(
+                receive_ns,
+                Kind::Edge,
+                Tone::Warn,
+                format!("edge {id} refused chunks: {}", refused.join(", ")),
+            );
+        }
     }
 
     fn on_report(&mut self, report: &ParticipantReport, receive_ns: i64) {
@@ -648,6 +699,18 @@ impl ControllerState {
             ages: VecDeque::new(),
         }
     }
+}
+
+/// A rejection's name, as the edge counts it (`stale_token`).
+pub fn rejection_name(reason: Rejection) -> String {
+    let mut out = String::new();
+    for (i, c) in format!("{reason:?}").chars().enumerate() {
+        if c.is_ascii_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
 }
 
 /// The tone of an edge mode.

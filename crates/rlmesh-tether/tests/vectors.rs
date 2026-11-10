@@ -1,4 +1,4 @@
-//! The conformance vectors of spec §10 (`tests/vectors.json`, schema in
+//! The conformance vectors (`tests/vectors.json`, schema in
 //! `tests/README.md`): this crate must reproduce them byte for byte, and
 //! every implementation of the tether (the Arduino library's host runner
 //! too) runs the same file.
@@ -588,7 +588,7 @@ fn frame_cases() -> Vec<Value> {
             cat(&[&[0, 0, 0x37, 0x42, 0, 0], &ping]),
         ),
         (
-            "a sketch's text, then a provisioning frame with its leading delimiter (§14.2)",
+            "a sketch's text, then a provisioning frame with its leading delimiter",
             256,
             cat(&[b"booted\r\n", &prov_wire(&Prov::GetDevice, 0)]),
         ),
@@ -865,7 +865,7 @@ fn rejection_cases() -> Vec<Value> {
     let mut long_name = h.clone();
     long_name.push(b'x');
     let mut cases: Vec<Rejection<'_>> = vec![
-        // Direction (§3.2).
+        // Direction.
         (
             "COMMAND heard by the bridge (an echoing adapter)",
             Bridge,
@@ -1682,7 +1682,7 @@ fn generate() -> Value {
     })
 }
 
-// ── Provisioning (spec §14) ──────────────────────────────────────────────
+// ── Provisioning ──────────────────────────────────────────────
 
 /// Writes `msg`, or panics with its error: a leading delimiter, then the
 /// frame.
@@ -1714,6 +1714,7 @@ fn prov_json(m: &Prov<'_>) -> Value {
             "flags": p.flags,
             "host_key": hex(&p.host_key),
             "host_id": hex(p.host_id),
+            "name": hex(p.name),
             "addresses": p.addresses.as_slice().iter().map(|a| hex(a)).collect::<Vec<_>>(),
         }),
     }
@@ -1745,6 +1746,7 @@ fn with_prov<R>(v: &Value, f: impl FnOnce(Prov<'_>) -> R) -> R {
         }),
         "PROVISION" => {
             let host_id = unhex(&v["host_id"]);
+            let name = unhex(&v["name"]);
             let list: Vec<Vec<u8>> = v["addresses"]
                 .as_array()
                 .expect("addresses")
@@ -1756,6 +1758,7 @@ fn with_prov<R>(v: &Value, f: impl FnOnce(Prov<'_>) -> R) -> R {
                 flags: int(&v["flags"]),
                 host_key: key32(&v["host_key"]),
                 host_id: &host_id,
+                name: &name,
                 addresses: Addresses::new(&refs).expect("at most 4"),
             }))
         }
@@ -1783,6 +1786,7 @@ fn provision_of<'a>(host_id: &'a [u8], addresses: &[&'a [u8]]) -> Provision<'a> 
         flags: 0,
         host_key: core::array::from_fn(|i| 0x50 + i as u8),
         host_id,
+        name: b"eye-3",
         addresses: Addresses::new(addresses).expect("at most 4"),
     }
 }
@@ -1794,11 +1798,11 @@ fn address(len: usize) -> Vec<u8> {
     a
 }
 
-/// A PROVISION payload of exactly `len` bytes (36 + 32-byte host id + 4
+/// A PROVISION payload of exactly `len` bytes (37 + 32-byte host id + 5-byte name + 4
 /// addresses), with addresses as long as it takes.
 fn provision_addresses(len: usize) -> Vec<Vec<u8>> {
-    // 36 + 32 + 4 × (1 + a) = len.
-    let total = len - 68 - 4;
+    // 37 + 32 + 5 + 4 × (1 + a) = len.
+    let total = len - 74 - 4;
     let base = total / 4;
     (0..4)
         .map(|i| address(base + usize::from(i < total % 4)))
@@ -1807,6 +1811,7 @@ fn provision_addresses(len: usize) -> Vec<Vec<u8>> {
 
 fn provision_cases() -> Vec<Value> {
     let id32 = letters(MAX_ID);
+    let name128 = letters(provision::MAX_NAME);
     let full = provision_addresses(252);
     let full_refs: Vec<&[u8]> = full.iter().map(Vec::as_slice).collect();
     let longest = address(MAX_ADDRESS);
@@ -1814,7 +1819,7 @@ fn provision_cases() -> Vec<Value> {
         ("GET_DEVICE", Prov::GetDevice, 0),
         (
             "DEVICE_INFO, not provisioned",
-            Prov::DeviceInfo(device_info(b"", b"eye-3")),
+            Prov::DeviceInfo(device_info(b"", b"")),
             0,
         ),
         (
@@ -1823,8 +1828,8 @@ fn provision_cases() -> Vec<Value> {
             1,
         ),
         (
-            "DEVICE_INFO, a multi-byte UTF-8 name",
-            Prov::DeviceInfo(device_info(b"rlm-3f9a2c", "œil-ü".as_bytes())),
+            "DEVICE_INFO, a 128-byte participant id",
+            Prov::DeviceInfo(device_info(b"rlm-3f9a2c", &name128)),
             2,
         ),
         (
@@ -1870,6 +1875,21 @@ fn provision_cases() -> Vec<Value> {
     let mut buf = [0_u8; 252];
     let largest = provision::payload(&cases[7].1, &mut buf).expect("fits");
     assert_eq!(largest, 252, "the largest case is the largest payload");
+    let mut cases = cases;
+    for (label, name) in [
+        ("PROVISION, one-byte name", &b"e"[..]),
+        ("PROVISION, 128-byte name", &name128[..]),
+        ("PROVISION, participant alphabet", &b"Eye_3.v2-0"[..]),
+    ] {
+        cases.push((
+            label,
+            Prov::Provision(Provision {
+                name,
+                ..provision_of(b"h", &[b"h:1"])
+            }),
+            6,
+        ));
+    }
     cases
         .into_iter()
         .map(|(name, m, seq)| {
@@ -1885,6 +1905,8 @@ fn provision_payload(flags: u8, host_id: &[u8], addresses: &[&[u8]]) -> Vec<u8> 
     p.extend((0..32).map(|i| 0x50 + i as u8));
     p.push(host_id.len() as u8);
     p.extend_from_slice(host_id);
+    p.push(5);
+    p.extend_from_slice(b"eye-3");
     p.push(addresses.len() as u8);
     for a in addresses {
         p.push(a.len() as u8);
@@ -1902,6 +1924,18 @@ fn device_info_payload(flags: u8, host_id: &[u8], name: &[u8]) -> Vec<u8> {
     p.push(name.len() as u8);
     p.extend_from_slice(name);
     p
+}
+
+fn invalid_provision_names() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("PROVISION, an empty name", vec![]),
+        ("PROVISION, a 129-byte name", letters(129)),
+        ("PROVISION, a name with a slash", b"bad/name".to_vec()),
+        ("PROVISION, a name with a space", b"with space".to_vec()),
+        ("PROVISION, a non-UTF-8 name", vec![0xff]),
+        ("PROVISION, a name with NUL", vec![0]),
+        ("PROVISION, a non-ASCII name", "œil".as_bytes().to_vec()),
+    ]
 }
 
 fn provision_rejection_cases() -> Vec<Value> {
@@ -1953,39 +1987,39 @@ fn provision_rejection_cases() -> Vec<Value> {
             E::Magic,
         ),
         (
-            "GET_DEVICE, version 2",
+            "GET_DEVICE, version 1",
             Board,
             pt::GET_DEVICE,
-            b"RLMP\x02".to_vec(),
-            E::Version(2),
+            b"RLMP\x01".to_vec(),
+            E::Version(1),
         ),
         (
             "GET_DEVICE, a byte too long",
             Board,
             pt::GET_DEVICE,
-            b"RLMP\x01\x00".to_vec(),
+            b"RLMP\x02\x00".to_vec(),
             E::Length,
         ),
         // DEVICE_INFO.
         (
-            "DEVICE_INFO, version 2, checked before its length",
+            "DEVICE_INFO, version 1, checked before its length",
             Bridge,
             pt::DEVICE_INFO,
-            b"RLMP\x02".to_vec(),
-            E::Version(2),
+            b"RLMP\x01".to_vec(),
+            E::Version(1),
         ),
         (
-            "DEVICE_INFO, an empty name",
+            "DEVICE_INFO, an invalid participant id",
             Bridge,
             pt::DEVICE_INFO,
-            device_info_payload(0, b"", b""),
+            device_info_payload(0, b"", b"bad/name"),
             E::Range,
         ),
         (
-            "DEVICE_INFO, a 33-byte name",
+            "DEVICE_INFO, a 129-byte name",
             Bridge,
             pt::DEVICE_INFO,
-            device_info_payload(0, b"", &letters(33)),
+            device_info_payload(0, b"", &letters(129)),
             E::Range,
         ),
         (
@@ -2007,7 +2041,7 @@ fn provision_rejection_cases() -> Vec<Value> {
             Bridge,
             pt::DEVICE_INFO,
             device_info_payload(0, b"", &[0xFF]),
-            E::Utf8,
+            E::Range,
         ),
         (
             "DEVICE_INFO, cut inside the key",
@@ -2026,17 +2060,31 @@ fn provision_rejection_cases() -> Vec<Value> {
         ),
         // PROVISION.
         (
-            "PROVISION, version 2",
+            "PROVISION, version 1",
             Board,
             pt::PROVISION,
             {
                 let mut p = ok.clone();
-                p[0] = 2;
+                p[0] = 1;
                 p
             },
-            E::Version(2),
+            E::Version(1),
         ),
         ("PROVISION, empty", Board, pt::PROVISION, vec![], E::Length),
+        (
+            "PROVISION, cut inside the name",
+            Board,
+            pt::PROVISION,
+            ok[..41].to_vec(),
+            E::Length,
+        ),
+        (
+            "PROVISION, missing address count",
+            Board,
+            pt::PROVISION,
+            ok[..44].to_vec(),
+            E::Length,
+        ),
         (
             "PROVISION, cut inside the last address",
             Board,
@@ -2129,6 +2177,12 @@ fn provision_rejection_cases() -> Vec<Value> {
             E::Utf8,
         ),
     ];
+    let mut cases = cases;
+    for (label, name) in invalid_provision_names() {
+        let mut p = provision_payload(0, b"h", &[b"h:1"]);
+        p.splice(36..42, [name.len() as u8].into_iter().chain(name));
+        cases.push((label, Board, pt::PROVISION, p, E::Range));
+    }
     cases
         .into_iter()
         .map(|(name, receiver, ty, payload, error)| {
@@ -2157,13 +2211,13 @@ fn provision_write_rejection_cases() -> Vec<Value> {
     let id33 = letters(33);
     let a: &[u8] = b"192.168.1.20:7447";
     // A 253-byte payload: one past the frame.
-    let over = provision_addresses(256);
+    let over = provision_addresses(253);
     let over_refs: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
     let id32 = letters(MAX_ID);
     let cases: Vec<(&str, Prov<'_>, MsgError)> = vec![
         (
-            "DEVICE_INFO, an empty name",
-            Prov::DeviceInfo(device_info(b"", b"")),
+            "DEVICE_INFO, an invalid participant id",
+            Prov::DeviceInfo(device_info(b"", b"bad/name")),
             E::Range,
         ),
         (
@@ -2213,6 +2267,18 @@ fn provision_write_rejection_cases() -> Vec<Value> {
         Err(E::Length),
         "the oversized case is over by one"
     );
+    let invalid_names = invalid_provision_names();
+    let mut cases = cases;
+    for (label, name) in &invalid_names {
+        cases.push((
+            label,
+            Prov::Provision(Provision {
+                name,
+                ..provision_of(b"h", &[b"h:1"])
+            }),
+            E::Range,
+        ));
+    }
     cases
         .into_iter()
         .map(|(name, m, error)| {
@@ -2430,7 +2496,7 @@ fn literal_values_not_from_the_crate() {
         encode(&[0x11, 0x22, 0x00, 0x33]),
         [0x03, 0x11, 0x22, 0x02, 0x33]
     );
-    // One whole HELLO frame, field by field (spec §4.1), CRC and COBS
+    // One whole HELLO frame, field by field, CRC and COBS
     // computed by a separate implementation.
     let decoded: &[u8] = &[
         0x01, 0x00, // type HELLO, seq 0
@@ -2461,10 +2527,10 @@ fn literal_values_not_from_the_crate() {
         .find(|v| v["name"] == "HELLO")
         .expect("the HELLO vector");
     assert_eq!(unhex(&hello["wire"]), wire);
-    // A GET_DEVICE (spec §14.3) with its leading delimiter, CRC-16 0x5C31
+    // A GET_DEVICE with its leading delimiter, CRC-16 0x6C52
     // and COBS computed by a separate implementation.
     let get_device: &[u8] = &[
-        0x00, 0x02, 0x90, 0x08, b'R', b'L', b'M', b'P', 0x01, 0x31, 0x5C, 0x00,
+        0x00, 0x02, 0x90, 0x08, b'R', b'L', b'M', b'P', 0x02, 0x52, 0x6C, 0x00,
     ];
     assert_eq!(prov_wire(&Prov::GetDevice, 0), get_device);
     let vector = cases(&all, "provision")

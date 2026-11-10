@@ -1,4 +1,4 @@
-// The board's runtime (spec §5–6): the `HELLO` loop, the map, attach and
+// The board's runtime: the `HELLO` loop, the map, attach and
 // its generation fence, drive permits, the link watchdog, the hardware
 // watchdog and the pin e-stop.
 //
@@ -13,7 +13,7 @@
 //   bool estopConfigured();     // a sketch called estopPin()
 //   bool estopActive();         // the pin, now
 //   bool latchLoad();           // the stored latch; a read fault is latched
-//   void latchStore();          // a program-only write (§6.4)
+//   void latchStore();          // a program-only write
 //   void latchClear();          // the erase
 //   uint16_t boot();            // differs from the previous boot
 //   uint8_t resetCause();       // `Status::reset`
@@ -32,11 +32,11 @@ namespace tether {
 const uint16_t kLibVersion = 0x0200;
 // How often an unattached board says `HELLO`.
 const uint16_t kHelloMs = 500;
-// The longest gap between `STATUS` frames while attached (§4.1).
+// The longest gap between `STATUS` frames while attached.
 const uint16_t kStatusMaxMs = 100;
 // `NOTE` rate: at most this many per second; extras are dropped.
 const uint8_t kNotesPerSecond = 2;
-// The link watchdog's default (§6.2).
+// The link watchdog's default.
 const uint16_t kDefaultWatchdogMs = 250;
 // The most frames one poll() acts on, so a flood can't hold it.
 const uint8_t kFramesPerPoll = 8;
@@ -348,7 +348,7 @@ class Board {
     if (input == input_) return;
     input_ = input;
     if (input && !latched_) {
-      // RAM and the parts, then `STATUS`, then storage (§6.4): a reset
+      // RAM and the parts, then `STATUS`, then storage: a reset
       // before the store loses it, but the host already has the e-stop.
       latched_ = true;
       safeAll(PartMode::Estop);

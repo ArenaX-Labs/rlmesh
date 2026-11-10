@@ -1,4 +1,4 @@
-//! A scene's view (scene design §5): its placed robots' parts in one path
+//! A scene's view: its placed robots' parts in one path
 //! tree, which a policy binds against when the session carries places and
 //! the run names no robot.
 //!
@@ -10,13 +10,13 @@
 //!   a transform the binder applies.
 //! - v0.2 refuses a second place for one robot, a place on another robot's
 //!   frame (every pose's parent is `world`), and, once maps are declared,
-//!   two parts at one view path or one over §2.1's limits.
+//!   two parts at one view path or one exceeding the path length or depth limits.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 
 use crate::wire::path::{MAX_SEGMENT_LEN, is_identifier};
-use crate::wire::{PartPath, PartSpec, Place};
+use crate::wire::{PartPath, PartSpec, ParticipantId, Place};
 
 /// The view's name: a binding against it targets `scene`.
 pub const VIEW: &str = "scene";
@@ -24,7 +24,7 @@ pub const VIEW: &str = "scene";
 /// How far a place's quaternion may sit from unit length.
 const UNIT_TOLERANCE: f64 = 1e-6;
 
-/// Whether `place` is well formed (scene design §2): `at` a path with no
+/// Whether `place` is well formed: `at` a path with no
 /// `_` segment, `from` empty or a path, `frame` empty or a frame name, and
 /// its pose finite metres and a unit quaternion.
 ///
@@ -59,6 +59,45 @@ pub fn check_place(place: &Place) -> Result<(), String> {
     Ok(())
 }
 
+/// The view of a plain session's robots, when it has no places: each robot
+/// at its own name (`eye-1` at `eye_1`: a path segment is
+/// `[a-z][a-z0-9_]*`), its root placed, at the origin. Selectors name the
+/// robot (`eye-1:gaze`); two names that read alike get a numbered suffix.
+pub fn each_at_its_name(robots: &[&ParticipantId]) -> Vec<Place> {
+    let mut places: Vec<Place> = Vec::with_capacity(robots.len());
+    for robot in robots {
+        let mut base: String = robot
+            .as_str()
+            .chars()
+            .map(|c| match c.to_ascii_lowercase() {
+                c @ ('a'..='z' | '0'..='9') => c,
+                _ => '_',
+            })
+            .collect();
+        if !base.starts_with(|c: char| c.is_ascii_lowercase()) {
+            base.insert(0, 'r');
+        }
+        base.truncate(MAX_SEGMENT_LEN - 4);
+        let mut at = base.clone();
+        let mut n = 1;
+        while places.iter().any(|p| p.at == at) {
+            n += 1;
+            at = alloc::format!("{base}_{n}");
+        }
+        places.push(Place {
+            robot: (*robot).clone(),
+            at,
+            from: String::new(),
+            frame: String::new(),
+            pose: crate::wire::Pose {
+                xyz: [0.0; 3],
+                quat_xyzw: [0.0, 0.0, 0.0, 1.0],
+            },
+        });
+    }
+    places
+}
+
 /// Whether a place table is well formed: each place ([`check_place`]),
 /// and one per robot.
 ///
@@ -83,7 +122,7 @@ pub fn check(places: &[Place]) -> Result<(), String> {
 ///
 /// # Errors
 /// A malformed table ([`check`]), two parts at one view path, or a view
-/// path over §2.1's limits, naming both parts.
+/// path exceeding the length or depth limits, naming both parts.
 pub fn parts(parts: &[PartSpec], places: &[Place]) -> Result<Vec<PartSpec>, String> {
     check(places)?;
     let mut view: Vec<PartSpec> = Vec::new();
@@ -106,7 +145,7 @@ pub fn parts(parts: &[PartSpec], places: &[Place]) -> Result<Vec<PartSpec>, Stri
             };
             let renamed = PartPath::new(placed.as_str()).map_err(|e| {
                 format!(
-                    "{}:{path} placed at {:?} is {placed}: {} (spec §2.1); place it higher \
+                    "{}:{path} placed at {:?} is {placed}: {}; place it higher \
                      or under a shorter path",
                     part.owner, place.at, e.reason
                 )

@@ -1,9 +1,9 @@
 //! The controller runtime: a bound policy's inputs, leases, chunks and run
-//! loop (§6.5, §8.8-§8.10, §9.7). Language bindings wrap it; users write
+//! loop. Language bindings wrap it; users write
 //! `predict` and nothing else.
 //!
 //! - [`Controller::bind`] waits for the robot's parts, binds the policy
-//!   (refuse-and-explain, §6.7), declares the binding and opens its inputs
+//!   (refuse-and-explain), declares the binding and opens its inputs
 //!   ([`Inputs`]).
 //! - **Leases.** A background keeper holds the binding's leases while they
 //!   are wanted, as one [`LeaseGroup`] (the holder state machine the
@@ -19,11 +19,11 @@
 //!   `t0` at the snapshot (or at send, `t0: "send"`), the binding's action
 //!   grid, `valid_until = t0 + min(horizon × dt, ttl)`, `replace_from = t0`
 //!   and the snapshot's `based_on`.
-//! - [`Controller::run`] is the policy loop of §8.9: starts on the replan
+//! - [`Controller::run`] runs the policy loop: starts on the replan
 //!   grid, one inference in flight, skipped starts with their reasons, warm
 //!   before authority (leases are requested only once a first snapshot of
 //!   the required inputs is complete), window gaps recovered from the
-//!   host's history store, and §8.10 reporting through [`StartSchedule`].
+//!   host's history store, and reporting through [`StartSchedule`].
 //!   On the wall clock the grid is phased just after the publication of
 //!   one sampled input ([`PhaseAlign`]), so a snapshot reads a sample about
 //!   a millisecond old rather than up to a full replan period old.
@@ -81,7 +81,7 @@ pub struct ControllerConfig {
     /// How often a wanted lease is re-requested while it is refused (it is
     /// also re-requested on every authority change).
     pub lease_retry: Duration,
-    /// An inference running this long is reported (§8.10).
+    /// An inference running this long is reported.
     pub pending_after: Duration,
 }
 
@@ -99,7 +99,7 @@ impl Default for ControllerConfig {
 /// Why a controller could not bind.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerError {
-    /// The binder refused (every problem, §6.7) or the options do not fit.
+    /// The binder refused (every problem) or the options do not fit.
     #[error(transparent)]
     Bind(#[from] BindError),
     /// The session failed.
@@ -157,7 +157,7 @@ pub trait Predictor {
     type Error;
 
     /// One start: the observation (snapshotted at `snapshot_ns`, session
-    /// time) in, one value per action entry out (`[horizon, ...]`, §6.1).
+    /// time) in, one value per action entry out (`[horizon, ...]`).
     fn predict(
         &mut self,
         observation: Observation,
@@ -222,9 +222,11 @@ impl Leases {
     }
 
     /// Whether the host has mapped this controller's clock and the clock of
-    /// every robot it commands. An edge rejects a chunk until both are
-    /// mapped (`NoClockMapping`), so leases taken earlier only produce
-    /// rejected chunks; a ticked session needs no mapping.
+    /// every present robot it commands. An edge rejects a chunk until both
+    /// are mapped (`NoClockMapping`), so leases taken earlier only produce
+    /// rejected chunks; a ticked session needs no mapping. A robot that is
+    /// gone has no mapping and is asked for no lease, so it never keeps the
+    /// others waiting.
     fn clocks_mapped(&self, participant: &Participant) -> bool {
         let me = participant.id();
         let channels = self.group().channels();
@@ -237,32 +239,76 @@ impl Leases {
             }
             view.clock(me).is_some()
                 && channels.iter().all(|c| {
-                    view.part(*c)
-                        .is_some_and(|part| view.clock(&part.owner).is_some())
+                    view.part(*c).is_some_and(|part| {
+                        view.clock(&part.owner).is_some()
+                            || !view.participant(&part.owner).is_some_and(|p| p.present)
+                    })
                 })
         })
     }
 
-    /// Requests every lease, all or none, and declares a sender per new
-    /// token.
+    /// Requests the leases not held, robot by robot, so a robot that is
+    /// gone or stopped on its own never keeps the others from moving, and
+    /// declares a sender per new token. Fails only when no robot granted
+    /// any.
     async fn grant(&self, participant: &Participant) -> Result<Vec<Lease>, SessionError> {
         let _request = self.request.lock().await;
         let ttl_ns = self
             .ttl
             .map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
-        let command = self.group().request(
-            participant.binding_fingerprint(),
-            ttl_ns,
-            participant.clock().now_ns(),
-        );
-        let reply = participant.command(command).await?;
-        self.group().on_reply(
-            &reply,
-            participant.clock_estimate().as_ref(),
-            participant.clock().now_ns(),
-        );
-        reply.result.clone()?;
-        for lease in &reply.leases {
+        let unheld = self.group().unheld(participant.clock().now_ns());
+        // One request per robot, for its present parts.
+        let mut robots: Vec<(ParticipantId, Vec<ChannelId>)> = Vec::new();
+        participant.authority_view().with(|view| {
+            let Some(view) = view else {
+                return;
+            };
+            for channel in &unheld {
+                let Some(part) = view.part(*channel) else {
+                    continue;
+                };
+                if !view.participant(&part.owner).is_some_and(|p| p.present) {
+                    continue;
+                }
+                match robots.iter_mut().find(|(r, _)| *r == part.owner) {
+                    Some((_, channels)) => channels.push(*channel),
+                    None => robots.push((part.owner.clone(), vec![*channel])),
+                }
+            }
+        });
+        let mut granted = Vec::new();
+        let mut refused = None;
+        for (_, channels) in robots {
+            let command = self.group().request_some(
+                &channels,
+                participant.binding_fingerprint(),
+                ttl_ns,
+                participant.clock().now_ns(),
+            );
+            let reply = match participant.command(command).await {
+                Ok(reply) => reply,
+                Err(err) => {
+                    refused = Some(err);
+                    continue;
+                }
+            };
+            self.group().on_reply_some(
+                &channels,
+                &reply,
+                participant.clock_estimate().as_ref(),
+                participant.clock().now_ns(),
+            );
+            match &reply.result {
+                Ok(()) => granted.extend(reply.leases.iter().cloned()),
+                Err(err) => refused = Some(SessionError::Rejected(err.clone())),
+            }
+        }
+        if granted.is_empty()
+            && let Some(err) = refused
+        {
+            return Err(err);
+        }
+        for lease in &granted {
             let current = self
                 .publishers()
                 .get(&lease.channel)
@@ -274,7 +320,7 @@ impl Leases {
             info!(participant = %participant.id(), channel = %lease.channel, token = %lease.token, "lease granted");
             self.publishers().insert(lease.channel, publisher);
         }
-        Ok(reply.leases)
+        Ok(granted)
     }
 
     /// Gives every held lease back.
@@ -328,7 +374,7 @@ async fn keep_leases(
     }
 }
 
-/// Reports an inference pending past the configured bound (§8.10: a timer,
+/// Reports an inference pending past the configured bound (a timer,
 /// not an average over completions).
 async fn watch_pending(
     participant: Arc<Participant>,
@@ -403,14 +449,32 @@ impl Controller {
         config: ControllerConfig,
     ) -> Result<Self, ControllerError> {
         let robot: Option<ParticipantId> = options.robot.clone();
+        let me = participant.id().clone();
+        let deadline = tokio::time::Instant::now() + config.bind_timeout;
         participant
             .wait_for("the robot's parts", config.bind_timeout, |view| {
                 view.parts
                     .iter()
-                    .any(|p| robot.as_ref().is_none_or(|r| &p.owner == r))
+                    .any(|p| p.owner != me && robot.as_ref().is_none_or(|r| &p.owner == r))
             })
             .await?;
-        let binding = participant.bind(policy, options)?;
+        // Robots declare one by one: a binding that names robots not
+        // declared yet is tried again on each new view until it stands or
+        // the timeout passes.
+        let mut view = participant.watch();
+        let binding = loop {
+            match participant.bind(policy, options) {
+                Ok(binding) => break binding,
+                Err(err) => {
+                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if left.is_zero()
+                        || !matches!(tokio::time::timeout(left, view.changed()).await, Ok(Ok(())))
+                    {
+                        return Err(err.into());
+                    }
+                }
+            }
+        };
         participant.declare_bound(&binding).await?;
         let inputs = Inputs::open(&participant, &binding).await?;
         let leases = Arc::new(Leases {
@@ -499,6 +563,11 @@ impl Controller {
     pub fn holds(&self) -> bool {
         self.leases.sync(&self.participant);
         self.leases.holds_all(&self.participant)
+    }
+
+    /// Whether it holds at least one of its leases.
+    pub fn holds_any(&self) -> bool {
+        !self.leases().is_empty()
     }
 
     /// The leases held now.
@@ -616,7 +685,7 @@ impl Controller {
         }
     }
 
-    /// Runs the policy loop (§8.9) until [`Self::stop`], `duration`, or a
+    /// Runs the policy loop until [`Self::stop`], `duration`, or a
     /// failure, then gives the leases back. Blocks the calling thread,
     /// which is where `predict` runs.
     pub fn run<P: Predictor>(
@@ -678,7 +747,7 @@ impl Controller {
                     let reason = skip.reason();
                     self.skip(t - off, reason);
                     // A gap inside a window: ask the host's store to fill it
-                    // (§8.8 recovery), at most every 100 ms.
+                    // (recovery), at most every 100 ms.
                     if reason == SkipReason::WindowGap
                         && recovered_at.is_none_or(|at| t - at >= RECOVER_GAP_NS)
                     {
@@ -705,7 +774,9 @@ impl Controller {
             // Warm before authority: the first complete snapshot asks for
             // the leases.
             self.want_leases();
-            if commands && !self.holds() {
+            // Any lease held is enough: a robot that is gone or stopped on
+            // its own never starves the others (its actions go unsent).
+            if commands && !self.holds_any() {
                 self.skip(t - off, SkipReason::NoLease);
                 if let Some(phase) = phase.as_mut() {
                     phase.update();
@@ -753,7 +824,7 @@ impl Controller {
 
     /// Why the session is gone for this controller: the host, or its
     /// robot's roster entry left absent. In a scene's run a lost robot may
-    /// rejoin (scene design §4.3): only the run closing ends it.
+    /// rejoin: only the run closing ends it.
     pub fn lost(&self) -> Option<Reason> {
         self.participant.host_lost().or_else(|| {
             self.participant.authority_view().with(|view| {
@@ -768,6 +839,14 @@ impl Controller {
     }
 
     /// Whether this process stopped the scene's run this controller is in.
+    #[cfg(not(feature = "fleet"))]
+    #[allow(clippy::unused_self)]
+    fn stopped_here(&self) -> bool {
+        false
+    }
+
+    /// Whether this process stopped the scene's run this controller is in.
+    #[cfg(feature = "fleet")]
     fn stopped_here(&self) -> bool {
         self.participant.authority_view().with(|view| {
             view.and_then(|v| v.scene.as_ref())

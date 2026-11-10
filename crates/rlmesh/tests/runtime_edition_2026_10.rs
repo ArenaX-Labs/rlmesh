@@ -218,7 +218,11 @@ fn meta_records(metas: &[Option<MetaMap>]) -> Value {
 fn option_records(options: &[Option<rlmesh_spaces::MetaMap>]) -> Value {
     let wire: Vec<Option<MetaMap>> = options
         .iter()
-        .map(|options| options.as_ref().map(rlmesh_grpc::wire::meta_map_to_proto))
+        .map(|options| {
+            options
+                .as_ref()
+                .map(rlmesh::binding::data::meta_map_to_proto)
+        })
         .collect();
     meta_records(&wire)
 }

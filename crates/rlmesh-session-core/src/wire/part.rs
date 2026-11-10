@@ -1,4 +1,4 @@
-//! Parts and streams (§3, §10.5, §10.6): what the host makes of a robot's
+//! Parts and streams: what the host makes of a robot's
 //! declaration, and the payload layout every sample and action follows.
 //!
 //! An embodiment sends its authored robot map; the host normalises each part
@@ -7,7 +7,7 @@
 //! [`StreamSpec`]s: a channel id, an owner, a key path and a typed
 //! [`Layout`]. It never interprets kinds.
 //!
-//! # Packing (normative, §10.6)
+//! # Packing
 //!
 //! A sample's fields go in [`FieldSpec`] order, each C-contiguous and
 //! little-endian, each starting at a multiple of 8 bytes from the start of
@@ -49,7 +49,7 @@ pub const MAX_CHUNK_ACTIONS: usize = 1024;
 /// The largest chunk payload.
 pub const MAX_CHUNK_BYTES: usize = 4 << 20;
 /// Small state samples ride the realtime class and are sent every sample by
-/// default; larger ones ride bulk and are coalesced (§4.1, custom kinds).
+/// default; larger ones ride bulk and are coalesced (custom kinds).
 pub const SMALL_SAMPLE_BYTES: usize = 4 << 10;
 
 /// An element type. Wire codes are v1's `DType` (`rlmesh-spaces`), with
@@ -183,9 +183,9 @@ pub struct FieldSpec {
     pub dtype: DType,
     /// The shape; empty is a scalar.
     pub shape: Vec<u32>,
-    /// Its unit (§5.1); empty when unitless.
+    /// Its unit; empty when unitless.
     pub unit: String,
-    /// The rotation encoding (§5.3), for rotation fields; empty otherwise.
+    /// The rotation encoding, for rotation fields; empty otherwise.
     pub rotation: String,
 }
 
@@ -244,7 +244,7 @@ fn round8(n: usize) -> Option<usize> {
 }
 
 impl Layout {
-    /// The layout of `fields`, checking the §3.4 caps.
+    /// The layout of `fields`, checking the caps.
     pub fn of(fields: &[FieldSpec]) -> Result<Self, String> {
         if fields.is_empty() {
             return Err("no fields".into());
@@ -385,7 +385,7 @@ impl Encoding {
     }
 }
 
-/// The traffic class a stream rides (§10.2). Higher classes are never queued
+/// The traffic class a stream rides. Higher classes are never queued
 /// behind lower ones: the session maps them to separate transport sessions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ChannelPriority {
@@ -423,13 +423,9 @@ impl ChannelPriority {
 pub enum MergePolicy {
     /// Keep committed actions before `replace_from`, replace from there on.
     Replace,
-    /// Later (§19): refused at declaration.
-    Blend,
-    /// Later (§19): refused at declaration.
-    RtcPrefix,
 }
 
-/// Bounds on one command field (§3.2, §9.6).
+/// Bounds on one command field.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldLimit {
     /// The command field.
@@ -443,7 +439,7 @@ pub struct FieldLimit {
     pub max_norm: Option<f64>,
 }
 
-/// What a commandable part accepts (§3.2).
+/// What a commandable part accepts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommandSpec {
     /// The command mode (`position`, `delta`, ...).
@@ -454,15 +450,15 @@ pub struct CommandSpec {
     pub limits: Vec<FieldLimit>,
     /// The robot's own safe behaviour, by id (`stop`, `brake`).
     pub safe_behavior: String,
-    /// The robot's hold allowance once valid coverage ends (§9.5).
+    /// The robot's hold allowance once valid coverage ends.
     pub hold_max: Duration,
-    /// The edge's cap on a chunk's life from receipt (§9.1).
+    /// The edge's cap on a chunk's life from receipt.
     pub max_action_age: Duration,
     /// How chunks merge: `Replace` only.
     pub merge: MergePolicy,
     /// `current` or `target` (delta modes).
     pub reference: String,
-    /// The command group within the robot (§9.7).
+    /// The command group within the robot.
     pub group: Option<String>,
     /// Commands snap to 0 or 1 at 0.5.
     pub binary: bool,
@@ -477,7 +473,7 @@ impl CommandSpec {
     /// The default open-loop budget.
     pub const DEFAULT_MAX_ACTION_AGE: Duration = Duration::from_millis(200);
 
-    /// Whether this is a delta mode (§9.3): each action is dispatched at
+    /// Whether this is a delta mode: each action is dispatched at
     /// most once, and Hold dispatches nothing.
     pub fn is_delta(&self) -> bool {
         self.mode == "delta"
@@ -494,7 +490,7 @@ impl CommandSpec {
     }
 }
 
-/// A publication ceiling (§8.3), parsed from `PartSpec::send`.
+/// A publication ceiling, parsed from `PartSpec::send`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SendPolicy {
     /// At most this many samples per second (newest wins); `None`: every
@@ -555,7 +551,7 @@ pub struct PartSpec {
     pub fields: Vec<FieldSpec>,
     /// The source rate; 0 for events.
     pub hz: f64,
-    /// The publication ceiling (§8.3).
+    /// The publication ceiling.
     pub send: String,
     /// The frame values are expressed in.
     pub frame: String,
@@ -598,7 +594,7 @@ impl PartSpec {
         })
     }
 
-    /// Its applied stream (§9.4): the command fields, on
+    /// Its applied stream: the command fields, on
     /// `{path}/_applied`, realtime class.
     pub fn applied_stream(&self) -> Option<Result<StreamSpec, String>> {
         let (command, channel) = (self.command.as_ref()?, self.applied_channel?);
@@ -677,7 +673,7 @@ impl StreamSpec {
         self.encoding == Encoding::Raw && matches!(self.layout, Layout::Packed { .. })
     }
 
-    /// The check every sample payload gets before any view of it (§10.6):
+    /// The check every sample payload gets before any view of it:
     /// the length, valid booleans and valid UTF-8. An applied sample with
     /// nothing dispatched has no payload.
     pub fn check_payload(&self, payload: &[u8]) -> Result<(), String> {

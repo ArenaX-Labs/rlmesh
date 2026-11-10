@@ -1,4 +1,4 @@
-//! The controller's input cache and history windows (§8.8), sans-IO.
+//! The controller's input cache and history windows, sans-IO.
 //!
 //! [`InputCache`] keeps one slot per bound stream (shared by the entries
 //! bound to it) plus a ring as deep as the deepest window on it, fed sample
@@ -265,7 +265,7 @@ impl InputCache {
                 skip.waiting.push(rule.entry.clone());
                 continue;
             };
-            // Freshness of the newest sample (§8.7, §9.1).
+            // Freshness of the newest sample.
             let slack =
                 i64::try_from(newest.error_ns.saturating_add(self_error_ns)).unwrap_or(i64::MAX);
             let (age_ns, future) = match newest.capture_ns {

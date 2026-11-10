@@ -1,4 +1,4 @@
-//! The v1/v2 latency benchmark (Haply/UR10 teleop shape, `bench2-spec.md`)
+//! The v1/v2 latency benchmark (Haply/UR10 teleop shape)
 //! on the production crates: an embodiment process (the session host,
 //! force/torque at 1 kHz, an optional camera, and the edge with its action
 //! queue and fallback) and a controller process that re-plans action chunks
@@ -39,7 +39,7 @@
 //!
 //! `--controller raw` (the default) re-plans from the transport callback on
 //! every `replan`-th ft sample. `--controller bound` is a bound policy
-//! instead, the shape `rlmesh.v2` runs from Python: the binder's delivery
+//! instead, the shape `rlmesh.realtime` runs from Python: the binder's delivery
 //! contracts (ft `latest@R`, the camera an input too), the
 //! [`Controller`](rlmesh_session::Controller) run loop at the replan rate,
 //! and `t0` at the snapshot. It is the Rust baseline of
@@ -401,7 +401,6 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
             &robot,
             "cmd",
             EdgeConfig {
-                log_capacity: 0,
                 ..EdgeConfig::default()
             },
             Some({

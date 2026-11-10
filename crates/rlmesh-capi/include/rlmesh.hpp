@@ -4237,53 +4237,15 @@ class ServedEnv {
   const auto& lanes() const { return lanes_; }
   const RLMeshVectorEnv* vector() const { return vector_; }
 };
-enum class Transport { Tcp = 1, Unix = 2 };
-inline std::string to_string(Transport t) {
-  return std::string(detail::sv(rlmesh_transport_str(static_cast<RLMeshTransport>(t))));
-}
 struct ServeOptions {
-  bool allow_remote_shutdown = false;
-  std::optional<Duration> idle_timeout{};
-  std::optional<Duration> drain_timeout{};
   std::optional<Duration> close_timeout{};
-  bool compress_responses = false;
   std::optional<std::string> workflow_edition{};
   RLMeshServeOptions raw() const {
     RLMeshServeOptions c = RLMESH_SERVE_OPTIONS_INIT;
-    c.allow_remote_shutdown = allow_remote_shutdown;
-    c.has_idle_timeout_seconds = idle_timeout.has_value();
-    if (idle_timeout) c.idle_timeout_seconds = idle_timeout->count();
-    c.has_drain_timeout_seconds = drain_timeout.has_value();
-    if (drain_timeout) c.drain_timeout_seconds = drain_timeout->count();
     c.has_close_timeout_seconds = close_timeout.has_value();
     if (close_timeout) c.close_timeout_seconds = close_timeout->count();
-    c.compress_responses = compress_responses;
     c.workflow_edition = detail::ptr(workflow_edition);
     return c;
-  }
-  ServeOptions& with_allow_remote_shutdown(bool value) & {
-    allow_remote_shutdown = std::move(value);
-    return *this;
-  }
-  ServeOptions with_allow_remote_shutdown(bool value) && {
-    allow_remote_shutdown = std::move(value);
-    return std::move(*this);
-  }
-  ServeOptions& with_idle_timeout(std::optional<Duration> value) & {
-    idle_timeout = std::move(value);
-    return *this;
-  }
-  ServeOptions with_idle_timeout(std::optional<Duration> value) && {
-    idle_timeout = std::move(value);
-    return std::move(*this);
-  }
-  ServeOptions& with_drain_timeout(std::optional<Duration> value) & {
-    drain_timeout = std::move(value);
-    return *this;
-  }
-  ServeOptions with_drain_timeout(std::optional<Duration> value) && {
-    drain_timeout = std::move(value);
-    return std::move(*this);
   }
   ServeOptions& with_close_timeout(std::optional<Duration> value) & {
     close_timeout = std::move(value);
@@ -4291,14 +4253,6 @@ struct ServeOptions {
   }
   ServeOptions with_close_timeout(std::optional<Duration> value) && {
     close_timeout = std::move(value);
-    return std::move(*this);
-  }
-  ServeOptions& with_compress_responses(bool value) & {
-    compress_responses = std::move(value);
-    return *this;
-  }
-  ServeOptions with_compress_responses(bool value) && {
-    compress_responses = std::move(value);
     return std::move(*this);
   }
   ServeOptions& with_workflow_edition(std::optional<std::string> value) & {
@@ -4312,25 +4266,7 @@ struct ServeOptions {
 };
 namespace ext {
 struct EnvServerOptions {
-  std::optional<std::string> token{};
-  std::map<std::string, std::string> peer_info_extra{};
   bool publish_describe = false;
-  EnvServerOptions& with_token(std::optional<std::string> value) & {
-    token = std::move(value);
-    return *this;
-  }
-  EnvServerOptions with_token(std::optional<std::string> value) && {
-    token = std::move(value);
-    return std::move(*this);
-  }
-  EnvServerOptions& with_peer_info_extra(std::map<std::string, std::string> value) & {
-    peer_info_extra = std::move(value);
-    return *this;
-  }
-  EnvServerOptions with_peer_info_extra(std::map<std::string, std::string> value) && {
-    peer_info_extra = std::move(value);
-    return std::move(*this);
-  }
   EnvServerOptions& with_publish_describe(bool value) & {
     publish_describe = std::move(value);
     return *this;
@@ -4341,7 +4277,6 @@ struct EnvServerOptions {
   }
 };
 struct ModelServeOptions {
-  std::optional<std::string> token{};
   std::optional<size_t> predict_concurrency{};
   bool no_signal_handlers = false;
   ModelServeOptions& with_no_signal_handlers(bool value) & {
@@ -4350,14 +4285,6 @@ struct ModelServeOptions {
   }
   ModelServeOptions with_no_signal_handlers(bool value) && {
     no_signal_handlers = value;
-    return std::move(*this);
-  }
-  ModelServeOptions& with_token(std::optional<std::string> value) & {
-    token = std::move(value);
-    return *this;
-  }
-  ModelServeOptions with_token(std::optional<std::string> value) && {
-    token = std::move(value);
     return std::move(*this);
   }
   ModelServeOptions& with_predict_concurrency(std::optional<size_t> value) & {
@@ -4371,10 +4298,7 @@ struct ModelServeOptions {
 };
 }  // namespace ext
 struct EnvServerOptions {
-  std::optional<std::string> address{}, host{};
-  std::optional<uint16_t> port{};
-  std::optional<std::string> path{};
-  std::optional<Transport> transport{};
+  std::optional<std::string> address{};
   std::optional<ServeOptions> options{};
   std::optional<adapters::EnvTags> tags{};
   bool close_env_on_shutdown = true;
@@ -4385,30 +4309,6 @@ struct EnvServerOptions {
   }
   EnvServerOptions with_address(std::optional<std::string> value) && {
     address = std::move(value);
-    return std::move(*this);
-  }
-  EnvServerOptions& with_port(std::optional<uint16_t> value) & {
-    port = std::move(value);
-    return *this;
-  }
-  EnvServerOptions with_port(std::optional<uint16_t> value) && {
-    port = std::move(value);
-    return std::move(*this);
-  }
-  EnvServerOptions& with_path(std::optional<std::string> value) & {
-    path = std::move(value);
-    return *this;
-  }
-  EnvServerOptions with_path(std::optional<std::string> value) && {
-    path = std::move(value);
-    return std::move(*this);
-  }
-  EnvServerOptions& with_transport(std::optional<Transport> value) & {
-    transport = std::move(value);
-    return *this;
-  }
-  EnvServerOptions with_transport(std::optional<Transport> value) && {
-    transport = std::move(value);
     return std::move(*this);
   }
   EnvServerOptions& with_options(std::optional<ServeOptions> value) & {
@@ -4443,14 +4343,6 @@ struct EnvServerOptions {
     ext = std::move(value);
     return std::move(*this);
   }
-  EnvServerOptions& with_host(std::optional<std::string> value) & {
-    host = std::move(value);
-    return *this;
-  }
-  EnvServerOptions with_host(std::optional<std::string> value) && {
-    host = std::move(value);
-    return std::move(*this);
-  }
 };
 class EnvServer;
 class EnvFactoryBase;
@@ -4474,12 +4366,6 @@ class EnvServer {
   void init(const EnvServerOptions& options) {
     RLMeshEnvServerOptions c = RLMESH_ENV_SERVER_OPTIONS_INIT;
     c.address = detail::ptr(options.address);
-    c.host = detail::ptr(options.host);
-    c.path = detail::ptr(options.path);
-    c.has_port = options.port.has_value();
-    if (options.port) c.port = *options.port;
-    c.has_transport = options.transport.has_value();
-    if (options.transport) c.transport = static_cast<RLMeshTransport>(*options.transport);
     c.close_env_on_shutdown = options.close_env_on_shutdown;
     if (options.tags) c.tags = options.tags->raw();
     std::optional<RLMeshServeOptions> so;
@@ -4488,14 +4374,9 @@ class EnvServer {
       c.options = &*so;
     }
     RLMeshExtEnvServerOptions extra = RLMESH_EXT_ENV_SERVER_OPTIONS_INIT;
-    Metadata peer;
     if (options.ext) {
-      extra.token = detail::ptr(options.ext->token);
       extra.publish_describe = options.ext->publish_describe;
-      for (auto& [k, v] : options.ext->peer_info_extra) peer.insert_or_assign(k, v);
     }
-    Value peer_value(peer);
-    extra.peer_info_extra = peer_value.raw();
     c.ext = &extra;
     RLMeshEnvServer* p = nullptr;
     if (auto v = std::get_if<VectorEnv>(&state_->env))
@@ -5537,7 +5418,6 @@ class Model {
     c.name = detail::ptr(options.name);
     RLMeshExtModelServeOptions extra = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
     if (options.ext) {
-      extra.token = detail::ptr(options.ext->token);
       extra.no_signal_handlers = options.ext->no_signal_handlers;
       extra.has_predict_concurrency = options.ext->predict_concurrency.has_value();
       if (options.ext->predict_concurrency)
@@ -5553,33 +5433,20 @@ class Model {
   Binding bind([[maybe_unused]] EnvTarget target);
 };
 struct RemoteEnvOptions {
-  std::optional<std::string> address{}, host{};
-  std::optional<uint16_t> port{};
-  std::optional<std::string> path{};
-  std::optional<Transport> transport{};
+  std::optional<std::string> address{};
   std::optional<Duration> connect_timeout{}, request_timeout{};
   std::optional<std::string> workflow_edition{};
   /* Sent as `authorization: Bearer <key>`; unset reads RLMESH_API_KEY for an
    * https:// address only, "" sends none. Never printed. */
-  std::optional<std::string> api_key{};
   /* A PEM bundle an https:// dial trusts instead of the system roots. */
-  std::optional<std::string> tls_ca_file{};
   RLMeshRemoteEnvOptions raw() const {
     RLMeshRemoteEnvOptions c = RLMESH_REMOTE_ENV_OPTIONS_INIT;
     c.address = detail::ptr(address);
-    c.host = detail::ptr(host);
-    c.path = detail::ptr(path);
-    c.has_port = port.has_value();
-    if (port) c.port = *port;
-    c.has_transport = transport.has_value();
-    if (transport) c.transport = static_cast<RLMeshTransport>(*transport);
     c.has_connect_timeout_seconds = connect_timeout.has_value();
     if (connect_timeout) c.connect_timeout_seconds = connect_timeout->count();
     c.has_request_timeout_seconds = request_timeout.has_value();
     if (request_timeout) c.request_timeout_seconds = request_timeout->count();
     c.workflow_edition = detail::ptr(workflow_edition);
-    c.api_key = detail::ptr(api_key);
-    c.tls_ca_file = detail::ptr(tls_ca_file);
     return c;
   }
   RemoteEnvOptions& with_address(std::optional<std::string> value) & {
@@ -5588,30 +5455,6 @@ struct RemoteEnvOptions {
   }
   RemoteEnvOptions with_address(std::optional<std::string> value) && {
     address = std::move(value);
-    return std::move(*this);
-  }
-  RemoteEnvOptions& with_port(std::optional<uint16_t> value) & {
-    port = std::move(value);
-    return *this;
-  }
-  RemoteEnvOptions with_port(std::optional<uint16_t> value) && {
-    port = std::move(value);
-    return std::move(*this);
-  }
-  RemoteEnvOptions& with_path(std::optional<std::string> value) & {
-    path = std::move(value);
-    return *this;
-  }
-  RemoteEnvOptions with_path(std::optional<std::string> value) && {
-    path = std::move(value);
-    return std::move(*this);
-  }
-  RemoteEnvOptions& with_transport(std::optional<Transport> value) & {
-    transport = std::move(value);
-    return *this;
-  }
-  RemoteEnvOptions with_transport(std::optional<Transport> value) && {
-    transport = std::move(value);
     return std::move(*this);
   }
   RemoteEnvOptions& with_connect_timeout(std::optional<Duration> value) & {
@@ -5630,36 +5473,12 @@ struct RemoteEnvOptions {
     workflow_edition = std::move(value);
     return std::move(*this);
   }
-  RemoteEnvOptions& with_host(std::optional<std::string> value) & {
-    host = std::move(value);
-    return *this;
-  }
-  RemoteEnvOptions with_host(std::optional<std::string> value) && {
-    host = std::move(value);
-    return std::move(*this);
-  }
   RemoteEnvOptions& with_request_timeout(std::optional<Duration> value) & {
     request_timeout = std::move(value);
     return *this;
   }
   RemoteEnvOptions with_request_timeout(std::optional<Duration> value) && {
     request_timeout = std::move(value);
-    return std::move(*this);
-  }
-  RemoteEnvOptions& with_api_key(std::optional<std::string> value) & {
-    api_key = std::move(value);
-    return *this;
-  }
-  RemoteEnvOptions with_api_key(std::optional<std::string> value) && {
-    api_key = std::move(value);
-    return std::move(*this);
-  }
-  RemoteEnvOptions& with_tls_ca_file(std::optional<std::string> value) & {
-    tls_ca_file = std::move(value);
-    return *this;
-  }
-  RemoteEnvOptions with_tls_ca_file(std::optional<std::string> value) && {
-    tls_ca_file = std::move(value);
     return std::move(*this);
   }
 };
@@ -5723,11 +5542,6 @@ class RemoteEnv {
     detail::check_status(rlmesh_remote_env_render(raw(), env_index, &p));
     if (p) return Value::adopt(p);
     return {};
-  }
-  bool shutdown(std::string_view reason = "owner shutdown") {
-    bool stopped = false;
-    detail::check_status(rlmesh_remote_env_shutdown(raw(), std::string(reason).c_str(), &stopped));
-    return stopped;
   }
   void close() { detail::check_status(rlmesh_remote_env_close(raw())); }
   ResetResult reset(std::optional<int64_t> seed = {}, const std::optional<InfoDict>& options = {}) {
@@ -5803,12 +5617,6 @@ class RemoteVectorEnv {
     detail::check_status(rlmesh_remote_vector_env_render(raw(), env_index, &p));
     if (p) return Value::adopt(p);
     return {};
-  }
-  bool shutdown(std::string_view reason = "owner shutdown") {
-    bool stopped = false;
-    detail::check_status(
-        rlmesh_remote_vector_env_shutdown(raw(), std::string(reason).c_str(), &stopped));
-    return stopped;
   }
   void close() { detail::check_status(rlmesh_remote_vector_env_close(raw())); }
   ResetResult reset(std::optional<VectorSeed> seed = {},

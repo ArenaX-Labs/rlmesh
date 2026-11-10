@@ -32,14 +32,21 @@ default = ["cli"]
 abi3-py311 = ["pyo3/abi3-py311"]
 cli = ["dep:rlmesh-cli"]
 stub-gen = ["dep:pyo3-stub-gen"]
+# Unreleased: the lobby and scene runs (`rlmesh-session/fleet`). Never in a
+# release wheel; CI builds it.
+fleet = ["rlmesh-cli?/fleet", "rlmesh-session/fleet"]
+
+# `rlmesh cockpit` in every desktop wheel; the Linux ARM wheel (a Pi, a
+# robot's computer) leaves the window out.
+[target.'cfg(not(all(target_os = "linux", target_arch = "aarch64")))'.dependencies]
+rlmesh-cli = { workspace = true, optional = true, features = ["cockpit"] }
 
 [dependencies]
 # No `managed`: the package has its own platform client (`rlmesh.managed`);
 # the bundled CLI (feature `cli`) brings it in for itself.
-rlmesh = { workspace = true, default-features = false, features = ["lockstep", "viewer"] }
+rlmesh = { workspace = true, default-features = false, features = ["viewer"] }
 rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
-rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
 rlmesh-session = { workspace = true, features = ["record"] }
 rlmesh-spaces = { workspace = true }
@@ -62,9 +69,7 @@ tokio = { workspace = true, features = [
   "sync",
   "time",
 ] }
-tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
-tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4"] }

@@ -1,4 +1,4 @@
-//! The virtual-mode tick barrier (§11.3), sans-IO.
+//! The virtual-mode tick barrier, sans-IO.
 //!
 //! Session time is `tick × tick_ns`, advanced by the host tick by tick:
 //!

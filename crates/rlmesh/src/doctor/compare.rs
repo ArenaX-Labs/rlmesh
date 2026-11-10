@@ -1,6 +1,6 @@
-//! Pure verdict and comparison helpers the checks share, ported unchanged from
-//! the managed probe: action spreads, replay divergence, conformance, the
-//! probe's actions and the contract-branch verdict.
+//! Pure verdict and comparison helpers the checks share: action spreads,
+//! replay divergence, conformance, the probe's actions and the
+//! contract-branch verdict.
 
 use rlmesh_spaces::spaces::SpaceKind;
 use rlmesh_spaces::{

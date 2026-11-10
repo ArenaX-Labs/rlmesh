@@ -17,13 +17,18 @@ uv run python examples/python/v2/ur10e_mujoco/demo.py policy --address ADDR
 Then open the cockpit on the printed address:
 
 ```sh
-mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...
+rlmesh cockpit 127.0.0.1:41000/local/01a15b0a-...   # from `pip install rlmesh` on a desktop
+mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...   # from this repo
 # or: cargo run -p rlmesh-cockpit -- ADDRESS [--id cockpit] [--timeout 10] [--record-dir DIR]
 ```
 
+`rlmesh cockpit` is in the desktop wheels (Linux x86_64, macOS, Windows); the Linux ARM wheel, for a Pi or a robot's computer, leaves the window out.
+
 `RUST_LOG=rlmesh_cockpit=debug` logs the feed.
 
-The header says whether the host records the session (`REC`, or "recording paused: disk low"). **Pause** scrubs the last minute (up to 512 MB of samples) while the session keeps running underneath; only E-STOP stays on until **Back to live**. **Keep** keeps the host's recording of the last 2 minutes as an incident; it needs the host on this machine, recording into `--record-dir` (default: the host's default).
+The header says whether the host records the session (`REC`, or "recording paused: disk low"). **Pause** scrubs the last minute (up to 512 MB of samples) while the session keeps running underneath; only E-STOP stays on until **Back to live**. **Keep** asks the host to keep its recording of the last 2 minutes as an incident (a host verb, so the cockpit can be on another machine; at most every 5 s).
+
+The **Edges** table says why each robot is or isn't moving: its edge mode and the reason its newest tick gives (`QUEUE_DRY`, `ESTOP_LOCAL`, ...), and the chunks it refused since it attached, by reason (hover for the breakdown; each new refusal is on the timeline too). The header gives the session's mode reason, and **Participants** each link's heartbeat age, jitter and largest gap as the host measures them. All of it comes from the host's signed health message (`host/health`, about once a second).
 
 ## Replay a recording
 
@@ -42,7 +47,7 @@ The same views over a recorded session, with play/pause, speed, previous/next me
 With the host on this machine, the live bar collects episodes: type the task, **Start episode**, then **Success**, **Fail** or **Discard** (a bad take, dropped). A success or a failure links the host's recording of the take into `collected/DATASET/UNIXMS/` with an `episode.json` (`--dataset`, default `default`); nothing purges it. Export the takes as a LeRobot dataset through the `lerobot` package (`pip install 'lerobot[dataset]'`); failed takes are left out unless `--include-failed`:
 
 ```sh
-python -m rlmesh.v2.lerobot ~/.local/share/rlmesh/recordings/collected/default ./ur10e-sweeps --repo-id me/ur10e-sweeps --fps 30
+python -m rlmesh.realtime.lerobot ~/.local/share/rlmesh/recordings/collected/default ./ur10e-sweeps --repo-id me/ur10e-sweeps --fps 30
 ```
 
 Each frame holds the newest sample of every stream at its time: `observation.state` is every numeric stream (`--state TOPIC...` to choose), `action` every `_applied` stream (what the edges dispatched) and `observation.images.PATH` every camera, as video.
@@ -52,14 +57,14 @@ A replay of a file or directory also offers **Open in Rerun** (`rerun` on the PA
 ## What it shows
 
 - **Live channels** (left): the robot path tree, each part's kind, latest value (numbers with a 10 s plot, or a camera thumbnail), age since capture and seq gaps. Commandable parts list their `_applied` stream: what the edge dispatched on each tick.
-- **Declared vs measured** (§8.10), each counter kept separate and labelled with its clock:
+- **Declared vs measured**, each counter kept separate and labelled with its clock:
   - per stream: declared source rate; produced and published (the publisher's own count, from its observer reports); the admitted delivery contracts and the publication plan; unique received here; per second of capture time; each subscriber's seq advance (from its heartbeats); age, freshness bound and losses; `rate_drift` outside `[0.8, 1.25]`.
-  - per controller: starts, completions and busy skips per second, other skipped slots by reason (`waiting_for`, `stale_input`, `window_gap`, `no_lease`), inference pending, latency p50/p99, chunks per second, chunk age at receipt and valid coverage remaining (an observer's estimate, §9.2).
-  - per edge: declared and measured control rate (the edge's own tick stamps), deadline misses (a tick more than two control periods late, §9.1), longest tick gap, edge mode, lease holder, fenced chunks, queue depth, hold and safe behaviour.
+  - per controller: starts, completions and busy skips per second, other skipped slots by reason (`waiting_for`, `stale_input`, `window_gap`, `no_lease`), inference pending, latency p50/p99, chunks per second, chunk age at receipt and valid coverage remaining (an observer's estimate).
+  - per edge: declared and measured control rate (the edge's own tick stamps), deadline misses (a tick more than two control periods late), longest tick gap, edge mode, lease holder, fenced chunks, queue depth, hold and safe behaviour.
   - per participant: clock offset, error bound and RTT, health, heartbeat age.
 - **Lease and mode timeline**: lanes of session mode, lease holder and edge mode, and every change derived from consecutive authority snapshots: epochs, mode transitions, leases granted, preempted, rebound, expired, revoked or released, e-stop, bindings and roster.
-- **Bindings**: each controller's binding table in the §6.8 layout (entries, input contracts, action grids).
-- **Arm / e-stop**: E-STOP is one click and always visible. Arm asks for confirmation. Disarm is offered whenever the protocol allows it. A latched e-stop is cleared at the robot (a local clear, §11.1); the cockpit says so and then offers disarm and arm.
+- **Bindings**: each controller's binding table in its declared layout (entries, input contracts, action grids).
+- **Arm / e-stop**: E-STOP is one click and always visible. Arm asks for confirmation. Disarm is offered whenever the protocol allows it. A latched e-stop is cleared at the robot (a local clear); the cockpit says so and then offers disarm and arm.
 
 In a sim slower than real time, "per second" means two things: rates on the cockpit's or publisher's clock are per wall second, "per capture s" is per second of capture time, and in virtual and lockstep modes the header shows session seconds per cockpit second.
 

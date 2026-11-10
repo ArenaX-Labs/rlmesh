@@ -2,15 +2,37 @@
 // randomness.
 
 #include <ESPmDNS.h>
+#include <Preferences.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "RLMeshESP32.h"
-#include "rlmesh_zenoh.h"
+#include "RLMesh.h"
+#include "rlmesh_transport.h"
 
 namespace rlmesh {
+
+namespace {
+// The NVS namespace and key of the e-stop latch.
+const char* const kLatchSpace = "rlmesh-estop";
+const char* const kLatchKey = "latched";
+
+bool storedLatch() {
+  Preferences nvs;
+  if (!nvs.begin(kLatchSpace, true)) return false;
+  bool latched = nvs.getBool(kLatchKey, false);
+  nvs.end();
+  return latched;
+}
+
+void storeLatch(bool latched) {
+  Preferences nvs;
+  if (!nvs.begin(kLatchSpace, false)) return;
+  nvs.putBool(kLatchKey, latched);
+  nvs.end();
+}
+}  // namespace
 
 bool Robot::begin(const char* address, const char* name, const char* robotJson,
                   uint32_t heartbeatMs) {
@@ -19,13 +41,12 @@ bool Robot::begin(const char* address, const char* name, const char* robotJson,
   return start(config);
 }
 
-bool Robot::begin(const Provisioning& provisioning, const char* name, const char* robotJson,
-                  uint32_t heartbeatMs) {
+bool Robot::begin(const Provisioning& provisioning, const char* robotJson, uint32_t heartbeatMs) {
   end();
   if (!provisioning.provisioned()) return false;
   rlmesh_device_robot_config_t config = {
       nullptr, provisioning.key_, provisioning.record_, provisioning.recordLen_,
-      name,    robotJson,         heartbeatMs,          &esp32::fillRandom};
+      nullptr, robotJson,         heartbeatMs,          &esp32::fillRandom};
   return start(config);
 }
 
@@ -33,6 +54,14 @@ bool Robot::start(const rlmesh_device_robot_config_t& config) {
   end();
   // A hostname: letters, digits and '-'.
   snprintf(mdnsName_, sizeof mdnsName_, "rlmesh-%s", config.name != nullptr ? config.name : "");
+  if (config.device_key != nullptr) {
+    uint8_t publicKey[32];
+    rlmesh_device_key_public(config.device_key, publicKey);
+    // The device key gives each copy of the firmware its own hostname.
+    snprintf(mdnsName_, sizeof mdnsName_, "rlmesh-%02x%02x%02x%02x%02x%02x%02x%02x", publicKey[0],
+             publicKey[1], publicKey[2], publicKey[3], publicKey[4], publicKey[5], publicKey[6],
+             publicKey[7]);
+  }
   for (char* c = mdnsName_; *c != '\0'; ++c) {
     if (!isalnum(static_cast<unsigned char>(*c))) *c = '-';
   }
@@ -40,7 +69,12 @@ bool Robot::start(const rlmesh_device_robot_config_t& config) {
     robot_ = nullptr;
     return false;
   }
-  zenoh_ = static_cast<rlmesh_zenoh_t*>(malloc(sizeof(rlmesh_zenoh_t)));
+  // A latch from before a reboot still holds, until a local clear.
+  if (storedLatch()) {
+    rlmesh_device_robot_estop(robot_, "latched before a reboot", esp32::nowUs());
+    persisted_ = 1;
+  }
+  zenoh_ = static_cast<rlmesh_zenoh_t*>(malloc(rlmesh_zenoh_size()));
   if (zenoh_ == nullptr || rlmesh_zenoh_open(zenoh_, robot_, &esp32::nowUs) != 0) {
     free(zenoh_);
     zenoh_ = nullptr;
@@ -54,10 +88,18 @@ void Robot::poll() {
   if (zenoh_ == nullptr) return;
   rlmesh_zenoh_poll(zenoh_);
   discover();
+  persistLatch();
+}
+
+void Robot::persistLatch() {
+  int8_t latched = estopLatched() ? 1 : 0;
+  if (latched == persisted_) return;
+  storeLatch(latched == 1);
+  persisted_ = latched;
 }
 
 // Every stored home address failed: ask mDNS for `_rlmesh._tcp`, and keep only
-// the instance whose TXT id is the stored host id (scene design §3.1). At most
+// the instance whose TXT id is the stored host id. At most
 // every 30 s: a query blocks for about a second.
 void Robot::discover() {
   const char* id = rlmesh_device_robot_home_id(robot_);
@@ -90,9 +132,11 @@ int Robot::part(const char* path) const {
   return robot_ != nullptr ? rlmesh_device_robot_part(robot_, path) : -1;
 }
 
-bool Robot::tick(int part, rlmesh_device_tick_t& out) {
-  if (robot_ == nullptr || part < 0 || part >= RLMESH_DEVICE_NO_PART) return false;
-  return rlmesh_device_robot_tick(robot_, uint8_t(part), esp32::nowUs(), &out) == 1;
+TickResult Robot::tick(int part, rlmesh_device_tick_t& out) {
+  if (robot_ == nullptr || part < 0 || part >= RLMESH_DEVICE_NO_PART)
+    return TickResult::InvalidArgument;
+  return static_cast<TickResult>(
+      rlmesh_device_robot_tick(robot_, uint8_t(part), esp32::nowUs(), &out));
 }
 
 void Robot::handoverDone(int part) {
@@ -116,6 +160,7 @@ void Robot::estop(const char* reason) {
 
 void Robot::clearEstop() {
   if (robot_ != nullptr) rlmesh_device_robot_clear_estop(robot_);
+  persistLatch();
 }
 
 rlmesh_device_robot_status_t Robot::status() const {
@@ -124,6 +169,8 @@ rlmesh_device_robot_status_t Robot::status() const {
   return s;
 }
 
-uint32_t Robot::transportFailures() const { return zenoh_ != nullptr ? zenoh_->failed : 0; }
+uint32_t Robot::transportFailures() const {
+  return zenoh_ != nullptr ? rlmesh_zenoh_failures(zenoh_) : 0;
+}
 
 }  // namespace rlmesh

@@ -27,6 +27,15 @@ path = "src/bin/rlmeshd.rs"
 name = "docker-credential-rlmesh"
 path = "src/bin/docker_credential_rlmesh.rs"
 
+[features]
+# Unreleased: the lobby, scene runs, satellites and mDNS
+# (`rlmesh scene|run|lobby|stop|arm`, and the daemon's side of them).
+# Off in every release; CI builds and tests it.
+fleet = ["rlmesh-session/fleet"]
+# `rlmesh cockpit`: the cockpit window (eframe; GL, X11 and Wayland are
+# loaded only when it opens). On in the desktop wheels.
+cockpit = ["dep:rlmesh-cockpit"]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
@@ -34,11 +43,12 @@ dirs = { workspace = true }
 reqwest = { workspace = true, features = ["form"] }
 # `rlmesh eval report`: results of saved bundles; `doctor` and `bench` (lockstep);
 # the platform client and profile store (managed).
-rlmesh = { workspace = true, default-features = false, features = ["lockstep", "managed"] }
+rlmesh = { workspace = true, default-features = false, features = ["managed"] }
 rlmesh-proto = { workspace = true }
+rlmesh-cockpit = { workspace = true, optional = true }
 # `rlmesh host`: v2 sessions over Zenoh, recorded (`record`).
 rlmesh-session = { workspace = true, features = ["record"] }
-# `rlmesh devices provision`: the tether's provisioning codec (spec §14).
+# `rlmesh devices provision`: the tether's provisioning codec.
 rlmesh-tether = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

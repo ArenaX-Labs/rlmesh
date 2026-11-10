@@ -1,4 +1,4 @@
-//! What people read: refusals (§6.7) and binding tables (§6.8).
+//! What people read: refusals and binding tables.
 //!
 //! Every refusal names the code, the entry, what was found and a fix:
 //!
@@ -224,7 +224,7 @@ fn edge_rate(command: Option<&CommandSpec>, hz: f64, control_hz: f64) -> String 
 }
 
 impl Binding {
-    /// The human-readable table (§6.8).
+    /// The human-readable table.
     pub fn table(&self) -> String {
         let count = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
         let mut out = format!(

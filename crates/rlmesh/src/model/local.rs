@@ -1,24 +1,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::data::env_contract_to_proto;
 use crate::run::runtime::{
     EnvResetRequest, EnvStepRequest, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
     RuntimeError, RuntimeHooks, RuntimeReport, RuntimeSessionSpec,
 };
 use async_trait::async_trait;
-use rlmesh_grpc::wire::env_contract_to_proto;
 
 use super::handler::ModelHandler;
-#[cfg(feature = "lockstep")]
 use crate::lockstep::GymError;
 use crate::{Error, Result, binding::spaces};
 
 /// One native run's resolved inputs.
 pub(crate) struct LocalRun {
     pub(crate) address: String,
-    /// The v1 endpoint token, for a build that still dials v1 (no `lockstep`).
-    #[cfg(not(feature = "lockstep"))]
-    pub(crate) token: String,
     /// The resolved budget (at least 1).
     pub(crate) episodes: u64,
     pub(crate) base_seed: Option<i64>,
@@ -58,8 +54,6 @@ where
     }
     let run = LocalRun {
         address: options.env_address.to_string(),
-        #[cfg(not(feature = "lockstep"))]
-        token: options.token,
         episodes,
         base_seed: options.base_seed,
         seed_key: None,
@@ -222,11 +216,8 @@ pub(crate) struct Connected {
     pub(crate) session: Option<String>,
 }
 
-/// Dials the env and handshakes: as a v2 lockstep driver (a participant
-/// address, §12), whose declaration answers the handshake. A build without
-/// the `lockstep` feature still dials v1 gRPC endpoints.
+/// Connect to a session env and negotiate its declared edition.
 async fn connect_env(options: &LocalRun) -> Result<Connected> {
-    #[cfg(feature = "lockstep")]
     {
         if !crate::address::is_v2(&options.address) {
             return Err(Error::invalid_argument(format!(
@@ -244,54 +235,6 @@ async fn connect_env(options: &LocalRun) -> Result<Connected> {
         }
         LockstepEnv::connect(&options.address, options.workflow_edition.as_deref()).await
     }
-    #[cfg(not(feature = "lockstep"))]
-    connect_grpc_env(options).await
-}
-
-/// The v1 wire's env, for a build without the `lockstep` feature (no
-/// in-repo consumer: Python and the C API build it).
-// TODO: delete with v1 env serving and the feature's opt-out.
-#[cfg(not(feature = "lockstep"))]
-async fn connect_grpc_env(options: &LocalRun) -> Result<Connected> {
-    if crate::address::is_v2(&options.address) {
-        return Err(Error::invalid_argument(format!(
-            "{}: this build has no v2 lockstep transport (the `lockstep` feature)",
-            options.address
-        )));
-    }
-    // An address carries what a RemoteEnv dialed with no api_key would
-    // (RLMESH_API_KEY over https://, RMT-22); a loopback server's token wins.
-    let auth = crate::credentials::resolve(&options.address, None, None, false)?;
-    let credentials = rlmesh_grpc::Credentials {
-        token: if options.token.is_empty() {
-            auth.token().to_string()
-        } else {
-            options.token.clone()
-        },
-        trust: auth.trust().clone(),
-    };
-    let mut env = rlmesh_grpc::EnvClient::connect_with(&options.address, &credentials)
-        .await
-        .map_err(Error::from_grpc)?;
-    // The runtime tier's WANT rides this leg's handshake and caps the env-leg
-    // negotiation, so it has to be declared before the handshake goes out.
-    env.declare_workflow_edition(options.workflow_edition.clone());
-    let handshake = env.handshake().await.map_err(Error::from_grpc)?;
-    Ok(Connected {
-        subset_step: rlmesh_proto::has_capability(
-            &handshake.capabilities,
-            rlmesh_proto::capabilities::ENV_SUBSET_STEP,
-        ),
-        contract: rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract)
-            .map_err(|err| Error::Protocol(format!("invalid spaces spec from env: {err}")))?,
-        num_envs: handshake.num_envs,
-        edition: RunEdition {
-            selected: handshake.workflow_edition.to_string(),
-            env: None,
-        },
-        env: DrivenEnv::Grpc(Box::new(EnvClientRuntimeEnv::new(env))),
-        session: None,
-    })
 }
 
 /// The edition a connection to an env negotiated, and the env's offer.
@@ -315,9 +258,7 @@ impl RunEdition {
             // TODO: pin the env to the floor on reset once an edition changes
             // what an env does; while one edition exists, the floor is the env's.
             (Some(env), Some(model)) => {
-                rlmesh_grpc::env_floor(env, &model, declared)
-                    .map_err(Error::from_grpc)?
-                    .selected_workflow_edition
+                crate::floor::env_floor(env, &model, declared)?.selected_workflow_edition
             }
             _ => self.selected,
         };
@@ -328,9 +269,6 @@ impl RunEdition {
 /// The env a local run drives.
 #[derive(Clone)]
 pub(crate) enum DrivenEnv {
-    #[cfg(not(feature = "lockstep"))]
-    Grpc(Box<EnvClientRuntimeEnv>),
-    #[cfg(feature = "lockstep")]
     Lockstep(LockstepEnv),
 }
 
@@ -341,9 +279,6 @@ impl RuntimeEnv for DrivenEnv {
         request: EnvResetRequest,
     ) -> std::result::Result<RuntimeEnvReset, RuntimeError> {
         match self {
-            #[cfg(not(feature = "lockstep"))]
-            Self::Grpc(env) => env.reset(request).await,
-            #[cfg(feature = "lockstep")]
             Self::Lockstep(env) => env.reset(request).await,
         }
     }
@@ -353,32 +288,24 @@ impl RuntimeEnv for DrivenEnv {
         request: EnvStepRequest,
     ) -> std::result::Result<RuntimeEnvStep, RuntimeError> {
         match self {
-            #[cfg(not(feature = "lockstep"))]
-            Self::Grpc(env) => env.step(request).await,
-            #[cfg(feature = "lockstep")]
             Self::Lockstep(env) => env.step(request).await,
         }
     }
 
     async fn close(&mut self, timeout: Duration) -> std::result::Result<(), String> {
         match self {
-            #[cfg(not(feature = "lockstep"))]
-            Self::Grpc(env) => env.close(timeout).await,
-            #[cfg(feature = "lockstep")]
             Self::Lockstep(env) => env.close(timeout).await,
         }
     }
 }
 
-/// A lockstep env (§12) as the driver's env: resets and steps on leaf slabs,
+/// A lockstep env as the driver's env: resets and steps on leaf slabs,
 /// the env's own timing reported beside each answer.
-#[cfg(feature = "lockstep")]
 #[derive(Clone)]
 pub struct LockstepEnv {
     client: crate::lockstep::LockstepClient,
 }
 
-#[cfg(feature = "lockstep")]
 impl LockstepEnv {
     /// The env `client` drives.
     pub fn new(client: crate::lockstep::LockstepClient) -> Self {
@@ -407,7 +334,7 @@ impl LockstepEnv {
             ));
         }
         // The driver checks the env's contract as a v1 handshake did.
-        rlmesh_grpc::wire::check_proto_contract(&info.contract)
+        crate::data::validate_driver_contract(&info.contract)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
         let (env, selected, _) =
             crate::editions::negotiate_env(info, declared).map_err(Error::Protocol)?;
@@ -443,7 +370,6 @@ impl LockstepEnv {
     }
 }
 
-#[cfg(feature = "lockstep")]
 #[async_trait]
 impl RuntimeEnv for LockstepEnv {
     async fn reset(
@@ -463,7 +389,7 @@ impl RuntimeEnv for LockstepEnv {
         let (endpoint_total_ns, phases) = self.timing();
         Ok(RuntimeEnvReset {
             observation,
-            infos: info.as_ref().map(rlmesh_grpc::wire::meta_map_to_proto),
+            infos: info.as_ref().map(crate::data::meta_map_to_proto),
             endpoint_total_ns,
             phases,
         })
@@ -484,7 +410,7 @@ impl RuntimeEnv for LockstepEnv {
             rewards: step.rewards,
             terminated: step.terminated,
             truncated: step.truncated,
-            infos: step.info.as_ref().map(rlmesh_grpc::wire::meta_map_to_proto),
+            infos: step.info.as_ref().map(crate::data::meta_map_to_proto),
             endpoint_total_ns,
             phases,
         })
@@ -497,17 +423,14 @@ impl RuntimeEnv for LockstepEnv {
     }
 }
 
-/// Maps a lockstep failure onto the runtime's env error, classified as the
-/// gRPC env client classifies the same failure.
-#[cfg(feature = "lockstep")]
+/// Preserve a session failure's class and recoverability in the driver.
 fn lockstep_runtime_error(operation: &'static str, error: GymError) -> RuntimeError {
-    use rlmesh_grpc::error::{Error as GrpcError, ProtocolError, TransportError};
     let recoverable = error.is_recoverable();
     let source = match error {
-        GymError::Env(error) => GrpcError::Environment(error.to_wire()),
-        GymError::Timeout(t) => GrpcError::Timeout(t),
-        GymError::Closed(why) => GrpcError::Transport(TransportError::ConnectFailed(why)),
-        other => GrpcError::Protocol(ProtocolError::DecodeError(other.to_string())),
+        GymError::Env(error) => Error::Environment(error),
+        GymError::Timeout(t) => Error::Timeout(t),
+        GymError::Closed(why) => Error::Connection(why),
+        other => Error::Protocol(other.to_string()),
     };
     RuntimeError::env_rpc_with_recoverability(operation, 0, recoverable, source)
 }
@@ -552,8 +475,8 @@ fn run_error(error: RuntimeError) -> Error {
         // Keep the driver's message (it names the op and the step) and take only
         // the classification from the structured source.
         RuntimeError::EnvRpc { source, .. } => match source
-            .and_then(|source| source.downcast::<rlmesh_grpc::error::Error>().ok())
-            .map(|error| Error::from_grpc(*error))
+            .and_then(|source| source.downcast::<Error>().ok())
+            .map(|error| *error)
         {
             Some(Error::Connection(_)) => Error::Connection(message),
             Some(Error::Timeout(timeout)) => Error::Timeout(timeout),
@@ -573,100 +496,5 @@ fn run_error(error: RuntimeError) -> Error {
         // vector-env refusals): ValueError at connect (RUN-P1).
         RuntimeError::InvalidSpec(_) => Error::invalid_argument(message),
         _ => Error::Internal(message),
-    }
-}
-
-/// A connected [`rlmesh_grpc::EnvClient`] as the driver's env: the v1 wire
-/// until v1 env serving goes.
-#[derive(Clone)]
-pub struct EnvClientRuntimeEnv {
-    inner: rlmesh_grpc::EnvClient,
-}
-
-impl EnvClientRuntimeEnv {
-    /// Wrap a connected (and handshaked) env client.
-    pub fn new(client: rlmesh_grpc::EnvClient) -> Self {
-        Self { inner: client }
-    }
-
-    /// Consume the adapter and return the underlying client.
-    pub fn into_inner(self) -> rlmesh_grpc::EnvClient {
-        self.inner
-    }
-}
-
-fn env_rpc(operation: &'static str, error: rlmesh_grpc::error::Error) -> RuntimeError {
-    let recoverable = error.is_recoverable();
-    RuntimeError::env_rpc_with_recoverability(operation, 0, recoverable, error)
-}
-
-fn mask(bytes: &[u8], lanes: usize) -> Vec<bool> {
-    (0..lanes)
-        .map(|lane| bytes.get(lane).is_some_and(|bit| *bit != 0))
-        .collect()
-}
-
-#[async_trait]
-impl RuntimeEnv for EnvClientRuntimeEnv {
-    async fn reset(
-        &mut self,
-        request: EnvResetRequest,
-    ) -> std::result::Result<RuntimeEnvReset, RuntimeError> {
-        let response = self
-            .inner
-            .reset(rlmesh_proto::env::v1::ResetRequest {
-                seeds: request.seeds,
-                options: request
-                    .options
-                    .as_ref()
-                    .map(rlmesh_grpc::wire::meta_map_to_proto),
-                timeout_ms: 0,
-                env_indices: request.env_indices,
-                episode_ids: Vec::new(),
-            })
-            .await
-            .map_err(|err| env_rpc("env.reset", err))?;
-        Ok(RuntimeEnvReset {
-            observation: response.observation.map(|v| v.leaves).unwrap_or_default(),
-            infos: response.infos,
-            endpoint_total_ns: self.inner.take_last_endpoint_total_ns(),
-            phases: self.inner.take_last_phases(),
-        })
-    }
-
-    async fn step(
-        &mut self,
-        request: EnvStepRequest,
-    ) -> std::result::Result<RuntimeEnvStep, RuntimeError> {
-        let response = self
-            .inner
-            .step(rlmesh_proto::env::v1::StepRequest {
-                action: Some(rlmesh_grpc::wire::leaves_value(request.action)),
-                timeout_ms: 0,
-                env_indices: request.env_indices,
-                episode_ids: Vec::new(),
-            })
-            .await
-            .map_err(|err| env_rpc("env.step", err))?;
-        let lanes = response.rewards.len();
-        Ok(RuntimeEnvStep {
-            observation: response.observation.map(|v| v.leaves).unwrap_or_default(),
-            terminated: mask(&response.terminated_mask, lanes),
-            truncated: mask(&response.truncated_mask, lanes),
-            rewards: response.rewards,
-            infos: response.infos,
-            endpoint_total_ns: self.inner.take_last_endpoint_total_ns(),
-            phases: self.inner.take_last_phases(),
-        })
-    }
-
-    async fn close(&mut self, timeout: Duration) -> std::result::Result<(), String> {
-        match tokio::time::timeout(timeout, self.inner.close()).await {
-            Ok(result) => result.map(|_| ()).map_err(|err| err.to_string()),
-            Err(err) => {
-                self.inner.detach();
-                Err(err.to_string())
-            }
-        }
     }
 }

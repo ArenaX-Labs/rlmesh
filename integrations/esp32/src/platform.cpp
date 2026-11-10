@@ -3,7 +3,7 @@
 #include <esp_random.h>
 #include <esp_timer.h>
 
-#include "RLMeshESP32.h"
+#include "RLMesh.h"
 
 namespace rlmesh {
 namespace esp32 {

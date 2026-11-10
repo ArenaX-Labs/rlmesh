@@ -133,8 +133,8 @@ def test_env_server_command_supports_fixture_and_gym() -> None:
 
 def test_parse_server_address() -> None:
     assert (
-        runner.parse_server_address("✓ Server address: tcp://127.0.0.1:54321")
-        == "tcp://127.0.0.1:54321"
+        runner.parse_server_address("✓ Server address: 127.0.0.1:54321/env")
+        == "127.0.0.1:54321/env"
     )
     assert runner.parse_server_address("Waiting for client connection...") is None
 

@@ -1,4 +1,4 @@
-//! Node-API bindings for real-time sessions (protocol v2, the v0.2 spec): an
+//! Node-API bindings for real-time sessions (protocol v2): an
 //! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound policy
 //! ([`rlmesh_session::Controller`]) and an MCAP recorder
 //! ([`rlmesh_session::record::Recorder`]), the Node and Electron twin of the PyO3
@@ -486,7 +486,10 @@ pub struct EdgeStats {
 #[napi]
 pub struct NativeRobot {
     name: String,
-    robot: Mutex<Option<Arc<Robot>>>,
+    /// The robot now: a rejoin swaps it ([`sdk::keep_joined`]).
+    robot: sdk::RobotSlot,
+    /// Joins it again when the host drops it.
+    keeper: Mutex<Option<tokio::task::JoinHandle<()>>>,
     encoder: Mutex<Option<Encoder>>,
 }
 
@@ -508,12 +511,16 @@ impl Encoder {
     /// sent.
     const QUEUE: usize = 2;
 
-    fn start(robot: Arc<Robot>) -> std::io::Result<Self> {
+    fn start(slot: sdk::RobotSlot) -> std::io::Result<Self> {
         let (frames, queued) = mpsc::sync_channel::<Frame>(Self::QUEUE);
         let thread = std::thread::Builder::new()
             .name("rlmesh-encoder".into())
             .spawn(move || {
                 for (path, capture, pixels) in queued {
+                    // The robot now: a rejoin may have swapped it.
+                    let Some(robot) = slot.lock().ok().and_then(|r| r.clone()) else {
+                        break;
+                    };
                     // Its outcome is in the publisher's own counters.
                     let _ = robot.publish(&path, capture, &[pixels.as_slice()]);
                 }
@@ -523,7 +530,9 @@ impl Encoder {
 }
 
 /// Attaches as `name` (the robot's participant id), declares `robot_json`
-/// (the authored map, §3) and starts its publishers and edges.
+/// (the authored map) and starts its publishers and edges. When the
+/// host drops it (a network gap past its presence grace) it joins again on
+/// its own.
 #[napi]
 pub async fn connect_robot(
     address: String,
@@ -539,13 +548,17 @@ pub async fn connect_robot(
             rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
             other => exception(other.to_string()),
         })?;
+    let slot: sdk::RobotSlot = Arc::new(Mutex::new(Some(Arc::new(robot))));
+    let keeper = sdk::keep_joined(slot.clone(), address, name.clone(), robot_json);
     Ok(NativeRobot {
         name,
-        robot: Mutex::new(Some(Arc::new(robot))),
+        robot: slot,
+        keeper: Mutex::new(Some(keeper)),
         encoder: Mutex::new(None),
     })
 }
 
+#[cfg(feature = "fleet")]
 /// Waits in the lobby of the home daemon `home` names (`null`: this
 /// machine's rlmeshd) as robot `name` until a run assigns it, then joins the
 /// run and declares `robot_json`. A refused join (its pin, another map) is
@@ -567,7 +580,8 @@ pub async fn robot_from_lobby(
         })?;
     Ok(NativeRobot {
         name,
-        robot: Mutex::new(Some(Arc::new(robot))),
+        robot: Arc::new(Mutex::new(Some(Arc::new(robot)))),
+        keeper: Mutex::new(None),
         encoder: Mutex::new(None),
     })
 }
@@ -639,7 +653,8 @@ impl NativeRobot {
             let frame = (path, capture, std::mem::take(pixels));
             let mut encoder = self.encoder.lock().map_err(|_| exception("poisoned"))?;
             if encoder.is_none() {
-                *encoder = Some(Encoder::start(robot).map_err(|e| exception(e.to_string()))?);
+                *encoder =
+                    Some(Encoder::start(self.robot.clone()).map_err(|e| exception(e.to_string()))?);
             }
             if let Some(encoder) = encoder.as_ref() {
                 // A full queue drops this frame: the encoder is behind.
@@ -647,8 +662,30 @@ impl NativeRobot {
             }
             return Ok(None);
         }
-        let sent = sdk::publish(&robot, &path, capture, owned).map_err(session_err)?;
+        let sent = sdk::publish(robot.published(), &path, capture, owned).map_err(session_err)?;
         Ok(sent.map(seq))
+    }
+
+    /// Publishes one frame of the camera `path` already encoded as JPEG,
+    /// sent as it is: for a part declared `encoding: jpeg`, at its declared
+    /// size. Captured at `capture_ns` (now by default); copied before this
+    /// returns.
+    #[napi]
+    pub fn publish_jpeg(
+        &self,
+        path: String,
+        jpeg: Uint8Array,
+        capture_ns: Option<BigInt>,
+    ) -> Result<()> {
+        let robot = self.robot()?;
+        let capture = match capture_ns {
+            Some(at) => ns(&at, "captureNs")?,
+            None => robot.participant().clock().now_ns(),
+        };
+        robot
+            .published()
+            .publish_jpeg(&path, capture, bytes::Bytes::copy_from_slice(&jpeg))
+            .map_err(session_err)
     }
 
     /// One control tick of the edge serving `path` and its command group:
@@ -681,6 +718,14 @@ impl NativeRobot {
         let robot = self.robot()?;
         robot.participant().disarm().await.map_err(session_err)?;
         Ok(())
+    }
+
+    /// Asks the host to keep its recent recording as an incident named
+    /// `label` (the cockpit's Keep).
+    #[napi]
+    pub async fn keep(&self, label: String) -> Result<()> {
+        let robot = self.robot()?;
+        robot.participant().keep(&label).await.map_err(session_err)
     }
 
     /// Emergency stop, latched locally with no network (any thread): the
@@ -739,14 +784,6 @@ impl NativeRobot {
         ))
     }
 
-    /// Why this robot should leave its scene's run (`scene_ended`,
-    /// `scene_failed`, `robot_lost`, `superseded`); `null` while it is in
-    /// the run, and outside a scene.
-    #[napi(getter)]
-    pub fn leaving(&self) -> Result<Option<String>> {
-        Ok(sdk::leaving(self.robot()?.participant()).map(|l| sdk::leave_name(&l)))
-    }
-
     /// Now on this robot's clock (`process.hrtime.bigint()`).
     #[napi]
     pub fn now_ns(&self) -> Result<BigInt> {
@@ -789,6 +826,9 @@ impl NativeRobot {
     /// Detaches: the edges and publishers go, the host drops the parts.
     #[napi]
     pub async fn close(&self) -> Result<()> {
+        if let Some(keeper) = self.keeper.lock().ok().and_then(|mut k| k.take()) {
+            keeper.abort();
+        }
         // The encoder finishes its queued frames and lets go of the robot.
         let encoder = self.encoder.lock().map(|mut e| e.take()).unwrap_or(None);
         if let Some(Encoder { frames, thread }) = encoder {
@@ -803,6 +843,19 @@ impl NativeRobot {
     }
 }
 
+#[cfg(feature = "fleet")]
+#[cfg(feature = "fleet")]
+#[napi]
+impl NativeRobot {
+    /// Why this robot should leave its scene's run (`scene_ended`,
+    /// `scene_failed`, `robot_lost`, `superseded`); `null` while it is in
+    /// the run, and outside a scene.
+    #[napi(getter)]
+    pub fn leaving(&self) -> Result<Option<String>> {
+        Ok(sdk::leaving(self.robot()?.participant()).map(|l| sdk::leave_name(&l)))
+    }
+}
+
 /// A refusal: its status and message.
 #[napi(object)]
 pub struct RefusalInfo {
@@ -810,6 +863,7 @@ pub struct RefusalInfo {
     pub message: String,
 }
 
+#[cfg(feature = "fleet")]
 /// One member of a run.
 #[napi(object)]
 pub struct MemberInfo {
@@ -818,6 +872,7 @@ pub struct MemberInfo {
     pub error: Option<RefusalInfo>,
 }
 
+#[cfg(feature = "fleet")]
 /// A run's state.
 #[napi(object)]
 pub struct RunInfo {
@@ -828,6 +883,7 @@ pub struct RunInfo {
     pub error: Option<RefusalInfo>,
 }
 
+#[cfg(feature = "fleet")]
 fn refusal(e: &Option<rlmesh_session::wire::CtlError>) -> Option<RefusalInfo> {
     e.as_ref().map(|e| RefusalInfo {
         status: sdk::status_name(e.status),
@@ -835,6 +891,7 @@ fn refusal(e: &Option<rlmesh_session::wire::CtlError>) -> Option<RefusalInfo> {
     })
 }
 
+#[cfg(feature = "fleet")]
 fn run_info(state: &rlmesh_session::wire::RunState) -> RunInfo {
     RunInfo {
         run: state.run.clone(),
@@ -855,6 +912,7 @@ fn run_info(state: &rlmesh_session::wire::RunState) -> RunInfo {
     }
 }
 
+#[cfg(feature = "fleet")]
 /// A scene run started from this process on the home daemon's lobby.
 #[napi]
 pub struct NativeScene {
@@ -862,6 +920,7 @@ pub struct NativeScene {
     scene: tokio::sync::Mutex<Option<sdk::SceneRun>>,
 }
 
+#[cfg(feature = "fleet")]
 /// Runs the scene file's text `scene_toml` on the home daemon `home` names
 /// (`null`: this machine's rlmeshd), waiting up to `timeout_s` for it
 /// (`manual_arm`: wait for `arm()`). A refused scene is `SessionRefused`
@@ -883,6 +942,7 @@ pub async fn run_scene(
     })
 }
 
+#[cfg(feature = "fleet")]
 impl NativeScene {
     async fn with<T>(
         &self,
@@ -896,6 +956,7 @@ impl NativeScene {
     }
 }
 
+#[cfg(feature = "fleet")]
 #[napi]
 impl NativeScene {
     /// The run's id.
@@ -1090,7 +1151,7 @@ impl NativeObservation {
     }
 }
 
-/// The run-time options of a binding (§6.4).
+/// The run-time options of a binding.
 #[napi(object)]
 pub struct BindOptions {
     pub priority: Option<String>,
@@ -1100,11 +1161,14 @@ pub struct BindOptions {
     pub allow: Option<Vec<String>>,
     pub captures: Option<HashMap<String, String>>,
     pub timeout_s: Option<f64>,
+    /// Parts of the policy's own to publish annotations on (an authored
+    /// map, none commandable).
+    pub publishes_json: Option<String>,
 }
 
 fn run_options(
     name: &str,
-    robot: &str,
+    robot: Option<&str>,
     opts: &BindOptions,
 ) -> std::result::Result<RunOptions, String> {
     let pairs = |map: &Option<HashMap<String, String>>| {
@@ -1152,7 +1216,7 @@ pub struct SkipCount {
     pub count: i64,
 }
 
-/// The start, skip and completion counters (§8.10), and the input the
+/// The start, skip and completion counters, and the input the
 /// starts are phased after.
 #[napi(object)]
 pub struct RunStats {
@@ -1252,32 +1316,49 @@ impl Predictor for JsPredictor {
 pub struct NativePolicy {
     name: String,
     controller: Mutex<Option<Arc<Controller>>>,
+    published: Option<Arc<rlmesh_session::edge::Published>>,
     replies: Mutex<Option<SyncSender<Reply>>>,
     closing: Arc<AtomicBool>,
 }
 
-/// Attaches as `name` at `options.priority`, waits for `robot`'s parts,
-/// binds `policy_json` (the policy map, §6) with the run-time options, and
+/// Attaches as `name` at `options.priority`, waits for `robot`'s parts
+/// (`null`: the session's view of every robot, each under its name), binds
+/// `policy_json` (the policy map) with the run-time options, and
 /// declares the binding.
 #[napi]
 pub async fn bind_policy(
     address: String,
     name: String,
     policy_json: String,
-    robot: String,
+    robot: Option<String>,
     options: BindOptions,
 ) -> Result<NativePolicy> {
     let address = self::address(&address)?;
     let wait = timeout(options.timeout_s.unwrap_or(10.0))?;
     let class = priority(options.priority.as_deref().unwrap_or("model"))?;
-    let run_options = run_options(&name, &robot, &options)
+    let run_options = run_options(&name, robot.as_deref(), &options)
         .map_err(|why| binding_refused(format!("binding refused: {why}")))?;
-    let controller = sdk::bind_policy(&address, &name, &policy_json, &run_options, class, wait)
+    let (controller, published) = match options.publishes_json.as_deref() {
+        Some(publishes) => sdk::bind_policy_publishing(
+            &address,
+            &name,
+            &policy_json,
+            publishes,
+            &run_options,
+            class,
+            wait,
+        )
         .await
-        .map_err(bind_policy_err)?;
+        .map(|(controller, published)| (controller, Some(Arc::new(published)))),
+        None => sdk::bind_policy(&address, &name, &policy_json, &run_options, class, wait)
+            .await
+            .map(|controller| (controller, None)),
+    }
+    .map_err(bind_policy_err)?;
     Ok(NativePolicy {
         name,
         controller: Mutex::new(Some(Arc::new(controller))),
+        published,
         replies: Mutex::new(None),
         closing: Arc::new(AtomicBool::new(false)),
     })
@@ -1301,7 +1382,50 @@ impl NativePolicy {
         self.name.clone()
     }
 
-    /// The binding table, as the cockpit shows it (§6.8).
+    /// The parts this policy publishes, as the host normalised them, in
+    /// authored order (none without `publishesJson`).
+    #[napi]
+    pub fn published_parts(&self) -> Vec<PartInfo> {
+        self.published
+            .iter()
+            .flat_map(|p| p.parts())
+            .map(part_info)
+            .collect()
+    }
+
+    /// Publishes one sample of one of this policy's own parts from its
+    /// fields in declaration order (packed bytes; a string for text),
+    /// captured at `capture_ns` (now by default). Returns the sample's seq,
+    /// or `null` when coalesced.
+    #[napi]
+    pub fn publish(
+        &self,
+        path: String,
+        fields: Vec<Either<String, Uint8Array>>,
+        capture_ns: Option<BigInt>,
+    ) -> Result<Option<i64>> {
+        let published = self.published.as_ref().ok_or_else(|| {
+            invalid(format!(
+                "policy {} publishes nothing: pass publishes to Policy",
+                self.name
+            ))
+        })?;
+        let owned: Vec<Vec<u8>> = fields
+            .into_iter()
+            .map(|field| match field {
+                Either::A(text) => text.into_bytes(),
+                Either::B(bytes) => bytes.to_vec(),
+            })
+            .collect();
+        let capture = match capture_ns {
+            Some(at) => ns(&at, "captureNs")?,
+            None => self.controller()?.participant().clock().now_ns(),
+        };
+        let sent = sdk::publish(published, &path, capture, owned).map_err(session_err)?;
+        Ok(sent.map(seq))
+    }
+
+    /// The binding table, as the cockpit shows it.
     #[napi(getter)]
     pub fn table(&self) -> Result<String> {
         Ok(self.controller()?.binding().table())
@@ -1412,7 +1536,7 @@ impl NativePolicy {
         Ok(self.controller()?.holds())
     }
 
-    /// Runs the policy loop (§8.9) on a thread of its own until `stop()`,
+    /// Runs the policy loop on a thread of its own until `stop()`,
     /// `duration_s`, or a failure, calling `predict(observation)` on the JS
     /// thread at the replan rate with one inference in flight; each call is
     /// answered with `reply`. If a reply is an error, the leases are
@@ -1488,7 +1612,7 @@ impl NativePolicy {
         Ok(())
     }
 
-    /// The start, skip and completion counters (§8.10).
+    /// The start, skip and completion counters.
     #[napi]
     pub fn stats(&self) -> Result<RunStats> {
         let controller = self.controller()?;
@@ -1602,7 +1726,7 @@ pub struct RecordStats {
     pub log_time_clamped: i64,
 }
 
-/// An MCAP recording of a session (§13), as an observer participant.
+/// An MCAP recording of a session, as an observer participant.
 #[napi]
 pub struct NativeRecorder {
     path: String,

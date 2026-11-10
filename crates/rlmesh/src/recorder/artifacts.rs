@@ -1,7 +1,6 @@
-//! The per-episode artifact tree the managed platform's evaluations write
-//! (`docs/evaluation-artifacts.md` there): `episodes/epNNNNNN/` with
-//! `episode.json`, `trajectory.parquet` and `video/{camera}.{stream}.mp4`,
-//! plus `telemetry/windows.jsonl`.
+//! The per-episode artifact tree: `episodes/epNNNNNN/` with `episode.json`,
+//! `trajectory.parquet` and `video/{camera}.{stream}.mp4`, plus
+//! `telemetry/windows.jsonl`.
 //!
 //! [`EpisodeArtifacts`] is fed the runtime driver's events, so raw and
 //! transformed streams come from `raw_observation` / `raw_action` with no
@@ -9,7 +8,6 @@
 //! with a `record` spec drives it on a run; a runner with its own
 //! [`RuntimeHooks`](crate::binding::RuntimeHooks) drives it directly.
 
-// Moved from rlmesh-middleman, whose artifact field names are this contract.
 #![allow(missing_docs)]
 
 mod invariants;
@@ -26,10 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
-use rlmesh_grpc::wire::{
+use crate::data::{
     decode_batched_partial_values, leaves_value, meta_map_from_proto, space_spec_from_proto,
 };
+use chrono::{DateTime, Utc};
 use rlmesh_proto::spaces::v1::{MetaMap, SpaceSpec as ProtoSpaceSpec, meta_value};
 use rlmesh_spaces::{DType, MetaValue, SpaceKind, SpaceSpec, SpaceValue};
 use serde::Serialize;

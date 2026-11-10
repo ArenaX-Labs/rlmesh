@@ -748,29 +748,26 @@ trees alike. `"av1"` (Rust `VideoCodec::Av1`, the default) is the in-process
 rav1e encoder and needs nothing installed. `"h264"` plays in every browser
 (Safari decodes AV1 only on recent hardware), but rlmesh ships no H.264
 encoder: it runs the user's own ffmpeg, `ffmpeg` on `PATH` or the `ffmpeg`
-path, as a subprocess and pipes raw RGB frames to it with the managed runner's
+path, as a subprocess and pipes raw RGB frames to it with these
 arguments (`-f rawvideo -pix_fmt rgb24 -s WxH -r FPS -i pipe:0 -an -vf
 pad=ceil(iw/2)*2:ceil(ih/2)*2 -c:v libx264 -preset ultrafast -tune zerolatency
--pix_fmt yuv420p -movflags +faststart`), so its videos match the platform's.
+-pix_fmt yuv420p -movflags +faststart`).
 Construction checks once per process that the ffmpeg runs and lists libx264,
 and fails with RuntimeError naming what to install; it never falls back to
 AV1, so a bundle's codec does not depend on the machine. There is no `auto`.
 `quality` applies to AV1 only. Both codecs write the same `.mp4` names. An
-odd frame side is cropped by AV1 and padded by H.264, as the platform does.
-H.264 writes block while ffmpeg is behind, where the managed runner drops
-frames: every frame is kept. C, C++ and C# record AV1 (D-47).
+odd frame side is cropped by AV1 and padded by H.264.
+H.264 writes block while ffmpeg is behind: every frame is kept. C, C++ and C# record AV1 (D-47).
 
 Python's Experimental `record(*, model, env, spec=None, task=None,
-config=None, included_in_metrics=True) -> RunHooks` writes the managed
-platform's per-episode artifact tree (its `docs/evaluation-artifacts.md`)
+config=None, included_in_metrics=True) -> RunHooks` writes a per-episode artifact tree
 into the bundle under `workloads/cNNNN/attempts/a001/` (`artifactRoot` on
 the workload): `episodes/epNNNNNN/episode.json` (`rlmesh.episode.v1`: seed,
 trial index, verdict, timing, invariant flags, first-frame hash),
 `trajectory.parquet` (one row per step, a memory-budgeted row group at a
 time) and `video/{camera}.{raw|perturbed|extra}.mp4`, plus
 `telemetry/windows.jsonl`, the run's `warmup` phase mark (`phases`) and the
-machine's hardware `stamp` on the document. `spec` is the platform's
-`record` block (video `raw` / `perturbed` / `extra` cameras, `fps`, `when`,
+machine's hardware `stamp` on the document. `spec` configures recording (video `raw` / `perturbed` / `extra` cameras, `fps`, `when`,
 `every`, `stride`; trajectory `obs`, `obsImages`, `action`, `reward`, `info`,
 `stepTiming`, `when`, `every`). Raw and perturbed come from the runtime's
 `raw_observation` / `raw_action`, so they differ only under a transform.

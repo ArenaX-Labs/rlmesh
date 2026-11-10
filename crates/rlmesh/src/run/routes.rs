@@ -3,9 +3,7 @@
 //! together behind a [`StartBarrier`], retry their env connect, and end with
 //! a verdict of their own: one route failing never stops its siblings.
 //!
-//! Ported from the managed runner (`managed_runtime/runner/runtime.rs`,
-//! `start_barrier.rs` and `connections/retry.rs` in rlmesh-middleman). A
-//! served model batches across routes on its own side, so each route joins it
+//! A served model batches across routes on its own side, so each route joins it
 //! from its own session; an in-process [`Model`](crate::Model) drives one route at a time.
 
 use std::future::Future;
@@ -178,7 +176,6 @@ fn fan_out(model: Driven<'_>, routes: usize) -> Result<Vec<Driven<'_>>> {
                 "run_routes: an in-process Model drives one route at a time, got {routes}; \
                  serve it and pass its address to share it across routes"
             ))),
-            #[cfg(feature = "lockstep")]
             Driven::Served(model) => Ok(Driven::Served(model)),
             Driven::Random => Ok(Driven::Random),
             Driven::Prepared(_) => Err(Error::Internal(

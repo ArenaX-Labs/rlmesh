@@ -1,13 +1,12 @@
-//! Pure checks over a built image's OCI config, the way the managed platform's
-//! admission reads it: the serve command and the address it binds, the port it
+//! Pure checks over a built image's OCI config: the serve command and the address it
+//! binds, the port it
 //! exposes, its platform, its rlmesh labels (including the package label's
 //! `variant` / `profiles` blocks, see [`crate::variant`]), and whether the
 //! rlmesh it was built with can meet a platform's workflow editions.
 //!
 //! Nothing here touches docker, the network, or Python: the caller hands in an
 //! [`ImageConfig`] (parsed from `docker image inspect`, a registry manifest, ...)
-//! and reads a [`CheckReport`] back. The managed platform's tooling calls these
-//! functions too, so their names, the report's buckets, and the
+//! and reads a [`CheckReport`] back. Function names, report buckets and the
 //! [`RuntimeOffer`] field names (which are the describe envelope's
 //! `runtime.*` keys and the wire handshake's) are a contract.
 //!
@@ -30,15 +29,15 @@ pub const DESCRIBE_LABEL: &str = "dev.rlmesh.describe";
 pub const PACKAGE_LABEL: &str = "dev.rlmesh.package";
 /// The port the platform connects to a served peer on.
 pub const SERVE_PORT: &str = "50051";
-/// The env var `rlmesh.serve` binds; the platform assigns it per pod.
+/// The env var `rlmesh.serve` binds.
 pub const ADDRESS_ENV: &str = "RLMESH_ADDRESS";
 /// The env var that declares a served peer's workflow edition, above
 /// `--workflow-edition` and the class declaration; empty declares none.
 pub const WORKFLOW_EDITION_ENV: &str = "RLMESH_WORKFLOW_EDITION";
 
 /// What a check found, in the buckets the CLI prints. `failed` means the push
-/// would land as not-runnable or the platform would reject a claim; `warnings`
-/// are claims the platform trims or intent it cannot see; `not_checked` names
+/// contains an invalid or non-runnable image; `warnings` identify inconsistent
+/// or unverifiable claims; `not_checked` names
 /// what could not be decided here (a custom entrypoint, an envelope without
 /// editions) and who decides it instead; `passed` is informational.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,9 +249,8 @@ impl ServeCommand {
 }
 
 /// Read the serve command off an image config. This is how an image with no
-/// describe label is classified; the platform then learns the rest from the
-/// served peer's handshake. The platform's own parser applies these same
-/// rules, so an image reads the same on both sides:
+/// describe label is classified. The served peer's handshake supplies the
+/// rest of its contract. Parsing follows these rules:
 ///
 /// 1. The command is `Entrypoint` followed by `Cmd`, each element one word:
 ///    Docker's argument boundaries are kept, so an exec-form
@@ -436,7 +434,7 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     let mut report = CheckReport::default();
     let command = parse_serve_command(config);
     if command.argv.is_empty() {
-        // The platform warns (a workload can still supply a command); match it.
+        // A workload can still supply a command, so this is a warning.
         report.warnings.push(
             "entrypoint: image declares no Entrypoint/Cmd; the platform cannot see what it \
              serves"
@@ -447,13 +445,13 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     let Some(serve) = command.serve else {
         report.not_checked.push(format!(
             "entrypoint: command `{}` does not run -m rlmesh.serve (custom entrypoint, e.g. \
-             a native C/C++ host); the runtime probe verifies serving",
+             a native C/C++ host); the managed platform checks it when you onboard the image",
             command.argv.join(" ")
         ));
         return report;
     };
     if command.address.is_some() {
-        // A warning, as on the platform: it assigns the address per pod, and a
+        // A warning: the address can be assigned at launch, and a
         // baked flag that names the same port still serves.
         report.warnings.push(format!(
             "entrypoint: --address is baked into the command; it overrides the {ADDRESS_ENV} \
@@ -494,7 +492,7 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     report
 }
 
-/// Check the image's OS/architecture against what the platform runs.
+/// Check the image's OS/architecture against supported deployment targets.
 pub fn check_platform(config: &ImageConfig) -> CheckReport {
     let mut report = CheckReport::default();
     if config.os.is_empty() || config.architecture.is_empty() {
@@ -523,7 +521,7 @@ pub struct RuntimeOffer {
     /// The `rlmesh` package the image was described with.
     #[serde(default)]
     pub package_version: Option<String>,
-    /// The wire generation the image speaks (`rlmesh-wire-v1`).
+    /// The wire generation the image speaks (`rlmesh-realtime-v1`).
     #[serde(default)]
     pub protocol_generation: Option<String>,
     /// Every edition the image's rlmesh can drive a session at.
@@ -538,7 +536,7 @@ pub struct RuntimeOffer {
     #[serde(default)]
     pub workflow_edition_error: Option<String>,
     /// The OS the envelope was generated on (`linux`); a label baked on a
-    /// Mac carries `macos` and the platform fails it.
+    /// Mac carries `macos` and fails validation.
     #[serde(default)]
     pub os: Option<String>,
     /// The architecture the envelope was generated on (`x86_64` / `amd64`).
@@ -548,7 +546,8 @@ pub struct RuntimeOffer {
 
 impl RuntimeOffer {
     /// The image's bind-time offer, or `None` when the envelope advertises no
-    /// editions (an older rlmesh); the runtime probe decides then.
+    /// editions (an older rlmesh); the managed platform checks the handshake
+    /// when the image is onboarded.
     pub fn session_offer(&self) -> Option<SessionOffer> {
         if self.supported_workflow_editions.is_empty() {
             return None;
@@ -652,7 +651,7 @@ fn missing_describe_note(config: &ImageConfig) -> String {
 }
 
 /// Check the rlmesh labels' wrappers and read the describe label. A missing
-/// describe label is not a failure: the platform reads describe off the served
+/// describe label is not a failure: the parser reads describe off the served
 /// peer's handshake instead, which `rlmesh.serve` stamps, and a native (C/C++)
 /// env stamps through the C ABI when it binds.
 pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>) {
@@ -705,7 +704,7 @@ pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>
     (report, label)
 }
 
-/// Check where a describe label was generated: the platform fails a label
+/// Check where a describe label was generated: reject a label
 /// whose `runtime.os` is not `linux` (the host's spaces, versions, and
 /// editions are not the image's), and warns on an architecture other than
 /// `x86_64` / `amd64`. Absent fields are not checked.
@@ -810,7 +809,8 @@ pub fn negotiate_image(
 
 /// Check that the image's rlmesh speaks the platform's protocol generation and
 /// shares a workflow edition with it. An envelope without the fields is
-/// `not_checked`: the runtime probe verifies the handshake.
+/// `not_checked`: the managed platform checks the handshake when the image is
+/// onboarded.
 pub fn check_editions(
     runtime: &RuntimeOffer,
     kind: Option<Kind>,
@@ -820,8 +820,11 @@ pub fn check_editions(
     match runtime.protocol_generation.as_deref().map(str::trim) {
         None | Some("") => report.not_checked.push(
             "editions: describe carries no protocol_generation (built with an rlmesh before \
-             the field); the runtime probe verifies the handshake"
+             the field); the managed platform checks the handshake when you onboard it"
                 .to_owned(),
+        ),
+        Some("rlmesh-wire-v1") => report.failed.push(
+            "editions: this rlmesh-wire-v1 image needs a RLMesh 0.1 runner; rebuild it with RLMesh 0.2 to use realtime sessions".to_owned(),
         ),
         Some(generation) if generation != PROTOCOL_GENERATION => report.failed.push(format!(
             "editions: image speaks protocol generation {generation}, the platform speaks \
@@ -846,7 +849,7 @@ pub fn check_editions(
     let Some(image) = runtime.session_offer() else {
         report.not_checked.push(
             "editions: describe carries no supported_workflow_editions (built with an rlmesh \
-             before the field); the runtime probe verifies the handshake"
+             before the field); the managed platform checks the handshake when you onboard it"
                 .to_owned(),
         );
         return report;
@@ -935,8 +938,8 @@ pub fn check_image(config: &ImageConfig, platform: Option<&SessionOffer>) -> Che
             }
         }
         None => report.not_checked.push(
-            "editions: not checked without a describe label; the runtime probe negotiates \
-             the handshake"
+            "editions: not checked without a describe label; the managed platform checks \
+             the handshake when you onboard the image"
                 .to_owned(),
         ),
     }
@@ -1240,7 +1243,7 @@ mod tests {
                 .any(|m| m.contains("admits drivers older than the image's CUDA 12.4")),
             "{report:#?}"
         );
-        // An image without a variant block reports what the platform infers.
+        // An image without a variant block reports what inference supplies.
         config.labels.clear();
         let report = check_image(&config, None);
         assert!(
@@ -1356,6 +1359,15 @@ mod tests {
         assert!(
             report.failed[0].contains("protocol generation"),
             "{report:?}"
+        );
+        let legacy = check_editions(
+            &offer(Some("rlmesh-wire-v1"), &["2026.06"], None),
+            Some(Kind::Env),
+            &platform,
+        );
+        assert!(
+            legacy.failed.iter().any(|m| m.contains("0.1 runner")),
+            "{legacy:?}"
         );
         // No fields at all: not checked, twice (generation and editions).
         let report = check_editions(&offer(None, &[], None), None, &platform);

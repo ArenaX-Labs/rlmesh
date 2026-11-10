@@ -6,7 +6,7 @@
 //!
 //! 1. **Live channels**: the robot path tree, each part's kind, latest value
 //!    (numbers with a short plot, or a camera thumbnail), age and seq gaps.
-//! 2. **Declared vs measured** (§8.10), each counter on its own clock:
+//! 2. **Declared vs measured**, each counter on its own clock:
 //!    per stream the declared source rate, the produced and published rates
 //!    (publisher reports), the admitted delivery rate (contracts), the
 //!    unique received rate here and each subscriber's seq advance
@@ -17,10 +17,10 @@
 //!    consecutive snapshots (leases granted, preempted, rebound, expired,
 //!    revoked; epochs; e-stop), edge mode transitions, and lanes of mode,
 //!    lease holder and edge mode over the last minute; and the binding
-//!    table of every controller (§6.8).
+//!    table of every controller.
 //! 4. **Arm and e-stop** through the host's verbs: e-stop in one click, arm
 //!    behind a confirmation, disarm. A latched e-stop is cleared at the
-//!    robot (§11.1), which the cockpit says rather than offers.
+//!    robot, which the cockpit says rather than offers.
 //!
 //! The layers: [`feed`] (the network side: an observer participant and its
 //! subscriptions) produces [`model::Input`]s; [`model::Model`] is sans-IO
@@ -31,11 +31,15 @@
 //! [`replay`] feeds a recorded session (MCAP) through the same model, with
 //! a play, pause, scrub and step bar instead of the verbs.
 //!
-//! The counters only the measuring side knows (a publisher's produced
-//! count, a controller's starts and skips) come from observer reports
-//! (`rlmesh_session::report`); everything else is measured here.
+//! What only the measuring side knows (a publisher's produced count, a
+//! controller's starts and skips, each link's heartbeats and each edge's
+//! refused chunks) comes from the host's signed health, which relays the
+//! participants' reports and heartbeats; everything else is measured here.
+//!
+//! [`cli`] is `rlmesh cockpit` (and the `rlmesh-cockpit` binary).
 
 pub mod app;
+pub mod cli;
 pub mod feed;
 pub mod meter;
 pub mod model;
@@ -46,6 +50,7 @@ pub mod values;
 pub mod view;
 
 pub use app::CockpitApp;
+pub use cli::CockpitArgs;
 pub use feed::Feed;
 pub use model::{Input, Model, ModelConfig, Verb};
 pub use replay::Replay;

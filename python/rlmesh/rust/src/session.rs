@@ -1,7 +1,7 @@
-//! PyO3 bindings for real-time sessions (protocol v2, the v0.2 spec): an
+//! PyO3 bindings for real-time sessions (protocol v2): an
 //! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound
 //! policy ([`rlmesh_session::Controller`]) and an MCAP recorder
-//! ([`rlmesh_session::record::Recorder`]). The `rlmesh.v2` package wraps
+//! ([`rlmesh_session::record::Recorder`]). The `rlmesh.realtime` package wraps
 //! them; every rule (packing, binding, the edge, leases, the run loop)
 //! stays in the Rust crates.
 //!
@@ -18,7 +18,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_session::address::Address;
@@ -56,7 +56,7 @@ create_exception!(
     _rlmesh,
     BindingRefused,
     SessionException,
-    "The binder refused a policy: the message is the refuse-and-explain text (§6.7); \
+    "The binder refused a policy: the message is the refuse-and-explain text; \
      `problems` lists `(code, \"input\" | \"action\", entry)` per problem."
 );
 
@@ -72,7 +72,7 @@ create_exception!(
     _rlmesh,
     StartSkipped,
     SessionException,
-    "A policy start was skipped (§8.8): `reason` is `waiting_for`, `stale_input` or \
+    "A policy start was skipped: `reason` is `waiting_for`, `stale_input` or \
      `window_gap`; `waiting`, `stale` and `gaps` name the entries."
 );
 
@@ -91,6 +91,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservation>()?;
     m.add_class::<PyRate>()?;
     m.add_class::<PyRecorder>()?;
+    m.add_class::<PySamples>()?;
+    #[cfg(feature = "fleet")]
     m.add_class::<PyScene>()?;
     m.add_function(wrap_pyfunction!(parse_address, m)?)?;
     m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
@@ -149,7 +151,7 @@ fn is_v2_address(text: &str) -> bool {
 }
 
 /// The static rigid transform from pose `a` to pose `b`, both in the scene
-/// frame `world` (scene design §5): `(xyz, quat_xyzw)` of `T_b←a`.
+/// frame `world`: `(xyz, quat_xyzw)` of `T_b←a`.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
@@ -392,6 +394,25 @@ impl PyHost {
     }
 }
 
+/// A sample's fields as owned bytes: UTF-8 for a `str`, else a
+/// C-contiguous buffer's bytes.
+fn field_bytes(py: Python<'_>, path: &str, fields: &[Bound<'_, PyAny>]) -> PyResult<Vec<Vec<u8>>> {
+    let mut owned: Vec<Vec<u8>> = Vec::with_capacity(fields.len());
+    for field in fields {
+        if let Ok(text) = field.extract::<String>() {
+            owned.push(text.into_bytes());
+        } else {
+            let buffer = PyBuffer::<u8>::get(field).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "{path}: a field must be a C-contiguous bytes-like or a str"
+                ))
+            })?;
+            owned.push(buffer.to_vec(py)?);
+        }
+    }
+    Ok(owned)
+}
+
 /// One field of a part, for the Python layer: `(name, dtype, shape)`.
 type FieldInfo = (String, String, Vec<u32>);
 
@@ -426,7 +447,7 @@ pub(crate) fn part_dict<'py>(py: Python<'py>, part: &PartSpec) -> PyResult<Bound
 }
 
 /// An `rlmesh_session::spec` tensor as a native `Tensor` (zero-copy when its buffer
-/// is 8-byte aligned, §8.11; one copy otherwise).
+/// is 8-byte aligned; one copy otherwise).
 pub(crate) fn tensor_to_py<'py>(py: Python<'py>, tensor: Tensor) -> PyResult<Bound<'py, PyAny>> {
     let dtype = rlmesh_spaces::DType::from_name(tensor.dtype.name()).ok_or_else(|| {
         SessionException::new_err(format!("no tensor dtype for {}", tensor.dtype.name()))
@@ -501,7 +522,10 @@ pub(crate) fn values_from_py(output: &Bound<'_, PyAny>) -> PyResult<Vec<(String,
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Robot", frozen)]
 pub struct PyRobot {
     name: String,
-    robot: Mutex<Option<Arc<Robot>>>,
+    /// The robot now: a rejoin swaps it ([`sdk::keep_joined`]).
+    robot: sdk::RobotSlot,
+    /// Joins it again when the host drops it.
+    keeper: Mutex<Option<tokio::task::JoinHandle<()>>>,
     session: EmbeddedHost,
 }
 
@@ -520,8 +544,9 @@ impl PyRobot {
 #[pymethods]
 impl PyRobot {
     /// Attaches as `name` (the robot's participant id), declares
-    /// `robot_json` (the authored map, §3) and starts its publishers and
-    /// edges.
+    /// `robot_json` (the authored map) and starts its publishers and
+    /// edges. When the host drops it (a network gap past its presence
+    /// grace) it joins again on its own.
     #[new]
     #[pyo3(signature = (address, name, robot_json, timeout_s=10.0))]
     fn new(
@@ -534,6 +559,7 @@ impl PyRobot {
         let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
         let wait = timeout(timeout_s)?;
+        let (rejoin, json) = (address.clone(), robot_json.clone());
         let robot = block_on(py, async move {
             sdk::connect_robot(&address, name, &robot_json, wait)
                 .await
@@ -542,13 +568,20 @@ impl PyRobot {
                     other => SessionException::new_err(other.to_string()),
                 })
         })?;
+        let slot: sdk::RobotSlot = Arc::new(Mutex::new(Some(Arc::new(robot))));
+        let keeper = {
+            let _runtime = runtime().enter();
+            sdk::keep_joined(slot.clone(), rejoin, name.to_string(), json)
+        };
         Ok(Self {
             name: name.to_string(),
-            robot: Mutex::new(Some(Arc::new(robot))),
+            robot: slot,
+            keeper: Mutex::new(Some(keeper)),
             session,
         })
     }
 
+    #[cfg(feature = "fleet")]
     /// Waits in the lobby of the home daemon `home` names (`None`: this
     /// machine's rlmeshd) as robot `name` until a run assigns it, then joins
     /// the run and declares `robot_json`. A refused join (its pin, another
@@ -574,11 +607,13 @@ impl PyRobot {
         })?;
         Ok(Self {
             name: name.to_string(),
-            robot: Mutex::new(Some(Arc::new(robot))),
+            robot: Arc::new(Mutex::new(Some(Arc::new(robot)))),
+            keeper: Mutex::new(None),
             session: EmbeddedHost::joined(address),
         })
     }
 
+    #[cfg(feature = "fleet")]
     /// Why this robot should leave its scene's run: the run is closing (its
     /// reason, `scene_ended` or `scene_failed`), the host lost it
     /// (`robot_lost`: wait in the lobby again, where its run re-sends its
@@ -631,21 +666,32 @@ impl PyRobot {
         capture_ns: Option<i64>,
     ) -> PyResult<Option<u64>> {
         let robot = self.robot()?;
-        let mut owned: Vec<Vec<u8>> = Vec::with_capacity(fields.len());
-        for field in &fields {
-            if let Ok(text) = field.extract::<String>() {
-                owned.push(text.into_bytes());
-            } else {
-                let buffer = PyBuffer::<u8>::get(field).map_err(|_| {
-                    PyValueError::new_err(format!(
-                        "{path}: a field must be a C-contiguous bytes-like or a str"
-                    ))
-                })?;
-                owned.push(buffer.to_vec(py)?);
-            }
-        }
+        let owned = field_bytes(py, path, &fields)?;
         let capture = capture_ns.unwrap_or_else(|| robot.participant().clock().now_ns());
-        py.detach(move || sdk::publish(&robot, path, capture, owned))
+        py.detach(move || sdk::publish(robot.published(), path, capture, owned))
+            .map_err(session_err)
+    }
+
+    /// Publishes one frame of the camera `path` already encoded as JPEG
+    /// (a C-contiguous bytes-like), sent as it is: for a part declared
+    /// `encoding: jpeg`, at its declared size. Captured at `capture_ns`
+    /// (now by default); copied before this returns.
+    #[pyo3(signature = (path, jpeg, capture_ns=None))]
+    fn publish_jpeg(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        #[gen_stub(override_type(type_repr = "builtins.bytes | builtins.bytearray | memoryview", imports = ("builtins")))]
+        jpeg: Bound<'_, PyAny>,
+        capture_ns: Option<i64>,
+    ) -> PyResult<()> {
+        let robot = self.robot()?;
+        let buffer = PyBuffer::<u8>::get(&jpeg).map_err(|_| {
+            PyValueError::new_err(format!("{path}: a JPEG frame is a C-contiguous bytes-like"))
+        })?;
+        let owned = bytes::Bytes::from(buffer.to_vec(py)?);
+        let capture = capture_ns.unwrap_or_else(|| robot.participant().clock().now_ns());
+        py.detach(move || robot.published().publish_jpeg(path, capture, owned))
             .map_err(session_err)
     }
 
@@ -686,6 +732,15 @@ impl PyRobot {
                 .await
                 .map(|_| ())
                 .map_err(session_err)
+        })
+    }
+
+    /// Asks the host to keep its recent recording as an incident named
+    /// `label` (the cockpit's Keep).
+    fn keep(&self, py: Python<'_>, label: String) -> PyResult<()> {
+        let robot = self.robot()?;
+        block_on(py, async move {
+            robot.participant().keep(&label).await.map_err(session_err)
         })
     }
 
@@ -776,6 +831,9 @@ impl PyRobot {
 
     /// Detaches: the edges and publishers go, the host drops the parts.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
+        if let Some(keeper) = self.keeper.lock().ok().and_then(|mut k| k.take()) {
+            keeper.abort();
+        }
         let taken = self.robot.lock().map(|mut r| r.take()).unwrap_or(None);
         block_on(py, async move {
             if let Some(robot) = taken {
@@ -786,6 +844,7 @@ impl PyRobot {
     }
 }
 
+#[cfg(feature = "fleet")]
 /// A run's state as a dict: `run`, `version`, `stage`, `members` (each
 /// `name`, `stage`, `error`) and `error` (each error `status`, `message`).
 fn run_state<'py>(
@@ -820,6 +879,7 @@ fn run_state<'py>(
     Ok(d)
 }
 
+#[cfg(feature = "fleet")]
 /// A scene run started from this process on the home daemon's lobby.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Scene", frozen)]
@@ -828,6 +888,7 @@ pub struct PyScene {
     scene: tokio::sync::Mutex<Option<sdk::SceneRun>>,
 }
 
+#[cfg(feature = "fleet")]
 impl PyScene {
     async fn with<T>(
         &self,
@@ -841,6 +902,7 @@ impl PyScene {
     }
 }
 
+#[cfg(feature = "fleet")]
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
@@ -1152,6 +1214,8 @@ impl Predictor for PyPredictor<'_> {
 pub struct PyController {
     name: String,
     controller: Mutex<Option<Arc<Controller>>>,
+    /// The parts it publishes (annotations), when it declared any.
+    published: Option<Arc<rlmesh_session::edge::Published>>,
     session: EmbeddedHost,
 }
 
@@ -1170,14 +1234,16 @@ impl PyController {
 #[pymethods]
 impl PyController {
     /// Attaches as `name` at `priority`, waits for `robot`'s parts, binds
-    /// `policy_json` (the policy map, §6) with the run-time options, and
-    /// declares the binding. Raises `BindingRefused` with the binder's
-    /// refuse-and-explain text.
+    /// `policy_json` (the policy map) with the run-time options, and
+    /// declares the binding. With `publishes_json` (an authored map of
+    /// parts, none commandable) it also declares those parts under its own
+    /// name, to publish annotations. Raises `BindingRefused` with the
+    /// binder's refuse-and-explain text.
     #[new]
     #[pyo3(signature = (
         address, name, policy_json, robot, *, priority="model", under=None,
         at=BTreeMap::new(), positional=Vec::new(), allow=Vec::new(),
-        captures=BTreeMap::new(), timeout_s=10.0
+        captures=BTreeMap::new(), timeout_s=10.0, publishes_json=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1185,7 +1251,7 @@ impl PyController {
         address: &str,
         name: &str,
         policy_json: &str,
-        robot: &str,
+        robot: Option<&str>,
         priority: &str,
         under: Option<&str>,
         at: BTreeMap<String, String>,
@@ -1193,6 +1259,7 @@ impl PyController {
         allow: Vec<String>,
         captures: BTreeMap<String, String>,
         timeout_s: f64,
+        publishes_json: Option<&str>,
     ) -> PyResult<Self> {
         let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
@@ -1209,16 +1276,73 @@ impl PyController {
         }
         .run_options()
         .map_err(|why| BindingRefused::new_err(format!("binding refused: {why}")))?;
-        let controller = block_on(py, async move {
-            sdk::bind_policy(&address, name, policy_json, &options, class, wait)
+        let (controller, published) = block_on(py, async move {
+            match publishes_json {
+                Some(publishes) => sdk::bind_policy_publishing(
+                    &address,
+                    name,
+                    policy_json,
+                    publishes,
+                    &options,
+                    class,
+                    wait,
+                )
                 .await
-                .map_err(bind_policy_err)
+                .map(|(controller, published)| (controller, Some(Arc::new(published)))),
+                None => sdk::bind_policy(&address, name, policy_json, &options, class, wait)
+                    .await
+                    .map(|controller| (controller, None)),
+            }
+            .map_err(bind_policy_err)
         })?;
         Ok(Self {
             name: name.to_string(),
             controller: Mutex::new(Some(Arc::new(controller))),
+            published,
             session,
         })
+    }
+
+    /// The parts this policy publishes, as the host normalised them, in
+    /// authored order (none without `publishes_json`).
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn published_parts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let parts = self
+            .published
+            .iter()
+            .flat_map(|p| p.parts())
+            .map(|p| part_dict(py, p))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, parts)
+    }
+
+    /// Publishes one sample of one of this policy's own parts from its
+    /// fields in declaration order (C-contiguous bytes-likes; a `str` for
+    /// text), captured at `capture_ns` (`time.monotonic_ns()`; now by
+    /// default). Returns the sample's seq, or `None` when coalesced.
+    #[pyo3(signature = (path, fields, capture_ns=None))]
+    fn publish(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        #[gen_stub(override_type(
+            type_repr = "collections.abc.Sequence[builtins.str | builtins.bytes | memoryview]",
+            imports = ("collections.abc", "builtins")
+        ))]
+        fields: Vec<Bound<'_, PyAny>>,
+        capture_ns: Option<i64>,
+    ) -> PyResult<Option<u64>> {
+        let published = self.published.clone().ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "policy {} publishes nothing: pass publishes= to Policy",
+                self.name
+            ))
+        })?;
+        let owned = field_bytes(py, path, &fields)?;
+        let controller = self.controller()?;
+        let capture = capture_ns.unwrap_or_else(|| controller.participant().clock().now_ns());
+        py.detach(move || sdk::publish(&published, path, capture, owned))
+            .map_err(session_err)
     }
 
     /// The policy's participant id.
@@ -1227,7 +1351,7 @@ impl PyController {
         &self.name
     }
 
-    /// The binding table, as the cockpit shows it (§6.8).
+    /// The binding table, as the cockpit shows it.
     #[getter]
     fn table(&self) -> PyResult<String> {
         Ok(self.controller()?.binding().table())
@@ -1347,7 +1471,7 @@ impl PyController {
         Ok(self.controller()?.holds())
     }
 
-    /// Runs the policy loop (§8.9) on this thread until `stop()`,
+    /// Runs the policy loop on this thread until `stop()`,
     /// `duration_s`, or a failure, calling `predict(observation)` at the
     /// replan rate with one inference in flight. If `predict` raises, the
     /// leases are released and the exception propagates; if the robot or
@@ -1383,7 +1507,7 @@ impl PyController {
         Ok(())
     }
 
-    /// The start, skip and completion counters (§8.10), and the input the
+    /// The start, skip and completion counters, and the input the
     /// starts are phased after (`aligned_to`, `phase_offset_ms`).
     #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -1499,7 +1623,7 @@ fn record_err(err: RecordError) -> PyErr {
     }
 }
 
-/// An MCAP recording of a session (§13), as an observer participant.
+/// An MCAP recording of a session, as an observer participant.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Recorder", frozen)]
 pub struct PyRecorder {
@@ -1610,32 +1734,72 @@ impl PyRecorder {
     }
 
     /// Every sample of a recording (an MCAP file, or a directory of them)
-    /// split into its declared fields, in log-time order: `(topic, log_ns,
-    /// fields)`, each field `(name, dtype, shape, bytes)`. Topics are
-    /// `{robot}/{path}` and `{robot}/{path}/_applied`; camera frames come
-    /// as raw RGB.
+    /// split into its declared fields, one at a time (one file's messages
+    /// held, each camera frame decoded as it is taken): `(topic, log_ns,
+    /// capture_ns, fields)`, each field `(name, dtype, shape, bytes)`, in
+    /// log-time order within a file. `capture_ns` is the capture time in
+    /// session time. Topics are `{robot}/{path}` and `{robot}/{path}/_applied`
+    /// (no fields: the edge dispatched nothing); camera frames come as raw
+    /// RGB, or with no bytes under `images=False` (a pass that only needs
+    /// each stream's shape).
     #[staticmethod]
-    #[gen_stub(override_return_type(type_repr = "builtins.list[tuple[builtins.str, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]]", imports = ("builtins",)))]
-    fn samples<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyList>> {
-        let samples = py
-            .detach(|| {
-                rlmesh_session::record::read(&path)
-                    .map(|messages| rlmesh_session::record::decode_samples(&messages))
-            })
-            .map_err(record_err)?;
-        let out = PyList::empty(py);
-        for sample in samples {
-            let fields = PyList::empty(py);
-            for f in sample.fields {
-                fields.append((
-                    f.name,
-                    f.dtype.name(),
-                    f.shape,
-                    pyo3::types::PyBytes::new(py, &f.bytes),
-                ))?;
-            }
-            out.append((sample.topic, sample.log_ns, fields))?;
+    #[pyo3(signature = (path, images = true))]
+    fn samples(path: String, images: bool) -> PyResult<PySamples> {
+        let samples = rlmesh_session::record::samples(&path).map_err(record_err)?;
+        Ok(PySamples {
+            inner: Mutex::new(if images {
+                samples
+            } else {
+                samples.skip_images()
+            }),
+        })
+    }
+}
+
+/// [`PyRecorder::samples`]: a recording's samples, decoded as they are taken.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Samples", frozen)]
+pub struct PySamples {
+    inner: Mutex<rlmesh_session::record::Samples>,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PySamples {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// The next `(topic, log_ns, capture_ns, fields)`.
+    #[gen_stub(override_return_type(type_repr = "tuple[builtins.str, builtins.int, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]", imports = ("builtins",)))]
+    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyTuple>>> {
+        let next = py.detach(|| {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next()
+        });
+        let Some(sample) = next.transpose().map_err(record_err)? else {
+            return Ok(None);
+        };
+        let fields = PyList::empty(py);
+        for f in sample.fields {
+            fields.append((
+                f.name,
+                f.dtype.name(),
+                f.shape,
+                pyo3::types::PyBytes::new(py, &f.bytes),
+            ))?;
         }
-        Ok(out)
+        Ok(Some(PyTuple::new(
+            py,
+            [
+                sample.topic.into_pyobject(py)?.into_any(),
+                sample.log_ns.into_pyobject(py)?.into_any(),
+                sample.capture_ns.into_pyobject(py)?.into_any(),
+                fields.into_any(),
+            ],
+        )?))
     }
 }

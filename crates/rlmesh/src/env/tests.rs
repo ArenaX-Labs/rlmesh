@@ -18,18 +18,8 @@ thread_local! {
         .unwrap();
 }
 
-/// Default options with a short drain, so a test does not wait out the 5 s
-/// cap on its own client's idle connection.
-/// A v1 server: these tests cover the gRPC wire's own serving options.
 fn quick() -> EnvServerOptions {
-    EnvServerOptions {
-        address: Some("tcp://127.0.0.1:0".into()),
-        options: Some(crate::ServeOptions {
-            drain_timeout: Some(Duration::from_millis(100)),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
+    EnvServerOptions::default()
 }
 
 fn client<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -659,7 +649,7 @@ fn a_started_server_serves_the_gymnasium_shape_and_closes_the_env() {
     let counters = Arc::new(Counters::default());
     let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
     assert!(
-        server.address().starts_with("tcp://127.0.0.1:"),
+        crate::address::is_v2(server.address()),
         "{}",
         server.address()
     );
@@ -819,44 +809,26 @@ fn lanes_serve_one_endpoint_and_must_agree() {
 }
 
 #[test]
-fn addresses_follow_python_s_normalization() {
+fn v1_bind_addresses_are_refused() {
     let counters = Arc::new(Counters::default());
-    let refused = |options: EnvServerOptions| {
-        let err = EnvServer::new(Counter::new(&counters), options).unwrap_err();
-        assert_eq!(err.class(), ErrorClass::ValueError, "{err}");
-        err.to_string()
-    };
-    assert_eq!(
-        refused(EnvServerOptions {
-            address: Some(String::new()),
-            ..Default::default()
-        }),
-        "address cannot be empty"
-    );
-    refused(EnvServerOptions {
-        address: Some("tcp://127.0.0.1:0".into()),
-        port: Some(0),
-        ..Default::default()
-    });
-    refused(EnvServerOptions {
-        path: Some("/tmp/x.sock".into()),
-        transport: Some(Transport::Tcp),
-        ..Default::default()
-    });
-    refused(EnvServerOptions {
-        transport: Some(Transport::Unix),
-        ..Default::default()
-    });
-    let server = EnvServer::new(
-        Counter::new(&counters),
-        EnvServerOptions {
-            host: Some("127.0.0.1".into()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert!(server.address().starts_with("tcp://127.0.0.1:"));
-    assert_eq!(Transport::Unix.to_string(), "unix");
+    for address in [
+        "tcp://127.0.0.1:0",
+        "unix:///tmp/env.sock",
+        "127.0.0.1:5555",
+    ] {
+        let err = EnvServer::new(
+            Counter::new(&counters),
+            EnvServerOptions {
+                address: Some(address.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(crate::address::V1_REFUSAL),
+            "{err}"
+        );
+    }
 }
 
 #[test]
@@ -1010,6 +982,7 @@ fn a_vector_env_sees_the_batched_layout() {
     let err =
         crate::ext::reset_lanes(&mut remote, &[u64::from(u32::MAX) + 1], None, None).unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
+    drop(remote);
     // A vector endpoint refuses the single-env client.
     let err = dial(server.address()).unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
@@ -1017,7 +990,6 @@ fn a_vector_env_sees_the_batched_layout() {
         err.to_string().contains("Use RemoteVectorEnv instead"),
         "{err}"
     );
-    drop(remote);
     server.shutdown().unwrap();
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0], Value::Text("Some(One(7))".into()));
@@ -1043,11 +1015,11 @@ fn a_one_lane_vector_env_serves_as_a_scalar_lane() {
     reset(&mut remote, Some(3));
     let (_, reward, _, _, _) = step(&mut remote, 2).unwrap();
     assert_eq!(reward, 0.5);
+    drop(remote);
     // A one-lane endpoint refuses the vector client.
     let err =
         RemoteVectorEnv::new(RemoteEnvOptions::default().address(server.address())).unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
-    drop(remote);
     server.shutdown().unwrap();
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0], Value::Text("Some(One(3))".into()));
@@ -1071,7 +1043,7 @@ fn autoreset_mode_follows_env_27() {
     for (mode, ok) in [
         (Value::Text("NextStep".into()), true),
         (Value::Text("Disabled".into()), true),
-        (Value::Text("SameStep".into()), false),
+        (Value::Text("SameStep".into()), true),
         (Value::Text("Bogus".into()), false),
         (Value::None, false),
         (Value::Int(1), false),
@@ -1194,7 +1166,7 @@ fn an_already_fired_cancel_runs_no_prepare() {
     let mut factory = Prepared::default();
     let err = factory
         .serve(
-            "tcp://127.0.0.1:0",
+            ":0/env",
             EnvFactoryServeOptions {
                 cancel: Some(cancel.clone()),
                 ..Default::default()
@@ -1212,7 +1184,7 @@ fn an_already_fired_cancel_runs_no_prepare() {
     });
     let err = factory
         .serve(
-            "tcp://127.0.0.1:0",
+            ":0/env",
             EnvFactoryServeOptions {
                 cancel: Some(cancel),
                 ..Default::default()
@@ -1287,19 +1259,20 @@ fn async_twins_run_on_any_executor() {
 fn a_request_past_its_timeout_is_a_timeout_error() {
     let counters = Arc::new(Counters::default());
     let mut env = Counter::new(&counters);
-    env.slow = Some(Duration::from_millis(400));
+    // The reset has the same timeout to meet, on however loaded a host.
+    env.slow = Some(Duration::from_secs(1));
     let server = EnvServer::new(env, quick()).unwrap();
     server.start().unwrap();
     let mut remote = RemoteEnv::new(
         RemoteEnvOptions::default()
             .address(server.address())
-            .request_timeout(Duration::from_millis(50)),
+            .request_timeout(Duration::from_millis(250)),
     )
     .unwrap();
     reset(&mut remote, None);
     let err = step(&mut remote, 1).unwrap_err();
     assert_eq!(err.class(), ErrorClass::TimeoutError);
-    assert_eq!(err.to_string(), "operation timed out after 50ms");
+    assert_eq!(err.to_string(), "operation timed out after 250ms");
     drop(remote);
     server.shutdown().unwrap();
 }
@@ -1322,44 +1295,18 @@ fn a_fired_cancel_handle_fails_one_call() {
 fn construction_errors_follow_rmt_12() {
     let err = RemoteEnv::new(RemoteEnvOptions::default()).unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
-    assert_eq!(err.to_string(), "address or host/port is required");
-    let err = dial("bogus://x").unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    assert!(err.to_string().starts_with("invalid address: "), "{err}");
-    let err = RemoteEnv::new(
-        RemoteEnvOptions::default()
-            .address("tcp://127.0.0.1:1")
-            .api_key("s3cret\n"),
-    )
-    .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    // Nothing listens on port 1.
-    let err = RemoteEnv::new(
-        RemoteEnvOptions::default()
-            .port(1)
-            .connect_timeout(Duration::from_secs(5)),
-    )
-    .unwrap_err();
-    assert!(
-        matches!(
-            err.class(),
-            ErrorClass::ConnectionError | ErrorClass::TimeoutError
-        ),
-        "{err:?}"
-    );
-    assert!(
-        err.to_string()
-            .starts_with("could not connect to an env at 'tcp://127.0.0.1:1'"),
-        "{err}"
-    );
-}
-
-#[test]
-fn empty_connect_host_defaults_to_loopback() {
-    assert_eq!(
-        super::client::normalize_connect_address(None, Some(""), Some(1234), None, None).unwrap(),
-        "tcp://127.0.0.1:1234"
-    );
+    for address in [
+        "tcp://127.0.0.1:1",
+        "unix:///tmp/env.sock",
+        "https://env.example.com",
+    ] {
+        let err = dial(address).unwrap_err();
+        assert_eq!(err.class(), ErrorClass::ValueError);
+        assert!(
+            err.to_string().contains(crate::address::V1_REFUSAL),
+            "{err}"
+        );
+    }
 }
 
 #[test]

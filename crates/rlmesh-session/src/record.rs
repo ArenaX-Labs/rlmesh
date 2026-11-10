@@ -1,9 +1,9 @@
-//! MCAP recording of a real-time RLMesh session (protocol v2, the v0.2
-//! spec §13).
+//! MCAP recording of a real-time RLMesh session.
 //!
 //! A [`Recorder`] is an observer participant: it subscribes to every stream
 //! of every robot (parts and their `_applied` streams), to every commandable
-//! part's action chunks and to the host's authority snapshots, and writes
+//! part's action chunks and to the host's signed authority snapshots and
+//! health messages, and writes
 //! each envelope unchanged into an MCAP file:
 //!
 //! | Topic | Schema | One message per |
@@ -13,8 +13,7 @@
 //! | `/{robot}/{path}/_chunks` | `rlmesh.session.v2.ActionChunk` | chunk sent to the edge |
 //! | `/_session/authority` | `rlmesh.session.v2.AuthorityState` | authority change |
 //! | `/_session/bindings` | `rlmesh.session.v2.BindingRecord` | new or changed binding |
-//! | `/_session/heartbeats` | `rlmesh.session.v2.Heartbeat` | participant heartbeat |
-//! | `/_session/reports` | `rlmesh.session.v2.ParticipantReport` | observer report |
+//! | `/_session/health` | `rlmesh.session.v2.HostHealth` | host health message (about 1 Hz) |
 //!
 //! Schemas are the `rlmesh.session.v2` protobuf descriptors. A new MCAP
 //! channel opens for every session channel id. `publish_time` is the
@@ -23,8 +22,8 @@
 //! seq (the full u64 stays in the envelope).
 //!
 //! The recorder records what the session publishes: it declares no delivery
-//! contract, so a stream a policy reads at `latest@R` is recorded at R
-//! (§8.2), while `_applied` and chunks are recorded in full.
+//! contract, so a stream a policy reads at `latest@R` is recorded at R, while
+//! `_applied` and chunks are recorded in full.
 //!
 //! Always-on capture ([`Recorder::start_rolling`]) also keeps incidents:
 //! an e-stop, safe mode, a lease preemption or a burst of missed edge
@@ -51,10 +50,10 @@ use std::time::Duration;
 use crate::transport::{TrafficClass, payload_bytes};
 use crate::wire::codec::{self, schema};
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, ChannelId, DType, Encoding, Fingerprint, Health, Heartbeat,
-    Mode, PartSpec, ParticipantId, ParticipantReport, Sample, SessionId, StreamSpec,
+    ActionChunk, AuthoritySnapshot, ChannelId, DType, Encoding, Fingerprint, Health, HostHealth,
+    Mode, PartSpec, ParticipantId, Sample, SessionId, StreamSpec,
 };
-use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
+use crate::{HealthSubscription, Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use bytes::Bytes;
 use rlmesh_session_core::crypto::sealed::unverified_body;
 use tracing::{debug, info, warn};
@@ -79,7 +78,27 @@ pub enum RecordError {
     /// The writer thread is gone.
     #[error("the recording writer stopped: {0}")]
     Writer(String),
+    /// A recording in a newer format than this build reads.
+    #[error(
+        "recording {path} is in format {format}; this rlmesh reads format {RECORDING_FORMAT} \
+         (upgrade rlmesh)"
+    )]
+    Format {
+        /// The file.
+        path: PathBuf,
+        /// Its format.
+        format: String,
+    },
 }
+
+/// The recording format this build writes and reads: an `rlmesh.recording`
+/// metadata record at the start of every file carries it, with the protocol
+/// generation and minor. A reader refuses a newer format; a file without
+/// one is format 1.
+pub const RECORDING_FORMAT: u32 = 1;
+
+/// The name of the metadata record that carries [`RECORDING_FORMAT`].
+pub const RECORDING_METADATA: &str = "rlmesh.recording";
 
 /// What a finished recording holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -123,8 +142,7 @@ enum TopicKey {
     Chunks(ChannelId),
     Authority,
     Bindings,
-    Heartbeats,
-    Reports,
+    Health,
 }
 
 enum Entry {
@@ -235,44 +253,6 @@ struct Misses {
     recent: std::collections::VecDeque<i64>,
 }
 
-/// Subscribes to a `_session` topic of every participant's envelopes
-/// (heartbeats, reports), `publish_time` its log time (the send time, on
-/// the sender's clock, is in the envelope): `sequence` decodes one into
-/// its sequence, or `None` to skip it.
-async fn subscribe_envelopes(
-    participant: &Arc<Participant>,
-    tx: &Tx,
-    stamp: &Stamp,
-    class: TrafficClass,
-    key: String,
-    topic: Topic,
-    sequence: fn(&[u8]) -> Option<u64>,
-) -> Result<zenoh::pubsub::Subscriber<()>, RecordError> {
-    let topic = Arc::new(topic);
-    let (tx, stamp) = (tx.clone(), stamp.clone());
-    Ok(participant
-        .transport()
-        .session(class)
-        .declare_subscriber(key)
-        .callback(move |sample| {
-            let log_time = stamp.now();
-            let data = sample.payload().to_bytes().into_owned();
-            let Some(sequence) = sequence(&data) else {
-                debug!(topic = topic.name, "undecodable envelope");
-                return;
-            };
-            let _ = tx.send(Entry::Message {
-                topic: topic.clone(),
-                log_time,
-                publish_time: log_time,
-                sequence,
-                data,
-            });
-        })
-        .await
-        .map_err(SessionError::from)?)
-}
-
 /// A session recording in progress: see the crate docs.
 pub struct Recorder {
     participant: Arc<Participant>,
@@ -280,8 +260,9 @@ pub struct Recorder {
     writer: Option<JoinHandle<Result<RecordStats, RecordError>>>,
     watcher: Option<tokio::task::JoinHandle<Subscriptions>>,
     cancel: tokio::sync::watch::Sender<bool>,
-    /// Authority, heartbeats and reports.
+    /// Authority.
     subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+    _health: HealthSubscription,
     /// Every robot declared while recording, as metadata records.
     robots: Arc<Mutex<Metadata>>,
 }
@@ -475,40 +456,28 @@ impl Recorder {
             }
             subscriber
         };
-        // TODO: heartbeats are sealed to the host since session auth (design
-        // §8.2), so none decodes here and recordings carry no heartbeats;
-        // have the host relay its per-participant link health to observers
-        // (the cockpit's TODO too), then record that instead.
-        let heartbeats = subscribe_envelopes(
-            &participant,
-            &tx,
-            &stamp,
-            TrafficClass::Control,
-            participant.keys().heartbeats(),
-            Topic {
-                key: TopicKey::Heartbeats,
-                name: "/_session/heartbeats".into(),
-                schema: schema::HEARTBEAT,
+        // Health: what the host relays of every link and edge, verified.
+        let health = {
+            let topic = Arc::new(Topic {
+                key: TopicKey::Health,
+                name: "/_session/health".into(),
+                schema: schema::HOST_HEALTH,
                 metadata: BTreeMap::new(),
-            },
-            |data| codec::decode_heartbeat(data).ok().map(|hb| hb.seq),
-        )
-        .await?;
-        let reports = subscribe_envelopes(
-            &participant,
-            &tx,
-            &stamp,
-            TrafficClass::Data,
-            participant.keys().reports(),
-            Topic {
-                key: TopicKey::Reports,
-                name: "/_session/reports".into(),
-                schema: schema::PARTICIPANT_REPORT,
-                metadata: BTreeMap::new(),
-            },
-            |data| codec::decode_report(data).ok().map(|_| 0),
-        )
-        .await?;
+            });
+            let (tx, stamp) = (tx.clone(), stamp.clone());
+            let sequence = AtomicU64::new(0);
+            participant
+                .host_health(move |health| {
+                    let _ = tx.send(Entry::Message {
+                        topic: topic.clone(),
+                        log_time: stamp.now(),
+                        publish_time: health.host_ns,
+                        sequence: sequence.fetch_add(1, Ordering::Relaxed),
+                        data: codec::encode_health(&health),
+                    });
+                })
+                .await?
+        };
 
         let (cancel, cancelled) = tokio::sync::watch::channel(false);
         let watcher = tokio::spawn(watch_parts(
@@ -523,7 +492,8 @@ impl Recorder {
             writer: Some(writer),
             watcher: Some(watcher),
             cancel,
-            subscribers: vec![authority, heartbeats, reports],
+            subscribers: vec![authority],
+            _health: health,
             robots,
         })
     }
@@ -560,7 +530,7 @@ impl Recorder {
 
     /// A handle that writes samples into this recording from inside the
     /// process: the lockstep path publishes no streams, so its env tees
-    /// each step's slabs here, per lane (§13).
+    /// each step's slabs here, per lane.
     pub fn tee(&self) -> SampleTee {
         SampleTee {
             tx: self.tx.clone(),
@@ -693,7 +663,7 @@ async fn watch_parts(
                             // a signed chunk's body as sent, unverified, and
                             // can't read a sealed one. Read permission
                             // doesn't change that: `k_cmd` goes only to the
-                            // robot and the host (design §8.4).
+                            // robot and the host.
                             // TODO: record verified chunks when the host
                             // relays what its edges accepted (the heartbeat
                             // relay above would carry it).
@@ -982,11 +952,28 @@ impl Segment {
             path: path.to_path_buf(),
             source,
         })?;
-        let writer = mcap::WriteOptions::new()
-            .compression(None)
+        // zstd at level 1: numeric topics shrink several times over, and
+        // JPEG frames, already compressed, cost little time to pass through.
+        let mut writer = mcap::WriteOptions::new()
+            .compression(Some(mcap::Compression::Zstd))
+            .compression_level(1)
             .profile("rlmesh")
             .library(concat!("rlmesh-session ", env!("CARGO_PKG_VERSION")))
             .create(BufWriter::new(file))?;
+        writer.write_metadata(&mcap::records::Metadata {
+            name: RECORDING_METADATA.into(),
+            metadata: BTreeMap::from([
+                ("format".to_string(), RECORDING_FORMAT.to_string()),
+                (
+                    "protocol_generation".to_string(),
+                    crate::wire::version::GENERATION.to_string(),
+                ),
+                (
+                    "protocol_minor".to_string(),
+                    crate::wire::version::PROTOCOL_MINOR.to_string(),
+                ),
+            ]),
+        })?;
         Ok(Self {
             writer,
             path: path.to_path_buf(),
@@ -1086,8 +1073,8 @@ impl Rolling {
     /// The defaults (newest 30 min or 20 GB, one-minute segments, pause
     /// below 2 GB free; incidents of the 2 min before and 30 s after, kept
     /// 14 days or 10 GB) under `dir`.
-    // TODO: fixed budgets; add per-host profiles (smaller budgets, lower
-    // camera rate) when a low-storage host needs them.
+    // `rlmesh host` overrides the budgets with its `--record-*` and
+    // `--incidents-*` flags.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
@@ -1251,9 +1238,8 @@ impl RollingSink {
 /// `incidents/{session}/{unix_ms}-{label}/`, out of the rolling purge's
 /// reach; returns that directory. The segments are hard links, so the one
 /// being written keeps growing in the incident until it rotates.
-// TODO: works on the recordings directory, so only on the host's machine;
-// carry Keep (and episode marks) on the wire once the spec's Mark message
-// is built.
+// A recording server answers the `Keep` host verb with this, so a cockpit
+// on any machine can keep.
 pub fn keep(rolling: &Rolling, session: SessionId, label: &str) -> Result<PathBuf, RecordError> {
     let now = std::time::SystemTime::now();
     let since = now.checked_sub(rolling.incident_before).unwrap_or(now);
@@ -1612,8 +1598,7 @@ pub fn summarize(path: impl AsRef<Path>) -> Result<Summary, RecordError> {
             schema::SAMPLE => codec::decode_sample(data).is_ok(),
             schema::ACTION_CHUNK => codec::decode_chunk(data).is_ok(),
             schema::BINDING_RECORD => codec::decode_binding(&data).is_ok(),
-            schema::HEARTBEAT => codec::decode_heartbeat(&data).is_ok(),
-            schema::PARTICIPANT_REPORT => codec::decode_report(&data).is_ok(),
+            schema::HOST_HEALTH => codec::decode_health(&data).is_ok(),
             schema::AUTHORITY_STATE => match codec::decode_state(&data) {
                 Ok(state) => {
                     lease_changes(&state, message.log_time, &mut held, &mut summary.leases);
@@ -1645,10 +1630,8 @@ pub enum Recorded {
     Chunk(ActionChunk),
     /// An authority snapshot (it carries the bindings too).
     Authority(Box<AuthoritySnapshot>),
-    /// A participant's heartbeat.
-    Heartbeat(Heartbeat),
-    /// A participant's observer report.
-    Report(ParticipantReport),
+    /// The host's health message: every link, edge and observer report.
+    Health(Box<HostHealth>),
 }
 
 /// One recorded message with its MCAP times, both session time.
@@ -1662,7 +1645,7 @@ pub struct RecordedMessage {
     pub message: Recorded,
 }
 
-/// Every sample, chunk, authority snapshot, heartbeat and report of a
+/// Every sample, chunk, authority snapshot and health message of a
 /// recording (one MCAP file, or a directory of them: rolling segments, an
 /// incident, an episode), ordered by
 /// log time (stable, so each channel keeps its recorded order). Binding
@@ -1703,6 +1686,30 @@ pub fn mcap_files(path: &Path) -> Result<Vec<PathBuf>, RecordError> {
     Ok(files)
 }
 
+/// Refuses a recording in a newer format than [`RECORDING_FORMAT`]: its
+/// `rlmesh.recording` record comes before the first chunk. A file without
+/// one (written before formats were marked) is format 1.
+fn check_format(path: &Path, bytes: &[u8]) -> Result<(), RecordError> {
+    for record in mcap::read::LinearReader::new(bytes)? {
+        match record {
+            Ok(mcap::records::Record::Metadata(m)) if m.name == RECORDING_METADATA => {
+                let format = m.metadata.get("format").cloned().unwrap_or_default();
+                return match format.parse::<u32>() {
+                    Ok(n) if n <= RECORDING_FORMAT => Ok(()),
+                    _ => Err(RecordError::Format {
+                        path: path.to_path_buf(),
+                        format,
+                    }),
+                };
+            }
+            Ok(mcap::records::Record::Chunk { .. } | mcap::records::Record::Message { .. })
+            | Err(_) => return Ok(()),
+            Ok(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
     // TODO: reads the whole file into memory; stream it chunk by chunk when
     // recordings outgrow RAM (long camera sessions, rolling segments).
@@ -1710,6 +1717,7 @@ fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
         path: path.to_path_buf(),
         source,
     })?;
+    check_format(path, &bytes)?;
     let mut out = Vec::new();
     for message in mcap::MessageStream::new(&bytes)? {
         let message = match message {
@@ -1728,10 +1736,9 @@ fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
             Some(schema::AUTHORITY_STATE) => codec::decode_state(&data)
                 .ok()
                 .map(|s| Recorded::Authority(Box::new(s))),
-            Some(schema::HEARTBEAT) => codec::decode_heartbeat(&data).ok().map(Recorded::Heartbeat),
-            Some(schema::PARTICIPANT_REPORT) => {
-                codec::decode_report(&data).ok().map(Recorded::Report)
-            }
+            Some(schema::HOST_HEALTH) => codec::decode_health(&data)
+                .ok()
+                .map(|h| Recorded::Health(Box::new(h))),
             _ => None,
         };
         if let Some(decoded) = decoded {
@@ -1766,6 +1773,9 @@ pub struct DecodedSample {
     pub topic: String,
     /// When the recorder received it (session time).
     pub log_ns: i64,
+    /// When it was captured, mapped to session time (the MCAP
+    /// `publish_time`): what frames align on.
+    pub capture_ns: i64,
     /// Its fields, in declared order; a JPEG frame decoded to raw RGB.
     /// None for an `_applied` tick that dispatched nothing.
     pub fields: Vec<Field>,
@@ -1776,9 +1786,25 @@ pub struct DecodedSample {
 /// A sample of a channel not declared yet, or that does not decode, is
 /// skipped.
 pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
-    let mut streams: BTreeMap<ChannelId, StreamSpec> = BTreeMap::new();
-    let mut out = Vec::new();
-    for m in messages {
+    let mut decoder = SampleDecoder::default();
+    messages.iter().filter_map(|m| decoder.decode(m)).collect()
+}
+
+/// Splits recorded samples into their fields, one message at a time, through
+/// the parts the authority snapshots before them declare.
+#[derive(Clone, Debug, Default)]
+pub struct SampleDecoder {
+    streams: BTreeMap<ChannelId, StreamSpec>,
+    /// Leave camera frames encoded: their field comes with its shape and no
+    /// bytes.
+    pub skip_images: bool,
+}
+
+impl SampleDecoder {
+    /// Takes `m` in log-time order: an authority snapshot declares parts, a
+    /// sample decodes. `None` for anything else, a sample of a channel not
+    /// declared yet, or one that does not decode.
+    pub fn decode(&mut self, m: &RecordedMessage) -> Option<DecodedSample> {
         let sample = match &m.message {
             Recorded::Authority(snapshot) => {
                 for part in &snapshot.parts {
@@ -1789,38 +1815,41 @@ pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
                     .into_iter()
                     .flatten()
                     {
-                        streams.insert(stream.channel, stream);
+                        self.streams.insert(stream.channel, stream);
                     }
                 }
-                continue;
+                return None;
             }
             Recorded::Sample(sample) => sample,
-            _ => continue,
+            _ => return None,
         };
-        let Some(spec) = streams.get(&sample.channel) else {
-            continue;
-        };
+        let spec = self.streams.get(&sample.channel)?;
         let fields = if sample.applied.is_some_and(|a| !a.present) {
             // An edge tick that dispatched nothing (hold, safe, e-stop).
             Vec::new()
         } else if matches!(spec.encoding, Encoding::Jpeg { .. }) {
-            let Ok(rgb) = crate::media::decode_payload(spec, &sample.payload) else {
-                debug!(channel = %spec.channel, "undecodable frame");
-                continue;
-            };
-            vec![(0, rgb)]
+            if self.skip_images {
+                vec![(0, Vec::new())]
+            } else {
+                let Ok(rgb) = crate::media::decode_payload(spec, &sample.payload) else {
+                    debug!(channel = %spec.channel, "undecodable frame");
+                    return None;
+                };
+                vec![(0, rgb)]
+            }
         } else {
             match spec.layout.stride() {
                 None => vec![(0, sample.payload.to_vec())],
                 Some(stride) if stride == sample.payload.len() => (0..spec.fields.len())
                     .filter_map(|i| Some((i, sample.payload.get(spec.layout.field(i)?)?.to_vec())))
                     .collect(),
-                Some(_) => continue,
+                Some(_) => return None,
             }
         };
-        out.push(DecodedSample {
+        Some(DecodedSample {
             topic: format!("{}/{}", spec.owner, spec.path),
             log_ns: m.log_ns,
+            capture_ns: m.publish_ns,
             fields: fields
                 .into_iter()
                 .map(|(i, bytes)| Field {
@@ -1830,9 +1859,70 @@ pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
                     bytes,
                 })
                 .collect(),
-        });
+        })
     }
-    out
+}
+
+/// Every sample of a recording (one MCAP file, or a directory of them) split
+/// into its fields, one at a time: only one file's messages, still encoded,
+/// are held at once, and each camera frame is decoded as it is taken.
+/// Within a file samples come in log-time order; files in name (opening)
+/// order. A segment still being written that holds no finished chunk is
+/// skipped, as [`read`] does.
+pub struct Samples {
+    files: std::collections::VecDeque<PathBuf>,
+    messages: std::vec::IntoIter<RecordedMessage>,
+    decoder: SampleDecoder,
+    dir: bool,
+}
+
+/// [`Samples`] over the recording at `path`.
+///
+/// # Errors
+/// [`RecordError::Io`] when `path` can't be listed.
+pub fn samples(path: impl AsRef<Path>) -> Result<Samples, RecordError> {
+    let path = path.as_ref();
+    Ok(Samples {
+        files: mcap_files(path)?.into(),
+        messages: Vec::new().into_iter(),
+        decoder: SampleDecoder::default(),
+        dir: path.is_dir(),
+    })
+}
+
+impl Samples {
+    /// Leaves camera frames encoded: each comes with its shape and no bytes
+    /// (a pass that only needs to know the streams).
+    #[must_use]
+    pub fn skip_images(mut self) -> Self {
+        self.decoder.skip_images = true;
+        self
+    }
+}
+
+impl Iterator for Samples {
+    type Item = Result<DecodedSample, RecordError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            for m in self.messages.by_ref() {
+                if let Some(sample) = self.decoder.decode(&m) {
+                    return Some(Ok(sample));
+                }
+            }
+            let file = self.files.pop_front()?;
+            match read_file(&file) {
+                Ok(mut messages) => {
+                    messages.sort_by_key(|m| m.log_ns);
+                    self.messages = messages.into_iter();
+                }
+                Err(err) if self.dir => {
+                    warn!(%err, file = %file.display(), "segment skipped");
+                }
+                Err(err) => return Some(Err(err)),
+            }
+        }
+    }
 }
 
 fn lease_changes(

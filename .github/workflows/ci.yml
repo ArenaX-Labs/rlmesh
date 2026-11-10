@@ -25,6 +25,10 @@ jobs:
       UV_CACHE_DIR: /tmp/.uv-cache
       # One release-cohort wheel build serves the installed-artifact profiles.
       RLMESH_RELEASE_BUILD: "1"
+      # Line numbers in backtraces, without the full debug info that makes
+      # every test binary several times larger: two test builds (default and
+      # fenced features) with it fill the runner's disk.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
     steps:
       - name: Checkout repository
@@ -59,6 +63,12 @@ jobs:
       # profile against a wheel built from this checkout.
       - name: Tests
         run: mise run --skip-tools test:ci
+
+      - name: Disk left after the test builds
+        if: always()
+        run: |
+          df -h / /tmp
+          du -sh target/* 2>/dev/null | sort -rh | head -12
 
       - name: Install C# toolchain when affected
         if: steps.csharp_changes.outputs.csharp == 'true'
@@ -143,7 +153,7 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
         run: |
-          if [ "$EVENT" = workflow_dispatch ]; then printf 'run=true\nsansio=true\ntether=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$EVENT" = workflow_dispatch ]; then printf 'run=true\nsansio=true\ntether=true\nesp32=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
           base="${PR_BASE:-${PUSH_BASE:-origin/main}}"
           if [[ "$base" =~ ^0+$ ]]; then base="$(git rev-parse HEAD^)"; fi
           paths='^(crates/rlmesh-session(-core)?/|javascript/|examples/web/|scripts/check-wasm\.mjs$|Cargo\.(toml|lock)$|mise\.(toml|lock)$|clippy\.toml$|\.mise/tasks/(setup/js|build/js|check/sans-io|test/js/)|\.github/(workflows/ci\.yml|actions/setup/))'
@@ -153,10 +163,13 @@ jobs:
           if [ "$run" = true ] || grep -qE '^crates/rlmesh-tether/' <<<"$changed"; then sansio=true; else sansio=false; fi
           # The Arduino codec runs the tether's conformance vectors (g++ only).
           if grep -qE '^(crates/rlmesh-tether/|integrations/arduino/|\.mise/tasks/test/tether/|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then tether=true; else tether=false; fi
+          # Board builds keep the existing runtime job and have their own path gate.
+          if grep -qE '^(crates/rlmesh-(device|session|session-core|tether)/|integrations/esp32/|Cargo\.(toml|lock)$|mise\.(toml|lock)$|\.mise/tasks/(build/(esp32|zenoh-pico)|setup/esp32|test/esp32/)|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then esp32=true; else esp32=false; fi
+          printf 'esp32=%s\n' "$esp32" >> "$GITHUB_OUTPUT"
           printf 'run=%s\nsansio=%s\ntether=%s\n' "$run" "$sansio" "$tether" | tee -a "$GITHUB_OUTPUT"
 
       - name: Setup toolchain
-        if: steps.changes.outputs.sansio == 'true' || steps.changes.outputs.tether == 'true'
+        if: steps.changes.outputs.sansio == 'true' || steps.changes.outputs.tether == 'true' || steps.changes.outputs.esp32 == 'true'
         uses: ./.github/actions/setup
         with:
           rust-components: "true"
@@ -174,6 +187,21 @@ jobs:
       - name: Sans-IO guard
         if: steps.changes.outputs.sansio == 'true'
         run: mise run --skip-tools check:sans-io
+
+      - name: Install board toolchains when affected
+        if: steps.changes.outputs.esp32 == 'true'
+        run: mise run --skip-tools setup:esp32
+
+      - name: Build ESP32, ESP32-S3 and ESP32-C6 libraries and examples
+        if: steps.changes.outputs.esp32 == 'true'
+        env:
+          RLMESH_ESP32_REQUIRE_XTENSA: "1"
+        # `mise run --skip-tools` drops the exec'd arduino-cli from PATH: pass its path.
+        run: ARDUINO_CLI="$(mise exec arduino-cli@1.5.1 -- which arduino-cli)" mise run --skip-tools build:esp32
+
+      - name: Board transport command path on loopback
+        if: steps.changes.outputs.esp32 == 'true'
+        run: mise run --skip-tools test:esp32:host
 
       # The Arduino tether codec, built on the host as a board would build it
       # (C++11, no exceptions, RTTI or heap), against the same vectors.json

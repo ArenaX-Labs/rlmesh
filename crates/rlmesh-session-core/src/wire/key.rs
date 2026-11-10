@@ -1,4 +1,4 @@
-//! Delivered keys (design §8.4, §8.5): what the host draws, scopes and
+//! Delivered keys: what the host draws, scopes and
 //! delivers to a participant, and what the participant acknowledges. The
 //! key bytes travel only inside sealed messages (a `KeyDelivery` under the
 //! recipient's `k_down`, a `CtlReply`); authority state never carries one.
@@ -11,7 +11,7 @@ use zeroize::Zeroize;
 pub use crate::crypto::Security;
 use crate::wire::ids::{ChannelId, LeaseToken, ParticipantId};
 
-/// What a key is for, and so which kinds it carries (§8.4).
+/// What a key is for, and so which kinds it carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KeyPurpose {
     /// `k_cmd`: chunks and lockstep requests under one token to one robot,
@@ -21,8 +21,6 @@ pub enum KeyPurpose {
     LockstepReply,
     /// `k_stream`: one part's samples and `_applied` entries.
     Stream,
-    /// `k_session_stream`: one host session stream.
-    SessionStream,
     /// `k_estop`: one participant generation's e-stop signals.
     Estop,
 }
@@ -31,7 +29,7 @@ impl KeyPurpose {
     /// Whether keys of this purpose rotate (they belong to a slot that
     /// outlives a key) rather than live and die with a token or generation.
     pub fn rotates(self) -> bool {
-        matches!(self, Self::Stream | Self::SessionStream)
+        matches!(self, Self::Stream)
     }
 }
 
@@ -80,7 +78,7 @@ pub struct IssuedKey {
     pub generation: u32,
 }
 
-/// Keys to install and keys to retire, for one participant (§8.5).
+/// Keys to install and keys to retire, for one participant.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeyDelivery {
     /// Install these (or switch one already held to sending).

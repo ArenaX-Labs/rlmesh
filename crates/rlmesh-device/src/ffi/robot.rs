@@ -33,11 +33,11 @@ pub struct RlmeshDeviceRobotConfig {
     pub address: *const c_char,
     /// A provisioned board's device key (32 bytes), with `address` null.
     pub device_key: *const u8,
-    /// Its stored provisioning record (tether spec §14).
+    /// Its stored provisioning record.
     pub record: *const u8,
     /// The record's length.
     pub record_len: usize,
-    /// This robot's name; null takes the address's.
+    /// This robot's name for an address; provisioned boards use the record's.
     pub name: *const c_char,
     /// The robot's map, as authored JSON.
     pub robot_json: *const c_char,
@@ -196,7 +196,8 @@ struct Target {
     session: String,
     credential: Credential,
     name: Option<String>,
-    /// A provisioned board waits in its home's lobby for runs.
+    /// A provisioned board of a `fleet` build waits in its home's lobby
+    /// for runs; otherwise it joins the home's default session.
     lobby: bool,
     /// Every base address of the home, and its host id (empty: unknown).
     homes: Vec<(String, u16)>,
@@ -204,8 +205,8 @@ struct Target {
 }
 
 /// The target of `address` (device `local`), or of a provisioned board's
-/// device key and record (session `default` on the record's first
-/// address).
+/// device key and record: the home's session `default`, at the record's
+/// addresses in order (see `Config::provisioned`).
 ///
 /// # Safety
 /// The config's key and record are null or valid for their lengths.
@@ -247,8 +248,8 @@ unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<T
     Ok(Target {
         session: String::from(address::DEFAULT_SESSION),
         credential: Credential::new(StaticKeypair::from_private(&mut private), record.host_key),
-        name: None,
-        lobby: true,
+        name: Some(record.name.clone()),
+        lobby: cfg!(feature = "fleet"),
         homes,
         home_id: record.host_id.clone(),
     })
@@ -280,7 +281,11 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
         Ok(target) => target,
         Err(rc) => return rc,
     };
-    let Some(name) = name.map(String::from).or(target.name) else {
+    let Some(name) = (if address.is_none() {
+        target.name
+    } else {
+        name.map(String::from).or(target.name)
+    }) else {
         return RLMESH_DEVICE_ERR_ARG;
     };
     // A session's name (`default`) or its UUID.
@@ -1001,16 +1006,21 @@ mod tests {
             flags: 0,
             host_key: [9; 32],
             host_id: b"rlm-3f9a2c",
+            name: b"eye-3",
             addresses: Addresses::new(&[b"[fe80::1]:7447", b"10.0.0.9:7447"]).unwrap(),
         });
         let mut record = [0; 252];
         let n = provision::payload(&p, &mut record).unwrap();
         let key = [5_u8; 32];
-        let mut config = config(b"\0", Some(c"eyes"), MAP);
+        let mut config = config(b"\0", None, MAP);
         config.address = core::ptr::null();
         config.device_key = key.as_ptr();
         config.record = record.as_ptr();
         config.record_len = n;
+        assert_eq!(
+            unsafe { target(None, &config) }.unwrap().name.as_deref(),
+            Some("eye-3")
+        );
         let mut robot = core::ptr::null_mut();
         assert_eq!(
             unsafe { rlmesh_device_robot_new(&config, &mut robot) },

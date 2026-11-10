@@ -143,7 +143,7 @@ pub fn parse(raw: &str, dir: &Path, origin: &str) -> Result<(Manifest, Vec<Strin
     };
 
     // A single build that declares no requirements writes no variant block,
-    // as a hand-written label would: the platform keys it `default` and
+    // as a hand-written label would: the default row is `default` and
     // names its profiles' rows by their bare keys (`egl`, not `default-egl`).
     let undeclared = variants.is_none() && top_accel.is_none();
     let tables: Vec<(String, toml::Table)> = match variants {

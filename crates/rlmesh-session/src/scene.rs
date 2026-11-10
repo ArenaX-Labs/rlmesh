@@ -1,4 +1,4 @@
-//! Scene files (scene design §2): a TOML file naming a run's members, their
+//! Scene files: a TOML file naming a run's members, their
 //! caps, places, security and where its host runs.
 //!
 //! ```toml
@@ -22,7 +22,7 @@
 //! file, a clock or the network: the daemon and every SDK share it.
 //!
 //! Every refusal names its line, its key and the fix, in the style of the
-//! binder's (spec §6.7):
+//! binder's:
 //!
 //! ```text
 //! scene refused: eyeball-rig (1 problem)
@@ -107,8 +107,8 @@ impl std::error::Error for Refusal {}
 /// The session-wide default for data and chunks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Security {
-    /// Integrity only.
-    Sign,
+    /// Integrity only: a MAC every reader of a part can make.
+    Mac,
     /// Encrypted.
     Seal,
 }
@@ -133,21 +133,6 @@ pub enum Seal {
     Parts(Vec<PartPath>),
 }
 
-/// Where a controller member's processes come from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// Any process of this device (`local`: the home machine).
-    Device(String),
-    /// A catalog model a daemon serves `on` a machine (`home` or a paired
-    /// device).
-    Serve {
-        /// The catalog model (`prebuilt/smolvla/so100`).
-        model: String,
-        /// The machine.
-        on: String,
-    },
-}
-
 /// A member's role and settings.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Role {
@@ -160,10 +145,11 @@ pub enum Role {
         /// What it seals beyond the scene's default.
         seal: Seal,
     },
-    /// A controller: a script or a served model.
+    /// A controller: a script or a model process.
     Controller {
-        /// Where its processes come from.
-        source: Source,
+        /// The device its processes attach from (`local`: the home
+        /// machine).
+        device: String,
         /// The highest class it attaches and leases at.
         max_priority: PriorityClass,
         /// The one robot it binds against rather than the view.
@@ -181,18 +167,11 @@ pub struct Member {
 }
 
 impl Member {
-    /// The device a controller member's processes attach from: its own, or
-    /// that of the machine serving it (`home` is `local`).
+    /// The device a member's processes attach from: a controller's own, a
+    /// robot's asserted one.
     pub fn device(&self) -> Option<&str> {
         match &self.role {
-            Role::Controller {
-                source: Source::Device(device),
-                ..
-            } => Some(device),
-            Role::Controller {
-                source: Source::Serve { on, .. },
-                ..
-            } => Some(if on == "home" { LOCAL_DEVICE } else { on }),
+            Role::Controller { device, .. } => Some(device),
             Role::Robot { device, .. } => device.as_deref(),
         }
     }
@@ -217,8 +196,6 @@ pub struct Scene {
     pub arm: Arm,
     /// How long a run waits for a lost member.
     pub rejoin: Duration,
-    /// Whether the host daemon's recorder joins.
-    pub record: bool,
     /// Its members, by name.
     pub members: Vec<Member>,
     text: String,
@@ -464,7 +441,7 @@ impl Reader<'_> {
                 table,
                 "place",
                 why,
-                "at is a path (spec §2.1) with no _ segment; frame one of the robot's own frames",
+                "at is a path with no _ segment; frame one of the robot's own frames",
             );
         }
         (self.problems.len() == before).then_some(place)
@@ -548,32 +525,20 @@ impl Reader<'_> {
                 }
             }
             Some("controller") => {
-                self.keys(
-                    &table,
-                    t,
-                    &["role", "device", "serve", "on", "max_priority", "robot"],
-                );
-                let device = self.string(&table, t, "device");
-                let serve = self.string(&table, t, "serve");
-                let on = self.string(&table, t, "on");
-                let source = match (device, serve, on) {
-                    (Some(device), None, None) => Source::Device(device),
-                    (None, Some(model), Some(on)) => Source::Serve { model, on },
-                    _ => {
-                        self.invalid(
-                            &table,
-                            "",
-                            "a controller has a device, or serve and on",
-                            "device = \"laptop-josh\", or serve = \"prebuilt/...\" with on = \"home\"",
-                        );
-                        return None;
-                    }
+                self.keys(&table, t, &["role", "device", "max_priority", "robot"]);
+                let Some(device) = self.string(&table, t, "device") else {
+                    self.invalid(
+                        &table,
+                        "",
+                        "a controller has a device",
+                        "device = \"laptop-josh\"",
+                    );
+                    return None;
                 };
                 let max_priority = match self.string(&table, t, "max_priority") {
                     None => PriorityClass::Model,
                     Some(name) => match priority(&name) {
-                        Some(PriorityClass::Safety) if !matches!(&source, Source::Device(d) if d == LOCAL_DEVICE) =>
-                        {
+                        Some(PriorityClass::Safety) if device != LOCAL_DEVICE => {
                             self.refuse(
                                 CtlStatus::NotAuthorized,
                                 &table,
@@ -605,7 +570,7 @@ impl Reader<'_> {
                         }
                     });
                 Role::Controller {
-                    source,
+                    device,
                     max_priority,
                     robot,
                 }
@@ -637,7 +602,7 @@ impl Scene {
                 line: err.span().map(|s| line_at(text, s.start)),
                 key: String::new(),
                 what: format!("not TOML: {}", err.message()),
-                fix: "write it as TOML, as in the scene design's §2".into(),
+                fix: "write it as TOML".into(),
             }],
         })?;
         let mut r = Reader {
@@ -662,7 +627,7 @@ impl Scene {
             "scene",
             s,
             &[
-                "format", "name", "home", "host", "security", "wait", "arm", "rejoin", "record",
+                "format", "name", "home", "host", "security", "wait", "arm", "rejoin",
             ],
         );
         if s.get("format").and_then(Value::as_integer) != Some(FORMAT) {
@@ -688,8 +653,8 @@ impl Scene {
             "scene",
             s,
             "security",
-            &[("sign", Security::Sign), ("seal", Security::Seal)],
-            Security::Sign,
+            &[("mac", Security::Mac), ("seal", Security::Seal)],
+            Security::Mac,
         );
         let wait = r.duration(
             "scene",
@@ -712,14 +677,6 @@ impl Scene {
             (Duration::ZERO, Duration::from_secs(3600)),
             DEFAULT_REJOIN,
         );
-        let record = match s.get("record") {
-            None => false,
-            Some(Value::Boolean(b)) => *b,
-            Some(_) => {
-                r.invalid("scene", "record", "is not true or false", "record = true");
-                false
-            }
-        };
         let mut members = Vec::new();
         match root.get("members") {
             None => {}
@@ -772,7 +729,6 @@ impl Scene {
             wait,
             arm,
             rejoin,
-            record,
             members,
             text: text.to_string(),
         })
@@ -830,14 +786,12 @@ impl Scene {
                         },
                     }),
                     Role::Controller {
-                        source,
+                        device,
                         max_priority,
                         robot,
                     } => json!({
                         "role": "controller",
-                        "device": match source { Source::Device(d) => Some(d), Source::Serve { .. } => None },
-                        "serve": match source { Source::Serve { model, .. } => Some(model), Source::Device(_) => None },
-                        "on": match source { Source::Serve { on, .. } => Some(on), Source::Device(_) => None },
+                        "device": device,
                         "max_priority": format!("{max_priority:?}").to_lowercase(),
                         "robot": robot.as_ref().map(ParticipantId::as_str),
                     }),
@@ -850,11 +804,10 @@ impl Scene {
             "name": self.name,
             "home": self.home,
             "host": self.host,
-            "security": match self.security { Security::Sign => "sign", Security::Seal => "seal" },
+            "security": match self.security { Security::Mac => "mac", Security::Seal => "seal" },
             "wait_ns": ns(self.wait),
             "arm": match self.arm { Arm::Auto => "auto", Arm::Manual => "manual" },
             "rejoin_ns": ns(self.rejoin),
-            "record": self.record,
             "members": members,
         }))
     }
@@ -886,8 +839,8 @@ impl Scene {
         }
     }
 
-    /// What run `run`'s session host carries for it: its identity, its
-    /// places and its member table, robots on their pinned devices (`pins`,
+    /// What run `run`'s session host carries for it: its identity and its
+    /// member table (its places are [`Self::places`], the host's own), robots on their pinned devices (`pins`,
     /// rlmeshd's `[robots.*]`; an unpinned robot binds to its first
     /// embodiment's device, `local` unless the caller allows more).
     pub fn host(&self, run: &str, pins: &BTreeMap<ParticipantId, Pin>) -> SceneConfig {
@@ -920,7 +873,6 @@ impl Scene {
                 closing: None,
                 rejoin_until_ns: None,
             },
-            places: self.places(),
             members,
             rejoin_ns: u64::try_from(self.rejoin.as_nanos()).unwrap_or(u64::MAX),
         }
@@ -963,7 +915,7 @@ x_note = "kept"
                 (Some(5), "scene.clock"),
                 (Some(9), "members.eye-l.max_priority"),
                 (Some(10), "members.eye-l.place"),
-                (Some(12), "members.tracker"),
+                (Some(15), "members.tracker.serve"),
             ]
         );
         let text = refusal.to_string();

@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use rlmesh_session::auth::Credential;
 use rlmesh_session::edge::{EdgeConfig, Robot};
 use rlmesh_session::record::{
-    Episode, Recorded, Recorder, Rolling, collect, decode_samples, keep, read, summarize,
+    Episode, RECORDING_METADATA, RecordError, Recorded, Recorder, Rolling, collect, decode_samples,
+    keep, read, samples as samples_of, summarize,
 };
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
@@ -17,14 +18,17 @@ use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{DType, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
-    Predictor, SessionHost, SessionServer, SystemMonotonicClock, Transport, TransportConfig,
+    Predictor, SamplePublisher, SessionHost, SessionServer, SystemMonotonicClock, Transport,
+    TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
 
+// A long hold: recording is under test, not the fallback, and on a loaded
+// host a controller's chunks arrive late enough to run a short one out.
 const ROBOT: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 500,
-            "command": "position", "hold_max_ms": 100, "max_action_age_ms": 1000},
+            "command": "position", "hold_max_ms": 2000, "max_action_age_ms": 1000},
     "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 500}
 }"#;
 
@@ -151,6 +155,26 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     let recorder = Recorder::start(Arc::new(observer), &path)
         .await
         .expect("recorder");
+    // The host's health, about once a second: what the recorder takes too.
+    let watcher = world
+        .join("watcher", Role::Observer, PriorityClass::Scripted)
+        .await;
+    let healths = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let _health = watcher
+        .host_health({
+            let healths = healths.clone();
+            move |health| {
+                if health.links.iter().any(|l| {
+                    l.participant
+                        .as_ref()
+                        .is_some_and(|p| p.as_str() == "ur10e")
+                }) {
+                    healths.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        })
+        .await
+        .expect("health");
 
     let robot = Robot::declare(
         world
@@ -206,6 +230,10 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     run.join().expect("run thread").expect("clean stop");
     stop.store(true, Ordering::Relaxed);
     spin.join().expect("robot loop");
+    wait_until("two health messages with the robot", || {
+        healths.load(Ordering::Relaxed) >= 2
+    })
+    .await;
 
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.messages > 100, "{stats:?}");
@@ -224,6 +252,7 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
         "/ur10e/arm/_chunks",
         "/_session/authority",
         "/_session/bindings",
+        "/_session/health",
     ] {
         let t = topic(name);
         assert!(t.messages > 0, "{t:?}");
@@ -241,6 +270,32 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
         "model and operator"
     );
     assert!(summary.metadata.iter().any(|m| m == "rlmesh.robot.ur10e"));
+    // Marked with its format, and its chunks zstd-compressed.
+    assert!(summary.metadata.iter().any(|m| m == RECORDING_METADATA));
+    let bytes = std::fs::read(&path).expect("read");
+    let file = mcap::Summary::read(&bytes)
+        .expect("summary")
+        .expect("a finished file");
+    assert!(!file.chunk_indexes.is_empty());
+    assert!(file.chunk_indexes.iter().all(|c| c.compression == "zstd"));
+
+    // A recording in a newer format is refused, by name.
+    let newer = dir.path().join("newer.mcap");
+    let mut writer = mcap::Writer::new(std::io::BufWriter::new(
+        std::fs::File::create(&newer).expect("create"),
+    ))
+    .expect("writer");
+    writer
+        .write_metadata(&mcap::records::Metadata {
+            name: RECORDING_METADATA.into(),
+            metadata: [("format".to_string(), "2".to_string())].into(),
+        })
+        .expect("metadata");
+    writer.finish().expect("finish");
+    drop(writer);
+    let err = read(&newer).expect_err("a newer format");
+    assert!(matches!(err, RecordError::Format { .. }), "{err}");
+    assert!(err.to_string().contains("upgrade rlmesh"), "{err}");
 
     // model, then the operator (preemption), then the model under a fresh token.
     let arm: Vec<_> = summary
@@ -285,9 +340,10 @@ fn files_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// A robot publishing `ft` every 10 ms for `ms`.
-async fn publish_ft(robot: &Participant, ms: u64) {
-    let ft = robot.publisher("ft").await.expect("publisher");
+/// A robot publishing `ft` every 10 ms for `ms`. A test publishes through
+/// one `ft` publisher throughout: a new one numbers its samples from 1
+/// again, which a subscriber that saw the first drops as out of order.
+async fn publish_ft(robot: &Participant, ft: &SamplePublisher, ms: u64) {
     for _ in 0..ms / 10 {
         ft.publish(robot.clock().now_ns(), bytes::Bytes::from(vec![0_u8; 32]))
             .expect("publish");
@@ -328,7 +384,17 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
         .join("robot", Role::Embodiment, PriorityClass::Scripted)
         .await;
     robot.declare_parts(FT).await.expect("declare");
-    publish_ft(&robot, 700).await;
+    let publisher = robot.publisher("ft").await.expect("publisher");
+    publish_ft(&robot, &publisher, 700).await;
+    // Any member that may arm asks the host to keep what it recorded.
+    robot.keep("keep me").await.expect("kept");
+    let incidents = files_in(&dir.path().join("incidents").join(session.to_string()));
+    assert_eq!(incidents.len(), 1, "{incidents:?}");
+    assert!(
+        incidents[0].to_string_lossy().ends_with("-keep_me"),
+        "{incidents:?}"
+    );
+    assert!(!files_in(&incidents[0]).is_empty());
     robot.detach().await.expect("detach");
     wait_until_async("the session to stop", || async {
         !server.sessions().await.contains(&session)
@@ -367,8 +433,9 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
         .join("robot", Role::Embodiment, PriorityClass::Scripted)
         .await;
     robot.declare_parts(FT).await.expect("declare");
+    let publisher = robot.publisher("ft").await.expect("publisher");
     let started = std::time::SystemTime::now();
-    publish_ft(&robot, 500).await;
+    publish_ft(&robot, &publisher, 500).await;
     let kept = keep(&rolling, world.session, "keep").expect("kept on request");
     let episode = Episode {
         task: "hold".into(),
@@ -381,20 +448,22 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     // Collecting it again keeps the same links, never copying over them.
     collect(&rolling, world.session, "test set", &episode, started).expect("again");
     robot.estop("test").await.expect("estop");
-    publish_ft(&robot, 500).await;
+    publish_ft(&robot, &publisher, 500).await;
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.segments >= 3, "{stats:?}");
-    // The purge spares the open segment and the one just closed (another
-    // session's could still be open).
+    // The purge spares the open segment and any written within the last
+    // period (another session's could still be open): the one just closed,
+    // and on a loaded runner the one before it too. About ten rolled.
     let rolling_kept = segments(dir.path(), world.session);
     assert!(
-        rolling_kept.len() <= 2 && rolling_kept.last() == Some(&stats.path),
-        "{rolling_kept:?}"
+        rolling_kept.len() <= 3
+            && rolling_kept.len() < stats.segments as usize
+            && rolling_kept.last() == Some(&stats.path),
+        "{rolling_kept:?} of {stats:?}"
     );
 
     // Both incidents outlive the purge, the e-stop's with the segments
-    // written after it, reports included (heartbeats are sealed to the
-    // host).
+    // written after it.
     let incidents = files_in(&dir.path().join("incidents").join(world.session.to_string()));
     assert_eq!(incidents.len(), 2, "{incidents:?}");
     assert!(incidents.contains(&kept));
@@ -408,7 +477,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     assert!(
         messages
             .iter()
-            .any(|m| matches!(m.message, Recorded::Report(_)))
+            .any(|m| matches!(m.message, Recorded::Sample(_)))
     );
 
     // The episode keeps its segments, decoded into the declared fields.
@@ -426,6 +495,28 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
         .map(|f| (f.name.as_str(), f.bytes.len()))
         .collect();
     assert_eq!(fields, [("force", 12), ("torque", 12)]);
+    // Streamed segment by segment, the same samples, each with its capture
+    // time in session time.
+    let mut streamed: Vec<_> = samples_of(&collected)
+        .expect("stream the episode")
+        .collect::<Result<_, _>>()
+        .expect("every segment reads");
+    let mut whole = samples.clone();
+    streamed.sort_by_key(|s| (s.topic.clone(), s.capture_ns, s.log_ns));
+    whole.sort_by_key(|s| (s.topic.clone(), s.capture_ns, s.log_ns));
+    assert_eq!(streamed, whole);
+    // Capture and receipt are session time through two clock mappings, the
+    // robot's and the recorder's. Just after the robot joins they can
+    // disagree by a few ms on a loaded host (5 ms seen on one core), so a
+    // sample can read as captured slightly after it arrived; anything mapped
+    // from the wrong clock or unit is off by far more.
+    let skew_ns: i64 = 25_000_000;
+    let late: Vec<_> = streamed
+        .iter()
+        .filter(|s| s.capture_ns > s.log_ns.saturating_add(skew_ns))
+        .map(|s| s.capture_ns - s.log_ns)
+        .collect();
+    assert!(late.is_empty(), "captured after receipt by {late:?} ns");
 
     // A disk below the floor gets nothing written.
     let full = tempfile::tempdir().expect("tempdir");
@@ -437,7 +528,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     let recorder = Recorder::start_rolling(Arc::new(observer), rolling, world.session)
         .await
         .expect("recorder");
-    publish_ft(&robot, 200).await;
+    publish_ft(&robot, &publisher, 200).await;
     let stats = recorder.finish().await.expect("finish");
     assert_eq!((stats.segments, stats.messages), (0, 0), "{stats:?}");
     assert!(stats.paused_drops > 0, "{stats:?}");

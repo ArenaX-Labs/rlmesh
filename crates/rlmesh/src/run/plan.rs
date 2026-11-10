@@ -1,18 +1,13 @@
 //! Evaluation plans: an evaluation request (the file `rlmesh eval submit`
-//! sends) compiled into the workloads one machine runs, under the managed
-//! platform's rules, so one request draws the same episodes on both.
+//! sends) compiled into the workloads one machine runs.
 //!
-//! The reference is the platform's run builder (`runs/builder.go`) and its
-//! controller's `routeSeedKey`: models × tasks, a task's episodes split over
-//! its `workers` (one per episode by default, scaled back to 300 per run),
-//! seed 0 by default, and each workload's seed key, slot offset and trial
-//! base. The env binding follows `bindEnvironment`: the scenario's make
-//! kwargs, the model's pairing for the env refined by the scenario, and the
-//! episode cap. Its data is each image's `dev.rlmesh.package` label and the
-//! env's describe envelope, which are what the platform hub reads too, so the
-//! catalog changes a binding by rebuilding its images, with no rlmesh
-//! release. `conformance/eval_plans.v1.json` pins the result against the
-//! platform's builder.
+//! Models are paired with tasks, and each task's episodes are split over its
+//! `workers`: one per episode by default, scaled back to 300 per run. The base
+//! seed defaults to 0; each workload carries its seed key, slot offset and
+//! trial base. Environment bindings combine the scenario's make kwargs, the
+//! model's pairing refined by the scenario, and the episode cap. Image
+//! `dev.rlmesh.package` labels and environment describe envelopes supply the
+//! binding metadata. `conformance/eval_plans.v1.json` pins the results.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,14 +21,14 @@ use crate::{Error, Result};
 /// env's or a model's make kwargs through it.
 pub const MAKE_KWARGS_VAR: &str = "RLMESH_MAKE_KWARGS";
 
-/// The seed a task without `seed` or `seeds` runs under (`defaultTaskSeed`).
+/// The seed a task without `seed` or `seeds` runs under.
 const DEFAULT_SEED: i64 = 0;
 
-/// The routes the default worker count stays under (`maxWorkersPerModel`).
+/// The routes the default worker count stays under.
 const MAX_DEFAULT_WORKERS: i64 = 300;
 
 /// Pairing keys the runner consumes as the episode cap instead of passing
-/// them to the env (`ReservedPairingKeys`).
+/// them to the env.
 const EPISODE_CAP_KEYS: [&str; 2] = ["max_episode_steps", "max_steps"];
 
 /// Metadata keys `workers` stamps on each shard.
@@ -175,7 +170,7 @@ pub struct EvalRequest {
 }
 
 impl EvalRequest {
-    /// The request in `document`, checked as the platform checks it. Every
+    /// The request in `document`, validated for local execution. Every
     /// field a local run cannot honour is refused by name, all at once,
     /// rather than ignored.
     pub fn parse(document: &Value) -> Result<Self> {
@@ -223,7 +218,7 @@ impl EvalRequest {
         Ok(request)
     }
 
-    /// The platform's request checks (`validateEvaluationRequest`).
+    /// Validate the evaluation request.
     fn validate(&self) -> Result<()> {
         let invalid = |message: String| Err(Error::invalid_argument(message));
         if self.models.is_empty() {
@@ -1129,7 +1124,7 @@ fn kwargs(raw: &str, owner: &str) -> Result<Map<String, Value>> {
     })
 }
 
-/// An image reference without its tag or digest, as the platform's catalog
+/// An image reference without its tag or digest, as the catalog
 /// id is a repository path.
 fn repository(image: &str) -> &str {
     let image = image.split('@').next().unwrap_or(image);
@@ -1168,7 +1163,7 @@ fn text(value: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// Equal JSON, with numbers compared by value (the platform's encoder
+    /// Equal JSON, with numbers compared by value (a JSON encoder
     /// writes `0.0` as `0`).
     fn same_json(a: &Value, b: &Value) -> bool {
         match (a, b) {

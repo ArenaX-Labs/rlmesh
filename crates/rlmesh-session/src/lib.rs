@@ -13,7 +13,7 @@
 //!   the hosting rule, and joining a session from another process.
 //! - [`auth`] and [`crypto`]: attaching through the Noise IK handshake, the
 //!   `Sealed` envelopes every `ctl` verb, reply and heartbeat travels in,
-//!   and the host's `Signed` broadcasts (design §8). A participant attaches
+//!   and the host's `Signed` broadcasts. A participant attaches
 //!   with a [`Credential`](auth::Credential): an embedded host's address
 //!   carries one.
 //! - [`authority`]: epoch, roster, the DISARMED/ARMED/ACTIVE/SAFE/ESTOP mode
@@ -26,7 +26,7 @@
 //!   single writer.
 //! - [`lease`]: the holder's side of a lease (deadline, renewal, loss,
 //!   fencing), sans-IO; the [`Controller`] and the browser binding share it.
-//! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3), sans-IO.
+//! - [`virtual_clock`]: the virtual-mode tick barrier, sans-IO.
 //! - [`clock`]: clock domains and NTP-style offset estimation with an error
 //!   bound, fed by heartbeats.
 //! - `gateway` (feature `gateway`): the browser gateway, WebSockets to
@@ -40,29 +40,28 @@
 //!   authority view, verbs, and endpoints by robot and path ([`sample`],
 //!   [`chunk`], [`media`]); an embodiment's publishers follow their
 //!   streams' publication plans.
-//! - [`cache`]: the controller's input cache and history windows (§8.8):
+//! - [`cache`]: the controller's input cache and history windows:
 //!   the snapshot at each policy start, freshness, hold, warmup, gaps and
 //!   provenance, fed by [`Inputs`].
-//! - [`schedule`]: policy starts (§8.9: one inference in flight, overdue
-//!   starts skipped) and slowdown reporting (§8.10), sans-IO.
+//! - [`schedule`]: policy starts (one inference in flight, overdue
+//!   starts skipped) and slowdown reporting, sans-IO.
 //! - [`controller`]: the [`Controller`] runtime language bindings wrap: a
 //!   bound policy's inputs, its leases (kept and re-requested in the
 //!   background), its chunks and its run loop.
-//! - [`edge`]: the edge runtime next to an embodiment (§9): the timed
+//! - [`edge`]: the edge runtime next to an embodiment: the timed
 //!   action queue, command limits, the hold-then-safe ladder, the applied
-//!   stream and log, and the [`Robot`](edge::Robot) bindings wrap.
-//! - `record` (feature `record`): MCAP recording of a session (§13) and
+//!   stream, and the [`Robot`](edge::Robot) bindings wrap.
+//! - `record` (feature `record`): MCAP recording of a session and
 //!   reading a recording back.
-//! - [`report`]: observer telemetry (§8.10), the publisher and controller
+//! - [`report`]: observer telemetry, the publisher and controller
 //!   counters an observer cannot measure itself.
-//! - [`pairing`]: machine pairing with rlmeshd (design §3), and the host
-//!   files paired machines attach with.
-//! - [`discovery`]: rlmeshd's mDNS advertisement, and a paired machine
-//!   finding its host by id (scene design §3.1).
-//! - [`lobby`]: the home daemon's lobby (scene design §3): its verbs'
-//!   service, a client that runs scenes, and a robot waiting for a run.
-//! - [`scene`]: scene files (scene design §2), read and checked without
-//!   IO, and what a scene's session host carries for one run.
+//! - [`pairing`]: machine pairing with the host, the host
+//!   files paired machines attach with, and a browser's page token.
+//! - With the unreleased `fleet` feature: `discovery` (rlmeshd's mDNS
+//!   advertisement, and a paired machine finding its host by id), `lobby`
+//!   (the home daemon's lobby: its verbs' service, a client that runs
+//!   scenes, and a robot waiting for a run) and `scene` (scene files, and
+//!   what a scene's session host carries for one run).
 //! - [`sdk`]: what the language bindings share (Python's extension, the
 //!   Node addon), so each only converts values.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
@@ -83,12 +82,14 @@ pub mod chunk;
 pub mod clock;
 pub mod controller;
 pub use rlmesh_session_core::crypto;
+#[cfg(feature = "fleet")]
 pub mod discovery;
 pub mod edge;
 pub mod error;
 #[cfg(feature = "gateway")]
 pub mod gateway;
 pub mod host;
+#[cfg(feature = "fleet")]
 pub mod lobby;
 pub mod media;
 pub mod metrics;
@@ -98,6 +99,7 @@ pub mod participant;
 pub mod record;
 pub mod report;
 pub mod sample;
+#[cfg(feature = "fleet")]
 pub mod scene;
 pub mod sdk;
 pub mod server;
@@ -118,12 +120,12 @@ pub use controller::{
     Controller, ControllerConfig, ControllerError, Predictor, RunError, SendError, Sent,
 };
 pub use error::SessionError;
-pub use host::{HistoryConfig, HostConfig, SessionHost};
+pub use host::{HistoryConfig, HostConfig, KeepRecording, SessionHost};
 pub use media::{ImagePublisher, MediaStats, Offer};
 pub use metrics::ParticipantHealth;
 pub use participant::{
-    AuthorityView, EdgeReport, ManualView, Participant, ParticipantConfig, Pending, SafeReporter,
-    Sealer, TickStream,
+    AuthorityView, EdgeReport, HealthSubscription, ManualView, Participant, ParticipantConfig,
+    Pending, SafeReporter, Sealer, TickStream,
 };
 pub use sample::{
     Fresh, Received, SamplePublisher, SampleStats, SampleSubscriber, SubscribeOptions,

@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::adapters::AdapterResolutionError;
-use rlmesh_grpc::error::{EnvError, EnvErrorCode};
+use crate::data::{EnvError, EnvErrorCode};
 
 /// The result type used throughout this crate: `Result<T, `[`Error`]`>`.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -375,6 +375,7 @@ impl Error {
 
     /// An address that could not be parsed: a `ValueError` whose text is
     /// `invalid address: message`.
+    #[cfg(test)]
     pub(crate) fn invalid_address(message: impl fmt::Display) -> Self {
         Self::invalid_argument(format!("invalid address: {message}"))
     }
@@ -432,7 +433,8 @@ impl Error {
     }
 
     /// Map a wire-level protocol failure onto [`Error::Protocol`].
-    pub(crate) fn from_protocol(value: rlmesh_grpc::error::ProtocolError) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_protocol(value: crate::data::ProtocolError) -> Self {
         Self::Protocol(value.to_string())
     }
 
@@ -446,79 +448,16 @@ impl Error {
             .cloned()
             .unwrap_or_else(|| Self::invalid_argument(value.message))
     }
-
-    /// Map a gRPC client/server error onto the facade taxonomy.
-    pub(crate) fn from_grpc(value: rlmesh_grpc::error::Error) -> Self {
-        use rlmesh_grpc::error::TransportError;
-        match value {
-            rlmesh_grpc::error::Error::Transport(error) => match error {
-                TransportError::InvalidAddress(message) => Self::invalid_address(message),
-                TransportError::BindFailed(message) => Self::server(message),
-                TransportError::ConnectFailed(message) => Self::Connection(message),
-                TransportError::ConnectionClosed => {
-                    Self::Connection("connection closed".to_string())
-                }
-                TransportError::Io(error) => Self::Connection(error.to_string()),
-                TransportError::MessageTooLarge { size, max } => {
-                    Self::Connection(format!("message too large: {size} > {max}"))
-                }
-                TransportError::Unavailable(message) => Self::Connection(message),
-                // The server refused the key: say where a key comes from,
-                // never what was sent (R-22).
-                TransportError::Status {
-                    code: tonic::Code::Unauthenticated,
-                    ..
-                } => Self::Connection(KEY_REJECTED.to_string()),
-                TransportError::Status { code, message } => {
-                    Self::Connection(format!("{code:?}: {message}"))
-                }
-                // TransportError is #[non_exhaustive].
-                other => Self::Connection(other.to_string()),
-            },
-            rlmesh_grpc::error::Error::Protocol(error) => Self::from_protocol(error),
-            rlmesh_grpc::error::Error::Environment(error) => {
-                Self::Environment(EnvironmentError::from_wire(error))
-            }
-            rlmesh_grpc::error::Error::Model(error) => Self::Model(ModelError {
-                code: map_model_error_code(error.code),
-                message: error.message,
-                is_recoverable: error.is_recoverable,
-            }),
-            rlmesh_grpc::error::Error::Timeout(duration) => Self::Timeout(duration),
-            // A cancelled connect/handshake is a connection-establishment
-            // failure (e.g. the server's port is published but it isn't serving
-            // yet during boot), not an internal fault -- surface it as Connection
-            // so dial-retry treats it as transient.
-            rlmesh_grpc::error::Error::Cancelled(message) => Self::Connection(message),
-            // A token a header cannot carry is a bad argument, not a
-            // transport failure (RMT-5).
-            rlmesh_grpc::error::Error::Client(
-                error @ rlmesh_grpc::error::ClientError::InvalidToken(_),
-            ) => Self::invalid_argument(error.to_string()),
-            rlmesh_grpc::error::Error::Client(
-                rlmesh_grpc::error::ClientError::InvalidTlsCaFile(message),
-            ) => Self::invalid_argument(message),
-            rlmesh_grpc::error::Error::Client(error) => Self::Connection(error.to_string()),
-            // rlmesh_grpc::error::Error is #[non_exhaustive].
-            other => Self::Internal(other.to_string()),
-        }
-    }
 }
-
-/// A server's refusal of the client's key (gRPC `Unauthenticated`), the same
-/// text in every language. It names where a key comes from, never the key.
-pub(crate) const KEY_REJECTED: &str = "the server rejected the API key; pass the key it \
-     expects as api_key (or set RLMESH_API_KEY for an https:// address)";
 
 /// A client's dial failure, the one formatter for env and model clients:
 /// `could not connect to {peer} at '{address}'; {hint} ({cause})`, or
 /// `could not connect to {peer} at '{address}': {cause}` when the server
 /// rejected the key (serving is not in doubt then). Other classes pass through.
 pub(crate) fn dial_failure(err: Error, peer: &str, address: &str, hint: &str) -> Error {
+    // An invite's key is a credential: errors show the address without it.
+    let address = rlmesh_session::address::redact(address);
     match err {
-        Error::Connection(cause) if cause == KEY_REJECTED => Error::Connection(format!(
-            "could not connect to {peer} at '{address}': {cause}"
-        )),
         Error::Connection(cause) => Error::Connection(format!(
             "could not connect to {peer} at '{address}'; {hint} ({cause})"
         )),
@@ -593,22 +532,6 @@ fn map_env_error_code(code: EnvErrorCode) -> ErrorCode {
         EnvErrorCode::Crashed => ErrorCode::Crashed,
         EnvErrorCode::Cancelled => ErrorCode::Cancelled,
         EnvErrorCode::Closed => ErrorCode::Closed,
-        // EnvErrorCode is #[non_exhaustive]; map unknown codes conservatively.
-        _ => ErrorCode::Internal,
-    }
-}
-
-fn map_model_error_code(code: rlmesh_grpc::error::ModelErrorCode) -> ModelErrorCode {
-    use rlmesh_grpc::error::ModelErrorCode as Wire;
-    match code {
-        Wire::Unspecified => ModelErrorCode::Unspecified,
-        Wire::InvalidRequest => ModelErrorCode::InvalidRequest,
-        Wire::NotConfigured => ModelErrorCode::NotConfigured,
-        Wire::Busy => ModelErrorCode::Busy,
-        Wire::Unsupported => ModelErrorCode::Unsupported,
-        Wire::Internal => ModelErrorCode::Internal,
-        Wire::Cancelled => ModelErrorCode::Cancelled,
-        Wire::Closed => ModelErrorCode::Closed,
     }
 }
 
@@ -622,50 +545,11 @@ impl EnvironmentError {
             class: None,
         }
     }
-
-    /// The inverse of [`Self::from_wire`].
-    #[cfg(feature = "lockstep")]
-    pub(crate) fn to_wire(&self) -> EnvError {
-        let code = match self.code {
-            ErrorCode::Unspecified => EnvErrorCode::Unspecified,
-            ErrorCode::Timeout => EnvErrorCode::Timeout,
-            ErrorCode::InvalidAction => EnvErrorCode::InvalidAction,
-            ErrorCode::NotReady => EnvErrorCode::NotReady,
-            ErrorCode::Busy => EnvErrorCode::Busy,
-            ErrorCode::Unsupported => EnvErrorCode::Unsupported,
-            ErrorCode::Internal => EnvErrorCode::Internal,
-            ErrorCode::Crashed => EnvErrorCode::Crashed,
-            ErrorCode::Cancelled => EnvErrorCode::Cancelled,
-            ErrorCode::Closed => EnvErrorCode::Closed,
-        };
-        EnvError {
-            is_recoverable: self.is_recoverable,
-            ..EnvError::new(code, self.message.clone())
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn grpc_model_error_maps_to_model_variant_preserving_code_and_recoverability() {
-        let grpc = rlmesh_grpc::error::Error::Model(rlmesh_grpc::error::ModelError {
-            code: rlmesh_grpc::error::ModelErrorCode::Busy,
-            message: "handler declined".to_string(),
-            is_recoverable: true,
-            debug_info: None,
-        });
-        match Error::from_grpc(grpc) {
-            Error::Model(model) => {
-                assert_eq!(model.code, ModelErrorCode::Busy);
-                assert_eq!(model.message, "handler declined");
-                assert!(model.is_recoverable);
-            }
-            other => panic!("expected Error::Model, got {other:?}"),
-        }
-    }
 
     #[test]
     fn model_error_constructors_set_recoverability() {
@@ -694,10 +578,8 @@ mod tests {
 
     #[test]
     fn protocol_failures_map_to_the_protocol_variant() {
-        let grpc = rlmesh_grpc::error::Error::Protocol(
-            rlmesh_grpc::error::ProtocolError::HandshakeFailed("generation 1 != 2".into()),
-        );
-        let error = Error::from_grpc(grpc);
+        let error =
+            Error::from_protocol(crate::data::ProtocolError::DecodeError("bad data".into()));
         assert!(matches!(error, Error::Protocol(_)), "{error:?}");
         assert_eq!(error.class(), ErrorClass::ProtocolException);
     }

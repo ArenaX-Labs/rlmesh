@@ -661,7 +661,6 @@ fn serve_refuses_a_v1_address_and_a_zero_predict_concurrency() {
             ModelServeOptions {
                 ext: Some(crate::ext::ModelServeOptions {
                     predict_concurrency: Some(0),
-                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -757,7 +756,7 @@ fn serving_from_a_callers_runtime_root_does_not_nest_runtimes() {
 #[test]
 fn dropping_a_cancel_watcher_stops_consuming_the_token() {
     let token = crate::ext::CancelToken::new();
-    let trigger = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
+    let trigger = crate::lifecycle::ShutdownTrigger::new();
     let watcher = super::facade::CancelWatcher::start(vec![token.clone()], trigger.clone());
     drop(watcher);
     token.cancel();

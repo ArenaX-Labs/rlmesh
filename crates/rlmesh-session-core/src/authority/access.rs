@@ -1,4 +1,4 @@
-//! Per-device authorization (design §4, §12 decisions 7, 8 and 14): what
+//! Per-device authorization: what
 //! each device may do, by its entry (`max_priority`, part globs, verbs).
 //!
 //! - An attach above the device's cap is refused (`NOT_AUTHORIZED`), never
@@ -42,6 +42,9 @@ impl Verb {
 pub struct DeviceAccess {
     /// The highest class it may attach and lease at; `None`: observer only.
     pub max_priority: Option<PriorityClass>,
+    /// The roles its participants may attach with (an observer always
+    /// may): a board only embodies a robot, a browser only controls one.
+    pub roles: Vec<Role>,
     /// Globs over `{robot}/{path}` it may lease and read (`*` one path
     /// segment, `**` any number).
     pub parts: Vec<String>,
@@ -56,6 +59,7 @@ impl DeviceAccess {
         let operator = max_priority.is_some_and(|p| p >= PriorityClass::Operator);
         Self {
             max_priority,
+            roles: vec![Role::Embodiment, Role::Controller, Role::Observer],
             parts: vec!["**".into()],
             verbs: if operator {
                 vec![Verb::Arm, Verb::Disarm]
@@ -80,6 +84,14 @@ pub struct Access {
 
 fn refused(message: String) -> CtlError {
     CtlError::new(CtlStatus::NotAuthorized, message)
+}
+
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::Embodiment => "embodiment",
+        Role::Controller => "controller",
+        Role::Observer => "observer",
+    }
 }
 
 fn class_name(class: Option<PriorityClass>) -> &'static str {
@@ -158,7 +170,22 @@ impl Access {
         roles: &[Role],
         priority: PriorityClass,
     ) -> Result<(), CtlError> {
-        self.entry(device)?;
+        if let Some(entry) = self.entry(device)?
+            && let Some(role) = roles
+                .iter()
+                .find(|r| **r != Role::Observer && !entry.roles.contains(r))
+        {
+            return Err(refused(format!(
+                "{device} may not attach as {}: its entry allows {}",
+                role_name(*role),
+                entry
+                    .roles
+                    .iter()
+                    .map(|r| role_name(*r))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
         if self.max_priority(device).is_none() {
             return if roles.iter().all(|r| *r == Role::Observer) {
                 Ok(())
@@ -250,9 +277,9 @@ mod tests {
         access.set(
             "laptop",
             DeviceAccess {
-                max_priority: Some(PriorityClass::Model),
                 parts: vec!["ur10e/arm".into(), "ur10e/wrist/*".into()],
                 verbs: Vec::new(),
+                ..DeviceAccess::new(Some(PriorityClass::Model))
             },
         );
         access.set("eye", DeviceAccess::new(None));

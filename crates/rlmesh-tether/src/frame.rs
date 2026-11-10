@@ -1,5 +1,5 @@
 //! Frames: `type: u8 | seq: u8 | payload | crc: u16 LE`, COBS-encoded and
-//! ended by `0x00` (spec §3). The CRC covers `type | seq | payload`.
+//! ended by `0x00`. The CRC covers `type | seq | payload`.
 
 use crate::{cobs, crc};
 
@@ -58,7 +58,7 @@ impl<'a> Frame<'a> {
 /// # Panics
 ///
 /// When the payload is empty, longer than [`MAX_PAYLOAD`], or in more than
-/// 4 pieces. [`crate::msg::write`] checks lengths and returns an error
+/// 4 pieces. `msg::write` (feature `board`) checks lengths and returns an error
 /// first, so only a direct caller can hit this.
 pub fn write(ty: u8, seq: u8, payload: &[&[u8]], mut out: impl FnMut(u8)) {
     let len: usize = payload.iter().map(|p| p.len()).sum();

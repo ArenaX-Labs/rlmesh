@@ -18,9 +18,9 @@
 //! | [`TrafficClass::Data`] | Data | best effort; reliable for events | DROP; BLOCK for events | no | small custom kinds, events, history replies |
 //! | [`TrafficClass::Bulk`] | DataLow | best effort | DROP | no | cameras, depth, large custom kinds |
 //!
-//! That is the v0.2 spec's §10.2 table, applied per publisher by
+//! These settings are applied per publisher by
 //! [`stream_qos`]. Two refinements: in a virtual-clock session every data
-//! stream is reliable with BLOCK (the tick barrier counts on seqs, §11.3);
+//! stream is reliable with BLOCK (the tick barrier counts on seqs);
 //! and heartbeats and their echoes are DROP rather than BLOCK, because a
 //! stale timing sample is worthless and the echo is sent from a transport
 //! callback, which must never block. Zenoh 1.10 treats reliability as a
@@ -36,7 +36,7 @@
 //! use the same layout. Priorities are still set on every message, so the
 //! shared layout keeps Zenoh's own ordering.
 //!
-//! The lockstep class (§10.2, §12.3) arrives with the Gym view (wave 5).
+//! The lockstep class arrives with the Gym view (wave 5).
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -92,7 +92,7 @@ impl TrafficClass {
         }
     }
 
-    /// The class's QoS (§10.2).
+    /// The class's QoS.
     pub fn qos(self) -> ClassQos {
         let (priority, reliability, congestion, express) = match self {
             Self::Control => (
@@ -202,17 +202,6 @@ pub enum Layout {
     PerClass([Endpoints; 4]),
 }
 
-/// TLS material for `tls/` and `quic/` endpoints.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TlsFiles {
-    /// The CA that signs peers' certificates.
-    pub root_ca: PathBuf,
-    /// This peer's certificate.
-    pub certificate: PathBuf,
-    /// Its private key.
-    pub private_key: PathBuf,
-}
-
 /// Link settings applied to every session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportTuning {
@@ -226,8 +215,6 @@ pub struct TransportTuning {
     /// dropped (Zenoh's default, 1 ms, stalls a 1 kHz publisher on a
     /// congested link). `None` keeps Zenoh's default.
     pub drop_wait: Option<Duration>,
-    /// TLS material for `tls/` and `quic/` endpoints.
-    pub tls: Option<TlsFiles>,
     /// Join as a Zenoh client: listen nowhere and reach everyone through
     /// the host dialed, which routes for its clients. A peer (the default)
     /// talks to the other peers directly, once the gossip of the peers it
@@ -237,11 +224,11 @@ pub struct TransportTuning {
     /// yet before it fails; `None` fails at once, as Zenoh clients do.
     /// Peers always keep dialing in the background.
     pub connect_timeout: Option<Duration>,
-    /// The embedded host's link gate (Zenoh `usrpwd`, design §5).
+    /// The embedded host's link gate (Zenoh `usrpwd`).
     pub link: Option<LinkAuth>,
 }
 
-/// The `usrpwd` gate of an embedded host's links (design §5): the password
+/// The `usrpwd` gate of an embedded host's links: the password
 /// comes from the session's key ([`crate::auth::address::link_password`]),
 /// so only its holders link to the host at all.
 #[derive(Clone, PartialEq, Eq)]
@@ -270,7 +257,6 @@ impl Default for TransportTuning {
             lease: Duration::from_secs(1),
             keep_alive: 4,
             drop_wait: None,
-            tls: None,
             client: false,
             connect_timeout: None,
             link: None,
@@ -428,24 +414,6 @@ pub fn zenoh_config(
                 format!("{:?}", dictionary.display().to_string()),
             )?;
         }
-    }
-    if let Some(tls) = &tuning.tls {
-        let path = |p: &PathBuf| format!("{:?}", p.display().to_string());
-        set(
-            &mut config,
-            "transport/link/tls/root_ca_certificate",
-            path(&tls.root_ca),
-        )?;
-        set(
-            &mut config,
-            "transport/link/tls/listen_certificate",
-            path(&tls.certificate),
-        )?;
-        set(
-            &mut config,
-            "transport/link/tls/listen_private_key",
-            path(&tls.private_key),
-        )?;
     }
     Ok(config)
 }
@@ -672,11 +640,6 @@ mod tests {
         let tuning = TransportTuning {
             lease: Duration::from_millis(1500),
             keep_alive: 3,
-            tls: Some(TlsFiles {
-                root_ca: "ca.pem".into(),
-                certificate: "cert.pem".into(),
-                private_key: "key.pem".into(),
-            }),
             drop_wait: Some(Duration::from_micros(50)),
             client: false,
             connect_timeout: None,
@@ -694,7 +657,6 @@ mod tests {
             get("transport/link/tx/queue/congestion_control/drop/wait_before_drop"),
             "50"
         );
-        assert_eq!(get("transport/link/tls/root_ca_certificate"), "\"ca.pem\"");
         assert!(get("connect/endpoints").contains("tcp/10.0.0.1:7447"));
         assert_eq!(get("scouting/multicast/enabled"), "false");
         assert_eq!(get("mode"), "\"peer\"");

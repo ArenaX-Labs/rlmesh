@@ -49,10 +49,9 @@ Required keywords and native-only fields with no Python default (including
 cancellation/extensions and DLPack bridge options) are outside this comparison.
 
 The C ABI makes `_MIN_SIZE` equal to the full struct size, so its
-minimum-sized fixture supplies `_INIT` for all known fields. The remote env
-options gained `api_key` and `tls_ca_file` after ABI 5; their `_MIN_SIZE`
-stays at the ABI-5 size, and `c_sizing_abi5_remote` checks that a size ending
-inside an appended field is refused. `served.toml` masks the port in error
+minimum-sized fixture supplies `_INIT` for all known fields. The fenced 0.2 ABI
+removes v1 helper and credential fields; the undersized remote-options fixture
+checks refusal below the current minimum. `served.toml` masks the port in error
 text as `PORT`. Extended input,
 out-struct and lent-reader cases exercise unknown appended fields without
 inventing a product field or ABI generation just for a test.

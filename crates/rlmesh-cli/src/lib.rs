@@ -2,12 +2,12 @@ mod auth;
 mod check;
 mod cli;
 mod container;
-mod daemon;
 mod devices;
 mod doctor;
 mod eval_run;
 mod host;
 pub mod image_check;
+#[cfg(feature = "fleet")]
 mod lobby;
 mod manifest;
 mod pair;
@@ -17,7 +17,9 @@ mod provision;
 mod publish;
 mod registry;
 mod render;
+#[cfg(feature = "fleet")]
 mod satellite;
+#[cfg(feature = "fleet")]
 mod scene;
 #[cfg(unix)]
 mod sys;
@@ -88,13 +90,8 @@ pub async fn run_cli_in(
         | Command::CheckImage(_)
         | Command::Describe(_)
         | Command::Host(_)
-        | Command::Daemon(_)
+        | Command::Cockpit(_)
         | Command::Devices(_)
-        | Command::Scene(_)
-        | Command::Run(_)
-        | Command::Lobby(_)
-        | Command::Stop(_)
-        | Command::Arm(_)
         | Command::Pair(_)
         | Command::Eval(cli::EvalArgs {
             command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
@@ -102,6 +99,8 @@ pub async fn run_cli_in(
         | Command::Registry(cli::RegistryArgs {
             command: cli::RegistryCommand::Publish(_),
         }) => None,
+        #[cfg(feature = "fleet")]
+        Command::Scene(_) | Command::Lobby(_) => None,
         _ => match ProfileStore::load(&settings) {
             Ok(profiles) => Some(profiles),
             Err(error) => {
@@ -198,14 +197,26 @@ pub async fn run_cli_in(
         Command::Check(args) => check::check_target(&args, stdout, stdout_style),
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
         Command::Describe(args) => check::describe(&args, stdout, stderr),
-        Command::Host(args) => host::host(&args, stdout).await.map(|()| 0),
-        Command::Daemon(args) => daemon::daemon(&args, stdout, stderr).await.map(|()| 0),
+        Command::Host(args) => host::host(&args, stdout, stderr).await.map(|()| 0),
+        #[cfg(feature = "cockpit")]
+        Command::Cockpit(args) => rlmesh_cockpit::cli::run(*args)
+            .await
+            .map(|()| 0)
+            .map_err(|err| anyhow::anyhow!(err)),
+        #[cfg(not(feature = "cockpit"))]
+        Command::Cockpit(_) => {
+            writeln!(
+                stderr,
+                "this rlmesh build has no cockpit (the Linux ARM wheel leaves it out): \
+                 run `rlmesh cockpit` on a desktop machine, or `cargo install rlmesh-cockpit`"
+            )?;
+            Ok(2)
+        }
         Command::Devices(args) => devices::devices(&args, stdout).map(|()| 0),
-        Command::Scene(args) => scene::scene(&args, stdout),
-        Command::Run(args) => scene::run(&args, stdout).await,
+        #[cfg(feature = "fleet")]
+        Command::Scene(args) => scene::scene(&args, stdout).await,
+        #[cfg(feature = "fleet")]
         Command::Lobby(args) => scene::lobby(&args, stdout).await.map(|()| 0),
-        Command::Stop(args) => scene::stop(&args, stdout).await,
-        Command::Arm(args) => scene::arm(&args, stdout).await.map(|()| 0),
         Command::Pair(args) => pair::pair(&args, stdout).await.map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
         Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),

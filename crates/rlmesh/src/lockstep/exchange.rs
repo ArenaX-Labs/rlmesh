@@ -1,4 +1,4 @@
-//! The lockstep exchange (§12.1-§12.3): one request, one reply, per step.
+//! The lockstep exchange: one request, one reply, per step.
 //!
 //! ```text
 //! driver ──LockstepStep{epoch, step, lanes, commands}──▶ env
@@ -16,7 +16,7 @@
 //! | same host or remote | [`ZenohLink`]: a query on `l/{robot}` over the lockstep class session, answered by [`serve_zenoh`] |
 //!
 //! Over Zenoh every request is a `LockstepRequest` sealed under the lease's
-//! `k_cmd` (design §8.6): a step, a reset, a render (a lane's frame) or a
+//! `k_cmd`: a step, a reset, a render (a lane's frame) or a
 //! probe, with a request id. The env answers a `LockstepResponse` with that
 //! id, sealed under the lease's `k_obs`: the observation, the frame's PNG
 //! bytes (empty for none), the probe, or the env's failure as JSON
@@ -172,9 +172,18 @@ impl Gate {
         }
         let epoch = self.epoch.load(Ordering::Acquire);
         let (asked, token) = (request.epoch().0, request.lease_token().0);
+        if asked < epoch {
+            // The env re-armed since this driver took its lease: the lease
+            // ended (its driver was not heard from) and went with the epoch.
+            return Err(GymError::Refused(format!(
+                "epoch {asked} is stale; the session is in epoch {epoch}: this driver's lease \
+                 ended (the host stopped hearing from it) and the env re-armed, so reconnect to \
+                 drive it again"
+            )));
+        }
         if asked != epoch {
             return Err(GymError::Refused(format!(
-                "epoch {asked} is stale; the session is in epoch {epoch}"
+                "epoch {asked} is ahead of the env's view, epoch {epoch}"
             )));
         }
         let held = self.token.load(Ordering::Acquire);

@@ -4,20 +4,24 @@
 //!
 //! A live session can be paused: the cockpit replays its recent history
 //! ([`History`]) while the feed keeps draining underneath, and only the
-//! e-stop stays on. Keep and the episode controls work on the host's
-//! recording, through this machine's recordings directory: Keep keeps the
-//! last minutes as an incident, an episode is collected into
-//! `collected/{dataset}/` when the operator marks it a success or a
-//! failure.
+//! e-stop stays on. Keep asks the host to keep the last minutes of its
+//! recording as an incident. With `collect` (unreleased) the episode
+//! controls work on the host's recording through this machine's recordings
+//! directory: an episode is collected into `collected/{dataset}/` when the
+//! operator marks it a success or a failure.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+#[cfg(feature = "collect")]
+use std::time::SystemTime;
+use std::time::{Duration, Instant};
 
-use rlmesh_session::record::{self, Episode, Rolling};
+#[cfg(feature = "collect")]
+use rlmesh_session::record::Episode;
+use rlmesh_session::record::{self, Rolling};
 use rlmesh_session::wire::SessionId;
 
 use crate::feed::Feed;
-use crate::model::{Model, ModelConfig};
+use crate::model::{Model, ModelConfig, Verb};
 use crate::replay::{History, Replay};
 use crate::ui::{self, LiveAction, LiveBar, UiState};
 
@@ -45,9 +49,11 @@ struct Live {
     /// The host's recordings root, when it is on this machine.
     recordings: Option<Rolling>,
     /// Where episodes are collected: `collected/{dataset}/`.
+    #[cfg_attr(not(feature = "collect"), allow(dead_code))]
     dataset: String,
     bar: LiveBar,
     /// The running episode: its start, wall clock and session time.
+    #[cfg(feature = "collect")]
     episode: Option<(SystemTime, i64)>,
     /// What the bar asked for, done next frame.
     action: Option<LiveAction>,
@@ -85,6 +91,7 @@ impl CockpitApp {
                 recordings,
                 dataset,
                 bar: LiveBar::default(),
+                #[cfg(feature = "collect")]
                 episode: None,
                 action: None,
             })),
@@ -131,17 +138,18 @@ impl eframe::App for CockpitApp {
                         live.paused = Some((replay, Instant::now()));
                     }
                     Some(LiveAction::Resume) => live.paused = None,
+                    // The host keeps its own recording, wherever it runs;
+                    // its answer reaches the header.
                     Some(LiveAction::Keep) => {
-                        live.bar.note = live.session().map(|(session, rolling)| {
-                            record::keep(rolling, session, "keep")
-                                .map(|dir| format!("kept in {}", dir.display()))
-                                .map_err(|err| format!("not kept: {err}"))
-                        });
+                        live.feed.send(Verb::Keep);
+                        live.bar.note = None;
                     }
+                    #[cfg(feature = "collect")]
                     Some(LiveAction::Start) => {
                         live.episode = Some((SystemTime::now(), live.model.session_ns(now_ns)));
                         live.bar.note = None;
                     }
+                    #[cfg(feature = "collect")]
                     Some(LiveAction::Finish { success }) => {
                         let started = live.episode.take();
                         live.bar.note = live.session().zip(started).map(
@@ -158,6 +166,7 @@ impl eframe::App for CockpitApp {
                             },
                         );
                     }
+                    #[cfg(feature = "collect")]
                     Some(LiveAction::Discard) => {
                         live.episode = None;
                         live.bar.note = Some(Ok("episode discarded".into()));
@@ -166,9 +175,12 @@ impl eframe::App for CockpitApp {
                 }
                 live.bar.paused = live.paused.is_some();
                 live.bar.local = live.session().is_some();
-                live.bar.episode_s = live
-                    .episode
-                    .map(|(_, start)| (live.model.session_ns(now_ns) - start) as f64 * 1e-9);
+                #[cfg(feature = "collect")]
+                {
+                    live.bar.episode_s = live
+                        .episode
+                        .map(|(_, start)| (live.model.session_ns(now_ns) - start) as f64 * 1e-9);
+                }
                 self.ui.paused = live.paused.is_some();
                 let view = match &mut live.paused {
                     Some((replay, last)) => {

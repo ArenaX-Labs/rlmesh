@@ -1,18 +1,12 @@
-//! `rlmesh doctor` and `rlmesh bench`: the managed platform's probe, run on
-//! one machine against a served env or model.
+//! `rlmesh doctor` and `rlmesh bench`: checks and benchmarks against a served
+//! env or model on one machine.
 //!
-//! Ported from the managed runner's probe (`probe.rs` and `probe/` in
-//! rlmesh-middleman). The checks keep their names and the report keeps the
-//! platform's `probe-report.json` shape ([`ProbeReport`]), so the platform
-//! probe can call this code and read the same verdicts. What changed is the
-//! wire: a model is reached through the 0.2 binder ([`crate::bind`]) against a
-//! scripted stand-in env, so resolution is the binder's own, and an env is
-//! driven through a binding with the probe's actions.
+//! Reports use the `probe-report.json` shape ([`ProbeReport`]). A model is
+//! reached through the binder ([`crate::bind`]) against a scripted stand-in
+//! env; an env is driven through a binding with the probe's actions.
 //!
-//! Hidden binding plumbing (R-25): the CLI and the platform drive it.
+//! Hidden binding plumbing (R-25), used by the CLI.
 
-// The report types mirror the platform's JSON contract field for field; their
-// docs live on the platform side.
 #![allow(missing_docs)]
 
 mod bench;
@@ -38,14 +32,13 @@ pub use report::{
 };
 pub use synth::SYNTHETIC_ENV_ID;
 
-/// The file a report is written to beside its preview, as the platform names it.
+/// The file a report is written to beside its preview.
 pub const PROBE_REPORT: &str = "probe-report.json";
 
 /// How long a served env or model gets to answer its first call.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Checks whose Fail says the image is not runnable at all; the platform's
-/// `probe/verdict.go` carries the same set.
+/// Checks whose Fail says the image is not runnable at all.
 pub const BLOCKING_CHECK_NAMES: [&str; 7] = [
     "handshake",
     "resolve",

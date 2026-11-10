@@ -26,7 +26,6 @@
       "Recorder",
       "RecoverableEnvironmentException",
       "RemoteEnv",
-      "RemoteModel",
       "RemoteVectorEnv",
       "RunContext",
       "RunHooks",
@@ -37,7 +36,6 @@
       "SandboxRuntime",
       "SandboxVectorEnv",
       "ServeOptions",
-      "Session",
       "StepEvent",
       "TelemetryRow",
       "Tensor",
@@ -45,7 +43,6 @@
       "Vector",
       "View",
       "WorkflowEditionWarning",
-      "__build__",
       "__version__",
       "adapters",
       "build_info",
@@ -56,7 +53,6 @@
       "predict_seed",
       "run",
       "sanitize_metadata",
-      "session",
       "spaces",
       "specs",
       "trial_index",
@@ -279,7 +275,7 @@
             "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
-        "signature": "EnvServer(env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None, framework: str | ValueBridge | None = None, device: object | None = None, close_env_on_shutdown: bool = True)",
+        "signature": "EnvServer(env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]], address: str | None = None, *, options: ServeOptions | None = None, tags: EnvTags | None = None, framework: str | ValueBridge | None = None, device: object | None = None, close_env_on_shutdown: bool = True)",
         "stability": "Stable"
       },
       "EnvironmentException": {
@@ -696,10 +692,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -709,12 +701,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
-        "stability": "Stable"
-      },
-      "RemoteModel": {
-        "kind": "function",
-        "signature": "RemoteModel(*args: object, **kwargs: object)",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteVectorEnv": {
@@ -780,10 +767,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -801,7 +784,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
       "RunContext": {
@@ -1008,10 +991,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "source": {
             "kind": "property",
             "signature": "property source: str"
@@ -1157,10 +1136,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -1188,37 +1163,16 @@
       "ServeOptions": {
         "kind": "class",
         "members": {
-          "allow_remote_shutdown": {
-            "kind": "property",
-            "signature": "property allow_remote_shutdown: bool"
-          },
           "close_timeout_seconds": {
             "kind": "property",
             "signature": "property close_timeout_seconds: Optional[float]"
-          },
-          "compress_responses": {
-            "kind": "property",
-            "signature": "property compress_responses: bool"
-          },
-          "drain_timeout_seconds": {
-            "kind": "property",
-            "signature": "property drain_timeout_seconds: Optional[float]"
-          },
-          "idle_timeout_seconds": {
-            "kind": "property",
-            "signature": "property idle_timeout_seconds: Optional[float]"
           },
           "workflow_edition": {
             "kind": "property",
             "signature": "property workflow_edition: Optional[str]"
           }
         },
-        "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None, compress_responses: bool = ...) -> ServeOptions",
-        "stability": "Stable"
-      },
-      "Session": {
-        "kind": "function",
-        "signature": "Session(*args: object, **kwargs: object) -> NoReturn",
+        "signature": "ServeOptions(*, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None) -> ServeOptions",
         "stability": "Stable"
       },
       "StepEvent": {
@@ -1455,11 +1409,6 @@
         "kind": "class",
         "stability": "Stable"
       },
-      "__build__": {
-        "kind": "type alias",
-        "signature": "__build__ = build_info().workflow_edition",
-        "stability": "Stable"
-      },
       "__version__": {
         "kind": "type alias",
         "signature": "__version__ = _package_version('rlmesh')",
@@ -1507,11 +1456,6 @@
         "kind": "function",
         "signature": "sanitize_metadata(info: Mapping[str, Any]) -> dict[str, Any]",
         "stability": "Bridge"
-      },
-      "session": {
-        "kind": "function",
-        "signature": "session(*args: object, **kwargs: object)",
-        "stability": "Stable"
       },
       "spaces": {
         "kind": "module",
@@ -2885,10 +2829,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -2898,7 +2838,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteModel": {
@@ -2969,10 +2909,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -2990,7 +2926,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Experimental"
       },
       "SandboxBuild": {
@@ -3086,10 +3022,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -3258,10 +3190,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",
@@ -3627,10 +3555,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -3640,7 +3564,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteModel": {
@@ -3711,10 +3635,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -3732,7 +3652,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
       "SandboxBuild": {
@@ -3828,10 +3748,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -4001,10 +3917,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -4148,6 +4060,510 @@
           }
         },
         "signature": "Vector(dim: int, unit: bool = False)",
+        "stability": "Experimental"
+      }
+    }
+  },
+  "rlmesh.realtime": {
+    "exports": [
+      "BindingRefused",
+      "BindingTable",
+      "Due",
+      "Host",
+      "Meta",
+      "Observation",
+      "Policy",
+      "Rate",
+      "Robot",
+      "SessionException",
+      "SessionLost",
+      "SessionRecorder",
+      "SessionRefused",
+      "StartSkipped",
+      "drive",
+      "parse_address",
+      "parts",
+      "read_recording"
+    ],
+    "objects": {
+      "BindingRefused": {
+        "kind": "class",
+        "members": {
+          "problems": {
+            "kind": "attribute",
+            "signature": "problems: list[tuple[str, str, str]]"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "BindingTable": {
+        "kind": "class",
+        "members": {
+          "fingerprint": {
+            "kind": "attribute",
+            "signature": "fingerprint: str"
+          },
+          "json": {
+            "kind": "attribute",
+            "signature": "json: dict[str, Any]"
+          },
+          "replan_hz": {
+            "kind": "attribute",
+            "signature": "replan_hz: float"
+          },
+          "table": {
+            "kind": "attribute",
+            "signature": "table: str"
+          },
+          "warnings": {
+            "kind": "attribute",
+            "signature": "warnings: list[str]"
+          }
+        },
+        "signature": "BindingTable(native: V2Controller)",
+        "stability": "Experimental"
+      },
+      "Due": {
+        "kind": "class",
+        "members": {
+          "based_on": {
+            "kind": "attribute",
+            "signature": "based_on: list[tuple[str, int, int]]"
+          },
+          "chunk_seq": {
+            "kind": "attribute",
+            "signature": "chunk_seq: int | None"
+          },
+          "handover": {
+            "kind": "attribute",
+            "signature": "handover: tuple[str, str, str] | None"
+          },
+          "index": {
+            "kind": "attribute",
+            "signature": "index: int | None"
+          },
+          "lease_token": {
+            "kind": "attribute",
+            "signature": "lease_token: int | None"
+          },
+          "mode": {
+            "kind": "attribute",
+            "signature": "mode: str"
+          },
+          "path": {
+            "kind": "attribute",
+            "signature": "path: str"
+          },
+          "received_ns": {
+            "kind": "attribute",
+            "signature": "received_ns: int | None"
+          },
+          "safe": {
+            "kind": "attribute",
+            "signature": "safe: str | None"
+          },
+          "slot_ns": {
+            "kind": "attribute",
+            "signature": "slot_ns: int | None"
+          },
+          "value": {
+            "kind": "attribute",
+            "signature": "value: Array | dict[str, Array] | None"
+          }
+        },
+        "signature": "Due(native: V2Due)",
+        "stability": "Experimental"
+      },
+      "Host": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          }
+        },
+        "signature": "Host(address: str = ':0', *, lease_grace_ms: int = 250, insecure: bool = False)",
+        "stability": "Experimental"
+      },
+      "Meta": {
+        "kind": "class",
+        "members": {
+          "ages_ns": {
+            "kind": "attribute",
+            "signature": "ages_ns: dict[str, int | None]"
+          },
+          "based_on": {
+            "kind": "attribute",
+            "signature": "based_on: list[tuple[int, int, int]]"
+          },
+          "blank": {
+            "kind": "attribute",
+            "signature": "blank: frozenset[str]"
+          },
+          "padded": {
+            "kind": "attribute",
+            "signature": "padded: dict[str, int]"
+          },
+          "skew_ns": {
+            "kind": "attribute",
+            "signature": "skew_ns: int"
+          },
+          "stale": {
+            "kind": "attribute",
+            "signature": "stale: frozenset[str]"
+          },
+          "time_ns": {
+            "kind": "attribute",
+            "signature": "time_ns: int"
+          }
+        },
+        "signature": "Meta(native: V2Observation)",
+        "stability": "Experimental"
+      },
+      "Observation": {
+        "kind": "class",
+        "members": {
+          "meta": {
+            "kind": "attribute",
+            "signature": "meta: Meta"
+          }
+        },
+        "signature": "Observation(native: V2Observation)",
+        "stability": "Experimental"
+      },
+      "Policy": {
+        "kind": "class",
+        "members": {
+          "acquire": {
+            "kind": "function",
+            "signature": "acquire() -> dict[str, int]"
+          },
+          "bind": {
+            "kind": "function",
+            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, **captures: str) -> BindingTable"
+          },
+          "binding": {
+            "kind": "property",
+            "signature": "property binding: BindingTable"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "events": {
+            "kind": "function",
+            "signature": "events() -> list[dict[str, Any]]"
+          },
+          "holds": {
+            "kind": "property",
+            "signature": "property holds: bool"
+          },
+          "name": {
+            "kind": "property",
+            "signature": "property name: str"
+          },
+          "observe": {
+            "kind": "function",
+            "signature": "observe() -> Observation"
+          },
+          "publish": {
+            "kind": "function",
+            "signature": "publish(path: str, value: object = None, /, *, capture_ns: int | None = None, **fields: object) -> int | None"
+          },
+          "release": {
+            "kind": "function",
+            "signature": "release() -> None"
+          },
+          "run": {
+            "kind": "function",
+            "signature": "run(predict: Predict, *, duration: float | None = None) -> dict[str, Any]"
+          },
+          "send": {
+            "kind": "function",
+            "signature": "send(actions: Mapping[str, Any], observation: Observation) -> dict[str, int | None]"
+          },
+          "stats": {
+            "kind": "function",
+            "signature": "stats() -> dict[str, Any]"
+          },
+          "stop": {
+            "kind": "function",
+            "signature": "stop() -> None"
+          }
+        },
+        "signature": "Policy(policy: Mapping[str, Any], *, session: Host | str, name: str = 'policy', priority: str = 'model', timeout: float = 10.0, publishes: Mapping[str, Any] | None = None)",
+        "stability": "Experimental"
+      },
+      "Rate": {
+        "kind": "class",
+        "members": {
+          "missed": {
+            "kind": "property",
+            "signature": "property missed: int"
+          },
+          "sleep": {
+            "kind": "function",
+            "signature": "sleep() -> int"
+          }
+        },
+        "signature": "Rate(hz: float)",
+        "stability": "Experimental"
+      },
+      "Robot": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "arm": {
+            "kind": "function",
+            "signature": "arm() -> None"
+          },
+          "clear_estop": {
+            "kind": "function",
+            "signature": "clear_estop() -> None"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "disarm": {
+            "kind": "function",
+            "signature": "disarm() -> None"
+          },
+          "due": {
+            "kind": "function",
+            "signature": "due(path: str) -> Due | None"
+          },
+          "edge_stats": {
+            "kind": "function",
+            "signature": "edge_stats(path: str) -> dict[str, Any]"
+          },
+          "estop": {
+            "kind": "function",
+            "signature": "estop(reason: str = 'estop') -> None"
+          },
+          "keep": {
+            "kind": "function",
+            "signature": "keep(label: str = 'keep') -> None"
+          },
+          "mode": {
+            "kind": "property",
+            "signature": "property mode: str"
+          },
+          "mode_reason": {
+            "kind": "property",
+            "signature": "property mode_reason: str"
+          },
+          "name": {
+            "kind": "property",
+            "signature": "property name: str"
+          },
+          "now_ns": {
+            "kind": "function",
+            "signature": "now_ns() -> int"
+          },
+          "parts": {
+            "kind": "property",
+            "signature": "property parts: dict[str, str]"
+          },
+          "publish": {
+            "kind": "function",
+            "signature": "publish(path: str, value: object = None, /, *, capture_ns: int | None = None, **fields: object) -> int | None"
+          },
+          "publish_jpeg": {
+            "kind": "function",
+            "signature": "publish_jpeg(path: str, jpeg: bytes | bytearray | memoryview, /, *, capture_ns: int | None = None) -> None"
+          },
+          "report_safe": {
+            "kind": "function",
+            "signature": "report_safe(reason: str) -> None"
+          },
+          "serve_lockstep": {
+            "kind": "function",
+            "signature": "serve_lockstep(step: Callable[[dict[str, Any]], Any], reset: Callable[[int | None, dict[str, Any] | None], Any] | None = None, *, background: bool = False, timeout: float = 10.0) -> None"
+          }
+        },
+        "signature": "Robot(name: str, parts: Mapping[str, Any], *, session: Host | str = '', timeout: float = 10.0, on_handover: Callable[[str, str, str], None] | None = None, clock: str = 'wall')",
+        "stability": "Experimental"
+      },
+      "SessionException": {
+        "kind": "class",
+        "stability": "Experimental"
+      },
+      "SessionLost": {
+        "kind": "class",
+        "members": {
+          "reason": {
+            "kind": "attribute",
+            "signature": "reason: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "SessionRecorder": {
+        "kind": "class",
+        "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> dict[str, Any] | None"
+          },
+          "path": {
+            "kind": "property",
+            "signature": "property path: str"
+          },
+          "stats": {
+            "kind": "attribute",
+            "signature": "stats: dict[str, Any] | None"
+          }
+        },
+        "signature": "SessionRecorder(path: str | os.PathLike[str], *, session: Host | str, name: str = 'recorder', timeout: float = 10.0)",
+        "stability": "Experimental"
+      },
+      "SessionRefused": {
+        "kind": "class",
+        "members": {
+          "status": {
+            "kind": "attribute",
+            "signature": "status: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "StartSkipped": {
+        "kind": "class",
+        "members": {
+          "gaps": {
+            "kind": "attribute",
+            "signature": "gaps: list[str]"
+          },
+          "reason": {
+            "kind": "attribute",
+            "signature": "reason: str"
+          },
+          "stale": {
+            "kind": "attribute",
+            "signature": "stale: list[str]"
+          },
+          "waiting": {
+            "kind": "attribute",
+            "signature": "waiting: list[str]"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "drive": {
+        "kind": "function",
+        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, timeout: float = 10.0, publishes: Mapping[str, Any] | None = None, **captures: str) -> dict[str, Any]",
+        "stability": "Experimental"
+      },
+      "parse_address": {
+        "kind": "function",
+        "signature": "parse_address(text: str, session: bool = False) -> dict[str, Any]",
+        "stability": "Experimental"
+      },
+      "parts": {
+        "kind": "module",
+        "stability": "Experimental"
+      },
+      "read_recording": {
+        "kind": "function",
+        "signature": "read_recording(path: str | os.PathLike[str]) -> dict[str, Any]",
+        "stability": "Experimental"
+      }
+    }
+  },
+  "rlmesh.realtime.parts": {
+    "exports": [
+      "camera",
+      "custom",
+      "depth",
+      "gripper",
+      "hand",
+      "imu",
+      "joints",
+      "pose",
+      "reward",
+      "success",
+      "tactile",
+      "text",
+      "velocity",
+      "wrench"
+    ],
+    "objects": {
+      "camera": {
+        "kind": "function",
+        "signature": "camera(width: int, height: int, *, hz: float, encoding: str | None = None, quality: int | None = None, format: str | None = None, frame: str | None = None, fov_deg: float | None = None, intrinsics: Sequence[float] | None = None, mount: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "custom": {
+        "kind": "function",
+        "signature": "custom(kind: str, *, hz: float, fields: Mapping[str, Any], command: str | None = None, command_fields: Mapping[str, Any] | None = None, frame: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "depth": {
+        "kind": "function",
+        "signature": "depth(width: int, height: int, *, hz: float, dtype: str | None = None, range: Sequence[float] | None = None, frame: str | None = None, fov_deg: float | None = None, intrinsics: Sequence[float] | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "gripper": {
+        "kind": "function",
+        "signature": "gripper(*, hz: float, command: str | None = None, width_m: Sequence[float] | None = None, binary: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "hand": {
+        "kind": "function",
+        "signature": "hand(names: Sequence[str], *, hz: float, fields: Sequence[str] | None = None, command: str | None = None, prismatic: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, gains: Mapping[str, float] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "imu": {
+        "kind": "function",
+        "signature": "imu(*, frame: str, hz: float, fields: Sequence[str], rotation: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "joints": {
+        "kind": "function",
+        "signature": "joints(names: Sequence[str] | None = None, *, hz: float, count: int | None = None, fields: Sequence[str] | None = None, command: str | None = None, prismatic: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, gains: Mapping[str, float] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "pose": {
+        "kind": "function",
+        "signature": "pose(*, frame: str, child: str, hz: float, rotation: str | None = None, reference: str | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "reward": {
+        "kind": "function",
+        "signature": "reward(*, priority: str | None = None, doc: str | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "success": {
+        "kind": "function",
+        "signature": "success(*, priority: str | None = None, doc: str | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "tactile": {
+        "kind": "function",
+        "signature": "tactile(shape: Sequence[int], *, hz: float, layout: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "text": {
+        "kind": "function",
+        "signature": "text(*, priority: str | None = None, doc: str | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "velocity": {
+        "kind": "function",
+        "signature": "velocity(*, frame: str, hz: float, dof: str | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "wrench": {
+        "kind": "function",
+        "signature": "wrench(*, frame: str, hz: float, point: Sequence[float] | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       }
     }
@@ -5109,10 +5525,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -5122,7 +5534,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteModel": {
@@ -5193,10 +5605,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -5214,7 +5622,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Experimental"
       },
       "SandboxBuild": {
@@ -5310,10 +5718,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -5482,10 +5886,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",

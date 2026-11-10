@@ -1,4 +1,3 @@
-#![cfg(feature = "lockstep")]
 //! A lockstep env in a session: one lease grant, then per-step checks of
 //! the epoch, the lease token and the e-stop: the direct link in one
 //! process, the lockstep session otherwise.
@@ -74,17 +73,29 @@ async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_an
     assert_eq!(reply.rewards.len(), 1);
     assert_eq!(direct.info().contract.id, "Catalog-v0");
 
-    // A stale epoch is refused locally, without the host.
+    // Another epoch is refused locally, without the host: one the env has
+    // left behind as stale, one it has not reached as ahead of its view.
     let (epoch, token) = direct.authority();
-    direct.set_authority(rlmesh_session::wire::Epoch(epoch.0 + 7), token);
+    direct.set_authority(rlmesh_session::wire::Epoch(epoch.0 - 1), token);
     refused(direct.step(&[], &actions(2, 1), None).await, "stale");
+    direct.set_authority(rlmesh_session::wire::Epoch(epoch.0 + 7), token);
+    refused(direct.step(&[], &actions(2, 1), None).await, "ahead");
     direct.set_authority(epoch, token);
     direct.step(&[], &actions(3, 1), None).await.unwrap();
 
     // E-stop: refused between steps.
     let op = operator(&address).await;
     op.estop("test").await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The latch reaches the env through the host's next state: step until
+    // it has, however long a loaded machine takes to deliver it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while direct.step(&[], &actions(2, 1), None).await.is_ok() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the env never saw the e-stop"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     refused(direct.step(&[], &actions(2, 1), None).await, "e-stopped");
     cancel.cancel();
     served.await.unwrap().unwrap();

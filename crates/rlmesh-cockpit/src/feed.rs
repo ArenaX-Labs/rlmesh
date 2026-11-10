@@ -1,8 +1,7 @@
 //! The cockpit's network side: an observer [`Participant`] subscribed to
 //! everything a session shows (authority, every stream and `_applied`
-//! stream, every commandable part's chunks, heartbeats and observer
-//! reports), turned into [`Input`]s for the [`Model`], plus the verbs the
-//! operator sends.
+//! stream, every commandable part's chunks, and the host's health), turned
+//! into [`Input`]s for the [`Model`], plus the verbs the operator sends.
 //!
 //! The observer is never in the loop: subscriptions run on the transport's
 //! threads and only queue inputs. Samples go through a bounded queue the UI
@@ -21,7 +20,9 @@ use rlmesh_session::crypto::sealed::unverified_body;
 use rlmesh_session::transport::{TrafficClass, payload_bytes};
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{ChannelId, StreamSpec};
-use rlmesh_session::{Participant, Received, SampleSubscriber, SessionError, SubscribeOptions};
+use rlmesh_session::{
+    HealthSubscription, Participant, Received, SampleSubscriber, SessionError, SubscribeOptions,
+};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -59,6 +60,7 @@ pub struct Feed {
     verbs: UnboundedSender<Verb>,
     tasks: Vec<JoinHandle<()>>,
     _subscriptions: Arc<Mutex<Subscriptions>>,
+    _health: HealthSubscription,
 }
 
 #[derive(Default)]
@@ -79,47 +81,21 @@ impl Feed {
             dropped: dropped.clone(),
         };
         let subscriptions = Arc::new(Mutex::new(Subscriptions::default()));
-        let keys = participant.keys().clone();
         let clock = participant.clock().clone();
 
-        // Heartbeats (control class) and reports (data class).
-        // TODO: heartbeats are sealed to the host since session auth (design
-        // §8.2), so none decodes here and the health, heartbeat-age, queue
-        // and heard-rate columns stay empty; have the host relay its
-        // per-participant link health to observers, then drop this.
-        let heartbeats = participant
-            .transport()
-            .control()
-            .declare_subscriber(keys.heartbeats())
-            .callback({
+        // The host's health: every link, edge counter and observer report,
+        // as the host relays them (heartbeats and reports are sealed to it).
+        let health = participant
+            .host_health({
                 let (data, clock) = (data_tx.clone(), clock.clone());
-                move |sample| match codec::decode_heartbeat(&sample.payload().to_bytes()) {
-                    Ok(heartbeat) => data.send(Input::Heartbeat {
-                        heartbeat,
+                move |health| {
+                    data.send(Input::Health {
+                        health,
                         receive_ns: clock.now_ns(),
-                    }),
-                    Err(err) => debug!(%err, "undecodable heartbeat"),
+                    });
                 }
             })
             .await?;
-        let reports = participant
-            .transport()
-            .session(TrafficClass::Data)
-            .declare_subscriber(keys.reports())
-            .callback({
-                let (data, clock) = (data_tx.clone(), clock.clone());
-                move |sample| match codec::decode_report(&sample.payload().to_bytes()) {
-                    Ok(report) => data.send(Input::Report {
-                        report,
-                        receive_ns: clock.now_ns(),
-                    }),
-                    Err(err) => debug!(%err, "undecodable report"),
-                }
-            })
-            .await?;
-        if let Ok(mut subs) = subscriptions.lock() {
-            subs.zenoh.extend([heartbeats, reports]);
-        }
 
         let (verbs, mut verb_rx) = unbounded_channel::<Verb>();
         let tasks = vec![
@@ -145,6 +121,7 @@ impl Feed {
                                 .estop(format!("cockpit {}", participant.id()))
                                 .await
                                 .map(drop),
+                            Verb::Keep => participant.keep("keep").await,
                         };
                         if let Err(err) = &result {
                             warn!(verb = verb.name(), %err, "verb refused");
@@ -182,6 +159,7 @@ impl Feed {
             verbs,
             tasks,
             _subscriptions: subscriptions,
+            _health: health,
         })
     }
 

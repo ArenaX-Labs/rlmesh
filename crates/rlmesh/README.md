@@ -1,6 +1,6 @@
 # rlmesh
 
-RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. This crate is the Rust API: write environments and policies as ordinary Rust types, serve them over gRPC, and run evaluations against anything else that speaks RLMesh.
+RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. This crate is the Rust API: write environments and policies as ordinary Rust types, serve them in realtime sessions, and run evaluations against anything else that speaks RLMesh.
 
 RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Binding`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
@@ -11,7 +11,7 @@ RLMesh aims to feel familiar in whichever language you use it from. Python, Rust
 rlmesh = "0.1"
 ```
 
-The build generates gRPC stubs, so it needs `protoc` on `PATH` (`apt install protobuf-compiler` or `brew install protobuf`). The minimum supported Rust version is the crate's `rust-version`.
+The build generates session protobuf messages, so it needs `protoc` on `PATH` (`apt install protobuf-compiler` or `brew install protobuf`). The minimum supported Rust version is the crate's `rust-version`.
 
 ## Quickstart
 
@@ -71,7 +71,7 @@ fn main() -> rlmesh::Result<()> {
     let server = EnvServer::new(
         Counter::new()?,
         EnvServerOptions {
-            address: Some("127.0.0.1:5555".into()),
+            address: Some("127.0.0.1:7447/counter".into()),
             ..Default::default()
         },
     )?;
@@ -90,7 +90,7 @@ fn main() -> rlmesh::Result<()> {
     // A closure is the smallest policy: observation in, action out.
     let model = Model::new(|_observation: Value| Ok(Value::Int(0)), ModelOptions::default())?;
     let result = model.run(
-        "127.0.0.1:5555",
+        "127.0.0.1:7447/counter",
         RunOptions {
             episodes: Some(3),
             ..Default::default()
@@ -109,8 +109,8 @@ fn main() -> rlmesh::Result<()> {
 The repository ships the same pair as runnable examples:
 
 ```bash
-cargo run -p rlmesh --example serve_env    # serve a counter env on 127.0.0.1:5555
-cargo run -p rlmesh --example run_model    # run a model against it
+cargo run -p rlmesh --example serve_env -- 127.0.0.1:7447/counter
+cargo run -p rlmesh --example run_model -- '<announced-address>'  # include its session key
 ```
 
 The server does not care what language its client is written in: the Python, C and C++ clients can drive this env, and a Rust model can drive an env served from any of them.
@@ -135,7 +135,7 @@ impl EnvFactory for CounterFactory {
     }
 }
 
-CounterFactory.serve("127.0.0.1:5555", EnvFactoryServeOptions::default())?;
+CounterFactory.serve("127.0.0.1:7447/counter", EnvFactoryServeOptions::default())?;
 ```
 
 ### Spaces and values
@@ -207,7 +207,7 @@ impl Policy for Alternate {
 fn main() -> rlmesh::Result<()> {
     let model = Model::new(Alternate, ModelOptions::default())?;
     // Serve it as a model endpoint that any RLMesh run can use.
-    model.serve("127.0.0.1:50051", ModelServeOptions::default())
+    model.serve("127.0.0.1:7447/policy", ModelServeOptions::default())
 }
 ```
 
@@ -233,7 +233,7 @@ impl RunHooks for PrintEpisodes {
 
 let mut hooks = PrintEpisodes;
 model.run(
-    "127.0.0.1:5555",
+    "127.0.0.1:7447/counter",
     RunOptions {
         seeds: Some(vec![0, 1, 2]),
         hooks: Some(&mut hooks),
@@ -277,7 +277,7 @@ let model = RemoteModel::new(RemoteModelOptions::default().address("127.0.0.1:74
 let result = rlmesh::run(&model, "127.0.0.1:7447/counter", RunOptions::default())?;
 ```
 
-Addresses are session participant addresses (`host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port). The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately) still connect a remote env until v1 is removed; a run and a binding refuse them.
+Addresses are session participant addresses (`host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port). 0.2 rejects the removed v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
 
 ### Adapters
 
@@ -301,7 +301,6 @@ When a model and an env describe their observations and actions differently (cam
 
 - `ext::CancelToken`: a cloneable cancellation handle. Pass it in `RunOptions::cancel` (or the serve and factory options) and call `cancel()` from anywhere; the call in flight fails with `Error::Cancelled`. `RemoteEnv::cancel_handle` returns the token a handle already uses.
 - `ext::TensorExt` (zero-copy `from_vec`, `zeros`, `stack`, `unstack`, storage and stride access) and `ext::SpaceExt::contains_detail` (why a value is not in a space).
-- Bearer-token endpoints: `ext::EnvServerOptions` and `ext::ModelServeOptions` (through the `ext` field of the serve options) set the token a server expects; clients send it as `api_key`.
 - Raw DLPack types in `ext::dlpack`, and `ext::register_entrypoint` for custom adapter transforms.
 
 ## Errors
@@ -311,7 +310,7 @@ Fallible calls return `rlmesh::Result<T>`, whose `Error` has one variant per fai
 ```rust,ignore
 use rlmesh::{Error, ErrorClass, RunOptions};
 
-match model.run("127.0.0.1:5555", RunOptions::default()) {
+match model.run("127.0.0.1:7447/counter", RunOptions::default()) {
     Ok(result) => println!("mean reward {}", result.mean_reward()),
     Err(err) if err.class().is_subclass_of(ErrorClass::OSError) => {
         eprintln!("could not reach the env: {err}");
@@ -327,7 +326,7 @@ Inside an env, return `Error::environment_recoverable("...")` to fail one reques
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (`Policy::workflow_edition`, `ServeOptions::workflow_edition`, the `workflow_edition` field of the run and session options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. See [workflow editions](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (`Policy::workflow_edition`, `ServeOptions::workflow_edition`, the `workflow_edition` field of the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. See [workflow editions](https://rlmesh.dev/docs/).
 
 ## Stability
 

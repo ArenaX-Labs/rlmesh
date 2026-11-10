@@ -10,7 +10,7 @@
 /// sequence), without the trailing `0x00` delimiter. At most
 /// `len + len / 254 + 1` bytes.
 ///
-/// The form is pinned (spec §3.1): no code byte follows a final 254-byte
+/// The form is pinned: no code byte follows a final 254-byte
 /// block. [`Decoder`] also accepts the common variant that appends `0x01`
 /// there, so a board using another COBS library still interoperates.
 pub fn encode(src: &[&[u8]], mut out: impl FnMut(u8)) {

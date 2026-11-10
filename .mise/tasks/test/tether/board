@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Flash integrations/arduino's Eyes example to a plugged-in board and check it against the board's half of the tether spec (crates/rlmesh-tether/examples/board_check.rs). Local only: needs the board, arduino-cli with its core, and the Servo library"
+#MISE description="Flash integrations/arduino's Eyes example to a plugged-in board and check its serial-link behavior (crates/rlmesh-tether/examples/board_check.rs). Local only: needs the board, arduino-cli with its core, and the Servo library"
 #MISE dir="{{ config_root }}"
 #USAGE arg "[port]" default="/dev/ttyACM0" help="The board's serial port"
 #USAGE flag "--fqbn <fqbn>" default="arduino:renesas_uno:minima" help="The board (arduino-cli board listall): arduino:avr:nano, arduino:avr:uno, arduino:renesas_uno:minima, ..."
@@ -17,7 +17,7 @@ if [ ! -r "$port" ] || [ ! -w "$port" ]; then
   echo "can't open $port: is the board plugged in, and are you in its group ($(stat -c %G "$port" 2>/dev/null || echo dialout))?" >&2
   exit 1
 fi
-cargo build -q -p rlmesh-tether --example board_check
+cargo build -q -p rlmesh-tether --features board --example board_check
 if [ "${usage_no_upload:-false}" != true ]; then
   echo "==> arduino-cli: examples/Eyes to $fqbn on $port"
   "$cli" compile --fqbn "$fqbn" --library "$lib" --build-path target/tether-board \

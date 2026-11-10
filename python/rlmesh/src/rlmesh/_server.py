@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
-from ._client import Transport, normalize_bind_address
+from ._client import normalize_bind_address
 from ._client._endpoint import redact_address
 from ._editions import serve_options_declaring
 from ._load_native import load_native
@@ -136,22 +136,13 @@ class EnvServer:
         address: The env's participant address in a session:
             ``"host:port/name"``, ``":0/name"`` (an OS-assigned local port) or
             ``"session/name"``. Defaults to ``":0/env"``. A v1 endpoint
-            (``"host:port"``, ``"tcp://..."``, ``"unix://..."``, or the
-            ``host``/``port``/``path``/``transport`` helpers) raises a
+            (``"host:port"``, ``"tcp://..."`` or ``"unix://..."``) raises a
             ``ValueError`` naming the session form.
-        host: 0.1 TCP host helper; refused (see ``address``).
-        port: 0.1 TCP port helper; refused (see ``address``).
-        path: 0.1 Unix socket path helper; refused (see ``address``).
-        transport: 0.1 transport selector; refused (see ``address``).
         options: Optional serve lifecycle options: the close timeout and the
             workflow edition this endpoint declares (see
-            :doc:`/editions/index`). The 0.1 options a session cannot honor
-            (remote shutdown, idle shutdown, a drain timeout, compression)
-            raise ``ValueError`` naming what replaces them. An
-            edition set here is declared verbatim; options without one take
-            ``RLMESH_WORKFLOW_EDITION``, then ``[tool.rlmesh]``.
-            ``RLMESH_ENV_ENDPOINT_TOKEN``, when set, fails construction: 0.2
-            sessions check no endpoint token yet.
+            :doc:`/editions/index`). An edition set here is declared verbatim;
+            options without one take ``RLMESH_WORKFLOW_EDITION``, then
+            ``[tool.rlmesh]``.
         tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
@@ -199,10 +190,6 @@ class EnvServer:
         env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]],
         address: str | None = None,
         *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
         options: ServeOptions | None = None,
         tags: EnvTags | None = None,
         framework: str | ValueBridge | None = None,
@@ -298,16 +285,7 @@ class EnvServer:
         else:
             env = prepare(env)
 
-        normalized_address = normalize_bind_address(
-            address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
-        )
-        if normalized_address is None:
-            # In a session of its own, on an OS-assigned local port.
-            normalized_address = ":0/env"
+        normalized_address = normalize_bind_address(address)
         refuse_v1_address("EnvServer", normalized_address)
         server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
         if options is None or options.workflow_edition is None:

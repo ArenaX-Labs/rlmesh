@@ -360,8 +360,7 @@ fn black_frame(frame: &Tensor, plan: &ImagePlan) -> Result<Tensor, ApplyError> {
 /// predicted chunk are executed before re-planning). A pin above this is a
 /// configuration error, not a capability question: the replay buffer is held in
 /// memory per lane, and a four-digit horizon is always a mis-set knob rather than
-/// a real open-loop plan. Enforced at engine resolve, at the SDK session seam,
-/// and as the `maximum` on the platform's own horizon knobs.
+/// a real open-loop plan. Enforced at engine resolve and at the SDK session seam.
 pub const MAX_EXECUTION_HORIZON: u32 = 1024;
 
 /// Split a chunked model action into its per-step actions (the leading axis is

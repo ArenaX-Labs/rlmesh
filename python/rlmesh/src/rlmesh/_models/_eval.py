@@ -89,7 +89,7 @@ def success_rate(outcomes: Iterable[bool | None]) -> float | None:
     """Successes over episodes, an unknown outcome counting as a failure.
 
     ``None`` when no episode reported an outcome. The same rule as the Rust
-    ``RunResult::success_rate`` and the managed platform's ``successRate``.
+    ``RunResult::success_rate`` implementation.
     """
     flags = list(outcomes)
     if all(flag is None for flag in flags):
@@ -239,8 +239,8 @@ class RunResult:
 
         Counts the env-reported task outcome only (the final step's
         ``info["is_success"]`` / ``["success"]`` / ``["task_success"]``,
-        captured per episode in :attr:`EpisodeResult.success`), by the
-        managed platform's rule that ``rlmesh eval report`` shares: an episode
+        captured per episode in :attr:`EpisodeResult.success`), as in
+        ``rlmesh eval report``: an episode
         without that signal counts as a failure, and the rate is ``None`` when
         no episode reported one. An outcome is never inferred from
         ``terminated``; read :attr:`EpisodeResult.terminated` yourself if a
@@ -374,7 +374,7 @@ class EvalReport:
     overall: counted episodes, successes, the success rate with its Wilson
     95% interval, steps, mean episode length and wall time; and the runs'
     telemetry merged per series. An episode with no success signal counts as
-    a failure and is reported as ``unknown``, as on the managed platform.
+    a failure and is reported as ``unknown``.
     """
 
     def __init__(self, document: dict[str, Any], table: str) -> None:

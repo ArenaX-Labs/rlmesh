@@ -1,14 +1,16 @@
-//! Observer telemetry (§8.10): the counters only the measuring side knows.
+//! Observer telemetry: the counters only the measuring side knows.
 //!
 //! An observer sees what travels: samples, chunks, `_applied` ticks,
-//! heartbeats and authority. Two §8.10 counters never travel on their own:
+//! heartbeats and authority. Two counters never travel on their own:
 //! how many samples a publisher produced before its plan coalesced some, and
 //! a controller runtime's starts, completions and skipped slots. A
-//! participant publishes them as a [`ParticipantReport`] on
-//! `p/{participant}/report` ([`crate::wire::SessionKeys::report`]) a few times per
-//! second. The counters are cumulative since the participant attached, so a
-//! lost report loses nothing; observers take rates from their deltas on the
-//! sender's clock. Nothing in the session acts on a report.
+//! participant seals them to the host as a [`ParticipantReport`] on
+//! `p/{participant}/report` ([`crate::wire::SessionKeys::report`]) a few
+//! times per second, and the host relays each participant's newest one in
+//! its signed `host/health` ([`crate::wire::HostHealth`]). The counters are
+//! cumulative since the participant attached, so a lost report loses
+//! nothing; observers take rates from their deltas on the sender's clock.
+//! Nothing in the session acts on a report.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -48,7 +50,7 @@ impl PublisherCounters {
     }
 }
 
-/// A controller runtime's start and completion counters (§8.9, §8.10).
+/// A controller runtime's start and completion counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RunCounters {
     /// `predict` calls started.

@@ -1,22 +1,25 @@
-// The board joins an RLMesh session over Wi-Fi as robot "eyes": two hobby
+// The board joins an RLMesh session over Wi-Fi under its provisioned name: two hobby
 // servos (pan on GPIO 18, tilt on 19) driven by whoever holds the lease.
 // Power the servos separately, not from the board's 3.3 V.
 //
-// Its home is the `rlmesh daemon` it was provisioned for. With the board on
-// USB, on the daemon's computer (close the Serial Monitor first):
+// Its home is the `rlmesh host` it was provisioned for. With the board on
+// USB, on the host's computer (close the Serial Monitor first):
 //
-//   rlmesh devices provision --port /dev/ttyUSB0 --name eyes
+//   rlmesh devices provision --port /dev/ttyUSB0 --name eye-3
 //
-// It joins as soon as it is provisioned, and on every boot after. For a
-// one-off host instead, run `rlmesh host --insecure --listen <lan-ip>:7447`
-// and paste the address it prints into kAddress.
+// It joins the host's session with its own device key as soon as it is
+// provisioned, and on every boot after. Every eye uses this same firmware;
+// its name comes from USB provisioning. The firmware holds no secret.
 
-#include <RLMeshESP32.h>
+#include <RLMesh.h>
 #include <WiFi.h>
+
+#if defined(ARDUINO_PARTITION_default)
+#error "RLMesh examples: select Tools > Partition Scheme > Minimal SPIFFS and keep the bundled partitions.csv"
+#endif
 
 const char* kSsid = "your-wifi";
 const char* kPassword = "your-password";
-const char* kAddress = "";  // empty: the provisioned home
 
 const char kMap[] =
     "{\"eyes\":{\"kind\":\"joints\",\"names\":[\"pan\",\"tilt\"],\"fields\":[\"pos\"],"
@@ -42,7 +45,7 @@ const char* const kPhases[] = {"reading the host",
                                "declaring parts",
                                "running",
                                "retrying",
-                               "waiting in the lobby for a run",
+                               "waiting for a run (lobby)",
                                "stopped: another board has its name"};
 const char* const kFaults[] = {
     "",
@@ -87,20 +90,17 @@ void setup() {
   }
   Serial.printf(" %s\n", WiFi.localIP().toString().c_str());
   // After Wi-Fi: a first boot draws the device key from the RNG.
-  if (!provisioning.begin("eyes")) Serial.println("NVS failed: no device key");
+  if (!provisioning.begin()) Serial.println("NVS failed: no device key");
   join();
 }
 
 void join() {
   // A latch outlives a new home: the next robot starts latched.
   bool latched = robot.estopLatched();
-  bool ok = kAddress[0] != '\0' ? robot.begin(kAddress, "eyes", kMap)
-                                : robot.begin(provisioning, "eyes", kMap);
+  bool ok = robot.begin(provisioning, kMap);
   if (latched) robot.estop("e-stop latched before a new home");
-  if (!ok && kAddress[0] != '\0') {
-    Serial.println("check kAddress: it is what `rlmesh host` printed, ending in #key");
-  } else if (!ok) {
-    Serial.println("not provisioned: rlmesh devices provision --port <this port> --name eyes");
+  if (!ok) {
+    Serial.println("not provisioned: rlmesh devices provision --port <this port> --name eye-3");
   }
   eyes = robot.part("eyes");
 }
@@ -151,7 +151,7 @@ void estopButton() {
 }
 
 void loop() {
-  // The daemon provisions over this port at any time; a new home is joined
+  // The host provisions over this port at any time; a new home is joined
   // at once.
   if (provisioning.poll(Serial)) {
     Serial.println("provisioned");
@@ -164,7 +164,7 @@ void loop() {
   if (eyes < 0 || !robot.running() || now < nextTick) return;
   nextTick = now + kPeriodUs;
   rlmesh_device_tick_t t;
-  if (robot.tick(eyes, t) && t.has_action && t.value_len == sizeof target) {
+  if (robot.tick(eyes, t) == rlmesh::TickResult::Ready && t.has_action && t.value_len == sizeof target) {
     memcpy(target, t.value, sizeof target);
     writeServo(kPanPin, target[0]);
     writeServo(kTiltPin, target[1]);

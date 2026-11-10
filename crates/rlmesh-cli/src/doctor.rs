@@ -1,5 +1,5 @@
 //! `rlmesh doctor` and `rlmesh bench`: run an image on this machine and probe
-//! it with `rlmesh::binding::doctor`, the platform probe's checks.
+//! it with `rlmesh::binding::doctor`, the served-peer checks.
 
 use std::io::Write;
 use std::path::Path;

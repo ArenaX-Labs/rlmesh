@@ -279,10 +279,6 @@ def serve_options_declaring(
     if options is None:
         return native(workflow_edition=resolved)
     return native(
-        allow_remote_shutdown=options.allow_remote_shutdown,
-        idle_timeout_seconds=options.idle_timeout_seconds,
-        drain_timeout_seconds=options.drain_timeout_seconds,
         close_timeout_seconds=options.close_timeout_seconds,
         workflow_edition=resolved,
-        compress_responses=options.compress_responses,
     )

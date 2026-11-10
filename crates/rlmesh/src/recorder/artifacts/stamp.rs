@@ -8,7 +8,7 @@ use super::schema::AttemptStamp;
 
 /// Shells out to nvidia-smi (amd-smi or rocm-smi when it shows no GPU):
 /// call from a blocking context. The image references and the managed ABI
-/// are the platform's to fill in.
+/// are left for the caller to fill in.
 pub fn collect() -> AttemptStamp {
     let query = run(
         "nvidia-smi",
@@ -71,7 +71,7 @@ pub fn collect() -> AttemptStamp {
 
 /// The AMD GPU a ROCm node shows: amd-smi's market name (its PCI device id
 /// when the name is unset), else rocm-smi's card series on releases that
-/// predate amd-smi. The platform folds either through its hardware taxonomy.
+/// predate amd-smi.
 fn amd_gpu_model() -> Option<String> {
     run("amd-smi", &["static", "--asic", "--json"])
         .and_then(|out| amd_smi_model(&out))

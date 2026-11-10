@@ -1,4 +1,4 @@
-//! The serial tether (spec `tether-spec.md`, frozen at v6): a board without a
+//! The serial tether: a board without a
 //! network speaks framed messages over a byte link to a computer, and the
 //! computer is the RLMesh robot for it.
 //!
@@ -9,10 +9,11 @@
 //! - [`cobs`]: COBS encoding without a copy of the source, and a
 //!   byte-at-a-time decoder into a fixed buffer;
 //! - [`frame`]: `type | seq | payload | crc` frames on top of both;
-//! - [`msg`]: the messages, with exact lengths and reserved-bit checks;
-//! - [`pack`]: a part's dense cable form against the session's 8-byte
-//!   aligned layout;
-//! - [`provision`]: a networked board's USB provisioning (spec §14), on the
+//! - [`msg`]: the messages, with exact lengths and reserved-bit checks
+//!   (a board link's only with `board`);
+//! - `pack` (feature `board`): a part's dense cable form against the
+//!   session's 8-byte aligned layout;
+//! - [`provision`]: a networked board's USB provisioning, on the
 //!   same framing.
 
 #![no_std]
@@ -22,5 +23,6 @@ pub mod cobs;
 pub mod crc;
 pub mod frame;
 pub mod msg;
+#[cfg(feature = "board")]
 pub mod pack;
 pub mod provision;

@@ -1,4 +1,4 @@
-//! Lockstep recording (§13), off the critical path.
+//! Lockstep recording, off the critical path.
 //!
 //! The env's process hands each request and reply to a [`Tee`] (two `Bytes`
 //! clones and a channel send); a worker thread splits the slabs per lane

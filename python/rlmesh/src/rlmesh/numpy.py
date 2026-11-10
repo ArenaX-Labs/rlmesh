@@ -209,7 +209,7 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue], GymEnv):  # pyright: igno
     prints its own).
 
     Args:
-        address: Endpoint address such as ``"tcp://127.0.0.1:5555"``,
+        address: Endpoint address such as ``"127.0.0.1:5555/env"``,
             ``"127.0.0.1:5555"``, or ``"unix:///tmp/env.sock"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
@@ -246,7 +246,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue], GymVectorEnv)
     by leaf as :class:`RemoteEnv` casts one.
 
     Args:
-        address: Endpoint address such as ``"tcp://127.0.0.1:5555"``.
+        address: Endpoint address such as ``"127.0.0.1:5555/env"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.

@@ -13,18 +13,19 @@ use bytes::Bytes;
 
 use crate::address::{Address, Placed, SessionAddress, place};
 use crate::controller::{Controller, ControllerConfig, ControllerError};
-use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Rejection, Robot};
+use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Published, Rejection, Robot};
 use crate::error::SessionError;
+#[cfg(feature = "fleet")]
 use crate::lobby::{Leave, Lobby, LobbyClient, find_home, leave, run_address, wait_for_join};
+#[cfg(feature = "fleet")]
 use crate::participant::Participant;
 use crate::spec::apply::Tensor;
 use crate::spec::bind::Dir;
 use crate::spec::policy::Allow;
 use crate::spec::{BindError, Policy, RunOptions};
-use crate::wire::{
-    AuthorityView, CtlStatus, DType, MemberStage, ParticipantId, PriorityClass, ReasonCode, Role,
-    RunStage, RunState,
-};
+#[cfg(feature = "fleet")]
+use crate::wire::{AuthorityView, MemberStage, ParticipantId, RunStage, RunState};
+use crate::wire::{CtlStatus, DType, PriorityClass, ReasonCode, Role};
 
 /// How a binding reports a [`SessionError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,11 +79,13 @@ pub fn status_name(status: CtlStatus) -> String {
     snake(&format!("{status:?}"), true)
 }
 
+#[cfg(feature = "fleet")]
 /// A run's stage as bindings name it (`rejoining`).
 pub fn run_stage_name(stage: RunStage) -> String {
     snake(&format!("{stage:?}"), false)
 }
 
+#[cfg(feature = "fleet")]
 /// A run member's stage as bindings name it (`declared`).
 pub fn member_stage_name(stage: MemberStage) -> String {
     snake(&format!("{stage:?}"), false)
@@ -166,13 +169,14 @@ pub fn tensor(entry: &str, dtype: &str, shape: Vec<u32>, data: Vec<u8>) -> Resul
     Ok(Tensor { dtype, shape, data })
 }
 
-/// A policy's run-time options (§6.4). Maps are applied sorted, so errors
+/// A policy's run-time options. Maps are applied sorted, so errors
 /// come in a stable order.
 pub struct BindOptions<'a> {
     /// The policy's participant id.
     pub name: &'a str,
-    /// The robot to bind to.
-    pub robot: &'a str,
+    /// The robot to bind to; `None`: the session's view of every robot
+    /// (each under its name; actions name theirs, `eye-1:gaze`).
+    pub robot: Option<&'a str>,
     /// A subtree every `at` is under.
     pub under: Option<&'a str>,
     /// Explicit paths, by entry.
@@ -188,7 +192,10 @@ pub struct BindOptions<'a> {
 impl BindOptions<'_> {
     /// The options as the binder takes them.
     pub fn run_options(mut self) -> Result<RunOptions, String> {
-        let mut options = RunOptions::named(self.name).robot(self.robot)?;
+        let mut options = RunOptions::named(self.name);
+        if let Some(robot) = self.robot {
+            options = options.robot(robot)?;
+        }
         if let Some(under) = self.under {
             options = options.under(under)?;
         }
@@ -256,27 +263,130 @@ impl EmbeddedHost {
     }
 }
 
-/// Joins as robot `name` and declares `robot_json` (the authored map, §3).
+/// Joins as robot `name` and declares `robot_json` (the authored map).
+/// Every robot `name` this process joins to one host shares its e-stop
+/// latch, so a stop outlives a rejoin until it is cleared locally.
 pub async fn connect_robot(
     address: &SessionAddress,
     name: &str,
     robot_json: &str,
     timeout: Duration,
 ) -> Result<Robot, EdgeError> {
+    let latch = address
+        .credential()
+        .ok()
+        .map(|c| process_latch(*c.host_static(), name));
     let participant = address
-        .join(
+        .join_with(
             name,
             vec![Role::Embodiment],
             PriorityClass::Scripted,
             timeout,
+            |config| config.latch = latch,
         )
         .await?;
     Robot::declare(participant, robot_json, EdgeConfig::default()).await
 }
 
+/// The robot a binding drives: read on every call, swapped by
+/// [`keep_joined`] when it rejoins, emptied when it closes.
+pub type RobotSlot = Arc<std::sync::Mutex<Option<Arc<Robot>>>>;
+
+/// How long each rejoin waits for the host.
+const REJOIN_ATTACH: Duration = Duration::from_secs(5);
+/// How often the robot's presence is checked.
+const PRESENCE_CHECK: Duration = Duration::from_millis(250);
+
+/// Whether the host has dropped `robot` (its roster entry gone or absent,
+/// or the host itself gone); `None` when another process took its name
+/// over, which it never takes back.
+fn dropped(robot: &Robot) -> Option<bool> {
+    let participant = robot.participant();
+    if participant.host_lost().is_some() {
+        return Some(true);
+    }
+    let mine = participant.generation();
+    participant.authority_view().with(|view| {
+        let Some(view) = view else {
+            return Some(false);
+        };
+        match view.participant(participant.id()) {
+            None => Some(true),
+            Some(me) if !me.present => Some(true),
+            Some(me) if mine.is_some_and(|g| g != me.generation) => None,
+            Some(_) => Some(false),
+        }
+    })
+}
+
+/// Keeps the robot in `slot` joined to the session at `address`: when the
+/// host drops it (a Wi-Fi gap longer than its presence grace) or goes away
+/// and comes back, it joins again as `name`, declares `robot_json` and is
+/// swapped into `slot`, so the binding's next call uses it. Runs until the
+/// slot empties (the robot closed) or another process takes the name over.
+pub fn keep_joined(
+    slot: RobotSlot,
+    address: SessionAddress,
+    name: String,
+    robot_json: String,
+) -> tokio::task::JoinHandle<()> {
+    let current = move |slot: &RobotSlot| {
+        slot.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(PRESENCE_CHECK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let Some(robot) = current(&slot) else {
+                return;
+            };
+            match dropped(&robot) {
+                Some(false) => continue,
+                None => {
+                    tracing::warn!(robot = %name, "another process took this robot's name over");
+                    return;
+                }
+                Some(true) => {}
+            }
+            tracing::warn!(robot = %name, "the host dropped this robot: joining again");
+            // Its old presence would refuse the new one; the binding keeps
+            // the old robot (its edge holds, then goes safe) until then.
+            robot.participant().withdraw();
+            drop(robot);
+            loop {
+                if current(&slot).is_none() {
+                    return;
+                }
+                match connect_robot(&address, &name, &robot_json, REJOIN_ATTACH).await {
+                    Ok(robot) => {
+                        let mut held = slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if held.is_none() {
+                            return;
+                        }
+                        *held = Some(Arc::new(robot));
+                        tracing::info!(robot = %name, "joined again");
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::debug!(robot = %name, %err, "rejoin failed; trying again");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    })
+}
+
+#[cfg(feature = "fleet")]
 /// How long a robot from the lobby waits for its run's host.
 const RUN_ATTACH: Duration = Duration::from_secs(10);
 
+#[cfg(feature = "fleet")]
 /// Waits in the lobby of the home daemon `home` names (`None`: this
 /// machine's) as robot `name` until a run assigns it, then joins the run and
 /// declares `robot_json`: the robot, and its run's session. A refused join
@@ -294,9 +404,9 @@ pub async fn robot_from_lobby(
     robot_from_lobby_at(&find_home(home).await?, name, robot_json, timeout).await
 }
 
-/// The e-stop latch of robot `name` in this process, for the lobby whose
-/// host key is `home`: one per robot process (design §6), so it outlives
-/// each run's participant until cleared locally.
+/// The e-stop latch of robot `name` in this process, for the host whose
+/// key is `home`: one per robot process, so it outlives each
+/// participant (a rejoin, a lobby's run) until cleared locally.
 fn process_latch(home: [u8; 32], name: &str) -> Arc<crate::participant::LocalLatch> {
     type Latches =
         std::collections::HashMap<([u8; 32], String), Arc<crate::participant::LocalLatch>>;
@@ -310,6 +420,7 @@ fn process_latch(home: [u8; 32], name: &str) -> Arc<crate::participant::LocalLat
         .clone()
 }
 
+#[cfg(feature = "fleet")]
 /// [`robot_from_lobby`] at the lobby `lobby_address`. Every run's robot
 /// shares this process's latch for the name: a stop not cleared locally
 /// starts the next run in ESTOP.
@@ -352,8 +463,9 @@ pub async fn robot_from_lobby_at(
     }
 }
 
-/// Why `participant`, a robot in a scene's run, should leave it (scene
-/// design §3.5): the run is closing, the host lost it (it waits in the lobby
+#[cfg(feature = "fleet")]
+/// Why `participant`, a robot in a scene's run, should leave it: the run is closing,
+/// the host lost it (it waits in the lobby
 /// again, where its run re-sends its join), or another process took its
 /// name over (it stops). `None` while it is in the run, or outside a scene.
 pub fn leaving(participant: &Participant) -> Option<Leave> {
@@ -372,6 +484,7 @@ pub fn leaving(participant: &Participant) -> Option<Leave> {
     })
 }
 
+#[cfg(feature = "fleet")]
 /// A [`Leave`] as bindings name it: the closing reason (`scene_ended`),
 /// `robot_lost` or `superseded`.
 pub fn leave_name(leave: &Leave) -> String {
@@ -382,6 +495,7 @@ pub fn leave_name(leave: &Leave) -> String {
     }
 }
 
+#[cfg(feature = "fleet")]
 /// A run's stages, as [`run_stage_name`] names them.
 const RUN_STAGES: [RunStage; 11] = [
     RunStage::Checking,
@@ -397,6 +511,7 @@ const RUN_STAGES: [RunStage; 11] = [
     RunStage::Rejoining,
 ];
 
+#[cfg(feature = "fleet")]
 /// The run stage `name` names (`running`).
 ///
 /// # Errors
@@ -411,6 +526,7 @@ pub fn run_stage(name: &str) -> Result<RunStage, String> {
         })
 }
 
+#[cfg(feature = "fleet")]
 /// A scene run this process started from the home daemon's lobby
 /// (`run_scene`, `runScene`).
 pub struct SceneRun {
@@ -418,6 +534,7 @@ pub struct SceneRun {
     run: String,
 }
 
+#[cfg(feature = "fleet")]
 impl SceneRun {
     /// Runs `scene_toml` at the home daemon `home` names (`None`: this
     /// machine's), waiting up to `timeout` for it (`manual_arm`: wait for
@@ -528,7 +645,7 @@ impl SceneRun {
 /// lone field already packed (a multiple of 8 bytes) is sent without a
 /// further copy.
 pub fn publish(
-    robot: &Robot,
+    robot: &Published,
     path: &str,
     capture_ns: i64,
     mut fields: Vec<Vec<u8>>,
@@ -609,7 +726,7 @@ pub enum BindPolicyError {
 }
 
 /// Joins as policy `name` at `priority`, waits for the robot's parts, binds
-/// `policy_json` (§6) with `options` and declares the binding. A refused
+/// `policy_json` with `options` and declares the binding. A refused
 /// policy leaves the session.
 pub async fn bind_policy(
     address: &SessionAddress,
@@ -619,20 +736,92 @@ pub async fn bind_policy(
     priority: PriorityClass,
     timeout: Duration,
 ) -> Result<Controller, BindPolicyError> {
+    bind_policy_with(address, name, policy_json, None, options, priority, timeout)
+        .await
+        .map(|(controller, _)| controller)
+}
+
+/// [`bind_policy`] for a policy that also publishes annotations: it joins
+/// as a controller and an embodiment, declares `publishes_json` (an
+/// authored map of parts, none commandable) under its own name, and
+/// returns their publishers. Its own parts are never bound to it; other
+/// policies may read them.
+pub async fn bind_policy_publishing(
+    address: &SessionAddress,
+    name: &str,
+    policy_json: &str,
+    publishes_json: &str,
+    options: &RunOptions,
+    priority: PriorityClass,
+    timeout: Duration,
+) -> Result<(Controller, Published), BindPolicyError> {
+    let (controller, published) = bind_policy_with(
+        address,
+        name,
+        policy_json,
+        Some(publishes_json),
+        options,
+        priority,
+        timeout,
+    )
+    .await?;
+    let published =
+        published.ok_or_else(|| BindPolicyError::Policy(format!("{name}: no parts")))?;
+    Ok((controller, published))
+}
+
+async fn bind_policy_with(
+    address: &SessionAddress,
+    name: &str,
+    policy_json: &str,
+    publishes_json: Option<&str>,
+    options: &RunOptions,
+    priority: PriorityClass,
+    timeout: Duration,
+) -> Result<(Controller, Option<Published>), BindPolicyError> {
     let policy = Policy::parse(policy_json)
         .map_err(|why| BindPolicyError::Policy(format!("{name}: {why}")))?;
+    if let Some(json) = publishes_json {
+        let commandable = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+            .map_err(|why| BindPolicyError::Policy(format!("{name}: publishes: {why}")))?
+            .into_iter()
+            .filter(|(_, part)| part.get("command").is_some())
+            .map(|(path, _)| path)
+            .collect::<Vec<_>>();
+        if !commandable.is_empty() {
+            return Err(BindPolicyError::Policy(format!(
+                "{name}: a policy publishes, never takes commands: {} declare `command`",
+                commandable.join(", ")
+            )));
+        }
+    }
+    let roles = match publishes_json {
+        Some(_) => vec![Role::Controller, Role::Embodiment],
+        None => vec![Role::Controller],
+    };
     let participant = address
-        .join(name, vec![Role::Controller], priority, timeout)
+        .join(name, roles, priority, timeout)
         .await
         .map_err(ControllerError::from)?;
+    let published = match publishes_json {
+        Some(json) => match Published::declare(&participant, json).await {
+            Ok(published) => Some(published),
+            Err(err) => {
+                let _ = participant.detach().await;
+                return Err(ControllerError::from(err).into());
+            }
+        },
+        None => None,
+    };
     let config = ControllerConfig {
         bind_timeout: timeout,
         ..ControllerConfig::default()
     };
     let participant = Arc::new(participant);
     match Controller::bind(participant.clone(), &policy, options, config).await {
-        Ok(controller) => Ok(controller),
+        Ok(controller) => Ok((controller, published)),
         Err(err) => {
+            drop(published);
             if let Ok(participant) = Arc::try_unwrap(participant) {
                 let _ = participant.detach().await;
             }
