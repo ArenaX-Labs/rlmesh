@@ -68,6 +68,7 @@ pub struct SessionServer {
     table: Table,
     /// The sessions started with their own devices and pins
     /// ([`Self::host_session`]), which [`Self::set_devices`] leaves alone.
+    #[cfg(feature = "fleet")]
     own_tables: std::sync::Mutex<HashSet<SessionId>>,
     transport: Transport,
     /// What its own participants attach with.
@@ -370,6 +371,7 @@ impl SessionServer {
             hosts,
             kept,
             table,
+            #[cfg(feature = "fleet")]
             own_tables: std::sync::Mutex::default(),
             own,
             transport,
@@ -430,12 +432,17 @@ impl SessionServer {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             (devices.clone(), pins.clone()),
         );
+        #[cfg(feature = "fleet")]
         let own_tables = self
             .own_tables
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        for (session, host) in hosts.iter().filter(|(s, _)| !own_tables.contains(s)) {
+        for (session, host) in hosts.iter() {
+            #[cfg(feature = "fleet")]
+            if own_tables.contains(session) {
+                continue;
+            }
             if let Err(err) = apply(host, (&old, &old_pins), (&devices, &pins)).await {
                 warn!(%session, %err, "device table not applied");
             }
@@ -449,6 +456,7 @@ impl SessionServer {
     /// # Errors
     /// [`SessionError::Config`] when the session is already hosted here, or
     /// what starting it failed with.
+    #[cfg(feature = "fleet")]
     pub async fn start_session(
         &self,
         config: HostConfig,
@@ -462,6 +470,7 @@ impl SessionServer {
     ///
     /// # Errors
     /// As [`Self::start_session`].
+    #[cfg(feature = "fleet")]
     pub async fn host_session(
         &self,
         config: HostConfig,
@@ -469,6 +478,7 @@ impl SessionServer {
         self.start_kept(config, true).await
     }
 
+    #[cfg(feature = "fleet")]
     async fn start_kept(
         &self,
         config: HostConfig,
