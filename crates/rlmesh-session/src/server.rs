@@ -10,7 +10,7 @@
 //! (`{tenant}/server`) tells a participant that a host here will serve its
 //! session, so one that finds only other sessions' hosts fails at once.
 //!
-//! A session started explicitly ([`SessionServer::start_session`]: the
+//! A session started explicitly (`SessionServer::start_session`: the
 //! home daemon's lobby, a scene's run) is kept however its participants
 //! come and go, until [`SessionServer::stop`]; once stopped, it is never
 //! started again for a straggler.
@@ -31,6 +31,7 @@ use zenoh::sample::SampleKind;
 use crate::auth::{Device, Pin};
 use crate::error::SessionError;
 use crate::host::{HostConfig, SessionHost, token_declared};
+#[cfg(any(feature = "fleet", feature = "record"))]
 use crate::participant::{Participant, ParticipantConfig};
 #[cfg(feature = "record")]
 use crate::record::{Recorder, Rolling};
@@ -70,8 +71,10 @@ pub struct SessionServer {
     /// ([`Self::host_session`]), which [`Self::set_devices`] leaves alone.
     #[cfg(feature = "fleet")]
     own_tables: std::sync::Mutex<HashSet<SessionId>>,
+    #[cfg(feature = "fleet")]
     transport: Transport,
     /// What its own participants attach with.
+    #[cfg(feature = "fleet")]
     own: (
         crate::wire::TenantId,
         Arc<dyn crate::clock::Clock>,
@@ -149,6 +152,7 @@ impl SessionServer {
         }
         let hosts: Hosts = Arc::default();
         let kept: Kept = Arc::default();
+        #[cfg(feature = "fleet")]
         let own = (
             config.tenant.clone(),
             config.clock.clone(),
@@ -373,7 +377,9 @@ impl SessionServer {
             table,
             #[cfg(feature = "fleet")]
             own_tables: std::sync::Mutex::default(),
+            #[cfg(feature = "fleet")]
             own,
+            #[cfg(feature = "fleet")]
             transport,
             #[cfg(feature = "record")]
             recorders,
@@ -532,6 +538,7 @@ impl SessionServer {
     ///
     /// # Errors
     /// What attaching failed with.
+    #[cfg(feature = "fleet")]
     pub async fn attach(
         &self,
         session: SessionId,
