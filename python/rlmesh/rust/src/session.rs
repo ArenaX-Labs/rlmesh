@@ -203,10 +203,13 @@ fn address_err(err: SessionError) -> PyErr {
     }
 }
 
-/// The runtime every session object of this process runs on.
+/// The runtime every session object of this process runs on. Its first use
+/// also installs the log subscriber, so a session's warnings (a robot the
+/// host dropped, a name another process took over) reach stderr.
 pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
+        crate::telemetry::init_tracing("session");
         tokio::runtime::Builder::new_multi_thread()
             .thread_name("rlmesh-session")
             .enable_all()
