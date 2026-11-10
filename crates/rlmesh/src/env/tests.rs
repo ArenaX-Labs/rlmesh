@@ -1259,19 +1259,20 @@ fn async_twins_run_on_any_executor() {
 fn a_request_past_its_timeout_is_a_timeout_error() {
     let counters = Arc::new(Counters::default());
     let mut env = Counter::new(&counters);
-    env.slow = Some(Duration::from_millis(400));
+    // The reset has the same timeout to meet, on however loaded a host.
+    env.slow = Some(Duration::from_secs(1));
     let server = EnvServer::new(env, quick()).unwrap();
     server.start().unwrap();
     let mut remote = RemoteEnv::new(
         RemoteEnvOptions::default()
             .address(server.address())
-            .request_timeout(Duration::from_millis(50)),
+            .request_timeout(Duration::from_millis(250)),
     )
     .unwrap();
     reset(&mut remote, None);
     let err = step(&mut remote, 1).unwrap_err();
     assert_eq!(err.class(), ErrorClass::TimeoutError);
-    assert_eq!(err.to_string(), "operation timed out after 50ms");
+    assert_eq!(err.to_string(), "operation timed out after 250ms");
     drop(remote);
     server.shutdown().unwrap();
 }

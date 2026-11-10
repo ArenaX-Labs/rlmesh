@@ -24,9 +24,11 @@ use rlmesh_session::{
 
 const WAIT: Duration = Duration::from_secs(10);
 
+// A long hold: recording is under test, not the fallback, and on a loaded
+// host a controller's chunks arrive late enough to run a short one out.
 const ROBOT: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 500,
-            "command": "position", "hold_max_ms": 100, "max_action_age_ms": 1000},
+            "command": "position", "hold_max_ms": 2000, "max_action_age_ms": 1000},
     "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 500}
 }"#;
 
