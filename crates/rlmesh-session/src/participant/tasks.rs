@@ -129,7 +129,11 @@ pub(super) async fn heartbeat_loop(
             () = cancel.cancelled() => break,
             _ = interval.tick() => {}
         }
-        if !shared.heartbeats_enabled.load(Ordering::Relaxed) || lock(&shared.relay).is_some() {
+        if !shared.heartbeats_enabled.load(Ordering::Relaxed) {
+            continue;
+        }
+        #[cfg(feature = "gateway")]
+        if lock(&shared.relay).is_some() {
             continue;
         }
         seq += 1;

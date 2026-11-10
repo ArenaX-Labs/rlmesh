@@ -51,10 +51,12 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, O
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+#[cfg(feature = "gateway")]
+use crate::wire::HeartbeatEcho;
 use crate::wire::codec;
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, HeartbeatEcho, PartSpec, ParticipantId, Reason, ReasonCode,
-    SessionKeys, TimingSample,
+    AuthoritySnapshot, ChannelId, PartSpec, ParticipantId, Reason, ReasonCode, SessionKeys,
+    TimingSample,
 };
 use rlmesh_session_core::crypto::SignedReceiver;
 use rlmesh_session_core::crypto::signed;
@@ -98,6 +100,7 @@ struct Shared {
     heartbeat: std::sync::OnceLock<zenoh::pubsub::Publisher<'static>>,
     /// Where the host's echoes go while this participant relays another
     /// clock's heartbeats ([`Participant::relay_heartbeats`]).
+    #[cfg(feature = "gateway")]
     relay: Mutex<Option<mpsc::UnboundedSender<HeartbeatEcho>>>,
     keys: SessionKeys,
     id: ParticipantId,

@@ -273,6 +273,7 @@ impl Participant {
             key_work,
             keys_changed,
             heartbeat: std::sync::OnceLock::new(),
+            #[cfg(feature = "gateway")]
             relay: Mutex::new(None),
             keys: keys.clone(),
             id: config.id.clone(),
@@ -330,12 +331,15 @@ impl Participant {
                         shared.host_heard_ns.store(t4, Ordering::Relaxed);
                     }
                     match echo {
+                        #[cfg(feature = "gateway")]
                         Ok(echo) => match &*lock(&shared.relay) {
                             Some(relay) => {
                                 let _ = relay.send(echo);
                             }
                             None => *lock(&shared.completed) = Some(echo.complete(t4)),
                         },
+                        #[cfg(not(feature = "gateway"))]
+                        Ok(echo) => *lock(&shared.completed) = Some(echo.complete(t4)),
                         Err(err) => debug!(%err, "heartbeat echo dropped"),
                     }
                 }

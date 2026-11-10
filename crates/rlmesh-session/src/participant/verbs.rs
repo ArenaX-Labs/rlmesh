@@ -7,8 +7,11 @@ use crate::spec::{BindError, Binding, Policy, RunOptions, Target};
 use crate::wire::version::SPEC_VERSION;
 use crate::wire::{
     AuthoritySnapshot, ChannelId, Command, CtlReply, EdgeMode, EstopSignal, Fingerprint, Health,
-    Heartbeat, HeartbeatEcho, Lease, LeaseToken, PartSpec, ParticipantId, ReasonCode,
+    Lease, LeaseToken, PartSpec, ParticipantId, ReasonCode,
 };
+#[cfg(feature = "gateway")]
+use crate::wire::{Heartbeat, HeartbeatEcho};
+#[cfg(feature = "gateway")]
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -24,12 +27,14 @@ impl Participant {
     /// participant's own heartbeats stop, [`Self::send_heartbeat`] seals and
     /// sends each relayed one, and the host's echoes of them, opened, go to
     /// `echoes`.
+    #[cfg(feature = "gateway")]
     pub fn relay_heartbeats(&self, echoes: mpsc::UnboundedSender<HeartbeatEcho>) {
         *lock(&self.shared.relay) = Some(echoes);
     }
 
     /// Seals and sends one heartbeat under this participant's keys (a
     /// relayed one: see [`Self::relay_heartbeats`]).
+    #[cfg(feature = "gateway")]
     pub async fn send_heartbeat(&self, heartbeat: &Heartbeat) -> Result<(), SessionError> {
         self.shared.send_heartbeat(heartbeat.clone(), false).await
     }
