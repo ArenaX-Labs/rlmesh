@@ -25,6 +25,10 @@ jobs:
       UV_CACHE_DIR: /tmp/.uv-cache
       # One release-cohort wheel build serves the installed-artifact profiles.
       RLMESH_RELEASE_BUILD: "1"
+      # Line numbers in backtraces, without the full debug info that makes
+      # every test binary several times larger: two test builds (default and
+      # fenced features) with it fill the runner's disk.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
     steps:
       - name: Checkout repository
@@ -59,6 +63,12 @@ jobs:
       # profile against a wheel built from this checkout.
       - name: Tests
         run: mise run --skip-tools test:ci
+
+      - name: Disk left after the test builds
+        if: always()
+        run: |
+          df -h / /tmp
+          du -sh target/* 2>/dev/null | sort -rh | head -12
 
       - name: Install C# toolchain when affected
         if: steps.csharp_changes.outputs.csharp == 'true'
