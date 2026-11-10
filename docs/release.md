@@ -68,7 +68,7 @@ RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are 
 
 ## Publish order
 
-The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh-cli`, `rlmesh`), then uploads the wheels to PyPI and cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh`, `rlmesh-cli`), then uploads the wheels to PyPI and cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
 
 ## GitHub Releases
 
