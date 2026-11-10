@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+0.2 rebuilds RLMesh on real-time sessions: one protocol
+(`rlmesh-realtime-v1`, provisional until 0.2.0) for robots and policies on
+a network and for stepping environments in lockstep. It is an alpha line;
+anything may change before 0.2.0.
+
+**Upgrading from 0.1.** 0.1 and 0.2 do not talk to each other: the gRPC
+transport is gone, addresses changed, and images built for 0.1 need
+rebuilding. Stay on 0.1.x (maintained on the `release/0.1` branch for
+security fixes) until you can move both sides. Names that 0.1 exported and
+0.2 dropped raise an error naming their replacement.
+
+- Experimental: `rlmesh.realtime` runs robots and policies on one network.
+  A `Robot` declares its parts (`rlmesh.realtime.parts`: joints, cameras,
+  custom streams), publishes what it senses (`publish`, `publish_jpeg`) and
+  plays the commands its edge says are due; a `Policy` declares what it
+  needs by kind and path, binds to the robots that have it and sends short
+  timed action chunks. See [real-time sessions](docs/realtime.md).
+- `rlmesh host` runs a session: it admits devices by key, grants leases,
+  holds the arm/disarm/e-stop state and records every session as MCAP
+  (a rolling window, plus kept incidents), which
+  `python -m rlmesh.realtime.lerobot` exports as a LeRobot dataset.
+- Sessions are authenticated and, beyond loopback, encrypted: a Noise IK
+  handshake per participant, sealed control and data, and host-signed
+  authority state. `rlmesh devices provision | ls | revoke` manages boards,
+  and `rlmesh pair` admits another computer by a short code. The
+  [threat model](docs/threat-model.md) says what this does and doesn't
+  defend.
+- `rlmesh cockpit` (desktop wheels) watches a session: every part's rate,
+  the lease and mode timeline, and why each robot is or isn't moving, with
+  Arm, Disarm, E-stop and Keep.
+- An ESP32 on Wi-Fi can be a robot: the `RLMesh` Arduino library
+  ([integrations/esp32](integrations/esp32)), provisioned over USB. The
+  alpha publishes no prebuilt board library; it is built from source.
+
 0.2 publishes Python wheels and Rust crates only. C/C++, C#, Unity, Unreal,
 npm and board-library distributions are fenced: their code and existing CI
 build/test coverage remain, but release publishing is disabled. Native changes
