@@ -241,6 +241,7 @@ impl EmbeddedHost {
 
     /// A session another process hosts, joined at `address` (a run's,
     /// from the lobby): closing it stops nothing.
+    #[cfg(feature = "fleet")]
     pub fn joined(address: SessionAddress) -> Self {
         Self {
             address,
