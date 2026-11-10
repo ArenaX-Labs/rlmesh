@@ -378,9 +378,19 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
         })
         .await
         .expect("parts");
+    // Freshness is not under test here, and a loaded host takes longer to
+    // seal and carry a round of frames than the default bound lets one age.
+    let authored = fixture("policies", "pi0_single");
+    let (inputs, actions) = authored
+        .split_once("\"actions\"")
+        .expect("inputs, then actions");
+    let authored = format!(
+        "{}\"actions\"{actions}",
+        inputs.replace("\"at\":", "\"max_age_ms\": 5000, \"at\":")
+    );
     let binding = policy
         .bind(
-            &Policy::parse(&fixture("policies", "pi0_single")).expect("policy"),
+            &Policy::parse(&authored).expect("policy"),
             &RunOptions::named("pi0_single"),
         )
         .expect("binds the policy");
