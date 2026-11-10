@@ -100,7 +100,7 @@ host's base port must be reachable.
 
 ```sh
 mise run setup:esp32
-mise run dev:heavy -- mise exec arduino-cli@1.5.1 -- mise run build:esp32
+mise run dev:heavy -- mise run build:esp32
 mise run dev:heavy -- mise run test:esp32:host
 ```
 
@@ -110,7 +110,7 @@ Espressif's Xtensa targets. Without the fork, local builds explicitly skip
 Xtensa; CI and releases set `RLMESH_ESP32_REQUIRE_XTENSA=1` to fail instead.
 Other chips are unsupported; the C3 lacks the atomics the runtime needs.
 
-Pass `ARDUINO_CLI=/path/to/arduino-cli` if the binary is off PATH, and
+Pass `ARDUINO_CLI=/path/to/arduino-cli` to use another Arduino CLI, and
 `ESP_EXPORT=/path/to/export-esp.sh` for a nonstandard toolchain installation.
 The task stages archives in `src/<chip>/`, compiles both examples without
 transport flags, and writes installable ZIPs in `target/esp32/dist/`.

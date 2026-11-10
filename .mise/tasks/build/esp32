@@ -6,9 +6,13 @@ set -euo pipefail
 lib=integrations/esp32
 target_dir="${CARGO_TARGET_DIR:-target}"
 tools="$HOME/.arduino15/packages/esp32/tools"
+# ARDUINO_CLI, else the one on PATH, else the version setup:esp32 installs.
 cli="${ARDUINO_CLI:-arduino-cli}"
+if ! "$cli" version >/dev/null 2>&1 && [ -z "${ARDUINO_CLI:-}" ]; then
+  cli="$(mise where arduino-cli@1.5.1 2>/dev/null || true)/arduino-cli"
+fi
 if ! "$cli" version >/dev/null 2>&1; then
-  echo "build:esp32 needs arduino-cli and the esp32:esp32 core (set ARDUINO_CLI for a binary off PATH)" >&2
+  echo "build:esp32 needs arduino-cli and the esp32:esp32 core: run \`mise run setup:esp32\`, or set ARDUINO_CLI" >&2
   exit 1
 fi
 mkdir -p "$target_dir/esp32"
