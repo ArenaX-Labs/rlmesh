@@ -559,8 +559,6 @@ def env_server_command(python: Path, scenario: ScenarioSpec) -> list[str]:
         "-u",
         "-m",
         "rlmesh._cli.serve_env",
-        "--transport",
-        "tcp",
     ]
     if env_spec.get("address") is not None:
         command.extend(["--address", str(env_spec["address"])])
