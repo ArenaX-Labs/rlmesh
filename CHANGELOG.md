@@ -15,7 +15,7 @@ anything may change before 0.2.0.
 transport is gone, addresses changed, and images built for 0.1 need
 rebuilding. Stay on 0.1.x (maintained on the `release/0.1` branch for
 security fixes) until you can move both sides. Names that 0.1 exported and
-0.2 dropped raise an error naming their replacement.
+0.2 dropped mostly raise an error naming their replacement.
 
 - Experimental: `rlmesh.realtime` runs robots and policies on one network.
   A `Robot` declares its parts (`rlmesh.realtime.parts`: joints, cameras,
