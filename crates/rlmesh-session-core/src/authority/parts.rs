@@ -41,7 +41,7 @@ impl Authority {
             return Err(CtlError::new(
                 CtlStatus::Unsupported,
                 format!(
-                    "{from}/{path}: this session seals the part, and this robot process can't                      seal it"
+                    "{from}/{path}: this session seals the part, and this robot process can't seal it"
                 ),
             ));
         }
