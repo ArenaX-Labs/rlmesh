@@ -221,9 +221,23 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     })?;
     #[cfg(not(unix))]
     drop((apply, service));
+    // One line: a reader that takes it and closes the pipe must not fail a
+    // second write.
+    let reach = match advertised(base).first() {
+        Some(address) if base.ip().is_unspecified() => format!(", reachable at {address}"),
+        Some(_) => String::new(),
+        None => {
+            writeln!(
+                stderr,
+                "no network route to pick an address from: boards can't be provisioned until \
+                 rlmesh host runs with --listen <LAN IP>:<port>"
+            )?;
+            String::new()
+        }
+    };
     writeln!(
         stdout,
-        "rlmesh host on {base} as {}, state in {}",
+        "rlmesh host on {base} as {}, state in {}{reach}",
         identity.host_id(),
         dir.display()
     )?;

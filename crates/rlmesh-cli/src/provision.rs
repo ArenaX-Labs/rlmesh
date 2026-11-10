@@ -30,8 +30,9 @@ use crate::devices::{DEVICES, Entry, Pin, edit};
 
 /// How long one try waits for the board's answer.
 const TRY: Duration = Duration::from_millis(200);
-/// Tries before giving up.
-const TRIES: u32 = 10;
+/// Tries before giving up: 10 s in all, since opening the port resets many
+/// boards, and a sketch may join Wi-Fi before it listens.
+const TRIES: u32 = 50;
 /// A board's default cap.
 const BOARD_CAP: &str = "model";
 
@@ -121,8 +122,8 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
     })?;
     let Some((device_key, previous)) = info else {
         bail!(
-            "the board never answered: is it running an RLMesh sketch, at 115200 baud, and is \
-             the port right?"
+            "the board never answered in 10 s: is it running an RLMesh sketch, at 115200 baud, \
+             is the port right, and is the serial monitor closed?"
         );
     };
     // As many addresses as fit the payload.
@@ -149,10 +150,15 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
         }
     }
     let Some((record, n)) = fitted else {
+        if usable.is_empty() {
+            bail!(
+                "the host has no address to give the board (no default route to pick one \
+                 from): run rlmesh host with --listen <LAN IP>:<port>"
+            );
+        }
         bail!(
             "no host address fits the board record with this name (252 bytes total; host:port, \
-             at most 63 bytes per address): run rlmeshd with \
-             --listen <LAN IP>:<port>"
+             at most 63 bytes per address): run rlmesh host with --listen <LAN IP>:<port>"
         );
     };
     let crc = record_crc(&payload[..n]);
@@ -184,7 +190,10 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
             "the board confirmed another record than the one sent (CRC mismatch); nothing was \
              enrolled"
         ),
-        None => bail!("the board never confirmed the record; nothing was enrolled"),
+        None => bail!(
+            "the board never confirmed the record; nothing was enrolled. It may have stored \
+             the record: run this again to finish"
+        ),
     }
 }
 
@@ -288,6 +297,12 @@ fn provision_on(
         "board {name} provisioned for {}: {verb} as device {id} in {DEVICES}, robot {name} pinned to it",
         home.host_id
     )?;
+    if let Some(address) = home.addresses.first() {
+        writeln!(
+            stdout,
+            "it joins the host at {address}; provision it again if that address changes"
+        )?;
+    }
     Ok(())
 }
 
