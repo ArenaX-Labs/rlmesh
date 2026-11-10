@@ -17,3 +17,8 @@ realtime = { max-threads = 2 }
 [[profile.default.overrides]]
 filter = '(package(rlmesh-session) & kind(test)) | (package(rlmesh-device) & binary(robot)) | (package(rlmesh-cli) & binary(host_process))'
 test-group = 'realtime'
+# They pass on a quiet machine and each fails once in a few hundred runs on a
+# loaded one, a different test each time: a deadline missed, not a wrong
+# answer. A retried test that then passes is reported as FLAKY rather than
+# failing the run; one that fails every try still fails it.
+retries = 2

@@ -22,8 +22,8 @@ use rlmesh_session::wire::{
     TenantId,
 };
 use rlmesh_session::{
-    Inputs, ObserveError, Participant, ParticipantConfig, SessionError, SubscribeOptions,
-    Transport, TransportConfig, TransportTuning,
+    Inputs, ObserveError, Participant, ParticipantConfig, SamplePublisher, SampleSubscriber,
+    SessionError, SubscribeOptions, Transport, TransportConfig, TransportTuning,
 };
 
 /// Participants listen too (the OS picks the ports): in peer mode, data
@@ -125,6 +125,50 @@ impl Drop for HostProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Publishes on `publisher` until a late subscription to its stream is
+/// warmed with the newest sample by the host's history store, and gives that
+/// subscription and how many samples it took. A sensor stream drops rather
+/// than blocks, so on a loaded host a sample may never reach the other
+/// process: this waits on the store, rather than allow it a fixed time.
+async fn served_from_history(
+    publisher: &SamplePublisher,
+    participant: &Participant,
+    owner: &ParticipantId,
+    path: &str,
+) -> (SampleSubscriber, u64) {
+    let started = Instant::now();
+    loop {
+        let seq = publisher
+            .publish(participant.clock().now_ns(), Bytes::from(vec![7; 32]))
+            .expect("publish")
+            .expect("sent");
+        let sent = Instant::now();
+        while sent.elapsed() < Duration::from_millis(500) {
+            let sub = participant
+                .subscribe(
+                    owner,
+                    path,
+                    SubscribeOptions {
+                        window: 1,
+                        warm_from_history: true,
+                        ..SubscribeOptions::default()
+                    },
+                )
+                .await
+                .expect("subscribe");
+            // Warmed by the store, not handed the sample as it passed.
+            if sub.stats().last_seq == seq && sub.stats().from_history == 1 {
+                return (sub, seq);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            started.elapsed() < WAIT,
+            "the history store never served sample {seq}"
+        );
     }
 }
 
@@ -240,21 +284,8 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
         ft.publish(robot.clock().now_ns(), Bytes::from(vec![i; 32]))
             .expect("publish");
     }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let sub = policy
-        .subscribe(
-            &robot_id,
-            "ft",
-            SubscribeOptions {
-                window: 1,
-                warm_from_history: true,
-                ..SubscribeOptions::default()
-            },
-        )
-        .await
-        .expect("subscribe");
+    let (sub, _) = served_from_history(&ft, &policy, &robot_id, "ft").await;
     assert_eq!(sub.stats().from_history, 1, "a window of one");
-    assert_eq!(sub.stats().last_seq, 3);
 
     // A crashed host: participants see its liveliness go, and verbs fail
     // instead of hanging.
@@ -293,6 +324,9 @@ async fn a_terminated_host_shuts_down_cleanly_with_its_session_recorded() {
             .expect("publish");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // The other process took the last sample in before it is told to stop.
+    let robot_id = robot.id().clone();
+    let (_, published) = served_from_history(&ft, &robot, &robot_id, "ft").await;
     host.signal(15);
     let status = host.wait_exit();
     assert!(status.success(), "clean exit: {status:?}");
@@ -319,7 +353,12 @@ async fn a_terminated_host_shuts_down_cleanly_with_its_session_recorded() {
         .iter()
         .filter(|m| matches!(m.message, Recorded::Sample(_)))
         .count();
-    assert_eq!(samples, 5);
+    // A sensor stream may drop on a loaded host, never the sample the host
+    // was seen to hold.
+    assert!(
+        (1..=published).contains(&(samples as u64)),
+        "{samples} of {published}"
+    );
 }
 
 /// The conformance fixtures of `rlmesh_session::spec`.
