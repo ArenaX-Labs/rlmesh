@@ -286,6 +286,7 @@ impl Participant {
             health: AtomicU8::new(health_code(Health::Ok)),
             host_present,
             host_lost_ns: AtomicI64::new(i64::MIN),
+            #[cfg(feature = "fleet")]
             host_heard_ns: AtomicI64::new(i64::MIN),
             completed: Mutex::new(None),
             seen: Mutex::new(BTreeMap::new()),
@@ -324,6 +325,7 @@ impl Participant {
                     };
                     let mut bytes = sample.payload().to_bytes().into_owned();
                     let echo = lock(link).echo(&key, &mut bytes);
+                    #[cfg(feature = "fleet")]
                     if echo.is_ok() {
                         shared.host_heard_ns.store(t4, Ordering::Relaxed);
                     }
@@ -412,6 +414,7 @@ impl Participant {
         let _ = shared
             .link
             .set(Mutex::new(Link::new(config.id.clone(), attached)));
+        #[cfg(feature = "fleet")]
         shared
             .host_heard_ns
             .store(config.clock.now_ns(), Ordering::Relaxed);

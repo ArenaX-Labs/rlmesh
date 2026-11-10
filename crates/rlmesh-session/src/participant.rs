@@ -117,6 +117,7 @@ struct Shared {
     host_lost_ns: AtomicI64,
     /// This participant's clock when the host last authenticated itself
     /// (its handshake, then each heartbeat echo).
+    #[cfg(feature = "fleet")]
     host_heard_ns: AtomicI64,
     /// The last completed exchange, sent with the next heartbeat.
     completed: Mutex<Option<TimingSample>>,
@@ -182,6 +183,7 @@ impl Participant {
     /// How long since the host last authenticated itself: the handshake,
     /// then each heartbeat echo. Its liveliness token is unsigned; this is
     /// not.
+    #[cfg(feature = "fleet")]
     pub fn host_unheard(&self) -> Duration {
         let heard = self.shared.host_heard_ns.load(Ordering::Relaxed);
         let ago = self.shared.clock.now_ns().saturating_sub(heard);
