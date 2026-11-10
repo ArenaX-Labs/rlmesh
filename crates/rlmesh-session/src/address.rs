@@ -32,9 +32,9 @@
 mod credentials;
 mod hosting;
 
-pub use credentials::{
-    LOCAL_KEY, STATE_DIR_VAR, credential, daemon_dir, link_auth, remember_credential, write_private,
-};
+#[cfg(feature = "fleet")]
+pub use credentials::remember_credential;
+pub use credentials::{LOCAL_KEY, STATE_DIR_VAR, credential, daemon_dir, link_auth, write_private};
 #[cfg(feature = "record")]
 pub use hosting::host_recording_at;
 pub use hosting::{Placed, connect, host_at, open_listeners, place};
@@ -49,6 +49,7 @@ use rlmesh_session_core::auth::address::{base32, unbase32};
 use rlmesh_session_core::auth::{Credential, HostIdentity};
 use zeroize::Zeroizing;
 
+#[cfg(feature = "fleet")]
 use crate::address::credentials::remembered;
 use crate::address::hosting::{local_host, open_client};
 use crate::clock::SystemMonotonicClock;
@@ -522,16 +523,19 @@ impl SessionAddress {
     }
 
     /// The credential its participants attach with: its own, else the one
-    /// this process was given for its session ([`remember_credential`]),
-    /// else see [`credential`].
+    /// this process was given for its session (`remember_credential`,
+    /// feature `fleet`), else see [`credential`].
     pub fn credential(&self) -> Result<Credential, SessionError> {
-        if let Some(credential) = self.credential.clone().or_else(|| {
-            remembered()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&(self.base, self.session))
-                .cloned()
-        }) {
+        if let Some(credential) = self.credential.clone() {
+            return Ok(credential);
+        }
+        #[cfg(feature = "fleet")]
+        if let Some(credential) = remembered()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(self.base, self.session))
+            .cloned()
+        {
             return Ok(credential);
         }
         credential(self.base, self.key.as_ref())

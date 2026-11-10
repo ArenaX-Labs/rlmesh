@@ -1,6 +1,7 @@
 //! Credentials for a session: remembered, paired, from the address's key or the
 //! daemon's, and the private files they live in.
 
+#[cfg(feature = "fleet")]
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
@@ -8,16 +9,21 @@ use rlmesh_session_core::auth::AddressKey;
 use rlmesh_session_core::auth::Credential;
 use zeroize::Zeroizing;
 
+#[cfg(feature = "fleet")]
 use crate::address::SessionAddress;
 use crate::address::hosting::local_hosts;
 use crate::error::SessionError;
 use crate::transport::LinkAuth;
-use crate::wire::{CtlError, CtlStatus, SessionId};
+#[cfg(feature = "fleet")]
+use crate::wire::SessionId;
+use crate::wire::{CtlError, CtlStatus};
 
 /// The credentials this process holds for sessions on hosts that aren't
 /// its home's, by base and session ([`remember_credential`]).
+#[cfg(feature = "fleet")]
 type Remembered = HashMap<(SocketAddr, SessionId), Credential>;
 
+#[cfg(feature = "fleet")]
 pub(super) fn remembered() -> &'static std::sync::Mutex<Remembered> {
     static REMEMBERED: std::sync::OnceLock<std::sync::Mutex<Remembered>> =
         std::sync::OnceLock::new();
@@ -29,6 +35,7 @@ pub(super) fn remembered() -> &'static std::sync::Mutex<Remembered> {
 /// whose address a binding passes to its controller as text.
 // TODO: kept until the process exits; forget ended runs if a long-lived
 // process runs thousands of satellite-hosted scenes.
+#[cfg(feature = "fleet")]
 pub fn remember_credential(address: &SessionAddress, credential: Credential) {
     remembered()
         .lock()
