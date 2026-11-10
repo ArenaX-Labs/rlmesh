@@ -176,6 +176,7 @@ impl Participant {
 
     /// The host instance this process's handshake authenticated (a restarted host is
     /// another instance).
+    #[cfg(feature = "fleet")]
     pub fn host_instance(&self) -> Option<u64> {
         self.shared
             .link
