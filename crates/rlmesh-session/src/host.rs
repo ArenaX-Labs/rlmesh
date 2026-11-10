@@ -63,6 +63,7 @@ use tracing::{info, warn};
 
 use crate::authority::{Access, Authority, AuthorityConfig, AuthorityEvent, DeviceAccess};
 use crate::error::SessionError;
+#[cfg(feature = "fleet")]
 use crate::host::actor::LobbyDone;
 #[cfg(feature = "fleet")]
 use crate::host::actor::LobbyKey;
@@ -269,8 +270,8 @@ impl SessionHost {
         let (events, _) = broadcast::channel(256);
         let cancel = CancellationToken::new();
         let (access_tx, access_rx) = mpsc::unbounded_channel();
-        #[cfg_attr(not(feature = "fleet"), allow(unused_variables))]
-        let (lobby_done, lobby_rx) = mpsc::unbounded_channel::<LobbyDone>();
+        #[cfg(feature = "fleet")]
+        let (lobby_done, lobby_answers) = mpsc::unbounded_channel::<LobbyDone>();
 
         let identity = config.identity.clone();
         let mut actor = HostActor {
@@ -301,6 +302,8 @@ impl SessionHost {
             lobby: HashMap::new(),
             #[cfg(feature = "fleet")]
             lobby_done,
+            #[cfg(feature = "fleet")]
+            lobby_answers,
         };
         actor.publish().await;
         info!(session = %actor.config.session, key = actor.keys.prefix(), "session host up");
@@ -313,7 +316,6 @@ impl SessionHost {
                         cancel,
                         hb_rx,
                         access_rx,
-                        lobby_rx,
                         (handshakes, ctl, state, views),
                         presence,
                     )
@@ -512,6 +514,9 @@ struct HostActor {
     /// Where a waiting lobby verb's answer comes back to the host task.
     #[cfg(feature = "fleet")]
     lobby_done: mpsc::UnboundedSender<LobbyDone>,
+    /// Those answers, for the host task's loop.
+    #[cfg(feature = "fleet")]
+    lobby_answers: mpsc::UnboundedReceiver<LobbyDone>,
 }
 
 /// Whether a liveliness token on `key` is declared: a participant that left

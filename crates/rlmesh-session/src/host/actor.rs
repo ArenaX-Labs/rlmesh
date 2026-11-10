@@ -7,6 +7,7 @@ mod grant;
 mod handshake;
 mod health;
 mod keys;
+#[cfg(feature = "fleet")]
 mod lobby;
 mod publish;
 
@@ -51,12 +52,9 @@ type Queries = zenoh::query::Queryable<Fifo<Query>>;
 #[cfg(feature = "fleet")]
 pub(super) type LobbyKey = (ParticipantId, u32, u64);
 
-/// A waiting lobby verb's answer, back at the host task. Without `fleet`
-/// nothing waits: the channel never yields.
+/// A waiting lobby verb's answer, back at the host task.
 #[cfg(feature = "fleet")]
 pub(super) type LobbyDone = (LobbyKey, LobbyResult);
-#[cfg(not(feature = "fleet"))]
-pub(super) type LobbyDone = std::convert::Infallible;
 
 /// A lobby verb waiting for its answer, and the latest query asking for it
 /// (a retry replaces it: the earlier one's caller has timed out).
@@ -156,7 +154,6 @@ impl HostActor {
         cancel: CancellationToken,
         mut heartbeats: mpsc::Receiver<(ParticipantId, crate::wire::Heartbeat, i64)>,
         mut access: mpsc::UnboundedReceiver<AccessChange>,
-        mut lobby: mpsc::UnboundedReceiver<LobbyDone>,
         (handshakes, ctl, state, views): (Queries, Queries, Queries, Queries),
         presence: zenoh::pubsub::Subscriber<Fifo<zenoh::sample::Sample>>,
     ) {
@@ -176,96 +173,106 @@ impl HostActor {
         let mut health = interval(health_log.unwrap_or(Duration::from_secs(1)));
         let mut health_out = interval(HEALTH_PERIOD);
 
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                query = handshakes.recv_async() => match query {
-                    Ok(query) => self.on_handshake(query).await,
-                    Err(_) => break,
-                },
-                query = ctl.recv_async() => match query {
-                    Ok(query) => {
-                        self.on_ctl(query).await;
-                        self.sync_history().await;
-                        self.sync_streams();
-                    }
-                    Err(_) => break,
-                },
-                query = state.recv_async() => match query {
-                    Ok(query) => self.on_state_query(query).await,
-                    Err(_) => break,
-                },
-                query = views.recv_async() => match query {
-                    Ok(query) => self.on_view_query(query).await,
-                    Err(_) => break,
-                },
-                Some((id, heartbeat, t2)) = heartbeats.recv() => {
-                    self.on_heartbeat(id, heartbeat, t2);
-                }
-                Some(done) = lobby.recv() => self.finish_lobby(done).await,
-                Some((change, done)) = access.recv() => {
-                    let applied = match change {
-                        Change::Access(device, entry) => self.set_access(&device, entry).await,
-                        Change::Admit(device) => self.admit(device).await,
-                        Change::Revoke(device) => self.revoke(&device).await,
-                        Change::Pin(robot, pin) => {
-                            self.pin(&robot, pin).await;
-                            Ok(())
+        // `tokio::select!` takes no `#[cfg]` on a branch: the loop is written
+        // once, and `fleet` hands it the lobby's.
+        macro_rules! serve {
+            ($($lobby:tt)*) => {
+                loop {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        query = handshakes.recv_async() => match query {
+                            Ok(query) => self.on_handshake(query).await,
+                            Err(_) => break,
+                        },
+                        query = ctl.recv_async() => match query {
+                            Ok(query) => {
+                                self.on_ctl(query).await;
+                                self.sync_history().await;
+                                self.sync_streams();
+                            }
+                            Err(_) => break,
+                        },
+                        query = state.recv_async() => match query {
+                            Ok(query) => self.on_state_query(query).await,
+                            Err(_) => break,
+                        },
+                        query = views.recv_async() => match query {
+                            Ok(query) => self.on_view_query(query).await,
+                            Err(_) => break,
+                        },
+                        Some((id, heartbeat, t2)) = heartbeats.recv() => {
+                            self.on_heartbeat(id, heartbeat, t2);
                         }
-                        #[cfg(feature = "fleet")]
-                        Change::Close(code, by, detail) => {
-                            self.close_scene(code, &by, &detail).await
+                        $($lobby)*
+                        Some((change, done)) = access.recv() => {
+                            let applied = match change {
+                                Change::Access(device, entry) => self.set_access(&device, entry).await,
+                                Change::Admit(device) => self.admit(device).await,
+                                Change::Revoke(device) => self.revoke(&device).await,
+                                Change::Pin(robot, pin) => {
+                                    self.pin(&robot, pin).await;
+                                    Ok(())
+                                }
+                                #[cfg(feature = "fleet")]
+                                Change::Close(code, by, detail) => {
+                                    self.close_scene(code, &by, &detail).await
+                                }
+                            };
+                            let _ = done.send(applied);
                         }
-                    };
-                    let _ = done.send(applied);
-                }
-                sample = presence.recv_async() => match sample {
-                    Ok(sample) => self.on_presence(&sample),
-                    Err(_) => break,
-                },
-                _ = tick.tick() => {
-                    // A heartbeat counts from when it arrived (t2), so any
-                    // still queued behind a busy host task goes in before
-                    // leases and presence are judged.
-                    while let Ok((id, heartbeat, t2)) = heartbeats.try_recv() {
-                        self.on_heartbeat(id, heartbeat, t2);
-                    }
-                    if heard.judge(tokio::time::Instant::now()) {
-                        let events = self.authority.expire(self.now());
-                        self.record(events).await;
-                    }
-                    self.publish_ticks().await;
-                    // Back from a stall, every edge's copy of its lease has
-                    // run out by its own clock: each renewal the returning
-                    // heartbeats bring goes out on the tick it arrives,
-                    // not a quarter grace later.
-                    self.publish_renewals(heard.listening()).await;
-                }
-                _ = republish.tick() => self.publish().await,
-                _ = health_out.tick() => self.publish_health().await,
-                _ = health.tick() => {
-                    let rows = self.health_rows();
-                    if health_log.is_some() {
-                        for row in &rows {
-                            info!(target: "rlmesh_session::health", "{row}");
+                        sample = presence.recv_async() => match sample {
+                            Ok(sample) => self.on_presence(&sample),
+                            Err(_) => break,
+                        },
+                        _ = tick.tick() => {
+                            // A heartbeat counts from when it arrived (t2), so any
+                            // still queued behind a busy host task goes in before
+                            // leases and presence are judged.
+                            while let Ok((id, heartbeat, t2)) = heartbeats.try_recv() {
+                                self.on_heartbeat(id, heartbeat, t2);
+                            }
+                            if heard.judge(tokio::time::Instant::now()) {
+                                let events = self.authority.expire(self.now());
+                                self.record(events).await;
+                            }
+                            self.publish_ticks().await;
+                            // Back from a stall, every edge's copy of its lease has
+                            // run out by its own clock: each renewal the returning
+                            // heartbeats bring goes out on the tick it arrives,
+                            // not a quarter grace later.
+                            self.publish_renewals(heard.listening()).await;
+                        }
+                        _ = republish.tick() => self.publish().await,
+                        _ = health_out.tick() => self.publish_health().await,
+                        _ = health.tick() => {
+                            let rows = self.health_rows();
+                            if health_log.is_some() {
+                                for row in &rows {
+                                    info!(target: "rlmesh_session::health", "{row}");
+                                }
+                            }
+                            self.health_tx.send_replace(rows);
+                            // A missed acknowledgement never detaches anyone: the
+                            // step waits, and says for whom.
+                            for step in self.auth.issuer().pending() {
+                                info!(
+                                    robot = %step.robot,
+                                    version = step.version,
+                                    stage = step.stage,
+                                    waiting = ?step.waiting,
+                                    "stream key rotation pending",
+                                );
+                            }
                         }
                     }
-                    self.health_tx.send_replace(rows);
-                    // A missed acknowledgement never detaches anyone: the
-                    // step waits, and says for whom.
-                    for step in self.auth.issuer().pending() {
-                        info!(
-                            robot = %step.robot,
-                            version = step.version,
-                            stage = step.stage,
-                            waiting = ?step.waiting,
-                            "stream key rotation pending",
-                        );
-                    }
+                    self.flush_keys().await;
                 }
-            }
-            self.flush_keys().await;
+            };
         }
+        #[cfg(feature = "fleet")]
+        serve!(Some(done) = self.lobby_answers.recv() => self.finish_lobby(done).await,);
+        #[cfg(not(feature = "fleet"))]
+        serve!();
         debug!(session = %self.config.session, "session host stopped");
     }
 
