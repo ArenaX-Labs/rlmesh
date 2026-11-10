@@ -558,8 +558,13 @@ int main(int argc, char **argv) {
       int warnings = 0;
       bool calling_thread = true;
       std::string category;
-      if (variant == "workflow")
+      if (variant == "workflow") {
+#ifdef _WIN32
+        REQUIRE(_putenv("RLMESH_WORKFLOW_EDITION=") == 0);
+#else
         REQUIRE(unsetenv("RLMESH_WORKFLOW_EDITION") == 0);
+#endif
+      }
       set_warning_handler([&](const Warning &warning) {
         calling_thread &= std::this_thread::get_id() == caller;
         ++warnings;

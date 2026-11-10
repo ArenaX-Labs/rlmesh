@@ -1,4 +1,4 @@
-// Serves an RLMesh env whose reset and step run on Unreal's game thread.
+﻿// Serves an RLMesh env whose reset and step run on Unreal's game thread.
 //
 // An EnvServer calls reset and step on its own threads, but Unreal game state
 // may only be touched on the game thread. FRLMeshGameThreadEnv posts each call
@@ -17,6 +17,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "RLMeshIncludes.h"
@@ -37,7 +38,15 @@ public:
 		{
 			try
 			{
-				Promise->set_value(Function());
+				if constexpr (std::is_void_v<Result>)
+				{
+					Function();
+					Promise->set_value();
+				}
+				else
+				{
+					Promise->set_value(Function());
+				}
 			}
 			catch (...)
 			{

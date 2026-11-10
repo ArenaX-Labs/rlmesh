@@ -39,14 +39,23 @@ out="$PWD/target/capi-pkg"
 stage="$out/$name"
 echo "==> packaging $name (ABI generation $abi_gen)"
 
+# Native Windows host packages the same layout as --target windows, from
+# target/release (no cargo-xwin). Detected via the host triple.
+windows_pkg=0
+if [ "$target" = windows ] || [[ "$triple" == *-windows-msvc ]]; then
+  windows_pkg=1
+fi
+
 # 1. Release-build the libraries.
-#    Host: build the staticlib + cdylib, then relink the cdylib with an explicit
-#    versioned SONAME (a Rust cdylib carries none by default). Without it a consumer
-#    binary records the build-machine absolute path in DT_NEEDED; with it the binary
-#    records librlmesh_capi.so.${abi_gen} and the loader refuses a different ABI
-#    generation. Deps cache between the two.
-#    Windows: cross-build with cargo-xwin, which fetches the MSVC CRT and Windows
-#    SDK (accepting Microsoft's license for them, as maturin does for the wheels).
+#    Host (Linux): build the staticlib + cdylib, then relink the cdylib with an
+#    explicit versioned SONAME (a Rust cdylib carries none by default). Without
+#    it a consumer binary records the build-machine absolute path in DT_NEEDED;
+#    with it the binary records librlmesh_capi.so.${abi_gen} and the loader
+#    refuses a different ABI generation. Deps cache between the two.
+#    Windows --target windows: cross-build with cargo-xwin, which fetches the
+#    MSVC CRT and Windows SDK (accepting Microsoft's license for them, as
+#    maturin does for the wheels).
+#    Windows host: native cargo build into target/release.
 if [ "$target" = windows ]; then
   rustup target add "$triple"
   XWIN_ACCEPT_LICENSE=1 cargo xwin build -p rlmesh-capi --release --lib --target "$triple"
@@ -58,6 +67,8 @@ elif [ "$target" = macos ]; then
   lipo -verify_arch arm64 x86_64 target/macos-universal/librlmesh_capi.dylib
   lipo -verify_arch arm64 x86_64 target/macos-universal/librlmesh_capi.a
   otool -D target/macos-universal/librlmesh_capi.dylib | tail -1 | grep -qx '@rpath/librlmesh_capi.dylib'
+elif [ "$windows_pkg" = 1 ]; then
+  cargo build -p rlmesh-capi --release --lib
 else
   cargo build -p rlmesh-capi --release --lib
   cargo rustc -p rlmesh-capi --release --lib --crate-type cdylib -- \
@@ -71,11 +82,15 @@ mkdir -p "$stage/include" "$stage/lib/cmake/rlmesh"
 # 3. Headers + licenses + the libs (verbatim — include/ is the one header authority).
 cp "$inc/rlmesh.h" "$inc/rlmesh.hpp" "$inc/dlpack.LICENSE" "$stage/include/"
 cp LICENSE-APACHE LICENSE-MIT          "$stage/"
-if [ "$target" = windows ]; then
+if [ "$windows_pkg" = 1 ]; then
   # The DLL goes in bin/ and its import library in lib/ under the name MSVC
   # projects link (rustc writes it as rlmesh_capi.dll.lib). The Rust staticlib is
   # left out: it is over 100 MB and pulls in the whole Rust runtime.
-  built="target/$triple/release"
+  if [ "$target" = windows ]; then
+    built="target/$triple/release"
+  else
+    built="target/release"
+  fi
   mkdir -p "$stage/bin"
   cp "$built/rlmesh_capi.dll" "$built/rlmesh_capi.pdb" "$stage/bin/"
   cp "$built/rlmesh_capi.dll.lib" "$stage/lib/rlmesh_capi.lib"
@@ -92,7 +107,7 @@ fi
 
 # 4. pkg-config metadata (non-CMake consumers). ${pcfiledir} keeps it relocatable.
 #    Windows consumers use CMake or link the import library directly.
-if [ "$target" != windows ]; then
+if [ "$windows_pkg" != 1 ]; then
 mkdir -p "$stage/lib/pkgconfig"
 cat > "$stage/lib/pkgconfig/rlmesh.pc" <<EOF
 prefix=\${pcfiledir}/../..
@@ -192,7 +207,7 @@ Or fetch the release tarball at configure time:
     FetchContent_MakeAvailable(rlmesh)
     target_link_libraries(app PRIVATE rlmesh::rlmesh)
 EOF
-if [ "$target" = windows ]; then
+if [ "$windows_pkg" = 1 ]; then
 cat >> "$stage/README.md" <<'EOF'
 
 ## MSVC without CMake

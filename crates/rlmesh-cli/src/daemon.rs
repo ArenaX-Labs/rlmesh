@@ -189,7 +189,8 @@ pub async fn daemon(
             let _ = writeln!(stderr, "rlmeshd: not advertised over mDNS: {err}");
         })
         .ok();
-    let (apply, mut applying) = tokio::sync::mpsc::channel(4);
+	let (apply, mut applying) =
+		tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(4);
     #[cfg(unix)]
     let local = crate::pair::serve_local(crate::pair::Local {
         dir: dir.clone(),
