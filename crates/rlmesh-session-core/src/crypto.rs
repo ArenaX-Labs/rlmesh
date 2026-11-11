@@ -167,6 +167,42 @@ mod tests {
             assert_eq!(*StaticKeypair::from_private(&mut private).public(), want);
         }
     }
+
+    const SECRET: [u8; 32] = [0xa7; 32];
+
+    #[test]
+    fn a_keypair_writes_back_the_private_key_it_was_made_from() {
+        let mut private = SECRET;
+        let pair = StaticKeypair::from_private(&mut private);
+        let mut stored = [0; 32];
+        pair.write_private(&mut stored);
+        let again = StaticKeypair::from_private(&mut stored);
+        assert_eq!(again.public(), pair.public());
+    }
+
+    #[test]
+    fn a_key_and_a_keypair_never_print_their_secret() {
+        let mut private = SECRET;
+        assert_redacted(&Key::from_bytes(SECRET), &SECRET);
+        assert_redacted(&StaticKeypair::from_private(&mut private), &SECRET);
+    }
+
+    #[test]
+    fn sealing_and_opening_state_never_print_the_key() {
+        let kinds = KindSet::of(&[Kind::Sample]);
+        let mut sender = SealSender::new(1, Key::from_bytes(SECRET), kinds, Security::Mac);
+        let receiver = SealReceiver::new(1, Key::from_bytes(SECRET), kinds, Security::Mac);
+        let msg = sender.seal(Kind::Sample, "k", b"body").expect("seal");
+        assert_redacted(&sender, &SECRET);
+        assert_redacted(&receiver, &SECRET);
+        assert_redacted(&sender.begin(Kind::Sample).expect("begin"), &SECRET);
+        assert_redacted(&receiver.begin(&msg).expect("begin"), &SECRET);
+    }
+
+    #[test]
+    fn a_signer_never_prints_its_signing_key() {
+        assert_redacted(&SignedSender::new(&SECRET, 7), &SECRET);
+    }
 }
 
 /// Asserts `value` prints something and none of it is `secret`, in the

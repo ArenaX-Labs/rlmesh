@@ -470,4 +470,15 @@ mod tests {
             HandshakeError::PayloadTooLong
         );
     }
+
+    #[test]
+    fn handshake_state_never_prints_a_static_secret() {
+        let (participant, host) = keys();
+        let p = prologue_for("arm");
+        let (init, msg1) =
+            IkInitiator::start(&mut TestRng::new(1), &participant, host.public(), &p).unwrap();
+        let resp = IkResponder::read_request(&mut TestRng::new(2), &host, &p, &msg1).unwrap();
+        crate::crypto::assert_redacted(&init, &[1; 32]);
+        crate::crypto::assert_redacted(&resp, &[2; 32]);
+    }
 }
