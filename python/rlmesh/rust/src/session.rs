@@ -1408,7 +1408,7 @@ impl PyController {
         Ok(self.controller()?.binding().replan_hz)
     }
 
-    /// Each bound action: `(entry, part path or None, horizon)`.
+    /// Each bound action: `(entry, part path or None, chunk)`.
     fn actions(&self) -> PyResult<Vec<(String, Option<String>, u32)>> {
         Ok(self
             .controller()?
@@ -1419,7 +1419,7 @@ impl PyController {
                 (
                     a.entry.clone(),
                     a.part.as_ref().map(|p| p.path.to_string()),
-                    a.horizon,
+                    a.chunk,
                 )
             })
             .collect())
@@ -1435,7 +1435,7 @@ impl PyController {
 
     /// Sends one chunk per action entry, computed from `observation`:
     /// `values` maps each action to `(dtype, shape, bytes)` or a dict of
-    /// them, `[horizon, ...]`. Returns each entry's chunk seq, or `None`
+    /// them, `[chunk, ...]`. Returns each entry's chunk seq, or `None`
     /// without the lease (or for a dropped entry).
     fn send(
         &self,

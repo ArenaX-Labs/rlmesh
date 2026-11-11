@@ -39,7 +39,7 @@ export interface Tensor {
   data: TypedArray;
 }
 
-/** What a policy sends per action entry: `[horizon, ...]` elements, row-major. The dtype follows the typed array unless given. */
+/** What a policy sends per action entry: `[chunk, ...]` elements, row-major. The dtype follows the typed array unless given. */
 export interface ActionArray {
   data: TypedArray | ArrayLike<number>;
   shape: number[];

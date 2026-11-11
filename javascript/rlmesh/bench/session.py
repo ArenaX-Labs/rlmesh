@@ -42,7 +42,7 @@ POLICY = {
             "command": "position",
             "names": JOINTS,
             "hz": 100,
-            "horizon": 10,
+            "chunk": 10,
         }
     },
     "allow": ["resize", "crop"],

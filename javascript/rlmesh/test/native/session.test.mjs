@@ -29,8 +29,8 @@ const SINE = {
     prompt: { kind: 'text', at: '/task' },
   },
   actions: {
-    arm: { kind: 'joints', at: 'arm', command: 'position', names: UR_JOINTS, hz: 100, horizon: 10 },
-    gripper: { kind: 'gripper', at: 'gripper', command: 'position', hz: 100, horizon: 10 },
+    arm: { kind: 'joints', at: 'arm', command: 'position', names: UR_JOINTS, hz: 100, chunk: 10 },
+    gripper: { kind: 'gripper', at: 'gripper', command: 'position', hz: 100, chunk: 10 },
   },
   allow: ['resize', 'crop'],
 };
@@ -39,7 +39,7 @@ const SINE = {
 const HOLD = {
   hz: 50,
   inputs: { q: { kind: 'joints', at: 'arm', fields: ['pos'], names: UR_JOINTS } },
-  actions: { arm: { kind: 'joints', at: 'arm', command: 'position', names: UR_JOINTS, hz: 100, horizon: 10 } },
+  actions: { arm: { kind: 'joints', at: 'arm', command: 'position', names: UR_JOINTS, hz: 100, chunk: 10 } },
 };
 
 const fixture = (kind, name) => JSON.parse(readFileSync(new URL(`fixtures/${kind}/${name}.json`, SPEC), 'utf8'));
@@ -64,8 +64,8 @@ function skipped(policy) {
   }
 }
 
-/** `[horizon, 6]` of one value. */
-const hold = (target, horizon = 10) => ({ arm: { data: new Float32Array(horizon * 6).fill(target), shape: [horizon, 6] } });
+/** `[chunk, 6]` of one value. */
+const hold = (target, chunk = 10) => ({ arm: { data: new Float32Array(chunk * 6).fill(target), shape: [chunk, 6] } });
 const first = (due) => due.value.data[0];
 
 /** The UR10e without physics: commanded joints become measured ones. */
@@ -143,7 +143,7 @@ test('a Node policy drives a Node robot on loopback', async () => {
   await using policy = new rlmesh.Policy(SINE, { session: host, name: 'sine' });
   const binding = await policy.bind('ur10e');
   assert.match(String(binding), /wrist +in +wrist\/cam +bound +decode\(jpeg\) → crop\(640x480 → 96x96, bilinear\)/);
-  assert.equal(binding.json.actions[0].horizon, 10);
+  assert.equal(binding.json.actions[0].chunk, 10);
   assert.equal(binding.fingerprint.length, 16);
 
   // An async predict: the run loop waits for it off this thread.
@@ -491,7 +491,7 @@ test('a scene runs a lobby robot and a Node policy on one machine', { skip: !fle
   const PILOT = {
     hz: 20,
     inputs: { q: { kind: 'joints', at: 'arm', fields: ['pos'] } },
-    actions: { arm: { kind: 'joints', at: 'arm', command: 'position', hz: 20, horizon: 2 } },
+    actions: { arm: { kind: 'joints', at: 'arm', command: 'position', hz: 20, chunk: 2 } },
   };
   const robot = (async () => {
     await using arm = await rlmesh.Robot.waitInLobby('arm', ARM, { home: daemon.home, timeout: 3 * WAIT_MS / 1000 });

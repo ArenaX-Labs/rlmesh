@@ -34,7 +34,7 @@ const POLICY: &str = r#"{
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
                "ft": {"kind": "wrench", "at": "wrist/ft", "frame": "tool0"}},
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                        "hz": 100, "horizon": 5}}
+                        "hz": 100, "chunk": 5}}
 }"#;
 
 struct World {
@@ -174,7 +174,7 @@ fn spin(robot: Arc<Robot>, stop: Arc<AtomicBool>, log: Log) -> std::thread::Join
     })
 }
 
-/// Commands every joint to `target` for the whole horizon.
+/// Commands every joint to `target` for the whole chunk.
 struct Constant {
     target: f32,
     seen: usize,
@@ -506,13 +506,13 @@ const EYES: &str = r#"{
     "hz": 50,
     "actions": {
         "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 100,
-                "horizon": 5},
+                "chunk": 5},
         "two": {"kind": "joints", "at": "eye-2:eyes", "command": "position", "hz": 100,
-                "horizon": 5}
+                "chunk": 5}
     }
 }"#;
 
-/// Both eyes to `target`, for the whole horizon.
+/// Both eyes to `target`, for the whole chunk.
 struct Gaze {
     target: f32,
 }

@@ -43,7 +43,7 @@ try {
   console.log(String(await policy.bind("ur10e"))); // the binding table
   await policy.run(
     async (obs) => {
-      const arm = new Float32Array(60); // [horizon 10, 6 joints]
+      const arm = new Float32Array(60); // [chunk 10, 6 joints]
       for (let k = 0; k < 10; k++) arm.set(obs.inputs.q.data, k * 6);
       return { arm: { data: arm, shape: [10, 6] } };
     },

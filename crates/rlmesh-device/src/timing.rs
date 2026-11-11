@@ -14,7 +14,7 @@ use rlmesh_session_core::crypto::{
 
 /// An authority state's body: a few parts, leases and roster entries.
 pub const STATE_LEN: usize = 1024;
-/// A chunk's body: a few parts over a short horizon.
+/// A chunk's body: a few parts over a few actions.
 pub const CHUNK_LEN: usize = 256;
 /// A sample's body: one part's state or `_applied` entry.
 pub const SAMPLE_LEN: usize = 64;

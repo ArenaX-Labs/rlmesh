@@ -60,14 +60,14 @@ SINE = {
             "command": "position",
             "names": UR_JOINTS,
             "hz": 100,
-            "horizon": 10,
+            "chunk": 10,
         },
         "gripper": {
             "kind": "gripper",
             "at": "gripper",
             "command": "position",
             "hz": 100,
-            "horizon": 10,
+            "chunk": 10,
         },
     },
     "allow": ["resize", "crop"],
@@ -87,7 +87,7 @@ HOLD = {
             "command": "position",
             "names": UR_JOINTS,
             "hz": 100,
-            "horizon": 10,
+            "chunk": 10,
         }
     },
 }
@@ -233,13 +233,15 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
             r"wrist +in +wrist/cam +bound +decode\(jpeg\) → crop\(640x480 → 96x96, bilinear\)",
             str(binding),
         )
-        assert binding.json["actions"][0]["horizon"] == 10
+        assert binding.json["actions"][0]["chunk"] == 10
         assert len(binding.fingerprint) == 16
         thread, result = in_thread(lambda: policy.run(predict, duration=30.0))
         wait_until(
             "the arm driven by the sine",
-            lambda: raised(result)
-            or ur.driven(lambda d: abs(float(np.asarray(d.value)[0])) <= 0.1001),
+            lambda: (
+                raised(result)
+                or ur.driven(lambda d: abs(float(np.asarray(d.value)[0])) <= 0.1001)
+            ),
             lambda: {"stats": policy.stats(), "holds": policy.holds},
         )
         wait_until("the gripper commanded", lambda: abs(ur.gripper - 0.5) < 1e-6)
@@ -325,8 +327,10 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         thread, result = in_thread(lambda: model.run(hold(0.25), duration=30.0))
         wait_until(
             "the model driving",
-            lambda: raised(result)
-            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25),
+            lambda: (
+                raised(result)
+                or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25)
+            ),
             lambda: {"stats": model.stats(), "holds": model.holds},
         )
         model_token = ur.log[-1].lease_token
@@ -356,8 +360,10 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         operator_thread, operator_result = in_thread(teleop)
         wait_until(
             "the operator driving",
-            lambda: raised(operator_result)
-            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.75),
+            lambda: (
+                raised(operator_result)
+                or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.75)
+            ),
             lambda: {
                 "teleop": operator_result,
                 "rejected_by": ur.robot.edge_stats("arm")["rejected_by"],
@@ -382,8 +388,10 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         operator.release()
         wait_until(
             "the model driving again",
-            lambda: raised(result)
-            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25),
+            lambda: (
+                raised(result)
+                or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25)
+            ),
             lambda: {"stats": model.stats(), "holds": model.holds},
         )
         resumed = ur.log[-1].lease_token
@@ -830,7 +838,7 @@ LOBBY_HOLD = {
             "at": "arm",
             "command": "position",
             "hz": 20,
-            "horizon": 2,
+            "chunk": 2,
         }
     },
 }
@@ -1052,7 +1060,7 @@ POLICY = {
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": ["a", "b"]}},
     "actions": {
         "arm": {"kind": "joints", "at": "arm", "command": "position",
-                "names": ["a", "b"], "hz": 100, "horizon": 10},
+                "names": ["a", "b"], "hz": 100, "chunk": 10},
     },
 }
 

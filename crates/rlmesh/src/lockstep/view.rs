@@ -7,9 +7,9 @@
 //! - the observation space is keyed by the policy's input names, or by part
 //!   path (`/` → `.`) without a policy: a single-field part is its field, a
 //!   multi-field part a dict of fields;
-//! - the action space is keyed by action names (`[horizon, ...]`, squeezed
-//!   when the horizon is 1), or by commandable part path without a policy;
-//! - one view step with horizon H is H lockstep steps (stopping at the end
+//! - the action space is keyed by action names (`[chunk, ...]`, squeezed
+//!   when the chunk is 1), or by commandable part path without a policy;
+//! - one view step with chunk H is H lockstep steps (stopping at the end
 //!   of the episode), rewards summed;
 //! - `info` carries each input's age (in session time: steps × `tick_ns`),
 //!   the stale inputs, and each action's edge mode (`driving` for a part
@@ -407,7 +407,7 @@ impl GymView {
                 Output::Bound(row) => row.part.as_ref().map(|_| {
                     (
                         row.entry.clone(),
-                        entry_of_delivery(&row.delivers, row.horizon == 1),
+                        entry_of_delivery(&row.delivers, row.chunk == 1),
                     )
                 }),
             })
@@ -460,7 +460,7 @@ impl GymView {
     pub async fn step(&self, actions: &[(String, Value)]) -> Result<ViewStep, GymError> {
         // Every commanded part's actions, packed.
         let mut packed: Vec<(ChannelId, usize, Vec<u8>)> = Vec::new();
-        let mut horizon = 1_usize;
+        let mut chunk = 1_usize;
         for output in &self.outputs {
             let Some(part) = output.part() else { continue };
             let Some(command) = &part.command else {
@@ -479,7 +479,7 @@ impl GymView {
             let bytes = match output {
                 Output::Raw { .. } => pack_raw(&command.fields, value)?,
                 Output::Bound(row) => {
-                    let value = if row.horizon == 1 {
+                    let value = if row.chunk == 1 {
                         unsqueeze(value)
                     } else {
                         value.clone()
@@ -488,14 +488,14 @@ impl GymView {
                 }
             };
             let count = bytes.len() / stride.max(1);
-            horizon = horizon.max(count);
+            chunk = chunk.max(count);
             packed.push((part.channel, stride, bytes));
         }
         let mut reward = 0.0;
         let (mut terminated, mut truncated) = (false, false);
         let mut info_json = String::new();
         let mut taken = 0;
-        for k in 0..horizon {
+        for k in 0..chunk {
             let commands = packed
                 .iter()
                 .map(|(channel, stride, bytes)| {

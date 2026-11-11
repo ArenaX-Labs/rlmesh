@@ -8,8 +8,8 @@
 //!   the session's subscriber decodes it, so this crate needs no codec), and
 //!   returns a [`Value`]: one array, 1-D fields of one dtype concatenated,
 //!   a dict keyed by field name, or text.
-//! - [`ActionRow::pack`] takes the model's chunk (`[horizon, ...]`) and
-//!   returns `horizon` actions packed at the part's command stride, ready for
+//! - [`ActionRow::pack`] takes the model's chunk (`[chunk, ...]`) and
+//!   returns `chunk` actions packed at the part's command stride, ready for
 //!   an `ActionChunk`. The edge then validates and clamps.
 //!
 //! Arithmetic runs in `f64`. A field no arithmetic step touches keeps its
@@ -655,8 +655,8 @@ impl InputRow {
 }
 
 impl ActionRow {
-    /// Packs a model's chunk (`[horizon, ...]`, as [`Self::delivers`]
-    /// describes) into `horizon` actions at the part's command stride.
+    /// Packs a model's chunk (`[chunk, ...]`, as [`Self::delivers`]
+    /// describes) into `chunk` actions at the part's command stride.
     pub fn pack(&self, value: &Value) -> Result<Vec<u8>, ApplyError> {
         let Some(part) = &self.part else {
             return Err(err(format!(
@@ -670,7 +670,7 @@ impl ActionRow {
             .ok_or_else(|| err(format!("{} is not commandable", part.path)))?;
         let layout = Layout::of(&command.fields).map_err(err)?;
         let stride = layout.stride().ok_or_else(|| err("a text command"))?;
-        let horizon = self.horizon as usize;
+        let chunk = self.chunk as usize;
         // The model's per-action fields, in delivery order.
         let model_fields: Vec<(String, Vec<u32>)> = match &self.delivers {
             Delivery::Array { shape, concat, .. } if !concat.is_empty() => {
@@ -700,8 +700,8 @@ impl ActionRow {
                     )));
                 }
                 let all = t.to_f64();
-                let row = all.len() / horizon.max(1);
-                (0..horizon)
+                let row = all.len() / chunk.max(1);
+                (0..chunk)
                     .map(|i| {
                         let mut at = i * row;
                         model_fields
@@ -722,7 +722,7 @@ impl ActionRow {
                     .collect()
             }
             (Value::Dict(items), Delivery::Dict(fields)) => {
-                let mut per: Vec<Vec<Field>> = vec![Vec::new(); horizon];
+                let mut per: Vec<Vec<Field>> = vec![Vec::new(); chunk];
                 for d in fields {
                     let t = items
                         .iter()
@@ -738,7 +738,7 @@ impl ActionRow {
                         )));
                     }
                     let all = t.to_f64();
-                    let n = all.len() / horizon.max(1);
+                    let n = all.len() / chunk.max(1);
                     for (i, slot) in per.iter_mut().enumerate() {
                         slot.push(Field {
                             name: d.name.clone(),
@@ -757,7 +757,7 @@ impl ActionRow {
                 )));
             }
         };
-        let mut out = Vec::with_capacity(horizon * stride);
+        let mut out = Vec::with_capacity(chunk * stride);
         for mut fields in per_action {
             for step in &self.plan.steps {
                 match step {

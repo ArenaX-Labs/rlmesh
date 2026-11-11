@@ -1187,12 +1187,12 @@ fn run_options(
 }
 
 /// A bound action: its entry, the part it drives (none when dropped) and its
-/// horizon.
+/// chunk length.
 #[napi(object)]
 pub struct ActionInfo {
     pub entry: String,
     pub part: Option<String>,
-    pub horizon: u32,
+    pub chunk: u32,
 }
 
 /// An action entry's chunk seq, or none without the lease (or dropped).
@@ -1466,7 +1466,7 @@ impl NativePolicy {
             .map(|a| ActionInfo {
                 entry: a.entry.clone(),
                 part: a.part.as_ref().map(|p| p.path.to_string()),
-                horizon: a.horizon,
+                chunk: a.chunk,
             })
             .collect())
     }
@@ -1480,7 +1480,7 @@ impl NativePolicy {
     }
 
     /// Sends one chunk per action entry, computed from `observation`, each
-    /// `[horizon, ...]`.
+    /// `[chunk, ...]`.
     #[napi]
     pub fn send(
         &self,

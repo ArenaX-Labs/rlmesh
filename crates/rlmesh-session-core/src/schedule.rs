@@ -24,7 +24,7 @@
 //! [`PhaseAlign`] phases a wall-clock grid just after the publication of
 //! one sampled input, so a snapshot reads a fresh sample.
 //!
-//! Nothing here renegotiates: rates, horizons and contracts never change
+//! Nothing here renegotiates: rates, chunk lengths and contracts never change
 //! because something got slow.
 
 #[allow(unused_imports)]

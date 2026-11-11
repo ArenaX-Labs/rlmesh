@@ -11,7 +11,7 @@
 //!     "prompt": "text"
 //!   },
 //!   "actions": {
-//!     "arm": {"kind": "joints", "at": "arm", "command": "position", "horizon": 10}
+//!     "arm": {"kind": "joints", "at": "arm", "command": "position", "chunk": 10}
 //!   },
 //!   "allow": ["resize", "pad"]
 //! }
@@ -379,7 +379,7 @@ pub struct Action {
     /// The action grid rate (`None`: the policy rate).
     pub hz: Option<f64>,
     /// Actions per chunk.
-    pub horizon: u32,
+    pub chunk: u32,
     /// Gripper: the model value meaning open.
     pub open: Option<f64>,
     /// Gripper: the model value meaning closed.
@@ -460,7 +460,7 @@ struct EntryDecl {
     command: Option<String>,
     reference: Option<String>,
     hz: Option<f64>,
-    horizon: Option<u32>,
+    chunk: Option<u32>,
     open: Option<f64>,
     closed: Option<f64>,
     t0: Option<String>,
@@ -540,7 +540,7 @@ const ACTION_ONLY: [&str; 8] = [
     "command",
     "reference",
     "hz",
-    "horizon",
+    "chunk",
     "open",
     "closed",
     "t0",
@@ -571,7 +571,7 @@ impl EntryDecl {
             ("command", self.command.is_some()),
             ("reference", self.reference.is_some()),
             ("hz", self.hz.is_some()),
-            ("horizon", self.horizon.is_some()),
+            ("chunk", self.chunk.is_some()),
             ("open", self.open.is_some()),
             ("closed", self.closed.is_some()),
             ("t0", self.t0.is_some()),
@@ -866,9 +866,9 @@ fn action(name: &str, value: Value, policy_allow: Allows) -> Result<Action, Stri
     if entry.kind.command_modes().is_empty() && entry.kind != Kind::Custom {
         return Err(format!("{where_}: a {} part takes no commands", entry.kind));
     }
-    let horizon = decl.horizon.unwrap_or(1);
-    if horizon == 0 || horizon as usize > MAX_CHUNK_ACTIONS {
-        return Err(format!("{where_}: horizon is 1 to {MAX_CHUNK_ACTIONS}"));
+    let chunk = decl.chunk.unwrap_or(1);
+    if chunk == 0 || chunk as usize > MAX_CHUNK_ACTIONS {
+        return Err(format!("{where_}: chunk is 1 to {MAX_CHUNK_ACTIONS}"));
     }
     if (decl.open.is_some() || decl.closed.is_some()) && entry.kind != Kind::Gripper {
         return Err(format!("{where_}: open and closed are for gripper actions"));
@@ -894,7 +894,7 @@ fn action(name: &str, value: Value, policy_allow: Allows) -> Result<Action, Stri
             Some(r) => return Err(format!("{where_}: reference {r:?}: current or target")),
         },
         hz: decl.hz.map(|hz| rate(&where_, "hz", hz)).transpose()?,
-        horizon,
+        chunk,
         open: decl.open,
         closed: decl.closed,
         t0,
@@ -1026,7 +1026,7 @@ mod tests {
                 "inputs": {"prompt": "text",
                            "image": {"kind": "camera", "at": "/scene/cam", "size": [224, 224],
                                      "allow": ["crop"]}},
-                "actions": {"arm": {"kind": "joints", "at": "arm", "count": 6, "horizon": 10}},
+                "actions": {"arm": {"kind": "joints", "at": "arm", "count": 6, "chunk": 10}},
                 "allow": ["resize"]}"#,
         )
         .expect("parse");
@@ -1038,7 +1038,7 @@ mod tests {
         assert_eq!(policy.inputs[1].size, Some((224, 224)));
         let arm = &policy.actions[0];
         assert_eq!(
-            (arm.horizon, arm.hz, arm.t0),
+            (arm.chunk, arm.hz, arm.t0),
             (10, None, ChunkStart::Snapshot)
         );
         assert!(arm.entry.allow.has(Allow::Resize) && !arm.entry.allow.has(Allow::Crop));
@@ -1056,7 +1056,7 @@ mod tests {
                 "colour",
             ),
             (
-                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "horizon": 3}}}"#,
+                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "chunk": 3}}}"#,
                 "action key",
             ),
             (
@@ -1100,8 +1100,8 @@ mod tests {
                 "input key",
             ),
             (
-                r#"{"hz": 1, "actions": {"a": {"kind": "joints", "horizon": 0}}}"#,
-                "horizon",
+                r#"{"hz": 1, "actions": {"a": {"kind": "joints", "chunk": 0}}}"#,
+                "chunk",
             ),
             (
                 r#"{"hz": 1, "actions": {"a": {"kind": "gripper", "open": 1, "closed": 1}}}"#,

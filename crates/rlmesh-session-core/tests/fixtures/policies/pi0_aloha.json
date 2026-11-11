@@ -50,26 +50,26 @@
       "at": "left/arm",
       "command": "position",
       "names": ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"],
-      "horizon": 50
+      "chunk": 50
     },
     "right": {
       "kind": "joints",
       "at": "right/arm",
       "command": "position",
       "names": ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"],
-      "horizon": 50
+      "chunk": 50
     },
     "left_gripper": {
       "kind": "gripper",
       "at": "left/gripper",
       "command": "position",
-      "horizon": 50
+      "chunk": 50
     },
     "right_gripper": {
       "kind": "gripper",
       "at": "right/gripper",
       "command": "position",
-      "horizon": 50
+      "chunk": 50
     }
   },
   "allow": ["resize", "pad", "blank"]

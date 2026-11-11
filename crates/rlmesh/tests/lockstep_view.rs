@@ -24,7 +24,7 @@ const POLICY: &str = r#"{
                "ft": {"kind": "wrench", "at": "wrist/ft", "frame": "tool0"},
                "prompt": {"kind": "text", "at": "task"}},
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                        "hz": 100, "horizon": 4}}
+                        "hz": 100, "chunk": 4}}
 }"#;
 
 fn f32s(values: &[f32]) -> Vec<u8> {

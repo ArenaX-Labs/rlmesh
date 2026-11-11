@@ -1005,7 +1005,7 @@ const WINDOWED: &str = r#"{
     "hz": 50,
     "inputs": {"ft": {"kind": "x/ft", "at": "ft", "fields": {"wrench": ["float32", [18]]},
                       "history": 10}},
-    "actions": {"arm": {"kind": "joints", "at": "arm", "hz": 100, "horizon": 5}}
+    "actions": {"arm": {"kind": "joints", "at": "arm", "hz": 100, "chunk": 5}}
 }"#;
 
 #[tokio::test(flavor = "multi_thread")]

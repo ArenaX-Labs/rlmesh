@@ -130,8 +130,8 @@ pub struct ActionRow {
     /// `1 / A`.
     pub dt: Duration,
     /// Actions per chunk.
-    pub horizon: u32,
-    /// The chunk's life: `min(horizon × dt, ttl)`.
+    pub chunk: u32,
+    /// The chunk's life: `min(chunk × dt, ttl)`.
     pub valid: Duration,
     /// When a chunk starts.
     pub t0: ChunkStart,
@@ -158,7 +158,7 @@ pub struct Binding {
     pub actions: Vec<ActionRow>,
     /// One delivery contract per bound input stream.
     pub contracts: Vec<StreamContract>,
-    /// Accepted with a warning (horizon past the edge's action-age cap).
+    /// Accepted with a warning (a chunk past the edge's action-age cap).
     pub warnings: Vec<String>,
     /// The fingerprint of [`Self::table_json`].
     pub fingerprint: Fingerprint,
@@ -253,7 +253,7 @@ fn table_value(b: &Binding) -> Value {
                 "plan": r.plan.steps.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "delivers": r.delivers.to_string(),
                 "dt_ns": u64::try_from(r.dt.as_nanos()).unwrap_or(u64::MAX),
-                "horizon": r.horizon,
+                "chunk": r.chunk,
                 "valid_ns": u64::try_from(r.valid.as_nanos()).unwrap_or(u64::MAX),
                 "t0": match r.t0 { ChunkStart::Snapshot => "snapshot", ChunkStart::Send => "send" },
             });

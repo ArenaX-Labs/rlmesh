@@ -700,7 +700,7 @@ impl Model {
     }
 
     /// Valid coverage remaining on a commandable part, as an
-    /// observer estimates it: `min(t0 + horizon·dt, valid_until, receipt +
+    /// observer estimates it: `min(t0 + chunk·dt, valid_until, receipt +
     /// max_action_age, lease expiry) − now`, in session time, with the
     /// cockpit's receipt standing in for the edge's.
     fn coverage_ms(&self, channel: ChannelId, now_ns: i64) -> Option<f64> {
@@ -1080,7 +1080,7 @@ impl Model {
                     .and_then(Json::as_u64)
                     .and_then(|c| s.part(ChannelId(u32::try_from(c).unwrap_or(u32::MAX))));
                 let dt_ns = row.get("dt_ns").and_then(Json::as_u64).unwrap_or(0);
-                let horizon = row.get("horizon").and_then(Json::as_u64).unwrap_or(0);
+                let chunk = row.get("chunk").and_then(Json::as_u64).unwrap_or(0);
                 let valid_ns = row.get("valid_ns").and_then(Json::as_u64).unwrap_or(0);
                 let dt_ms = dt_ns as f64 * 1e-6;
                 [
@@ -1091,9 +1091,9 @@ impl Model {
                         "-".into()
                     },
                     format!(
-                        "{horizon} × {} = {}",
+                        "{chunk} × {} = {}",
                         ms_text(dt_ms),
-                        ms_text(dt_ms * horizon as f64)
+                        ms_text(dt_ms * chunk as f64)
                     ),
                     ms_text(valid_ns as f64 * 1e-6),
                     part.map_or("-".into(), |p| hz_text(p.control_hz)),

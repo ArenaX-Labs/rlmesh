@@ -119,9 +119,9 @@ TRACKER = {
     "inputs": {"cam": {"kind": "camera", "at": "webcam:cam"}},
     "actions": {
         "left": {"kind": "joints", "at": "eye-1:eyes", "command": "position",
-                 "hz": 50, "horizon": 4},
+                 "hz": 50, "chunk": 4},
         "right": {"kind": "joints", "at": "eye-2:eyes", "command": "position",
-                  "hz": 50, "horizon": 4},
+                  "hz": 50, "chunk": 4},
     },
 }
 # What the detector saw, recorded and shown in the cockpit beside the eyes.
@@ -136,7 +136,7 @@ def predict(obs):
     )
     if xy is not None:
         policy.publish("hand", xy=np.asarray(xy, np.float32))
-    chunk = np.tile(target, (4, 1))  # [horizon, (pan, tilt)] in radians
+    chunk = np.tile(target, (4, 1))  # [chunk, (pan, tilt)] in radians
     return {"left": chunk, "right": chunk}
 
 with realtime.Policy(TRACKER, session="", name="tracker", publishes=HAND) as policy:

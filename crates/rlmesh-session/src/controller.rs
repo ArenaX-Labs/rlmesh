@@ -17,7 +17,7 @@
 //! - [`Controller::send`] packs `predict`'s output per action entry
 //!   (`ActionRow::pack`) and sends one timed chunk per commanded part:
 //!   `t0` at the snapshot (or at send, `t0: "send"`), the binding's action
-//!   grid, `valid_until = t0 + min(horizon × dt, ttl)`, `replace_from = t0`
+//!   grid, `valid_until = t0 + min(chunk × dt, ttl)`, `replace_from = t0`
 //!   and the snapshot's `based_on`.
 //! - [`Controller::run`] runs the policy loop: starts on the replan
 //!   grid, one inference in flight, skipped starts with their reasons, warm
@@ -157,7 +157,7 @@ pub trait Predictor {
     type Error;
 
     /// One start: the observation (snapshotted at `snapshot_ns`, session
-    /// time) in, one value per action entry out (`[horizon, ...]`).
+    /// time) in, one value per action entry out (`[chunk, ...]`).
     fn predict(
         &mut self,
         observation: Observation,

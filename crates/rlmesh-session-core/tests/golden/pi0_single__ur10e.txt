@@ -1,4 +1,4 @@
-binding pi0_single on ur10e: 5 inputs, 2 actions, fingerprint bf3bd95bee8923b7
+binding pi0_single on ur10e: 5 inputs, 2 actions, fingerprint e217cc79c68cc620
 replan 15 Hz
 
   entry        dir  part       status  plan                                              delivers

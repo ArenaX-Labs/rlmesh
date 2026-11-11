@@ -236,7 +236,7 @@ fn grippers_rescale_and_poses_re_encode() {
                 &chunk[..9]
             )))
             .is_err(),
-        "a chunk is the declared horizon"
+        "a chunk is the declared length"
     );
 
     let libero = binding("pi05_libero", "libero");

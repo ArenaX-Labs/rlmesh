@@ -38,13 +38,13 @@ impl<'a> Binder<'a> {
             },
             delivers: Delivery::Array {
                 dtype: DType::F32,
-                shape: vec![action.horizon],
+                shape: vec![action.chunk],
                 concat: Vec::new(),
             },
             grid_hz,
             grid_declared,
             dt,
-            horizon: action.horizon,
+            chunk: action.chunk,
             valid: Duration::ZERO,
             t0: action.t0,
         }
@@ -347,7 +347,7 @@ impl<'a> Binder<'a> {
             );
             return None;
         }
-        let span = dt * action.horizon;
+        let span = dt * action.chunk;
         let valid = action.ttl.map_or(span, |ttl| ttl.min(span));
         // A part that can't hold its target (a velocity, a torque; not a
         // delta, which keeps its target) runs its safe behaviour whenever
@@ -365,20 +365,20 @@ impl<'a> Binder<'a> {
                     ms(period)
                 ),
                 vec![format!(
-                    "    fix: \"horizon\": {needed} (or more) on {:?}, so each chunk outlasts the next replan.",
+                    "    fix: \"chunk\": {needed} (or more) on {:?}, so each chunk outlasts the next replan.",
                     slot.entry.name
                 )],
             );
             return None;
         }
         let stride = command.layout().ok().and_then(|l| l.stride()).unwrap_or(0);
-        if (action.horizon as usize).saturating_mul(stride) > MAX_CHUNK_BYTES {
+        if (action.chunk as usize).saturating_mul(stride) > MAX_CHUNK_BYTES {
             self.incompatible(
                 slot,
                 format!(
                     "{}: {} actions of {stride} bytes is over the 4 MiB chunk cap.",
                     slot.name(),
-                    action.horizon
+                    action.chunk
                 ),
                 Vec::new(),
             );
@@ -412,11 +412,11 @@ impl<'a> Binder<'a> {
             part: Some(part.clone()),
             status,
             plan,
-            delivers: Delivery::of(delivered, Some(action.horizon)),
+            delivers: Delivery::of(delivered, Some(action.chunk)),
             grid_hz,
             grid_declared,
             dt,
-            horizon: action.horizon,
+            chunk: action.chunk,
             valid,
             t0: action.t0,
         })

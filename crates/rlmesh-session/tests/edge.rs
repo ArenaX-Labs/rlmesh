@@ -226,7 +226,7 @@ fn tick_at_1khz(
 }
 
 /// `n` actions at 1 ms from now (session time), every byte `tag`.
-fn horizon(p: &Participant, n: usize, tag: u8, valid_for: Duration) -> ChunkDraft {
+fn chunk(p: &Participant, n: usize, tag: u8, valid_for: Duration) -> ChunkDraft {
     let now = p.session_now_ns();
     ChunkDraft {
         based_on: vec![InputRange::one(ChannelId(99), 1)],
@@ -269,7 +269,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     model_tx
         // Long enough to still be due however late a loaded machine ticks.
-        .send(horizon(&policy, 1000, 1, Duration::from_secs(2)))
+        .send(chunk(&policy, 1000, 1, Duration::from_secs(2)))
         .expect("send");
     wait_until("model chunk accepted", || edge.stats().accepted == 1).await;
     tokio::time::sleep(Duration::from_millis(2)).await;
@@ -281,7 +281,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
 
     // Already void on arrival.
     model_tx
-        .send(horizon(&policy, 50, 1, Duration::ZERO))
+        .send(chunk(&policy, 50, 1, Duration::ZERO))
         .expect("send");
     wait_until("expired chunk rejected", || {
         edge.stats().rejected(Rejection::Expired) == 1
@@ -310,7 +310,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
         })
         .await
         .expect("view");
-    let late = model_tx.send(horizon(&policy, 50, 1, Duration::from_millis(100)));
+    let late = model_tx.send(chunk(&policy, 50, 1, Duration::from_millis(100)));
     assert!(matches!(late, Err(SessionError::Key(_))), "{late:?}");
     // ...and a chunk naming the new lease, sealed by anyone but its holder
     // (here under its public key id with a made-up key), never opens.
@@ -354,7 +354,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
     let human_tx = operator.chunk_publisher(&human).await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(50)).await;
     human_tx
-        .send(horizon(&operator, 1000, 2, Duration::from_secs(2)))
+        .send(chunk(&operator, 1000, 2, Duration::from_secs(2)))
         .expect("send");
     wait_until("operator chunk accepted", || edge.stats().accepted == 2).await;
     tokio::time::sleep(Duration::from_millis(2)).await;
@@ -398,13 +398,13 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(Mutex::new(Vec::new()));
     let ticker = tick_at_1khz(edge.clone(), stop.clone(), Some(ticks.clone()));
-    // The model re-plans a 50 ms horizon every 10 ms.
+    // The model re-plans a 50 ms chunk every 10 ms.
     let streaming = Arc::new(AtomicBool::new(true));
     let model_loop = tokio::spawn({
         let streaming = streaming.clone();
         async move {
             while streaming.load(Ordering::Relaxed) {
-                let _ = model_tx.send(horizon(&policy, 50, 1, Duration::from_millis(150)));
+                let _ = model_tx.send(chunk(&policy, 50, 1, Duration::from_millis(150)));
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             policy
@@ -421,7 +421,7 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
         .await
         .expect("view");
     for _ in 0..30 {
-        let _ = human_tx.send(horizon(&operator, 50, 2, Duration::from_millis(150)));
+        let _ = human_tx.send(chunk(&operator, 50, 2, Duration::from_millis(150)));
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     streaming.store(false, Ordering::Relaxed);
@@ -487,7 +487,7 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
     let ticker = tick_at_1khz(edge.clone(), stop.clone(), None);
     // One 20 ms chunk, then silence (heartbeats continue: the host alone
     // would never lapse the lease).
-    tx.send(horizon(&policy, 20, 1, Duration::from_millis(150)))
+    tx.send(chunk(&policy, 20, 1, Duration::from_millis(150)))
         .expect("send");
     // The edge's EnterSafe ends this robot's lease alone; the session is
     // not taken SAFE for it.
@@ -663,9 +663,9 @@ async fn with_the_host_gone_the_edge_falls_back_on_its_own_clock() {
         .expect("view");
     let tx = policy.chunk_publisher(&lease).await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(200)).await;
-    // A long horizon (the part's open-loop budget is 2 s): the queue would
+    // A long chunk (the part's open-loop budget is 2 s): the queue would
     // drive for a second, the most one chunk carries.
-    tx.send(horizon(&policy, 1024, 1, Duration::from_secs(2)))
+    tx.send(chunk(&policy, 1024, 1, Duration::from_secs(2)))
         .expect("send");
     wait_until("chunk accepted", || edge.stats().accepted == 1).await;
     let stop = Arc::new(AtomicBool::new(false));
@@ -702,7 +702,7 @@ async fn stream(p: &Participant, lease: &Lease, tag: u8, duration: Duration, war
     let stride = tx.stride();
     let started = Instant::now();
     while started.elapsed() < duration {
-        let mut draft = horizon(p, 50, tag, Duration::from_millis(150));
+        let mut draft = chunk(p, 50, tag, Duration::from_millis(150));
         draft.actions = Bytes::from(vec![tag; stride * 50]);
         tx.send(draft).expect("send");
         tokio::time::sleep(Duration::from_millis(10)).await;

@@ -79,7 +79,7 @@ UR_JOINTS = [
 ]
 HOME = np.array([-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0])
 OPERATOR_HZ = 50
-OPERATOR_HORIZON = 40  # 40 x 1 ms: twice the operator's replan period
+OPERATOR_CHUNK = 40  # 40 x 1 ms: twice the operator's replan period
 FT_WINDOW = 10  # 10 ms of the 1 kHz wrench
 JOG_RAD = 0.1
 MAX_SPEED = 1.0  # rad/s, policy and operator alike
@@ -130,7 +130,7 @@ def policy_map(args: argparse.Namespace) -> dict[str, Any]:
         "hz": args.replan_hz,
         "inputs": inputs,
         "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                            "names": UR_JOINTS, "hz": CONTROL_HZ, "horizon": args.horizon}},
+                            "names": UR_JOINTS, "hz": CONTROL_HZ, "chunk": args.chunk}},
         "allow": ["resize", "pad"],
     }  # fmt: skip
 
@@ -143,13 +143,13 @@ def operator_map(args: argparse.Namespace) -> dict[str, Any]:
             "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
                        "ft": {"kind": "wrench", "at": "wrist/ft", "frame": "tool0", "max_age_ms": 3}},
             "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                                "names": UR_JOINTS, "hz": CONTROL_HZ, "horizon": 1, "ttl_ms": 5}},
+                                "names": UR_JOINTS, "hz": CONTROL_HZ, "chunk": 1, "ttl_ms": 5}},
         }  # fmt: skip
     return {
         "hz": OPERATOR_HZ,
         "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS}},
         "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                            "names": UR_JOINTS, "hz": CONTROL_HZ, "horizon": OPERATOR_HORIZON}},
+                            "names": UR_JOINTS, "hz": CONTROL_HZ, "chunk": OPERATOR_CHUNK}},
     }  # fmt: skip
 
 
@@ -464,7 +464,7 @@ def report(
                 "width",
                 "height",
                 "replan_hz",
-                "horizon",
+                "chunk",
                 "keys",
             )
         },
@@ -599,7 +599,7 @@ def child(
             "seconds",
             "camera",
             "replan_hz",
-            "horizon",
+            "chunk",
             "keys",
             "policy",
             "operator",
@@ -740,7 +740,7 @@ def emit(args: argparse.Namespace, out: dict[str, Any]) -> None:
 
 
 def run_policy(args: argparse.Namespace) -> int:
-    horizon, dt = args.horizon, 1.0 / CONTROL_HZ
+    chunk, dt = args.chunk, 1.0 / CONTROL_HZ
     brightness: list[float] = []
     origin: list[float] = []
     # Per start, the age of the newest sample in each window input.
@@ -754,14 +754,14 @@ def run_policy(args: argparse.Namespace) -> int:
         if not origin:
             origin.append(now)
         # The reach: sweep the pan and the first wrist joint around home.
-        t = now - origin[0] + np.arange(horizon) * dt
-        target = np.repeat(HOME[None], horizon, axis=0)
+        t = now - origin[0] + np.arange(chunk) * dt
+        target = np.repeat(HOME[None], chunk, axis=0)
         target[:, 0] += 0.5 * np.sin(2 * np.pi * 0.2 * t)
         target[:, 3] += 0.3 * np.sin(2 * np.pi * 0.3 * t)
         if "cam" in obs:
             brightness.append(float(np.asarray(obs["cam"]).mean()))
         q = np.asarray(obs["q"], dtype=np.float64)
-        step = MAX_SPEED * dt * np.arange(1, horizon + 1)[:, None]
+        step = MAX_SPEED * dt * np.arange(1, chunk + 1)[:, None]
         return {"arm": (q + np.clip(target - q, -step, step)).astype(np.float32)}
 
     with realtime.Policy(
@@ -845,7 +845,7 @@ def run_operator(args: argparse.Namespace) -> int:
     chunks = 0
     haptic = args.operator == "haptic"
     hz = CONTROL_HZ if haptic else OPERATOR_HZ
-    horizon = 1 if haptic else OPERATOR_HORIZON
+    length = 1 if haptic else OPERATOR_CHUNK
     with realtime.Policy(
         operator_map(args), session=args.address, name="operator", priority="operator"
     ) as op:
@@ -913,7 +913,7 @@ def run_operator(args: argparse.Namespace) -> int:
                 if fresh:
                     cmd = np.asarray(obs["q"], dtype=np.float64).copy()
                     target, fresh = cmd.copy(), False
-                chunk = ramp(cmd, target, horizon, 1.0 / CONTROL_HZ)
+                chunk = ramp(cmd, target, length, 1.0 / CONTROL_HZ)
                 sent = op.send({"arm": chunk.astype(np.float32)}, obs)
                 if sent.get("arm") is not None:
                     chunks += 1
@@ -959,9 +959,7 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--replan-hz", type=float, default=100.0)
-    parser.add_argument(
-        "--horizon", type=int, default=12, help="1 ms actions per chunk"
-    )
+    parser.add_argument("--chunk", type=int, default=12, help="1 ms actions per chunk")
     parser.add_argument(
         "--keys",
         default="scripted",

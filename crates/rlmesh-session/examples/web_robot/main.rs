@@ -99,7 +99,7 @@ fn robot_map(cam: &str) -> String {
 /// Replans at 50 Hz, ten 10 ms actions per chunk: a slow sway of every joint.
 const POLICY: &str = r#"{
     "hz": 50,
-    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position", "hz": 100, "horizon": 10}}
+    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position", "hz": 100, "chunk": 10}}
 }"#;
 
 struct Sway;

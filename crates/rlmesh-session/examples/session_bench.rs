@@ -5,7 +5,7 @@
 //! from the force/torque stream.
 //!
 //! ```text
-//! session_bench both --camera off|raw|jpeg --horizon 1 --duration-s 30
+//! session_bench both --camera off|raw|jpeg --chunk 1 --duration-s 30
 //! ```
 //!
 //! `both` runs the embodiment here and spawns the controller as a second OS
@@ -32,7 +32,7 @@
 //!   packing and the link (per dispatched chunk).
 //!
 //! Options: `--camera off|raw|jpeg` (640x480 at `--camera-hz 20`; jpeg is
-//! q75 with an 8 Mbit/s cap), `--horizon N` actions at 1 ms re-planned every
+//! q75 with an 8 Mbit/s cap), `--chunk N` actions at 1 ms re-planned every
 //! `--replan-ms` (default 1 for N=1, else 10), `--links per-class|shared`,
 //! `--warmup-s 3`, `--duration-s 30`, `--seal none|all` (encrypt every
 //! part rather than sign it).
@@ -85,7 +85,7 @@ struct Args {
     role: String,
     camera: String,
     camera_hz: u32,
-    horizon: usize,
+    chunk: usize,
     replan: u64,
     links: String,
     controller: String,
@@ -116,13 +116,13 @@ fn parse_args() -> Result<Args, BoxError> {
     let num = |k: &str, d: f64| -> Result<f64, BoxError> {
         Ok(opts.get(k).map_or(Ok(d), |v| v.parse::<f64>())?)
     };
-    let horizon = num("horizon", 1.0)?.max(1.0) as usize;
+    let chunk = num("chunk", 1.0)?.max(1.0) as usize;
     Ok(Args {
         role,
         camera: opts.get("camera").cloned().unwrap_or_else(|| "off".into()),
         camera_hz: num("camera-hz", 20.0)? as u32,
-        horizon,
-        replan: num("replan-ms", if horizon == 1 { 1.0 } else { 10.0 })?.max(1.0) as u64,
+        chunk,
+        replan: num("replan-ms", if chunk == 1 { 1.0 } else { 10.0 })?.max(1.0) as u64,
         links: opts
             .get("links")
             .cloned()
@@ -153,8 +153,8 @@ fn to_args(
         args.camera.clone(),
         "--camera-hz".into(),
         args.camera_hz.to_string(),
-        "--horizon".into(),
-        args.horizon.to_string(),
+        "--chunk".into(),
+        args.chunk.to_string(),
         "--replan-ms".into(),
         args.replan.to_string(),
         "--links".into(),
@@ -585,7 +585,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let stats = edge.stats();
     let result = json!({
         "config": {
-            "camera": args.camera, "camera_hz": args.camera_hz, "horizon": args.horizon,
+            "camera": args.camera, "camera_hz": args.camera_hz, "chunk": args.chunk,
             "replan_ms": args.replan, "links": args.links, "duration_s": duration_s,
             "controller": args.controller,
         },
@@ -620,7 +620,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
 }
 
 /// The bound policy of `--controller bound`: the ft wrench in (and the
-/// camera, so its frames cross the link), `horizon` 1 ms actions out.
+/// camera, so its frames cross the link), `chunk` 1 ms actions out.
 fn bound_policy(args: &Args) -> String {
     let camera = if args.camera == "off" {
         String::new()
@@ -631,16 +631,16 @@ fn bound_policy(args: &Args) -> String {
         r#"{{"hz": {hz},
             "inputs": {{"ft": {{"kind": "x/ft", "at": "ft", "fields": {{"wrench": ["float32", [18]]}}}}{camera}}},
             "actions": {{"cmd": {{"kind": "x/wrench_cmd", "at": "cmd", "command": "wrench",
-                                 "fields": {{"wrench": ["float32", [6]]}}, "hz": 1000, "horizon": {h}}}}}}}"#,
+                                 "fields": {{"wrench": ["float32", [6]]}}, "hz": 1000, "chunk": {h}}}}}}}"#,
         hz = 1000.0 / args.replan as f64,
-        h = args.horizon,
+        h = args.chunk,
     )
 }
 
 /// The "model" of `--controller bound`: hold the first six floats of the
-/// wrench for the whole horizon.
+/// wrench for the whole chunk.
 struct HoldWrench {
-    horizon: u32,
+    chunk: u32,
 }
 
 impl Predictor for HoldWrench {
@@ -659,8 +659,8 @@ impl Predictor for HoldWrench {
             "cmd".into(),
             ActionValue::Tensor(Tensor {
                 dtype: ft.dtype,
-                shape: vec![self.horizon, 6],
-                data: held.repeat(self.horizon as usize),
+                shape: vec![self.chunk, 6],
+                data: held.repeat(self.chunk as usize),
             }),
         )])
     }
@@ -684,11 +684,11 @@ async fn bound_controller(args: &Args, policy: Participant) -> Result<Value, Box
     // The embodiment measures warmup + duration after its first sample.
     let run_for = Duration::from_nanos((args.warmup_ns + args.duration_ns).unsigned_abs())
         + Duration::from_secs(2);
-    let horizon = u32::try_from(args.horizon)?;
+    let chunk = u32::try_from(args.chunk)?;
     let runner = controller.clone();
     tokio::task::spawn_blocking(move || {
         runner
-            .run(&mut HoldWrench { horizon }, Some(run_for))
+            .run(&mut HoldWrench { chunk }, Some(run_for))
             .map_err(|err| format!("{err:?}"))
     })
     .await??;
@@ -756,7 +756,7 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
     let send_errors = Arc::new(AtomicU64::new(0));
     // EWMA of the ft one-way delay: where the next chunk will land.
     let expected_ns = Arc::new(AtomicI64::new(0));
-    let (horizon, replan) = (args.horizon, args.replan);
+    let (chunk, replan) = (args.chunk, args.replan);
     let _ft = policy
         .subscribe(
             &robot,
@@ -787,10 +787,10 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
                         }
                         // The "model": hold the first six floats of the wrench.
                         let action = r.sample.payload.slice(..24.min(r.sample.payload.len()));
-                        let actions = if horizon == 1 {
+                        let actions = if chunk == 1 {
                             action
                         } else {
-                            Bytes::from(action.repeat(horizon))
+                            Bytes::from(action.repeat(chunk))
                         };
                         let draft = ChunkDraft {
                             based_on: vec![InputRange::one(ft, r.sample.seq)],

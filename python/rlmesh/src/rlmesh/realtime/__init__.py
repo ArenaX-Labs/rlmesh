@@ -92,7 +92,7 @@ __all__ = [
     "read_recording",
 ]
 
-#: A predict function: an observation in, one ``[horizon, ...]`` array (or a
+#: A predict function: an observation in, one ``[chunk, ...]`` array (or a
 #: dict of arrays) per action entry out.
 Predict = Callable[["Observation"], Mapping[str, Any]]
 
@@ -823,7 +823,7 @@ class Policy:
     ) -> dict[str, int | None]:
         """Send one timed chunk per action entry, computed from ``observation``.
 
-        ``actions`` maps each action entry to its ``[horizon, ...]`` array
+        ``actions`` maps each action entry to its ``[chunk, ...]`` array
         (or a dict of arrays). Returns each entry's chunk seq, or ``None``
         when this policy does not hold the part's lease.
         """

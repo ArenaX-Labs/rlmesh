@@ -44,7 +44,7 @@ SINE = {
     },
     "actions": {
         "arm": {"kind": "joints", "at": "arm", "command": "position", "names": UR_JOINTS,
-                "hz": 100, "horizon": 10},
+                "hz": 100, "chunk": 10},
     },
 }  # fmt: skip
 

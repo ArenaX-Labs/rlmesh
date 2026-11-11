@@ -36,7 +36,7 @@ const POLICY: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                        "hz": 100, "horizon": 5}}
+                        "hz": 100, "chunk": 5}}
 }"#;
 
 struct World {

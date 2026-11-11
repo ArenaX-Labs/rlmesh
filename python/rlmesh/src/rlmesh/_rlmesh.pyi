@@ -832,7 +832,7 @@ class V2Controller:
         """
     def actions(self) -> builtins.list[tuple[builtins.str, typing.Optional[builtins.str], builtins.int]]:
         r"""
-        Each bound action: `(entry, part path or None, horizon)`.
+        Each bound action: `(entry, part path or None, chunk)`.
         """
     def observe(self) -> V2Observation:
         r"""
@@ -843,7 +843,7 @@ class V2Controller:
         r"""
         Sends one chunk per action entry, computed from `observation`:
         `values` maps each action to `(dtype, shape, bytes)` or a dict of
-        them, `[horizon, ...]`. Returns each entry's chunk seq, or `None`
+        them, `[chunk, ...]`. Returns each entry's chunk seq, or `None`
         without the lease (or for a dropped entry).
         """
     def acquire(self) -> builtins.list[tuple[builtins.str, builtins.int]]:

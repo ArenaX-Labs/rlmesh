@@ -327,12 +327,7 @@ impl Binding {
                 rows.push(vec![
                     r.entry.clone(),
                     marked(format!("{} Hz", num(r.grid_hz)), r.grid_declared, "default"),
-                    format!(
-                        "{} × {} ms = {} ms",
-                        r.horizon,
-                        ms(r.dt),
-                        ms(r.dt * r.horizon)
-                    ),
+                    format!("{} × {} ms = {} ms", r.chunk, ms(r.dt), ms(r.dt * r.chunk)),
                     if r.status == Status::Dropped {
                         "-".into()
                     } else {

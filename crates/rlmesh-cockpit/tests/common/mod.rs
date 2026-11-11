@@ -35,7 +35,7 @@ pub const POLICY: &str = r#"{
     },
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
                         "names": ["shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3"],
-                        "hz": 500, "horizon": 20}},
+                        "hz": 500, "chunk": 20}},
     "allow": ["resize", "pad"]
 }"#;
 

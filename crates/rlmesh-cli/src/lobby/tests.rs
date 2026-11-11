@@ -26,7 +26,7 @@ const WAIT: Duration = Duration::from_secs(10);
 const ARM: &str = r#"{"arm": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 100,
     "command": "position", "hold_max_ms": 100}}"#;
 const PILOT: &str = r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
-    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position", "hz": 20, "horizon": 2}}}"#;
+    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position", "hz": 20, "chunk": 2}}}"#;
 
 fn scene(wait: &str) -> String {
     format!(

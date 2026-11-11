@@ -111,10 +111,7 @@ fn pi0_single_on_ur10e() {
     assert_eq!(plan(&b, "gripper"), "none");
     assert_eq!(plan(&b, "prompt"), "none");
     let arm = b.action("arm").expect("arm");
-    assert_eq!(
-        (arm.horizon, arm.dt),
-        (10, Duration::from_nanos(66_666_667))
-    );
+    assert_eq!((arm.chunk, arm.dt), (10, Duration::from_nanos(66_666_667)));
     assert_eq!(arm.plan.to_string(), "none; names identical");
     assert_eq!(
         b.action("gripper").expect("gripper").plan.to_string(),
@@ -274,7 +271,7 @@ fn force_policy_on_ur10e() {
     );
     let arm = b.action("arm").expect("arm");
     assert_eq!(
-        (arm.dt, arm.horizon, arm.valid),
+        (arm.dt, arm.chunk, arm.valid),
         (Duration::from_millis(10), 20, Duration::from_millis(150))
     );
     golden("force_policy__ur10e", &b.table());
@@ -515,8 +512,8 @@ fn a_custom_schema_binds_in_any_authored_field_order() {
 fn two_actions_on_one_command_group_are_refused() {
     let text = refusal_text(
         r#"{"hz": 10, "actions": {
-            "joints": {"kind": "joints", "at": "arm", "horizon": 1},
-            "cartesian": {"kind": "pose", "at": "arm/tcp", "command": "delta", "horizon": 1}}}"#,
+            "joints": {"kind": "joints", "at": "arm", "chunk": 1},
+            "cartesian": {"kind": "pose", "at": "arm/tcp", "command": "delta", "chunk": 1}}}"#,
         "ur10e",
     );
     assert!(text.contains("[duplicate_target] actions \"joints\" and \"cartesian\" command arm and arm/tcp, members of one command group \"arm\"."), "{text}");
@@ -528,16 +525,16 @@ fn a_part_that_cannot_hold_its_target_needs_chunks_that_outlast_a_replan() {
     // one 20 Hz action per 20 Hz replan leaves it waiting between chunks.
     let text = refusal_text(
         r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
-            "hz": 20, "horizon": 1}}}"#,
+            "hz": 20, "chunk": 1}}}"#,
         "go2",
     );
     assert!(
-        text.contains("can't hold its target between chunks") && text.contains("\"horizon\": 3"),
+        text.contains("can't hold its target between chunks") && text.contains("\"chunk\": 3"),
         "{text}"
     );
     inline(
         r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
-            "hz": 20, "horizon": 3}}}"#,
+            "hz": 20, "chunk": 3}}}"#,
         "go2",
     )
     .expect("three actions outlast a replan");
@@ -768,7 +765,7 @@ fn captures_scope_and_qualified_selectors() {
     );
     let policy = Policy::parse(
         r#"{"hz": 50, "inputs": {"goal": {"kind": "velocity", "at": "supervisor:goal/cmd_vel"}},
-            "actions": {"legs": {"kind": "joints", "at": "legs", "horizon": 1}}}"#,
+            "actions": {"legs": {"kind": "joints", "at": "legs", "chunk": 1}}}"#,
     )
     .expect("policy");
     // No robot named: the session's view, every robot under its name, so
