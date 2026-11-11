@@ -34,6 +34,13 @@ JOIN_BUDGET = 4096
 # A function of the C ABI's own frame: a sketch calls these from loop().
 FRAME_BUDGET = 1024
 
+# The transport's own tasks: each entry point and the function that returns
+# the stack it is created with.
+TASKS = (
+    ("verify_task", "rlmesh_zenoh_verify_stack"),
+    ("tx_task", "rlmesh_zenoh_tx_stack"),
+)
+
 ROOT = "loopTask(void*)"
 JOIN = "rlmesh::Robot::start(rlmesh_device_robot_config_t const&)"
 ABI_PREFIX = "rlmesh_device_"
@@ -242,6 +249,21 @@ def check(functions: dict[int, Function], elf: Path) -> list[str]:
         if total > JOIN_BUDGET:
             show(functions, join)
             problems.append(f"joining takes {total} bytes, over its {JOIN_BUDGET}")
+    for entry, size_fn in TASKS:
+        task = by_name.get(entry)
+        size = by_name.get(size_fn)
+        if task is None and size is None:
+            # A sketch without the transport (the Timing example).
+            continue
+        if task is None or size is None or size.returned is None:
+            problems.append(f"no {entry} or {size_fn} in {elf}")
+            continue
+        budget = size.returned - RTOS_RESERVE - MARGIN
+        total, _ = deepest(functions, task.address)
+        print(f"{elf.name}: {entry} deepest call {total} of {size.returned} bytes")
+        if total > budget:
+            show(functions, task)
+            problems.append(f"{entry} takes {total} bytes, over its {budget}")
     for function in functions.values():
         if function.name.startswith(ABI_PREFIX) and function.frame > FRAME_BUDGET:
             problems.append(

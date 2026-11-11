@@ -19,6 +19,10 @@ if [ ! -f "$zp_build/lib/libzenohpico.a" ]; then
 fi
 echo "==> rlmesh-device and its test host"
 cargo build -q -p rlmesh-device --lib --example test_host
+echo "==> the transport's send queue under a link that never drains it"
+cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -Iintegrations/esp32/transport \
+  integrations/esp32/test/txq_test.c -o "$out/txq_test"
+"$out/txq_test"
 echo "==> the board's loop"
 # The header the library compiles against, staged as build:esp32 does.
 cp crates/rlmesh-device/include/rlmesh_device.h integrations/esp32/src/
