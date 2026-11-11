@@ -114,7 +114,7 @@ run = "cargo fmt --all"
 
 [tasks."fmt:python"]
 description = "Format Python code"
-run = "uv run --no-sync ruff format"
+run = ["python scripts/dev/python_synced.py", "uv run --no-sync ruff format"]
 
 [tasks."fmt:proto"]
 description = "Format Protobuf definitions"
@@ -143,7 +143,7 @@ run = "cargo fmt --all --check"
 
 [tasks."fmt:check:python"]
 description = "Check Python formatting"
-run = "uv run --no-sync ruff format --check"
+run = ["python scripts/dev/python_synced.py", "uv run --no-sync ruff format --check"]
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings and examples (clang-format)"
@@ -175,7 +175,7 @@ run = "cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
 [tasks."fix:python"]
 description = "Apply safe Python lint fixes"
-run = "uv run --no-sync ruff check --fix"
+run = ["python scripts/dev/python_synced.py", "uv run --no-sync ruff check --fix"]
 
 # ──────────────────────────────────────────────
 # Lint (non-mutating)
@@ -194,7 +194,7 @@ run = [
 
 [tasks."lint:python"]
 description = "Lint Python code"
-run = "uv run --no-sync ruff check"
+run = ["python scripts/dev/python_synced.py", "uv run --no-sync ruff check"]
 
 [tasks."lint:proto"]
 description = "Lint Protobuf definitions"

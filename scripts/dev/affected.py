@@ -281,7 +281,14 @@ def main() -> None:
     if args.dry_run:
         return
 
-    # Same as test:rust: tests that embed Python need the venv's site-packages.
+    # Same as test:rust: tests that embed Python need the venv's site-packages,
+    # synced (a new worktree's is empty). This task holds the heavy lock, so it
+    # syncs rather than stops.
+    embeds = selection.rust is None or EXTENSION_PACKAGE in selection.rust
+    if (embeds or selection.python) and run(
+        [sys.executable, str(ROOT / "scripts/dev/python_synced.py"), "--sync"]
+    ):
+        sys.exit(1)
     env = dict(os.environ, PYTHONPATH=sysconfig.get_path("purelib"))
     status = 0
     if selection.rust is None:
