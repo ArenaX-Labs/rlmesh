@@ -208,6 +208,26 @@ actually dispatched (`eye-1/eyes/_applied`, `eye-2/eyes/_applied`); an eye
 that held keeps its last action. `rlmesh cockpit --replay DIR` plays a
 recording back.
 
+## Switches and values
+
+Not every part is a joint. A `switch` is one on/off `on` field: an LED, a
+relay or a valve when commanded (`command: "set"`), a button when not. A
+`value` is one float, with an optional `unit` and `range`: a thermometer
+when observed, a dimmer when commanded (`command: "set"`).
+
+```python
+LAMP = {
+    "relay": parts.switch(hz=10, command="set", safe=parts.Safe.STOP),
+    "button": parts.switch(hz=50),
+    "dimmer": parts.value(hz=20, unit="percent", range=(0, 100),
+                          command="set", safe=parts.Safe.HOLD),
+    "temp": parts.value(hz=1, unit="degC"),
+}
+```
+
+A policy addresses them by kind like any other part, and a chunk for a
+switch is an array of booleans, one per action.
+
 ## Safety
 
 - The session starts disarmed; nothing moves until it is armed.

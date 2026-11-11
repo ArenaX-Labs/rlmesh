@@ -924,3 +924,12 @@ fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
     );
     golden("spans__eyeball_rig__refused", &refusal.to_string());
 }
+
+#[test]
+fn switches_and_values_bind_by_kind() {
+    let binding = bound("lamp_keeper", "lamp", RunOptions::named("lamp_keeper"));
+    golden("lamp_keeper__lamp", &binding.table());
+    let relay = binding.action("relay").expect("relay");
+    assert_eq!(relay.delivers.to_string(), "bool [1]");
+    assert_eq!(relay.chunk, 1);
+}

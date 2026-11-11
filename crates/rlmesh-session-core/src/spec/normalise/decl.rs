@@ -6,7 +6,7 @@ use crate::prelude::*;
 use core::fmt;
 
 use serde::Deserialize;
-use serde::de::value::MapAccessDeserializer;
+use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 
 use crate::spec::kinds::Kind;
@@ -79,6 +79,39 @@ impl<'de> Deserialize<'de> for FieldsDecl {
         }
 
         deserializer.deserialize_any(FieldsVisitor)
+    }
+}
+
+/// A part's `range`: `[low, high]` (a `value` part), or
+/// `{field: [low, high]}` (any other kind).
+pub(super) enum RangeDecl {
+    /// The bounds of the part's one field.
+    Bounds([f64; 2]),
+    /// The bounds of each named field.
+    Fields(Ordered<[f64; 2]>),
+}
+
+impl<'de> Deserialize<'de> for RangeDecl {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct RangeVisitor;
+
+        impl<'de> Visitor<'de> for RangeVisitor {
+            type Value = RangeDecl;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("[low, high], or {field: [low, high]}")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                <[f64; 2]>::deserialize(SeqAccessDeserializer::new(seq)).map(RangeDecl::Bounds)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                Ordered::deserialize(MapAccessDeserializer::new(map)).map(RangeDecl::Fields)
+            }
+        }
+
+        deserializer.deserialize_any(RangeVisitor)
     }
 }
 
@@ -158,6 +191,8 @@ pub(super) fn allowed(kind: Kind) -> Vec<&'static str> {
             "reference",
         ],
         Kind::Gripper => &["dtype", "units", "range", "width_m", "binary"],
+        Kind::Switch => &[],
+        Kind::Value => &["unit", "range"],
         Kind::Velocity => &["frame", "dof", "dtype", "units", "range"],
         Kind::Tactile => &["shape", "layout", "dtype", "units", "range"],
         Kind::Custom => &["frame", "units", "range", "fields", "command_fields"],

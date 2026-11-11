@@ -4495,8 +4495,10 @@
       "pose",
       "reward",
       "success",
+      "switch",
       "tactile",
       "text",
+      "value",
       "velocity",
       "wrench"
     ],
@@ -4574,6 +4576,11 @@
         "signature": "success(*, priority: str | None = None, doc: str | None = None) -> Part",
         "stability": "Experimental"
       },
+      "switch": {
+        "kind": "function",
+        "signature": "switch(*, hz: float, command: str | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      },
       "tactile": {
         "kind": "function",
         "signature": "tactile(shape: Sequence[int], *, hz: float, layout: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
@@ -4582,6 +4589,11 @@
       "text": {
         "kind": "function",
         "signature": "text(*, priority: str | None = None, doc: str | None = None) -> Part",
+        "stability": "Experimental"
+      },
+      "value": {
+        "kind": "function",
+        "signature": "value(*, hz: float, unit: str | None = None, range: Sequence[float] | None = None, command: str | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       },
       "velocity": {

@@ -9,6 +9,8 @@
 //! | `imu` | `orientation [R]`, `ang_vel [3] rad/s`, `lin_acc [3] m/s^2`, `gravity [3]` | none | `every` | realtime |
 //! | `pose` | `pos [3] m`, `rot [R]` | `absolute` → `pos`, `rot`; `delta` → `pos [3] m`, `rot [3]` axis-angle | `every` | realtime |
 //! | `gripper` | `pos [1]`, 0 closed … 1 open | `position` → `pos` | `every` | realtime |
+//! | `switch` | `on: bool []` | `set` → `on` | `every` | realtime |
+//! | `value` | `value: f32 []`, in its declared `unit` | `set` → `value` | `every` | realtime |
 //! | `velocity` | planar `linear [2] m/s`, `angular [1] rad/s`; spatial `[3]`, `[3]` | `velocity` → both | `every` | realtime |
 //! | `tactile` | `values [shape]` normalized | none | `every` | data |
 //! | `text`, `reward`, `success` | `text: utf8`, `reward: f32 []`, `success: bool []` | none | event | data |
@@ -49,6 +51,10 @@ pub enum Kind {
     Pose,
     /// A gripper opening.
     Gripper,
+    /// An on/off output or input: an LED, a relay, a button.
+    Switch,
+    /// One number: a thermometer, a dimmer.
+    Value,
     /// A base twist.
     Velocity,
     /// Taxels.
@@ -65,7 +71,7 @@ pub enum Kind {
 
 impl Kind {
     /// The core kinds.
-    pub const CORE: [Self; 13] = [
+    pub const CORE: [Self; 15] = [
         Self::Camera,
         Self::Depth,
         Self::Joints,
@@ -74,6 +80,8 @@ impl Kind {
         Self::Imu,
         Self::Pose,
         Self::Gripper,
+        Self::Switch,
+        Self::Value,
         Self::Velocity,
         Self::Tactile,
         Self::Text,
@@ -115,6 +123,8 @@ impl Kind {
             Self::Imu => "imu",
             Self::Pose => "pose",
             Self::Gripper => "gripper",
+            Self::Switch => "switch",
+            Self::Value => "value",
             Self::Velocity => "velocity",
             Self::Tactile => "tactile",
             Self::Text => "text",
@@ -147,6 +157,7 @@ impl Kind {
             Self::Wrench => &["wrench"],
             Self::Pose => &["absolute", "delta"],
             Self::Gripper => &["position"],
+            Self::Switch | Self::Value => &["set"],
             Self::Velocity => &["velocity"],
             _ => &[],
         }
@@ -157,7 +168,9 @@ impl Kind {
     pub fn holds_target(self, mode: &str) -> bool {
         matches!(
             (self, mode),
-            (Self::Joints | Self::Hand | Self::Gripper, "position") | (Self::Pose, "absolute")
+            (Self::Joints | Self::Hand | Self::Gripper, "position")
+                | (Self::Pose, "absolute")
+                | (Self::Switch | Self::Value, "set")
         )
     }
 
@@ -182,6 +195,8 @@ impl Kind {
             Self::Imu => "an IMU",
             Self::Pose => "a pose part",
             Self::Gripper => "a gripper",
+            Self::Switch => "a switch",
+            Self::Value => "a value part",
             Self::Velocity => "a velocity part",
             Self::Tactile => "a tactile sensor",
             Self::Text => "a text part",
@@ -198,6 +213,7 @@ impl Kind {
             Self::Imu => "IMU readings",
             Self::Pose => "poses",
             Self::Velocity => "velocities",
+            Self::Switch => "switch states",
             Self::Camera | Self::Depth => "images",
             _ => "values",
         }
@@ -210,6 +226,7 @@ impl Kind {
             Self::Imu => "IMU reading",
             Self::Pose => "pose",
             Self::Velocity => "velocity",
+            Self::Switch => "switch state",
             Self::Camera | Self::Depth => "image",
             _ => "value",
         }
@@ -245,6 +262,7 @@ pub fn quantity(kind: Kind, field: &str, unit: &str) -> Quantity {
         (Kind::Pose, "pos") => Quantity::Length,
         (Kind::Velocity, "linear") => Quantity::LinearVelocity,
         (Kind::Gripper, "pos") => Quantity::Gripper,
+        (Kind::Value, "value") => Quantity::Custom,
         (Kind::Depth, "depth") => Quantity::Length,
         (Kind::Tactile, "values") => Quantity::Tactile,
         (Kind::Custom, _) => Quantity::Custom,
@@ -279,6 +297,12 @@ mod tests {
         }
         assert!(Kind::Pose.holds_target("absolute") && !Kind::Pose.holds_target("delta"));
         assert!(!Kind::Joints.holds_target("velocity"));
+        assert_eq!(Kind::parse("switch"), Ok(Kind::Switch));
+        assert_eq!(Kind::parse("value"), Ok(Kind::Value));
+        for kind in [Kind::Switch, Kind::Value] {
+            assert_eq!(kind.command_modes(), ["set"]);
+            assert!(kind.holds_target("set"));
+        }
     }
 
     #[test]

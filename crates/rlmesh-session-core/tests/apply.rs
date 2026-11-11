@@ -319,3 +319,20 @@ fn untouched_u8_images_pass_through_as_bytes_hwc_or_chw() {
         ]
     );
 }
+
+#[test]
+fn a_switch_chunk_packs_booleans_and_a_value_chunk_floats() {
+    let lamp = binding("lamp_keeper", "lamp");
+    let relay = lamp.action("relay").expect("relay");
+    let on = Tensor::from_f64(DType::Bool, vec![1], &[1.0]);
+    assert_eq!(
+        relay.pack(&Value::Tensor(on)).expect("pack"),
+        [1, 0, 0, 0, 0, 0, 0, 0],
+        "one bool at an 8-byte stride"
+    );
+    let dimmer = lamp.action("dimmer").expect("dimmer");
+    let level = Tensor::from_f64(DType::F32, vec![1], &[42.5]);
+    let packed = dimmer.pack(&Value::Tensor(level)).expect("pack");
+    assert_eq!(packed.len(), 8);
+    assert_eq!(packed[..4], 42.5_f32.to_le_bytes());
+}

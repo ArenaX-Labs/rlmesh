@@ -380,3 +380,96 @@ fn a_safe_behaviour_is_any_identifier_passed_through_uninterpreted() {
     );
     assert!(bad.message.contains("safe"), "{}", bad.message);
 }
+
+#[test]
+fn a_switch_is_one_bool_and_holds_its_target() {
+    let lamp = parts(
+        r#"{"led": {"kind": "switch", "hz": 10, "command": "set", "safe": "stop"},
+            "button": {"kind": "switch", "hz": 50}}"#,
+    );
+    assert_eq!(
+        shapes(&lamp[0]),
+        [("on".into(), DType::Bool, vec![], String::new())]
+    );
+    let command = lamp[0].command.as_ref().expect("commanded");
+    assert_eq!(
+        (
+            command.mode.as_str(),
+            command.fields.len(),
+            command.hold_last
+        ),
+        ("set", 1, true)
+    );
+    assert_eq!(
+        (lamp[0].priority, lamp[0].send.as_str()),
+        (ChannelPriority::Realtime, "every")
+    );
+    assert!(lamp[1].command.is_none(), "a button is observe-only");
+}
+
+#[test]
+fn a_value_is_one_float_with_an_optional_unit_and_range() {
+    let room = parts(
+        r#"{"temp": {"kind": "value", "hz": 1, "unit": "degC", "range": [-40, 125]},
+            "dimmer": {"kind": "value", "hz": 20, "command": "set", "safe": "hold"},
+            "bare": {"kind": "value", "hz": 1}}"#,
+    );
+    assert_eq!(
+        shapes(&room[0]),
+        [("value".into(), DType::F32, vec![], "degC".into())]
+    );
+    assert_eq!(room[0].attrs[attrs::RANGE], r#"{"value":[-40,125]}"#);
+    assert!(room[0].command.is_none(), "a thermometer is observe-only");
+    let command = room[1].command.as_ref().expect("commanded");
+    assert_eq!((command.mode.as_str(), command.hold_last), ("set", true));
+    assert_eq!(shapes(&room[2])[0].3, "", "unitless by default");
+}
+
+#[test]
+fn switches_and_values_refuse_what_does_not_apply() {
+    let cases = [
+        (
+            r#"{"s": {"kind": "switch", "hz": 1, "command": "position", "safe": "stop"}}"#,
+            "takes set",
+        ),
+        (
+            r#"{"s": {"kind": "switch", "hz": 1, "command": "set"}}"#,
+            "safe",
+        ),
+        (
+            r#"{"s": {"kind": "switch", "hz": 1, "unit": "V"}}"#,
+            "unit does not apply",
+        ),
+        (r#"{"s": {"kind": "switch"}}"#, "hz is required"),
+        (
+            r#"{"s": {"kind": "switch", "hz": 1, "command": "set", "safe": "stop", "limits": {"on": [0, 1]}}}"#,
+            "only on float32",
+        ),
+        (
+            r#"{"v": {"kind": "value", "hz": 1, "dtype": "float64"}}"#,
+            "dtype does not apply",
+        ),
+        (
+            r#"{"v": {"kind": "value", "hz": 1, "units": {"value": "V"}}}"#,
+            "units does not apply",
+        ),
+        (
+            r#"{"v": {"kind": "value", "hz": 1, "range": {"value": [0, 1]}}}"#,
+            "range is [low, high]",
+        ),
+        (
+            r#"{"v": {"kind": "value", "hz": 1, "range": [1, 0]}}"#,
+            "low < high",
+        ),
+        (r#"{"v": {"kind": "value", "hz": 1, "unit": ""}}"#, "unit"),
+        (
+            r#"{"a": {"kind": "joints", "count": 1, "hz": 1, "range": [0, 1]}}"#,
+            "range is {field",
+        ),
+    ];
+    for (json, needle) in cases {
+        let err = refused(json);
+        assert_eq!(err.status, CtlStatus::InvalidRequest, "{json}: {err}");
+        assert!(err.message.contains(needle), "{json}: {}", err.message);
+    }
+}

@@ -184,3 +184,19 @@ def test_a_safe_is_compared_by_name() -> None:
 def test_a_safe_is_accepted_in_a_plain_map() -> None:
     plain = {"arm": {"kind": "joints", "count": 1, "safe": parts.Safe.HOLD}}
     assert json.loads(realtime._json(plain))["arm"]["safe"] == "hold"
+
+
+def test_the_lamp_is_its_fixture() -> None:
+    assert {
+        "relay": parts.switch(hz=10, command="set", safe=parts.Safe.STOP),
+        "button": parts.switch(hz=50),
+        "dimmer": parts.value(
+            hz=20,
+            unit="percent",
+            range=(0, 100),
+            command="set",
+            safe=parts.Safe.HOLD,
+            limits={"value": [0, 100]},
+        ),
+        "temp": parts.value(hz=1, unit="degC", range=(-40, 125)),
+    } == fixture("lamp")

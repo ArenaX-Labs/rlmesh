@@ -6,7 +6,7 @@ use super::check::{
     apply_units, field, float_dtype, invalid, limits, millis, name, optional_fields, pair, rate,
     rotation_field, schema,
 };
-use super::decl::{COMMAND, FieldsDecl, LimitDecl, Ordered, allowed};
+use super::decl::{COMMAND, FieldsDecl, LimitDecl, Ordered, RangeDecl, allowed};
 use super::{MAX_DOC_LEN, MAX_ELEMENT_NAME_LEN, MAX_JOINTS};
 use crate::prelude::*;
 
@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use crate::spec::canonical;
 use crate::spec::kinds::{Kind, joint_quantity, quantity};
 use crate::spec::rotation::Rotation;
-use crate::spec::units::NORMALIZED;
+use crate::spec::units::{NORMALIZED, Quantity};
 
 #[derive(Deserialize)]
 pub(super) struct PartDecl {
@@ -33,7 +33,8 @@ pub(super) struct PartDecl {
     frame: Option<String>,
     dtype: Option<String>,
     units: Option<Ordered<String>>,
-    range: Option<Ordered<[f64; 2]>>,
+    unit: Option<String>,
+    range: Option<RangeDecl>,
     max_age_ms: Option<f64>,
     fields: Option<FieldsDecl>,
     priority: Option<String>,
@@ -75,13 +76,14 @@ pub(super) struct PartDecl {
 impl PartDecl {
     /// The keys this declaration sets.
     fn present(&self) -> Vec<&'static str> {
-        let keys: [(&'static str, bool); 41] = [
+        let keys: [(&'static str, bool); 42] = [
             ("kind", true),
             ("hz", self.hz.is_some()),
             ("send", self.send.is_some()),
             ("frame", self.frame.is_some()),
             ("dtype", self.dtype.is_some()),
             ("units", self.units.is_some()),
+            ("unit", self.unit.is_some()),
             ("range", self.range.is_some()),
             ("max_age_ms", self.max_age_ms.is_some()),
             ("fields", self.fields.is_some()),
@@ -286,6 +288,20 @@ fn lower(path: &str, kind: Kind, decl: &mut PartDecl) -> Result<Lowered, CtlErro
             let command = (mode.as_deref() == Some("position")).then(|| fields.clone());
             (fields, command)
         }
+        Kind::Switch => {
+            let fields = vec![field("on", DType::Bool, &[], "")];
+            let command = (mode.as_deref() == Some("set")).then(|| fields.clone());
+            (fields, command)
+        }
+        Kind::Value => {
+            let unit = decl.unit.as_deref();
+            if let Some(unit) = unit.filter(|u| !Quantity::Custom.accepts(u)) {
+                return Err(invalid(path, format!("unit {unit:?}: 1 to 32 bytes")));
+            }
+            let fields = vec![field("value", DType::F32, &[], unit.unwrap_or(""))];
+            let command = (mode.as_deref() == Some("set")).then(|| fields.clone());
+            (fields, command)
+        }
         Kind::Velocity => {
             let dtype = float_dtype(path, decl.dtype.as_deref())?;
             let (linear, angular) = match decl.dof.as_deref() {
@@ -456,8 +472,18 @@ pub(super) fn part(
     let layout = Layout::of(&fields).map_err(|err| invalid(path, err))?;
 
     if let Some(range) = decl.range.take() {
+        let ranges = match (kind, range) {
+            (Kind::Value, RangeDecl::Bounds(bounds)) => vec![("value".to_string(), bounds)],
+            (Kind::Value, RangeDecl::Fields(_)) => {
+                return Err(invalid(path, "range is [low, high]"));
+            }
+            (_, RangeDecl::Bounds(_)) => {
+                return Err(invalid(path, "range is {field: [low, high]}"));
+            }
+            (_, RangeDecl::Fields(ranges)) => ranges.0,
+        };
         let mut map = serde_json::Map::new();
-        for (key, bounds) in range.0 {
+        for (key, bounds) in ranges {
             if !fields.iter().any(|f| f.name == key) {
                 return Err(invalid(path, format!("range on unknown field {key:?}")));
             }
