@@ -87,8 +87,8 @@ impl ModelLink {
             // server went away while the request was in flight.
             if started.elapsed() + crate::lockstep::exchange::ENDED_EARLY < timeout {
                 GymError::Closed(
-                    "the served model went away before it answered: its server exited or left \
-                     the session"
+                    "the served model went away before it answered: its server exited, left \
+                     the session, or the link to it was lost"
                         .to_owned(),
                 )
             } else {

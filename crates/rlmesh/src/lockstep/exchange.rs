@@ -427,8 +427,9 @@ impl ZenohLink {
 }
 
 /// A request whose replies ended with none: a timeout when its time ran
-/// out, else the env's server went away while it was in flight (its
-/// process exited or it left the session), which waiting would not mend.
+/// out, else the env went away while it was in flight (its process exited,
+/// it left the session, or the link to it dropped), which waiting would
+/// not mend.
 pub(crate) fn unanswered(
     robot: &ParticipantId,
     started: tokio::time::Instant,
@@ -436,8 +437,8 @@ pub(crate) fn unanswered(
 ) -> GymError {
     if started.elapsed() + ENDED_EARLY < timeout {
         GymError::Closed(format!(
-            "the served env '{robot}' went away before it answered: its server exited or left the \
-             session"
+            "the served env '{robot}' went away before it answered: its server exited, left the \
+             session, or the link to it was lost"
         ))
     } else {
         GymError::Timeout(timeout)
