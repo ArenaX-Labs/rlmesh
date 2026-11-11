@@ -92,7 +92,14 @@ pub fn open_view(
     if verified.header.kind != SignedKind::DeviceView {
         return Err(SignedError::UnknownKind(verified.header.kind.as_u8()).into());
     }
-    let view = codec::decode_view(verified.body)?;
+    decode_view_of(keyexpr, verified.body)
+}
+
+/// A verified view's body. Its own function so the decoder's frame isn't
+/// underneath the signature check, a board's deepest call.
+#[inline(never)]
+fn decode_view_of(keyexpr: &str, body: &[u8]) -> Result<DeviceView, LinkError> {
+    let view = codec::decode_view(body)?;
     if keyexpr.rsplit('/').next() != Some(view.robot.as_str()) {
         return Err(WireError::malformed("device view", "another robot's").into());
     }
@@ -127,6 +134,20 @@ pub fn open_health(
         return Err(SignedError::UnknownKind(verified.header.kind.as_u8()).into());
     }
     Ok(codec::decode_health(verified.body)?)
+}
+
+/// The unsealed `UNAUTHENTICATED` refusal `msg` is, if it is one. Its own
+/// function so a decoded reply isn't held on the stack while the real one
+/// is opened and decoded.
+#[inline(never)]
+fn unauthenticated_refusal(msg: &[u8]) -> Option<CtlError> {
+    match codec::decode_view_reply(msg) {
+        Ok(ViewReply {
+            result: Err(refusal),
+            ..
+        }) if refusal.status == CtlStatus::Unauthenticated => Some(refusal),
+        _ => None,
+    }
 }
 
 /// A participant generation's link to the host:
@@ -536,7 +557,7 @@ impl Link {
         request_id: u64,
         now_ns: i64,
     ) -> Result<ReplyOutcome<ViewReply>, LinkError> {
-        let plain = codec::decode_view_reply(msg);
+        let refused = unauthenticated_refusal(msg);
         match self.down.open(keyexpr, msg) {
             Ok(opened) => {
                 let reply = codec::decode_view_reply(opened.body)?;
@@ -553,15 +574,7 @@ impl Link {
                     ReplyOutcome::Other(reply.request_id)
                 })
             }
-            Err(err) => match plain {
-                Ok(ViewReply {
-                    result: Err(refusal),
-                    ..
-                }) if refusal.status == CtlStatus::Unauthenticated => {
-                    Ok(ReplyOutcome::Hint(refusal))
-                }
-                _ => Err(err.into()),
-            },
+            Err(err) => refused.map_or(Err(err.into()), |r| Ok(ReplyOutcome::Hint(r))),
         }
     }
 

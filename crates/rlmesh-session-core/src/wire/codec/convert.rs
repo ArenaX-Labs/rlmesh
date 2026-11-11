@@ -8,14 +8,20 @@ use crate::wire::authority::{ClockMode, Mode, PriorityClass, Role};
 use crate::wire::error::WireError;
 use crate::wire::ids::{ChannelId, Fingerprint};
 
+/// A plain loop: `collect`'s iterator adapters each keep a copy of an item
+/// in their own stack frame, and the items are large.
 pub(super) fn collect<T, U, E>(
     items: Vec<T>,
-    f: impl FnMut(T) -> Result<U, E>,
+    mut f: impl FnMut(T) -> Result<U, E>,
 ) -> Result<Vec<U>, WireError>
 where
     WireError: From<E>,
 {
-    Ok(items.into_iter().map(f).collect::<Result<Vec<U>, E>>()?)
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        out.push(f(item)?);
+    }
+    Ok(out)
 }
 
 pub(super) fn bad_enum(what: &'static str, raw: i32) -> WireError {

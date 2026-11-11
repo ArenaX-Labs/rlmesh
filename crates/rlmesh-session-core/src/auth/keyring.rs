@@ -349,7 +349,11 @@ impl Keyring {
             self.held.clear();
             return;
         }
-        let live: BTreeSet<LeaseToken> = snapshot.leases().iter().map(|l| l.token).collect();
+        // Inserted one by one: `collect` sorts first, with a 4 KB stack buffer.
+        let mut live = BTreeSet::new();
+        for lease in snapshot.leases() {
+            live.insert(lease.token);
+        }
         let gone = &mut self.gone;
         self.held.retain(|id, held| {
             if held.scope.purpose.rotates() {

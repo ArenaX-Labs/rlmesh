@@ -4,7 +4,6 @@ use super::convert::{bad_enum, collect};
 use super::pb;
 use crate::prelude::*;
 
-use alloc::collections::BTreeMap;
 use core::time::Duration;
 
 use crate::wire::error::WireError;
@@ -181,7 +180,7 @@ pub(super) fn part_from_pb(p: pb::PartSpec) -> Result<PartSpec, WireError> {
         encoding,
         max_age: (p.max_age_ns > 0).then(|| Duration::from_nanos(p.max_age_ns)),
         command: p.command.map(command_from_pb).transpose()?,
-        attrs: p.attrs.into_iter().collect::<BTreeMap<_, _>>(),
+        attrs: p.attrs,
         priority: channel_priority_from_pb(p.priority)?,
         owner: ParticipantId::new(p.owner)?,
         event: p.event,
