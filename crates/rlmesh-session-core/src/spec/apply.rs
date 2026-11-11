@@ -820,9 +820,69 @@ impl ActionRow {
     }
 }
 
+/// Splits actions [`ActionRow::pack`] produced for a part whose command
+/// declares `fields` into one array per field, `[chunk, ...]`: the actions
+/// as the part's edge would receive them.
+pub fn unpack_actions(fields: &[FieldSpec], packed: &[u8]) -> Result<Value, ApplyError> {
+    let layout = Layout::of(fields).map_err(err)?;
+    let stride = layout.stride().ok_or_else(|| err("a text command"))?;
+    if !packed.len().is_multiple_of(stride) {
+        return Err(err(format!(
+            "{} bytes, not a whole number of {stride}-byte actions",
+            packed.len()
+        )));
+    }
+    let chunk = packed.len() / stride;
+    let mut out = Vec::with_capacity(fields.len());
+    for (i, field) in fields.iter().enumerate() {
+        let range = layout.field(i).ok_or_else(|| err("layout"))?;
+        let mut data = Vec::with_capacity(chunk * range.len());
+        for action in packed.chunks_exact(stride) {
+            data.extend_from_slice(&action[range.clone()]);
+        }
+        let mut shape = vec![u32::try_from(chunk).map_err(|_| err("too many actions"))?];
+        shape.extend(&field.shape);
+        out.push((
+            field.name.clone(),
+            Tensor {
+                dtype: field.dtype,
+                shape,
+                data,
+            },
+        ));
+    }
+    Ok(Value::Dict(out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpacked_actions_are_one_array_per_command_field() {
+        let fields = [
+            FieldSpec::new("pos", DType::F32, &[2]),
+            FieldSpec::new("open", DType::Bool, &[]),
+        ];
+        let layout = Layout::of(&fields).expect("layout");
+        let stride = layout.stride().expect("packed");
+        let mut packed = vec![0_u8; 3 * stride];
+        for (i, action) in packed.chunks_exact_mut(stride).enumerate() {
+            let pos = encode(DType::F32, &[i as f64, -(i as f64)]);
+            action[layout.field(0).expect("pos")].copy_from_slice(&pos);
+            action[layout.field(1).expect("open")][0] = u8::from(i == 1);
+        }
+        let Value::Dict(unpacked) = unpack_actions(&fields, &packed).expect("unpack") else {
+            panic!("a dict");
+        };
+        let (name, pos) = &unpacked[0];
+        assert_eq!((name.as_str(), pos.shape.as_slice()), ("pos", &[3, 2][..]));
+        assert_eq!(pos.to_f64(), [0.0, -0.0, 1.0, -1.0, 2.0, -2.0]);
+        let (name, open) = &unpacked[1];
+        assert_eq!((name.as_str(), open.shape.as_slice()), ("open", &[3][..]));
+        assert_eq!(open.data, [0, 1, 0]);
+        assert!(unpack_actions(&fields, &packed[1..]).is_err());
+    }
 
     #[test]
     fn casts_round_half_away_from_zero_and_saturate() {

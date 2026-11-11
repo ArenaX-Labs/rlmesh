@@ -15,8 +15,8 @@ use rlmesh_session::wire::{
 };
 use rlmesh_session::{
     AuthorityEvent, Controller, ControllerConfig, HostConfig, Observation, Participant,
-    ParticipantConfig, Predictor, RunError, SessionHost, SkipReason, SystemMonotonicClock,
-    Transport, TransportConfig,
+    ParticipantConfig, Predictor, RunConfig, RunError, SessionHost, SkipReason,
+    SystemMonotonicClock, Transport, TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -212,7 +212,10 @@ fn run_in_thread(
     let controller = controller.clone();
     std::thread::spawn(move || {
         let mut model = Constant { target, seen: 0 };
-        let result = controller.run(&mut model, Some(Duration::from_secs(30)));
+        let result = controller.run(
+            &mut model,
+            RunConfig::default().duration(Duration::from_secs(30)),
+        );
         (result, model.seen)
     })
 }
@@ -351,9 +354,11 @@ async fn a_failing_model_stops_sending_and_lets_go_of_the_robot() {
     let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
     let result = {
         let model = model.clone();
-        tokio::task::spawn_blocking(move || model.run(&mut Failing(0), Some(WAIT)))
-            .await
-            .expect("run")
+        tokio::task::spawn_blocking(move || {
+            model.run(&mut Failing(0), RunConfig::default().duration(WAIT))
+        })
+        .await
+        .expect("run")
     };
     assert!(matches!(result, Err(RunError::Predict(ref e)) if e == "the model crashed"));
     assert!(!model.holds());
@@ -622,7 +627,10 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     let run = {
         let tracker = tracker.clone();
         std::thread::spawn(move || {
-            tracker.run(&mut Gaze { target: 0.25 }, Some(Duration::from_secs(60)))
+            tracker.run(
+                &mut Gaze { target: 0.25 },
+                RunConfig::default().duration(Duration::from_secs(60)),
+            )
         })
     };
     let started = Instant::now();
@@ -775,7 +783,10 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
     let run = {
         let tracker = tracker.clone();
         std::thread::spawn(move || {
-            tracker.run(&mut Gaze { target: 0.25 }, Some(Duration::from_secs(60)))
+            tracker.run(
+                &mut Gaze { target: 0.25 },
+                RunConfig::default().duration(Duration::from_secs(60)),
+            )
         })
     };
     let started = Instant::now();
@@ -1136,7 +1147,7 @@ async fn a_run_on_a_disarmed_session_says_it_waits_to_be_armed() {
     assert!(waiting.starts_with("the session is DISARMED"), "{waiting}");
     let run = {
         let controller = controller.clone();
-        std::thread::spawn(move || controller.run(&mut Echo, None))
+        std::thread::spawn(move || controller.run(&mut Echo, RunConfig::default()))
     };
     let waits = |controller: &Controller| {
         controller

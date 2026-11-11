@@ -18,7 +18,7 @@ use rlmesh_session::spec::RunOptions;
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::wire::{DType, PairInfo, TenantId};
 use rlmesh_session::wire::{Mode, ReasonCode, Role};
-use rlmesh_session::{Controller, Observation, Predictor, RunError};
+use rlmesh_session::{Controller, Observation, Predictor, RunConfig, RunError};
 
 use super::*;
 
@@ -473,7 +473,7 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
     });
     let running = std::thread::spawn({
         let pilot = pilot.clone();
-        move || pilot.run(&mut Hold, None)
+        move || pilot.run(&mut Hold, RunConfig::default())
     });
     // Attached under its name but not declared: still rejoining.
     let (_, back) = wait_for_join(&lobby, &mut me, "arm", Some(WAIT * 3))
@@ -584,7 +584,7 @@ async fn a_lost_robot_that_misses_the_rejoin_window_fails_the_run() {
     );
     let running = std::thread::spawn({
         let pilot = pilot.clone();
-        move || pilot.run(&mut Hold, None)
+        move || pilot.run(&mut Hold, RunConfig::default())
     });
     let state = until(&client, state, |s| s.stage == RunStage::Running).await;
     lose(robot);

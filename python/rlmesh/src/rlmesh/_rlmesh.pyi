@@ -868,13 +868,17 @@ class V2Controller:
         r"""
         Whether this policy holds every lease its binding commands.
         """
-    def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None) -> None:
+    def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None, mode: builtins.str = ..., on_step: collections.abc.Callable[[dict[builtins.str, typing.Any]], None] | None = None) -> None:
         r"""
         Runs the policy loop on this thread until `stop()`,
         `duration_s`, or a failure, calling `predict(observation)` at the
-        replan rate with one inference in flight. If `predict` raises, the
-        leases are released and the exception propagates; if the robot or
-        the host is lost, it raises `SessionLost`.
+        replan rate with one inference in flight. `mode` is `command`, or
+        `shadow` to predict without a lease and send nothing until it holds
+        one; `on_step(step)` gets each completed start as a dict (`shadow`,
+        `time_ns`, and per action entry its `actions` as the edge receives
+        them, `parts` and chunk `seqs`). If `predict` or `on_step` raises,
+        the leases are released and the exception propagates; if the robot
+        or the host is lost, it raises `SessionLost`.
         """
     def stop(self) -> None:
         r"""

@@ -118,7 +118,7 @@ interface NativeEdgeStats {
 interface NativeStats {
   alignedTo?: string | null; phaseOffsetMs: number;
   starts: number; completions: number; skipped: { reason: string; count: number }[];
-  chunksSent: number; sendErrors: number;
+  chunksSent: number; shadowPredictions: number; sendErrors: number;
   latencyP50Ms?: number | null; latencyP99Ms?: number | null; latencyMaxMs?: number | null;
   drifting: boolean;
 }
@@ -147,12 +147,22 @@ interface NativePolicy {
   acquire(): Promise<{ path: string; token: bigint }[]>;
   release(): Promise<void>;
   holds(): boolean;
-  run(predict: (obs: NativeObservation) => void, durationS?: number | null): Promise<NativeStats>;
+  run(
+    predict: (obs: NativeObservation) => void,
+    durationS?: number | null,
+    mode?: RunMode | null,
+    onStep?: ((step: NativeStep) => void) | null,
+  ): Promise<NativeStats>;
   reply(values: NativeEntry[] | null, error: string | null): void;
   stop(): void;
   stats(): NativeStats;
   events(): Record<string, unknown>[];
   close(): Promise<void>;
+}
+interface NativeStep {
+  readonly shadow: boolean;
+  readonly timeNs: bigint;
+  takeActions(): { entry: string; part?: string | null; seq?: number | null; actions?: NativeEntry | null }[];
 }
 interface NativeRate { sleep(): Promise<number>; readonly missed: number }
 interface NativeRecorder { readonly path: string; close(): Promise<RecordStats | null> }
@@ -684,6 +694,39 @@ export class Observation {
   }
 }
 
+/**
+ * What `Policy.run` does with a start it cannot command (no lease held: the session not armed,
+ * preempted, its robot held). `'command'` (the default) skips it (`no_lease`). `'shadow'` still
+ * calls `predict` and converts and checks its actions, then drops them: nothing reaches a robot.
+ * A shadow run commands from the first start whose inputs were read with a lease held.
+ */
+export type RunMode = 'command' | 'shadow';
+
+/** A completed start, as `onStep` receives it. */
+export interface Step {
+  /** A shadow start: its actions were checked and not sent. */
+  shadow: boolean;
+  /** The session time of the start's snapshot. */
+  timeNs: bigint;
+  /** Each action entry's chunk as the part's edge receives it: one `[chunk, ...]` array per command field (null: dropped). */
+  actions: Record<string, Record<string, Tensor> | null>;
+  /** The part each action entry commands, `robot:path` (null: dropped). */
+  parts: Record<string, string | null>;
+  /** Each entry's chunk seq when it was sent (null: not sent). */
+  seqs: Record<string, number | null>;
+}
+
+function step(native: NativeStep): Step {
+  const entries = native.takeActions();
+  return {
+    shadow: native.shadow,
+    timeNs: native.timeNs,
+    actions: Object.fromEntries(entries.map((e) => [e.entry, e.actions ? (input(e.actions) as Record<string, Tensor>) : null])),
+    parts: Object.fromEntries(entries.map((e) => [e.entry, e.part ?? null])),
+    seqs: Object.fromEntries(entries.map((e) => [e.entry, e.seq ?? null])),
+  };
+}
+
 /** A binding table: what each entry is bound to and how it is delivered. */
 export class BindingTable {
   /** The human table, as the cockpit shows it. */
@@ -721,6 +764,8 @@ export interface RunStats {
   completions: number;
   skipped: Record<string, number>;
   chunksSent: number;
+  /** Starts a shadow run predicted without a lease (not `no_lease` skips). */
+  shadowPredictions: number;
   sendErrors: number;
   latencyP50Ms: number | null;
   latencyP99Ms: number | null;
@@ -736,12 +781,23 @@ function runStats(s: NativeStats): RunStats {
     completions: s.completions,
     skipped: Object.fromEntries(s.skipped.map((k) => [k.reason, k.count])),
     chunksSent: s.chunksSent,
+    shadowPredictions: s.shadowPredictions,
     sendErrors: s.sendErrors,
     latencyP50Ms: s.latencyP50Ms ?? null,
     latencyP99Ms: s.latencyP99Ms ?? null,
     latencyMaxMs: s.latencyMaxMs ?? null,
     drifting: s.drifting,
   };
+}
+
+/** How one `Policy.run` runs. */
+export interface RunOptions {
+  /** Stop after this many seconds. */
+  duration?: number;
+  /** What a start that cannot command does (default `'command'`). */
+  mode?: RunMode;
+  /** Called after each completed start with its actions, marked shadow or sent. */
+  onStep?: (step: Step) => void;
 }
 
 export interface BindOptions {
@@ -883,10 +939,34 @@ export class Policy implements AsyncDisposable {
    * with one inference in flight (a start that falls while it runs is skipped, never queued). If
    * `predict` throws or rejects, the policy stops sending, releases its leases (the robot holds,
    * then goes safe) and the run rejects with that error.
+   *
+   * With `mode: 'shadow'` a start that cannot command still calls `predict` (its own published
+   * parts keep flowing) and checks its actions, sending nothing until the policy holds a lease
+   * (`shadowing` and `commanding` events). `onStep(step)` is called after each completed start with
+   * its actions as the edges receive them, marked `shadow`; if it throws, the run stops and
+   * rejects with that error.
    */
-  async run(predict: Predict, opts: { duration?: number } = {}): Promise<RunStats> {
+  async run(predict: Predict, opts: RunOptions = {}): Promise<RunStats> {
     const nat = this.nat();
+    const mode = opts.mode ?? 'command';
+    if (mode !== 'command' && mode !== 'shadow') throw new RangeError(`mode ${String(mode)}: 'command' or 'shadow'`);
     let failure: { error: unknown } | null = null;
+    const onStep = opts.onStep;
+    const stepped = onStep
+      ? (raw: NativeStep) => {
+          if (failure) return;
+          try {
+            onStep(step(raw));
+          } catch (error) {
+            failure = { error };
+            try {
+              nat.stop();
+            } catch {
+              // The run already ended.
+            }
+          }
+        }
+      : null;
     const start = (raw: NativeObservation) => {
       void (async () => {
         try {
@@ -903,7 +983,9 @@ export class Policy implements AsyncDisposable {
       })();
     };
     try {
-      return runStats(await nat.run(start, opts.duration ?? null));
+      const stats = runStats(await nat.run(start, opts.duration ?? null, mode, stepped));
+      if (failure) throw (failure as { error: unknown }).error;
+      return stats;
     } catch (e) {
       if (failure) throw (failure as { error: unknown }).error;
       return rethrow(e);
@@ -920,7 +1002,7 @@ export class Policy implements AsyncDisposable {
     return runStats(call(() => this.nat().stats()));
   }
 
-  /** Take the events reported so far: `rate_drift`, `inference_pending`. */
+  /** Take the events reported so far: `rate_drift`, `inference_pending`, `robot_held`, `clock_refused`, `waiting_to_arm`, `shadowing`, `commanding`, `input_lost`, `rebound`. */
   events(): Record<string, unknown>[] {
     return call(() => this.nat().events()).map((e) => Object.fromEntries(Object.entries(e).filter(([, v]) => v != null)));
   }
@@ -1128,11 +1210,10 @@ export async function drive(
   policy: Record<string, unknown>,
   robot: string | null,
   predict: Predict,
-  opts: BindOptions & {
+  opts: BindOptions & RunOptions & {
     session: Host | string;
     name?: string;
     priority?: Priority;
-    duration?: number;
     timeout?: number;
     publishes?: Record<string, unknown>;
   },

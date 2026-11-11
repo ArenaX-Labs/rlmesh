@@ -11,9 +11,10 @@
 //! - **Skipped starts** keep their reason: `waiting_for` (an input never
 //!   received in this epoch), `stale_input`, `window_gap`, `decode` (a
 //!   sample did not decode or fit its plan), `no_lease` (a standby, or
-//!   a preempted controller: its inputs stay warm, `predict` does not run)
-//!   and `publisher_gone` (an input's publisher left the session or
-//!   withdrew the part, until it is back).
+//!   a preempted controller: its inputs stay warm, `predict` does not run;
+//!   a shadow run predicts instead, counted apart) and `publisher_gone`
+//!   (an input's publisher left the session or withdrew the part, until it
+//!   is back).
 //! - **`rate_drift`** (scope `policy`): the completion rate over a window of
 //!   `max(1 s, 4 / R)`, counting silent intervals, outside `[0.8, 1.25] × R`,
 //!   with hysteresis (one event per transition). It is suppressed until the
@@ -153,6 +154,17 @@ pub enum RunEvent {
         /// The session's mode, and what the run waits for.
         message: String,
     },
+    /// A shadow run cannot command: `predict` runs and its actions are
+    /// checked, and nothing is sent.
+    Shadowing {
+        /// Why it cannot command.
+        message: String,
+    },
+    /// A shadow run holds a lease: its actions are sent from this start.
+    Commanding {
+        /// What it holds.
+        message: String,
+    },
     /// A bound input's publisher went away: it left the session, or no
     /// longer declares the part.
     InputLost {
@@ -198,6 +210,8 @@ impl fmt::Display for RunEvent {
             Self::RobotHeld { message }
             | Self::ClockRefused { message }
             | Self::WaitingToArm { message }
+            | Self::Shadowing { message }
+            | Self::Commanding { message }
             | Self::InputLost { message, .. }
             | Self::Rebound { message, .. } => f.write_str(message),
         }
@@ -215,6 +229,9 @@ pub struct RunStats {
     pub skipped: [u64; SkipReason::ALL.len()],
     /// Chunks sent.
     pub chunks_sent: u64,
+    /// Starts a shadow run predicted without a lease: `predict` completed
+    /// and its actions were checked, and nothing was sent.
+    pub shadow_predictions: u64,
     /// Chunks that could not be packed or sent.
     pub send_errors: u64,
     /// Completion latency (snapshot to the end of `predict`), median.
@@ -382,6 +399,11 @@ impl StartSchedule {
         } else {
             self.stats.send_errors += 1;
         }
+    }
+
+    /// Counts a start predicted in shadow.
+    pub fn shadowed(&mut self) {
+        self.stats.shadow_predictions += 1;
     }
 
     /// The counters, with latency percentiles over the last 1024
@@ -687,6 +709,8 @@ mod tests {
                 RunEvent::RobotHeld { .. }
                 | RunEvent::ClockRefused { .. }
                 | RunEvent::WaitingToArm { .. }
+                | RunEvent::Shadowing { .. }
+                | RunEvent::Commanding { .. }
                 | RunEvent::InputLost { .. }
                 | RunEvent::Rebound { .. } => (false, "other"),
             })

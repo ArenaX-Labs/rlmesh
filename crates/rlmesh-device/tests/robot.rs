@@ -1290,7 +1290,12 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
     let policy = Arc::new(policy);
     let run = std::thread::spawn({
         let policy = policy.clone();
-        move || policy.run(&mut Gaze, Some(Duration::from_secs(60)))
+        move || {
+            policy.run(
+                &mut Gaze,
+                rlmesh_session::RunConfig::default().duration(Duration::from_secs(60)),
+            )
+        }
     });
     let two = two_session.await.expect("board 2");
     assert_eq!(two.phase(), Phase::Running, "fault: {:?}", two.fault());
@@ -1982,7 +1987,12 @@ async fn a_boards_view_in_the_demo_session() {
     let driver = Arc::new(driver);
     let run = std::thread::spawn({
         let driver = driver.clone();
-        move || driver.run(&mut Gaze, Some(Duration::from_secs(120)))
+        move || {
+            driver.run(
+                &mut Gaze,
+                rlmesh_session::RunConfig::default().duration(Duration::from_secs(120)),
+            )
+        }
     });
     let driven = |seen: &Arc<Mutex<Seen>>| {
         seen.lock()
@@ -2192,7 +2202,12 @@ async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
     );
     let run = std::thread::spawn({
         let driver = driver.clone();
-        move || driver.run(&mut Gaze, Some(Duration::from_secs(120)))
+        move || {
+            driver.run(
+                &mut Gaze,
+                rlmesh_session::RunConfig::default().duration(Duration::from_secs(120)),
+            )
+        }
     });
     let driven = |seen: &Arc<Mutex<Seen>>| {
         seen.lock()

@@ -67,7 +67,7 @@ use rlmesh_session::wire::{
 };
 use rlmesh_session::{
     AuthorityEvent, ChunkDraft, Clock, Controller, ControllerConfig, HostConfig, Observation,
-    Offer, Participant, ParticipantConfig, Predictor, SessionHost, SubscribeOptions,
+    Offer, Participant, ParticipantConfig, Predictor, RunConfig, SessionHost, SubscribeOptions,
     SystemMonotonicClock, Transport, TransportConfig,
 };
 use serde_json::{Value, json};
@@ -688,7 +688,10 @@ async fn bound_controller(args: &Args, policy: Participant) -> Result<Value, Box
     let runner = controller.clone();
     tokio::task::spawn_blocking(move || {
         runner
-            .run(&mut HoldWrench { chunk }, Some(run_for))
+            .run(
+                &mut HoldWrench { chunk },
+                RunConfig::default().duration(run_for),
+            )
             .map_err(|err| format!("{err:?}"))
     })
     .await??;

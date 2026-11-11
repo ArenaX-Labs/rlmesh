@@ -377,6 +377,57 @@ test('a policy publishes annotations under its name and never binds them', async
   }
 });
 
+test('a shadow run predicts on a disarmed session, sends nothing, and commands once armed', async () => {
+  const EYE = { eyes: { kind: 'joints', names: ['pan', 'tilt'], fields: ['pos'], hz: 200, command: 'position', safe: 'hold', hold_max_ms: 200 } };
+  await using eye = await rlmesh.Robot.connect('eye-1', EYE, { session: host });
+  const driven = [];
+  let stopped = false;
+  const loop = (async () => {
+    const rate = new rlmesh.Rate(200);
+    while (!stopped) {
+      eye.publish('eyes', { pos: Float32Array.of(0, 0) });
+      const due = eye.due('eyes');
+      if (due?.mode === 'driving' && due.value) driven.push(first(due));
+      await rate.sleep();
+    }
+  })();
+  await using policy = new rlmesh.Policy(
+    { hz: 25, inputs: { q: { kind: 'joints', at: 'eyes', fields: ['pos'] } }, actions: { gaze: { kind: 'joints', at: 'eyes', command: 'position', hz: 50 } } },
+    { session: host, name: 'tracker' },
+  );
+  await policy.bind('eye-1');
+  const steps = [];
+  const run = policy.run(() => ({ gaze: { data: Float32Array.of(0.25, 0), shape: [1, 2] } }), {
+    duration: 60,
+    mode: 'shadow',
+    onStep: (step) => steps.push(step),
+  });
+  await waitUntil('shadow predictions', () => policy.stats().shadowPredictions >= 10 && steps.length >= 10);
+  const stats = policy.stats();
+  assert.equal(stats.chunksSent, 0);
+  assert.equal(stats.skipped.no_lease, 0);
+  const edge = eye.edgeStats('eyes');
+  assert.equal(edge.accepted + edge.rejected, 0, 'the edge got a chunk');
+  assert.equal(steps[0].shadow, true);
+  assert.deepEqual(steps[0].parts, { gaze: 'eye-1:eyes' });
+  assert.deepEqual(steps[0].seqs, { gaze: null });
+  assert.deepEqual(steps[0].actions.gaze.pos.shape, [1, 2]);
+  assert.equal(steps[0].actions.gaze.pos.data[0], 0.25);
+  const events = policy.events();
+  assert.ok(events.some((e) => e.kind === 'shadowing' && /DISARMED/.test(e.message)), JSON.stringify(events));
+
+  await eye.arm();
+  await waitUntil('the eye driven by the same run', () => driven.length >= 5);
+  assert.ok(policy.events().some((e) => e.kind === 'commanding'));
+  assert.ok(steps.some((s) => !s.shadow && typeof s.seqs.gaze === 'number'));
+  policy.stop();
+  const final = await run;
+  assert.ok(final.chunksSent > 0 && final.shadowPredictions >= 10);
+  await assert.rejects(policy.run(() => ({}), { mode: 'sideways' }), RangeError);
+  stopped = true;
+  await loop;
+});
+
 test('a throwing predict releases the leases and the run rejects with its error', async () => {
   let calls = 0;
   await using _ur = await FakeUR10e.start(host);

@@ -36,6 +36,15 @@
 //!   process stopped returns. A run on a session that is not armed waits
 //!   for it, and says so once each time the session leaves ARMED or ACTIVE
 //!   ([`RunEvent::WaitingToArm`], [`Controller::waiting`]).
+//! - **Shadow runs** ([`RunMode::Shadow`]). A start that cannot command (no
+//!   lease held: the session not armed, preempted, its robot held) still
+//!   runs `predict` on the same grid and freshness rules, and packs its
+//!   actions as for sending, so a failing model or an action the binding
+//!   refuses ends the run as it would while commanding; nothing is sent.
+//!   The run commands from the first start whose inputs were read with a
+//!   lease held, and says so on each change ([`RunEvent::Shadowing`],
+//!   [`RunEvent::Commanding`]). [`Predictor::step`] sees every start's
+//!   converted actions, marked shadow or sent.
 //! - **Rebinding.** A background watcher follows every robot the binding
 //!   reads or commands, and the robots its selectors name. When one comes
 //!   back, restarts, declares its parts again or appears, the controller
@@ -57,13 +66,13 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use crate::spec::apply::{ApplyError, Value};
+use crate::spec::apply::{ApplyError, Value, unpack_actions};
 use crate::spec::policy::ChunkStart;
 use crate::spec::selector::Selector;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, ClockMode, CtlReply, InputRange, Lease, Mode, PartSpec,
-    ParticipantId, Reason, ReasonCode, RunCounters,
+    AuthoritySnapshot, ChannelId, ClockMode, CtlReply, FieldSpec, InputRange, Lease, Mode,
+    PartSpec, ParticipantId, Reason, ReasonCode, RunCounters,
 };
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -152,6 +161,117 @@ pub enum Sent {
     Dropped,
 }
 
+/// What [`Controller::run`] does with a start it cannot command: one with
+/// no lease held (the session not armed, preempted, its robot held).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RunMode {
+    /// The start is skipped (`no_lease`): `predict` runs only while the
+    /// policy can command.
+    #[default]
+    Command,
+    /// `predict` runs, and its actions are packed and checked as for
+    /// sending, then dropped: nothing reaches a robot. The run commands from
+    /// the first start whose inputs were read with a lease held.
+    Shadow,
+}
+
+impl RunMode {
+    /// Every mode.
+    pub const ALL: [Self; 2] = [Self::Command, Self::Shadow];
+
+    /// The mode's name: `command` or `shadow`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Shadow => "shadow",
+        }
+    }
+
+    /// The mode called `name`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.name() == name)
+    }
+}
+
+impl std::fmt::Display for RunMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// How one [`Controller::run`] runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunConfig {
+    /// How long it runs (`None`: until [`Controller::stop`] or a failure).
+    pub duration: Option<Duration>,
+    /// What a start that cannot command does.
+    pub mode: RunMode,
+}
+
+impl RunConfig {
+    /// Runs for `duration`.
+    #[must_use]
+    pub fn duration(mut self, duration: Duration) -> Self {
+        self.duration = Some(duration);
+        self
+    }
+
+    /// Runs in `mode`.
+    #[must_use]
+    pub fn mode(mut self, mode: RunMode) -> Self {
+        self.mode = mode;
+        self
+    }
+}
+
+/// One action entry of a completed start, packed by the binding.
+#[derive(Clone, Debug)]
+pub struct StepAction {
+    /// The action entry.
+    pub entry: String,
+    /// The part it commands, `robot:path`; `None` for a dropped entry.
+    pub part: Option<String>,
+    /// Session time of the chunk's first action.
+    pub t0_ns: i64,
+    /// The chunk's action period.
+    pub dt_ns: u64,
+    /// The chunk's seq; `None` when it was not sent (a shadow start, no
+    /// lease on the part, a dropped entry).
+    pub seq: Option<u64>,
+    /// The actions, packed back to back at the command's stride.
+    pub packed: Bytes,
+    fields: Vec<FieldSpec>,
+}
+
+impl StepAction {
+    /// The actions as the part's edge receives them: one array per command
+    /// field, `[chunk, ...]`. `None` for a dropped entry.
+    pub fn actions(&self) -> Option<Value> {
+        self.part.as_ref()?;
+        unpack_actions(&self.fields, &self.packed).ok()
+    }
+}
+
+/// A completed start, as [`Predictor::step`] sees it.
+#[derive(Clone, Debug)]
+pub struct Step {
+    /// A shadow start: its actions were checked and not sent.
+    pub shadow: bool,
+    /// Session time of the start's snapshot.
+    pub snapshot_ns: i64,
+    /// Each action entry, in binding order.
+    pub actions: Vec<StepAction>,
+}
+
+/// One action entry packed for sending.
+struct Packed {
+    entry: String,
+    /// The part it commands; `None` for a dropped entry.
+    part: Option<(ChannelId, String)>,
+    draft: ChunkDraft,
+    fields: Vec<FieldSpec>,
+}
+
 /// Why [`Controller::run`] returned early.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError<E> {
@@ -189,6 +309,14 @@ pub trait Predictor {
     /// Called between starts at least every 20 ms (a binding checks for
     /// interrupts here). An error ends the run like a failed `predict`.
     fn idle(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Called after each completed start with its packed actions, sent or
+    /// (in a shadow start) only checked. An error ends the run like a failed
+    /// `predict`.
+    fn step(&mut self, step: &Step) -> Result<(), Self::Error> {
+        let _ = step;
         Ok(())
     }
 }
@@ -1410,6 +1538,19 @@ impl Controller {
         based_on: &[InputRange],
         snapshot_ns: i64,
     ) -> Result<Vec<(String, Sent)>, SendError> {
+        let packed = self.pack(values, based_on, snapshot_ns)?;
+        let sent = self.publish(&packed)?;
+        Ok(packed.into_iter().map(|p| p.entry).zip(sent).collect())
+    }
+
+    /// Packs `values` per action entry into a timed chunk draft, as
+    /// [`Self::send`] sends it.
+    fn pack(
+        &self,
+        values: &[(String, Value)],
+        based_on: &[InputRange],
+        snapshot_ns: i64,
+    ) -> Result<Vec<Packed>, SendError> {
         let binding = self.binding();
         if let Some((entry, _)) = values
             .iter()
@@ -1420,10 +1561,15 @@ impl Controller {
                 action_names(&binding)
             )));
         }
-        let mut sent = Vec::with_capacity(binding.actions.len());
+        let mut packed = Vec::with_capacity(binding.actions.len());
         for row in &binding.actions {
             let Some(part) = &row.part else {
-                sent.push((row.entry.clone(), Sent::Dropped));
+                packed.push(Packed {
+                    entry: row.entry.clone(),
+                    part: None,
+                    draft: ChunkDraft::default(),
+                    fields: Vec::new(),
+                });
                 continue;
             };
             let value = values
@@ -1441,27 +1587,48 @@ impl Controller {
                 ChunkStart::Snapshot => snapshot_ns,
                 ChunkStart::Send => self.participant.session_now_ns(),
             };
-            let draft = ChunkDraft {
-                based_on: based_on.to_vec(),
-                t0_ns,
-                dt_ns: u64::try_from(row.dt.as_nanos()).unwrap_or(u64::MAX),
-                replace_from_ns: t0_ns,
-                valid_until_ns: t0_ns
-                    .saturating_add(i64::try_from(row.valid.as_nanos()).unwrap_or(i64::MAX)),
-                actions,
-                tick: 0,
+            packed.push(Packed {
+                entry: row.entry.clone(),
+                part: Some((part.channel, part.qualified())),
+                draft: ChunkDraft {
+                    based_on: based_on.to_vec(),
+                    t0_ns,
+                    dt_ns: u64::try_from(row.dt.as_nanos()).unwrap_or(u64::MAX),
+                    replace_from_ns: t0_ns,
+                    valid_until_ns: t0_ns
+                        .saturating_add(i64::try_from(row.valid.as_nanos()).unwrap_or(i64::MAX)),
+                    actions,
+                    tick: 0,
+                },
+                fields: part
+                    .command
+                    .as_ref()
+                    .map(|c| c.fields.clone())
+                    .unwrap_or_default(),
+            });
+        }
+        Ok(packed)
+    }
+
+    /// Sends each packed chunk under the lease held on its part.
+    fn publish(&self, packed: &[Packed]) -> Result<Vec<Sent>, SendError> {
+        let mut sent = Vec::with_capacity(packed.len());
+        for p in packed {
+            let Some((channel, _)) = &p.part else {
+                sent.push(Sent::Dropped);
+                continue;
             };
             let token = self
                 .leases
                 .group()
-                .lease(part.channel, self.participant.clock().now_ns())
+                .lease(*channel, self.participant.clock().now_ns())
                 .map(|lease| lease.token);
             let publishers = self.leases.publishers();
             let outcome = match publishers
-                .get(&part.channel)
-                .filter(|p| Some(p.token()) == token)
+                .get(channel)
+                .filter(|publisher| Some(publisher.token()) == token)
             {
-                Some(publisher) => match publisher.send(draft) {
+                Some(publisher) => match publisher.send(p.draft.clone()) {
                     Ok(seq) => Sent::Seq(seq),
                     // Its key went with a token that just ended, before
                     // the lease group saw it: no lease.
@@ -1470,29 +1637,32 @@ impl Controller {
                 },
                 None => Sent::NoLease,
             };
-            sent.push((row.entry.clone(), outcome));
+            sent.push(outcome);
         }
         Ok(sent)
     }
 
-    /// Runs the policy loop until [`Self::stop`], `duration`, or a
+    /// Runs the policy loop until [`Self::stop`], the run's duration, or a
     /// failure, then gives the leases back. Blocks the calling thread,
     /// which is where `predict` runs.
     pub fn run<P: Predictor>(
         &self,
         predictor: &mut P,
-        duration: Option<Duration>,
+        config: RunConfig,
     ) -> Result<(), RunError<P::Error>> {
         let run = self.runs.fetch_add(1, Ordering::Relaxed) + 1;
         self.stop.store(false, Ordering::Relaxed);
         let clock = self.participant.clock().clone();
         let now = || clock.now_ns();
-        let end =
-            duration.map(|d| now().saturating_add(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)));
+        let end = config
+            .duration
+            .map(|d| now().saturating_add(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)));
+        let shadow_mode = config.mode == RunMode::Shadow;
         let mut recovered_at: Option<i64> = None;
         let mut clock_refused = Vec::new();
         let mut held = Vec::new();
         let mut waiting = None;
+        let mut state = None;
         // Wall clock only: virtual and lockstep starts stay on their ticks.
         let wall = self
             .participant
@@ -1537,6 +1707,10 @@ impl Controller {
                 }
                 continue;
             }
+            let commands = self.binding().actions.iter().any(|a| a.part.is_some());
+            // A shadow run commands a start only with a lease held before its
+            // inputs are read, so no chunk comes from a shadow snapshot.
+            let held_before = shadow_mode && commands && self.holds_any();
             let (observation, snapshot_ns) = match self.observe() {
                 Ok(observed) => observed,
                 Err(ObserveError::Skipped(skip)) => {
@@ -1574,13 +1748,20 @@ impl Controller {
             self.report_held(&mut held);
             // Any lease held is enough: a robot that is gone or stopped on
             // its own never starves the others (its actions go unsent).
-            let commands = self.binding().actions.iter().any(|a| a.part.is_some());
-            if commands && !self.holds_any() {
-                self.skip(t - off, SkipReason::NoLease);
-                if let Some(phase) = phase.as_mut() {
-                    phase.update();
+            let shadow = if shadow_mode {
+                !held_before
+            } else {
+                if commands && !self.holds_any() {
+                    self.skip(t - off, SkipReason::NoLease);
+                    if let Some(phase) = phase.as_mut() {
+                        phase.update();
+                    }
+                    continue;
                 }
-                continue;
+                false
+            };
+            if shadow_mode && commands {
+                self.report_state(shadow, &mut state);
             }
             self.schedule().start(now() - off);
             let based_on = observation.meta.based_on.clone();
@@ -1596,20 +1777,52 @@ impl Controller {
                 Ok(values) => values,
                 Err(err) => break Err(RunError::Predict(err)),
             };
-            match self.send(&values, &based_on, snapshot_ns) {
-                Ok(sent) => {
-                    self.report_clock_refusals(&mut clock_refused);
-                    let mut schedule = self.schedule();
-                    for (_, outcome) in sent {
-                        if let Sent::Seq(_) = outcome {
-                            schedule.sent(true);
-                        }
-                    }
+            let sent = match self.pack(&values, &based_on, snapshot_ns) {
+                Ok(packed) if shadow => {
+                    self.schedule().shadowed();
+                    Ok((packed, Vec::new()))
                 }
+                Ok(packed) => self.publish(&packed).map(|sent| (packed, sent)),
+                Err(err) => Err(err),
+            };
+            let (packed, sent) = match sent {
+                Ok(sent) => sent,
                 Err(err) => {
                     self.schedule().sent(false);
                     break Err(RunError::Send(err));
                 }
+            };
+            if !shadow {
+                self.report_clock_refusals(&mut clock_refused);
+                let mut schedule = self.schedule();
+                for outcome in &sent {
+                    if let Sent::Seq(_) = outcome {
+                        schedule.sent(true);
+                    }
+                }
+            }
+            let step = Step {
+                shadow,
+                snapshot_ns,
+                actions: packed
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| StepAction {
+                        entry: p.entry,
+                        part: p.part.map(|(_, part)| part),
+                        t0_ns: p.draft.t0_ns,
+                        dt_ns: p.draft.dt_ns,
+                        seq: match sent.get(i) {
+                            Some(Sent::Seq(seq)) => Some(*seq),
+                            _ => None,
+                        },
+                        packed: p.draft.actions,
+                        fields: p.fields,
+                    })
+                    .collect(),
+            };
+            if let Err(err) = predictor.step(&step) {
+                break Err(RunError::Predict(err));
             }
         };
         self.leases.want.store(false, Ordering::Relaxed);
@@ -1620,6 +1833,99 @@ impl Controller {
             warn!(%err, "releasing the leases after the run failed");
         }
         result
+    }
+
+    /// Why this controller cannot command now, in words, after a key that
+    /// changes only when the reason does (`pending` while its leases are
+    /// asked for and not yet granted).
+    fn shadow_reason(&self) -> (String, String) {
+        if let Some(waiting) = self.waiting() {
+            return (waiting.clone(), waiting);
+        }
+        let held = self.held_refusals();
+        if !held.is_empty() {
+            let robots: Vec<String> = held.iter().map(|(robot, _)| robot.to_string()).collect();
+            let messages: Vec<String> = held.into_iter().map(|(_, message)| message).collect();
+            return (format!("held {}", robots.join(",")), messages.join("; "));
+        }
+        let me = self.participant.id();
+        let channels = self.binding().channels();
+        let leased: Vec<String> = self.participant.authority_view().with(|view| {
+            view.map(|view| {
+                view.leases
+                    .iter()
+                    .filter(|l| &l.holder != me && channels.contains(&l.channel))
+                    .map(|l| format!("{} is leased to {}", view.part_name(l.channel), l.holder))
+                    .collect()
+            })
+            .unwrap_or_default()
+        });
+        if !leased.is_empty() {
+            let message = format!(
+                "no lease ({}): {}; it commands once it holds a lease again",
+                SkipReason::NoLease,
+                leased.join(", ")
+            );
+            return (message.clone(), message);
+        }
+        (
+            "pending".into(),
+            format!(
+                "no lease ({}): its leases are not granted yet",
+                SkipReason::NoLease
+            ),
+        )
+    }
+
+    /// Reports a shadow run's change between shadowing and commanding, and
+    /// a new reason it cannot command (`reported`: the last said; `None`
+    /// once commanding).
+    fn report_state(&self, shadow: bool, reported: &mut Option<Option<String>>) {
+        if !shadow {
+            if *reported != Some(None) {
+                let leases = self.leases();
+                let parts: Vec<String> = self.participant.authority_view().with(|view| {
+                    leases
+                        .iter()
+                        .map(|l| {
+                            view.map_or_else(|| l.channel.to_string(), |v| v.part_name(l.channel))
+                        })
+                        .collect()
+                });
+                push_event(
+                    &self.events,
+                    RunEvent::Commanding {
+                        message: format!(
+                            "commanding: it holds {}; its actions are sent from this start",
+                            if parts.is_empty() {
+                                "its leases".to_string()
+                            } else {
+                                parts.join(", ")
+                            }
+                        ),
+                    },
+                );
+                *reported = Some(None);
+            }
+            return;
+        }
+        let (key, message) = self.shadow_reason();
+        let said = match reported {
+            Some(Some(said)) => said == &key || key == "pending",
+            _ => false,
+        };
+        if !said {
+            push_event(
+                &self.events,
+                RunEvent::Shadowing {
+                    message: format!(
+                        "shadowing: {message}; meanwhile predict runs and its actions are \
+                         checked, never sent"
+                    ),
+                },
+            );
+            *reported = Some(Some(key));
+        }
     }
 
     /// Why the session is gone for this controller: the host, or its

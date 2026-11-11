@@ -40,7 +40,7 @@ use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::wire::{DType, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
-    Predictor, SessionHost, SystemMonotonicClock, Transport, TransportConfig,
+    Predictor, RunConfig, SessionHost, SystemMonotonicClock, Transport, TransportConfig,
 };
 
 const ROBOT: &str = "arm7";
@@ -241,7 +241,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let controller = Arc::new(controller);
         let runner = controller.clone();
         std::thread::spawn(move || {
-            if let Err(err) = runner.run(&mut Sway, None) {
+            if let Err(err) = runner.run(&mut Sway, RunConfig::default()) {
                 eprintln!("policy stopped: {err}");
             }
         });

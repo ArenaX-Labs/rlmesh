@@ -210,6 +210,41 @@ actually dispatched (`eye-1/eyes/_applied`, `eye-2/eyes/_applied`); an eye
 that held keeps its last action. `rlmesh cockpit --replay DIR` plays a
 recording back.
 
+## Shadow runs: watch a model before arming
+
+A policy that commands something calls `predict` only while it holds a
+lease, so on a disarmed session it does nothing, and anything reading the
+parts it publishes waits. Run it in shadow mode to watch it first:
+
+```python
+def predict(obs):
+    xy = detect(obs["cam"])
+    policy.publish("aim", xy=xy)  # published while disarmed too
+    chunk = np.tile(gaze(xy), (4, 1))
+    return {"left": chunk, "right": chunk}
+
+with realtime.Policy(TRACKER, session="", name="tracker", publishes=AIM) as policy:
+    policy.bind()
+    policy.run(predict, mode=realtime.RunMode.SHADOW,
+               on_step=lambda step: step.shadow and show(step.actions))
+```
+
+While it cannot command (the session not armed, an operator holding the
+eyes, an eye held) it still calls `predict` on the same rate and inputs,
+publishes its own parts, and converts and checks its actions as for
+sending, so a model error or an action the binding refuses stops the run
+then, not at arming. It sends nothing. Once armed and granted its leases,
+the same run starts sending from the next start, with inputs read after
+the lease was granted; a viewer bound to `tracker:aim` reads it throughout.
+`policy.events()` says `shadowing` (and why) and `commanding` at each
+change, `policy.stats()["shadow_predictions"]` counts the starts predicted
+in shadow, and `on_step` receives each start's actions as the edges would
+take them (`step.actions`), marked `step.shadow`. A recording shows no
+chunk and no dispatched action for a shadow start.
+
+The default, `RunMode.COMMAND`, never calls `predict` without a lease,
+since a model that keeps state may expect each call to act on the robot.
+
 ## Switches and values
 
 Not every part is a joint. A `switch` is one on/off `on` field: an LED, a

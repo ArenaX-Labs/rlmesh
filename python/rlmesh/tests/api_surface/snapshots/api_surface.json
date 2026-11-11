@@ -4075,11 +4075,13 @@
       "Policy",
       "Rate",
       "Robot",
+      "RunMode",
       "SessionException",
       "SessionLost",
       "SessionRecorder",
       "SessionRefused",
       "StartSkipped",
+      "Step",
       "drive",
       "parse_address",
       "parts",
@@ -4288,7 +4290,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(predict: Predict, *, duration: float | None = None) -> dict[str, Any]"
+            "signature": "run(predict: Predict, *, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None) -> dict[str, Any]"
           },
           "send": {
             "kind": "function",
@@ -4408,6 +4410,20 @@
         "signature": "Robot(name: str, parts: Mapping[str, Any], *, session: Host | str = '', timeout: float = 10.0, on_handover: Callable[[str, str, str], None] | None = None, clock: str = 'wall')",
         "stability": "Experimental"
       },
+      "RunMode": {
+        "kind": "class",
+        "members": {
+          "COMMAND": {
+            "kind": "attribute",
+            "signature": "COMMAND"
+          },
+          "SHADOW": {
+            "kind": "attribute",
+            "signature": "SHADOW"
+          }
+        },
+        "stability": "Experimental"
+      },
       "SessionException": {
         "kind": "class",
         "stability": "Experimental"
@@ -4473,9 +4489,36 @@
         },
         "stability": "Experimental"
       },
+      "Step": {
+        "kind": "class",
+        "members": {
+          "actions": {
+            "kind": "attribute",
+            "signature": "actions: dict[str, dict[str, Array] | None]"
+          },
+          "parts": {
+            "kind": "attribute",
+            "signature": "parts: dict[str, str | None]"
+          },
+          "seqs": {
+            "kind": "attribute",
+            "signature": "seqs: dict[str, int | None]"
+          },
+          "shadow": {
+            "kind": "attribute",
+            "signature": "shadow: bool"
+          },
+          "time_ns": {
+            "kind": "attribute",
+            "signature": "time_ns: int"
+          }
+        },
+        "signature": "Step(native: Mapping[str, Any])",
+        "stability": "Experimental"
+      },
       "drive": {
         "kind": "function",
-        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, timeout: float = 10.0, publishes: Mapping[str, Any] | None = None, **captures: str) -> dict[str, Any]",
+        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, timeout: float = 10.0, publishes: Mapping[str, Any] | None = None, **captures: str) -> dict[str, Any]",
         "stability": "Experimental"
       },
       "parse_address": {

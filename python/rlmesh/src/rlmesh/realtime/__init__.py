@@ -31,6 +31,7 @@ reused at once.
 
 from __future__ import annotations
 
+import enum
 import json
 import logging
 import os
@@ -82,11 +83,13 @@ __all__ = [
     "Policy",
     "Rate",
     "Robot",
+    "RunMode",
     "SessionException",
     "SessionLost",
     "SessionRecorder",
     "SessionRefused",
     "StartSkipped",
+    "Step",
     "drive",
     "parse_address",
     "parts",
@@ -694,6 +697,49 @@ class Observation(Mapping[str, Any]):
         return f"Observation({', '.join(self._values)})"
 
 
+class RunMode(enum.Enum):
+    """What :meth:`Policy.run` does with a start it cannot command.
+
+    A start cannot command while the policy holds none of its leases: the
+    session is not armed, a higher class preempted it, or its robot is held.
+    """
+
+    #: The start is skipped (``no_lease``): ``predict`` runs only while the
+    #: policy can command. The default.
+    COMMAND = "command"
+    #: ``predict`` runs on the same rate and inputs, and its actions are
+    #: converted and checked as for sending, then dropped: nothing reaches a
+    #: robot. The run commands from the first start whose inputs were read
+    #: with a lease held, without a restart.
+    SHADOW = "shadow"
+
+
+class Step:
+    """A completed start, as ``on_step`` receives it (:meth:`Policy.run`)."""
+
+    __slots__ = ("actions", "parts", "seqs", "shadow", "time_ns")
+
+    def __init__(self, native: Mapping[str, Any]) -> None:
+        #: A shadow start: its actions were checked and not sent.
+        self.shadow: bool = native["shadow"]
+        #: The session time of the start's snapshot.
+        self.time_ns: int = native["time_ns"]
+        #: Each action entry's chunk as the part's edge receives it: one
+        #: ``[chunk, ...]`` array per command field (``None``: a dropped entry).
+        self.actions: dict[str, dict[str, Array] | None] = {
+            entry: None if value is None else cast("dict[str, Array]", _value(value))
+            for entry, value in native["actions"].items()
+        }
+        #: The part each action entry commands, ``robot:path`` (``None``: dropped).
+        self.parts: dict[str, str | None] = native["parts"]
+        #: Each entry's chunk seq when it was sent (``None``: not sent).
+        self.seqs: dict[str, int | None] = native["seqs"]
+
+    def __repr__(self) -> str:
+        kind = "shadow" if self.shadow else "sent"
+        return f"Step({kind}, {', '.join(self.actions)})"
+
+
 class BindingTable:
     """A binding table: what each entry is bound to and how it is delivered."""
 
@@ -882,7 +928,14 @@ class Policy:
         """Whether this policy holds every lease its binding commands."""
         return self._bound().holds()
 
-    def run(self, predict: Predict, *, duration: float | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        predict: Predict,
+        *,
+        duration: float | None = None,
+        mode: RunMode = RunMode.COMMAND,
+        on_step: Callable[[Step], object] | None = None,
+    ) -> dict[str, Any]:
         """Run the policy loop on this thread; returns the run's counters.
 
         ``predict(obs)`` is called at most at the replan rate, one inference
@@ -905,13 +958,32 @@ class Policy:
         its own (a ``rebound`` event) and keeps the leases it holds. A part
         that comes back as something the policy cannot read raises
         :class:`BindingRefused`, naming it and what changed.
+
+        With ``mode=RunMode.SHADOW`` a start that cannot command (the session
+        not armed, preempted, its robot held) still calls ``predict``, so its
+        own published parts keep flowing and a failing model surfaces at
+        once; its actions are converted and checked, and nothing is sent.
+        The run commands from the first start whose inputs were read with a
+        lease held, and says so on each change (``shadowing`` and
+        ``commanding`` events). :meth:`stats` counts ``shadow_predictions``.
+
+        ``on_step(step)``, if given, is called after each completed start
+        with a :class:`Step`: the actions as the edges receive them, marked
+        ``shadow`` or with their chunk seqs. If it raises, the run ends as
+        when ``predict`` raises.
         """
         native = self._bound()
+        if not isinstance(mode, RunMode):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"mode must be a RunMode, not {mode!r}")
 
         def call(raw: V2Observation) -> dict[str, Any]:
             return _actions(predict(Observation(raw)))
 
-        native.run(call, duration)
+        def step(raw: dict[str, Any]) -> None:
+            if on_step is not None:
+                on_step(Step(raw))
+
+        native.run(call, duration, mode.value, None if on_step is None else step)
         return self.stats()
 
     def stop(self) -> None:
@@ -926,7 +998,9 @@ class Policy:
         ``clock_refused`` says, per leased part whose edge refuses this
         policy's chunks for its clock, the measured error and the bound.
         ``waiting`` says what the policy waits for before it can command
-        (the session not armed), or is ``None``.
+        (the session not armed), or is ``None``. ``shadow_predictions``
+        counts the starts a shadow run predicted without a lease; they are
+        not ``no_lease`` skips.
         """
         return self._bound().stats()
 
@@ -936,7 +1010,7 @@ class Policy:
         return self._bound().held
 
     def events(self) -> list[dict[str, Any]]:
-        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``, ``input_lost`` (with ``part``), ``rebound`` (with ``parts``)."""
+        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``, ``shadowing``, ``commanding``, ``input_lost`` (with ``part``), ``rebound`` (with ``parts``)."""
         return self._bound().events()
 
     def close(self) -> None:
@@ -1050,6 +1124,8 @@ def drive(
     names: Mapping[str, str] | None = None,
     allow: Sequence[str] | None = None,
     duration: float | None = None,
+    mode: RunMode = RunMode.COMMAND,
+    on_step: Callable[[Step], object] | None = None,
     timeout: float = 10.0,
     publishes: Mapping[str, Any] | None = None,
     **captures: str,
@@ -1067,4 +1143,4 @@ def drive(
         publishes=publishes,
     ) as p:
         p.bind(robot, under=under, at=at, names=names, allow=allow, **captures)
-        return p.run(predict, duration=duration)
+        return p.run(predict, duration=duration, mode=mode, on_step=on_step)

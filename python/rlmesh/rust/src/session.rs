@@ -30,8 +30,9 @@ use rlmesh_session::spec::BindError;
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::wire::{PartSpec, ParticipantId, PriorityClass, ReasonCode};
 use rlmesh_session::{
-    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
-    SendError, Sent, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunConfig, RunError,
+    RunEvent, RunMode, SendError, Sent, SessionError, SkipReason, Snapshot, Step,
+    SystemMonotonicClock,
 };
 
 use crate::client::{check_signals, signal_poll};
@@ -1269,9 +1270,10 @@ impl PyObservation {
     }
 }
 
-/// `predict`, called from the run loop.
+/// `predict`, called from the run loop, and `on_step` after each start.
 struct PyPredictor<'a> {
     predict: &'a Py<PyAny>,
+    on_step: Option<&'a Py<PyAny>>,
 }
 
 impl Predictor for PyPredictor<'_> {
@@ -1291,6 +1293,31 @@ impl Predictor for PyPredictor<'_> {
 
     fn idle(&mut self) -> Result<(), PyErr> {
         check_signals()
+    }
+
+    fn step(&mut self, step: &Step) -> Result<(), PyErr> {
+        let Some(on_step) = self.on_step else {
+            return Ok(());
+        };
+        Python::attach(|py| {
+            let d = PyDict::new(py);
+            d.set_item("shadow", step.shadow)?;
+            d.set_item("time_ns", step.snapshot_ns)?;
+            let (actions, parts, seqs) = (PyDict::new(py), PyDict::new(py), PyDict::new(py));
+            for action in &step.actions {
+                let value = action
+                    .actions()
+                    .map(|value| value_to_py(py, value))
+                    .transpose()?;
+                actions.set_item(&action.entry, value)?;
+                parts.set_item(&action.entry, action.part.as_deref())?;
+                seqs.set_item(&action.entry, action.seq)?;
+            }
+            d.set_item("actions", actions)?;
+            d.set_item("parts", parts)?;
+            d.set_item("seqs", seqs)?;
+            on_step.call1(py, (d,)).map(drop)
+        })
     }
 }
 
@@ -1568,10 +1595,14 @@ impl PyController {
 
     /// Runs the policy loop on this thread until `stop()`,
     /// `duration_s`, or a failure, calling `predict(observation)` at the
-    /// replan rate with one inference in flight. If `predict` raises, the
-    /// leases are released and the exception propagates; if the robot or
-    /// the host is lost, it raises `SessionLost`.
-    #[pyo3(signature = (predict, duration_s=None))]
+    /// replan rate with one inference in flight. `mode` is `command`, or
+    /// `shadow` to predict without a lease and send nothing until it holds
+    /// one; `on_step(step)` gets each completed start as a dict (`shadow`,
+    /// `time_ns`, and per action entry its `actions` as the edge receives
+    /// them, `parts` and chunk `seqs`). If `predict` or `on_step` raises,
+    /// the leases are released and the exception propagates; if the robot
+    /// or the host is lost, it raises `SessionLost`.
+    #[pyo3(signature = (predict, duration_s=None, mode="command", on_step=None))]
     fn run(
         &self,
         py: Python<'_>,
@@ -1581,12 +1612,25 @@ impl PyController {
         ))]
         predict: Py<PyAny>,
         duration_s: Option<f64>,
+        mode: &str,
+        #[gen_stub(override_type(
+            type_repr = "collections.abc.Callable[[dict[builtins.str, typing.Any]], None] | None",
+            imports = ("collections.abc", "builtins", "typing")
+        ))]
+        on_step: Option<Py<PyAny>>,
     ) -> PyResult<()> {
         let controller = self.controller()?;
-        let duration = duration_s.map(timeout).transpose()?;
+        let mode = RunMode::from_name(mode).ok_or_else(|| {
+            PyValueError::new_err(format!("mode {mode:?}: \"command\" or \"shadow\""))
+        })?;
+        let mut config = RunConfig::default().mode(mode);
+        config.duration = duration_s.map(timeout).transpose()?;
         let result = py.detach(|| {
-            let mut predictor = PyPredictor { predict: &predict };
-            controller.run(&mut predictor, duration)
+            let mut predictor = PyPredictor {
+                predict: &predict,
+                on_step: on_step.as_ref(),
+            };
+            controller.run(&mut predictor, config)
         });
         match result {
             Ok(()) => Ok(()),
@@ -1632,6 +1676,7 @@ impl PyController {
         }
         d.set_item("skipped", skipped)?;
         d.set_item("chunks_sent", stats.chunks_sent)?;
+        d.set_item("shadow_predictions", stats.shadow_predictions)?;
         d.set_item("send_errors", stats.send_errors)?;
         let ms = |d: Option<Duration>| d.map(|d| d.as_secs_f64() * 1e3);
         d.set_item("latency_p50_ms", ms(stats.latency_p50))?;
@@ -1677,6 +1722,8 @@ impl PyController {
                 RunEvent::RobotHeld { .. } => d.set_item("kind", "robot_held")?,
                 RunEvent::ClockRefused { .. } => d.set_item("kind", "clock_refused")?,
                 RunEvent::WaitingToArm { .. } => d.set_item("kind", "waiting_to_arm")?,
+                RunEvent::Shadowing { .. } => d.set_item("kind", "shadowing")?,
+                RunEvent::Commanding { .. } => d.set_item("kind", "commanding")?,
                 RunEvent::InputLost { part, .. } => {
                     d.set_item("kind", "input_lost")?;
                     d.set_item("part", part)?;

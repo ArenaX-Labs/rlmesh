@@ -35,8 +35,9 @@ use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{BindError, RunOptions};
 use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, ReasonCode};
 use rlmesh_session::{
-    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
-    SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunConfig, RunError,
+    RunEvent, RunMode, SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, Step,
+    SystemMonotonicClock,
 };
 
 /// The first line of an error's message, naming its kind for the wrapper.
@@ -1252,6 +1253,8 @@ pub struct RunStats {
     pub completions: i64,
     pub skipped: Vec<SkipCount>,
     pub chunks_sent: i64,
+    /// Starts a shadow run predicted without a lease.
+    pub shadow_predictions: i64,
     pub send_errors: i64,
     pub latency_p50_ms: Option<f64>,
     pub latency_p99_ms: Option<f64>,
@@ -1288,6 +1291,7 @@ fn run_stats(controller: &Controller) -> RunStats {
             })
             .collect(),
         chunks_sent: seq(stats.chunks_sent),
+        shadow_predictions: seq(stats.shadow_predictions),
         send_errors: seq(stats.send_errors),
         latency_p50_ms: ms(stats.latency_p50),
         latency_p99_ms: ms(stats.latency_p99),
@@ -1302,10 +1306,81 @@ type Reply = std::result::Result<Vec<(String, Value)>, String>;
 /// The start handed to JS: `predict` is called with it.
 type PredictFn = ThreadsafeFunction<NativeObservation, (), NativeObservation, Status, false>;
 
+/// A completed start handed to JS: `onStep` is called with it.
+type StepFn = ThreadsafeFunction<NativeStep, (), NativeStep, Status, false>;
+
+/// A completed start: whether it was a shadow one, and each action entry's
+/// chunk as the edge receives it.
+#[napi]
+pub struct NativeStep {
+    shadow: bool,
+    time_ns: i64,
+    actions: Mutex<Vec<StepEntry>>,
+}
+
+/// One action entry of a completed start.
+#[napi(object)]
+pub struct StepEntry {
+    pub entry: String,
+    /// The part it commands, `robot:path` (none: dropped).
+    pub part: Option<String>,
+    /// Its chunk seq when sent.
+    pub seq: Option<i64>,
+    /// One `[chunk, ...]` array per command field (none: dropped).
+    pub actions: Option<EntryValue>,
+}
+
+impl NativeStep {
+    fn new(step: &Step) -> Self {
+        Self {
+            shadow: step.shadow,
+            time_ns: step.snapshot_ns,
+            actions: Mutex::new(
+                step.actions
+                    .iter()
+                    .map(|a| StepEntry {
+                        entry: a.entry.clone(),
+                        part: a.part.clone(),
+                        seq: a.seq.map(seq),
+                        actions: a.actions().map(|v| value_out(a.entry.clone(), v)),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[napi]
+impl NativeStep {
+    /// A shadow start: its actions were checked and not sent.
+    #[napi(getter)]
+    pub fn shadow(&self) -> bool {
+        self.shadow
+    }
+
+    /// The session time of the start's snapshot.
+    #[napi(getter)]
+    pub fn time_ns(&self) -> BigInt {
+        BigInt::from(self.time_ns)
+    }
+
+    /// Takes the action entries (the arrays move to JS: a second call
+    /// returns none).
+    #[napi]
+    pub fn take_actions(&self) -> Vec<StepEntry> {
+        self.actions
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+}
+
 /// `predict`, called from the run loop's thread: the observation goes to JS
-/// and the thread waits for [`NativePolicy::reply`].
+/// and the thread waits for [`NativePolicy::reply`]. Each completed start
+/// goes to `on_step`, without waiting.
 struct JsPredictor {
     predict: PredictFn,
+    on_step: Option<StepFn>,
     replies: mpsc::Receiver<Reply>,
     closing: Arc<AtomicBool>,
 }
@@ -1331,6 +1406,19 @@ impl Predictor for JsPredictor {
                 Err(RecvTimeoutError::Timeout) if !self.closing.load(Ordering::Relaxed) => {}
                 Err(_) => return Err("the policy closed while predict ran".into()),
             }
+        }
+    }
+
+    fn step(&mut self, step: &Step) -> std::result::Result<(), String> {
+        let Some(on_step) = &self.on_step else {
+            return Ok(());
+        };
+        match on_step.call(
+            NativeStep::new(step),
+            ThreadsafeFunctionCallMode::NonBlocking,
+        ) {
+            Status::Ok => Ok(()),
+            status => Err(format!("onStep could not be called: {status}")),
         }
     }
 }
@@ -1563,14 +1651,27 @@ impl NativePolicy {
     /// Runs the policy loop on a thread of its own until `stop()`,
     /// `duration_s`, or a failure, calling `predict(observation)` on the JS
     /// thread at the replan rate with one inference in flight; each call is
-    /// answered with `reply`. If a reply is an error, the leases are
-    /// released and the run rejects with code `Predict`. Resolves to the
-    /// run's counters (taken as it returns, so a `close` racing the
-    /// resolution cannot lose them).
+    /// answered with `reply`. `mode` is `command` (default) or `shadow`;
+    /// `on_step` gets each completed start. If a reply is an error, the
+    /// leases are released and the run rejects with code `Predict`.
+    /// Resolves to the run's counters (taken as it returns, so a `close`
+    /// racing the resolution cannot lose them).
     #[napi]
-    pub async fn run(&self, predict: PredictFn, duration_s: Option<f64>) -> Result<RunStats> {
+    pub async fn run(
+        &self,
+        predict: PredictFn,
+        duration_s: Option<f64>,
+        mode: Option<String>,
+        on_step: Option<StepFn>,
+    ) -> Result<RunStats> {
         let controller = self.controller()?;
-        let duration = duration_s.map(timeout).transpose()?;
+        let mode = match mode.as_deref() {
+            None => RunMode::Command,
+            Some(name) => RunMode::from_name(name)
+                .ok_or_else(|| invalid(format!("mode {name:?}: 'command' or 'shadow'")))?,
+        };
+        let mut config = RunConfig::default().mode(mode);
+        config.duration = duration_s.map(timeout).transpose()?;
         let (tx, rx) = mpsc::sync_channel(1);
         {
             let mut slot = self.replies.lock().map_err(|_| exception("poisoned"))?;
@@ -1584,12 +1685,13 @@ impl NativePolicy {
         }
         let mut predictor = JsPredictor {
             predict,
+            on_step,
             replies: rx,
             closing: self.closing.clone(),
         };
         let result = tokio::task::spawn_blocking(move || {
             controller
-                .run(&mut predictor, duration)
+                .run(&mut predictor, config)
                 .map(|()| run_stats(&controller))
         })
         .await;
@@ -1681,6 +1783,8 @@ impl NativePolicy {
                     RunEvent::RobotHeld { .. } => info.kind = "robot_held".into(),
                     RunEvent::ClockRefused { .. } => info.kind = "clock_refused".into(),
                     RunEvent::WaitingToArm { .. } => info.kind = "waiting_to_arm".into(),
+                    RunEvent::Shadowing { .. } => info.kind = "shadowing".into(),
+                    RunEvent::Commanding { .. } => info.kind = "commanding".into(),
                     RunEvent::InputLost { .. } => info.kind = "input_lost".into(),
                     RunEvent::Rebound { .. } => info.kind = "rebound".into(),
                 }

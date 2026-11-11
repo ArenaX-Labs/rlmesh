@@ -19,8 +19,8 @@ use rlmesh_session::wire::{
 };
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
-    Predictor, RunError, RunEvent, SessionHost, SkipReason, SystemMonotonicClock, Transport,
-    TransportConfig,
+    Predictor, RunConfig, RunError, RunEvent, SessionHost, SkipReason, SystemMonotonicClock,
+    Transport, TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -355,7 +355,12 @@ impl Events {
 
 fn run(controller: &Arc<Controller>) -> std::thread::JoinHandle<Result<(), RunError<String>>> {
     let controller = controller.clone();
-    std::thread::spawn(move || controller.run(&mut Follow, Some(Duration::from_secs(120))))
+    std::thread::spawn(move || {
+        controller.run(
+            &mut Follow,
+            RunConfig::default().duration(Duration::from_secs(120)),
+        )
+    })
 }
 
 #[tokio::test(flavor = "multi_thread")]
