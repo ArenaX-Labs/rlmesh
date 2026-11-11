@@ -34,7 +34,7 @@ use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session_core::wire::{
     AuthorityView, ChannelId, ChannelPriority, ClockMode, Command, CtlError, CtlStatus, DeviceView,
     Epoch, Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, Plan, PriorityClass, Reason,
-    ReasonCode, Role, Sample, SessionId, SessionKeys, TenantId, TimingSample,
+    ReasonCode, Role, Sample, SessionId, SessionKeys, StreamSpec, TenantId, TimingSample,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -370,6 +370,42 @@ impl Outlet {
     }
 }
 
+/// One stream this robot publishes, worked out once when its parts are
+/// declared: its spec takes a dozen allocations, and a tick needs two.
+struct Published {
+    spec: StreamSpec,
+    key: String,
+    class: u8,
+}
+
+impl Published {
+    fn new(keys: &SessionKeys, me: &ParticipantId, spec: StreamSpec) -> Self {
+        Self {
+            key: keys.data(me, &spec.path),
+            class: class_of(spec.priority),
+            spec,
+        }
+    }
+}
+
+/// What the runtime sends and listens on for one session, worked out when it
+/// enters it: each is a format on a path that runs many times a second.
+struct Routes {
+    view: String,
+    echo: String,
+    heartbeat: String,
+}
+
+impl Routes {
+    fn new(keys: &SessionKeys, me: &ParticipantId) -> Self {
+        Self {
+            view: keys.host_view(me),
+            echo: keys.heartbeat_echo(me),
+            heartbeat: keys.heartbeat(me),
+        }
+    }
+}
+
 /// One command group's edge.
 struct Edge {
     core: EdgeCore,
@@ -404,6 +440,7 @@ pub struct Robot {
     tenant: TenantId,
     session: SessionId,
     keys: SessionKeys,
+    routes: Routes,
     /// Between runs: what its next wait reports.
     lobby: Option<Lobby>,
     /// The run it joined, while in one.
@@ -462,6 +499,11 @@ pub struct Robot {
     observed_ns: i64,
     /// The host's parts of this robot, in the map's order.
     parts: Vec<PartSpec>,
+    /// Each part's sample stream, in the same order (`None`: it has none it
+    /// can publish), its applied stream, and its command key.
+    samples: Vec<Option<Published>>,
+    applied_streams: Vec<Option<Published>>,
+    command_keys: Vec<String>,
     edges: Vec<Edge>,
     edge_of: Vec<Option<usize>>,
     /// Command subscriptions made (they outlive a restart).
@@ -537,6 +579,7 @@ impl Robot {
             (config.tenant.clone(), config.session)
         };
         let keys = SessionKeys::new(&tenant, session);
+        let routes = Routes::new(&keys, &config.name);
         let lobby = config.lobby.then(|| Lobby::new(config.name.clone()));
         let target = config.homes.first().cloned().ok_or(ConfigError::NoHome)?;
         let credential = config.credential.clone();
@@ -552,6 +595,7 @@ impl Robot {
                 tenant,
                 session,
                 keys,
+                routes,
                 lobby,
                 run: None,
                 wait: None,
@@ -580,6 +624,9 @@ impl Robot {
                 views: 0,
                 observed_ns: 0,
                 parts: Vec::new(),
+                samples: Vec::new(),
+                applied_streams: Vec::new(),
+                command_keys: Vec::new(),
                 edges: Vec::new(),
                 seqs: BTreeMap::new(),
                 fault: None,
@@ -740,10 +787,7 @@ impl Robot {
 
     /// Chunks refused this attach for `reason`.
     pub fn refusals(&self, reason: Rejection) -> u64 {
-        self.edges
-            .iter()
-            .map(|e| e.core.stats().rejected(reason))
-            .sum()
+        self.edges.iter().map(|e| e.core.rejected(reason)).sum()
     }
 
     /// Runs the timers and returns what the transport should do next, in
@@ -961,11 +1005,10 @@ impl Robot {
     #[inline(never)]
     fn sample_view(&mut self, payload: &mut [u8], now_us: u64) {
         let now = ns(now_us);
-        let key = self.keys.host_view(&self.config.name);
         let Some(link) = self.link.as_mut() else {
             return;
         };
-        if let Ok(view) = link.open_view(&key, payload) {
+        if let Ok(view) = link.open_view(&self.routes.view, payload) {
             link.observe(&view, now);
             self.took_view(view, now_us);
         }
@@ -999,11 +1042,10 @@ impl Robot {
         if sub != SUB_VIEW {
             return;
         }
-        let key = self.keys.host_view(&self.config.name);
         let Some(link) = self.link.as_mut() else {
             return;
         };
-        if let Ok(view) = link.take_view(&key, checked) {
+        if let Ok(view) = link.take_view(&self.routes.view, checked) {
             link.observe(&view, ns(now_us));
             self.took_view(view, now_us);
         }
@@ -1021,11 +1063,10 @@ impl Robot {
 
     #[inline(never)]
     fn sample_echo(&mut self, payload: &mut [u8], now_us: u64) {
-        let key = self.keys.heartbeat_echo(&self.config.name);
         let Some(link) = self.link.as_mut() else {
             return;
         };
-        if let Ok(echo) = link.echo(&key, payload) {
+        if let Ok(echo) = link.echo(&self.routes.echo, payload) {
             self.previous = Some(echo.complete(ns(now_us)));
             self.last_heard = now_us;
             self.echoes += 1;
@@ -1078,18 +1119,18 @@ impl Robot {
             let Some(stream) = self
                 .parts
                 .iter()
-                .find(|p| p.channel == sample.part)
-                .and_then(|p| p.applied_stream())
-                .and_then(Result::ok)
+                .position(|p| p.channel == sample.part)
+                .and_then(|i| self.applied_streams.get(i))
+                .and_then(Option::as_ref)
             else {
                 continue;
             };
-            let outlet = self.seqs.entry(stream.channel).or_default();
+            let outlet = self.seqs.entry(stream.spec.channel).or_default();
             if !outlet.admit(now_us) {
                 continue;
             }
             let sealed = Sample {
-                channel: stream.channel,
+                channel: stream.spec.channel,
                 epoch,
                 seq: outlet.next_seq(),
                 capture_ns: now,
@@ -1098,13 +1139,12 @@ impl Robot {
                 payload: sample.value.clone(),
                 applied: Some(sample.applied),
             };
-            let key = self.keys.data(&self.config.name, &stream.path);
             if let Some(link) = self.link.as_mut()
-                && let Ok(payload) = link.seal_sample(&key, &sealed, true)
+                && let Ok(payload) = link.seal_sample(&stream.key, &sealed, true)
             {
                 self.out.push(Action::Publish {
-                    class: class_of(stream.priority),
-                    key,
+                    class: stream.class,
+                    key: stream.key.clone(),
                     payload,
                 });
             }
@@ -1149,19 +1189,20 @@ impl Robot {
         if part >= self.paths.len() {
             return Err(PublishError::UnknownPart);
         }
-        let (Some(spec), Some(link)) = (self.parts.get(part), self.link.as_mut()) else {
+        let (Some(stream), Some(link)) = (self.samples.get(part), self.link.as_mut()) else {
             return Err(PublishError::NotReady);
         };
-        let stream = spec.stream().map_err(|_| PublishError::Invalid)?;
+        let stream = stream.as_ref().ok_or(PublishError::Invalid)?;
         stream
+            .spec
             .check_payload(value)
             .map_err(|_| PublishError::Invalid)?;
-        let outlet = self.seqs.entry(stream.channel).or_default();
+        let outlet = self.seqs.entry(stream.spec.channel).or_default();
         if !outlet.admit(now_us) {
             return Ok(());
         }
         let sample = Sample {
-            channel: stream.channel,
+            channel: stream.spec.channel,
             epoch: self.view.as_ref().map_or(Epoch(0), |s| s.epoch),
             seq: outlet.next_seq(),
             capture_ns: ns(capture_us),
@@ -1170,12 +1211,11 @@ impl Robot {
             payload: Bytes::copy_from_slice(value),
             applied: None,
         };
-        let key = self.keys.data(&self.config.name, &stream.path);
-        match link.seal_sample(&key, &sample, false) {
+        match link.seal_sample(&stream.key, &sample, false) {
             Ok(payload) => {
                 self.out.push(Action::Publish {
-                    class: class_of(stream.priority),
-                    key,
+                    class: stream.class,
+                    key: stream.key.clone(),
                     payload,
                 });
                 Ok(())
@@ -1189,11 +1229,10 @@ impl Robot {
 
     #[inline(never)]
     fn chunk(&mut self, index: usize, msg: Vec<u8>, now: i64) {
-        let (Some(path), Some(link)) = (self.paths.get(index), self.link.as_mut()) else {
+        let (Some(key), Some(link)) = (self.command_keys.get(index), self.link.as_mut()) else {
             return;
         };
-        let key = self.keys.commands(&self.config.name, path);
-        let chunk = match link.open_chunk(&key, msg) {
+        let chunk = match link.open_chunk(key, msg) {
             Ok(chunk) => chunk,
             Err(err) => {
                 if let Some(Some(edge)) = self
@@ -1252,11 +1291,7 @@ impl Robot {
         Rejection::ALL
             .iter()
             .map(|r| {
-                let n = self
-                    .edges
-                    .iter()
-                    .map(|e| e.core.stats().rejected(*r))
-                    .sum::<u64>();
+                let n = self.edges.iter().map(|e| e.core.rejected(*r)).sum::<u64>();
                 (*r, n)
             })
             .filter(|(_, n)| *n > 0)
@@ -1642,6 +1677,18 @@ impl Robot {
                 key: self.keys.commands(me, part.path.as_str()),
             });
         }
+        self.samples = parts
+            .iter()
+            .map(|p| Some(Published::new(&self.keys, me, p.stream().ok()?)))
+            .collect();
+        self.applied_streams = parts
+            .iter()
+            .map(|p| Some(Published::new(&self.keys, me, p.applied_stream()?.ok()?)))
+            .collect();
+        self.command_keys = parts
+            .iter()
+            .map(|p| self.keys.commands(me, p.path.as_str()))
+            .collect();
         self.parts = parts;
         self.edges = edges;
         self.edge_of = edge_of;
@@ -1680,14 +1727,13 @@ impl Robot {
                 .filter_map(|e| e.core.clock_refused().cloned())
                 .collect(),
         };
-        let key = self.keys.heartbeat(&self.config.name);
         let Some(link) = self.link.as_mut() else {
             return;
         };
-        if let Ok(sealed) = link.heartbeat(&key, &heartbeat) {
+        if let Ok(sealed) = link.heartbeat(&self.routes.heartbeat, &heartbeat) {
             self.out.push(Action::Publish {
                 class: CLASS_CONTROL,
-                key,
+                key: self.routes.heartbeat.clone(),
                 payload: sealed,
             });
         }
@@ -1800,6 +1846,9 @@ impl Robot {
         self.queue.clear();
         self.hint = None;
         self.parts.clear();
+        self.samples.clear();
+        self.applied_streams.clear();
+        self.command_keys.clear();
         self.edges.clear();
         self.edge_of = alloc::vec![None; self.paths.len()];
         self.view = None;
@@ -1920,6 +1969,7 @@ impl Robot {
         self.out.push(Action::Reset);
         self.subscribed = alloc::vec![false; self.paths.len()];
         self.keys = SessionKeys::new(&tenant, session);
+        self.routes = Routes::new(&self.keys, &self.config.name);
         self.tenant = tenant;
         self.session = session;
         self.seqs.clear();

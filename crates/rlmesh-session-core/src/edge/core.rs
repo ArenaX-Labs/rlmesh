@@ -427,6 +427,12 @@ impl EdgeCore {
         self.rejected[reason.index()] += 1;
     }
 
+    /// Chunks refused for `reason`, without building [`Self::stats`]: a
+    /// board reports these on every heartbeat.
+    pub fn rejected(&self, reason: Rejection) -> u64 {
+        self.rejected[reason.index()]
+    }
+
     /// Why the clocks are refusing chunks, while the newest judgement did.
     pub fn clock_refused(&self) -> Option<&ClockRefusal> {
         self.clock_refused.as_ref()
