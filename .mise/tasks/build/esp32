@@ -27,8 +27,10 @@ zp_src="$(.mise/tasks/build/zenoh-pico)"
 zp_version="${zp_src##*/src-}"
 zp="$target_dir/zenoh-pico"
 zp_lib="$zp/arduino/zenoh-pico"
+# A board dials its host: it never scouts, nor joins a multicast group.
 if ! cmake -S "$zp_src" -B "$zp/config" -DZP_PLATFORM=arduino_esp32 -DFRAG_MAX_SIZE=4096 \
   -DBATCH_UNICAST_SIZE=2048 -DBATCH_MULTICAST_SIZE=2048 -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF \
+  -DZ_FEATURE_LINK_UDP_MULTICAST=0 -DZ_FEATURE_SCOUTING=0 \
   >"$zp/config.log" 2>&1; then
   cat "$zp/config.log" >&2
   exit 1
