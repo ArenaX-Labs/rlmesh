@@ -39,7 +39,10 @@
 //! a link that stopped reading, so the host task never makes one that could.
 //! What it publishes is dropped for a congested link and sent again; replies
 //! and history subscriptions go out from other threads. Virtual ticks are
-//! the exception: the barrier needs every one.
+//! the exception: the barrier needs every one. Zenoh still routes other
+//! participants' BLOCK traffic to such a peer from its own threads, so the
+//! host's listening [`Transport`] cuts a link whose peer stopped reading
+//! (see [`Transport::close`] and the transport's link guard).
 //!
 //! The host is a library ([`SessionHost::start`] on any [`Transport`]);
 //! `rlmesh host` runs one in the foreground.

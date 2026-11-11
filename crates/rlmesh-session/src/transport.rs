@@ -43,16 +43,26 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::wire::codec::Encoded;
 use crate::wire::{ChannelPriority, ClockMode, StreamSpec};
 use bytes::Bytes;
-use tracing::debug;
+use tracing::{debug, warn};
 use zenoh::bytes::ZBytes;
 use zenoh::qos::{CongestionControl, Priority, Reliability};
 
 use crate::error::SessionError;
+
+mod links;
+
+use links::{Cut, LinkGuard};
+
+/// How long [`Transport::close`] waits on Zenoh before each step that
+/// forces it: cutting the links with bytes waiting, then every link, then
+/// returning without it.
+const CLOSE_STEP: Duration = Duration::from_secs(1);
 
 /// A traffic class: a separate Zenoh session in [`Layout::PerClass`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -440,6 +450,8 @@ pub struct Transport {
     /// The sessions of a session host this process runs, which its own
     /// participants ride (see [`Self::is_in_process`]).
     in_process: bool,
+    /// What watches the links its listeners accepted, if it listens.
+    guard: Option<Arc<LinkGuard>>,
 }
 
 impl std::fmt::Debug for Transport {
@@ -465,9 +477,11 @@ impl Transport {
             Layout::Shared(endpoints) => {
                 let session = zenoh::open(zenoh_config(endpoints, &config.tuning)?).await?;
                 debug!(zid = %session.zid(), "transport open (shared)");
+                let guard = guard(std::slice::from_ref(&session), config).await;
                 Ok(Self {
                     client: config.tuning.client,
                     link: config.tuning.link.clone(),
+                    guard,
                     ..Self::from_session(session)
                 })
             }
@@ -478,6 +492,7 @@ impl Transport {
                     debug!(class = class.name(), zid = %session.zid(), "transport open");
                     opened.push(session);
                 }
+                let guard = guard(&opened, config).await;
                 let sessions: [zenoh::Session; 4] = opened
                     .try_into()
                     .map_err(|_| SessionError::Config("four class sessions".into()))?;
@@ -487,6 +502,7 @@ impl Transport {
                     client: config.tuning.client,
                     link: config.tuning.link.clone(),
                     in_process: false,
+                    guard,
                 })
             }
         }
@@ -500,6 +516,7 @@ impl Transport {
             client: false,
             link: None,
             in_process: false,
+            guard: None,
         }
     }
 
@@ -550,17 +567,78 @@ impl Transport {
     }
 
     /// Closes every session (once each, in the shared layout).
+    ///
+    /// A listening transport's close returns within 3 s whatever its peers
+    /// do: Zenoh closes each link with a last message queued behind what the
+    /// link still holds, and waits for it without a deadline on a link
+    /// nothing reads. So the sessions close on a thread of their own; a link
+    /// still holding bytes after a second is cut at the socket (which ends
+    /// that wait), every remaining link after another, and after a third the
+    /// close returns and leaves Zenoh to finish.
     pub async fn close(&self) -> Result<(), SessionError> {
         let sessions: &[zenoh::Session] = if self.shared {
             &self.sessions[..1]
         } else {
             &self.sessions
         };
-        for session in sessions {
-            session.close().await?;
+        let Some(guard) = &self.guard else {
+            for session in sessions {
+                session.close().await?;
+            }
+            return Ok(());
+        };
+        let (done, mut closed) = tokio::sync::oneshot::channel();
+        let sessions = sessions.to_vec();
+        std::thread::Builder::new()
+            .name("rlmesh-close".into())
+            .spawn(move || {
+                use zenoh::Wait;
+                let _ = done.send(sessions.iter().try_for_each(|s| s.close().wait()));
+            })?;
+        for force in [Some(Cut::Waiting), Some(Cut::All), None] {
+            if let Ok(result) = tokio::time::timeout(CLOSE_STEP, &mut closed).await {
+                return match result {
+                    Ok(closed) => closed.map_err(SessionError::from),
+                    Err(_) => Ok(()),
+                };
+            }
+            match force {
+                Some(which) => {
+                    let cut = guard.cut(which);
+                    warn!(
+                        cut,
+                        ?which,
+                        "links still open {CLOSE_STEP:?} into closing: cut"
+                    );
+                }
+                None => warn!("Zenoh did not finish closing: left to it"),
+            }
         }
         Ok(())
     }
+}
+
+/// Watches the links `sessions` accept on their TCP listeners, when they
+/// listen (see [`links`]).
+async fn guard(sessions: &[zenoh::Session], config: &TransportConfig) -> Option<Arc<LinkGuard>> {
+    let listens = match &config.layout {
+        Layout::Shared(endpoints) => !endpoints.listen.is_empty(),
+        Layout::PerClass(classes) => classes.iter().any(|c| !c.listen.is_empty()),
+    };
+    if config.tuning.client || !listens {
+        return None;
+    }
+    let mut ports = Vec::new();
+    for session in sessions {
+        for locator in session.info().locators().await {
+            if locator.protocol().as_str() == "tcp"
+                && let Ok(addr) = locator.address().as_str().parse::<SocketAddr>()
+            {
+                ports.push(addr.port());
+            }
+        }
+    }
+    LinkGuard::start(ports).map(Arc::new)
 }
 
 /// `n` `tcp/127.0.0.1:{port}` endpoints on ports that were free a moment
