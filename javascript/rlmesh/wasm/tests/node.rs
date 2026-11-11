@@ -98,6 +98,7 @@ fn snapshot(revision: u64, leases: Vec<Lease>) -> AuthoritySnapshot {
         last_stop: LastStop::default(),
         places: Vec::new(),
         scene: None,
+        held: Vec::new(),
     }
 }
 

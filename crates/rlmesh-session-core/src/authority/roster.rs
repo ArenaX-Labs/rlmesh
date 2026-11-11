@@ -166,7 +166,7 @@ impl Authority {
         // that starts the session again is all it needs.
         if robot && matches!(self.mode, Mode::Armed | Mode::Active) {
             let why = self.reason(ReasonCode::RobotLost, id, "");
-            self.hold(id, why);
+            self.hold(id, why, events);
         }
         self.needed.retain(|(p, _), _| p != id);
         self.recompute_demands(events);
@@ -289,7 +289,7 @@ impl Authority {
             let why = self.reason(ReasonCode::VoidedByEpoch, id, "the robot restarted");
             self.stop_robot(id, ReasonCode::VoidedByEpoch, &why, events);
             if matches!(self.mode, Mode::Armed | Mode::Active) {
-                self.hold(id, why);
+                self.hold(id, why, events);
             }
             self.settle_after_release(id, "its robot restarted", events);
         } else {

@@ -1028,16 +1028,23 @@ def test_a_robot_held_in_an_armed_session_needs_a_rearm_by_name(
             {**EYES, "actions": actions}, session=host, name="tracker"
         ) as policy:
             policy.bind()
+            wait_until("the policy sees eye-2 held", lambda: bool(policy.held))
+            [entry] = policy.held
+            assert (entry["robot"], entry["reason"]) == ("eye-2", "unspecified")
+            assert entry["detail"] == "declared commandable parts while armed"
+            assert entry["at_ns"] > 0
             with pytest.raises(
                 rlmesh.SessionRefused, match=r'robot\.rearm\("eye-2"\)'
             ) as held:
                 policy.acquire()
             assert held.value.status == "NOT_READY"
+            assert str(held.value) == entry["message"]
             first.arm()
             with pytest.raises(rlmesh.SessionRefused, match="eye-2"):
                 policy.acquire()
             first.rearm("eye-2")
             wait_until("every lease", lambda: bool(policy.acquire()))
+            wait_until("the hold is gone", lambda: not first.held)
     finally:
         first.close()
         if late is not None:

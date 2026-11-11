@@ -436,6 +436,11 @@ class Robot:
         """Why the mode is what it is (``robot_lost``, ``estop_local``, ...; ``unspecified`` before any change)."""
         return self._native.mode_reason
 
+    @property
+    def held(self) -> list[dict[str, Any]]:
+        """Every robot held until re-armed by name: ``robot``, ``reason``, ``detail``, ``at_ns``, ``message``."""
+        return self._native.held
+
     def publish(
         self,
         path: str,
@@ -904,8 +909,13 @@ class Policy:
         """
         return self._bound().stats()
 
+    @property
+    def held(self) -> list[dict[str, Any]]:
+        """Every robot held until re-armed by name: ``robot``, ``reason``, ``detail``, ``at_ns``, ``message``."""
+        return self._bound().held
+
     def events(self) -> list[dict[str, Any]]:
-        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``clock_refused``."""
+        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``."""
         return self._bound().events()
 
     def close(self) -> None:

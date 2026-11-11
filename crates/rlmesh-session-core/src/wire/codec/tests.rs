@@ -11,8 +11,8 @@ use crate::edge::Rejection;
 use crate::wire::action::{ActionChunk, ChunkRef, InputRange};
 use crate::wire::authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
-    CtlStatus, HandshakeAccept, HandshakeRequest, LastStop, Lease, LeaseEnd, Mode, ParticipantInfo,
-    PriorityClass, Reason, ReasonCode, Request, Role, Watermark,
+    CtlStatus, HandshakeAccept, HandshakeRequest, HeldRobot, LastStop, Lease, LeaseEnd, Mode,
+    ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, Watermark,
 };
 use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 use crate::wire::health::{HostHealth, LinkHealth};
@@ -235,6 +235,17 @@ fn snapshot() -> AuthoritySnapshot {
             pose: Pose {
                 xyz: [0.4, -0.2, 0.0],
                 quat_xyzw: [0.0, 0.0, 0.6, 0.8],
+            },
+        }],
+        held: vec![HeldRobot {
+            robot: pid("ur10e"),
+            reason: Reason {
+                code: ReasonCode::DeviceWatchdog,
+                by: "ur10e".into(),
+                detail: "board link".into(),
+                at_ns: 7,
+                revision: 8,
+                verified: true,
             },
         }],
         scene: Some(Box::new(SceneInfo {

@@ -809,6 +809,12 @@ class V2Controller:
         r"""
         The replan rate R.
         """
+    @property
+    def held(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        Every robot held until re-armed by name, as dicts with `robot`,
+        `reason`, `detail`, `at_ns` (session time) and `message`.
+        """
     def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: typing.Optional[builtins.str], *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ..., publishes_json: typing.Optional[builtins.str] = None) -> V2Controller:
         r"""
         Attaches as `name` at `priority`, waits for `robot`'s parts, binds
@@ -1160,6 +1166,12 @@ class V2Robot:
         r"""
         Why the session mode is what it is (`robot_lost`, `estop_local`, ...;
         `unspecified` before any change).
+        """
+    @property
+    def held(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        Every robot held until re-armed by name, as dicts with `robot`,
+        `reason`, `detail`, `at_ns` (session time) and `message`.
         """
     def __new__(cls, address: builtins.str, name: builtins.str, robot_json: builtins.str, timeout_s: builtins.float = ...) -> V2Robot:
         r"""

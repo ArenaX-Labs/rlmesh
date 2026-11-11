@@ -5,6 +5,7 @@ use alloc::collections::BTreeSet;
 
 use super::{Authority, AuthorityEvent, ENDED, Grant};
 use crate::prelude::*;
+use crate::wire::authority::held_refusal;
 use crate::wire::{
     ChannelId, CtlError, CtlStatus, Epoch, Lease, LeaseEnd, LeaseToken, Mode, ParticipantId,
     Reason, ReasonCode, Role,
@@ -86,12 +87,7 @@ impl Authority {
             if let Some(why) = self.held.get(&part.owner) {
                 return Err(CtlError::new(
                     CtlStatus::NotReady,
-                    format!(
-                        "{} stopped on its own ({}): {}",
-                        part.owner,
-                        why.code,
-                        self.rearm_hint(&part.owner)
-                    ),
+                    held_refusal(&part.owner, why, self.scene_run()),
                 ));
             }
             // Before pre-emption and busy checks: a device pre-empts only

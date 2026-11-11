@@ -163,7 +163,8 @@ under `--rearm-robots`, is driven again at once. Without the flag it stays
 held until you say so by name, from any robot's program:
 `camera.rearm("eye-1")` (in a scene, `rlmesh scene arm RUN eye-1`). A held
 robot stays held across a disarm or a session-wide SAFE: `arm()` never
-clears it.
+clears it. `camera.held` (or a policy's `held`) lists every robot held, why
+and since when.
 
 **When a policy drops off** (a crash, a lost link, or a new process
 joining under its name), the host ends only the leases it held. Those

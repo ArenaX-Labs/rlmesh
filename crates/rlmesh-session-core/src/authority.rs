@@ -53,7 +53,8 @@
 //!   of [`LeaseEnd`]s, and `last_stop` marks the last entry into SAFE,
 //!   DISARMED or ESTOP, so clients never infer why. An embodiment's
 //!   `EnterSafe` ends that robot's leases and holds it until a `Rearm` names
-//!   it; SAFE and ESTOP stay and record its reason.
+//!   it; SAFE and ESTOP stay and record its reason. The snapshot lists
+//!   every robot held, with why and since when.
 //! - **Places** ([`AuthorityConfig::places`]) go out in every snapshot, so
 //!   every binder builds the same view of several robots; a declaration
 //!   whose placed paths collide is refused (`INCOMPATIBLE`).
@@ -77,7 +78,7 @@ use crate::wire::tick::VirtualTick;
 use crate::wire::version::PROTOCOL_MINOR;
 use crate::wire::{
     AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Demand, Epoch,
-    FenceError, Fingerprint, LastStop, Lease, LeaseEnd, LeaseToken, Mode, ParticipantId,
+    FenceError, Fingerprint, HeldRobot, LastStop, Lease, LeaseEnd, LeaseToken, Mode, ParticipantId,
     ParticipantInfo, Place, Reason, SessionId,
 };
 
@@ -426,6 +427,14 @@ impl Authority {
             last_stop: self.last_stop,
             places: self.config.places.clone(),
             scene: self.scene_info(),
+            held: self
+                .held
+                .iter()
+                .map(|(robot, reason)| HeldRobot {
+                    robot: robot.clone(),
+                    reason: reason.clone(),
+                })
+                .collect(),
         }
     }
 

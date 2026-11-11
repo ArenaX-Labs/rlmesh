@@ -779,11 +779,27 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
     let driver = current(&one);
     driver.participant().arm().await.expect("a no-op");
     let eye_two = current(&two).participant().id().clone();
+    wait_until("the policy sees eye 2 held", || {
+        tracker.held_refusals().iter().any(|(r, _)| *r == eye_two)
+    })
+    .await;
+    let (_, why) = tracker.held_refusals().remove(0);
+    assert!(why.contains("robot.rearm(\"eye-2\")"), "{why}");
+    wait_until("the run reports the hold", || {
+        tracker.drain_events().iter().any(
+            |e| matches!(e, rlmesh_session::RunEvent::RobotHeld { message } if message.contains("eye-2")),
+        )
+    })
+    .await;
     driver
         .participant()
         .rearm(&eye_two)
         .await
         .expect("re-arm eye 2");
+    wait_until("the policy sees eye 2 re-armed", || {
+        tracker.held_refusals().is_empty()
+    })
+    .await;
     wait_until("eye 2 driven again", || driven_since(&log_two, 0.25, back)).await;
     wait_until("eye 1 still driven", || driven_since(&log_one, 0.25, back)).await;
 

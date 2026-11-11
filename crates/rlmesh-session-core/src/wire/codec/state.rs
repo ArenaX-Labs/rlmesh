@@ -16,8 +16,8 @@ use bytes::Bytes;
 use prost::Message as _;
 
 use crate::wire::authority::{
-    AuthoritySnapshot, BindingRecord, ClockMapping, LastStop, Lease, LeaseEnd, ParticipantInfo,
-    Reason, ReasonCode,
+    AuthoritySnapshot, BindingRecord, ClockMapping, HeldRobot, LastStop, Lease, LeaseEnd,
+    ParticipantInfo, Reason, ReasonCode,
 };
 use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 use crate::wire::error::WireError;
@@ -331,6 +331,13 @@ fn binding_from_pb(b: pb::BindingRecord) -> Result<BindingRecord, WireError> {
     })
 }
 
+fn held_from_pb(h: pb::HeldRobot) -> Result<HeldRobot, WireError> {
+    Ok(HeldRobot {
+        robot: ParticipantId::new(h.robot)?,
+        reason: h.reason.map(reason_from_pb).unwrap_or_default(),
+    })
+}
+
 pub(super) fn state_to_pb(s: &AuthoritySnapshot) -> pb::AuthorityState {
     pb::AuthorityState {
         session: s.session.to_string(),
@@ -359,6 +366,14 @@ pub(super) fn state_to_pb(s: &AuthoritySnapshot) -> pb::AuthorityState {
         last_stop: Some(last_stop_to_pb(s.last_stop)),
         places: s.places.iter().map(place_to_pb).collect(),
         scene: s.scene.as_deref().map(scene_info_to_pb),
+        held: s
+            .held
+            .iter()
+            .map(|h| pb::HeldRobot {
+                robot: h.robot.to_string(),
+                reason: Some(reason_to_pb(&h.reason)),
+            })
+            .collect(),
     }
 }
 
@@ -398,6 +413,7 @@ pub(super) fn state_from_pb(s: pb::AuthorityState) -> Result<AuthoritySnapshot, 
             .scene
             .map(|s| scene_info_from_pb(s).map(Box::new))
             .transpose()?,
+        held: collect(s.held, held_from_pb)?,
     })
 }
 

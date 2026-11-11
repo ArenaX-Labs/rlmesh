@@ -298,6 +298,15 @@ message AuthorityState {
   repeated Place places = 22;
   // The scene this session runs, when a daemon started it.
   SceneInfo scene = 23;
+  // Every robot that stopped on its own and waits to be re-armed by name.
+  repeated HeldRobot held = 24;
+}
+
+// A robot held until it is re-armed by name.
+message HeldRobot {
+  string robot = 1;
+  // Why (code, detail) and when (at_ns, host session clock).
+  Reason reason = 2;
 }
 
 // One robot's place in a scene's view: its parts under `from` appear at

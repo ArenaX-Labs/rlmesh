@@ -816,6 +816,14 @@ impl PyRobot {
         ))
     }
 
+    /// Every robot held until re-armed by name, as dicts with `robot`,
+    /// `reason`, `detail`, `at_ns` (session time) and `message`.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn held<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        held_list(py, self.robot()?.participant().authority().as_ref())
+    }
+
     /// Now on this robot's clock (`time.monotonic_ns()`).
     fn now_ns(&self) -> PyResult<i64> {
         Ok(self.robot()?.participant().clock().now_ns())
@@ -877,6 +885,27 @@ impl PyRobot {
             self.session.close().await.map_err(session_err)
         })
     }
+}
+
+/// The robots `state` holds, as dicts for `held`.
+fn held_list<'py>(
+    py: Python<'py>,
+    state: Option<&rlmesh_session::wire::AuthoritySnapshot>,
+) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty(py);
+    let Some(state) = state else {
+        return Ok(list);
+    };
+    for held in &state.held {
+        let d = PyDict::new(py);
+        d.set_item("robot", held.robot.as_str())?;
+        d.set_item("reason", sdk::reason_name(held.reason.code))?;
+        d.set_item("detail", &held.reason.detail)?;
+        d.set_item("at_ns", held.reason.at_ns)?;
+        d.set_item("message", state.held_refusal(&held.robot))?;
+        list.append(d)?;
+    }
+    Ok(list)
 }
 
 #[cfg(feature = "fleet")]
@@ -1509,6 +1538,14 @@ impl PyController {
         })
     }
 
+    /// Every robot held until re-armed by name, as dicts with `robot`,
+    /// `reason`, `detail`, `at_ns` (session time) and `message`.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn held<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        held_list(py, self.controller()?.participant().authority().as_ref())
+    }
+
     /// Whether this policy holds every lease its binding commands.
     fn holds(&self) -> PyResult<bool> {
         Ok(self.controller()?.holds())
@@ -1611,6 +1648,7 @@ impl PyController {
                     d.set_item("kind", "inference_pending")?;
                     d.set_item("pending_s", pending.as_secs_f64())?;
                 }
+                RunEvent::RobotHeld { .. } => d.set_item("kind", "robot_held")?,
                 RunEvent::ClockRefused { .. } => d.set_item("kind", "clock_refused")?,
             }
             list.append(d)?;

@@ -97,6 +97,13 @@ pub enum AuthorityEvent {
         /// The parts released, each `robot:part`.
         parts: Vec<String>,
     },
+    /// A robot stopped on its own: it takes no lease until re-armed by name.
+    RobotHeld {
+        /// The robot.
+        robot: ParticipantId,
+        /// Why.
+        reason: Reason,
+    },
     /// A robot's hold was cleared.
     RobotRearmed {
         /// The robot.
@@ -214,6 +221,7 @@ impl fmt::Display for AuthorityEvent {
                 "holder {holder} lost ({code}): released {}",
                 parts.join(", ")
             ),
+            Self::RobotHeld { robot, reason } => write!(f, "robot {robot} held ({reason})"),
             Self::RobotRearmed { robot, by } => write!(f, "robot {robot} re-armed by {by}"),
             Self::EstopLatched { by, reason } => write!(f, "ESTOP latched by {by}: {reason}"),
             Self::EstopCleared { by } => write!(f, "ESTOP latch cleared by {by}"),

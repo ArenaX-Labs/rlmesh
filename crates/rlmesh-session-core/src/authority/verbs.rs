@@ -517,7 +517,7 @@ impl Authority {
             // The session and the other robots go on.
             Mode::Active | Mode::Armed | Mode::Disarmed => {
                 self.stop_robot(&from, ReasonCode::VoidedBySafe, &why, &mut applied.events);
-                self.hold(&from, why);
+                self.hold(&from, why, &mut applied.events);
                 self.settle_after_release(&from, "its robot went safe", &mut applied.events);
             }
             Mode::Safe | Mode::Estop => {

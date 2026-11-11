@@ -466,9 +466,43 @@ pub struct AuthoritySnapshot {
     pub places: Vec<Place>,
     /// The scene this session runs, when a daemon started it.
     pub scene: Option<Box<SceneInfo>>,
+    /// Every robot that stopped on its own and waits to be re-armed by name.
+    pub held: Vec<HeldRobot>,
+}
+
+/// A robot held until it is re-armed by name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRobot {
+    /// The robot.
+    pub robot: ParticipantId,
+    /// Why (`code`, `detail`) and when (`at_ns`, session time).
+    pub reason: Reason,
+}
+
+/// Why `robot`, held for `why`, takes no lease, and how to re-arm it (in the
+/// scene run `run`, if it is in one).
+pub fn held_refusal(robot: &ParticipantId, why: &Reason, run: Option<&str>) -> String {
+    let code = why.code;
+    match run {
+        Some(run) => format!(
+            "{robot} stopped on its own ({code}): run `rlmesh scene arm {run} {robot}` or call \
+             robot.rearm(\"{robot}\") to drive it again"
+        ),
+        None => format!(
+            "{robot} stopped on its own ({code}): call robot.rearm(\"{robot}\") to drive it again"
+        ),
+    }
 }
 
 impl AuthoritySnapshot {
+    /// Why `robot` takes no lease, when it is held: what the host would
+    /// refuse a lease on it with.
+    pub fn held_refusal(&self, robot: &ParticipantId) -> Option<String> {
+        let held = self.held.iter().find(|h| &h.robot == robot)?;
+        let run = self.scene.as_ref().map(|s| s.run.as_str());
+        Some(held_refusal(robot, &held.reason, run))
+    }
+
     /// The part whose stream is `channel`.
     pub fn part(&self, channel: ChannelId) -> Option<&PartSpec> {
         self.parts.iter().find(|p| p.channel == channel)

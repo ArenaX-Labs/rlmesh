@@ -258,6 +258,87 @@ fn a_hold_outlasts_a_session_wide_safe_and_a_disarm() {
     f.grant("policy", "wheel", 5).expect("leased");
 }
 
+fn held_in(f: &Fixture, now: i64) -> Vec<(String, ReasonCode, String, i64)> {
+    f.auth
+        .snapshot(Vec::new(), now)
+        .held
+        .iter()
+        .map(|h| {
+            (
+                h.robot.to_string(),
+                h.reason.code,
+                h.reason.detail.clone(),
+                h.reason.at_ns,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_snapshot_lists_a_held_robot_from_its_fault_until_its_rearm() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 1).expect("arm");
+    assert!(held_in(&f, 1).is_empty());
+    let revision = f.auth.revision();
+    let fault = Command::EnterSafe {
+        reason: "board link".into(),
+        code: ReasonCode::DeviceWatchdog,
+    };
+    let applied = f.run("robot", fault, 2).expect("fault");
+    assert!(
+        f.auth.revision() > revision,
+        "a hold is published even with no lease to end"
+    );
+    assert!(matches!(
+        applied.events.as_slice(),
+        [AuthorityEvent::RobotHeld { robot, .. }] if *robot == pid("robot")
+    ));
+    assert_eq!(
+        held_in(&f, 3),
+        [(
+            "robot".to_string(),
+            ReasonCode::DeviceWatchdog,
+            "board link".to_string(),
+            2
+        )]
+    );
+    let refused = f.grant("policy", "cmd1", 3).expect_err("held");
+    assert_eq!(
+        f.auth.snapshot(Vec::new(), 3).held_refusal(&pid("robot")),
+        Some(refused.message),
+        "the snapshot says what the host refuses with"
+    );
+    let revision = f.auth.revision();
+    f.run("operator", rearm("robot"), 4).expect("re-arm");
+    assert!(f.auth.revision() > revision);
+    assert!(held_in(&f, 4).is_empty());
+    assert_eq!(
+        f.auth.snapshot(Vec::new(), 4).held_refusal(&pid("robot")),
+        None
+    );
+}
+
+#[test]
+fn the_snapshot_keeps_a_hold_through_a_session_wide_safe_and_a_new_arm() {
+    let mut f = two_held_robots();
+    f.run("operator", Command::Arm, 1).expect("arm");
+    f.run("operator", rearm("robot"), 1).expect("re-arm");
+    f.grant("policy", "cmd1", 1).expect("lease");
+    let why = f.auth.reason(ReasonCode::Unspecified, "test", "");
+    f.auth.enter_safe(why, &mut Vec::new());
+    assert_eq!(f.auth.mode(), Mode::Safe);
+    f.run("operator", Command::Arm, 2).expect("arm from SAFE");
+    assert_eq!(
+        held_in(&f, 2),
+        [(
+            "other".to_string(),
+            ReasonCode::DeviceWatchdog,
+            "board link".to_string(),
+            0
+        )]
+    );
+}
+
 #[test]
 fn a_robot_lost_or_restarted_while_armed_is_held_and_one_while_disarmed_is_not() {
     let restart = |f: &mut Fixture, generation: u32, now: i64| {

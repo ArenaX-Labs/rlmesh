@@ -116,7 +116,7 @@ impl Authority {
                 from,
                 "declared commandable parts while armed",
             );
-            self.hold(from, why);
+            self.hold(from, why, events);
         }
         // Validated: mutate.
         let mut added = Vec::with_capacity(fresh.len());

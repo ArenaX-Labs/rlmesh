@@ -576,6 +576,46 @@ impl Controller {
         self.leases.group().held(self.participant.clock().now_ns())
     }
 
+    /// Each robot this controller commands that is held, with why it takes
+    /// no lease and how to re-arm it, by the authority state: no request to
+    /// the host.
+    pub fn held_refusals(&self) -> Vec<(ParticipantId, String)> {
+        let channels = self.binding.channels();
+        self.participant.authority_view().with(|view| {
+            let Some(view) = view else {
+                return Vec::new();
+            };
+            let mut robots: Vec<&ParticipantId> = channels
+                .iter()
+                .filter_map(|channel| view.part(*channel))
+                .map(|part| &part.owner)
+                .collect();
+            robots.sort();
+            robots.dedup();
+            robots
+                .into_iter()
+                .filter_map(|robot| Some((robot.clone(), view.held_refusal(robot)?)))
+                .collect()
+        })
+    }
+
+    /// Reports each robot held since the last look (`reported`).
+    fn report_held(&self, reported: &mut Vec<ParticipantId>) {
+        let now = self.held_refusals();
+        for (robot, message) in &now {
+            if !reported.contains(robot) {
+                warn!(participant = %self.participant.id(), "{message}");
+                push_event(
+                    &self.events,
+                    RunEvent::RobotHeld {
+                        message: message.clone(),
+                    },
+                );
+            }
+        }
+        *reported = now.into_iter().map(|(robot, _)| robot).collect();
+    }
+
     /// Each leased part whose edge refuses this controller's chunks for its
     /// clock, by the authority state: the part and the refusal in words.
     pub fn clock_refusals(&self) -> Vec<(ChannelId, String)> {
@@ -743,6 +783,7 @@ impl Controller {
         let commands = !self.binding.channels().is_empty();
         let mut recovered_at: Option<i64> = None;
         let mut clock_refused = Vec::new();
+        let mut held = Vec::new();
         // Wall clock only: virtual and lockstep starts stay on their ticks.
         let wall = self
             .participant
@@ -816,6 +857,7 @@ impl Controller {
             // Warm before authority: the first complete snapshot asks for
             // the leases.
             self.want_leases();
+            self.report_held(&mut held);
             // Any lease held is enough: a robot that is gone or stopped on
             // its own never starves the others (its actions go unsent).
             if commands && !self.holds_any() {

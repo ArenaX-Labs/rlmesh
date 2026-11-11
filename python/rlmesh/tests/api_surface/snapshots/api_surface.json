@@ -4258,6 +4258,10 @@
             "kind": "function",
             "signature": "events() -> list[dict[str, Any]]"
           },
+          "held": {
+            "kind": "property",
+            "signature": "property held: list[dict[str, Any]]"
+          },
           "holds": {
             "kind": "property",
             "signature": "property holds: bool"
@@ -4347,6 +4351,10 @@
           "estop": {
             "kind": "function",
             "signature": "estop(reason: str = 'estop') -> None"
+          },
+          "held": {
+            "kind": "property",
+            "signature": "property held: list[dict[str, Any]]"
           },
           "keep": {
             "kind": "function",

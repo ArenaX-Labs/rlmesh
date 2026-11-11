@@ -27,6 +27,8 @@ security fixes) until you can move both sides. Names that 0.1 exported and
   holds the arm/disarm/e-stop state and records every session as MCAP
   (a rolling window, plus kept incidents), which
   `python -m rlmesh.realtime.lerobot` exports as a LeRobot dataset.
+- The session snapshot lists every robot held until re-armed by name, with
+  why and since when; `Robot.held` and `Policy.held` read it.
 - A commanded part bounds the clock error it accepts with
   `max_clock_error_ms` (by default a quarter of `max_action_age_ms`, at
   least 5 ms) in place of a fixed 5 ms, and a `clock_uncertain` refusal now
