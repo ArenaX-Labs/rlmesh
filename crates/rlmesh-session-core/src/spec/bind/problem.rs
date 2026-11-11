@@ -303,7 +303,20 @@ impl<'a> Binder<'a> {
 
     pub(super) fn unbound(&mut self, slot: &Slot<'a>, considered: &[&'a PartSpec]) {
         let kind = &slot.entry.kind_name;
-        let (head, body) = if considered.is_empty() {
+        let waiting = self.waiting(slot);
+        let (head, body) = if waiting.contains(&slot.robot) {
+            (
+                format!(
+                    "{}: {} has not declared any parts yet.",
+                    slot.subject(),
+                    slot.robot
+                ),
+                vec![format!(
+                    "    fix: start {}, or name a robot that is in the session.",
+                    slot.robot
+                )],
+            )
+        } else if considered.is_empty() {
             let need = if slot.entry.kind == Kind::Custom {
                 format!("a {kind} part")
             } else {
@@ -331,7 +344,6 @@ impl<'a> Binder<'a> {
                 )],
             )
         };
-        let waiting = self.waiting(slot);
         self.problems.push(Problem {
             waiting,
             ..problem(Code::Unbound, slot, head, body)

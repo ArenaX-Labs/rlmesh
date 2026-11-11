@@ -980,6 +980,52 @@ fn a_views_refusal_names_a_part_as_its_robot_declared_it() {
 }
 
 #[test]
+fn only_a_robot_that_has_not_appeared_is_waited_for() {
+    let parts = robot("ur10e");
+    let options = RunOptions::named("reader").robot("ur10e").expect("robot");
+    let refusal = |json: &str| {
+        let policy = Policy::parse(json).expect("policy");
+        bind(&policy, &parts, &options).expect_err("refused")
+    };
+    let absent = refusal(
+        r#"{"hz": 20, "inputs": {
+            "q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
+            "target": {"kind": "joints", "at": "tracker:target", "fields": ["pos"]}}}"#,
+    );
+    assert_eq!(
+        absent.waiting_for().as_deref(),
+        Some(
+            "robot tracker to declare its parts; input \"target\" (kind joints, at \
+             \"tracker:target\") needs it"
+        )
+    );
+    assert!(
+        absent
+            .to_string()
+            .contains("tracker has not declared any parts yet.\n    fix: start tracker"),
+        "{absent}"
+    );
+    // A present robot's missing part stands, alone or beside an absent robot.
+    let missing = refusal(r#"{"hz": 20, "inputs": {"c": {"kind": "gripper", "at": "nope"}}}"#);
+    assert_eq!(missing.waiting_for(), None, "{missing}");
+    let both = refusal(
+        r#"{"hz": 20, "inputs": {
+            "c": {"kind": "gripper", "at": "nope"},
+            "target": {"kind": "joints", "at": "tracker:target", "fields": ["pos"]}}}"#,
+    );
+    assert_eq!(both.waiting_for(), None, "{both}");
+    // An optional entry's robot is not waited for: absent binds blank.
+    let policy = Policy::parse(
+        r#"{"hz": 20, "inputs": {"target": {"kind": "joints", "at": "tracker:target",
+            "fields": ["pos"], "count": 2, "optional": true}},
+            "allow": ["blank"]}"#,
+    )
+    .expect("policy");
+    let bound = bind(&policy, &parts, &options).unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(bound.input("target").expect("row").status, Status::Blank);
+}
+
+#[test]
 fn switches_and_values_bind_by_kind() {
     let binding = bound("lamp_keeper", "lamp", RunOptions::named("lamp_keeper"));
     golden("lamp_keeper__lamp", &binding.table());

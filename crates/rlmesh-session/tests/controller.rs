@@ -961,3 +961,61 @@ async fn binding_to_a_robot_that_never_appears_names_it() {
         "{err}"
     );
 }
+/// Reads the arm, and a part of a robot that may not have started.
+const READS_TRACKER: &str = r#"{
+    "hz": 50,
+    "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
+               "target": {"kind": "joints", "at": "tracker:target", "fields": ["pos"]}}
+}"#;
+
+const TRACKER: &str = r#"{"target": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 50}}"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binding_waits_for_a_named_robot_that_starts_later() {
+    let world = World::start().await;
+    let _robot = world.robot().await;
+    let p = world
+        .join("reader", Role::Controller, PriorityClass::Model)
+        .await;
+    let options = RunOptions::named("reader").robot("ur10e").expect("robot");
+    let policy = Policy::parse(READS_TRACKER).expect("policy");
+    let binding = tokio::spawn(async move {
+        Controller::bind(Arc::new(p), &policy, &options, ControllerConfig::default()).await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!binding.is_finished(), "it waits for the tracker");
+    let tracker = world
+        .join("tracker", Role::Embodiment, PriorityClass::Scripted)
+        .await;
+    tracker.declare_parts(TRACKER).await.expect("declare");
+    let controller = binding.await.expect("join").expect("bound");
+    assert!(controller.binding().input("target").is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_named_input_that_never_appears_says_which_robot_and_entry() {
+    let world = World::start().await;
+    let _robot = world.robot().await;
+    let p = world
+        .join("reader", Role::Controller, PriorityClass::Model)
+        .await;
+    let Err(err) = Controller::bind(
+        Arc::new(p),
+        &Policy::parse(READS_TRACKER).expect("policy"),
+        &RunOptions::named("reader").robot("ur10e").expect("robot"),
+        ControllerConfig {
+            bind_timeout: Duration::from_millis(100),
+            ..ControllerConfig::default()
+        },
+    )
+    .await
+    else {
+        panic!("bound");
+    };
+    let text = err.to_string();
+    assert!(
+        text.contains("waiting for robot tracker to declare its parts"),
+        "{text}"
+    );
+    assert!(text.contains("at \"tracker:target\""), "{text}");
+}
