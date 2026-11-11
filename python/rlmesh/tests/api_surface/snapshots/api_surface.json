@@ -4074,6 +4074,7 @@
       "Observation",
       "Policy",
       "Rate",
+      "Resume",
       "Robot",
       "RunMode",
       "SessionException",
@@ -4288,9 +4289,13 @@
             "kind": "function",
             "signature": "release() -> None"
           },
+          "resume": {
+            "kind": "function",
+            "signature": "resume() -> list[str]"
+          },
           "run": {
             "kind": "function",
-            "signature": "run(predict: Predict, *, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None) -> dict[str, Any]"
+            "signature": "run(predict: Predict, *, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, resume: Resume = Resume.MANUAL) -> dict[str, Any]"
           },
           "send": {
             "kind": "function",
@@ -4321,6 +4326,20 @@
           }
         },
         "signature": "Rate(hz: float)",
+        "stability": "Experimental"
+      },
+      "Resume": {
+        "kind": "class",
+        "members": {
+          "AUTO": {
+            "kind": "attribute",
+            "signature": "AUTO"
+          },
+          "MANUAL": {
+            "kind": "attribute",
+            "signature": "MANUAL"
+          }
+        },
         "stability": "Experimental"
       },
       "Robot": {
@@ -4518,7 +4537,7 @@
       },
       "drive": {
         "kind": "function",
-        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, timeout: float = 10.0, publishes: Mapping[str, Any] | None = None, **captures: str) -> dict[str, Any]",
+        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, timeout: float = 10.0, publishes: Mapping[str, Any] | None = None, resume: Resume = Resume.MANUAL, **captures: str) -> dict[str, Any]",
         "stability": "Experimental"
       },
       "parse_address": {

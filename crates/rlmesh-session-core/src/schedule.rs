@@ -12,7 +12,8 @@
 //!   received in this epoch), `stale_input`, `window_gap`, `decode` (a
 //!   sample did not decode or fit its plan), `no_lease` (a standby, or
 //!   a preempted controller: its inputs stay warm, `predict` does not run;
-//!   a shadow run predicts instead, counted apart) and `publisher_gone`
+//!   a shadow run predicts instead, counted apart), `parked` (a higher
+//!   class took its parts and it waits to be resumed) and `publisher_gone`
 //!   (an input's publisher left the session or withdrew the part, until it
 //!   is back).
 //! - **`rate_drift`** (scope `policy`): the completion rate over a window of
@@ -62,11 +63,14 @@ pub enum SkipReason {
     /// A required input's publisher is gone: it left the session, or no
     /// longer declares the part (`publisher_gone`).
     PublisherGone,
+    /// A higher class took the controller's parts, and it holds none: it
+    /// waits to be resumed (`parked`).
+    Parked,
 }
 
 impl SkipReason {
     /// Every reason, in report order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Busy,
         Self::Waiting,
         Self::StaleInput,
@@ -74,6 +78,7 @@ impl SkipReason {
         Self::Decode,
         Self::NoLease,
         Self::PublisherGone,
+        Self::Parked,
     ];
 
     /// The report name (`busy_skip`, `waiting_for`, ...).
@@ -86,6 +91,7 @@ impl SkipReason {
             Self::Decode => "decode",
             Self::NoLease => "no_lease",
             Self::PublisherGone => "publisher_gone",
+            Self::Parked => "parked",
         }
     }
 
@@ -106,6 +112,7 @@ impl SkipReason {
             Self::Decode => 4,
             Self::NoLease => 5,
             Self::PublisherGone => 6,
+            Self::Parked => 7,
         }
     }
 }
@@ -173,6 +180,16 @@ pub enum RunEvent {
         /// What happened, and what the run does meanwhile.
         message: String,
     },
+    /// A higher class took a part from the controller: it is not asked for
+    /// again, even once free, until the controller is resumed.
+    Parked {
+        /// The part, `robot:path`.
+        part: String,
+        /// Who took it.
+        by: String,
+        /// What happened, and the call that resumes it.
+        message: String,
+    },
     /// The controller bound again against the session's current parts: an
     /// input's publisher came back or restarted, or a blank input's
     /// publisher appeared.
@@ -213,6 +230,7 @@ impl fmt::Display for RunEvent {
             | Self::Shadowing { message }
             | Self::Commanding { message }
             | Self::InputLost { message, .. }
+            | Self::Parked { message, .. }
             | Self::Rebound { message, .. } => f.write_str(message),
         }
     }
@@ -712,6 +730,7 @@ mod tests {
                 | RunEvent::Shadowing { .. }
                 | RunEvent::Commanding { .. }
                 | RunEvent::InputLost { .. }
+                | RunEvent::Parked { .. }
                 | RunEvent::Rebound { .. } => (false, "other"),
             })
             .collect();

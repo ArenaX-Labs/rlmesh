@@ -221,7 +221,7 @@ test('the binding table and refusals match the conformance goldens', async () =>
   );
 });
 
-test('an operator preempts the model and hands back under a fresh token', async () => {
+test('an operator preempts the model, which stays stopped until resumed', async () => {
   await using ur = await FakeUR10e.start(host);
   await using model = new rlmesh.Policy(HOLD, { session: host, name: 'model' });
   await using operator = new rlmesh.Policy(HOLD, { session: host, name: 'teleop', priority: 'operator' });
@@ -254,20 +254,55 @@ test('an operator preempts the model and hands back under a fresh token', async 
   await using _stopTeleop = { [Symbol.asyncDispose]: () => ((streaming = false), teleop) };
   await waitUntil('the operator driving', () => ur.driven((d) => first(d) === 0.75));
   assert.equal(ur.log.at(-1).leaseToken, tokens['ur10e:arm']);
-  assert.ok(model.stats().skipped.no_lease > 0, 'a preempted model stays warm, skips its starts');
+  assert.ok(model.stats().skipped.parked > 0, 'a preempted model stays warm, skips its starts');
+  assert.deepEqual(model.stats().parked, ['ur10e:arm']);
 
   // A model cannot take it back while the operator holds it.
   await assert.rejects(model.acquire(), (e) => e instanceof rlmesh.SessionRefused && e.status === 'LEASE_BUSY');
 
-  // Handing back: the model re-requests and resumes under a fresh token.
+  // The operator lets go: the model stays stopped, and the arm goes safe.
   streaming = false;
   await teleop;
   await operator.release();
+  const parked = model.stats().skipped.parked;
+  await waitUntil(
+    'the model parked and the arm safe',
+    () => model.stats().skipped.parked >= parked + 25 && ur.log.at(-1).mode === 'safe',
+    state,
+  );
+  assert.equal(model.holds, false);
+  const events = model.events().filter((e) => e.kind === 'parked');
+  assert.deepEqual(
+    events.map((e) => [e.part, e.by, e.message]),
+    [['ur10e:arm', 'teleop', 'ur10e:arm was taken by teleop at Operator; this policy stays stopped until policy.resume()']],
+  );
+
+  // Resumed, the model re-requests and drives under a fresh token.
+  assert.deepEqual(model.resume(), ['ur10e:arm']);
   await waitUntil('the model driving again', () => ur.driven((d) => first(d) === 0.25));
   const resumed = ur.log.at(-1).leaseToken;
   assert.ok(resumed !== null && resumed > tokens['ur10e:arm']);
   model.stop();
   assert.equal(typeof (await running).starts, 'number');
+});
+
+test("a model set to resume on its own takes the arm back when the operator lets go", async () => {
+  await using ur = await FakeUR10e.start(host);
+  await using model = new rlmesh.Policy(HOLD, { session: host, name: 'model' });
+  await using operator = new rlmesh.Policy(HOLD, { session: host, name: 'teleop', priority: 'operator' });
+  await model.bind('ur10e');
+  await operator.bind('ur10e');
+  await assert.rejects(model.run(() => hold(0.25), { resume: 'later' }), RangeError);
+  const running = model.run(() => hold(0.25), { duration: 30, resume: 'auto' });
+  await waitUntil('the model driving', () => ur.driven((d) => first(d) === 0.25));
+  await operator.acquire();
+  await waitUntil("the model's lease gone", () => !model.holds);
+  await operator.release();
+  await waitUntil('the model driving again, unresumed', () => ur.driven((d) => first(d) === 0.25) && model.holds);
+  assert.equal(model.stats().skipped.parked, 0);
+  assert.deepEqual(model.stats().parked, []);
+  model.stop();
+  await running;
 });
 
 test('a recorder writes the session to MCAP and reads it back', async () => {

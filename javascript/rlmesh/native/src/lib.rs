@@ -35,9 +35,9 @@ use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{BindError, RunOptions};
 use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, ReasonCode};
 use rlmesh_session::{
-    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunConfig, RunError,
-    RunEvent, RunMode, SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, Step,
-    SystemMonotonicClock,
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, Resume, RunConfig,
+    RunError, RunEvent, RunMode, SendError, Sent, SessionAddress, SessionError, SkipReason,
+    Snapshot, Step, SystemMonotonicClock,
 };
 
 /// The first line of an error's message, naming its kind for the wrapper.
@@ -1260,6 +1260,9 @@ pub struct RunStats {
     pub latency_p99_ms: Option<f64>,
     pub latency_max_ms: Option<f64>,
     pub drifting: bool,
+    /// The parts a higher class took, `robot:path`, kept from the policy
+    /// until `resume()`.
+    pub parked: Vec<String>,
 }
 
 /// An event the run loop reported.
@@ -1273,6 +1276,10 @@ pub struct RunEventInfo {
     pub cause: Option<String>,
     pub drifting: Option<bool>,
     pub pending_s: Option<f64>,
+    /// `parked`: the part, `robot:path`.
+    pub part: Option<String>,
+    /// `parked`: who took it.
+    pub by: Option<String>,
 }
 
 fn run_stats(controller: &Controller) -> RunStats {
@@ -1297,6 +1304,7 @@ fn run_stats(controller: &Controller) -> RunStats {
         latency_p99_ms: ms(stats.latency_p99),
         latency_max_ms: ms(stats.latency_max),
         drifting: stats.drifting,
+        parked: controller.parked().into_iter().map(|p| p.part).collect(),
     }
 }
 
@@ -1652,7 +1660,9 @@ impl NativePolicy {
     /// `duration_s`, or a failure, calling `predict(observation)` on the JS
     /// thread at the replan rate with one inference in flight; each call is
     /// answered with `reply`. `mode` is `command` (default) or `shadow`;
-    /// `on_step` gets each completed start. If a reply is an error, the
+    /// `on_step` gets each completed start. `resume` is `manual` (default:
+    /// a part a higher class took stays parked until `resume()`) or `auto`.
+    /// If a reply is an error, the
     /// leases are released and the run rejects with code `Predict`.
     /// Resolves to the run's counters (taken as it returns, so a `close`
     /// racing the resolution cannot lose them).
@@ -1663,6 +1673,7 @@ impl NativePolicy {
         duration_s: Option<f64>,
         mode: Option<String>,
         on_step: Option<StepFn>,
+        resume: Option<String>,
     ) -> Result<RunStats> {
         let controller = self.controller()?;
         let mode = match mode.as_deref() {
@@ -1670,7 +1681,12 @@ impl NativePolicy {
             Some(name) => RunMode::from_name(name)
                 .ok_or_else(|| invalid(format!("mode {name:?}: 'command' or 'shadow'")))?,
         };
-        let mut config = RunConfig::default().mode(mode);
+        let resume = match resume.as_deref() {
+            None => Resume::Manual,
+            Some(name) => Resume::from_name(name)
+                .ok_or_else(|| invalid(format!("resume {name:?}: 'manual' or 'auto'")))?,
+        };
+        let mut config = RunConfig::default().mode(mode).resume(resume);
         config.duration = duration_s.map(timeout).transpose()?;
         let (tx, rx) = mpsc::sync_channel(1);
         {
@@ -1739,6 +1755,13 @@ impl NativePolicy {
         Ok(())
     }
 
+    /// Hands the parts a higher class took back to this policy; returns
+    /// them, `robot:path`.
+    #[napi]
+    pub fn resume(&self) -> Result<Vec<String>> {
+        Ok(self.controller()?.resume())
+    }
+
     /// The start, skip and completion counters.
     #[napi]
     pub fn stats(&self) -> Result<RunStats> {
@@ -1762,6 +1785,8 @@ impl NativePolicy {
                     cause: None,
                     drifting: None,
                     pending_s: None,
+                    part: None,
+                    by: None,
                 };
                 match event {
                     RunEvent::RateDrift {
@@ -1787,6 +1812,11 @@ impl NativePolicy {
                     RunEvent::Commanding { .. } => info.kind = "commanding".into(),
                     RunEvent::InputLost { .. } => info.kind = "input_lost".into(),
                     RunEvent::Rebound { .. } => info.kind = "rebound".into(),
+                    RunEvent::Parked { part, by, .. } => {
+                        info.kind = "parked".into();
+                        info.part = Some(part);
+                        info.by = Some(by);
+                    }
                 }
                 info
             })

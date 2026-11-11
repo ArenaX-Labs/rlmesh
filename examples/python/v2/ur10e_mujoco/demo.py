@@ -771,7 +771,11 @@ def run_policy(args: argparse.Namespace) -> int:
         print(binding, file=sys.stderr, flush=True)
         cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
         try:
-            stats = policy.run(predict, duration=args.seconds)
+            # The operator is another process: handing back cannot call
+            # policy.resume() here, so the policy takes the arm back itself.
+            stats = policy.run(
+                predict, duration=args.seconds, resume=realtime.Resume.AUTO
+            )
         except KeyboardInterrupt:
             stats = policy.stats()
         cpu = cpu_share(cpu0, wall0)

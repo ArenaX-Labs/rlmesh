@@ -172,6 +172,32 @@ parts go to their declared safe behaviour, as after a release; the session
 stays armed, every other policy keeps driving, and nothing needs re-arming.
 The host logs who was lost and which `robot:part`s were released.
 
+**When an operator takes a robot over** from a running model (a policy of
+a higher priority class, `priority="operator"`, acquires its parts), the
+model's run is parked on those parts: when the operator releases them, or
+their process dies, the model does **not** take the robot back by itself,
+and the parts go to their declared safe behaviour. A robot never starts
+moving because someone let go of a controller. The run keeps going: its
+starts are skipped as `parked`, `policy.events()` says `parked` once
+(`ur10e:arm was taken by operator at Operator; this policy stays stopped
+until policy.resume()`), and `policy.stats()["parked"]` lists the parts.
+Hand them back from any thread:
+
+```python
+thread = threading.Thread(target=policy.run, args=(predict,))
+thread.start()
+...                       # an operator jumps in, then lets go
+policy.resume()           # ["ur10e:arm"]: the model asks for it again
+```
+
+Only a preemption parks: a lapsed heartbeat, a disarm and arm, a robot
+held and re-armed or restarting, or another policy of the same class
+holding the part first leave the model asking for it again on its own.
+For an unattended demo that should take the robot back the moment it is
+free, run with `resume=realtime.Resume.AUTO`. In Rust it is
+`controller.resume()` and `RunConfig::default().resume(Resume::Auto)`; in
+Node, `policy.resume()` and `{ resume: 'auto' }`.
+
 ## 6. Watch it: the cockpit
 
 ```sh
@@ -230,7 +256,7 @@ with realtime.Policy(TRACKER, session="", name="tracker", publishes=AIM) as poli
 ```
 
 While it cannot command (the session not armed, an operator holding the
-eyes, an eye held) it still calls `predict` on the same rate and inputs,
+eyes, an eye held, parked) it still calls `predict` on the same rate and inputs,
 publishes its own parts, and converts and checks its actions as for
 sending, so a model error or an action the binding refuses stops the run
 then, not at arming. It sends nothing. Once armed and granted its leases,

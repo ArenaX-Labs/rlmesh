@@ -44,7 +44,8 @@ pub fn run_counters(stats: &RunStats, pending: Option<Duration>) -> RunCounters 
         stale_input: stats.skipped(SkipReason::StaleInput),
         window_gap: stats.skipped(SkipReason::WindowGap),
         decode: stats.skipped(SkipReason::Decode),
-        no_lease: stats.skipped(SkipReason::NoLease),
+        // Nor for a parked controller's: it holds no lease.
+        no_lease: stats.skipped(SkipReason::NoLease) + stats.skipped(SkipReason::Parked),
         chunks_sent: stats.chunks_sent,
         pending_ns: ns(pending),
         latency_p50_ns: ns(stats.latency_p50),
@@ -132,7 +133,7 @@ mod tests {
             drifting: true,
             ..RunStats::default()
         };
-        stats.skipped = [3, 2, 1, 4, 0, 6, 0];
+        stats.skipped = [3, 2, 1, 4, 0, 6, 0, 5];
         let c = run_counters(&stats, Some(Duration::from_secs(2)));
         assert_eq!((c.starts, c.completions, c.chunks_sent), (10, 9, 9));
         assert_eq!(
@@ -144,7 +145,7 @@ mod tests {
                 c.decode,
                 c.no_lease
             ),
-            (3, 2, 1, 4, 0, 6)
+            (3, 2, 1, 4, 0, 11)
         );
         assert_eq!(
             (c.pending_ns, c.latency_p50_ns, c.latency_p99_ns),

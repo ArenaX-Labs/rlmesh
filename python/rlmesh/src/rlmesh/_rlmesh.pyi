@@ -868,7 +868,7 @@ class V2Controller:
         r"""
         Whether this policy holds every lease its binding commands.
         """
-    def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None, mode: builtins.str = ..., on_step: collections.abc.Callable[[dict[builtins.str, typing.Any]], None] | None = None) -> None:
+    def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None, mode: builtins.str = ..., on_step: collections.abc.Callable[[dict[builtins.str, typing.Any]], None] | None = None, resume: builtins.str = ...) -> None:
         r"""
         Runs the policy loop on this thread until `stop()`,
         `duration_s`, or a failure, calling `predict(observation)` at the
@@ -876,13 +876,21 @@ class V2Controller:
         `shadow` to predict without a lease and send nothing until it holds
         one; `on_step(step)` gets each completed start as a dict (`shadow`,
         `time_ns`, and per action entry its `actions` as the edge receives
-        them, `parts` and chunk `seqs`). If `predict` or `on_step` raises,
+        them, `parts` and chunk `seqs`). `resume` is `manual`: a part a
+        higher class took stays parked until `resume()`, or `auto`: it is
+        asked for again once free. If `predict` or `on_step` raises,
         the leases are released and the exception propagates; if the robot
         or the host is lost, it raises `SessionLost`.
         """
     def stop(self) -> None:
         r"""
         Asks a `run` in progress to return.
+        """
+    def resume(self) -> builtins.list[builtins.str]:
+        r"""
+        Hands the parts a higher class took back to this policy: they are
+        asked for again (once their holder lets go). Returns them,
+        `robot:path`.
         """
     def stats(self) -> builtins.dict[builtins.str, typing.Any]:
         r"""

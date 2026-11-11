@@ -82,6 +82,7 @@ __all__ = [
     "Observation",
     "Policy",
     "Rate",
+    "Resume",
     "Robot",
     "RunMode",
     "SessionException",
@@ -714,6 +715,24 @@ class RunMode(enum.Enum):
     SHADOW = "shadow"
 
 
+class Resume(enum.Enum):
+    """What :meth:`Policy.run` does once a higher class took a part from it and let go.
+
+    A part is taken when a participant of a higher priority class preempts
+    the policy (an operator jumping in). Losing a lease for any other reason
+    (its own lapse, a disarm, its robot held or restarting) never parks it:
+    it is asked for again as soon as it can be.
+    """
+
+    #: The part stays parked: the policy does not take it back when the
+    #: holder releases it, detaches or dies, until :meth:`Policy.resume`.
+    #: The robot's part goes to its safe behaviour meanwhile. The default.
+    MANUAL = "manual"
+    #: The part is asked for again as soon as it is free (an unattended
+    #: demo): the robot moves again the moment its holder lets go.
+    AUTO = "auto"
+
+
 class Step:
     """A completed start, as ``on_step`` receives it (:meth:`Policy.run`)."""
 
@@ -935,13 +954,23 @@ class Policy:
         duration: float | None = None,
         mode: RunMode = RunMode.COMMAND,
         on_step: Callable[[Step], object] | None = None,
+        resume: Resume = Resume.MANUAL,
     ) -> dict[str, Any]:
         """Run the policy loop on this thread; returns the run's counters.
 
         ``predict(obs)`` is called at most at the replan rate, one inference
         in flight; a start that falls while it runs is skipped, never
         queued. Leases are requested once the inputs are warm, re-requested
-        after a preemption ends, and released when the run returns. If
+        after a lapse, a disarm or a re-arm, and released when the run
+        returns.
+
+        A part a higher class takes (an operator preempting the policy) is
+        parked: the policy does not take it back when the operator releases
+        it or their process dies; the robot's part goes to its safe
+        behaviour. A ``parked`` event names the part and who took it, starts
+        are skipped as ``parked``, and :meth:`stats` lists it under
+        ``parked``, until :meth:`resume` (from any thread) hands it back.
+        ``resume=Resume.AUTO`` takes it back as soon as it is free. If
         ``predict`` raises, the policy stops sending, releases its leases
         (the robot holds, then goes safe) and the exception propagates.
         Raises :class:`SessionLost` (``reason`` ``robot_lost`` or
@@ -975,6 +1004,8 @@ class Policy:
         native = self._bound()
         if not isinstance(mode, RunMode):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"mode must be a RunMode, not {mode!r}")
+        if not isinstance(resume, Resume):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"resume must be a Resume, not {resume!r}")
 
         def call(raw: V2Observation) -> dict[str, Any]:
             return _actions(predict(Observation(raw)))
@@ -983,12 +1014,23 @@ class Policy:
             if on_step is not None:
                 on_step(Step(raw))
 
-        native.run(call, duration, mode.value, None if on_step is None else step)
+        native.run(
+            call, duration, mode.value, None if on_step is None else step, resume.value
+        )
         return self.stats()
 
     def stop(self) -> None:
         """Ask a :meth:`run` in progress (on another thread) to return."""
         self._bound().stop()
+
+    def resume(self) -> list[str]:
+        """Hand the parts a higher class took back to this policy; returns them (``robot:path``).
+
+        Safe to call from any thread while :meth:`run` is in progress on
+        another. The policy asks for them again: at once when they are free,
+        or once their holder lets go.
+        """
+        return self._bound().resume()
 
     def stats(self) -> dict[str, Any]:
         """Starts, completions, skips by reason, chunks sent and latency.
@@ -1000,7 +1042,8 @@ class Policy:
         ``waiting`` says what the policy waits for before it can command
         (the session not armed), or is ``None``. ``shadow_predictions``
         counts the starts a shadow run predicted without a lease; they are
-        not ``no_lease`` skips.
+        not ``no_lease`` skips. ``parked`` lists the parts a higher class
+        took, ``robot:path``, kept from the policy until :meth:`resume`.
         """
         return self._bound().stats()
 
@@ -1010,7 +1053,7 @@ class Policy:
         return self._bound().held
 
     def events(self) -> list[dict[str, Any]]:
-        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``, ``shadowing``, ``commanding``, ``input_lost`` (with ``part``), ``rebound`` (with ``parts``)."""
+        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``, ``shadowing``, ``commanding``, ``input_lost`` (with ``part``), ``rebound`` (with ``parts``), ``parked`` (with ``part`` and ``by``)."""
         return self._bound().events()
 
     def close(self) -> None:
@@ -1128,11 +1171,15 @@ def drive(
     on_step: Callable[[Step], object] | None = None,
     timeout: float = 10.0,
     publishes: Mapping[str, Any] | None = None,
+    resume: Resume = Resume.MANUAL,
     **captures: str,
 ) -> dict[str, Any]:
     """Bind ``policy`` to ``robot`` (``None``: every robot's view) and drive it with ``predict`` until ``duration``.
 
     Shorthand for :class:`Policy` + :meth:`Policy.bind` + :meth:`Policy.run`.
+    It keeps no handle: a part a higher class took stays parked for the
+    rest of the run unless ``resume=Resume.AUTO``; use :class:`Policy` to
+    :meth:`Policy.resume` one.
     """
     with Policy(
         policy,
@@ -1143,4 +1190,6 @@ def drive(
         publishes=publishes,
     ) as p:
         p.bind(robot, under=under, at=at, names=names, allow=allow, **captures)
-        return p.run(predict, duration=duration, mode=mode, on_step=on_step)
+        return p.run(
+            predict, duration=duration, mode=mode, on_step=on_step, resume=resume
+        )

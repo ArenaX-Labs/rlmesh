@@ -35,7 +35,7 @@ use core::fmt;
 
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, Command, CtlError, CtlReply, Epoch, Fingerprint,
-    InputRange, Lease, LeaseToken, Mode, ParticipantId,
+    InputRange, Lease, LeaseToken, Mode, ParticipantId, ReasonCode,
 };
 use bytes::Bytes;
 
@@ -132,6 +132,8 @@ enum State {
     Revoked {
         lease: Option<Lease>,
         reason: String,
+        /// The lease of a higher class that took it, when one did.
+        by: Option<Lease>,
     },
     Refused {
         error: CtlError,
@@ -202,6 +204,17 @@ impl LeaseClient {
     pub fn lease(&self) -> Option<&Lease> {
         match &self.state {
             State::Held(held) => Some(&held.lease),
+            _ => None,
+        }
+    }
+
+    /// The lease of a higher priority class that took this one away, while
+    /// that is why it is revoked: an end the host gives as `PREEMPTED`, or
+    /// (from a host that gives none) another holder of a higher class on
+    /// the part in the same epoch.
+    pub fn preempted_by(&self) -> Option<&Lease> {
+        match &self.state {
+            State::Revoked { by, .. } => by.as_ref(),
             _ => None,
         }
     }
@@ -300,14 +313,16 @@ impl LeaseClient {
         true
     }
 
-    /// Why `snapshot` shows this holder's lease `token` (of `epoch`) gone,
-    /// or `None` while it is still current.
+    /// Why `snapshot` shows this holder's `lease` (of `epoch`) gone, and
+    /// the lease that preempted it, if one did; `None` while it is still
+    /// current.
     fn loss(
         &self,
         snapshot: &AuthoritySnapshot,
         epoch: Epoch,
-        token: LeaseToken,
-    ) -> Option<String> {
+        lease: &Lease,
+    ) -> Option<(String, Option<Lease>)> {
+        let token = lease.token;
         let held = snapshot
             .lease(self.channel)
             .is_some_and(|now| now.token == token && now.holder == self.me);
@@ -321,22 +336,30 @@ impl LeaseClient {
             .rev()
             .find(|e| e.lease.channel == self.channel && e.lease.token == token)
         {
-            return Some(end.reason.to_string());
+            let by = end
+                .by
+                .clone()
+                .filter(|_| end.reason.code == ReasonCode::Preempted);
+            return Some((end.reason.to_string(), by));
         }
         if snapshot.epoch != epoch {
-            return Some(format!("epoch {} began", snapshot.epoch));
+            return Some((format!("epoch {} began", snapshot.epoch), None));
         }
         Some(match snapshot.lease(self.channel) {
-            Some(now) if now.holder == self.me => {
-                format!("re-issued under {} (the binding changed)", now.token)
-            }
-            Some(now) => format!(
-                "preempted by {} ({:?}, {})",
-                now.holder, now.priority, now.token
+            Some(now) if now.holder == self.me => (
+                format!("re-issued under {} (the binding changed)", now.token),
+                None,
             ),
-            None if snapshot.mode == Mode::Safe => "lapsed: the session is SAFE".into(),
-            None if snapshot.mode == Mode::Estop => "the session is in ESTOP".into(),
-            None => "ended by the host".into(),
+            Some(now) => (
+                format!(
+                    "preempted by {} ({:?}, {})",
+                    now.holder, now.priority, now.token
+                ),
+                (now.priority > lease.priority).then(|| now.clone()),
+            ),
+            None if snapshot.mode == Mode::Safe => ("lapsed: the session is SAFE".into(), None),
+            None if snapshot.mode == Mode::Estop => ("the session is in ESTOP".into(), None),
+            None => ("ended by the host".into(), None),
         })
     }
 
@@ -354,9 +377,9 @@ impl LeaseClient {
             return None;
         }
         self.tick(now_ns);
-        let (lease, reason) = match &self.state {
-            State::Held(held) => match self.loss(snapshot, held.epoch, held.lease.token) {
-                Some(reason) => (held.lease.clone(), reason),
+        let (lease, (reason, by)) = match &self.state {
+            State::Held(held) => match self.loss(snapshot, held.epoch, &held.lease) {
+                Some(loss) => (held.lease.clone(), loss),
                 None => {
                     let now = snapshot.lease(self.channel)?.clone();
                     let bound = local_bound(now.expires_ns, clock);
@@ -369,14 +392,13 @@ impl LeaseClient {
                     return Some(LeaseChange::Renewed);
                 }
             },
-            State::Expired { lease, epoch } => {
-                (lease.clone(), self.loss(snapshot, *epoch, lease.token)?)
-            }
+            State::Expired { lease, epoch } => (lease.clone(), self.loss(snapshot, *epoch, lease)?),
             _ => return None,
         };
         self.state = State::Revoked {
             lease: Some(lease),
             reason: reason.clone(),
+            by,
         };
         Some(LeaseChange::Revoked(reason))
     }
@@ -587,6 +609,15 @@ impl LeaseGroup {
                 Some((client.channel(), change))
             })
             .collect()
+    }
+
+    /// The lease of a higher class that took `channel` away, while that is
+    /// why it is revoked ([`LeaseClient::preempted_by`]).
+    pub fn preempted_by(&self, channel: ChannelId) -> Option<&Lease> {
+        self.clients
+            .iter()
+            .find(|c| c.channel() == channel)?
+            .preempted_by()
     }
 
     /// The lease on `channel`, while held at `now_ns`.
@@ -1015,6 +1046,58 @@ mod tests {
             change(&gone),
             Some(LeaseChange::Revoked("ended by the host".into()))
         );
+    }
+
+    /// The preempting lease, after `snapshot` revoked the lease on part 3
+    /// held under token 9 (an operator's).
+    fn preempted_by(snapshot: &AuthoritySnapshot) -> Option<Lease> {
+        let mut client = LeaseClient::new(me(), ChannelId(3), 0);
+        granted(&mut client, None);
+        assert!(matches!(
+            client.on_snapshot(snapshot, None, 10 * MS),
+            Some(LeaseChange::Revoked(_))
+        ));
+        client.preempted_by().cloned()
+    }
+
+    #[test]
+    fn only_a_higher_class_taking_the_part_is_a_preemption() {
+        let supervisor = Lease {
+            priority: PriorityClass::Safety,
+            ..lease("supervisor", 10, 1_000 * MS)
+        };
+        let end = |code: ReasonCode, by: Option<Lease>| LeaseEnd {
+            lease: lease("web-1", 9, 1_000 * MS),
+            reason: Reason {
+                code,
+                by: "supervisor".into(),
+                ..Reason::default()
+            },
+            by,
+        };
+        // The host's own account.
+        let mut taken = snapshot(6, 1, Mode::Active, vec![supervisor.clone()]);
+        taken
+            .ended
+            .push(end(ReasonCode::Preempted, Some(supervisor.clone())));
+        assert_eq!(preempted_by(&taken), Some(supervisor.clone()));
+        // Lapsed, then taken by someone else: not a preemption.
+        let mut lapsed = snapshot(6, 1, Mode::Active, vec![supervisor.clone()]);
+        lapsed.ended.push(end(ReasonCode::HeartbeatLapse, None));
+        assert_eq!(preempted_by(&lapsed), None);
+        // No account: a higher class on the part took it, the same class
+        // only followed it.
+        let inferred = snapshot(6, 1, Mode::Active, vec![supervisor.clone()]);
+        assert_eq!(preempted_by(&inferred), Some(supervisor));
+        let same_class = snapshot(6, 1, Mode::Active, vec![lease("web-2", 10, 1_000 * MS)]);
+        assert_eq!(preempted_by(&same_class), None);
+        // A new request forgets it.
+        let mut client = LeaseClient::new(me(), ChannelId(3), 0);
+        granted(&mut client, None);
+        client.on_snapshot(&taken, None, 10 * MS);
+        assert!(client.preempted_by().is_some());
+        client.request(Fingerprint::from(7), None, 20 * MS);
+        assert!(client.preempted_by().is_none());
     }
 
     #[test]

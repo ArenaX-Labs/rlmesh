@@ -229,6 +229,8 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     operator.release().await.expect("release");
+    // Preempted, the model is parked until handed back.
+    assert_eq!(model.resume(), vec!["ur10e:arm".to_string()]);
     wait_until("the model back", || model.holds()).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     model.stop();

@@ -7,9 +7,18 @@
 //!   ([`Inputs`]).
 //! - **Leases.** A background keeper holds the binding's leases while they
 //!   are wanted, as one [`LeaseGroup`] (the holder state machine the
-//!   browser binding runs too, with its local deadline): it requests them, re-requests them after a preemption
-//!   ends, a lapse or a re-arm (each with a fresh token), and declares a
-//!   chunk sender per granted lease. On the wall clock it waits until the
+//!   browser binding runs too, with its local deadline): it requests them,
+//!   re-requests them after a lapse, a disarm or a re-arm (each with a fresh
+//!   token), and declares a chunk sender per granted lease.
+//! - **Parked.** A part a higher class takes from it (preempted: an
+//!   operator jumping in) is not asked for again when that holder lets go,
+//!   detaches or is lost: it is parked, with the parts of its command group,
+//!   until [`Controller::resume`] (or [`Controller::acquire`]), so a robot
+//!   never starts moving because someone released a controller or their
+//!   process died. The edge takes the part through its released-part path
+//!   meanwhile. A run reports it once ([`RunEvent::Parked`]) and skips its
+//!   starts as `parked`. [`Resume::Auto`] keeps the old behaviour: the part
+//!   is asked for again as soon as it is free. On the wall clock it waits until the
 //!   host has mapped this controller's clock and its robots' (an edge
 //!   rejects chunks until then). [`Controller::acquire`] takes them at
 //!   once (an operator taking over), once those clocks are mapped;
@@ -72,7 +81,7 @@ use crate::spec::selector::Selector;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::{
     AuthoritySnapshot, ChannelId, ClockMode, CtlReply, FieldSpec, InputRange, Lease, Mode,
-    PartSpec, ParticipantId, Reason, ReasonCode, RunCounters,
+    PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, RunCounters,
 };
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -199,6 +208,43 @@ impl std::fmt::Display for RunMode {
     }
 }
 
+/// What [`Controller::run`] does once a higher class took a part from it
+/// and let go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Resume {
+    /// The part stays parked: never asked for again until
+    /// [`Controller::resume`].
+    #[default]
+    Manual,
+    /// The part is asked for again as soon as it is free, as after any other
+    /// loss (an unattended demo).
+    Auto,
+}
+
+impl Resume {
+    /// Every setting.
+    pub const ALL: [Self; 2] = [Self::Manual, Self::Auto];
+
+    /// The setting's name: `manual` or `auto`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Auto => "auto",
+        }
+    }
+
+    /// The setting called `name`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|resume| resume.name() == name)
+    }
+}
+
+impl std::fmt::Display for Resume {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// How one [`Controller::run`] runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RunConfig {
@@ -206,6 +252,8 @@ pub struct RunConfig {
     pub duration: Option<Duration>,
     /// What a start that cannot command does.
     pub mode: RunMode,
+    /// What a part a higher class took does once it is free.
+    pub resume: Resume,
 }
 
 impl RunConfig {
@@ -221,6 +269,35 @@ impl RunConfig {
     pub fn mode(mut self, mode: RunMode) -> Self {
         self.mode = mode;
         self
+    }
+
+    /// Takes a part a higher class took back as `resume` says.
+    #[must_use]
+    pub fn resume(mut self, resume: Resume) -> Self {
+        self.resume = resume;
+        self
+    }
+}
+
+/// A part a higher class took from a controller, kept from it until
+/// [`Controller::resume`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Parked {
+    /// The part, `robot:path`.
+    pub part: String,
+    /// Who took it.
+    pub by: ParticipantId,
+    /// Its class.
+    pub priority: PriorityClass,
+}
+
+impl Parked {
+    /// What happened, and the call that resumes it.
+    pub fn message(&self) -> String {
+        format!(
+            "{} was taken by {} at {:?}; this policy stays stopped until policy.resume()",
+            self.part, self.by, self.priority
+        )
     }
 }
 
@@ -333,6 +410,11 @@ struct Leases {
     request: tokio::sync::Mutex<()>,
     wake: Notify,
     ttl: Option<Duration>,
+    /// Ask again for a part a higher class took, once it is free
+    /// ([`Resume::Auto`]).
+    auto_resume: AtomicBool,
+    /// The parts a higher class took, not asked for until resumed.
+    parked: Mutex<Vec<Parked>>,
 }
 
 impl Leases {
@@ -348,9 +430,47 @@ impl Leases {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn parked(&self) -> MutexGuard<'_, Vec<Parked>> {
+        self.parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether `part` (`robot:path`) is parked.
+    fn is_parked(&self, part: &str) -> bool {
+        self.parked().iter().any(|p| p.part == part)
+    }
+
+    /// Parks `channel`, taken by `by`, and the binding's parts in its
+    /// command group (only one member of a group is ever leased).
+    fn park(&self, snapshot: &AuthoritySnapshot, channel: ChannelId, by: &Lease) {
+        let group = |c: ChannelId| {
+            let part = snapshot.part(c)?;
+            Some((part.owner.clone(), part.command.as_ref()?.group.clone()?))
+        };
+        let taken = group(channel);
+        let channels = self.group().channels();
+        let mut parked = self.parked();
+        for c in channels {
+            if c != channel && (taken.is_none() || group(c) != taken) {
+                continue;
+            }
+            let part = snapshot.part_name(c);
+            if parked.iter().any(|p| p.part == part) {
+                continue;
+            }
+            parked.push(Parked {
+                part,
+                by: by.holder.clone(),
+                priority: by.priority,
+            });
+        }
+    }
+
     /// Applies the current authority view: renews the held leases, and
     /// drops what it no longer backs (lost to a preemption, lapsed, or
-    /// voided by a new epoch) with its chunk sender.
+    /// voided by a new epoch) with its chunk sender. A part a higher class
+    /// took is parked, unless the run resumes on its own.
     fn sync(&self, participant: &Participant) {
         let Some(snapshot) = participant.authority_view().current() else {
             return;
@@ -363,6 +483,12 @@ impl Leases {
             if let LeaseChange::Revoked(reason) = change {
                 let part = snapshot.part_name(channel);
                 info!(participant = %participant.id(), %part, %reason, "lease lost");
+                let by = self.group().preempted_by(channel).cloned();
+                if let Some(by) = by
+                    && !self.auto_resume.load(Ordering::Relaxed)
+                {
+                    self.park(&snapshot, channel, &by);
+                }
                 // A rebind may have taken the part over under a new token
                 // meanwhile: only a sender of no held token goes.
                 let held = self.group().lease(channel, now).map(|l| l.token);
@@ -436,6 +562,27 @@ impl Leases {
         self.group().holds_all(participant.clock().now_ns())
     }
 
+    /// The parts not held that the keeper may ask for: every one not
+    /// parked.
+    fn wanted(&self, participant: &Participant) -> Vec<ChannelId> {
+        let unheld = self.group().unheld(participant.clock().now_ns());
+        if self.parked().is_empty() {
+            return unheld;
+        }
+        let names: Vec<String> = participant.authority_view().with(|view| {
+            unheld
+                .iter()
+                .map(|c| view.map_or_else(|| c.to_string(), |v| v.part_name(*c)))
+                .collect()
+        });
+        unheld
+            .into_iter()
+            .zip(names)
+            .filter(|(_, part)| !self.is_parked(part))
+            .map(|(channel, _)| channel)
+            .collect()
+    }
+
     /// Whether the host has mapped this controller's clock and the clock of
     /// every present robot it commands (see [`unmapped_clocks`]).
     fn clocks_mapped(&self, participant: &Participant) -> bool {
@@ -491,7 +638,7 @@ impl Leases {
         let ttl_ns = self
             .ttl
             .map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
-        let unheld = self.group().unheld(participant.clock().now_ns());
+        let unheld = self.wanted(participant);
         // One request per robot, for its present parts.
         let mut robots: Vec<(ParticipantId, Vec<ChannelId>)> = Vec::new();
         participant.authority_view().with(|view| {
@@ -616,7 +763,7 @@ async fn keep_leases(
         let wanted = leases.want.load(Ordering::Relaxed);
         let mode = participant.authority().map(|v| v.mode);
         if wanted
-            && !leases.holds_all(&participant)
+            && !leases.wanted(&participant).is_empty()
             && matches!(mode, Some(Mode::Armed | Mode::Active))
             && leases.clocks_mapped(&participant)
         {
@@ -1276,6 +1423,8 @@ impl Controller {
             request: tokio::sync::Mutex::new(()),
             wake: Notify::new(),
             ttl: config.lease_ttl,
+            auto_resume: AtomicBool::new(false),
+            parked: Mutex::new(Vec::new()),
         });
         let schedule = Arc::new(Mutex::new(StartSchedule::new(binding.replan_hz)));
         participant.set_run_source(Some({
@@ -1501,17 +1650,65 @@ impl Controller {
         *refused = now.into_iter().map(|(channel, _)| channel).collect();
     }
 
+    /// The parts a higher class took from this controller, kept from it
+    /// until [`Self::resume`].
+    pub fn parked(&self) -> Vec<Parked> {
+        self.leases.sync(&self.participant);
+        self.leases.parked().clone()
+    }
+
+    /// Hands the parked parts back to this controller: the keeper asks for
+    /// them again (once their holder lets go, when it still holds them).
+    /// Returns the parts, `robot:path`.
+    pub fn resume(&self) -> Vec<String> {
+        let resumed: Vec<String> = std::mem::take(&mut *self.leases.parked())
+            .into_iter()
+            .map(|p| p.part)
+            .collect();
+        if !resumed.is_empty() {
+            info!(participant = %self.participant.id(), parts = ?resumed, "resumed");
+        }
+        self.leases.wake.notify_one();
+        resumed
+    }
+
+    /// Reports each part parked since the last look (`reported`).
+    fn report_parked(&self, reported: &mut Vec<String>) {
+        let now = self.parked();
+        for parked in &now {
+            if !reported.contains(&parked.part) {
+                push_event(
+                    &self.events,
+                    RunEvent::Parked {
+                        part: parked.part.clone(),
+                        by: parked.by.to_string(),
+                        message: parked.message(),
+                    },
+                );
+            }
+        }
+        *reported = now.into_iter().map(|p| p.part).collect();
+    }
+
     /// Takes the binding's leases now (all or none), preempting a lower
-    /// class; from then on the keeper holds them. First waits for the host
-    /// to map the clocks an edge needs (a [`SessionError::Timeout`] naming
-    /// whose is missing, past the bind timeout), so a chunk sent right after
-    /// is not rejected. A refusal (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`,
-    /// ...) leaves the keeper as it was.
+    /// class; from then on the keeper holds them, parked or not. First
+    /// waits for the host to map the clocks an edge needs (a
+    /// [`SessionError::Timeout`] naming whose is missing, past the bind
+    /// timeout), so a chunk sent right after is not rejected. A refusal
+    /// (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) leaves the keeper as
+    /// it was, parked parts too.
     pub async fn acquire(&self) -> Result<Vec<Lease>, SessionError> {
         self.leases
             .wait_for_clocks(&self.participant, self.clock_timeout)
             .await?;
-        let leases = self.leases.grant(&self.participant).await?;
+        let parked = std::mem::take(&mut *self.leases.parked());
+        let leases = match self.leases.grant(&self.participant).await {
+            Ok(leases) => leases,
+            Err(err) => {
+                self.leases.parked().extend(parked);
+                return Err(err);
+            }
+        };
         self.leases.want.store(true, Ordering::Relaxed);
         Ok(leases)
     }
@@ -1658,9 +1855,15 @@ impl Controller {
             .duration
             .map(|d| now().saturating_add(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)));
         let shadow_mode = config.mode == RunMode::Shadow;
+        let auto = config.resume == Resume::Auto;
+        self.leases.auto_resume.store(auto, Ordering::Relaxed);
+        if auto {
+            self.resume();
+        }
         let mut recovered_at: Option<i64> = None;
         let mut clock_refused = Vec::new();
         let mut held = Vec::new();
+        let mut parked = Vec::new();
         let mut waiting = None;
         let mut state = None;
         // Wall clock only: virtual and lockstep starts stay on their ticks.
@@ -1746,13 +1949,19 @@ impl Controller {
             // the leases.
             self.want_leases();
             self.report_held(&mut held);
+            self.report_parked(&mut parked);
             // Any lease held is enough: a robot that is gone or stopped on
             // its own never starves the others (its actions go unsent).
             let shadow = if shadow_mode {
                 !held_before
             } else {
                 if commands && !self.holds_any() {
-                    self.skip(t - off, SkipReason::NoLease);
+                    let reason = if parked.is_empty() {
+                        SkipReason::NoLease
+                    } else {
+                        SkipReason::Parked
+                    };
+                    self.skip(t - off, reason);
                     if let Some(phase) = phase.as_mut() {
                         phase.update();
                     }
@@ -1826,6 +2035,7 @@ impl Controller {
             }
         };
         self.leases.want.store(false, Ordering::Relaxed);
+        self.leases.auto_resume.store(false, Ordering::Relaxed);
         if let Err(err) = self
             .runtime
             .block_on(self.leases.release(&self.participant))
@@ -1847,6 +2057,15 @@ impl Controller {
             let robots: Vec<String> = held.iter().map(|(robot, _)| robot.to_string()).collect();
             let messages: Vec<String> = held.into_iter().map(|(_, message)| message).collect();
             return (format!("held {}", robots.join(",")), messages.join("; "));
+        }
+        let parked = self.parked();
+        if !parked.is_empty() {
+            let parts: Vec<&str> = parked.iter().map(|p| p.part.as_str()).collect();
+            let messages: Vec<String> = parked.iter().map(Parked::message).collect();
+            return (
+                format!("parked {}", parts.join(",")),
+                format!("parked: {}", messages.join("; ")),
+            );
         }
         let me = self.participant.id();
         let channels = self.binding().channels();

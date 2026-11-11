@@ -310,7 +310,7 @@ def test_the_binding_table_and_refusals_match_the_conformance_goldens(
         robot.close()
 
 
-def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
+def test_an_operator_preempts_the_model_which_stays_stopped_until_resumed(
     host: rlmesh.Host,
 ) -> None:
     def hold(target: float) -> Callable[[rlmesh.Observation], dict[str, Any]]:
@@ -373,20 +373,49 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
             },
         )
         assert ur.log[-1].lease_token == tokens["ur10e:arm"]
-        assert model.stats()["skipped"]["no_lease"] > 0, (
+        assert model.stats()["skipped"]["parked"] > 0, (
             "a preempted model stays warm, skips its starts"
         )
+        assert model.stats()["parked"] == ["ur10e:arm"]
 
         # A model cannot take it back while the operator holds it.
         with pytest.raises(rlmesh.SessionRefused) as busy:
             model.acquire()
         assert busy.value.status == "LEASE_BUSY"
 
-        # Handing back: the model re-requests and resumes under a fresh token.
+        # The operator lets go: the model stays stopped, and the arm goes to
+        # its safe behaviour.
         streaming.set()
         operator_thread.join(WAIT)
         assert operator_result == [None]
         operator.release()
+        parked = model.stats()["skipped"]["parked"]
+        wait_until(
+            "the model parked and the arm safe",
+            lambda: (
+                raised(result)
+                or (
+                    model.stats()["skipped"]["parked"] >= parked + 25
+                    and ur.log[-1].mode == "safe"
+                )
+            ),
+            lambda: {"stats": model.stats(), "recent": ur.log[-1:]},
+        )
+        assert not model.holds
+        events = [e for e in model.events() if e["kind"] == "parked"]
+        assert [(e["part"], e["by"], e["message"]) for e in events] == [
+            (
+                "ur10e:arm",
+                "teleop",
+                "ur10e:arm was taken by teleop at Operator; this policy stays "
+                "stopped until policy.resume()",
+            )
+        ]
+
+        # Resumed from this thread, the run on the other re-requests and
+        # drives under a fresh token.
+        assert model.resume() == ["ur10e:arm"]
+        assert model.stats()["parked"] == []
         wait_until(
             "the model driving again",
             lambda: (
@@ -397,6 +426,46 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         )
         resumed = ur.log[-1].lease_token
         assert resumed is not None and resumed > tokens["ur10e:arm"]
+        model.stop()
+        thread.join(WAIT)
+        assert isinstance(result[0], dict)
+
+
+def test_a_model_set_to_resume_on_its_own_takes_the_arm_back_when_the_operator_lets_go(
+    host: rlmesh.Host,
+) -> None:
+    def hold(target: float) -> Callable[[rlmesh.Observation], dict[str, Any]]:
+        return lambda obs: {"arm": np.full((10, 6), target, dtype=np.float32)}
+
+    with (
+        FakeUR10e(host) as ur,
+        rlmesh.Policy(HOLD, session=host, name="model") as model,
+        rlmesh.Policy(
+            HOLD, session=host, name="teleop", priority="operator"
+        ) as operator,
+    ):
+        model.bind("ur10e")
+        operator.bind("ur10e")
+        with pytest.raises(TypeError, match="Resume"):
+            model.run(hold(0.25), resume="auto")  # type: ignore[arg-type]
+        thread, result = in_thread(
+            lambda: model.run(hold(0.25), duration=30.0, resume=rlmesh.Resume.AUTO)
+        )
+
+        def driving() -> bool:
+            return raised(result) or ur.driven(
+                lambda d: float(np.asarray(d.value)[0]) == 0.25
+            )
+
+        wait_until("the model driving", driving)
+        operator.acquire()
+        wait_until("the model's lease gone", lambda: not model.holds)
+        assert model.stats()["parked"] == []
+        operator.release()
+        wait_until("the model driving again, unresumed", driving)
+        stats = model.stats()
+        assert stats["skipped"]["parked"] == 0
+        assert not [e for e in model.events() if e["kind"] == "parked"]
         model.stop()
         thread.join(WAIT)
         assert isinstance(result[0], dict)

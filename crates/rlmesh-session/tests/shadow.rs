@@ -1,7 +1,7 @@
 //! Shadow runs ([`RunMode::Shadow`]) over a real session: a policy that
 //! cannot command still predicts and sends nothing, starts commanding the
 //! moment it holds a lease, and keeps predicting while an operator has the
-//! robot.
+//! robot, and once the operator lets go, until it is resumed.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,8 +14,8 @@ use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{DType, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     AuthorityEvent, Controller, ControllerConfig, HostConfig, Observation, Participant,
-    ParticipantConfig, Predictor, RunConfig, RunError, RunEvent, RunMode, SessionHost, SkipReason,
-    Step, SystemMonotonicClock, Transport, TransportConfig,
+    ParticipantConfig, Predictor, Resume, RunConfig, RunError, RunEvent, RunMode, SessionHost,
+    SkipReason, Step, SystemMonotonicClock, Transport, TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -201,12 +201,22 @@ fn run_in_thread(
     model: &Counter,
     mode: RunMode,
 ) -> std::thread::JoinHandle<Result<(), RunError<String>>> {
+    run_resuming(controller, model, mode, Resume::default())
+}
+
+fn run_resuming(
+    controller: &Arc<Controller>,
+    model: &Counter,
+    mode: RunMode,
+    resume: Resume,
+) -> std::thread::JoinHandle<Result<(), RunError<String>>> {
     let (controller, mut model) = (controller.clone(), model.clone());
     std::thread::spawn(move || {
         controller.run(
             &mut model,
             RunConfig::default()
                 .mode(mode)
+                .resume(resume)
                 .duration(Duration::from_secs(60)),
         )
     })
@@ -449,10 +459,52 @@ fn model_steps(counter: &Counter) -> Vec<Step> {
     counter.steps.lock().expect("steps").clone()
 }
 
+/// While preempted, or parked: in command mode its starts are skipped
+/// (`reason`) and `predict` does not run; in shadow mode it predicts. Waits
+/// for 25 more starts, and checks nothing was sent meanwhile.
+async fn stopped(controller: &Controller, model: &Counter, mode: RunMode, reason: SkipReason) {
+    // A start already past its lease check finishes as it began.
+    let (skipped, shadowed) = {
+        let stats = controller.stats();
+        (stats.skipped(reason), stats.shadow_predictions)
+    };
+    wait_until("a start after the loss", || {
+        let stats = controller.stats();
+        stats.skipped(reason) > skipped || stats.shadow_predictions > shadowed + 1
+    })
+    .await;
+    let before = (controller.stats(), model.calls.load(Ordering::Relaxed));
+    match mode {
+        RunMode::Command => {
+            wait_until("starts skipped", || {
+                controller.stats().skipped(reason) >= before.0.skipped(reason) + 25
+            })
+            .await;
+            assert_eq!(
+                model.calls.load(Ordering::Relaxed),
+                before.1,
+                "predict ran without a lease"
+            );
+        }
+        RunMode::Shadow => {
+            wait_until("shadow predictions", || {
+                controller.stats().shadow_predictions >= before.0.shadow_predictions + 25
+            })
+            .await;
+            assert_eq!(controller.stats().skipped(SkipReason::NoLease), 0);
+            assert_eq!(controller.stats().skipped(SkipReason::Parked), 0);
+        }
+    }
+    assert_eq!(controller.stats().chunks_sent, before.0.chunks_sent);
+    assert!(!controller.holds_any());
+}
+
 /// What an operator taking the robot and letting go of it does to a model,
-/// in each mode: released, it hands back at once; its process gone, its
-/// lease lapses and the model takes the robot back.
-async fn operator_hand_back(mode: RunMode) {
+/// in each mode. By default ([`Resume::Manual`]) the model stays stopped
+/// (parked) when the operator releases, and when its process dies, until it
+/// is resumed. Set to [`Resume::Auto`], released, it takes the robot back
+/// at once; the operator's process gone, once its lease lapsed.
+async fn operator_hand_back(mode: RunMode, resume: Resume) {
     let world = World::start().await;
     let robot = world.robot("ur10e").await;
     robot.participant().arm().await.expect("arm");
@@ -460,35 +512,30 @@ async fn operator_hand_back(mode: RunMode) {
     let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
     let model = world.controller("model", PriorityClass::Model).await;
     let counter = Counter::default();
-    let run = run_in_thread(&model, &counter, mode);
+    let run = run_resuming(&model, &counter, mode, resume);
     wait_until("the model driving", || {
         model.holds() && model.stats().chunks_sent > 5
     })
     .await;
+    let manual = resume == Resume::Manual;
+    let (preempted, parked) = if manual {
+        (SkipReason::Parked, SkipReason::Parked)
+    } else {
+        (SkipReason::NoLease, SkipReason::NoLease)
+    };
 
     // An operator takes the arm and lets go.
     let operator = world.controller("operator", PriorityClass::Operator).await;
     operator.acquire().await.expect("operator preempts");
     wait_until("the model preempted", || !model.holds()).await;
-    // A start already past its lease check finishes as it began.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let before = (model.stats(), counter.calls.load(Ordering::Relaxed));
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let during = (model.stats(), counter.calls.load(Ordering::Relaxed));
-    match mode {
-        // Preempted, the model's starts are skipped: predict does not run.
-        RunMode::Command => {
-            assert!(during.0.skipped(SkipReason::NoLease) > before.0.skipped(SkipReason::NoLease));
-            assert_eq!(during.1, before.1, "predict ran without a lease");
-        }
-        RunMode::Shadow => {
-            assert!(during.0.shadow_predictions > before.0.shadow_predictions);
-            assert_eq!(during.0.skipped(SkipReason::NoLease), 0);
-        }
-    }
-    assert_eq!(during.0.chunks_sent, before.0.chunks_sent);
+    stopped(&model, &counter, mode, preempted).await;
     let released = Instant::now();
     operator.release().await.expect("release");
+    if manual {
+        stopped(&model, &counter, mode, parked).await;
+        assert!(world.host.snapshot().leases.is_empty());
+        assert_eq!(model.resume(), vec!["ur10e:arm".to_string()]);
+    }
     wait_until("the model back after a release", || model.holds()).await;
     let back_after_release = released.elapsed();
     let sent = model.stats().chunks_sent;
@@ -505,6 +552,14 @@ async fn operator_hand_back(mode: RunMode) {
     operator.participant().set_heartbeats_enabled(false);
     drop(operator);
     let died = Instant::now();
+    if manual {
+        wait_until("the operator's lease lapsed", || {
+            world.host.snapshot().leases.is_empty()
+        })
+        .await;
+        stopped(&model, &counter, mode, parked).await;
+        assert_eq!(model.resume(), vec!["ur10e:arm".to_string()]);
+    }
     wait_until("the model back after the operator died", || model.holds()).await;
     let back_after_death = died.elapsed();
     let sent = model.stats().chunks_sent;
@@ -513,7 +568,7 @@ async fn operator_hand_back(mode: RunMode) {
     })
     .await;
     // The host ended the dead operator's lease by its lapse and held no
-    // robot: the model took the arm back on its own.
+    // robot.
     let mut told = Vec::new();
     while let Ok(event) = host_events.try_recv() {
         if let AuthorityEvent::RobotHeld { robot, .. } = &event {
@@ -530,23 +585,55 @@ async fn operator_hand_back(mode: RunMode) {
         told.iter().any(|e| e.contains("granted to model")),
         "{told:#?}"
     );
-    // Released, the arm is back at the next authority view; dead, only once
-    // the operator's lease lapsed (300 ms after its last heartbeat).
-    assert!(
-        back_after_release < back_after_death,
-        "{back_after_release:?}"
-    );
-    assert!(
-        back_after_death >= Duration::from_millis(250),
-        "{back_after_death:?}"
-    );
+    if !manual {
+        // Released, the arm is back at the next authority view; dead, only
+        // once the operator's lease lapsed (300 ms after its last
+        // heartbeat).
+        assert!(
+            back_after_release < back_after_death,
+            "{back_after_release:?}"
+        );
+        assert!(
+            back_after_death >= Duration::from_millis(250),
+            "{back_after_death:?}"
+        );
+    }
     let mut events = Events::default();
+    let parked_events: Vec<String> = events
+        .drain(&model)
+        .iter()
+        .filter_map(|e| match e {
+            RunEvent::Parked { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .collect();
+    if manual {
+        assert_eq!(parked_events.len(), 2, "{:#?}", events.0);
+        assert_eq!(
+            parked_events[0],
+            "ur10e:arm was taken by operator at Operator; this policy stays stopped until \
+             policy.resume()"
+        );
+    } else {
+        assert!(parked_events.is_empty(), "{parked_events:?}");
+    }
     if mode == RunMode::Shadow {
         let said = events.shadowing(&model);
-        assert!(
+        // Parked, it says so while the operator holds the arm too.
+        assert_eq!(
             said.iter().any(|m| m.contains("leased to operator")),
+            !manual,
             "{said:?}"
         );
+        if manual {
+            assert!(
+                said.iter().any(|m| m.starts_with(
+                    "shadowing: parked: ur10e:arm was taken by operator at Operator; \
+                     this policy stays stopped until policy.resume(); meanwhile predict runs"
+                )),
+                "{said:#?}"
+            );
+        }
         // Commanding, then back after each preemption.
         assert!(events.commanding(&model) >= 3, "{:#?}", events.0);
     } else {
@@ -561,11 +648,21 @@ async fn operator_hand_back(mode: RunMode) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_commanding_model_takes_the_robot_back_when_an_operator_releases_or_dies() {
-    operator_hand_back(RunMode::Command).await;
+async fn a_commanding_model_stays_stopped_when_an_operator_releases_or_dies_until_resumed() {
+    operator_hand_back(RunMode::Command, Resume::Manual).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_shadow_model_predicts_while_preempted_and_takes_the_robot_back() {
-    operator_hand_back(RunMode::Shadow).await;
+async fn a_shadow_model_predicts_while_preempted_and_parked_until_resumed() {
+    operator_hand_back(RunMode::Shadow, Resume::Manual).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_commanding_model_set_to_resume_on_its_own_takes_the_robot_back() {
+    operator_hand_back(RunMode::Command, Resume::Auto).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shadow_model_set_to_resume_on_its_own_takes_the_robot_back() {
+    operator_hand_back(RunMode::Shadow, Resume::Auto).await;
 }

@@ -30,8 +30,8 @@ use rlmesh_session::spec::BindError;
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::wire::{PartSpec, ParticipantId, PriorityClass, ReasonCode};
 use rlmesh_session::{
-    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunConfig, RunError,
-    RunEvent, RunMode, SendError, Sent, SessionError, SkipReason, Snapshot, Step,
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, Resume, RunConfig,
+    RunError, RunEvent, RunMode, SendError, Sent, SessionError, SkipReason, Snapshot, Step,
     SystemMonotonicClock,
 };
 
@@ -1599,10 +1599,12 @@ impl PyController {
     /// `shadow` to predict without a lease and send nothing until it holds
     /// one; `on_step(step)` gets each completed start as a dict (`shadow`,
     /// `time_ns`, and per action entry its `actions` as the edge receives
-    /// them, `parts` and chunk `seqs`). If `predict` or `on_step` raises,
+    /// them, `parts` and chunk `seqs`). `resume` is `manual`: a part a
+    /// higher class took stays parked until `resume()`, or `auto`: it is
+    /// asked for again once free. If `predict` or `on_step` raises,
     /// the leases are released and the exception propagates; if the robot
     /// or the host is lost, it raises `SessionLost`.
-    #[pyo3(signature = (predict, duration_s=None, mode="command", on_step=None))]
+    #[pyo3(signature = (predict, duration_s=None, mode="command", on_step=None, resume="manual"))]
     fn run(
         &self,
         py: Python<'_>,
@@ -1618,12 +1620,16 @@ impl PyController {
             imports = ("collections.abc", "builtins", "typing")
         ))]
         on_step: Option<Py<PyAny>>,
+        resume: &str,
     ) -> PyResult<()> {
         let controller = self.controller()?;
         let mode = RunMode::from_name(mode).ok_or_else(|| {
             PyValueError::new_err(format!("mode {mode:?}: \"command\" or \"shadow\""))
         })?;
-        let mut config = RunConfig::default().mode(mode);
+        let resume = Resume::from_name(resume).ok_or_else(|| {
+            PyValueError::new_err(format!("resume {resume:?}: \"manual\" or \"auto\""))
+        })?;
+        let mut config = RunConfig::default().mode(mode).resume(resume);
         config.duration = duration_s.map(timeout).transpose()?;
         let result = py.detach(|| {
             let mut predictor = PyPredictor {
@@ -1654,6 +1660,13 @@ impl PyController {
     fn stop(&self) -> PyResult<()> {
         self.controller()?.stop();
         Ok(())
+    }
+
+    /// Hands the parts a higher class took back to this policy: they are
+    /// asked for again (once their holder lets go). Returns them,
+    /// `robot:path`.
+    fn resume(&self) -> PyResult<Vec<String>> {
+        Ok(self.controller()?.resume())
     }
 
     /// The start, skip and completion counters, and the input the
@@ -1690,6 +1703,8 @@ impl PyController {
             .collect();
         d.set_item("clock_refused", refused)?;
         d.set_item("waiting", controller.waiting())?;
+        let parked: Vec<String> = controller.parked().into_iter().map(|p| p.part).collect();
+        d.set_item("parked", parked)?;
         Ok(d)
     }
 
@@ -1731,6 +1746,11 @@ impl PyController {
                 RunEvent::Rebound { parts, .. } => {
                     d.set_item("kind", "rebound")?;
                     d.set_item("parts", parts)?;
+                }
+                RunEvent::Parked { part, by, .. } => {
+                    d.set_item("kind", "parked")?;
+                    d.set_item("part", part)?;
+                    d.set_item("by", by)?;
                 }
             }
             list.append(d)?;

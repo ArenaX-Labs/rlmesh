@@ -75,6 +75,8 @@ block instead of the `finally`.
 | `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }`      |
 | `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                       |
 | `policy.run(predict, mode=RunMode.SHADOW)`         | `await policy.run(predict, { mode: 'shadow' })`                    |
+| `policy.run(predict, resume=Resume.AUTO)`          | `await policy.run(predict, { resume: 'auto' })`                    |
+| `policy.resume()` → `["ur10e:arm"]`                | `policy.resume()` → `['ur10e:arm']`                                |
 | `on_step=f` (`step.shadow`, `step.actions`)        | `onStep: f` (`step.shadow`, `step.actions`)                        |
 | `policy.acquire()` → `{"ur10e:arm": token}`        | `await policy.acquire()` → `{ 'ur10e:arm': token }` (`bigint`)     |
 | `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                      |

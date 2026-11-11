@@ -4,7 +4,7 @@ The v0.2 milestone demo (protocol v2). Three participants share one session:
 
 - **robot** (this process): the session host, an MCAP recorder, and a simulated UR10e. Physics and the edge tick at 1 kHz: each tick publishes `arm` (pos, vel, effort) and `wrist/ft`, applies what `robot.due("arm")` returns, and steps MuJoCo. A second thread renders the wrist camera offscreen (640x480 u8, 20 Hz, JPEG on the wire).
 - **policy** (a child process): a scripted reach that reads the joints, the newest 10 ms of the 1 kHz wrist force/torque (`history: 10`) and the wrist camera, and sends 12 x 1 ms chunks at 100 Hz through `Policy.run`. `--policy reach` drops the force window.
-- **operator** (a child process): teleop at `operator` class (`--operator haptic`: 1 kHz with the wrench every sample and one-action chunks). Taking over pre-empts the policy's lease; the edge fences the policy's chunks and holds its last target until the operator's first chunk. Handing back lets the policy re-request the lease; it resumes under a fresh token.
+- **operator** (a child process): teleop at `operator` class (`--operator haptic`: 1 kHz with the wrench every sample and one-action chunks). Taking over pre-empts the policy's lease; the edge fences the policy's chunks and holds its last target until the operator's first chunk. Handing back lets the policy re-request the lease; it resumes under a fresh token. The policy runs with `resume=Resume.AUTO` for that: by default a preempted policy stays stopped until `policy.resume()`.
 
 ## Run it
 

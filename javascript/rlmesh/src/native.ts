@@ -120,7 +120,7 @@ interface NativeStats {
   starts: number; completions: number; skipped: { reason: string; count: number }[];
   chunksSent: number; shadowPredictions: number; sendErrors: number;
   latencyP50Ms?: number | null; latencyP99Ms?: number | null; latencyMaxMs?: number | null;
-  drifting: boolean;
+  drifting: boolean; parked: string[];
 }
 interface NativeHost { readonly address: string; close(): Promise<void> }
 interface NativeRobot {
@@ -152,9 +152,11 @@ interface NativePolicy {
     durationS?: number | null,
     mode?: RunMode | null,
     onStep?: ((step: NativeStep) => void) | null,
+    resume?: Resume | null,
   ): Promise<NativeStats>;
   reply(values: NativeEntry[] | null, error: string | null): void;
   stop(): void;
+  resume(): string[];
   stats(): NativeStats;
   events(): Record<string, unknown>[];
   close(): Promise<void>;
@@ -702,6 +704,14 @@ export class Observation {
  */
 export type RunMode = 'command' | 'shadow';
 
+/**
+ * What `Policy.run` does once a higher class took a part from it (an operator preempting it) and
+ * let go. `'manual'` (the default): the part stays parked, and the robot's part goes to its safe
+ * behaviour, until `policy.resume()`; a robot never moves again because someone released a
+ * controller or their process died. `'auto'`: it is asked for again as soon as it is free.
+ */
+export type Resume = 'manual' | 'auto';
+
 /** A completed start, as `onStep` receives it. */
 export interface Step {
   /** A shadow start: its actions were checked and not sent. */
@@ -771,6 +781,8 @@ export interface RunStats {
   latencyP99Ms: number | null;
   latencyMaxMs: number | null;
   drifting: boolean;
+  /** The parts a higher class took, `robot:path`, kept from the policy until `resume()`. */
+  parked: string[];
 }
 
 function runStats(s: NativeStats): RunStats {
@@ -787,6 +799,7 @@ function runStats(s: NativeStats): RunStats {
     latencyP99Ms: s.latencyP99Ms ?? null,
     latencyMaxMs: s.latencyMaxMs ?? null,
     drifting: s.drifting,
+    parked: s.parked,
   };
 }
 
@@ -796,6 +809,8 @@ export interface RunOptions {
   duration?: number;
   /** What a start that cannot command does (default `'command'`). */
   mode?: RunMode;
+  /** What a part a higher class took does once it is free (default `'manual'`). */
+  resume?: Resume;
   /** Called after each completed start with its actions, marked shadow or sent. */
   onStep?: (step: Step) => void;
 }
@@ -950,6 +965,8 @@ export class Policy implements AsyncDisposable {
     const nat = this.nat();
     const mode = opts.mode ?? 'command';
     if (mode !== 'command' && mode !== 'shadow') throw new RangeError(`mode ${String(mode)}: 'command' or 'shadow'`);
+    const resume = opts.resume ?? 'manual';
+    if (resume !== 'manual' && resume !== 'auto') throw new RangeError(`resume ${String(resume)}: 'manual' or 'auto'`);
     let failure: { error: unknown } | null = null;
     const onStep = opts.onStep;
     const stepped = onStep
@@ -983,7 +1000,7 @@ export class Policy implements AsyncDisposable {
       })();
     };
     try {
-      const stats = runStats(await nat.run(start, opts.duration ?? null, mode, stepped));
+      const stats = runStats(await nat.run(start, opts.duration ?? null, mode, stepped, resume));
       if (failure) throw (failure as { error: unknown }).error;
       return stats;
     } catch (e) {
@@ -997,12 +1014,20 @@ export class Policy implements AsyncDisposable {
     call(() => this.nat().stop());
   }
 
+  /**
+   * Hand the parts a higher class took back to this policy (a `run()` in progress asks for them
+   * again, once their holder lets go); returns them, `robot:path`.
+   */
+  resume(): string[] {
+    return call(() => this.nat().resume());
+  }
+
   /** Starts, completions, skips by reason, chunks sent and latency. */
   stats(): RunStats {
     return runStats(call(() => this.nat().stats()));
   }
 
-  /** Take the events reported so far: `rate_drift`, `inference_pending`, `robot_held`, `clock_refused`, `waiting_to_arm`, `shadowing`, `commanding`, `input_lost`, `rebound`. */
+  /** Take the events reported so far: `rate_drift`, `inference_pending`, `robot_held`, `clock_refused`, `waiting_to_arm`, `shadowing`, `commanding`, `input_lost`, `rebound`, `parked` (with `part` and `by`). */
   events(): Record<string, unknown>[] {
     return call(() => this.nat().events()).map((e) => Object.fromEntries(Object.entries(e).filter(([, v]) => v != null)));
   }

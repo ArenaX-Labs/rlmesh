@@ -1,6 +1,7 @@
 //! A declared robot ([`Robot`]) and bound policies ([`Controller`]) over a
 //! real session: the run loop drives the edge, an operator preempts the
-//! model and hands back, a failing model lets go of the robot.
+//! model, which stays stopped until resumed, a failing model lets go of the
+//! robot.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,8 +15,8 @@ use rlmesh_session::wire::{
     DType, LeaseToken, Mode, PriorityClass, ReasonCode, Role, SessionId, TenantId,
 };
 use rlmesh_session::{
-    AuthorityEvent, Controller, ControllerConfig, HostConfig, Observation, Participant,
-    ParticipantConfig, Predictor, RunConfig, RunError, SessionHost, SkipReason,
+    AuthorityEvent, Controller, ControllerConfig, HostConfig, Observation, Parked, Participant,
+    ParticipantConfig, Predictor, RunConfig, RunError, RunEvent, SessionHost, SkipReason,
     SystemMonotonicClock, Transport, TransportConfig,
 };
 
@@ -268,8 +269,53 @@ async fn a_bound_policy_runs_warm_before_authority_and_the_robot_applies_its_chu
     assert_eq!(safe.entries, 0, "a release never latches safe");
 }
 
+/// The edge's mode on its last tick.
+fn edge_mode(log: &Log) -> Option<EdgeMode> {
+    log.lock().expect("log").last().map(|(_, mode, ..)| *mode)
+}
+
+/// The parked events drained so far.
+fn parked_events(
+    controller: &Controller,
+    seen: &mut Vec<RunEvent>,
+) -> Vec<(String, String, String)> {
+    seen.extend(controller.drain_events());
+    seen.iter()
+        .filter_map(|e| match e {
+            RunEvent::Parked { part, by, message } => {
+                Some((part.clone(), by.clone(), message.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Waits until `controller` has skipped `n` more starts as `parked`, the
+/// robot's arm has gone safe, and nothing was sent meanwhile: it stayed
+/// stopped although nobody holds the arm.
+async fn stays_parked(world: &World, controller: &Controller, log: &Log, n: u64) {
+    let (skipped, sent) = {
+        let stats = controller.stats();
+        (stats.skipped(SkipReason::Parked), stats.chunks_sent)
+    };
+    wait_until("parked starts with the arm safe", || {
+        controller.stats().skipped(SkipReason::Parked) >= skipped + n
+            && edge_mode(log) == Some(EdgeMode::Safe)
+    })
+    .await;
+    assert!(!controller.holds_any());
+    assert_eq!(controller.stats().chunks_sent, sent, "sent while parked");
+    assert!(
+        world.host.snapshot().leases.is_empty(),
+        "nobody holds the arm"
+    );
+}
+
+/// An operator takes the arm from a running model and lets go: the model
+/// stays stopped, the arm goes safe, and only `resume` hands it back (under
+/// a fresh token). The same when the operator's process dies.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_operator_preempts_the_model_and_hands_back_under_a_fresh_token() {
+async fn an_operator_preempts_the_model_which_stays_stopped_until_resumed() {
     let world = World::start().await;
     let robot = world.robot().await;
     let model = world.controller("model", PriorityClass::Model).await;
@@ -300,16 +346,40 @@ async fn an_operator_preempts_the_model_and_hands_back_under_a_fresh_token() {
         })
     };
     wait_until("the operator driving", || driven_to(&log, 2.0)).await;
-    assert!(
-        model.stats().skipped(SkipReason::NoLease) > 0,
-        "a standby skips its starts"
+    let operator_id = operator.participant().id().clone();
+    let taken = Parked {
+        part: "ur10e:arm".into(),
+        by: operator_id.clone(),
+        priority: PriorityClass::Operator,
+    };
+    assert_eq!(model.parked(), vec![taken.clone()]);
+    let mut events = Vec::new();
+    wait_until("the model says it is parked", || {
+        !parked_events(&model, &mut events).is_empty()
+    })
+    .await;
+    assert_eq!(
+        parked_events(&model, &mut events),
+        vec![(
+            "ur10e:arm".to_string(),
+            "operator".to_string(),
+            "ur10e:arm was taken by operator at Operator; this policy stays stopped until \
+             policy.resume()"
+                .to_string()
+        )]
     );
+    assert!(model.stats().skipped(SkipReason::Parked) > 0);
 
-    // The operator hands back: the model re-requests, gets a fresh token
-    // and resumes.
+    // The operator lets go: the model does not take the arm back.
     operator_driving.store(false, Ordering::Relaxed);
     streaming.join().expect("operator thread");
     operator.release().await.expect("release");
+    stays_parked(&world, &model, &log, 25).await;
+    assert_eq!(model.parked(), vec![taken.clone()]);
+
+    // Resumed, it asks again and drives under a fresh token.
+    assert_eq!(model.resume(), vec!["ur10e:arm".to_string()]);
+    assert!(model.parked().is_empty());
     wait_until("the model driving again", || driven_to(&log, 1.0)).await;
     let tokens: Vec<LeaseToken> = log
         .lock()
@@ -320,6 +390,78 @@ async fn an_operator_preempts_the_model_and_hands_back_under_a_fresh_token() {
     let last = *tokens.last().expect("model tokens");
     assert!(last > leases[0].token, "a fresh token after the hand-back");
     assert!(tokens.contains(&model_token));
+
+    // The operator takes it again, and its process dies: its lease lapses,
+    // and the model still stays stopped.
+    operator.acquire().await.expect("operator preempts");
+    wait_until("the model preempted", || !model.holds()).await;
+    operator.participant().set_heartbeats_enabled(false);
+    drop(operator);
+    wait_until("the operator's lease lapsed", || {
+        world.host.snapshot().leases.is_empty()
+    })
+    .await;
+    stays_parked(&world, &model, &log, 25).await;
+    assert_eq!(model.parked(), vec![taken]);
+    assert_eq!(parked_events(&model, &mut events).len(), 2, "{events:#?}");
+    assert_eq!(model.resume(), vec!["ur10e:arm".to_string()]);
+    wait_until("the model driving after a resume", || driven_to(&log, 1.0)).await;
+
+    model.stop();
+    run.join().expect("run thread").0.expect("clean stop");
+    stop.store(true, Ordering::Relaxed);
+    robot_loop.join().expect("robot loop");
+}
+
+/// A loss that is not a higher class taking the arm leaves the model asking
+/// for it again: a holder of its own class, a disarm and arm, its own
+/// lease's lapse.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_other_loss_leaves_the_model_asking_again() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let (stop, log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
+    // Another model holds the arm first: the run waits for it, unparked.
+    let other = world.controller("other", PriorityClass::Model).await;
+    other.acquire().await.expect("first come");
+    let model = world.controller("model", PriorityClass::Model).await;
+    let run = run_in_thread(&model, 1.0);
+    wait_until("the model waiting for the arm", || {
+        model.stats().skipped(SkipReason::NoLease) >= 10
+    })
+    .await;
+    assert!(model.parked().is_empty());
+    other.release().await.expect("release");
+    wait_until("the model driving once the arm is free", || {
+        driven_to(&log, 1.0)
+    })
+    .await;
+
+    // Disarmed and armed: every lease ends, and it asks again.
+    robot.participant().disarm().await.expect("disarm");
+    wait_until("the lease voided", || !model.holds_any()).await;
+    robot.participant().arm().await.expect("arm");
+    let armed = Instant::now();
+    wait_until("the model driving after the arm", || {
+        model.holds() && driven_since(&log, 1.0, armed)
+    })
+    .await;
+
+    // Its own lease lapses (no heartbeats past its ttl), then it is back.
+    model.participant().set_heartbeats_enabled(false);
+    wait_until("the model's lease lapsed", || {
+        world.host.snapshot().leases.is_empty()
+    })
+    .await;
+    model.participant().set_heartbeats_enabled(true);
+    let back = Instant::now();
+    wait_until("the model driving after its lapse", || {
+        model.holds() && driven_since(&log, 1.0, back)
+    })
+    .await;
+    assert!(model.parked().is_empty());
+    assert_eq!(model.stats().skipped(SkipReason::Parked), 0);
 
     model.stop();
     run.join().expect("run thread").0.expect("clean stop");
@@ -705,6 +847,118 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     run.join().expect("run thread").expect("a clean stop");
     stop.store(true, Ordering::Relaxed);
     loop_one.join().expect("eye 1 loop");
+}
+
+/// Eye 1 alone, for an operator.
+const EYE_ONE: &str = r#"{
+    "hz": 50,
+    "actions": {
+        "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 100,
+                "chunk": 5}
+    }
+}"#;
+
+/// An operator takes one of the two eyes a policy drives and lets go: that
+/// eye stays stopped (safe) until the policy is resumed, and the other is
+/// driven all along.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operator_taking_one_eye_parks_only_that_eye() {
+    let world = World::start_with(|config| config.rearm_robots = true).await;
+    let eye = |name: &'static str| {
+        let world = &world;
+        async move {
+            let p = world
+                .join(name, Role::Embodiment, PriorityClass::Scripted)
+                .await;
+            Arc::new(
+                Robot::declare(p, EYE, EdgeConfig::default())
+                    .await
+                    .expect("declare"),
+            )
+        }
+    };
+    let (one, two) = (eye("eye-1").await, eye("eye-2").await);
+    one.participant().arm().await.expect("arm");
+    let bind = |name: &'static str, policy: &'static str, priority| {
+        let world = &world;
+        async move {
+            let p = world.join(name, Role::Controller, priority).await;
+            Arc::new(
+                Controller::bind(
+                    Arc::new(p),
+                    &Policy::parse(policy).expect("policy"),
+                    &RunOptions::named(name),
+                    ControllerConfig::default(),
+                )
+                .await
+                .expect("bind"),
+            )
+        }
+    };
+    let tracker = bind("tracker", EYES, PriorityClass::Model).await;
+    let operator = bind("operator", EYE_ONE, PriorityClass::Operator).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let (log_one, log_two): (Log, Log) = (Arc::default(), Arc::default());
+    let loops = [
+        spin_eye(one.clone(), stop.clone(), log_one.clone()),
+        spin_eye(two.clone(), stop.clone(), log_two.clone()),
+    ];
+    let run = {
+        let tracker = tracker.clone();
+        std::thread::spawn(move || {
+            tracker.run(
+                &mut Gaze { target: 0.25 },
+                RunConfig::default().duration(Duration::from_secs(60)),
+            )
+        })
+    };
+    let started = Instant::now();
+    wait_until("both eyes driven", || {
+        driven_since(&log_one, 0.25, started) && driven_since(&log_two, 0.25, started)
+    })
+    .await;
+
+    operator.acquire().await.expect("the operator takes eye 1");
+    operator.release().await.expect("and lets go");
+    let released = Instant::now();
+    wait_until("eye 1 safe, eye 2 driven", || {
+        edge_mode(&log_one) == Some(EdgeMode::Safe) && driven_since(&log_two, 0.25, released)
+    })
+    .await;
+    let parked: Vec<String> = tracker.parked().into_iter().map(|p| p.part).collect();
+    assert_eq!(parked, ["eye-1:eyes"]);
+    // Starts go on, for eye 2: none is skipped as parked.
+    let sent = tracker.stats().chunks_sent;
+    wait_until("eye 2 still commanded", || {
+        tracker.stats().chunks_sent >= sent + 10
+    })
+    .await;
+    assert_eq!(tracker.stats().skipped(SkipReason::Parked), 0);
+    assert_eq!(edge_mode(&log_one), Some(EdgeMode::Safe));
+    assert!(
+        world
+            .host
+            .snapshot()
+            .leases
+            .iter()
+            .all(|l| l.holder.as_str() == "tracker"),
+        "only eye 2 is leased, to the tracker"
+    );
+    assert_eq!(tracker.leases().len(), 1);
+
+    assert_eq!(tracker.resume(), vec!["eye-1:eyes".to_string()]);
+    let resumed = Instant::now();
+    wait_until("both eyes driven again", || {
+        driven_since(&log_one, 0.25, resumed) && driven_since(&log_two, 0.25, resumed)
+    })
+    .await;
+
+    tracker.stop();
+    run.join().expect("run thread").expect("a clean stop");
+    stop.store(true, Ordering::Relaxed);
+    for spin in loops {
+        spin.join().expect("eye loop");
+    }
 }
 
 /// A robot the host dropped (its heartbeats stopped past the presence
