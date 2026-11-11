@@ -563,6 +563,15 @@ pub(super) fn part(
 
     let (command, control_hz) = match (decl.command, command_fields) {
         (Some(mode), Some(command_fields)) => {
+            let Some(safe) = decl.safe.as_deref() else {
+                return Err(invalid(
+                    path,
+                    format!(
+                        "command {mode:?} needs a safe behaviour: \"safe\": \"stop\", \"hold\", \
+                         or the name of one the robot's firmware implements"
+                    ),
+                ));
+            };
             if encoding != Encoding::Raw {
                 return Err(invalid(path, "encoded parts take no commands"));
             }
@@ -603,7 +612,7 @@ pub(super) fn part(
                     mode,
                     fields: command_fields,
                     limits,
-                    safe_behavior: name(path, "safe", decl.safe.as_deref().unwrap_or("stop"))?,
+                    safe_behavior: name(path, "safe", safe)?,
                     hold_max: decl
                         .hold_max_ms
                         .map(|ms| millis(path, "hold_max_ms", ms, true))

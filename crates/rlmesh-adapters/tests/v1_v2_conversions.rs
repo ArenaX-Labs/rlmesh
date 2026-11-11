@@ -118,10 +118,10 @@ fn v2_binding(policy: serde_json::Value) -> Binding {
         "scene/cam": {"kind": "camera", "width": W, "height": H, "hz": 20, "mount": "upside_down"},
         "wrist/cam": {"kind": "camera", "width": W, "height": H, "hz": 20, "mount": "upside_down"},
         "arm/tcp": {"kind": "pose", "frame": "robot_base", "child": "tcp", "hz": 20,
-                    "command": "delta", "reference": "current"},
+                    "command": "delta", "safe": "stop", "reference": "current"},
         "gripper/fingers": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 20,
                             "prismatic": true},
-        "gripper": {"kind": "gripper", "hz": 20, "command": "position", "binary": true},
+        "gripper": {"kind": "gripper", "hz": 20, "command": "position", "safe": "stop", "binary": true},
         "task": {"kind": "text"}
     });
     let mut parts = normalise(

@@ -22,7 +22,7 @@ const TICK_NS: u64 = 1_000_000;
 const WAIT: Duration = Duration::from_secs(10);
 const ROBOT: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 1000,
-            "command": "position", "max_action_age_ms": 1000},
+            "command": "position", "safe": "stop", "max_action_age_ms": 1000},
     "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 1000}
 }"#;
 

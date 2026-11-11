@@ -220,6 +220,11 @@ recording back.
      cockpit or a policy set it, from a robot process on the host's
      machine (`camera.clear_estop()` here);
   3. disarm, then arm.
+- Every part that accepts commands declares its `safe` behaviour, and the
+  host refuses a map that leaves it out. It is `stop`, `hold`, or the name
+  of a behaviour the robot's own firmware implements; RLMesh passes the
+  name to the robot and does not interpret it. In Python it is
+  `parts.Safe.STOP`, `parts.Safe.HOLD` or `parts.Safe.custom("park")`.
 - Every part's limits are enforced on the robot's side, by its edge,
   whatever a policy sends.
 - Beyond loopback the host encrypts every sample and command; see the

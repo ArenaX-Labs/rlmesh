@@ -24,7 +24,7 @@ use super::*;
 
 const WAIT: Duration = Duration::from_secs(10);
 const ARM: &str = r#"{"arm": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 100,
-    "command": "position", "hold_max_ms": 100}}"#;
+    "command": "position", "safe": "stop", "hold_max_ms": 100}}"#;
 const PILOT: &str = r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position", "hz": 20, "chunk": 2}}}"#;
 
@@ -359,7 +359,7 @@ async fn a_run_fails_at_its_stage_with_its_code() {
 }
 
 const ARM_CHANGED: &str = r#"{"arm": {"kind": "joints", "count": 3, "fields": ["pos"], "hz": 100,
-    "command": "position", "hold_max_ms": 100}}"#;
+    "command": "position", "safe": "stop", "hold_max_ms": 100}}"#;
 
 struct Hold;
 

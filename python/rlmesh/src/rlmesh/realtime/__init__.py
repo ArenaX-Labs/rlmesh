@@ -211,14 +211,16 @@ def _value(value: object) -> object:
 
 
 def _plain(value: Any) -> Any:
-    """A NumPy array or scalar as plain JSON data (``json.dumps``'s default)."""
+    """A NumPy value or a ``Safe`` as plain JSON data (``json.dumps``'s default)."""
     if isinstance(value, np.ndarray | np.generic):
         return cast("Any", value).tolist()
+    if isinstance(value, parts.Safe):
+        return value.name
     raise TypeError(f"{type(value).__name__} is not JSON serializable")
 
 
 def _json(value: Any) -> str:
-    """``info`` or reset ``options`` as JSON; NumPy values become lists and numbers."""
+    """A map, ``info`` or reset ``options`` as JSON; NumPy values become lists and numbers."""
     return json.dumps(value, default=_plain)
 
 
@@ -374,10 +376,10 @@ class Robot:
             raise ValueError(f"clock {clock!r}: wall or lockstep")
         self._lockstep: V2LockstepRobot | None = None
         if clock == "lockstep":
-            self._lockstep = V2LockstepRobot(_address(session), name, json.dumps(parts))
+            self._lockstep = V2LockstepRobot(_address(session), name, _json(parts))
             self._native = cast("V2Robot", self._lockstep)
         else:
-            self._native = V2Robot(_address(session), name, json.dumps(parts), timeout)
+            self._native = V2Robot(_address(session), name, _json(parts), timeout)
         self._adopt(on_handover)
 
     def _adopt(self, on_handover: Callable[[str, str, str], None] | None) -> None:
@@ -712,7 +714,7 @@ class Policy:
         publishes: Mapping[str, Any] | None = None,
     ) -> None:
         self._policy_json = json.dumps(policy)
-        self._publishes_json = json.dumps(publishes) if publishes else None
+        self._publishes_json = _json(publishes) if publishes else None
         self._address = _address(session)
         self._name = name
         self._priority = priority

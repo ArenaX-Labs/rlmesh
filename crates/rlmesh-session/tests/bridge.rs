@@ -42,7 +42,7 @@ type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const WAIT: Duration = Duration::from_secs(10);
 /// This machine's page token.
 const PAGE: &str = "page-token-0123456789abcdef";
-const ROBOT: &str = r#"{"arm": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 200, "command": "position",
+const ROBOT: &str = r#"{"arm": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 200, "command": "position", "safe": "stop",
                        "hold_max_ms": 100, "max_action_age_ms": 1000}}"#;
 
 struct World {

@@ -40,19 +40,19 @@ fn core_kinds_expand_to_their_fields() {
     let ur = parts(
         r#"{
             "arm": {"kind": "joints", "names": ["a", "b", "c"], "fields": ["effort", "pos"],
-                    "hz": 500, "command": "position", "limits": {"pos": [-6, 6]}, "group": "arm",
+                    "hz": 500, "command": "position", "safe": "stop", "limits": {"pos": [-6, 6]}, "group": "arm",
                     "units": {"pos": "deg"}},
             "arm/tcp": {"kind": "pose", "frame": "base", "child": "tool0", "hz": 500,
-                        "command": "delta", "group": "arm",
+                        "command": "delta", "safe": "stop", "group": "arm",
                         "limits": {"pos": {"max_norm": 0.01}, "rot": {"max_norm": 0.05}}},
             "wrist/cam": {"kind": "camera", "width": 640, "height": 480, "hz": 30,
                           "encoding": "jpeg", "quality": 75, "mount": "upside_down"},
             "head/depth": {"kind": "depth", "width": 64, "height": 48, "hz": 30, "dtype": "uint16"},
-            "gripper": {"kind": "gripper", "hz": 100, "command": "position", "width_m": [0, 0.085],
+            "gripper": {"kind": "gripper", "hz": 100, "command": "position", "safe": "stop", "width_m": [0, 0.085],
                         "units": {"pos": "m"}, "binary": true},
             "base/imu": {"kind": "imu", "frame": "base", "hz": 500, "rotation": "quat_wxyz",
                          "fields": ["lin_acc", "orientation"]},
-            "base/twist": {"kind": "velocity", "frame": "base", "hz": 50, "command": "velocity"},
+            "base/twist": {"kind": "velocity", "frame": "base", "hz": 50, "command": "velocity", "safe": "stop"},
             "hand/tactile": {"kind": "tactile", "shape": [9, 12], "hz": 100},
             "task": {"kind": "text"},
             "reward": {"kind": "reward"},
@@ -226,23 +226,23 @@ fn declarations_failing_the_rules_are_refused_naming_the_path_and_key() {
             "length",
         ),
         (
-            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "limits": {"pos": [[0, 1]]}}}"#,
+            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "safe": "stop", "limits": {"pos": [[0, 1]]}}}"#,
             "pairs",
         ),
         (
-            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "limits": {"pos": [1, 0]}}}"#,
+            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "safe": "stop", "limits": {"pos": [1, 0]}}}"#,
             "low <= high",
         ),
         (
-            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "limits": {"pos": {"max_norm": 1}}}}"#,
+            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "safe": "stop", "limits": {"pos": {"max_norm": 1}}}}"#,
             "max_norm",
         ),
         (
-            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "limits": {"vel": [0, 1]}}}"#,
+            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "safe": "stop", "limits": {"vel": [0, 1]}}}"#,
             "not a command field",
         ),
         (
-            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "hold_max_ms": 70000}}"#,
+            r#"{"arm": {"kind": "joints", "count": 2, "hz": 1, "command": "position", "safe": "stop", "hold_max_ms": 70000}}"#,
             "hold_max_ms",
         ),
         (
@@ -283,7 +283,7 @@ fn declarations_failing_the_rules_are_refused_naming_the_path_and_key() {
             "source",
         ),
         (
-            r#"{"tcp": {"kind": "pose", "frame": "base", "child": "t", "hz": 1, "command": "absolute", "reference": "target"}}"#,
+            r#"{"tcp": {"kind": "pose", "frame": "base", "child": "t", "hz": 1, "command": "absolute", "safe": "stop", "reference": "target"}}"#,
             "delta only",
         ),
         (
@@ -301,7 +301,7 @@ fn declarations_failing_the_rules_are_refused_naming_the_path_and_key() {
             "duplicate",
         ),
         (
-            r#"{"a": {"kind": "joints", "count": 2, "hz": 1, "command": "velocity", "group": "g"},
+            r#"{"a": {"kind": "joints", "count": 2, "hz": 1, "command": "velocity", "safe": "stop", "group": "g"},
                  "b": {"kind": "joints", "count": 2, "hz": 1, "command": "velocity", "group": "g", "safe": "brake"}}"#,
             "same safe",
         ),
@@ -314,8 +314,14 @@ fn declarations_failing_the_rules_are_refused_naming_the_path_and_key() {
         assert_eq!(err.status, CtlStatus::InvalidRequest, "{json}: {err}");
         assert!(err.message.contains(needle), "{json}: {}", err.message);
     }
+    let missing =
+        refused(r#"{"arm": {"kind": "joints", "count": 1, "hz": 1, "command": "position"}}"#);
+    assert_eq!(missing.status, CtlStatus::InvalidRequest);
+    for needle in ["arm", "safe", "stop", "hold", "firmware"] {
+        assert!(missing.message.contains(needle), "{}", missing.message);
+    }
     assert_eq!(
-        refused(r#"{"a": {"kind": "joints", "count": 1, "hz": 1, "command": "position", "merge": "blend"}}"#).status,
+        refused(r#"{"a": {"kind": "joints", "count": 1, "hz": 1, "command": "position", "safe": "stop", "merge": "blend"}}"#).status,
         CtlStatus::Unsupported
     );
     let many: Vec<String> = (0..=MAX_PARTS)
@@ -356,4 +362,21 @@ fn a_robot_on_a_newer_kind_table_is_told_to_upgrade_the_host() {
 fn kind_table_versions_start_at_one() {
     let err = normalise(&robot(), 0, "{}").expect_err("zero");
     assert_eq!(err.status, CtlStatus::Incompatible);
+}
+
+#[test]
+fn a_safe_behaviour_is_any_identifier_passed_through_uninterpreted() {
+    for safe in ["stop", "hold", "park"] {
+        let parts = parts(&format!(
+            r#"{{"arm": {{"kind": "joints", "count": 1, "hz": 1, "command": "position", "safe": "{safe}"}}}}"#
+        ));
+        assert_eq!(
+            parts[0].command.as_ref().expect("command").safe_behavior,
+            safe
+        );
+    }
+    let bad = refused(
+        r#"{"arm": {"kind": "joints", "count": 1, "hz": 1, "command": "position", "safe": "Not Ok"}}"#,
+    );
+    assert!(bad.message.contains("safe"), "{}", bad.message);
 }

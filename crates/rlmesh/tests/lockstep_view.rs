@@ -13,7 +13,7 @@ use rlmesh_session::wire::{DType, LockstepReply, PartSpec};
 
 const UR10E: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos", "vel"], "hz": 100,
-            "command": "position"},
+            "command": "position", "safe": "stop"},
     "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 100},
     "task": {"kind": "text"}
 }"#;

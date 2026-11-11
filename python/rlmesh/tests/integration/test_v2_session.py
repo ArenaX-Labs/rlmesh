@@ -826,6 +826,7 @@ LOBBY_ARM = {
         "fields": ["pos"],
         "hz": 100,
         "command": "position",
+        "safe": "stop",
         "hold_max_ms": 200,
     }
 }

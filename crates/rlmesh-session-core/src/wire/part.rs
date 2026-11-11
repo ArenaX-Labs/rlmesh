@@ -448,7 +448,8 @@ pub struct CommandSpec {
     pub fields: Vec<FieldSpec>,
     /// Bounds on command fields; the edge clamps.
     pub limits: Vec<FieldLimit>,
-    /// The robot's own safe behaviour, by id (`stop`, `brake`).
+    /// The robot's safe behaviour, as declared: `stop`, `hold`, or any other
+    /// identifier its firmware implements. Passed to the robot uninterpreted.
     pub safe_behavior: String,
     /// The robot's hold allowance once valid coverage ends.
     pub hold_max: Duration,

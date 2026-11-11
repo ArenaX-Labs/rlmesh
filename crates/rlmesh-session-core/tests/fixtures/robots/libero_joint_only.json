@@ -32,6 +32,7 @@
     "kind": "gripper",
     "hz": 20,
     "command": "position",
+    "safe": "stop",
     "binary": true,
     "max_action_age_ms": 1000
   },

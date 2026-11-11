@@ -348,7 +348,7 @@ test('a policy publishes annotations under its name and never binds them', async
     {
       await using eye = await rlmesh.Robot.connect(
         'eye-1',
-        { eyes: { kind: 'joints', names: ['pan', 'tilt'], fields: ['pos'], hz: 200, command: 'position' } },
+        { eyes: { kind: 'joints', names: ['pan', 'tilt'], fields: ['pos'], hz: 200, command: 'position', safe: 'stop' } },
         { session: host },
       );
       await using tracker = new rlmesh.Policy(
@@ -487,7 +487,7 @@ test('a scene runs a lobby robot and a Node policy on one machine', { skip: !fle
     path,
     '[scene]\nformat = 1\nname = "bench"\nwait = "20s"\n\n[members.arm]\nrole = "robot"\n\n[members.pilot]\nrole = "controller"\ndevice = "local"\n',
   );
-  const ARM = { arm: { kind: 'joints', count: 2, fields: ['pos'], hz: 100, command: 'position', hold_max_ms: 200 } };
+  const ARM = { arm: { kind: 'joints', count: 2, fields: ['pos'], hz: 100, command: 'position', safe: 'stop', hold_max_ms: 200 } };
   const PILOT = {
     hz: 20,
     inputs: { q: { kind: 'joints', at: 'arm', fields: ['pos'] } },

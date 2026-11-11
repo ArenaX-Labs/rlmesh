@@ -34,11 +34,11 @@ fn robot_map(hold_last: bool) -> String {
             "cmd": {{{kind}, "hz": 1000,
                     "command": "position", "hold_max_ms": 10, "safe": "brake",
                     "max_action_age_ms": 200}},
-            "grip": {{"kind": "gripper", "hz": 1000, "command": "position", "binary": true}},
+            "grip": {{"kind": "gripper", "hz": 1000, "command": "position", "safe": "stop", "binary": true}},
             "arm": {{"kind": "joints", "hz": 1000, "count": 2, "fields": ["pos"],
-                    "command": "position", "group": "arm", "limits": {{"pos": [-1, 1]}}}},
+                    "command": "position", "safe": "stop", "group": "arm", "limits": {{"pos": [-1, 1]}}}},
             "arm/tcp": {{"kind": "x/tcp", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
-                        "command": "delta", "group": "arm"}}
+                        "command": "delta", "safe": "stop", "group": "arm"}}
         }}"#
     )
 }

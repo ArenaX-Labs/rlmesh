@@ -263,6 +263,7 @@ ARM = {
         "fields": ["pos"],
         "hz": 100,
         "command": "position",
+        "safe": "stop",
     }
 }
 
@@ -355,7 +356,7 @@ def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
     # A game: no hz (lockstep steps it), no kinds (each part is its own).
     game = {
         "board": {"fields": {"cells": ["int8", [9]]}},
-        "move": {"fields": {"cell": ["int64", []]}, "command": "value"},
+        "move": {"fields": {"cell": ["int64", []]}, "command": "value", "safe": "stop"},
     }
     with v2.Host() as host:
         robot = v2.Robot("ttt", game, session=host, clock="lockstep")

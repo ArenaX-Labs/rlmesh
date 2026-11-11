@@ -10,14 +10,13 @@ part of the public API.
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Callable, Mapping
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from .. import _rlmesh
-from . import Robot
+from . import Robot, _json
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -63,7 +62,7 @@ def wait_in_lobby(
     """
     robot = Robot.__new__(Robot)
     robot._lockstep = None
-    robot._native = _from_lobby(home, name, json.dumps(parts), timeout)
+    robot._native = _from_lobby(home, name, _json(parts), timeout)
     robot._adopt(on_handover)
     return robot
 

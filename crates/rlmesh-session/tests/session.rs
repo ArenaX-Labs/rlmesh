@@ -50,9 +50,9 @@ fn robot_map(camera: &str) -> String {
     format!(
         r#"{{
         "arm": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
-                "command": "position", "priority": "control", "group": "arm"}},
+                "command": "position", "safe": "stop", "priority": "control", "group": "arm"}},
         "arm/tcp": {{"kind": "x/tcp", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
-                    "command": "delta", "group": "arm"}},
+                    "command": "delta", "safe": "stop", "group": "arm"}},
         "ft": {{"kind": "x/ft", "hz": 1000, "fields": {{"wrench": ["float32", [18]]}},
                "priority": "realtime", "max_age_ms": 40}},
         "wrist/cam": {{"kind": "camera", "hz": 30, {camera}}}
@@ -921,7 +921,7 @@ async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
             robot
                 .declare_parts(
                     r#"{"arm": {"kind": "joints", "names": ["a"], "hz": 500,
-                        "command": "position", "merge": "blend"}}"#
+                        "command": "position", "safe": "stop", "merge": "blend"}}"#
                 )
                 .await
                 .expect_err("a merge policy that is Later")
@@ -2252,7 +2252,7 @@ role = "controller"
 device = "local"
 "#;
     const EYE: &str = r#"{"gaze": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"],
-        "hz": 50, "command": "position"}}"#;
+        "hz": 50, "command": "position", "safe": "stop"}}"#;
     let scene = Scene::parse(SCENE).unwrap_or_else(|refusal| panic!("{refusal}"));
     let world = World::start_with(|c| {
         c.scene = Some(scene.host("r-7k2m", &c.pins));

@@ -233,7 +233,7 @@ fn device_view() -> DeviceView {
         &eye,
         SPEC_VERSION,
         r#"{"gaze": {"kind": "joints", "hz": 100, "count": 2, "fields": ["pos"],
-                     "command": "position"}}"#,
+                     "command": "position", "safe": "stop"}}"#,
     )
     .expect("map");
     parts[0].channel = ChannelId(1);

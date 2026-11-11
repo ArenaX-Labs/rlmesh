@@ -27,7 +27,7 @@ fn robot_map(extra: &str) -> String {
     let cmd = |path: &str, group: &str| {
         format!(
             r#""{path}": {{"kind": "joints", "hz": 500, "count": 6, "fields": ["pos"],
-                   "command": "position"{group}}}"#
+                   "command": "position", "safe": "stop"{group}}}"#
         )
     };
     let parts = [

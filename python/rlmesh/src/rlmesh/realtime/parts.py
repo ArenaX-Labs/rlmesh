@@ -11,7 +11,7 @@ so a map can mix them with dicts and the host still checks every rule::
             hz=50,
             fields=["pos"],
             command="position",
-            safe="hold",
+            safe=parts.Safe.HOLD,
             limits={"pos": [[-0.6, 0.6], [-0.4, 0.4]]},
         ),
     }
@@ -21,7 +21,8 @@ Keyword arguments every streaming kind takes: ``send`` (the publication
 policy, ``"every"``, ``"latest(hz=30)"``, ``"latest(max_mbps=20)"``),
 ``priority``, ``doc`` and ``max_age_ms``. A commandable kind also takes the
 command keys: ``command`` (the mode), ``control_hz``, ``safe`` (the
-declared safe behaviour), ``hold_max_ms``, ``max_action_age_ms``,
+behaviour to fall back to, a :class:`Safe`; the host refuses a commanded
+part without one), ``hold_max_ms``, ``max_action_age_ms``,
 ``limits`` (``{field: [lo, hi]}``, a pair per element, or
 ``{"max_norm": x}``), ``merge`` and ``group``. Units are SI unless
 ``units`` says otherwise.
@@ -29,10 +30,12 @@ declared safe behaviour), ``hold_max_ms``, ``max_action_age_ms``,
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 __all__ = [
+    "Safe",
     "camera",
     "custom",
     "depth",
@@ -55,12 +58,65 @@ Part = dict[str, Any]
 Limits = Mapping[str, Any]
 
 
+_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+class Safe:
+    """What a commanded part does when no one is commanding it.
+
+    ``Safe.STOP`` and ``Safe.HOLD`` are the common behaviours. Any other is
+    one the robot's own firmware implements: ``Safe.custom("park")``. RLMesh
+    passes the name to the robot and does not interpret it.
+    """
+
+    STOP: ClassVar[Safe]
+    HOLD: ClassVar[Safe]
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        if not _IDENTIFIER.fullmatch(name):
+            raise ValueError(
+                f"safe behaviour {name!r}: 1 to 64 characters of [a-z][a-z0-9_]*"
+            )
+        self.name = name
+
+    @classmethod
+    def custom(cls, name: str) -> Safe:
+        """A behaviour the robot's firmware implements, by ``name``."""
+        if name in ("stop", "hold"):
+            raise ValueError(f"{name!r} is built in: use Safe.{name.upper()}")
+        return cls(name)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Safe) and other.name == self.name
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+    def __repr__(self) -> str:
+        if self.name in ("stop", "hold"):
+            return f"Safe.{self.name.upper()}"
+        return f"Safe.custom({self.name!r})"
+
+
+Safe.STOP = Safe("stop")
+Safe.HOLD = Safe("hold")
+
+
 def _part(kind: str, **keys: Any) -> Part:
     part: Part = {"kind": kind}
     for key, value in keys.items():
         if value is None:
             continue
-        if isinstance(value, Mapping):
+        if key == "safe":
+            if not isinstance(value, Safe):
+                raise TypeError(
+                    f"safe must be a Safe (Safe.STOP, Safe.HOLD or "
+                    f"Safe.custom(...)), not {value!r}"
+                )
+            part[key] = value.name
+        elif isinstance(value, Mapping):
             part[key] = dict(cast("Mapping[str, Any]", value))
         elif isinstance(value, Sequence) and not isinstance(value, str):
             part[key] = list(cast("Sequence[Any]", value))
@@ -166,7 +222,7 @@ def joints(
     range: Mapping[str, Any] | None = None,
     gains: Mapping[str, float] | None = None,
     control_hz: float | None = None,
-    safe: str | None = None,
+    safe: Safe | None = None,
     hold_max_ms: float | None = None,
     max_action_age_ms: float | None = None,
     limits: Limits | None = None,
@@ -221,7 +277,7 @@ def hand(
     range: Mapping[str, Any] | None = None,
     gains: Mapping[str, float] | None = None,
     control_hz: float | None = None,
-    safe: str | None = None,
+    safe: Safe | None = None,
     hold_max_ms: float | None = None,
     max_action_age_ms: float | None = None,
     limits: Limits | None = None,
@@ -269,7 +325,7 @@ def wrench(
     units: Mapping[str, str] | None = None,
     range: Mapping[str, Any] | None = None,
     control_hz: float | None = None,
-    safe: str | None = None,
+    safe: Safe | None = None,
     hold_max_ms: float | None = None,
     max_action_age_ms: float | None = None,
     limits: Limits | None = None,
@@ -347,7 +403,7 @@ def pose(
     units: Mapping[str, str] | None = None,
     range: Mapping[str, Any] | None = None,
     control_hz: float | None = None,
-    safe: str | None = None,
+    safe: Safe | None = None,
     hold_max_ms: float | None = None,
     max_action_age_ms: float | None = None,
     limits: Limits | None = None,
@@ -394,7 +450,7 @@ def gripper(
     units: Mapping[str, str] | None = None,
     range: Mapping[str, Any] | None = None,
     control_hz: float | None = None,
-    safe: str | None = None,
+    safe: Safe | None = None,
     hold_max_ms: float | None = None,
     max_action_age_ms: float | None = None,
     limits: Limits | None = None,
@@ -439,7 +495,7 @@ def velocity(
     units: Mapping[str, str] | None = None,
     range: Mapping[str, Any] | None = None,
     control_hz: float | None = None,
-    safe: str | None = None,
+    safe: Safe | None = None,
     hold_max_ms: float | None = None,
     max_action_age_ms: float | None = None,
     limits: Limits | None = None,
@@ -529,7 +585,7 @@ def custom(
     units: Mapping[str, str] | None = None,
     range: Mapping[str, Any] | None = None,
     control_hz: float | None = None,
-    safe: str | None = None,
+    safe: Safe | None = None,
     hold_max_ms: float | None = None,
     max_action_age_ms: float | None = None,
     limits: Limits | None = None,

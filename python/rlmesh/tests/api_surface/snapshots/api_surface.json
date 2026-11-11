@@ -4484,6 +4484,7 @@
   },
   "rlmesh.realtime.parts": {
     "exports": [
+      "Safe",
       "camera",
       "custom",
       "depth",
@@ -4500,6 +4501,29 @@
       "wrench"
     ],
     "objects": {
+      "Safe": {
+        "kind": "class",
+        "members": {
+          "HOLD": {
+            "kind": "attribute",
+            "signature": "HOLD: Safe"
+          },
+          "STOP": {
+            "kind": "attribute",
+            "signature": "STOP: Safe"
+          },
+          "custom": {
+            "kind": "function",
+            "signature": "custom(name: str) -> Safe"
+          },
+          "name": {
+            "kind": "attribute",
+            "signature": "name"
+          }
+        },
+        "signature": "Safe(name: str)",
+        "stability": "Experimental"
+      },
       "camera": {
         "kind": "function",
         "signature": "camera(width: int, height: int, *, hz: float, encoding: str | None = None, quality: int | None = None, format: str | None = None, frame: str | None = None, fov_deg: float | None = None, intrinsics: Sequence[float] | None = None, mount: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
@@ -4507,7 +4531,7 @@
       },
       "custom": {
         "kind": "function",
-        "signature": "custom(kind: str, *, hz: float, fields: Mapping[str, Any], command: str | None = None, command_fields: Mapping[str, Any] | None = None, frame: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "signature": "custom(kind: str, *, hz: float, fields: Mapping[str, Any], command: str | None = None, command_fields: Mapping[str, Any] | None = None, frame: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       },
       "depth": {
@@ -4517,12 +4541,12 @@
       },
       "gripper": {
         "kind": "function",
-        "signature": "gripper(*, hz: float, command: str | None = None, width_m: Sequence[float] | None = None, binary: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "signature": "gripper(*, hz: float, command: str | None = None, width_m: Sequence[float] | None = None, binary: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       },
       "hand": {
         "kind": "function",
-        "signature": "hand(names: Sequence[str], *, hz: float, fields: Sequence[str] | None = None, command: str | None = None, prismatic: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, gains: Mapping[str, float] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "signature": "hand(names: Sequence[str], *, hz: float, fields: Sequence[str] | None = None, command: str | None = None, prismatic: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, gains: Mapping[str, float] | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       },
       "imu": {
@@ -4532,12 +4556,12 @@
       },
       "joints": {
         "kind": "function",
-        "signature": "joints(names: Sequence[str] | None = None, *, hz: float, count: int | None = None, fields: Sequence[str] | None = None, command: str | None = None, prismatic: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, gains: Mapping[str, float] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "signature": "joints(names: Sequence[str] | None = None, *, hz: float, count: int | None = None, fields: Sequence[str] | None = None, command: str | None = None, prismatic: bool | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, gains: Mapping[str, float] | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       },
       "pose": {
         "kind": "function",
-        "signature": "pose(*, frame: str, child: str, hz: float, rotation: str | None = None, reference: str | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "signature": "pose(*, frame: str, child: str, hz: float, rotation: str | None = None, reference: str | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       },
       "reward": {
@@ -4562,12 +4586,12 @@
       },
       "velocity": {
         "kind": "function",
-        "signature": "velocity(*, frame: str, hz: float, dof: str | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "signature": "velocity(*, frame: str, hz: float, dof: str | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       },
       "wrench": {
         "kind": "function",
-        "signature": "wrench(*, frame: str, hz: float, point: Sequence[float] | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: str | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "signature": "wrench(*, frame: str, hz: float, point: Sequence[float] | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
         "stability": "Experimental"
       }
     }

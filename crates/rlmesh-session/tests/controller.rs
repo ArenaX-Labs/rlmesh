@@ -23,7 +23,7 @@ const WAIT: Duration = Duration::from_secs(10);
 /// The UR10e's arm and wrist F/T, at 500 Hz.
 const UR10E: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 500,
-            "command": "position", "hold_max_ms": 100, "max_action_age_ms": 1000},
+            "command": "position", "safe": "stop", "hold_max_ms": 100, "max_action_age_ms": 1000},
     "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 500}
 }"#;
 

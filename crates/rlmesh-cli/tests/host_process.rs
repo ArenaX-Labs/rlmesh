@@ -207,7 +207,7 @@ async fn join(
 
 const ROBOT: &str = r#"{
     "cmd": {"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
-            "command": "position", "priority": "control"},
+            "command": "position", "safe": "stop", "priority": "control"},
     "ft": {"kind": "wrench", "frame": "tool0", "hz": 1000}
 }"#;
 
