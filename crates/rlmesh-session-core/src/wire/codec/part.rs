@@ -67,6 +67,7 @@ fn command_to_pb(c: &CommandSpec) -> pb::Command {
         group: c.group.clone().unwrap_or_default(),
         binary: c.binary,
         hold_last: c.hold_last,
+        latch: c.latch,
     }
 }
 
@@ -95,6 +96,7 @@ fn command_from_pb(c: pb::Command) -> Result<CommandSpec, WireError> {
         group: (!c.group.is_empty()).then_some(c.group),
         binary: c.binary,
         hold_last: c.hold_last,
+        latch: c.latch,
     })
 }
 

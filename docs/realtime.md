@@ -228,6 +228,14 @@ LAMP = {
 A policy addresses them by kind like any other part, and a chunk for a
 switch is an array of booleans, one per action.
 
+A commanded switch or value is **latched** by default: the edge keeps
+applying its last target for as long as the commanding lease is held, so a
+policy can set a relay once and go quiet. When the lease is released,
+revoked or lost, the part goes to its `safe` behaviour. Set `latch: false`
+to give it the usual short life instead. Any part whose command mode holds
+its target can opt in with `latch: true`; the host refuses it on a velocity
+or torque, which would run away.
+
 ## Safety
 
 - The session starts disarmed; nothing moves until it is armed.

@@ -473,3 +473,50 @@ fn switches_and_values_refuse_what_does_not_apply() {
         assert!(err.message.contains(needle), "{json}: {}", err.message);
     }
 }
+
+#[test]
+fn latch_defaults_on_for_switches_and_values_and_off_elsewhere() {
+    let robot = parts(
+        r#"{"relay": {"kind": "switch", "hz": 10, "command": "set", "safe": "stop"},
+            "dimmer": {"kind": "value", "hz": 10, "command": "set", "safe": "hold"},
+            "manual": {"kind": "switch", "hz": 10, "command": "set", "safe": "stop", "latch": false},
+            "arm": {"kind": "joints", "count": 1, "hz": 10, "command": "position", "safe": "stop"},
+            "brake": {"kind": "joints", "count": 1, "hz": 10, "command": "position", "safe": "stop",
+                      "latch": true}}"#,
+    );
+    let latches: Vec<bool> = robot
+        .iter()
+        .map(|p| p.command.as_ref().expect("command").latch)
+        .collect();
+    assert_eq!(latches, [true, true, false, false, true]);
+    let text = canonical::to_string(&canonical(&robot));
+    assert!(text.contains(r#""latch":true"#), "{text}");
+}
+
+#[test]
+fn latch_is_refused_on_a_mode_that_does_not_hold_its_target() {
+    for part in [
+        r#"{"kind": "joints", "count": 1, "hz": 1, "command": "velocity""#,
+        r#"{"kind": "joints", "count": 1, "hz": 1, "command": "torque""#,
+        r#"{"kind": "velocity", "frame": "base", "hz": 1, "command": "velocity""#,
+        r#"{"kind": "pose", "frame": "b", "child": "t", "hz": 1, "command": "delta""#,
+        r#"{"kind": "x/a", "fields": {"v": ["float32", [1]]}, "hz": 1, "command": "go""#,
+    ] {
+        let err = refused(&format!(
+            r#"{{"p": {part}, "safe": "stop", "latch": true}}}}"#
+        ));
+        assert_eq!(err.status, CtlStatus::InvalidRequest, "{part}: {err}");
+        assert!(err.message.contains("run away"), "{part}: {}", err.message);
+    }
+    let off = parts(
+        r#"{"p": {"kind": "joints", "count": 1, "hz": 1, "command": "velocity", "safe": "stop",
+                  "latch": false}}"#,
+    );
+    assert!(!off[0].command.as_ref().expect("command").latch);
+    let idle = refused(r#"{"p": {"kind": "switch", "hz": 1, "latch": true}}"#);
+    assert!(
+        idle.message.contains("latch without command"),
+        "{}",
+        idle.message
+    );
+}

@@ -315,3 +315,66 @@ fn a_virtual_session_runs_the_edge_on_session_ticks() {
     f.accept(chunk, 1_000 * MS).expect("accept");
     assert_eq!(f.tick(1_002 * MS).mode, EdgeMode::Driving);
 }
+
+/// A latched part commanded once at 0, its lease then renewed for 2 s with
+/// nothing else arriving.
+fn latched_for_two_seconds() -> (Fixture, Lease) {
+    let mut f = Fixture::with(EdgeConfig::default(), true, &["latched"], None);
+    let lease = f.grant_with("policy", "latched", &[], 0);
+    f.publish(0);
+    f.accept(f.chunk_for("latched", "policy", &lease, 1, 0, 1, 0.5), 0)
+        .expect("accept");
+    assert_eq!(f.tick(0).mode, EdgeMode::Driving);
+    for t in (50..=2_000).step_by(50) {
+        let now = t * MS;
+        let renewed = f.grant_with("policy", "latched", &[], now);
+        assert_eq!(renewed.token, lease.token);
+        f.publish(now);
+        let tick = f.tick(now);
+        assert_eq!(tick.mode, EdgeMode::Driving, "at {t} ms");
+        assert!(tick.action.is_some() && tick.safe_behavior.is_none());
+        assert!(tick.report.is_none(), "at {t} ms");
+    }
+    (f, lease)
+}
+
+#[test]
+fn a_latched_part_is_still_driving_after_two_seconds_of_silence() {
+    let (f, _) = latched_for_two_seconds();
+    let stats = f.edge.stats();
+    assert_eq!(stats.accepted, 1, "one chunk, two seconds ago");
+    assert_eq!(stats.safe_reports, 0, "no QUEUE_DRY");
+    assert_eq!(stats.mode(EdgeMode::Hold).ticks, 0);
+}
+
+#[test]
+fn a_latched_part_goes_safe_when_its_lease_is_released() {
+    let (mut f, lease) = latched_for_two_seconds();
+    let channel = f.ch("latched");
+    Fixture::run(
+        &mut f.auth,
+        "policy",
+        Command::ReleaseLease {
+            channels: vec![channel],
+            token: lease.token,
+        },
+    );
+    f.publish(2_001 * MS);
+    assert_eq!(f.tick(2_001 * MS).mode, EdgeMode::Hold);
+    let tick = f.tick(2_011 * MS);
+    assert_eq!(tick.mode, EdgeMode::Safe);
+    assert_eq!(tick.safe_behavior.as_deref(), Some("brake"));
+    assert!(tick.report.is_none(), "a release is the host's own");
+}
+
+#[test]
+fn a_latched_part_goes_safe_when_its_lease_lapses() {
+    let (mut f, _) = latched_for_two_seconds();
+    let tick = f.tick(2_000 * MS + GRACE + MS);
+    assert_eq!(tick.mode, EdgeMode::Safe, "safe at once, no hold");
+    assert_eq!(tick.safe_behavior.as_deref(), Some("brake"));
+    assert_eq!(
+        tick.report.map(|(_, cause)| cause),
+        Some(SafeCause::LeaseLapsed)
+    );
+}

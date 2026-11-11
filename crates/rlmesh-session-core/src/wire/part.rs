@@ -466,6 +466,9 @@ pub struct CommandSpec {
     /// During Hold, repeat the last dispatched target (position-type modes);
     /// otherwise run the safe behaviour.
     pub hold_last: bool,
+    /// While the commanding lease is held, keep applying the last target
+    /// with no age expiry and no wait. Only on a mode that holds its target.
+    pub latch: bool,
 }
 
 impl CommandSpec {
@@ -776,6 +779,7 @@ pub(crate) mod tests {
                 group: Some("arm".into()),
                 binary: false,
                 hold_last: true,
+                latch: true,
             }),
             attrs: BTreeMap::from([("doc".to_string(), "the arm".to_string())]),
             priority: ChannelPriority::Realtime,

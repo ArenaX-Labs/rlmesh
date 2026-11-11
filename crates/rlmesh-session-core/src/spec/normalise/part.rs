@@ -65,6 +65,7 @@ pub(super) struct PartDecl {
     safe: Option<String>,
     hold_max_ms: Option<f64>,
     max_action_age_ms: Option<f64>,
+    latch: Option<bool>,
     limits: Option<BTreeMap<String, LimitDecl>>,
     merge: Option<String>,
     group: Option<String>,
@@ -76,7 +77,7 @@ pub(super) struct PartDecl {
 impl PartDecl {
     /// The keys this declaration sets.
     fn present(&self) -> Vec<&'static str> {
-        let keys: [(&'static str, bool); 42] = [
+        let keys: [(&'static str, bool); 43] = [
             ("kind", true),
             ("hz", self.hz.is_some()),
             ("send", self.send.is_some()),
@@ -115,6 +116,7 @@ impl PartDecl {
             ("safe", self.safe.is_some()),
             ("hold_max_ms", self.hold_max_ms.is_some()),
             ("max_action_age_ms", self.max_action_age_ms.is_some()),
+            ("latch", self.latch.is_some()),
             ("limits", self.limits.is_some()),
             ("merge", self.merge.is_some()),
             ("group", self.group.is_some()),
@@ -632,9 +634,22 @@ pub(super) fn part(
                 decl.limits.unwrap_or_default(),
             )?;
             let control_hz = rate(path, "control_hz", decl.control_hz.unwrap_or(hz))?;
+            let hold_last = kind.holds_target(&mode);
+            if decl.latch == Some(true) && !hold_last {
+                return Err(invalid(
+                    path,
+                    format!(
+                        "latch: command {mode:?} does not hold its target, \
+                         and a latched velocity or torque would run away"
+                    ),
+                ));
+            }
             (
                 Some(CommandSpec {
-                    hold_last: kind.holds_target(&mode),
+                    hold_last,
+                    latch: decl
+                        .latch
+                        .unwrap_or(matches!(kind, Kind::Switch | Kind::Value)),
                     mode,
                     fields: command_fields,
                     limits,

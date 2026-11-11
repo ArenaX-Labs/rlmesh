@@ -368,6 +368,7 @@ mod tests {
             group: None,
             binary,
             hold_last: false,
+            latch: false,
         }
     }
 

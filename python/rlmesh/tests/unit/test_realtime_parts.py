@@ -200,3 +200,20 @@ def test_the_lamp_is_its_fixture() -> None:
         ),
         "temp": parts.value(hz=1, unit="degC", range=(-40, 125)),
     } == fixture("lamp")
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda **k: parts.joints(("pan",), hz=50, command="position", **k),
+        lambda **k: parts.hand(("f",), hz=50, command="position", **k),
+        lambda **k: parts.pose(frame="b", child="t", hz=50, command="absolute", **k),
+        lambda **k: parts.gripper(hz=50, command="position", **k),
+        lambda **k: parts.switch(hz=50, command="set", **k),
+        lambda **k: parts.value(hz=50, command="set", **k),
+    ],
+)
+def test_latch_is_given_only_when_set(build: Any) -> None:
+    assert "latch" not in build()
+    assert build(latch=True)["latch"] is True
+    assert build(latch=False)["latch"] is False

@@ -592,6 +592,9 @@ message Command {
   // During Hold, may the edge repeat the last dispatched target? Set for
   // position-type modes; otherwise it runs the safe behaviour.
   bool hold_last = 11;
+  // While the commanding lease is held, keep applying the last target with
+  // no age expiry and no wait. Only on a mode that holds its target.
+  bool latch = 12;
 }
 
 // A part as the host normalised it, in AuthorityState.

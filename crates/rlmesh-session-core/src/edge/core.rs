@@ -365,6 +365,7 @@ impl EdgeCore {
             ladders.push(MemberLadder {
                 hold_last: command.hold_last,
                 delivery,
+                latch: command.latch,
             });
             queues.push(ActionQueue::new(delivery));
             members.push(Member {

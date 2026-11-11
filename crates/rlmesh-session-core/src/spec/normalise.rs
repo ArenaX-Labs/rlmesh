@@ -227,6 +227,7 @@ pub fn part_json(part: &PartSpec) -> Value {
             "group": c.group,
             "binary": c.binary,
             "hold_last": c.hold_last,
+            "latch": c.latch,
         })
     });
     let (encoding, quality) = match part.encoding {

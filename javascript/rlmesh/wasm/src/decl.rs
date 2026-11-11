@@ -490,6 +490,7 @@ mod tests {
             group: None,
             binary: false,
             hold_last: true,
+            latch: false,
         };
         let packed = pack_command(&command, &[1.0, 2.0, 3.0, 1.0]).expect("packed");
         assert_eq!(packed.len(), 24);

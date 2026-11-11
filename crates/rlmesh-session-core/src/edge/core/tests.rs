@@ -38,7 +38,10 @@ fn robot_map(hold_last: bool) -> String {
             "arm": {{"kind": "joints", "hz": 1000, "count": 2, "fields": ["pos"],
                     "command": "position", "safe": "stop", "group": "arm", "limits": {{"pos": [-1, 1]}}}},
             "arm/tcp": {{"kind": "x/tcp", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
-                        "command": "delta", "safe": "stop", "group": "arm"}}
+                        "command": "delta", "safe": "stop", "group": "arm"}},
+            "latched": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
+                        "command": "position", "hold_max_ms": 10, "safe": "brake",
+                        "latch": true}}
         }}"#
     )
 }
