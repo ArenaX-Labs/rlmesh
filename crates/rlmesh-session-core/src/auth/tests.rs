@@ -559,3 +559,21 @@ fn a_credentials_debug_output_never_shows_its_private_key() {
     let device = crate::crypto::StaticKeypair::from_private(&mut [5; 32]);
     crate::crypto::assert_redacted(&Credential::new(device, [1; 32]), &[5; 32]);
 }
+
+#[test]
+fn an_id_inside_the_window_never_moves_its_floor() {
+    let mut window = RequestWindow::<&str>::default();
+    assert_eq!(window.admit(200), Admit::Execute);
+    assert_eq!(window.admit(137), Admit::Execute, "the floor");
+    assert_eq!(window.admit(136), Admit::Expired);
+}
+
+#[test]
+fn a_retry_of_a_request_still_executing_joins_it() {
+    let mut window = RequestWindow::<&str>::default();
+    assert_eq!(window.admit(3), Admit::Execute);
+    window.begin(3);
+    assert_eq!(window.admit(3), Admit::Pending);
+    window.complete(3, "three");
+    assert_eq!(window.admit(3), Admit::Done(&"three"));
+}
