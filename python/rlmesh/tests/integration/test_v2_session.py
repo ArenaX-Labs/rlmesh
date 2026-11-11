@@ -740,6 +740,81 @@ def test_eyes_with_no_state_export_and_an_idle_eye_keeps_its_last_action(
     np.testing.assert_allclose(rows[-1]["action"], [0.25, 0.25, 0.5, 0.5])
 
 
+def test_a_leader_arm_stays_out_of_the_followers_state_unless_asked_for(
+    host: rlmesh.Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rlmesh.realtime import lerobot
+
+    joints = {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 100}
+    follower_map = {
+        "arm": {**joints, "command": "position", "safe": "stop", "hold_max_ms": 500}
+    }
+    mirror = {
+        "hz": 25,
+        "inputs": {"q": {"kind": "joints", "at": "leader:arm", "fields": ["pos"]}},
+        "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position"}},
+    }
+    path = tmp_path / "teleop.mcap"
+    stop = threading.Event()
+    leader = rlmesh.Robot("leader", {"arm": joints}, session=host)
+    follower = rlmesh.Robot("follower", follower_map, session=host)
+
+    def loop() -> None:
+        rate = rlmesh.Rate(200)
+        while not stop.is_set():
+            leader.publish("arm", pos=[0.1, 0.2])
+            follower.publish("arm", pos=[0.3, 0.4])
+            follower.due("arm")
+            rate.sleep()
+
+    try:
+        follower.arm()
+        with rlmesh.SessionRecorder(path, session=host):
+            ticker = threading.Thread(target=loop, daemon=True)
+            ticker.start()
+            with rlmesh.Policy(mirror, session=host, name="mirror") as policy:
+                policy.bind("follower")
+                thread, out = in_thread(
+                    lambda: policy.run(
+                        lambda obs: {"arm": np.asarray(obs["q"])[None]}, duration=30.0
+                    )
+                )
+                wait_until(
+                    "the follower driven",
+                    lambda: follower.edge_stats("arm")["accepted"] > 5,
+                )
+                policy.stop()
+                thread.join(WAIT)
+                assert not raised(out)
+            stop.set()
+            ticker.join(WAIT)
+    finally:
+        stop.set()
+        leader.close()
+        follower.close()
+
+    datasets = fake_lerobot(monkeypatch)
+    assert lerobot.export(path, tmp_path / "out", repo_id="me/teleop") == 1
+    follower_state = ["follower/arm.pos[0]", "follower/arm.pos[1]"]
+    assert datasets[0].features["observation.state"]["names"] == follower_state
+    np.testing.assert_allclose(
+        datasets[0].episodes[0][-1]["observation.state"], [0.3, 0.4]
+    )
+
+    both = fake_lerobot(monkeypatch)
+    lerobot.export(
+        path,
+        tmp_path / "both",
+        repo_id="me/teleop",
+        state=["leader/arm", "follower/arm"],
+    )
+    assert both[0].features["observation.state"]["names"] == [
+        "leader/arm.pos[0]",
+        "leader/arm.pos[1]",
+        *follower_state,
+    ]
+
+
 def test_a_run_on_a_disarmed_session_says_it_waits_to_be_armed(
     host: rlmesh.Host,
 ) -> None:

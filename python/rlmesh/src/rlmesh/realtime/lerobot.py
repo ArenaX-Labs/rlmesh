@@ -15,10 +15,12 @@ recorder mapped each sample's capture), not on when the recorder received
 it. A frame holds every stream's newest sample captured at or before the
 frame's time:
 
-- ``observation.state``: every numeric stream but the ``_applied`` ones,
-  flattened and concatenated in topic order (or only the ``state``
-  topics). Left out when there are none: a robot with no state stream (an
-  eye's servos, driven open loop) still exports.
+- ``observation.state``: the numeric streams, but the ``_applied`` ones, of
+  the robots the recorded actions drive, flattened and concatenated in
+  topic order. Another robot's streams (a leader arm's) are left out unless
+  named in ``state``, which replaces the selection. Left out when there are
+  none: a robot with no state stream (an eye's servos, driven open loop)
+  still exports.
 - ``action``: every ``_applied`` stream, what the edges dispatched. An edge
   that holds dispatches nothing; its last action carries over, so one idle
   robot never drops the others' frames.
@@ -210,7 +212,12 @@ def _layout(
         t for t, f in first.items() if f and not _is_image(f) and _width(f)
     )
     actions = [t for t in numeric if t.endswith("/_applied")]
-    states = list(state) if state else [t for t in numeric if t not in actions]
+    driven = {t.split("/", 1)[0] for t in actions}
+    states = (
+        list(state)
+        if state
+        else [t for t in numeric if t not in actions and t.split("/", 1)[0] in driven]
+    )
     cameras: dict[str, str] = {}
     for topic in sorted(t for t, f in first.items() if f and _is_image(f)):
         path = topic.split("/", 1)[1] if len(robots) == 1 else topic
@@ -231,7 +238,9 @@ def export(
     """Write ``source`` (a recording, or a collected dataset) as a LeRobot dataset at ``out``.
 
     Returns how many episodes were written. ``task`` names a recording's
-    episode, and any take without one.
+    episode, and any take without one. ``state`` names the
+    ``{robot}/{path}`` streams of ``observation.state``, in place of those
+    of the robots the actions drive.
     """
     lerobot: Any = importlib.import_module("lerobot.datasets.lerobot_dataset")
     takes = _takes(Path(source), include_failed, task)
@@ -326,7 +335,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--state",
         nargs="+",
         metavar="TOPIC",
-        help="observation.state from only these {robot}/{path} streams",
+        help="observation.state from these {robot}/{path} streams, "
+        "instead of those of the robots the actions drive",
     )
     parser.add_argument("--include-failed", action="store_true")
     args = parser.parse_args(argv)
