@@ -10,9 +10,9 @@
 #![cfg(target_os = "linux")]
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rlmesh_session::address::open_listeners;
@@ -29,8 +29,10 @@ use zenoh::qos::CongestionControl;
 /// A healthy participant's query must come back within this, every time. A
 /// host held by the deaf peer misses it by seconds.
 const BOUND: Duration = Duration::from_millis(1500);
-/// How long the deaf peer is given to hold the host up.
-const WINDOW: Duration = Duration::from_secs(4);
+/// How long the test waits for something that must happen before it calls
+/// it a hang: the host resetting the deaf link, the board's subscription
+/// carrying a first sample.
+const HANG: Duration = Duration::from_secs(60);
 
 /// A Zenoh transport frame on a stream link: a length, and one `KeepAlive`.
 const KEEP_ALIVE: [u8; 3] = [1, 0, 0x04];
@@ -43,6 +45,10 @@ struct Relay {
     deaf: Arc<AtomicBool>,
     /// The host reset a link while it was deaf.
     evicted: Arc<AtomicBool>,
+    /// The relay's links to the host, to cut at the end.
+    links: Arc<Mutex<Vec<TcpStream>>>,
+    /// Cut: new links are refused.
+    cut: Arc<AtomicBool>,
 }
 
 impl Relay {
@@ -50,14 +56,28 @@ impl Relay {
         let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
         let deaf = Arc::new(AtomicBool::new(false));
         let evicted = Arc::new(AtomicBool::new(false));
+        let links = Arc::new(Mutex::new(Vec::new()));
+        let cut = Arc::new(AtomicBool::new(false));
         for class in 0..4 {
             let listener =
                 TcpListener::bind(SocketAddr::new(base.ip(), base.port() + class)).expect("bind");
             let to = SocketAddr::new(host.ip(), host.port() + class);
             let (deaf, evicted) = (deaf.clone(), evicted.clone());
+            let (links, cut) = (links.clone(), cut.clone());
             std::thread::spawn(move || {
                 for client in listener.incoming().map_while(Result::ok) {
-                    relay(client, narrow_link(to), deaf.clone(), evicted.clone());
+                    // A board whose link was reset dials again; once cut, or
+                    // once the host is gone, there is nothing to relay to.
+                    if cut.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let Some(host) = narrow_link(to) else {
+                        continue;
+                    };
+                    if let Ok(clone) = host.try_clone() {
+                        links.lock().expect("links").push(clone);
+                    }
+                    relay(client, host, deaf.clone(), evicted.clone());
                 }
             });
         }
@@ -65,17 +85,37 @@ impl Relay {
             base,
             deaf,
             evicted,
+            links,
+            cut,
+        }
+    }
+
+    /// Resets every link to the host. A link the relay keeps open but never
+    /// reads holds whatever the host queued on it, its closing message
+    /// included, so the host's shutdown would wait on it for good.
+    fn cut(&self) {
+        self.cut.store(true, Ordering::Relaxed);
+        for link in self.links.lock().expect("links").drain(..) {
+            let _ = link.shutdown(Shutdown::Both);
         }
     }
 }
 
+impl Drop for Relay {
+    /// Before the host, which is dropped after it, shuts down; also when the
+    /// test panics.
+    fn drop(&mut self) {
+        self.cut();
+    }
+}
+
 /// A connection whose receive window closes after a few kilobytes.
-fn narrow_link(to: SocketAddr) -> TcpStream {
+fn narrow_link(to: SocketAddr) -> Option<TcpStream> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).expect("socket");
     socket.set_recv_buffer_size(4096).expect("rcvbuf");
     socket.set_tcp_mss(1000).expect("mss");
-    socket.connect(&to.into()).expect("connect");
-    socket.into()
+    socket.connect(&to.into()).ok()?;
+    Some(socket.into())
 }
 
 fn relay(client: TcpStream, host: TcpStream, deaf: Arc<AtomicBool>, evicted: Arc<AtomicBool>) {
@@ -216,8 +256,8 @@ impl World {
     }
 
     /// Opens a board's four links through `relay`, subscribed to every key
-    /// of the session.
-    async fn deaf_board(&self, relay: &Relay) -> Vec<zenoh::Session> {
+    /// of the session; `heard` is set once a sample reaches it.
+    async fn deaf_board(&self, relay: &Relay, heard: &Arc<AtomicBool>) -> Vec<zenoh::Session> {
         let keys = SessionKeys::new(&self.tenant, self.session);
         let mut sessions = Vec::new();
         for class in 0..4 {
@@ -235,9 +275,10 @@ impl World {
                 .insert_json5("transport/unicast/qos/enabled", "false")
                 .expect("qos");
             let session = zenoh::open(config).await.expect("board");
+            let heard = heard.clone();
             session
                 .declare_subscriber(format!("{}/**", keys.prefix()))
-                .callback(|_| {})
+                .callback(move |_| heard.store(true, Ordering::Relaxed))
                 .background()
                 .await
                 .expect("subscribe");
@@ -261,9 +302,8 @@ async fn a_peer_that_stops_reading_delays_no_one_else() {
     let observer = world.join("observer", Role::Observer).await;
 
     let relay = Relay::start(world.base);
-    let board = world.deaf_board(&relay).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    relay.deaf.store(true, Ordering::Relaxed);
+    let heard = Arc::new(AtomicBool::new(false));
+    let board = world.deaf_board(&relay, &heard).await;
 
     // Fill the deaf link's queue: what the host routes to it stays there.
     let filling = Arc::new(AtomicBool::new(true));
@@ -284,11 +324,23 @@ async fn a_peer_that_stops_reading_delays_no_one_else() {
             }
         })
     };
+    // Deaf once the host routes the filler to the board, not before.
+    let routed = Instant::now();
+    while !heard.load(Ordering::Relaxed) {
+        assert!(routed.elapsed() < HANG, "the board never heard the filler");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    relay.deaf.store(true, Ordering::Relaxed);
 
     let started = Instant::now();
     let mut worst = Duration::ZERO;
     let mut joined = false;
-    while started.elapsed() < WINDOW {
+    let mut queries = 0;
+    while !relay.evicted.load(Ordering::Relaxed) {
+        assert!(
+            started.elapsed() < HANG,
+            "the host still holds the deaf link"
+        );
         let asked = Instant::now();
         let view = observer.fetch_authority().await.unwrap_or_else(|err| {
             panic!(
@@ -302,8 +354,10 @@ async fn a_peer_that_stops_reading_delays_no_one_else() {
             "the host dropped a healthy robot {:?} in",
             started.elapsed()
         );
-        // A participant joining tells every link, the deaf one too.
-        if !joined && started.elapsed() > Duration::from_secs(1) {
+        queries += 1;
+        // A participant joining tells every link, the deaf one too: once
+        // the queue has had a while to fill.
+        if !joined && queries == 20 {
             let late = world.join("late", Role::Observer).await;
             late.detach().await.expect("detach");
             joined = true;
@@ -315,8 +369,4 @@ async fn a_peer_that_stops_reading_delays_no_one_else() {
     // Closing them would wait on links nothing reads.
     std::mem::forget(board);
     assert!(worst < BOUND, "a query took {worst:?}");
-    assert!(
-        relay.evicted.load(Ordering::Relaxed),
-        "the host still holds the deaf link"
-    );
 }
