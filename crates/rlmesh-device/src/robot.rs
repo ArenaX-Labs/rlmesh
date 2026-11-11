@@ -685,47 +685,53 @@ impl Robot {
                 };
                 self.start(peeked.header.host_instance, rng, now_us);
             }
-            Phase::Handshake => {
-                let msg2 = match codec::decode_handshake_reply(payload) {
-                    Ok(Ok(msg2)) => msg2,
-                    Ok(Err(refusal)) => {
-                        self.waiting = None;
-                        return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
-                    }
-                    Err(_) => return,
-                };
-                self.waiting = None;
-                let Some(initiator) = self.initiator.take() else {
-                    return self.fail(Fault::Internal, now_us);
-                };
-                let Ok(attached) = auth::finish(initiator, &msg2) else {
-                    return self.fail(Fault::Handshake, now_us);
-                };
-                self.generation = attached.accept.generation;
-                self.link = Some(Link::new(self.config.name.clone(), attached));
-                self.phase = Phase::Attach;
-                // The host answers nothing before the attach, which carries
-                // the latch: stop reports queued until now are in it.
-                self.queue
-                    .retain(|c| !matches!(c, Command::Estop { .. } | Command::Clear));
-                self.queue.push_front(Command::Attach {
-                    name: self.config.name.as_str().to_string(),
-                    roles: alloc::vec![Role::Embodiment],
-                    priority: PriorityClass::Scripted,
-                    protocol_minor: PROTOCOL_MINOR,
-                    // The device view instead of the full state.
-                    supports: alloc::vec![String::from("view.device")],
-                    requires: Vec::new(),
-                    workflow_edition: String::new(),
-                    workflow_editions: Vec::new(),
-                    // A latch outlives the session: the host learns it at
-                    // once.
-                    estop: self.estop.clone(),
-                });
-                self.next_ctl(now_us);
-            }
+            Phase::Handshake => self.handshake_reply(payload, now_us),
             _ => {}
         }
+    }
+
+    /// The host's handshake answer: on to the attach, or a failure. Out of
+    /// line, like [`Self::ctl_reply`]: inlined, each step's large temporaries
+    /// add up in one frame of [`Self::reply`].
+    #[inline(never)]
+    fn handshake_reply(&mut self, payload: &[u8], now_us: u64) {
+        let msg2 = match codec::decode_handshake_reply(payload) {
+            Ok(Ok(msg2)) => msg2,
+            Ok(Err(refusal)) => {
+                self.waiting = None;
+                return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
+            }
+            Err(_) => return,
+        };
+        self.waiting = None;
+        let Some(initiator) = self.initiator.take() else {
+            return self.fail(Fault::Internal, now_us);
+        };
+        let Ok(attached) = auth::finish(initiator, &msg2) else {
+            return self.fail(Fault::Handshake, now_us);
+        };
+        self.generation = attached.accept.generation;
+        self.link = Some(Link::new(self.config.name.clone(), attached));
+        self.phase = Phase::Attach;
+        // The host answers nothing before the attach, which carries
+        // the latch: stop reports queued until now are in it.
+        self.queue
+            .retain(|c| !matches!(c, Command::Estop { .. } | Command::Clear));
+        self.queue.push_front(Command::Attach {
+            name: self.config.name.as_str().to_string(),
+            roles: alloc::vec![Role::Embodiment],
+            priority: PriorityClass::Scripted,
+            protocol_minor: PROTOCOL_MINOR,
+            // The device view instead of the full state.
+            supports: alloc::vec![String::from("view.device")],
+            requires: Vec::new(),
+            workflow_edition: String::new(),
+            workflow_editions: Vec::new(),
+            // A latch outlives the session: the host learns it at
+            // once.
+            estop: self.estop.clone(),
+        });
+        self.next_ctl(now_us);
     }
 
     /// Query `id` is over: every reply has arrived, or it timed out.
@@ -750,57 +756,90 @@ impl Robot {
     /// A sample on subscription `sub`, received on `key`.
     pub fn sample(&mut self, sub: u8, key: &str, payload: &mut [u8], now_us: u64) {
         let now = ns(now_us);
-        let Some(link) = self.link.as_mut() else {
+        if self.link.is_none() {
             return;
-        };
+        }
+        // Each kind out of line: inlined, their temporaries add up in one
+        // frame underneath the signature check, a board's deepest call.
         match sub {
-            SUB_VIEW => {
-                let key = self.keys.host_view(&self.config.name);
-                if let Ok(view) = link.open_view(&key, payload) {
-                    self.views += 1;
-                    self.last_heard = now_us;
-                    link.observe(&view, now);
-                    self.observe(view, now);
-                    self.check_leave(now_us);
-                }
-            }
-            SUB_TICK => {
-                // Verified to keep the host's sequence floor; lockstep
-                // isn't run on a board yet.
-                let _ = link.tick(&self.keys.host_tick(), payload);
-            }
-            SUB_ECHO => {
-                let key = self.keys.heartbeat_echo(&self.config.name);
-                if let Ok(echo) = link.echo(&key, payload) {
-                    self.previous = Some(echo.complete(now));
-                    self.last_heard = now_us;
-                    self.echoes += 1;
-                }
-            }
-            SUB_ESTOP => {
-                if let Ok((by, signal)) = link.open_estop_signal(key, payload.to_vec()) {
-                    self.latch(Reason {
-                        code: ReasonCode::EstopSignal,
-                        by: by.to_string(),
-                        detail: signal.reason,
-                        at_ns: now,
-                        ..Reason::default()
-                    });
-                }
-            }
-            SUB_KEYS => {
-                let key = self.keys.participant_keys(&self.config.name);
-                if let Ok(ack) = link.keys(&key, payload, now)
-                    && !ack.is_empty()
-                {
-                    self.queue.push_back(Command::KeysAck(ack));
-                }
-            }
+            SUB_VIEW => self.sample_view(payload, now_us),
+            SUB_TICK => self.sample_tick(payload),
+            SUB_ECHO => self.sample_echo(payload, now_us),
+            SUB_ESTOP => self.sample_estop(key, payload, now),
+            SUB_KEYS => self.sample_keys(payload, now),
             _ => {
                 if let Some(index) = sub.checked_sub(SUB_COMMANDS) {
                     self.chunk(usize::from(index), payload.to_vec(), now);
                 }
             }
+        }
+    }
+
+    #[inline(never)]
+    fn sample_view(&mut self, payload: &mut [u8], now_us: u64) {
+        let now = ns(now_us);
+        let key = self.keys.host_view(&self.config.name);
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        if let Ok(view) = link.open_view(&key, payload) {
+            self.views += 1;
+            self.last_heard = now_us;
+            link.observe(&view, now);
+            self.observe(view, now);
+            self.check_leave(now_us);
+        }
+    }
+
+    #[inline(never)]
+    fn sample_tick(&mut self, payload: &mut [u8]) {
+        let key = self.keys.host_tick();
+        if let Some(link) = self.link.as_mut() {
+            // Verified to keep the host's sequence floor; lockstep isn't
+            // run on a board yet.
+            let _ = link.tick(&key, payload);
+        }
+    }
+
+    #[inline(never)]
+    fn sample_echo(&mut self, payload: &mut [u8], now_us: u64) {
+        let key = self.keys.heartbeat_echo(&self.config.name);
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        if let Ok(echo) = link.echo(&key, payload) {
+            self.previous = Some(echo.complete(ns(now_us)));
+            self.last_heard = now_us;
+            self.echoes += 1;
+        }
+    }
+
+    #[inline(never)]
+    fn sample_estop(&mut self, key: &str, payload: &[u8], now: i64) {
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        if let Ok((by, signal)) = link.open_estop_signal(key, payload.to_vec()) {
+            self.latch(Reason {
+                code: ReasonCode::EstopSignal,
+                by: by.to_string(),
+                detail: signal.reason,
+                at_ns: now,
+                ..Reason::default()
+            });
+        }
+    }
+
+    #[inline(never)]
+    fn sample_keys(&mut self, payload: &mut [u8], now: i64) {
+        let key = self.keys.participant_keys(&self.config.name);
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        if let Ok(ack) = link.keys(&key, payload, now)
+            && !ack.is_empty()
+        {
+            self.queue.push_back(Command::KeysAck(ack));
         }
     }
 
@@ -925,6 +964,7 @@ impl Robot {
         }
     }
 
+    #[inline(never)]
     fn chunk(&mut self, index: usize, msg: Vec<u8>, now: i64) {
         let (Some(path), Some(link)) = (self.paths.get(index), self.link.as_mut()) else {
             return;
@@ -1065,6 +1105,7 @@ impl Robot {
         self.waiting = Some(id);
     }
 
+    #[inline(never)]
     fn start(&mut self, host_instance: u64, rng: &mut dyn Rng, now_us: u64) {
         let session = self.session.to_string();
         let started = self.credential.start(
@@ -1170,6 +1211,7 @@ impl Robot {
         self.pending = Some(pending);
     }
 
+    #[inline(never)]
     fn ctl_reply(&mut self, payload: &[u8], now_us: u64) {
         let now = ns(now_us);
         let ctl = self.keys.ctl();
@@ -1501,6 +1543,7 @@ impl Robot {
     }
 
     /// The lobby's answer to a wait: an order for this robot, or a refusal.
+    #[inline(never)]
     fn wait_reply(&mut self, payload: &[u8], now_us: u64) {
         let now = ns(now_us);
         let ctl = self.keys.ctl();
