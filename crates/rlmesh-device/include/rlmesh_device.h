@@ -232,6 +232,17 @@ uint64_t rlmesh_device_robot_next_due(const rlmesh_device_robot_t* robot, uint64
  * transport can run it on another task. The sample on this subscription is a
  * signed device view: pass it to the checker, not _robot_sample. */
 #define RLMESH_DEVICE_SUB_VIEW 0
+/* This robot's view sealed under its own link key, from a host that seals it:
+ * a sample for rlmesh_device_robot_sample. Once one is taken, signed views are
+ * ignored (rlmesh_device_robot_wants_signed_views says 0). */
+#define RLMESH_DEVICE_SUB_VIEW_SEALED 255
+/* Whether the transport should still check signed views (1) or drop them
+ * unchecked (0). */
+int rlmesh_device_robot_wants_signed_views(const rlmesh_device_robot_t* robot);
+/* Sealed views taken, signed views taken, and views refused, over every attach;
+ * any pointer may be NULL. */
+int rlmesh_device_robot_view_counts(const rlmesh_device_robot_t* robot, uint64_t* sealed,
+                                    uint64_t* signed_, uint64_t* refused);
 typedef struct rlmesh_device_checker_t rlmesh_device_checker_t;
 typedef struct rlmesh_device_checked_t rlmesh_device_checked_t;
 /* The verifier for the robot's current link, once per link (free it with

@@ -84,6 +84,7 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
     e->sub = sub;
     e->query_id = query_id;
     e->checked = NULL;
+    e->arrived_us = z->now_us();
     e->key_len = key_len;
     e->len = len;
     if (key_len > 0) memcpy(e->data, key_data, key_len);
@@ -171,7 +172,12 @@ static void offer_view(rlmesh_zenoh_t* z, const z_loaned_sample_t* sample) {
 static void on_sample(z_loaned_sample_t* sample, void* ctx) {
   rlmesh_zenoh_sub_t* s = (rlmesh_zenoh_sub_t*)ctx;
   if (s->sub == RLMESH_DEVICE_SUB_VIEW) {
-    offer_view(s->z, sample);
+    /* Once the robot takes sealed views, a signed one is dropped unchecked. */
+    z_mutex_lock(z_loan_mut(s->z->lock));
+    bool skip = s->z->skip_signed;
+    if (skip) s->z->views.skipped++;
+    z_mutex_unlock(z_loan_mut(s->z->lock));
+    if (!skip) offer_view(s->z, sample);
     return;
   }
   push(s->z, EV_SAMPLE, s->sub, 0, z_sample_keyexpr(sample), z_sample_payload(sample));
@@ -543,7 +549,9 @@ int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
 
 int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
   rlmesh_device_checker_t* checker = rlmesh_device_robot_take_checker(z->robot);
+  bool skip_signed = rlmesh_device_robot_wants_signed_views(z->robot) == 0;
   z_mutex_lock(z_loan_mut(z->lock));
+  z->skip_signed = skip_signed;
   rlmesh_device_checker_t* unused = NULL;
   if (checker != NULL) {
     unused = z->next_checker;
@@ -560,6 +568,18 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
       case EV_SAMPLE:
         rlmesh_device_robot_sample(z->robot, e->sub, (const char*)e->data, e->key_len,
                                    e->data + e->key_len, e->len, now);
+        if (e->sub == RLMESH_DEVICE_SUB_VIEW_SEALED) {
+          uint64_t done = z->now_us();
+          uint64_t waited = done - e->arrived_us;
+          uint64_t took = done - now;
+          z_mutex_lock(z_loan_mut(z->lock));
+          z->views.sealed++;
+          z->views.sealed_wait_total_us += waited;
+          if (waited > z->views.sealed_wait_max_us) z->views.sealed_wait_max_us = waited;
+          z->views.sealed_open_total_us += took;
+          if (took > z->views.sealed_open_max_us) z->views.sealed_open_max_us = took;
+          z_mutex_unlock(z_loan_mut(z->lock));
+        }
         break;
       case EV_CHECKED: {
         rlmesh_device_robot_sample_checked(z->robot, e->sub, e->checked, now);

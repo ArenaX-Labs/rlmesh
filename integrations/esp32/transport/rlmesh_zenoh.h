@@ -75,12 +75,22 @@ typedef struct rlmesh_zenoh_view_stats_t {
   uint32_t replaced;
   uint32_t refused;
   uint32_t taken;
+  /* Signed views dropped unchecked: the robot takes sealed ones. */
+  uint32_t skipped;
   uint64_t wait_max_us;
   uint64_t wait_total_us;
   /* Publications dropped from a full send queue, and those the send task
    * failed to send (or an action the transport failed to carry out). */
   uint32_t tx_dropped;
   uint32_t failed;
+  /* Sealed views handed to the robot: the longest and total time from
+   * arrival until the robot took it, and of that the robot's own (opening,
+   * decoding and applying it). */
+  uint32_t sealed;
+  uint64_t sealed_wait_max_us;
+  uint64_t sealed_wait_total_us;
+  uint64_t sealed_open_max_us;
+  uint64_t sealed_open_total_us;
 } rlmesh_zenoh_view_stats_t;
 
 /* A subscription's callback context. */
@@ -121,6 +131,8 @@ typedef struct rlmesh_zenoh_t {
   rlmesh_device_checker_t* next_checker;
   bool stopping;
   rlmesh_zenoh_view_stats_t views;
+  /* The robot takes sealed views: signed ones need no check. */
+  bool skip_signed;
   /* Called (under `lock`) when an event is queued for the robot. */
   void (*wake)(void*);
   void* wake_arg;

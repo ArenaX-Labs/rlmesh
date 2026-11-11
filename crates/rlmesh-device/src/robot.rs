@@ -30,7 +30,9 @@ use rlmesh_session_core::crypto::{Checked, Rng, SignedChecker, signed};
 use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick, Rejection};
 use rlmesh_session_core::lobby::{self, LOBBY_SESSION, Leave, Lobby, WAIT_RETRY};
 use rlmesh_session_core::wire::codec;
-use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
+use rlmesh_session_core::wire::version::{
+    PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE, VIEW_DEVICE_SEALED,
+};
 use rlmesh_session_core::wire::{
     AuthorityView, ChannelId, ChannelPriority, ClockMode, Command, CtlError, CtlStatus, DeviceView,
     Epoch, Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, Plan, PriorityClass, Reason,
@@ -78,6 +80,9 @@ pub const SUB_KEYS: u8 = 3;
 pub const SUB_ESTOP: u8 = 4;
 /// The commands of part `i` (in the map's order) are `SUB_COMMANDS + i`.
 pub const SUB_COMMANDS: u8 = 5;
+/// `p/{id}/view`: this robot's device view sealed under its `k_down`, from
+/// a host that seals it ([`VIEW_DEVICE_SEALED`]). Past every part's commands.
+pub const SUB_VIEW_SEALED: u8 = 255;
 
 /// What a robot needs to join.
 #[derive(Debug, Clone)]
@@ -396,6 +401,7 @@ impl Published {
 /// enters it: each is a format on a path that runs many times a second.
 struct Routes {
     view: String,
+    sealed_view: String,
     echo: String,
     heartbeat: String,
 }
@@ -404,6 +410,7 @@ impl Routes {
     fn new(keys: &SessionKeys, me: &ParticipantId) -> Self {
         Self {
             view: keys.host_view(me),
+            sealed_view: keys.participant_view(me),
             echo: keys.heartbeat_echo(me),
             heartbeat: keys.heartbeat(me),
         }
@@ -489,6 +496,14 @@ pub struct Robot {
     /// The link is new, and a transport that verifies broadcasts on another
     /// task hasn't taken its checker.
     checker_due: bool,
+    /// This link took a sealed view: signed ones are ignored from then on.
+    sealed_seen: bool,
+    /// Sealed views taken, signed views taken, and views refused (not
+    /// opened, another generation's, or not newer than the one held), over
+    /// every attach.
+    sealed_views: u64,
+    signed_views: u64,
+    view_refusals: u64,
     pending: Option<Pending>,
     queue: VecDeque<Command>,
     /// An unsealed refusal of the `ctl` request in flight: a hint, kept in
@@ -626,6 +641,10 @@ impl Robot {
                 initiator: None,
                 link: None,
                 checker_due: false,
+                sealed_seen: false,
+                sealed_views: 0,
+                signed_views: 0,
+                view_refusals: 0,
                 pending: None,
                 queue: VecDeque::new(),
                 hint: None,
@@ -862,6 +881,11 @@ impl Robot {
                 },
                 Action::Subscribe {
                     class: CLASS_CONTROL,
+                    sub: SUB_VIEW_SEALED,
+                    key: self.routes.sealed_view.clone(),
+                },
+                Action::Subscribe {
+                    class: CLASS_CONTROL,
                     sub: SUB_TICK,
                     key: self.keys.host_tick(),
                 },
@@ -964,6 +988,7 @@ impl Robot {
         self.generation = attached.accept.generation;
         self.link = Some(Link::new(self.config.name.clone(), attached));
         self.checker_due = true;
+        self.sealed_seen = false;
         self.phase = Phase::Attach;
         // The host answers nothing before the attach, which carries
         // the latch: stop reports queued until now are in it.
@@ -975,7 +1000,7 @@ impl Robot {
             priority: PriorityClass::Scripted,
             protocol_minor: PROTOCOL_MINOR,
             // The device view instead of the full state.
-            supports: alloc::vec![String::from("view.device")],
+            supports: alloc::vec![String::from(VIEW_DEVICE), String::from(VIEW_DEVICE_SEALED)],
             requires: Vec::new(),
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),
@@ -1044,6 +1069,7 @@ impl Robot {
         // frame underneath the signature check, a board's deepest call.
         match sub {
             SUB_VIEW => self.sample_view(payload, now_us),
+            SUB_VIEW_SEALED => self.sample_sealed_view(payload, now_us),
             SUB_TICK => self.sample_tick(payload),
             SUB_ECHO => self.sample_echo(payload, now_us),
             SUB_ESTOP => self.sample_estop(key, payload, now),
@@ -1059,13 +1085,57 @@ impl Robot {
     #[inline(never)]
     fn sample_view(&mut self, payload: &mut [u8], now_us: u64) {
         let now = ns(now_us);
+        if self.sealed_seen {
+            return;
+        }
         let Some(link) = self.link.as_mut() else {
             return;
         };
         if let Ok(view) = link.open_view(&self.routes.view, payload) {
             link.observe(&view, now);
+            self.signed_views += 1;
             self.took_view(view, now_us);
         }
+    }
+
+    /// This robot's view sealed under its `k_down`: opened at a symmetric
+    /// cipher's cost, and from then on this link ignores signed views.
+    #[inline(never)]
+    fn sample_sealed_view(&mut self, payload: &mut [u8], now_us: u64) {
+        let now = ns(now_us);
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        let Ok(view) = link.open_sealed_view(&self.routes.sealed_view, payload) else {
+            self.view_refusals += 1;
+            return;
+        };
+        if self
+            .view
+            .as_ref()
+            .is_some_and(|held| (held.revision, held.host_ns) >= (view.revision, view.host_ns))
+        {
+            self.view_refusals += 1;
+            return;
+        }
+        link.observe(&view, now);
+        self.sealed_seen = true;
+        self.sealed_views += 1;
+        self.took_view(view, now_us);
+    }
+
+    /// Whether a transport should still check signed views for this robot:
+    /// not once this link has taken a sealed one, which saves a signature
+    /// check per view.
+    pub fn wants_signed_views(&self) -> bool {
+        !self.sealed_seen
+    }
+
+    /// Sealed views taken, signed views taken, and views refused (not
+    /// opened, another generation's, or not newer than the one held), over
+    /// every attach.
+    pub fn view_counts(&self) -> (u64, u64, u64) {
+        (self.sealed_views, self.signed_views, self.view_refusals)
     }
 
     /// A verified signed view, from either path.
@@ -1093,7 +1163,7 @@ impl Robot {
     /// this link's key, instance and floor, and to this robot's key
     /// expression.
     pub fn sample_checked(&mut self, sub: u8, checked: &Checked, now_us: u64) {
-        if sub != SUB_VIEW {
+        if sub != SUB_VIEW || self.sealed_seen {
             return;
         }
         let Some(link) = self.link.as_mut() else {
@@ -1101,6 +1171,7 @@ impl Robot {
         };
         if let Ok(view) = link.take_view(&self.routes.view, checked) {
             link.observe(&view, ns(now_us));
+            self.signed_views += 1;
             self.took_view(view, now_us);
         }
     }
@@ -1931,6 +2002,7 @@ impl Robot {
     /// Forgets everything of the session it was in; the e-stop latch and
     /// the lobby's report stay.
     fn reset_session(&mut self) {
+        self.sealed_seen = false;
         self.waiting = None;
         self.initiator = None;
         self.link = None;

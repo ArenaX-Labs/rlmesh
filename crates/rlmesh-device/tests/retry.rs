@@ -67,7 +67,7 @@ fn unanswered(robot: &mut Robot, now: u64) {
 fn a_retry_declares_its_subscriptions_again() {
     let mut robot = robot(&[("10.0.0.1", 7447)]);
     let first = robot.poll(0);
-    assert_eq!(declares(&first), (5, 1));
+    assert_eq!(declares(&first), (6, 1));
     robot.query_done(query(&first).expect("a query"), 0);
     assert_eq!(robot.phase(), Phase::Retry);
     assert_eq!(robot.fault(), Some(&Fault::NoReply));
@@ -76,7 +76,7 @@ fn a_retry_declares_its_subscriptions_again() {
     // drops what it holds and declares it all again, then waits its pause.
     let retry = robot.poll(0);
     assert!(matches!(retry.first(), Some(Action::Reset)), "{retry:?}");
-    assert_eq!(declares(&retry), (5, 1));
+    assert_eq!(declares(&retry), (6, 1));
     assert_eq!(query(&retry), None, "it waits before asking again");
     assert!(query(&robot.poll(S)).is_some(), "it asks after a second");
 }

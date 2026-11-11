@@ -580,6 +580,46 @@ pub unsafe extern "C" fn rlmesh_device_robot_next_due(
         .map_or(u64::MAX, |due| due.saturating_sub(now_us))
 }
 
+/// Whether the transport should still check signed views for this robot (1)
+/// or drop them unchecked (0): not once its link has taken a sealed view.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_wants_signed_views(
+    robot: *const DeviceRobot,
+) -> c_int {
+    // SAFETY: per the contract.
+    unsafe { robot.as_ref() }.map_or(1, |r| c_int::from(r.robot.wants_signed_views()))
+}
+
+/// Sealed views taken, signed views taken, and views refused, over every
+/// attach; any out-pointer may be null.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; each pointer null or
+/// valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_view_counts(
+    robot: *const DeviceRobot,
+    sealed: *mut u64,
+    signed: *mut u64,
+    refused: *mut u64,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    let (s, g, f) = r.robot.view_counts();
+    for (out, value) in [(sealed, s), (signed, g), (refused, f)] {
+        if !out.is_null() {
+            // SAFETY: per the contract.
+            unsafe { out.write(value) };
+        }
+    }
+    RLMESH_DEVICE_OK
+}
+
 /// `rlmesh_device_checker_t`: a verifier of a robot's signed broadcasts.
 #[derive(Debug)]
 pub struct DeviceChecker(SignedChecker);
@@ -1154,6 +1194,7 @@ mod tests {
             kinds,
             [
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 0, 0),
+                (RLMESH_DEVICE_SUBSCRIBE, 0, 255, 0),
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 1, 0),
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 2, 0),
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 3, 0),
@@ -1163,9 +1204,10 @@ mod tests {
             ]
         );
         assert!(keys[0].ends_with("/host/view/eyes"), "{keys:?}");
-        assert!(keys[6].ends_with("/host/state"), "{keys:?}");
-        assert!(keys[3].ends_with("/p/eyes/keys"), "{keys:?}");
-        assert!(keys[4].ends_with("/estop/*"), "{keys:?}");
+        assert!(keys[1].ends_with("/p/eyes/view"), "{keys:?}");
+        assert!(keys[7].ends_with("/host/state"), "{keys:?}");
+        assert!(keys[4].ends_with("/p/eyes/keys"), "{keys:?}");
+        assert!(keys[5].ends_with("/estop/*"), "{keys:?}");
         assert_eq!(action.query_id, 1);
 
         let mut status = RlmeshDeviceRobotStatus::default();

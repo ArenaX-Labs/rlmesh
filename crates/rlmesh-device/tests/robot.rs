@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 #[cfg(not(feature = "fleet"))]
 use rlmesh_device::provision::Record;
-use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot, SUB_COMMANDS, SUB_VIEW};
+use rlmesh_device::robot::{
+    Action, Config, Fault, Phase, Robot, SUB_COMMANDS, SUB_VIEW, SUB_VIEW_SEALED,
+};
 use rlmesh_session::address::AddressKey;
 use rlmesh_session::auth::{Credential, Device, HostIdentity};
 use rlmesh_session::authority::DeviceAccess;
@@ -245,6 +247,14 @@ struct Board {
     views_refused: u32,
     /// Spoils the next signed view that arrives.
     forge_next_view: bool,
+    /// Signature checks made, and those made after the robot took a sealed
+    /// view (a board's transport skips them then).
+    checks: u32,
+    checks_after_sealed: u32,
+    /// Sealed views never reach the robot, as from a host that doesn't seal.
+    drop_sealed: bool,
+    /// The first sealed view that arrived, kept for a replay.
+    first_sealed: Option<(String, Vec<u8>)>,
 }
 
 impl Board {
@@ -272,6 +282,10 @@ impl Board {
             checkers: 0,
             views_refused: 0,
             forge_next_view: false,
+            checks: 0,
+            checks_after_sealed: 0,
+            drop_sealed: false,
+            first_sealed: None,
         }
     }
 
@@ -336,7 +350,16 @@ impl Board {
             while let Some(event) = next {
                 match event {
                     Event::Sample(sub, key, mut bytes) => {
-                        if self.check_views && sub == SUB_VIEW {
+                        if sub == SUB_VIEW_SEALED {
+                            if self.drop_sealed {
+                                // A host that doesn't seal.
+                            } else {
+                                if self.first_sealed.is_none() {
+                                    self.first_sealed = Some((key.clone(), bytes.clone()));
+                                }
+                                robot.sample(sub, &key, &mut bytes, now_us());
+                            }
+                        } else if self.check_views && sub == SUB_VIEW {
                             self.check_view(robot, &key, bytes, now_us());
                         } else {
                             robot.sample(sub, &key, &mut bytes, now_us());
@@ -365,6 +388,14 @@ impl Board {
         let Some(checker) = self.checker.as_mut() else {
             return;
         };
+        if !robot.wants_signed_views() {
+            // The transport drops it unchecked.
+            return;
+        }
+        self.checks += 1;
+        if robot.view_counts().0 > 0 {
+            self.checks_after_sealed += 1;
+        }
         if std::mem::take(&mut self.forge_next_view) {
             bytes[20] ^= 1;
         }
@@ -554,6 +585,8 @@ async fn a_board_takes_views_checked_on_another_task_and_never_a_forged_one() {
     let mut robot = world.robot(AddressKey::of(&world.identity));
     let mut board = Board::open(&world).await;
     board.check_views = true;
+    // Signed views only, as from a host that doesn't seal them.
+    board.drop_sealed = true;
     let seen = Arc::default();
     board
         .run(&mut robot, Duration::from_secs(10), &seen, |r| {
@@ -611,6 +644,57 @@ async fn a_running_board_is_next_due_by_its_heartbeat_and_its_control_tick() {
         "due {} us after the tick",
         due.saturating_sub(ticked)
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_board_takes_sealed_views_and_checks_no_signature_after_the_first() {
+    let world = World::start().await;
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    board.check_views = true;
+    let seen = Arc::default();
+    board
+        .run(&mut robot, Duration::from_secs(15), &seen, |r| {
+            r.phase() == Phase::Running && r.view_counts().0 >= 4
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    let (sealed, _, refused) = robot.view_counts();
+    assert!(sealed >= 4, "{sealed} sealed views");
+    assert_eq!(refused, 0);
+    assert!(!robot.wants_signed_views());
+    assert_eq!(
+        board.checks_after_sealed, 0,
+        "no signature check after the first sealed view ({} before)",
+        board.checks
+    );
+
+    // The first sealed view again: a replay, refused and counted.
+    let (key, mut first) = board.first_sealed.clone().expect("a sealed view");
+    let held = robot.view().expect("a view").revision;
+    robot.sample(SUB_VIEW_SEALED, &key, &mut first, 0);
+    assert_eq!(robot.view_counts().2, 1, "the replay is refused");
+    assert_eq!(robot.view().expect("a view").revision, held);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_board_falls_back_to_signed_views_from_a_host_that_doesnt_seal() {
+    let world = World::start().await;
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    board.check_views = true;
+    board.drop_sealed = true;
+    let seen = Arc::default();
+    board
+        .run(&mut robot, Duration::from_secs(15), &seen, |r| {
+            r.phase() == Phase::Running && r.view_counts().1 >= 2
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    let (sealed, signed, _) = robot.view_counts();
+    assert_eq!(sealed, 0);
+    assert!(signed >= 2, "{signed} signed views");
+    assert!(robot.wants_signed_views());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
