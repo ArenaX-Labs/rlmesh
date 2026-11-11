@@ -119,6 +119,48 @@ fn clock_conversion_never_extends_a_deadline_and_transit_is_checked() {
 }
 
 #[test]
+fn a_holder_lost_before_the_host_noticed_parks_its_part_unreported() {
+    let mut f = Fixture::new();
+    let lease = f.grant("policy", 0);
+    f.publish(0);
+    f.accept(f.chunk("policy", &lease, 1, 0, 5), 0)
+        .expect("accept");
+    let ticks: Vec<EdgeTick> = (0..20).map(|t| f.tick(t * MS)).collect();
+    assert_eq!(ticks.last().map(|t| t.mode), Some(EdgeMode::Safe));
+    f.auth.participant_lost(&pid("policy"), 25 * MS);
+    f.publish(25 * MS);
+    let tick = f.tick(26 * MS);
+    assert_eq!(tick.mode, EdgeMode::Safe);
+    assert_eq!(tick.safe_behavior.as_deref(), Some("brake"));
+    assert!(ticks.iter().chain([&tick]).all(|t| t.report.is_none()));
+    assert_eq!(f.edge.stats().safe_reports, 0);
+    // The next holder resumes it.
+    let next = f.grant("operator", 30 * MS);
+    f.publish(30 * MS);
+    f.accept(f.chunk("operator", &next, 1, 30 * MS, 5), 30 * MS)
+        .expect("accept");
+    assert_eq!(f.tick(31 * MS).mode, EdgeMode::Driving);
+}
+
+#[test]
+fn a_holder_the_host_lost_first_parks_its_part_as_a_release() {
+    let mut f = Fixture::new();
+    let lease = f.grant("policy", 0);
+    f.publish(0);
+    f.accept(f.chunk("policy", &lease, 1, 0, 5), 0)
+        .expect("accept");
+    assert_eq!(f.tick(0).mode, EdgeMode::Driving);
+    f.auth.participant_lost(&pid("policy"), MS);
+    f.publish(MS);
+    let ticks: Vec<EdgeTick> = (1..20).map(|t| f.tick(t * MS)).collect();
+    let last = ticks.last().expect("ticks");
+    assert_eq!(last.mode, EdgeMode::Safe);
+    assert_eq!(last.safe_behavior.as_deref(), Some("brake"));
+    assert!(ticks.iter().all(|t| t.report.is_none()));
+    assert_eq!(f.auth.mode(), Mode::Armed);
+}
+
+#[test]
 fn a_dry_queue_holds_then_goes_safe_and_estop_is_immediate() {
     let mut f = Fixture::new();
     let lease = f.grant("policy", 0);
@@ -130,11 +172,17 @@ fn a_dry_queue_holds_then_goes_safe_and_estop_is_immediate() {
     assert_eq!(count(EdgeMode::Driving), 5);
     assert_eq!(count(EdgeMode::Hold), 10, "hold_max is 10 ms");
     assert_eq!(count(EdgeMode::Safe), 5);
+    assert!(ticks.iter().all(|t| t.report.is_none()), "not judged yet");
+    // A renewal from after the fall: its holder is alive, so it is reported.
+    let epoch = f.auth.epoch();
+    f.auth.heartbeat(&pid("policy"), epoch, 10 * MS);
+    f.publish(16 * MS);
+    assert!(f.tick(20 * MS).report.is_none(), "from before the fall");
+    f.auth.heartbeat(&pid("policy"), epoch, 21 * MS);
+    f.publish(21 * MS);
+    assert_eq!(f.tick(22 * MS).report, Some((epoch, SafeCause::QueueDry)));
     assert_eq!(f.edge.stats().safe_reports, 1);
-    assert_eq!(
-        ticks.iter().filter_map(|t| t.report).collect::<Vec<_>>(),
-        vec![(f.auth.epoch(), SafeCause::QueueDry)]
-    );
+    assert!(f.tick(23 * MS).report.is_none(), "reported once");
 
     let mut f = Fixture::new();
     let lease = f.grant("policy", 0);

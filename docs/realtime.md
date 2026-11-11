@@ -160,6 +160,12 @@ that eye alone: its lease ends, the other eye keeps tracking, and the
 policy keeps running. When the board is back it rejoins with its key and,
 under `--rearm-robots`, is driven again at once.
 
+**When a policy drops off** (a crash, a lost link, or a new process
+joining under its name), the host ends only the leases it held. Those
+parts go to their declared safe behaviour, as after a release; the session
+stays armed, every other policy keeps driving, and nothing needs re-arming.
+The host logs who was lost and which `robot:part`s were released.
+
 ## 6. Watch it: the cockpit
 
 ```sh

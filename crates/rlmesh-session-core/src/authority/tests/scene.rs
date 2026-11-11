@@ -167,3 +167,33 @@ fn a_lost_scene_member_is_waited_for_and_back_only_with_its_map_and_an_explicit_
     assert_eq!(f.auth.mode(), Mode::Armed);
     restart(&mut f, 2, 50);
 }
+
+#[cfg(feature = "fleet")]
+#[test]
+fn a_scene_stops_for_a_lost_holder_it_counts_as_a_member() {
+    let mut f = Fixture::new();
+    f.auth.config.scene = Some(SceneConfig {
+        info: crate::wire::SceneInfo {
+            run: "r-7k2m".into(),
+            name: "rig".into(),
+            fingerprint: Fingerprint::from(7),
+            closing: None,
+            rejoin_until_ns: None,
+        },
+        members: [(
+            pid("policy"),
+            crate::authority::Member::Controller {
+                device: crate::auth::LOCAL_DEVICE.into(),
+                max_priority: PriorityClass::Operator,
+            },
+        )]
+        .into(),
+        rejoin_ns: 60,
+    });
+    f.run("operator", Command::Arm, 0).expect("arm");
+    f.grant("policy", "cmd1", 0).expect("lease");
+    f.grant("script", "cmd2", 0).expect("lease");
+    f.auth.participant_lost(&pid("policy"), 10);
+    assert_eq!(f.auth.mode(), Mode::Safe);
+    assert_eq!(f.auth.lease_count(), 0);
+}

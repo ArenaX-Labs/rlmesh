@@ -118,8 +118,9 @@ impl Authority {
         }
     }
 
-    /// A lapse while ACTIVE takes the whole session to SAFE and revokes every
-    /// other lease: re-arming (a fresh epoch) is the way back.
+    /// Takes an ACTIVE session to SAFE and revokes every lease: re-arming (a
+    /// fresh epoch) is the way back. Only a stalled barrier or a scene losing
+    /// a member does; a lost holder stops its own parts alone.
     pub(super) fn enter_safe(&mut self, reason: Reason, events: &mut Vec<AuthorityEvent>) {
         if self.mode == Mode::Active {
             self.revoke_all(ReasonCode::VoidedBySafe, &reason, events);

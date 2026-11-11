@@ -529,6 +529,119 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
     assert_eq!(world.host.snapshot().mode, Mode::Armed);
 }
 
+/// Two controllers drive one part each; the first vanishes. Its queue runs
+/// dry at the edge before the host notices, and still only its part stops.
+async fn a_vanished_holder_leaves_the_other_driving(
+    world: &World,
+    dying: (&Participant, &str),
+    staying: (&Participant, &str),
+) {
+    let one = world
+        .join("one", vec![Role::Controller], PriorityClass::Model)
+        .await;
+    let two = world
+        .join("two", vec![Role::Controller], PriorityClass::Model)
+        .await;
+    for (p, fingerprint) in [(&one, 1), (&two, 2)] {
+        let view = p
+            .wait_for("every part", WAIT, |s| {
+                s.part_at(dying.0.id(), dying.1).is_some()
+                    && s.part_at(staying.0.id(), staying.1).is_some()
+            })
+            .await
+            .expect("parts");
+        let channels = view
+            .parts
+            .iter()
+            .filter(|part| part.command.is_some())
+            .map(|part| part.channel)
+            .collect();
+        p.declare_binding(Fingerprint::from(fingerprint), "{}", channels, 0.0)
+            .await
+            .expect("bind");
+    }
+    let dying_part = one.part(dying.0.id(), dying.1).expect("part").channel;
+    let staying_part = one.part(staying.0.id(), staying.1).expect("part").channel;
+    let dying_edge = Arc::new(
+        Edge::attach(dying.0, dying.1, EdgeConfig::default(), None)
+            .await
+            .expect("edge"),
+    );
+    let staying_edge = Arc::new(
+        Edge::attach(staying.0, staying.1, EdgeConfig::default(), None)
+            .await
+            .expect("edge"),
+    );
+    for p in [dying.0, staying.0, &one, &two] {
+        mapped(p).await;
+    }
+    let armed = one.arm().await.expect("arm");
+    let lost = one.grant_lease(dying_part, None).await.expect("lease");
+    let kept = two.grant_lease(staying_part, None).await.expect("lease");
+    for robot in [dying.0, staying.0] {
+        robot
+            .wait_for("both leases", WAIT, |s| {
+                s.lease(dying_part).is_some() && s.lease(staying_part).is_some()
+            })
+            .await
+            .expect("view");
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let tickers = [
+        tick_at_1khz(dying_edge.clone(), stop.clone(), None),
+        tick_at_1khz(staying_edge.clone(), stop.clone(), None),
+    ];
+    let vanish = async {
+        stream(&one, &lost, 1, Duration::from_millis(300), WARMUP).await;
+        one.set_heartbeats_enabled(false);
+        let view = two
+            .wait_for("its lease ends", WAIT, |s| s.lease(dying_part).is_none())
+            .await
+            .expect("lapse");
+        assert_eq!((view.mode, view.epoch), (Mode::Active, armed.epoch));
+        assert!(view.lease(staying_part).is_some());
+    };
+    tokio::join!(
+        stream(&two, &kept, 2, Duration::from_millis(1200), WARMUP),
+        vanish,
+    );
+    let last_driven = staying_edge.tick().mode;
+    stop.store(true, Ordering::Relaxed);
+    for ticker in tickers {
+        ticker.join().expect("ticker");
+    }
+    assert_eq!(last_driven, EdgeMode::Driving);
+    let (lost_stats, kept_stats) = (dying_edge.stats(), staying_edge.stats());
+    assert_eq!(lost_stats.mode(EdgeMode::Safe).entries, 1, "{lost_stats:?}");
+    assert_eq!(lost_stats.safe_reports, 0, "{lost_stats:?}");
+    assert_eq!(kept_stats.mode(EdgeMode::Safe).entries, 0, "{kept_stats:?}");
+    let snapshot = world.host.snapshot();
+    assert_eq!((snapshot.mode, snapshot.epoch), (Mode::Active, armed.epoch));
+    assert_eq!(
+        snapshot.lease(staying_part).map(|l| l.token),
+        Some(kept.token),
+        "never interrupted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_policies_on_two_parts_of_one_robot_lose_one_and_the_other_drives() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    a_vanished_holder_leaves_the_other_driving(&world, (&robot, "cmd"), (&robot, "arm")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_policies_on_two_robots_lose_one_and_the_other_drives() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let other = world
+        .join("other", vec![Role::Embodiment], PriorityClass::Scripted)
+        .await;
+    other.declare_parts(ROBOT).await.expect("declare");
+    a_vanished_holder_leaves_the_other_driving(&world, (&robot, "cmd"), (&other, "cmd")).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn with_the_host_gone_the_edge_falls_back_on_its_own_clock() {
     let world = World::start().await;
@@ -575,7 +688,7 @@ async fn with_the_host_gone_the_edge_falls_back_on_its_own_clock() {
     assert!(after < GRACE + Duration::from_secs(2), "after {after:?}");
     let stats = edge.stats();
     assert_eq!(stats.mode(EdgeMode::Hold).ticks, 0, "no hold: {stats:?}");
-    assert_eq!(stats.safe_reports, 1);
+    assert_eq!(stats.safe_reports, 0, "nobody is left to tell");
     let tick = edge.tick();
     assert_eq!(tick.mode, EdgeMode::Safe);
     assert_eq!(tick.safe_behavior.as_deref(), Some("stop"));

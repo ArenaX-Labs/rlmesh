@@ -189,7 +189,9 @@ impl Gate {
         let held = self.token.load(Ordering::Acquire);
         if held == 0 || token != held {
             return Err(GymError::Refused(format!(
-                "lease token {token} does not hold the robot's commandable parts"
+                "lease token {token} does not hold the robot's commandable parts: this \
+                 driver's lease ended (the host stopped hearing from it) or moved to another, \
+                 so reconnect to drive it again"
             )));
         }
         Ok(())

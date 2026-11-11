@@ -148,9 +148,16 @@ fn the_lease_lapses_by_the_edge_clock_alone_and_the_edge_reports_safe() {
     let tick = f.tick(GRACE + MS);
     assert_eq!(tick.mode, EdgeMode::Safe, "safe at once, no hold");
     assert_eq!(tick.safe_behavior.as_deref(), Some("brake"));
-    let (epoch, cause) = tick.report.expect("a report for the host");
-    assert_eq!((epoch, cause), (f.auth.epoch(), SafeCause::LeaseLapsed));
+    assert!(tick.report.is_none(), "the host may be losing the holder");
     let mut late = f.chunk("policy", &lease, 2, GRACE + 2 * MS, 10);
     late.publish_ns = GRACE + 2 * MS;
     assert_eq!(f.accept(late, GRACE + 2 * MS), Err(Rejection::LeaseExpired));
+    // The host comes back with the holder alive: the fall was the edge's.
+    let epoch = f.auth.epoch();
+    f.auth.heartbeat(&pid("policy"), epoch, 2 * GRACE);
+    f.publish(2 * GRACE);
+    assert_eq!(
+        f.tick(2 * GRACE + MS).report,
+        Some((epoch, SafeCause::LeaseLapsed))
+    );
 }

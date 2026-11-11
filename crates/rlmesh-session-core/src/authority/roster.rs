@@ -1,6 +1,8 @@
 //! Who is in the session: attach generations, presence by heartbeat,
 //! loss, detach and access changes.
 
+use alloc::collections::BTreeMap;
+
 use super::{Authority, AuthorityEvent, DetachReason, DeviceAccess};
 use crate::prelude::*;
 use crate::wire::{
@@ -32,28 +34,31 @@ impl Authority {
         }
     }
 
-    /// Lapses leases whose holder stopped heartbeating (ACTIVE goes SAFE),
-    /// loses participants whose heartbeats lapsed, and ends a virtual run
-    /// whose barrier stalled.
+    /// Lapses leases whose holder stopped heartbeating (only those parts
+    /// stop), loses participants whose heartbeats lapsed, and ends a virtual
+    /// run whose barrier stalled.
     pub fn expire(&mut self, now_ns: i64) -> Vec<AuthorityEvent> {
         self.now_ns = now_ns;
         let mut events = Vec::new();
-        let lapsed: Vec<ChannelId> = self
-            .leases
-            .values()
-            .filter(|lease| now_ns > lease.expires_ns)
-            .map(|lease| lease.channel)
-            .collect();
-        let mut first = None;
-        for channel in &lapsed {
-            if let Some(lease) = self.leases.remove(channel) {
-                let why = self.reason(ReasonCode::HeartbeatLapse, &lease.holder, "");
-                first.get_or_insert_with(|| why.clone());
-                self.end(lease, why, &mut events);
+        let mut lapsed: BTreeMap<ParticipantId, Vec<ChannelId>> = BTreeMap::new();
+        for lease in self.leases.values().filter(|l| now_ns > l.expires_ns) {
+            lapsed
+                .entry(lease.holder.clone())
+                .or_default()
+                .push(lease.channel);
+        }
+        let mut stops_run = None;
+        for (holder, channels) in &lapsed {
+            let why = self.reason(ReasonCode::HeartbeatLapse, holder, "");
+            self.release_holder(holder, channels, &why, &mut events);
+            if self.scene_member(holder) {
+                stops_run.get_or_insert(why);
             }
         }
-        if let Some(why) = first {
-            self.enter_safe(why, &mut events);
+        match (stops_run, lapsed.keys().next()) {
+            (Some(why), _) => self.enter_safe(why, &mut events),
+            (None, Some(holder)) => self.settle_after_release(holder, "holder lapsed", &mut events),
+            (None, None) => {}
         }
         // Never shorter than the lease grace, which a holder may count on.
         let hint = i64::try_from(self.config.lease_grace_ns).unwrap_or(i64::MAX);
@@ -89,8 +94,7 @@ impl Authority {
 
     /// The participant's heartbeats lapsed. Any lease it held ends
     /// (`HOLDER_LOST`); a robot stays in the roster, absent, and the leases
-    /// on its parts end with `ROBOT_LOST`. ACTIVE goes SAFE when a lease
-    /// ended or a robot was lost.
+    /// on its parts end with `ROBOT_LOST`. Everyone else goes on.
     pub fn participant_lost(&mut self, id: &ParticipantId, now_ns: i64) -> Vec<AuthorityEvent> {
         self.now_ns = now_ns;
         let mut events = Vec::new();
@@ -101,21 +105,20 @@ impl Authority {
         events
     }
 
-    /// A participant is gone: any lease it held ends (`HOLDER_LOST`, and an
-    /// ACTIVE session goes SAFE). A robot stays in the roster, absent, while
-    /// its parts remain: the leases on them end with `ROBOT_LOST` and an
-    /// ACTIVE session goes SAFE. Anyone else leaves the roster. Parts and
-    /// bindings stay for a reconnect.
+    /// A participant is gone: any lease it held ends (`HOLDER_LOST`), and
+    /// the session and every other holder go on. A robot stays in the
+    /// roster, absent, while its parts remain: the leases on them end with
+    /// `ROBOT_LOST`. Anyone else leaves the roster. Parts and bindings stay
+    /// for a reconnect. Only a scene's run stops for a lost member: it waits
+    /// for it, SAFE, until an explicit arm.
     pub(super) fn lose(&mut self, id: &ParticipantId, events: &mut Vec<AuthorityEvent>) {
         if !self.is_attached(id) {
             return;
         }
         let in_scene = self.scene_lost(id);
         self.seen.remove(id);
-        let before = events.len();
         let held = self.reason(ReasonCode::HolderLost, id, "");
-        self.end_leases_of(id, &held, events);
-        let lapsed = events.len() > before;
+        let released = self.release_holder(id, &self.held_by(id), &held, events);
         let robot = self.parts.values().any(|p| &p.owner == id);
         events.push(AuthorityEvent::Detached {
             participant: id.clone(),
@@ -145,8 +148,10 @@ impl Authority {
             self.settle_after_release(id, "its robot was lost", events);
         } else {
             self.roster.remove(id);
-            if lapsed {
+            if in_scene && released {
                 self.enter_safe(held, events);
+            } else {
+                self.settle_after_release(id, "holder lost", events);
             }
         }
         // In a scene's run an ARMED session goes SAFE too: once the member is back,
@@ -269,8 +274,7 @@ impl Authority {
     /// ends. A robot's restart is the identity half of an embodiment swap: a
     /// new epoch voids every lease, and ACTIVE becomes ARMED; no other mode
     /// changes, so a restart never stands in for an arm or a clear. Anyone
-    /// else's leases end as a detached holder's, and an ACTIVE session goes
-    /// SAFE.
+    /// else's leases end as a lost holder's: only its parts stop.
     pub(super) fn replace_generation(
         &mut self,
         id: &ParticipantId,
@@ -288,11 +292,8 @@ impl Authority {
                 id,
                 "a new process attached under its id",
             );
-            let before = events.len();
-            self.end_leases_of(id, &why, events);
-            if events.len() > before {
-                self.enter_safe(why, events);
-            }
+            self.release_holder(id, &self.held_by(id), &why, events);
+            self.settle_after_release(id, "a new process replaced the holder", events);
         }
     }
 

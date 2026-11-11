@@ -66,7 +66,7 @@ fn an_attach_requiring_a_missing_feature_is_incompatible() {
 }
 
 #[test]
-fn heartbeats_renew_and_their_absence_lapses_to_safe() {
+fn heartbeats_renew_and_a_lapse_ends_only_that_holders_leases() {
     let mut f = Fixture::new();
     f.run("operator", Command::Arm, 0).expect("arm");
     let a = f.grant("policy", "cmd1", 0).expect("lease");
@@ -80,42 +80,109 @@ fn heartbeats_renew_and_their_absence_lapses_to_safe() {
     f.auth.heartbeat(&pid("policy"), Epoch(1), 200);
     f.auth.heartbeat(&pid("script"), epoch, 200);
     let events = f.auth.expire(251);
-    assert_eq!(f.auth.mode(), Mode::Safe);
+    assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Active, epoch));
     assert!(events.iter().any(|e| matches!(
         e,
         AuthorityEvent::LeaseEnded { lease, reason }
             if lease.token == a.token && reason.code == ReasonCode::HeartbeatLapse
     )));
-    let reason = f.auth.mode_reason();
-    assert_eq!(
-        (reason.code, reason.by.as_str()),
-        (ReasonCode::HeartbeatLapse, "policy")
-    );
-    assert!(f.auth.lease(f.ch("cmd2")).is_none());
-    assert_eq!(
-        Fixture::status(f.grant("policy", "cmd1", 260)),
-        CtlStatus::InvalidTransition
-    );
-    f.run("operator", Command::Arm, 270)
-        .expect("re-arm from SAFE");
-    assert_eq!(f.auth.epoch(), epoch.next());
+    assert!(f.auth.lease(f.ch("cmd1")).is_none());
+    assert!(f.auth.lease(f.ch("cmd2")).is_some());
+    f.auth.heartbeat(&pid("policy"), epoch, 260);
+    f.grant("policy", "cmd1", 260)
+        .expect("no arm needed to lease again");
 }
 
 #[test]
-fn losing_the_holder_goes_safe_and_losing_an_observer_does_not() {
+fn a_lost_holder_stops_only_its_parts_of_one_robot() {
     let mut f = Fixture::new();
     f.run("operator", Command::Arm, 0).expect("arm");
-    f.grant("policy", "cmd1", 0).expect("lease");
-    f.auth.participant_lost(&pid("viewer"), 0);
-    assert_eq!(f.auth.mode(), Mode::Active);
-    f.auth.participant_lost(&pid("policy"), 0);
-    assert_eq!(f.auth.mode(), Mode::Safe);
-    assert_eq!(f.auth.mode_reason().code, ReasonCode::HolderLost);
+    f.grant_with("policy", &["cmd1", "cmd3"], &[], 0)
+        .expect("lease");
+    f.grant("script", "cmd2", 0).expect("lease");
+    let epoch = f.auth.epoch();
+    assert!(f.auth.participant_lost(&pid("viewer"), 0).len() == 1);
+    let events = f.auth.participant_lost(&pid("policy"), 1);
+    assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Active, epoch));
+    assert!(f.auth.lease(f.ch("cmd1")).is_none());
+    assert!(f.auth.lease(f.ch("cmd2")).is_some());
+    assert!(f.auth.held(&pid("robot")).is_none());
     assert!(!f.auth.is_attached(&pid("policy")));
     assert!(
         f.auth.binding(&pid("policy")).is_some(),
         "kept for a reconnect"
     );
+    let told = events
+        .iter()
+        .find(|e| matches!(e, AuthorityEvent::HolderLost { .. }))
+        .expect("the loss is reported");
+    assert_eq!(
+        told.to_string(),
+        "holder policy lost (HOLDER_LOST): released robot:cmd1, robot:cmd3"
+    );
+    // The last holder gone leaves an armed session with no lease.
+    f.auth.participant_lost(&pid("script"), 2);
+    assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Armed, epoch));
+    assert_eq!(f.auth.mode_reason().code, ReasonCode::LastRelease);
+}
+
+#[test]
+fn a_lost_holder_on_one_robot_leaves_another_robot_driving() {
+    let mut f = Fixture::new();
+    f.run(
+        "other",
+        attach("other", vec![Role::Embodiment], PriorityClass::Scripted),
+        0,
+    )
+    .expect("attach");
+    let map = r#"{"wheel": {"kind": "joints", "hz": 500, "count": 6, "fields": ["pos"],
+                  "command": "position"}}"#;
+    f.run("other", declare(map), 0).expect("declare");
+    f.bind("policy", 11, &["cmd1"]).expect("bind");
+    f.bind("script", 12, &["wheel"]).expect("bind");
+    f.run("operator", Command::Arm, 0).expect("arm");
+    f.grant("policy", "cmd1", 0).expect("lease");
+    f.grant("script", "wheel", 0).expect("lease");
+    let epoch = f.auth.epoch();
+    f.auth.participant_lost(&pid("policy"), 1);
+    assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Active, epoch));
+    assert!(f.auth.lease(f.ch("wheel")).is_some());
+    assert!(f.auth.held(&pid("robot")).is_none());
+    assert!(f.auth.held(&pid("other")).is_none());
+}
+
+#[test]
+fn a_replaced_holder_ends_only_its_leases() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 0).expect("arm");
+    f.grant("policy", "cmd1", 0).expect("lease");
+    f.grant("script", "cmd2", 0).expect("lease");
+    let epoch = f.auth.epoch();
+    let restarted = Identity {
+        device: crate::auth::LOCAL_DEVICE.into(),
+        generation: 1,
+    };
+    let applied = f
+        .auth
+        .apply_from(
+            Request {
+                from: pid("policy"),
+                epoch: None,
+                request_id: 0,
+                command: attach("policy", vec![Role::Controller], PriorityClass::Model),
+            },
+            &restarted,
+            1,
+        )
+        .expect("re-attach");
+    assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Active, epoch));
+    assert!(f.auth.lease(f.ch("cmd1")).is_none());
+    assert!(f.auth.lease(f.ch("cmd2")).is_some());
+    assert!(applied.events.iter().any(|e| matches!(
+        e,
+        AuthorityEvent::HolderLost { holder, code: ReasonCode::HolderDetached, parts }
+            if holder == &pid("policy") && parts == &["robot:cmd1"]
+    )));
 }
 
 #[test]

@@ -27,6 +27,9 @@ security fixes) until you can move both sides. Names that 0.1 exported and
   holds the arm/disarm/e-stop state and records every session as MCAP
   (a rolling window, plus kept incidents), which
   `python -m rlmesh.realtime.lerobot` exports as a LeRobot dataset.
+- A lost lease holder stops only the parts it held: its leases end, those
+  parts go to their safe behaviour as after a release, and the session and
+  every other holder go on with no re-arm.
 - Sessions are authenticated and, beyond loopback, encrypted: a Noise IK
   handshake per participant, sealed control and data, and host-signed
   authority state. `rlmesh devices provision | ls | revoke` manages boards,

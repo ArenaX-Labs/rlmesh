@@ -439,10 +439,9 @@ async fn serve_robot(
                 let snapshot = watch.borrow_and_update().clone();
                 let Some(snapshot) = snapshot else { continue };
                 gate.observe(&snapshot, &robot, &commands);
-                // A driver that left (its lease lapsed) puts the session
-                // in SAFE. A lockstep robot then re-arms once, so the next
-                // driver can attach, as a v1 env server serves one Join
-                // session after another. An e-stop stays latched.
+                // A run that went SAFE (its barrier stalled) re-arms once,
+                // so the next driver can attach, as a v1 env server serves
+                // one Join session after another. An e-stop stays latched.
                 let held = snapshot
                     .leases
                     .iter()
@@ -692,9 +691,9 @@ impl Attached {
         // Requested through the holder's lease state machine; the lease ends
         // with the driver's detach.
         let mut group = LeaseGroup::new(participant.id(), &channels, 0);
-        // The robot may be re-arming after the previous driver left (SAFE,
-        // then a fresh epoch): wait for an armed session and retry a verb
-        // that raced the new epoch.
+        // The robot may be re-arming after a stalled run (SAFE, then a
+        // fresh epoch): wait for an armed session and retry a verb that
+        // raced the new epoch.
         let deadline = tokio::time::Instant::now() + timeout;
         // A driver dropped without closing detaches in the background (a
         // binding left, a run ended, a client garbage-collected): its lease

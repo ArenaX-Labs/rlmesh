@@ -5,7 +5,8 @@ use core::fmt;
 
 use crate::prelude::*;
 use crate::wire::{
-    ChannelId, Demand, Epoch, Fingerprint, Lease, Mode, ParticipantId, PriorityClass, Reason, Role,
+    ChannelId, Demand, Epoch, Fingerprint, Lease, Mode, ParticipantId, PriorityClass, Reason,
+    ReasonCode, Role,
 };
 
 /// Why a participant left the roster.
@@ -85,6 +86,16 @@ pub enum AuthorityEvent {
         lease: Lease,
         /// Why.
         reason: Reason,
+    },
+    /// A lease holder went away: the leases it held ended, and nothing else
+    /// stopped for it.
+    HolderLost {
+        /// The holder.
+        holder: ParticipantId,
+        /// How it went (`HOLDER_LOST`, `HEARTBEAT_LAPSE`, `HOLDER_DETACHED`).
+        code: ReasonCode,
+        /// The parts released, each `robot:part`.
+        parts: Vec<String>,
     },
     /// An e-stop latched.
     EstopLatched {
@@ -186,6 +197,15 @@ impl fmt::Display for AuthorityEvent {
                 f,
                 "lease {} of {} token {} ended ({reason})",
                 lease.channel, lease.holder, lease.token
+            ),
+            Self::HolderLost {
+                holder,
+                code,
+                parts,
+            } => write!(
+                f,
+                "holder {holder} lost ({code}): released {}",
+                parts.join(", ")
             ),
             Self::EstopLatched { by, reason } => write!(f, "ESTOP latched by {by}: {reason}"),
             Self::EstopCleared { by } => write!(f, "ESTOP latch cleared by {by}"),

@@ -36,14 +36,15 @@
 //!   lower class's member is preempted. `release` switches members
 //!   atomically.
 //! - Leases have a TTL, renewed by every heartbeat from the holder on the
-//!   current epoch; a lapse while ACTIVE takes the session SAFE.
+//!   current epoch. A holder that lapses, is lost or is replaced loses only
+//!   the leases it held: those parts go to their safe behaviour as after a
+//!   release, and the mode and every other holder go on.
 //! - **Presence** is heartbeats only: a participant silent for
 //!   `presence_grace` is lost. A liveliness put never makes anyone present;
 //!   a delete is only a hint ([`Authority::presence_hint`]) that loses the
 //!   participant unless a heartbeat arrives within `lease_grace` of it. A
 //!   lost robot stays in the roster, absent with `left = ROBOT_LOST`, while
-//!   its parts remain; the leases on them end with `ROBOT_LOST` and an
-//!   ACTIVE session goes SAFE.
+//!   its parts remain; the leases on them end with `ROBOT_LOST`.
 //! - ESTOP is accepted from anyone (refusing an e-stop is never safer) and
 //!   latches; only an embodiment's local clear releases the latch, and then a
 //!   disarm and an arm (a fresh epoch) are needed.

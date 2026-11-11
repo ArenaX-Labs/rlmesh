@@ -573,7 +573,7 @@ async fn a_command_group_holds_one_member_and_switches_atomically() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn heartbeat_loss_lapses_the_lease_and_goes_safe() {
+async fn heartbeat_loss_lapses_the_lease_alone() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world.policy().await;
@@ -588,24 +588,24 @@ async fn heartbeat_loss_lapses_the_lease_and_goes_safe() {
     let stopped = Instant::now();
     policy.set_heartbeats_enabled(false);
     let view = robot
-        .wait_for("SAFE after lapse", WAIT, |s| s.mode == Mode::Safe)
+        .wait_for("the lease lapses", WAIT, |s| s.leases.is_empty())
         .await
-        .expect("safe");
+        .expect("lapse");
     let elapsed = stopped.elapsed();
-    assert!(view.leases.is_empty());
+    assert_eq!(view.mode, Mode::Armed);
     assert!(elapsed >= GRACE - Duration::from_millis(30), "{elapsed:?}");
     assert!(elapsed < GRACE * 3, "lapse took {elapsed:?}");
 
-    // Still present: only its heartbeats stopped. Re-arming is a fresh epoch.
+    // Still present: only its heartbeats stopped. It leases again without
+    // an arm, under a fresh token.
     assert!(view.participant(policy.id()).is_some());
     policy.set_heartbeats_enabled(true);
-    let armed = policy.arm().await.expect("re-arm");
-    assert_eq!(armed.epoch, view.epoch.next());
-    assert!(armed.check_fence(arm, lease.token, view.epoch).is_err());
+    let again = policy.grant_lease(arm, None).await.expect("grant");
+    assert_ne!(again.token, lease.token);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_vanished_holder_takes_the_session_safe() {
+async fn a_vanished_holder_ends_its_lease_alone() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world.policy().await;
@@ -619,21 +619,23 @@ async fn a_vanished_holder_takes_the_session_safe() {
     drop(policy);
     transport.close().await.expect("close");
     let view = robot
-        .wait_for("SAFE and the holder gone", WAIT, |s| {
-            s.mode == Mode::Safe && s.participant(&id).is_none()
+        .wait_for("the holder gone", WAIT, |s| {
+            s.leases.is_empty() && s.participant(&id).is_none()
         })
         .await
-        .expect("safe");
+        .expect("gone");
+    assert_eq!(view.mode, Mode::Armed);
     // Its lease lapses, or it is lost first: heartbeats decide, either way.
+    let ended = view.ended.last().expect("its lease ended");
     assert!(
         matches!(
-            view.mode_reason.code,
+            ended.reason.code,
             ReasonCode::HeartbeatLapse | ReasonCode::HolderLost
         ),
         "{}",
-        view.mode_reason
+        ended.reason
     );
-    tracing::info!("holder loss to SAFE in {:?}", gone.elapsed());
+    tracing::info!("holder loss in {:?}", gone.elapsed());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1913,8 +1915,8 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
         CtlStatus::Expired
     );
 
-    // A controller's new process: the old one's lease ends as a detached
-    // holder's (ACTIVE goes SAFE), and the old process is no longer heard.
+    // A controller's new process: the old one's lease ends, nothing else
+    // stops for it, and the old process is no longer heard.
     policy
         .wait_for("the armed epoch", WAIT, |s| s.epoch == first.state.epoch)
         .await
@@ -1933,7 +1935,7 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     assert!(restarted.generation > old);
     let reply = restarted.call(1, attach("policy", Role::Controller)).await;
     reply.result.expect("attached");
-    assert_eq!(reply.state.mode, Mode::Safe);
+    assert_eq!(reply.state.mode, Mode::Armed);
     assert!(
         reply.state.ended.iter().any(|e| {
             e.lease.token == lease.token && e.reason.code == ReasonCode::HolderDetached

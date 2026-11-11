@@ -354,17 +354,49 @@ impl Authority {
         reason: &Reason,
         events: &mut Vec<AuthorityEvent>,
     ) {
-        let channels: Vec<ChannelId> = self
-            .leases
-            .values()
-            .filter(|lease| &lease.holder == id)
-            .map(|lease| lease.channel)
-            .collect();
-        for channel in channels {
+        for channel in self.held_by(id) {
             if let Some(lease) = self.leases.remove(&channel) {
                 self.end(lease, reason.clone(), events);
             }
         }
+    }
+
+    /// `holder` went away: the leases on `channels` end with `why`, and
+    /// their edges park the parts as after a release. Says whether any did.
+    pub(super) fn release_holder(
+        &mut self,
+        holder: &ParticipantId,
+        channels: &[ChannelId],
+        why: &Reason,
+        events: &mut Vec<AuthorityEvent>,
+    ) -> bool {
+        let mut parts = Vec::with_capacity(channels.len());
+        for channel in channels {
+            if let Some(lease) = self.leases.remove(channel) {
+                if let Some(part) = self.parts.get(channel) {
+                    parts.push(format!("{}:{}", part.owner, part.path.as_str()));
+                }
+                self.end(lease, why.clone(), events);
+            }
+        }
+        let released = !parts.is_empty();
+        if released {
+            events.push(AuthorityEvent::HolderLost {
+                holder: holder.clone(),
+                code: why.code,
+                parts,
+            });
+        }
+        released
+    }
+
+    /// The parts `holder` holds a lease on.
+    pub(super) fn held_by(&self, holder: &ParticipantId) -> Vec<ChannelId> {
+        self.leases
+            .values()
+            .filter(|lease| &lease.holder == holder)
+            .map(|lease| lease.channel)
+            .collect()
     }
 
     /// Ends every lease with `code`, carrying who and why from `cause`.

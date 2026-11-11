@@ -366,9 +366,10 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
     let refused = frame_with(&mut control, frame::REPLY).await;
     assert!(codec::decode_reply(&refused[5..]).unwrap().result.is_err());
 
-    // Without heartbeats the host lapses the lease (2 s ttl) and goes SAFE.
+    // Without heartbeats the host lapses the lease (2 s ttl), and nothing
+    // else stops for it.
     let lapsed = state_until(&mut control, |s| s.lease(arm).is_none()).await;
-    assert_eq!(lapsed.mode, Mode::Safe);
+    assert_eq!(lapsed.mode, Mode::Armed);
 
     // Dropping the connection drops the participant.
     drop(control);

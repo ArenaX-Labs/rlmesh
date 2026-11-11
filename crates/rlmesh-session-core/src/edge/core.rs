@@ -58,7 +58,9 @@ use bytes::Bytes;
 
 use crate::edge::GroupError;
 use crate::edge::command::CommandCheck;
-use crate::edge::fallback::{Fallback, LeaseView, MemberLadder, ModeStats, SafeCause, TickView};
+use crate::edge::fallback::{
+    Decision, Fallback, LeaseView, MemberLadder, ModeStats, SafeCause, TickView,
+};
 use crate::edge::queue::{
     ActionQueue, ChunkMeta, Delivery, QueueStats, QueuedAction, Splice, SpliceOutcome,
 };
@@ -297,8 +299,24 @@ pub struct EdgeCore {
     accepted: u64,
     rejected: [u64; Rejection::ALL.len()],
     safe_reports: u64,
+    /// A fall not reported yet, waiting to see whether its holder is alive.
+    unjudged: Option<Unjudged>,
     clamped: u64,
     handovers: u64,
+}
+
+/// A dry queue or a lapsed lease is what a dead holder looks like from here,
+/// and the edge sees it before the host does. The group is safe either way;
+/// only the report waits. A renewal from after the fall means the holder is
+/// alive, so the fall is the robot's to report; the lease going away means
+/// the host judged the holder lost, and only its parts stop.
+#[derive(Clone, Copy, Debug)]
+struct Unjudged {
+    epoch: Epoch,
+    cause: SafeCause,
+    token: LeaseToken,
+    /// An expiry at or past this came from a heartbeat after the fall.
+    renewed_by_ns: i64,
 }
 
 impl EdgeCore {
@@ -371,6 +389,7 @@ impl EdgeCore {
             accepted: 0,
             rejected: [0; Rejection::ALL.len()],
             safe_reports: 0,
+            unjudged: None,
             clamped: 0,
             handovers: 0,
         })
@@ -643,11 +662,7 @@ impl EdgeCore {
             reason: v.mode_reason(),
         });
         let decision = self.fallback.tick(now_ns, tick_view, &mut self.queues);
-        let report = decision
-            .went_safe
-            .filter(|cause| cause.needs_report())
-            .zip(tick_view)
-            .map(|(cause, v)| (v.epoch, cause));
+        let report = self.judge_fall(now_ns, &decision, tick_view, view);
         if report.is_some() {
             self.safe_reports += 1;
         }
@@ -708,6 +723,45 @@ impl EdgeCore {
             handover,
             applied,
         }
+    }
+
+    /// What to tell the host this tick about the group's fall, if anything.
+    fn judge_fall<V: AuthorityView + ?Sized>(
+        &mut self,
+        now_ns: i64,
+        decision: &Decision,
+        tick_view: Option<TickView>,
+        view: Option<&V>,
+    ) -> Option<(Epoch, SafeCause)> {
+        let tick_view = tick_view?;
+        if let Some(cause) = decision.went_safe.filter(|c| c.needs_report()) {
+            let lease = tick_view
+                .lease
+                .filter(|_| matches!(cause, SafeCause::QueueDry | SafeCause::LeaseLapsed));
+            let Some(lease) = lease else {
+                return Some((tick_view.epoch, cause));
+            };
+            let ttl = decision
+                .member
+                .and_then(|i| view?.lease(self.members[i].part.channel))
+                .map_or(0, |l| l.ttl_ns);
+            self.unjudged = Some(Unjudged {
+                epoch: tick_view.epoch,
+                cause,
+                token: lease.token,
+                renewed_by_ns: now_ns.saturating_add_unsigned(ttl),
+            });
+        }
+        let fall = self.unjudged?;
+        let Some(lease) = tick_view.lease.filter(|l| l.token == fall.token) else {
+            self.unjudged = None;
+            return None;
+        };
+        if lease.expires_ns.is_some_and(|e| e < fall.renewed_by_ns) {
+            return None;
+        }
+        self.unjudged = None;
+        Some((fall.epoch, fall.cause))
     }
 
     /// The counters so far.
