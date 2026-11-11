@@ -67,6 +67,7 @@ impl Authority {
                 );
             }
             Command::Arm => self.on_arm(from, sender, now_ns, &mut applied)?,
+            Command::Rearm { robot } => self.on_rearm(from, robot, sender, &mut applied)?,
             Command::Disarm => self.on_disarm(from, sender, &mut applied)?,
             // The host checked `board_id` against the robot's pin before
             // (`HostAuth::check_board`).
@@ -343,21 +344,60 @@ impl Authority {
                     "leaving ESTOP needs a disarm before arm",
                 ));
             }
-            // Re-arms the robots stopped on their own; the others
-            // and their leases are untouched.
-            Mode::Armed | Mode::Active if !self.held.is_empty() => {
-                self.held.clear();
+            Mode::Armed | Mode::Active => {}
+        }
+        Ok(())
+    }
+
+    fn on_rearm(
+        &mut self,
+        from: ParticipantId,
+        robot: ParticipantId,
+        sender: &Identity,
+        applied: &mut Applied,
+    ) -> Result<(), CtlError> {
+        self.require_attached(&from)?;
+        self.config.access.check_verb(&sender.device, Verb::Arm)?;
+        self.scene_arm_ready()?;
+        match self.mode {
+            Mode::Armed | Mode::Active => {}
+            Mode::Estop if self.estop_latched => {
+                return Err(CtlError::new(
+                    CtlStatus::EstopLatched,
+                    format!("e-stop is latched: clear it, disarm and arm before re-arming {robot}"),
+                ));
             }
-            Mode::Armed | Mode::Active => {
+            mode => {
                 return Err(CtlError::new(
                     CtlStatus::InvalidTransition,
-                    format!("already {}", self.mode),
+                    format!("session is {mode}; arm it first, then re-arm {robot}"),
                 ));
             }
         }
-        if matches!(self.mode, Mode::Armed) {
-            self.held.clear();
+        let Some(info) = self
+            .roster
+            .get(&robot)
+            .filter(|p| p.has_role(Role::Embodiment))
+        else {
+            return Err(CtlError::new(
+                CtlStatus::InvalidRequest,
+                format!("{robot} is not a robot in this session"),
+            ));
+        };
+        if !self.held.contains_key(&robot) {
+            return Ok(());
         }
+        // Acknowledged while gone, it would drive the moment it came back.
+        if !info.present {
+            return Err(CtlError::new(
+                CtlStatus::NotReady,
+                format!("{robot} is not present: re-arm it once it is back"),
+            ));
+        }
+        self.held.remove(&robot);
+        applied
+            .events
+            .push(AuthorityEvent::RobotRearmed { robot, by: from });
         Ok(())
     }
 
@@ -472,11 +512,12 @@ impl Authority {
         }
         let why = self.reason(code, &from, &reason);
         match self.mode {
-            // Only this robot stops: its leases end, and it waits
-            // for an arm (unless robots re-arm on their own). The
-            // session and the other robots go on.
+            // Only this robot stops: its leases end, and it waits to
+            // be re-armed by name (unless robots re-arm on their own).
+            // The session and the other robots go on.
             Mode::Active | Mode::Armed | Mode::Disarmed => {
                 self.stop_robot(&from, ReasonCode::VoidedBySafe, &why, &mut applied.events);
+                self.hold(&from, why);
                 self.settle_after_release(&from, "its robot went safe", &mut applied.events);
             }
             Mode::Safe | Mode::Estop => {

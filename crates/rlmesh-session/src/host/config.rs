@@ -94,8 +94,8 @@ pub struct HostConfig {
     pub pins: BTreeMap<ParticipantId, Pin>,
     /// Whether a robot that went safe, restarted or came back from a loss
     /// may be leased again at once ([`AuthorityConfig::rearm_robots`]).
-    /// Off by default: it waits for the next arm. Other robots never stop
-    /// for it either way.
+    /// Off by default: it waits to be re-armed by name. Other robots never
+    /// stop for it either way.
     pub rearm_robots: bool,
     /// Where each placed robot's parts appear in the session's view: one binding drives
     /// every placed robot. Empty by default:

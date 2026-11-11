@@ -774,10 +774,14 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
     .await;
     drop(first);
     let back = Instant::now();
-    // It waits for an arm (robots don't re-arm on their own by default).
-    current(&one)
+    // It waits to be re-armed by name (robots don't re-arm on their own by
+    // default); a routine arm is not one.
+    let driver = current(&one);
+    driver.participant().arm().await.expect("a no-op");
+    let eye_two = current(&two).participant().id().clone();
+    driver
         .participant()
-        .arm()
+        .rearm(&eye_two)
         .await
         .expect("re-arm eye 2");
     wait_until("eye 2 driven again", || driven_since(&log_two, 0.25, back)).await;

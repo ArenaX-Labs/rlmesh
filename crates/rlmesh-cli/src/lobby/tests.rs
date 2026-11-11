@@ -530,6 +530,21 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
     assert_eq!(state.stage, RunStage::Running);
     holding(&pilot).await;
     let robot = restarted;
+    // Armed again by a routine script: nothing happens.
+    let state = client.arm(&state.run).await.expect("a no-op");
+    assert_eq!(state.stage, RunStage::Running);
+    // Re-arming goes to the run's own host: a robot not held is left as it
+    // is, and only a robot in the run can be named.
+    let id = |name| ParticipantId::new(name).expect("id");
+    client
+        .rearm(&state.run, &id("arm"))
+        .await
+        .expect("not held: a no-op");
+    let err = client
+        .rearm(&state.run, &id("ghost"))
+        .await
+        .expect_err("unknown");
+    assert!(err.to_string().contains("ghost"), "{err}");
 
     client.stop(&state.run).await.expect("stop");
     // This process stopped the run: the policy's run returns.

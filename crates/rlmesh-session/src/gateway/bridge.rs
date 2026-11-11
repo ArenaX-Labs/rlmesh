@@ -668,6 +668,11 @@ impl BrowserLink {
                     .map(|_| Vec::new())
                     .map_err(|e| refusal(&e)),
                 Command::Arm => p.arm().await.map(|_| Vec::new()).map_err(|e| refusal(&e)),
+                Command::Rearm { robot } => p
+                    .rearm(&robot)
+                    .await
+                    .map(|_| Vec::new())
+                    .map_err(|e| refusal(&e)),
                 Command::Disarm => p
                     .disarm()
                     .await

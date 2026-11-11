@@ -434,10 +434,7 @@ impl Driver {
                 Some(command) = self.inbox.recv() => match command {
                     RunCommand::End(outcome) => return Some(outcome),
                     RunCommand::Arm { answer } => {
-                        let _ = answer.send(Err(refused(
-                            CtlStatus::InvalidTransition,
-                            format!("run {} is already running", self.id),
-                        )));
+                        let _ = answer.send(Ok(LobbyReply::Run(self.state())));
                     }
                 },
             }

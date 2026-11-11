@@ -87,8 +87,10 @@ impl Authority {
                 return Err(CtlError::new(
                     CtlStatus::NotReady,
                     format!(
-                        "{} stopped on its own ({}): arm to drive it again",
-                        part.owner, why.code
+                        "{} stopped on its own ({}): {}",
+                        part.owner,
+                        why.code,
+                        self.rearm_hint(&part.owner)
                     ),
                 ));
             }

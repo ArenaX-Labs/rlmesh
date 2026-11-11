@@ -141,10 +141,6 @@ impl Authority {
                 info.present = false;
                 info.left = Some(why.clone());
             }
-            // Only this robot stops; it is re-armed once it is back.
-            if !self.config.rearm_robots {
-                self.held.insert(id.clone(), why);
-            }
             self.settle_after_release(id, "its robot was lost", events);
         } else {
             self.roster.remove(id);
@@ -165,6 +161,12 @@ impl Authority {
             };
             let why = self.reason(code, id, "");
             self.set_mode(Mode::Safe, why, events);
+        }
+        // Lost from a stopped session, nothing was driving it: the arm
+        // that starts the session again is all it needs.
+        if robot && matches!(self.mode, Mode::Armed | Mode::Active) {
+            let why = self.reason(ReasonCode::RobotLost, id, "");
+            self.hold(id, why);
         }
         self.needed.retain(|(p, _), _| p != id);
         self.recompute_demands(events);
@@ -282,9 +284,13 @@ impl Authority {
     ) {
         if self.parts.values().any(|p| &p.owner == id) {
             // Its new process may be another embodiment: its own leases end
-            // and it waits for an arm. Every other robot goes on.
+            // and, in an armed session, it waits to be re-armed by name.
+            // Every other robot goes on.
             let why = self.reason(ReasonCode::VoidedByEpoch, id, "the robot restarted");
             self.stop_robot(id, ReasonCode::VoidedByEpoch, &why, events);
+            if matches!(self.mode, Mode::Armed | Mode::Active) {
+                self.hold(id, why);
+            }
             self.settle_after_release(id, "its robot restarted", events);
         } else {
             let why = self.reason(

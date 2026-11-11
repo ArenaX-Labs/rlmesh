@@ -108,15 +108,15 @@ impl Authority {
                 }
             })
             .collect::<Result<_, _>>()?;
-        // New commands in an armed session wait for an arm, unless robots
-        // re-arm on their own.
-        if armed && commands && !self.config.rearm_robots {
+        // New commands in an armed session wait to be re-armed by name,
+        // unless robots re-arm on their own.
+        if armed && commands {
             let why = self.reason(
                 ReasonCode::Unspecified,
                 from,
                 "declared commandable parts while armed",
             );
-            self.held.insert(from.clone(), why);
+            self.hold(from, why);
         }
         // Validated: mutate.
         let mut added = Vec::with_capacity(fresh.len());

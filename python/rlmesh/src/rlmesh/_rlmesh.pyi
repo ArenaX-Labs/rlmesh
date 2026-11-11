@@ -1208,7 +1208,13 @@ class V2Robot:
         """
     def arm(self) -> None:
         r"""
-        DISARMED or SAFE to ARMED, in a fresh epoch.
+        DISARMED or SAFE to ARMED, in a fresh epoch; nothing when already
+        armed. It clears no robot's hold.
+        """
+    def rearm(self, robot: builtins.str) -> None:
+        r"""
+        Lets `robot`, stopped on its own, take leases again, in a session
+        already armed.
         """
     def disarm(self) -> None:
         r"""

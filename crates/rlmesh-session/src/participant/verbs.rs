@@ -39,9 +39,20 @@ impl Participant {
         self.shared.send_heartbeat(heartbeat.clone(), false).await
     }
 
-    /// DISARMED or SAFE to ARMED, in a fresh epoch.
+    /// DISARMED or SAFE to ARMED, in a fresh epoch; nothing when already
+    /// armed. It clears no robot's hold: see [`Self::rearm`].
     pub async fn arm(&self) -> Result<AuthoritySnapshot, SessionError> {
         Ok(self.shared.ctl(Command::Arm).await?.0)
+    }
+
+    /// Lets `robot`, stopped on its own (a fault, a restart, or commandable
+    /// parts declared while armed), take leases again. The session must be
+    /// armed; a robot that is not held is left as it is.
+    pub async fn rearm(&self, robot: &ParticipantId) -> Result<AuthoritySnapshot, SessionError> {
+        let command = Command::Rearm {
+            robot: robot.clone(),
+        };
+        Ok(self.shared.ctl(command).await?.0)
     }
 
     /// Back to DISARMED.

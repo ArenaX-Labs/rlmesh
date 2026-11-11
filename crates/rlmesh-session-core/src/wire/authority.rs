@@ -623,8 +623,15 @@ pub enum Command {
     },
     /// Leave, releasing leases and removing owned parts.
     Detach,
-    /// DISARMED or SAFE to ARMED, in a fresh epoch.
+    /// DISARMED or SAFE to ARMED, in a fresh epoch; nothing when already
+    /// armed. It clears no robot's hold.
     Arm,
+    /// Clears one robot's hold, in a session already armed. On the wire,
+    /// an `Arm` naming the robot.
+    Rearm {
+        /// The robot.
+        robot: ParticipantId,
+    },
     /// Back to DISARMED, revoking every lease.
     Disarm,
     /// An embodiment's robot map, as authored JSON; the host normalises it.

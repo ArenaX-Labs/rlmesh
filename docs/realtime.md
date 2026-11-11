@@ -42,7 +42,7 @@ key, and the devices it admits in `devices.toml`) in its state directory,
 so boards provisioned once stay valid across restarts. The two graces
 are raised for Wi-Fi, where a board can go quiet for a moment.
 `--rearm-robots` drives a robot again as soon as it rejoins; without it a
-returning robot waits for the next arm. See the [CLI
+returning robot waits to be re-armed by name. See the [CLI
 reference](reference/cli.md) for every flag.
 
 Programs on the PC join it by name: `session=""` is this machine's host,
@@ -154,11 +154,16 @@ chunk comes.
 
 The eyes move only while the session is armed: press **Arm** in the
 cockpit (next section), or call `camera.arm()` from a robot's program.
+Arming an armed session does nothing, so any script may call it.
 
 **When an eye drops off** (Wi-Fi, a brown-out, a reboot), the host stops
 that eye alone: its lease ends, the other eye keeps tracking, and the
 policy keeps running. When the board is back it rejoins with its key and,
-under `--rearm-robots`, is driven again at once.
+under `--rearm-robots`, is driven again at once. Without the flag it stays
+held until you say so by name, from any robot's program:
+`camera.rearm("eye-1")` (in a scene, `rlmesh scene arm RUN eye-1`). A held
+robot stays held across a disarm or a session-wide SAFE: `arm()` never
+clears it.
 
 **When a policy drops off** (a crash, a lost link, or a new process
 joining under its name), the host ends only the leases it held. Those

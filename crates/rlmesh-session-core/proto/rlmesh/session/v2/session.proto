@@ -654,7 +654,11 @@ message LocalEstop {
 
 message Detach {}
 
-message Arm {}
+message Arm {
+  // Empty: arm the session. A robot's name: clear that robot's hold, in a
+  // session already armed.
+  string robot = 1;
+}
 
 message Disarm {}
 

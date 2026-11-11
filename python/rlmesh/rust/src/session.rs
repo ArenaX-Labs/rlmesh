@@ -28,7 +28,7 @@ use rlmesh_session::record::{RecordError, Recorder};
 use rlmesh_session::sdk::{self, BindOptions, BindPolicyError, EmbeddedHost, ErrorKind};
 use rlmesh_session::spec::BindError;
 use rlmesh_session::spec::apply::{Tensor, Value};
-use rlmesh_session::wire::{PartSpec, PriorityClass, ReasonCode};
+use rlmesh_session::wire::{PartSpec, ParticipantId, PriorityClass, ReasonCode};
 use rlmesh_session::{
     Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
     SendError, Sent, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
@@ -712,13 +712,29 @@ impl PyRobot {
         self.robot()?.handover_done(path).map_err(session_err)
     }
 
-    /// DISARMED or SAFE to ARMED, in a fresh epoch.
+    /// DISARMED or SAFE to ARMED, in a fresh epoch; nothing when already
+    /// armed. It clears no robot's hold.
     fn arm(&self, py: Python<'_>) -> PyResult<()> {
         let robot = self.robot()?;
         block_on(py, async move {
             robot
                 .participant()
                 .arm()
+                .await
+                .map(|_| ())
+                .map_err(session_err)
+        })
+    }
+
+    /// Lets `robot`, stopped on its own, take leases again, in a session
+    /// already armed.
+    fn rearm(&self, py: Python<'_>, robot: &str) -> PyResult<()> {
+        let id = ParticipantId::new(robot).map_err(|err| session_err(SessionError::from(err)))?;
+        let handle = self.robot()?;
+        block_on(py, async move {
+            handle
+                .participant()
+                .rearm(&id)
                 .await
                 .map(|_| ())
                 .map_err(session_err)
@@ -976,6 +992,14 @@ impl PyScene {
     #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
     fn arm<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let state = block_on(py, self.with(async |s| s.arm().await))?;
+        run_state(py, &state)
+    }
+
+    /// Re-arms `robot` in the run; its state.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn rearm<'py>(&self, py: Python<'py>, robot: &str) -> PyResult<Bound<'py, PyDict>> {
+        let id = ParticipantId::new(robot).map_err(|err| session_err(SessionError::from(err)))?;
+        let state = block_on(py, self.with(async move |s| s.rearm(&id).await))?;
         run_state(py, &state)
     }
 

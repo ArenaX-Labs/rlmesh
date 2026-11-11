@@ -419,7 +419,6 @@ async fn serve_robot(
         .collect();
     let snapshot = match participant.arm().await {
         Ok(snapshot) => snapshot,
-        // Already armed (a session another participant armed).
         Err(err) => {
             warn!(%err, "lockstep robot: arm refused; serving the current mode");
             participant.fetch_authority().await?

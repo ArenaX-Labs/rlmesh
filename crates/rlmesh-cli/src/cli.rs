@@ -515,7 +515,7 @@ pub struct HostArgs {
     #[arg(long, value_name = "DURATION", value_parser = duration)]
     pub lease_grace: Option<std::time::Duration>,
     /// A robot that went safe, restarted or came back from a loss is driven
-    /// again at once, instead of waiting for the next arm. Other robots
+    /// again at once, instead of waiting to be re-armed by name. Other robots
     /// never stop for one either way.
     #[arg(long)]
     pub rearm_robots: bool,
@@ -710,8 +710,8 @@ pub enum SceneCommand {
     /// Stop a run.
     Stop(RunIdArgs),
     /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
-    /// lost member rejoined).
-    Arm(RunIdArgs),
+    /// lost member rejoined), or re-arm one robot of a running run.
+    Arm(ArmArgs),
 }
 
 #[cfg(feature = "fleet")]
@@ -740,11 +740,25 @@ pub struct RunArgs {
 }
 
 #[cfg(feature = "fleet")]
-/// Flags for `rlmesh scene stop` and `rlmesh scene arm`.
+/// Flags for `rlmesh scene stop`.
 #[derive(Args, Debug)]
 pub struct RunIdArgs {
     /// The run (`r-7k2m`), as `rlmesh scene run` printed it.
     pub run: String,
+    #[command(flatten)]
+    pub home: HomeArgs,
+}
+
+#[cfg(feature = "fleet")]
+/// Flags for `rlmesh scene arm`.
+#[derive(Args, Debug)]
+pub struct ArmArgs {
+    /// The run (`r-7k2m`), as `rlmesh scene run` printed it.
+    pub run: String,
+    /// Re-arm this robot alone: it stopped on its own (a fault, a restart)
+    /// and the run went on without it.
+    #[arg(value_name = "ROBOT")]
+    pub robot: Option<String>,
     #[command(flatten)]
     pub home: HomeArgs,
 }

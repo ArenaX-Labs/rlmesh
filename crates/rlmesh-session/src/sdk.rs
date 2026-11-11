@@ -607,6 +607,14 @@ impl SceneRun {
         self.client.arm(&self.run).await
     }
 
+    /// Re-arms `robot` in the run: see [`LobbyClient::rearm`].
+    ///
+    /// # Errors
+    /// The re-arm's refusal, or what the call failed with.
+    pub async fn rearm(&self, robot: &ParticipantId) -> Result<RunState, SessionError> {
+        self.client.rearm(&self.run, robot).await
+    }
+
     /// Stops the run and waits up to `timeout` for it to end.
     ///
     /// # Errors

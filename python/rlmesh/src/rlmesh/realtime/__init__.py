@@ -357,7 +357,7 @@ class Robot:
 
     When the host drops the robot (a network gap past its presence grace)
     it joins again on its own; meanwhile its edge holds, then goes safe.
-    The host has it wait for an arm unless ``rlmesh host --rearm-robots``.
+    The host has it wait for :meth:`rearm` unless ``rlmesh host --rearm-robots``.
     """
 
     def __init__(
@@ -533,8 +533,21 @@ class Robot:
         return due
 
     def arm(self) -> None:
-        """DISARMED or SAFE to ARMED, in a fresh epoch."""
+        """DISARMED or SAFE to ARMED, in a fresh epoch; nothing when already armed.
+
+        It clears no robot's hold: see :meth:`rearm`.
+        """
         self._native.arm()
+
+    def rearm(self, robot: str) -> None:
+        """Let ``robot``, stopped on its own, take leases again.
+
+        A robot that faulted, restarted or declared commandable parts while
+        the session was armed is held until it is re-armed by name. The
+        session must already be armed; a robot that is not held is left as
+        it is.
+        """
+        self._native.rearm(robot)
 
     def disarm(self) -> None:
         """Back to DISARMED."""

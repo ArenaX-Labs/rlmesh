@@ -76,8 +76,7 @@ impl Authority {
     }
 
     /// Ends every lease on `robot`'s parts (`code`, carrying who and why
-    /// from `cause`) and, unless robots re-arm on their own, holds it until
-    /// the next `Arm`.
+    /// from `cause`).
     pub(super) fn stop_robot(
         &mut self,
         robot: &ParticipantId,
@@ -100,8 +99,24 @@ impl Authority {
                 self.end(lease, why, events);
             }
         }
+    }
+
+    /// `robot` takes no lease until it is re-armed by name, unless robots
+    /// re-arm on their own.
+    pub(super) fn hold(&mut self, robot: &ParticipantId, why: Reason) {
         if !self.config.rearm_robots {
-            self.held.insert(robot.clone(), cause.clone());
+            self.held.insert(robot.clone(), why);
+        }
+    }
+
+    /// How to re-arm `robot`, for the refusal of a lease on it.
+    pub(super) fn rearm_hint(&self, robot: &ParticipantId) -> String {
+        match self.scene_run() {
+            Some(run) => format!(
+                "run `rlmesh scene arm {run} {robot}` or call robot.rearm(\"{robot}\") to drive \
+                 it again"
+            ),
+            None => format!("call robot.rearm(\"{robot}\") to drive it again"),
         }
     }
 

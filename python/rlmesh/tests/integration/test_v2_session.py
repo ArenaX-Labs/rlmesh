@@ -997,6 +997,43 @@ def test_one_policy_bound_with_no_robot_drives_two_robots(host: rlmesh.Host) -> 
             eye.close()
 
 
+def test_a_robot_held_in_an_armed_session_needs_a_rearm_by_name(
+    host: rlmesh.Host,
+) -> None:
+    first = rlmesh.Robot("eye-1", EYE, session=host)
+    late = None
+    try:
+        with pytest.raises(rlmesh.SessionRefused, match="arm it first"):
+            first.rearm("eye-1")
+        first.arm()
+        first.arm()
+        with pytest.raises(rlmesh.SessionRefused, match="ghost") as unknown:
+            first.rearm("ghost")
+        assert unknown.value.status == "INVALID_REQUEST"
+        first.rearm("eye-1")
+        # A robot declaring commandable parts in an armed session is held.
+        late = rlmesh.Robot("eye-2", EYE, session=host)
+        actions = {"two": EYES["actions"]["two"]}
+        with rlmesh.Policy(
+            {**EYES, "actions": actions}, session=host, name="tracker"
+        ) as policy:
+            policy.bind()
+            with pytest.raises(
+                rlmesh.SessionRefused, match=r'robot\.rearm\("eye-2"\)'
+            ) as held:
+                policy.acquire()
+            assert held.value.status == "NOT_READY"
+            first.arm()
+            with pytest.raises(rlmesh.SessionRefused, match="eye-2"):
+                policy.acquire()
+            first.rearm("eye-2")
+            wait_until("every lease", lambda: bool(policy.acquire()))
+    finally:
+        first.close()
+        if late is not None:
+            late.close()
+
+
 _STALLED_ROBOT = """
 import threading
 

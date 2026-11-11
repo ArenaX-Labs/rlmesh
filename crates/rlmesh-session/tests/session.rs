@@ -1896,19 +1896,17 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     let arm = channel(&policy, "arm");
 
     // A retry keeps its request id and takes a fresh seq: the host answers
-    // it from its reply cache (a second Arm would be refused: already
-    // ARMED). Below the window, an id is never applied.
+    // it from its reply cache (applied again, this Arm would arm the
+    // disarmed session). Below the window, an id is never applied.
     let mut twin = world.raw("twin", Role::Observer).await;
     let first = twin.call(2, Command::Arm).await;
     assert!(first.result.is_ok());
+    assert!(twin.call(3, Command::Disarm).await.result.is_ok());
     let retried = twin.call(2, Command::Arm).await;
     assert_eq!(retried, first, "the cached reply, sealed afresh");
-    assert_eq!(world.host.snapshot().epoch, first.state.epoch);
-    let refused = twin.call(70, Command::Arm).await;
-    assert_eq!(
-        refused.result.expect_err("armed").status,
-        CtlStatus::InvalidTransition
-    );
+    assert_eq!(world.host.snapshot().mode, Mode::Disarmed);
+    let first = twin.call(70, Command::Arm).await;
+    assert!(first.result.is_ok());
     let expired = twin.call(2, Command::Arm).await;
     assert_eq!(
         expired.result.expect_err("expired").status,

@@ -30,6 +30,10 @@ security fixes) until you can move both sides. Names that 0.1 exported and
 - A lost lease holder stops only the parts it held: its leases end, those
   parts go to their safe behaviour as after a release, and the session and
   every other holder go on with no re-arm.
+- `arm()` on an armed session is a no-op and clears no robot's hold; a
+  robot stopped on its own (a fault, a restart, or commandable parts
+  declared while armed) is re-armed by name with `rearm(robot)` or
+  `rlmesh scene arm RUN ROBOT`.
 - Sessions are authenticated and, beyond loopback, encrypted: a Noise IK
   handshake per participant, sealed control and data, and host-signed
   authority state. `rlmesh devices provision | ls | revoke` manages boards,

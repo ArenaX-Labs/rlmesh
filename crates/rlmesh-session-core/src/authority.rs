@@ -52,8 +52,8 @@
 //!   [`Reason`] (`mode_reason`), every lease ending goes into a bounded ring
 //!   of [`LeaseEnd`]s, and `last_stop` marks the last entry into SAFE,
 //!   DISARMED or ESTOP, so clients never infer why. An embodiment's
-//!   `EnterSafe` takes ACTIVE, ARMED and DISARMED to SAFE; SAFE and ESTOP
-//!   stay and record its reason.
+//!   `EnterSafe` ends that robot's leases and holds it until a `Rearm` names
+//!   it; SAFE and ESTOP stay and record its reason.
 //! - **Places** ([`AuthorityConfig::places`]) go out in every snapshot, so
 //!   every binder builds the same view of several robots; a declaration
 //!   whose placed paths collide is refused (`INCOMPATIBLE`).
@@ -124,8 +124,8 @@ pub struct AuthorityConfig {
     pub access: Access,
     /// Whether a robot that went safe, restarted or came back from a loss
     /// may be leased again at once. Off by default: its leases ended and it
-    /// waits for the next `Arm`, which re-arms it alone in an ARMED or
-    /// ACTIVE session. Other robots never stop for it either way.
+    /// waits for a `Rearm` naming it. Other robots never stop for it either
+    /// way.
     pub rearm_robots: bool,
     /// Where each placed robot's parts appear in the view: one binding drives several
     /// robots through it. Empty: no view.
@@ -250,7 +250,7 @@ pub struct Authority {
     /// Virtual ticks to publish.
     ticks: Vec<VirtualTick>,
     /// Robots stopped on their own (a fallback, a restart, a loss) and not
-    /// re-armed yet: their parts take no lease until the next `Arm`.
+    /// re-armed yet: their parts take no lease until a `Rearm` names them.
     held: BTreeMap<ParticipantId, Reason>,
     /// The scene run's closing and rejoin window.
     #[cfg(feature = "fleet")]
@@ -301,7 +301,7 @@ impl Authority {
         }
     }
 
-    /// Why `robot` waits for an `Arm` before its parts take a lease, if it
+    /// Why `robot` waits for a `Rearm` before its parts take a lease, if it
     /// does.
     pub fn held(&self, robot: &ParticipantId) -> Option<&Reason> {
         self.held.get(robot)

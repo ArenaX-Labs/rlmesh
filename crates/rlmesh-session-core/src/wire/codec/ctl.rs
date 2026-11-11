@@ -272,7 +272,12 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             workflow_editions: workflow_editions.clone(),
         }),
         Command::Detach => Verb::Detach(pb::Detach {}),
-        Command::Arm => Verb::Arm(pb::Arm {}),
+        Command::Arm => Verb::Arm(pb::Arm {
+            robot: String::new(),
+        }),
+        Command::Rearm { robot } => Verb::Arm(pb::Arm {
+            robot: robot.to_string(),
+        }),
         Command::Disarm => Verb::Disarm(pb::Disarm {}),
         Command::DeclareParts {
             spec_version,
@@ -406,7 +411,10 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
                 .map(|e| e.reason.map(reason_from_pb).unwrap_or_default()),
         },
         Verb::Detach(_) => Command::Detach,
-        Verb::Arm(_) => Command::Arm,
+        Verb::Arm(a) if a.robot.is_empty() => Command::Arm,
+        Verb::Arm(a) => Command::Rearm {
+            robot: ParticipantId::new(a.robot)?,
+        },
         Verb::Disarm(_) => Command::Disarm,
         Verb::DeclareParts(d) => Command::DeclareParts {
             spec_version: d.spec_version,

@@ -200,6 +200,9 @@ fn control_messages_round_trip() {
         Command::Keep {
             label: "eye-2 froze".into(),
         },
+        Command::Rearm {
+            robot: pid("eye-1"),
+        },
     ];
     for command in requests {
         let request = Request {

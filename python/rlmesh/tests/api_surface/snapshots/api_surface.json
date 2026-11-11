@@ -4380,6 +4380,10 @@
             "kind": "function",
             "signature": "publish_jpeg(path: str, jpeg: bytes | bytearray | memoryview, /, *, capture_ns: int | None = None) -> None"
           },
+          "rearm": {
+            "kind": "function",
+            "signature": "rearm(robot: str) -> None"
+          },
           "report_safe": {
             "kind": "function",
             "signature": "report_safe(reason: str) -> None"

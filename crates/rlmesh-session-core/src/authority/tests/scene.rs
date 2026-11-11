@@ -48,6 +48,16 @@ fn closing_a_scene_disarms_ends_every_lease_and_reaches_the_device_view() {
     );
     let refused = f.grant("policy", "cmd1", 6).expect_err("closing");
     assert!(refused.message.contains("closing"), "{}", refused.message);
+    assert_eq!(
+        Fixture::status(f.run(
+            "operator",
+            Command::Rearm {
+                robot: pid("robot")
+            },
+            6
+        )),
+        CtlStatus::InvalidTransition
+    );
     assert_eq!(f.auth.mode(), Mode::Disarmed);
     // Closing is once.
     assert!(
@@ -196,4 +206,35 @@ fn a_scene_stops_for_a_lost_holder_it_counts_as_a_member() {
     f.auth.participant_lost(&pid("policy"), 10);
     assert_eq!(f.auth.mode(), Mode::Safe);
     assert_eq!(f.auth.lease_count(), 0);
+}
+
+#[cfg(feature = "fleet")]
+#[test]
+fn a_held_robot_in_a_run_is_refused_with_the_runs_command() {
+    let mut f = Fixture::new();
+    f.auth.config.scene = Some(SceneConfig {
+        info: crate::wire::SceneInfo {
+            run: "r-7k2m".into(),
+            name: "rig".into(),
+            fingerprint: Fingerprint::from(7),
+            closing: None,
+            rejoin_until_ns: None,
+        },
+        members: BTreeMap::new(),
+        rejoin_ns: 0,
+    });
+    f.run("operator", Command::Arm, 0).expect("arm");
+    let fault = Command::EnterSafe {
+        reason: "board link".into(),
+        code: ReasonCode::DeviceWatchdog,
+    };
+    f.run("robot", fault, 1).expect("fault");
+    let refused = f.grant("policy", "cmd1", 2).expect_err("held");
+    assert!(
+        refused
+            .message
+            .contains("`rlmesh scene arm r-7k2m robot` or call robot.rearm(\"robot\")"),
+        "{}",
+        refused.message
+    );
 }
