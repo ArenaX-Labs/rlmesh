@@ -8,7 +8,11 @@ use crate::crypto::test_rng::TestRng;
 use crate::prelude::*;
 use crate::wire::codec;
 use crate::wire::heartbeat::{Heartbeat, HeartbeatEcho};
-use crate::wire::{Command, CtlError, CtlReply, CtlStatus, DeviceView, Epoch, ParticipantId};
+use crate::wire::{
+    ChannelId, Command, CtlError, CtlReply, CtlStatus, DeviceView, Epoch, HistoryQuery, IssuedKey,
+    KeyBytes, KeyPurpose, LeaseToken, LockstepOp, LockstepRequest, LockstepResponse,
+    LockstepResult, ParticipantId, Sample, Security, ViewReply,
+};
 
 fn pid(id: &str) -> ParticipantId {
     ParticipantId::new(id).expect("id")
@@ -313,4 +317,173 @@ fn the_request_window_answers_retries_from_its_cache_and_expires_old_ids() {
     assert_eq!(window.admit(200), Admit::Execute);
     assert_eq!(window.admit(65), Admit::Expired);
     assert_eq!(window.admit(137), Admit::Execute);
+}
+
+/// Two attached links, `robot` and `policy`, and `robot`'s host side.
+fn linked_pair() -> (Link, Link, Candidate) {
+    let (identity, mut auth) = host();
+    let local = identity.local_credential();
+    let (robot, candidate) = handshake(&identity, &mut auth, &local, "robot").expect("robot");
+    let (policy, _) = handshake(&identity, &mut auth, &local, "policy").expect("policy");
+    (
+        Link::new(pid("robot"), robot),
+        Link::new(pid("policy"), policy),
+        candidate,
+    )
+}
+
+/// A key on part 3 of `robot` under token 5, sent by `sender`.
+fn delivered(link: &Link, id: u32, purpose: KeyPurpose, sender: &str, send: bool) -> IssuedKey {
+    IssuedKey {
+        key_id: id,
+        purpose,
+        sender: Some(pid(sender)),
+        robot: Some(pid("robot")),
+        channels: vec![ChannelId(3)],
+        token: LeaseToken(5),
+        version: 1,
+        key: KeyBytes([id as u8; 32]),
+        send,
+        security: Security::Mac,
+        generation: link.accept().generation,
+    }
+}
+
+#[test]
+fn a_links_samples_and_lockstep_reach_the_other_side_under_delivered_keys() {
+    let (mut robot, mut policy, _) = linked_pair();
+    for (id, purpose, sender, sending) in [
+        (20, KeyPurpose::Stream, "robot", true),
+        (21, KeyPurpose::Command, "policy", false),
+        (22, KeyPurpose::LockstepReply, "robot", true),
+    ] {
+        let at_robot = delivered(&robot, id, purpose, sender, sending);
+        let at_policy = delivered(&policy, id, purpose, sender, !sending);
+        robot.keyring_mut().install(&at_robot, 0).expect("robot");
+        policy.keyring_mut().install(&at_policy, 0).expect("policy");
+    }
+    let sample = Sample {
+        channel: ChannelId(3),
+        epoch: Epoch(1),
+        seq: 1,
+        capture_ns: 0,
+        publish_ns: 0,
+        tick: 0,
+        payload: bytes::Bytes::from_static(b"wrench!!"),
+        applied: None,
+    };
+    let sealed = robot.seal_sample("d", &sample, false).expect("seal");
+    assert_eq!(
+        policy
+            .open_sample("d", sealed, &pid("robot"), false)
+            .expect("open"),
+        sample
+    );
+
+    let token = LeaseToken(5);
+    let request = LockstepRequest {
+        request_id: 1,
+        op: LockstepOp::Probe,
+    };
+    let sealed = policy
+        .seal_lockstep_request("l", &pid("robot"), token, &request)
+        .expect("seal");
+    let (opened, opened_token) = robot.open_lockstep_request("l", sealed).expect("open");
+    assert_eq!((opened, opened_token), (request, token));
+
+    let response = LockstepResponse {
+        request_id: 1,
+        result: LockstepResult::Probe,
+    };
+    let sealed = robot
+        .seal_lockstep_response("l", token, &response)
+        .expect("seal");
+    assert_eq!(
+        policy
+            .open_lockstep_response("l", sealed, &pid("robot"), token)
+            .expect("open"),
+        response
+    );
+}
+
+#[test]
+fn history_query_ids_count_up_from_one_under_k_up() {
+    let (mut robot, _, mut candidate) = linked_pair();
+    let query = HistoryQuery {
+        epoch: Epoch(1),
+        after_seq: 0,
+        until_seq: None,
+        limit: None,
+        request_id: 0,
+    };
+    for want in 1..=3 {
+        let (id, mut sealed) = robot.history_query("h", query).expect("seal");
+        assert_eq!(id, want);
+        let opened = candidate.up.open("h", &mut sealed).expect("open");
+        let decoded = codec::decode_history_query(opened.body).expect("query");
+        assert_eq!(decoded.request_id, want);
+    }
+}
+
+#[test]
+fn only_an_unauthenticated_plain_refusal_is_a_hint() {
+    let (mut robot, _, _) = linked_pair();
+    let snapshot = crate::authority::Authority::new(
+        crate::wire::SessionId::named("demo"),
+        crate::authority::AuthorityConfig::default(),
+    )
+    .snapshot(Vec::new(), 0);
+    let unauthenticated = CtlError::new(CtlStatus::Unauthenticated, "superseded");
+    let other = CtlError::new(CtlStatus::NotAuthorized, "not you");
+    let reply = |error: &CtlError| {
+        codec::encode_reply(&CtlReply {
+            result: Err(error.clone()),
+            state: snapshot.clone(),
+            leases: Vec::new(),
+            request_id: 1,
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        })
+    };
+    let view_reply = |error: &CtlError| {
+        codec::encode_view_reply(&ViewReply {
+            result: Err(error.clone()),
+            view: None,
+            leases: Vec::new(),
+            request_id: 1,
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        })
+    };
+    assert_eq!(
+        robot
+            .reply("ctl", &mut reply(&unauthenticated), 1, 0)
+            .expect("a hint"),
+        ReplyOutcome::Hint(unauthenticated.clone())
+    );
+    assert!(robot.reply("ctl", &mut reply(&other), 1, 0).is_err());
+    assert_eq!(
+        robot
+            .reply_view("ctl", &mut view_reply(&unauthenticated), 1, 0)
+            .expect("a hint"),
+        ReplyOutcome::Hint(unauthenticated)
+    );
+    assert!(
+        robot
+            .reply_view("ctl", &mut view_reply(&other), 1, 0)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_links_debug_output_never_shows_a_delivered_keys_bytes() {
+    let (mut robot, _, _) = linked_pair();
+    let key = IssuedKey {
+        key: KeyBytes([0xa7; 32]),
+        ..delivered(&robot, 20, KeyPurpose::Stream, "robot", true)
+    };
+    robot.keyring_mut().install(&key, 0).expect("install");
+    crate::crypto::assert_redacted(&robot, &[0xa7; 32]);
 }
