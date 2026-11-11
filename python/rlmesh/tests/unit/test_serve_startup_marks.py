@@ -39,7 +39,14 @@ def test_serving_a_model_stamps_the_handshake_and_prints_the_phases(
     )
 
     class Served:
-        def serve(self, address: str, *, name: str, options: object = None) -> None:
+        def serve(
+            self,
+            address: str,
+            *,
+            name: str,
+            options: object = None,
+            batching: object = None,
+        ) -> None:
             self.address = address
             self.options = options
 
@@ -75,7 +82,14 @@ def test_serving_a_model_puts_its_describe_envelope_on_the_handshake(
         def predict(self, observation: object) -> int:
             return 0
 
-        def serve(self, address: str, *, name: str, options: object = None) -> None:
+        def serve(
+            self,
+            address: str,
+            *,
+            name: str,
+            options: object = None,
+            batching: object = None,
+        ) -> None:
             pass
 
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: Tiny())
@@ -109,7 +123,14 @@ def test_serving_a_specced_model_does_not_warn(
         def predict(self, observation: object) -> int:
             return 0
 
-        def serve(self, address: str, *, name: str, options: object = None) -> None:
+        def serve(
+            self,
+            address: str,
+            *,
+            name: str,
+            options: object = None,
+            batching: object = None,
+        ) -> None:
             pass
 
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: Specced())
@@ -133,7 +154,9 @@ def test_an_undescribable_target_still_serves(
         lambda extra=None: stamped.update(extra or {}),
     )
     served = type(
-        "Served", (), {"serve": lambda self, address, *, name, options=None: None}
+        "Served",
+        (),
+        {"serve": lambda self, address, *, name, options=None, batching=None: None},
     )()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)
 
@@ -151,7 +174,14 @@ class _Declared(rlmesh.Model):
     def predict(self, observation: object) -> int:
         return 0
 
-    def serve(self, address: str, *, name: str, options: object = None) -> None:
+    def serve(
+        self,
+        address: str,
+        *,
+        name: str,
+        options: object = None,
+        batching: object = None,
+    ) -> None:
         self.options = options
 
 

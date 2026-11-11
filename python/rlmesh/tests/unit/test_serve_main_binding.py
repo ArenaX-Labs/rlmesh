@@ -92,6 +92,7 @@ def test_model_binding_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
         name: str,
         binding: object = None,
         workflow_edition: str | None = None,
+        batching: object = None,
     ) -> None:
         captured["binding"] = binding
         captured["workflow_edition"] = workflow_edition

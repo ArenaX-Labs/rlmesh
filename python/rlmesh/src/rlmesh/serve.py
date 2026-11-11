@@ -6,6 +6,17 @@ or a bare predict / make-env callable. Serves as ``RLMESH_NAME`` (default
 ``model``, or ``env``) in the session at ``RLMESH_ADDRESS`` (default
 ``0.0.0.0:7447``, hosted here); point your Dockerfile ``ENTRYPOINT`` here
 instead of hand-writing a serve loop.
+
+Every option has a command-line flag and an ``RLMESH_*`` environment variable,
+so a container is configured through its environment alone; a flag wins over
+its variable, and a value that does not parse stops the process at startup,
+naming the variable. A served model's batching (:class:`rlmesh.BatchOptions`)
+is ``--max-batch-size`` / ``RLMESH_MAX_BATCH_SIZE``, ``--batch-window-ms`` /
+``RLMESH_BATCH_WINDOW_MS``, ``--batch-byte-budget`` /
+``RLMESH_BATCH_BYTE_BUDGET``, ``--max-in-flight-batches`` /
+``RLMESH_MAX_IN_FLIGHT_BATCHES`` and ``--batch-records`` /
+``RLMESH_BATCH_RECORDS``; one left unset takes ``BatchOptions``' default.
+``python -m rlmesh.serve --help`` lists them all.
 """
 
 from __future__ import annotations
@@ -129,7 +140,7 @@ def _handshake_describe(
 
 
 if TYPE_CHECKING:
-    from rlmesh._models.base import ModelBase
+    from rlmesh._models.base import BatchOptions, ModelBase
     from rlmesh._rlmesh import ServeOptions
     from rlmesh._value_conversion import ValueBridge
     from rlmesh.types import EnvLike
@@ -140,6 +151,123 @@ __all__ = ["main", "serve_env", "serve_model", "startup_marks"]
 # process on the well-known port, on all interfaces (a container's published
 # ports).
 _ADDRESS = "0.0.0.0:7447"
+
+# A served model's batching: each integer rlmesh.BatchOptions field, the
+# environment variable behind its flag, the least value it takes and its help.
+_BATCH_INTEGERS = (
+    (
+        "max_batch_size",
+        "RLMESH_MAX_BATCH_SIZE",
+        1,
+        "The most predict groups (one route's rows each) one grouped predict "
+        "carries; 1 turns batching off.",
+    ),
+    (
+        "batch_window_ms",
+        "RLMESH_BATCH_WINDOW_MS",
+        0,
+        "The longest, in milliseconds, an idle model holds a batch open for "
+        "more requests.",
+    ),
+    (
+        "batch_byte_budget",
+        "RLMESH_BATCH_BYTE_BUDGET",
+        1,
+        "The most observation bytes one grouped predict carries.",
+    ),
+    (
+        "max_in_flight_batches",
+        "RLMESH_MAX_IN_FLIGHT_BATCHES",
+        1,
+        "Batches past assembly at once: 2 assembles the next while one runs, "
+        "1 assembles only while the model is idle.",
+    ),
+)
+_BATCH_RECORDS_VAR = "RLMESH_BATCH_RECORDS"
+# The largest value a batch setting takes (the native fields are 64-bit).
+_BATCH_MAX = 2**63 - 1
+
+
+def _batch_integer(raw: str, minimum: int) -> int:
+    """A batch setting's integer, or ``ValueError`` saying what it must be."""
+    try:
+        value = int(raw.strip(), 10)
+    except ValueError:
+        value = None
+    if value is None or not minimum <= value <= _BATCH_MAX:
+        raise ValueError(f"must be an integer from {minimum} to {_BATCH_MAX}")
+    return value
+
+
+def _batch_flag_type(minimum: int) -> Callable[[str], int]:
+    def parse(raw: str) -> int:
+        try:
+            return _batch_integer(raw, minimum)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"{exc}, got {raw!r}") from exc
+
+    return parse
+
+
+def _add_batching_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group(
+        "model batching",
+        "How a served model coalesces predicts from every session it answers "
+        "in (rlmesh.BatchOptions; experimental). Each flag defaults to its "
+        "environment variable, then to BatchOptions' default. Model only.",
+    )
+    for field, var, minimum, help_text in _BATCH_INTEGERS:
+        group.add_argument(
+            "--" + field.replace("_", "-"),
+            dest=field,
+            type=_batch_flag_type(minimum),
+            metavar="N",
+            help=f"{help_text} Defaults to {var}.",
+        )
+    group.add_argument(
+        "--batch-records",
+        metavar="PATH",
+        help=(
+            "Append one JSON line per batch here (batch size, queue wait, "
+            f"forward timing, outcome). Defaults to {_BATCH_RECORDS_VAR}."
+        ),
+    )
+
+
+def _batching(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> BatchOptions | None:
+    """The batch options the flags and their variables set, else ``None``.
+
+    A flag wins over its variable; a variable that does not parse stops
+    startup, naming it.
+    """
+    from ._models import BatchOptions
+
+    values: dict[str, int] = {}
+    for field, var, minimum, _ in _BATCH_INTEGERS:
+        value = cast("int | None", getattr(args, field))
+        raw = os.environ.get(var)
+        if value is None and raw:
+            try:
+                value = _batch_integer(raw, minimum)
+            except ValueError as exc:
+                parser.error(f"{var} {exc}, got {raw!r}")
+        if value is not None:
+            values[field] = value
+    records = cast("str | None", args.batch_records) or os.environ.get(
+        _BATCH_RECORDS_VAR
+    )
+    if not values and not records:
+        return None
+    return BatchOptions(
+        max_batch_size=values.get("max_batch_size"),
+        batch_window_ms=values.get("batch_window_ms"),
+        batch_byte_budget=values.get("batch_byte_budget"),
+        max_in_flight_batches=values.get("max_in_flight_batches"),
+        batch_records=records or None,
+    )
+
 
 # Frameworks whose obs/action seam carries device tensors. numpy and the default
 # Auto backend have no device, so a device= is meaningless (and unsupported) there.
@@ -261,6 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "the declared defaults. Validated before construction."
         ),
     )
+    _add_batching_arguments(parser)
     args = parser.parse_args(argv)
     if not args.env and (target := os.environ.get("RLMESH_SERVE_TARGET")):
         args.model = target
@@ -271,6 +400,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "--framework/--device apply only to an env (--env); unset them (and "
             "RLMESH_FRAMEWORK / RLMESH_DEVICE) when serving a model"
+        )
+    batching = _batching(args, parser)
+    if args.env and batching is not None:
+        parser.error(
+            "the batching options apply only to a model; unset them (and "
+            "RLMESH_MAX_BATCH_SIZE, RLMESH_BATCH_WINDOW_MS, "
+            "RLMESH_BATCH_BYTE_BUDGET, RLMESH_MAX_IN_FLIGHT_BATCHES, "
+            "RLMESH_BATCH_RECORDS) when serving an env"
         )
 
     # Eval shape from the container env (start_prebuilt_container injects these for a
@@ -342,6 +479,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 name=args.name or "model",
                 binding=binding,
                 workflow_edition=args.workflow_edition,
+                batching=batching,
             )
     except KeyboardInterrupt:
         # Ctrl-C is how an operator stops a served container: the serve loop has
@@ -381,6 +519,7 @@ def serve_model(
     name: str = "model",
     binding: dict[str, Any] | None = None,
     workflow_edition: str | None = None,
+    batching: BatchOptions | None = None,
 ) -> None:
     """Serve a model in the session at ``address`` as ``name`` (blocking).
 
@@ -393,6 +532,8 @@ def serve_model(
     the authoring base stays cheap. A one-line serving status is printed once the
     model is resolved and loaded, before the blocking serve, with the startup
     phase marks (see :func:`startup_marks`), which also ride the handshake.
+    ``batching`` coalesces its predicts (:class:`rlmesh.BatchOptions`' defaults
+    when ``None``).
     """
     from ._editions import serve_options_declaring
 
@@ -408,7 +549,7 @@ def serve_model(
         declared=getattr(type(model), "workflow_edition", None),
     )
     _stamp_startup("model", f"{address.rstrip('/')}/{name}", model, options=options)
-    model.serve(address, name=name, options=options)
+    model.serve(address, name=name, options=options, batching=batching)
 
 
 def _warn_without_spec(model: object) -> None:

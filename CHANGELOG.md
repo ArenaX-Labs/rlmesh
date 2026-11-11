@@ -107,6 +107,8 @@ below describe development APIs; C ABI 7 is cut only when they ship.
 
 - Experimental: a launcher that starts a session host in another process (`python -m rlmesh.serve` in a container) makes the host's identity and the keyed address to dial with `rlmesh host-identity new` (`--json`, `--out FILE`, `--address HOST:PORT[/SESSION]`, `--participant NAME`), and reads an identity's key with `rlmesh host-identity key`. Python has the same in `rlmesh.launch` (`launch_identity`, `identity_key`, `launched_address`), Rust in `rlmesh_session::address::{identity_key, launched_address}`. The identity is a secret: the CLI reads it from the environment or a file, never argv, and writes it 0600.
 
+- `python -m rlmesh.serve` sets a served model's batching from its environment: every `BatchOptions` field has a flag and an `RLMESH_*` variable (`--max-batch-size` / `RLMESH_MAX_BATCH_SIZE`, `--batch-window-ms` / `RLMESH_BATCH_WINDOW_MS`, `--batch-byte-budget` / `RLMESH_BATCH_BYTE_BUDGET`, `--max-in-flight-batches` / `RLMESH_MAX_IN_FLIGHT_BATCHES`, `--batch-records` / `RLMESH_BATCH_RECORDS`). A flag wins over its variable, an unset one keeps the default, and a value that does not parse stops startup, naming the variable; set for an env, they are refused.
+
 
 This development tree gives the Rust facade crate (`rlmesh`), the fenced C API (`rlmesh.h`, development ABI 6) and the fenced C++ wrapper (`rlmesh.hpp`, C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
