@@ -294,8 +294,103 @@ pub async fn open_listeners(
     if let Some(dictionary) = dictionary {
         let _ = std::fs::remove_file(dictionary);
     }
+    if let Ok((_, base)) = &opened {
+        bound_silent_links(*base);
+    }
     opened
 }
+
+/// How long a host's link may leave what it sent unacknowledged, or its
+/// receive window closed, before the kernel resets it.
+#[cfg(target_os = "linux")]
+const LINK_SILENCE: Duration = Duration::from_secs(2);
+
+/// Makes the kernel reset any link accepted on `base`'s class ports that
+/// stops acknowledging ([`LINK_SILENCE`]).
+///
+/// Zenoh evicts a silent peer after the lease that peer advertised (a
+/// board's is 10 s), and a peer that keeps talking but stops reading never
+/// lapses it. Meanwhile the transmit queue fills, and a BLOCK send waits on
+/// it: Zenoh then closes the transport, but its Close message waits for the
+/// same queue, without a deadline, on a link without QoS (a board's). A
+/// socket error is what ends that wait. Zenoh has no option for
+/// `TCP_USER_TIMEOUT`, but accepted sockets inherit it from their listener.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code, clippy::useless_conversion)]
+fn bound_silent_links(base: SocketAddr) {
+    use std::mem::size_of;
+    use std::os::fd::RawFd;
+
+    let ports = base.port()..=base.port().saturating_add(3);
+    let timeout_ms = LINK_SILENCE.as_millis() as libc::c_int;
+    let Ok(fds) = std::fs::read_dir("/proc/self/fd") else {
+        tracing::warn!("no /proc/self/fd: silent links last until their lease");
+        return;
+    };
+    let mut bounded = 0;
+    for fd in fds.flatten() {
+        let Some(fd) = fd
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<RawFd>().ok())
+        else {
+            continue;
+        };
+        let mut accepting: libc::c_int = 0;
+        let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: both pointers are valid for the given length; a descriptor
+        // that is no socket (or no longer open) only fails the call.
+        let listener = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_ACCEPTCONN,
+                (&raw mut accepting).cast(),
+                &raw mut len,
+            )
+        } == 0
+            && accepting != 0;
+        if !listener {
+            continue;
+        }
+        // SAFETY: an all-zero `sockaddr_storage` is valid.
+        let mut local: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+        let mut len = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        // SAFETY: `local` is valid for `len` bytes.
+        if unsafe { libc::getsockname(fd, (&raw mut local).cast(), &raw mut len) } != 0 {
+            continue;
+        }
+        let family = libc::c_int::from(local.ss_family);
+        if family != libc::AF_INET && family != libc::AF_INET6 {
+            continue;
+        }
+        // Both address families keep the port at the same offset.
+        // SAFETY: a `sockaddr_storage` is larger than a `sockaddr_in`.
+        let port =
+            u16::from_be(unsafe { (*(&raw const local).cast::<libc::sockaddr_in>()).sin_port });
+        if !ports.contains(&port) {
+            continue;
+        }
+        // SAFETY: the value is valid for the given length.
+        let set = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_USER_TIMEOUT,
+                (&raw const timeout_ms).cast(),
+                size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if set == 0 {
+            bounded += 1;
+        }
+    }
+    tracing::debug!(%base, bounded, "listeners reset silent links");
+}
+
+/// Elsewhere a silent link lasts until its lease.
+#[cfg(not(target_os = "linux"))]
+fn bound_silent_links(_base: SocketAddr) {}
 
 /// Writes the `user:password` file a gated host's Zenoh reads at open; the
 /// caller removes it right after.
