@@ -119,6 +119,39 @@ impl World {
         links(self.base).await
     }
 
+    /// Stops the host and starts a new one at the same address with the same
+    /// key: a new process, a new instance, an empty roster.
+    async fn restart(self) -> Self {
+        let Self {
+            tenant,
+            session,
+            base,
+            identity,
+            host,
+        } = self;
+        host.shutdown().await;
+        let started = Instant::now();
+        // The ports free up as the old transport finishes closing.
+        let transport = loop {
+            let config = TransportConfig::per_class_tcp(Some(base), None).expect("config");
+            match Transport::open(&config).await {
+                Ok(transport) => break transport,
+                Err(err) => assert!(started.elapsed() < WAIT, "no ports back: {err}"),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let mut config = HostConfig::new(tenant.clone(), session);
+        config.identity = identity.clone();
+        let host = SessionHost::start(transport, config).await.expect("host");
+        Self {
+            tenant,
+            session,
+            base,
+            identity,
+            host,
+        }
+    }
+
     fn robot(&self, key: AddressKey) -> Box<Robot> {
         self.robot_as(key.credential())
     }
@@ -172,6 +205,7 @@ struct Board {
     /// until the robot asks to reopen them (zenoh-pico's sessions don't come
     /// back on their own; Zenoh's own client would, and hide the fault).
     transport: Option<Transport>,
+    base: std::net::SocketAddr,
     tx: mpsc::UnboundedSender<Event>,
     rx: mpsc::UnboundedReceiver<Event>,
     subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
@@ -180,6 +214,10 @@ struct Board {
     rng: Mix,
     start: Instant,
     next_sample: u64,
+    /// Links reopened at the robot's request.
+    reconnects: u32,
+    /// No new link can open before this: the network is down.
+    offline_until: Option<Instant>,
     /// The transport never reports a query's end, as when zenoh-pico's
     /// executor is blocked in `recv`.
     no_query_end: bool,
@@ -192,6 +230,7 @@ impl Board {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             transport: Some(world.transport().await),
+            base: world.base,
             tx,
             rx,
             subscribers: Vec::new(),
@@ -200,9 +239,23 @@ impl Board {
             rng: seeded(),
             start: Instant::now(),
             next_sample: 0,
+            reconnects: 0,
+            offline_until: None,
             no_query_end: false,
             lose: Box::new(|_| false),
         }
+    }
+
+    /// The links die with no word to the board: a host restarted, or Wi-Fi
+    /// gone. What is in flight is lost.
+    fn sever(&mut self) {
+        self.transport = None;
+        self.subscribers.clear();
+        self.tokens.clear();
+        for (_, query) in std::mem::take(&mut self.queries) {
+            query.abort();
+        }
+        while self.rx.try_recv().is_ok() {}
     }
 
     /// Runs `robot` until `done` holds or `limit` passes, carrying out its
@@ -268,6 +321,13 @@ impl Board {
             Action::Reset => {
                 self.subscribers.clear();
                 self.tokens.clear();
+            }
+            Action::Reconnect => {
+                self.sever();
+                if self.offline_until.is_none_or(|at| Instant::now() >= at) {
+                    self.transport = Some(links(self.base).await);
+                    self.reconnects += 1;
+                }
             }
             Action::Subscribe { class: c, sub, key } => {
                 let Some(transport) = &self.transport else {
@@ -896,6 +956,71 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
     run.join().expect("run thread").expect("a clean stop");
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     one.await.expect("board 1");
+}
+
+/// A host restarted under a board that was not: the links are dead and only
+/// the board can reopen them, then it joins the new instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_reopens_its_links_and_rejoins_a_restarted_host() {
+    let world = World::start().await;
+    let seen = Arc::default();
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    board
+        .run(&mut robot, WAIT, &seen, |r| r.phase() == Phase::Running)
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    // Past the time silence would count: links that answer are left alone.
+    let joined = Instant::now();
+    board
+        .run(&mut robot, Duration::from_secs(6), &seen, move |_| {
+            joined.elapsed() > Duration::from_millis(5500)
+        })
+        .await;
+    assert_eq!(board.reconnects, 0, "fault: {:?}", robot.fault());
+
+    let world = world.restart().await;
+    board.sever();
+    // The silent case: the dead link reports nothing, not even a query's end.
+    board.no_query_end = true;
+    let mut left = false;
+    board
+        .run(&mut robot, Duration::from_secs(30), &seen, |r| {
+            left |= r.phase() != Phase::Running;
+            left && r.phase() == Phase::Running
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    assert!(board.reconnects >= 1, "it reopened its links");
+    let roster = world.host.snapshot().roster;
+    assert!(roster.iter().any(|p| p.id.as_str() == "eyes" && p.present));
+}
+
+/// Wi-Fi gone long enough for the host to lose the board, then back, with
+/// the host up all along: it reopens its links, retrying until they open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_rejoins_after_the_network_returns_with_the_host_still_up() {
+    let world = World::start().await;
+    let seen = Arc::default();
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    board
+        .run(&mut robot, WAIT, &seen, |r| r.phase() == Phase::Running)
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    let first = robot.generation();
+
+    board.sever();
+    board.offline_until = Some(Instant::now() + Duration::from_secs(9));
+    let mut left = false;
+    board
+        .run(&mut robot, Duration::from_secs(40), &seen, |r| {
+            left |= r.phase() != Phase::Running;
+            left && r.phase() == Phase::Running
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    assert!(robot.generation() > first, "a new attach");
 }
 
 /// zenoh-pico's executor stuck in `recv`: no query ever reports its end, and

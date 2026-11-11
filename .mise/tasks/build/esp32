@@ -51,6 +51,33 @@ cp "$zp/config/include/zenoh-pico/config.h" "$zp_lib/src/zenoh-pico/"
   mkdir -p "$zp_lib/src/zp/$(dirname "$file")"
   cp "$zp_src/$file" "$zp_lib/src/zp/$file"
 done
+# zenoh-pico's ESP32 TCP link sets no receive timeout, though its ESP32 UDP
+# link and its POSIX and lwIP TCP links do. One task per session reads, so a
+# silent peer would block its lease checks and query timeouts for ever, and
+# closing the session too. rlmesh_zenoh.c gives the timeout in the locator.
+python3 - "$zp_lib/src/zp/src/link/transport/tcp/tcp_esp32.c" <<'PATCH'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+source = path.read_text()
+unused = "    _ZP_UNUSED(tout);\n    z_result_t ret = _Z_RES_OK;\n"
+opened = "    if (sock->_fd != -1) {\n        int optflag = 1;\n"
+timeout = (
+    "        z_time_t tv;\n"
+    "        tv.tv_sec = tout / (uint32_t)1000;\n"
+    "        tv.tv_usec = (tout % (uint32_t)1000) * (uint32_t)1000;\n"
+    "        if (setsockopt(sock->_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(tv)) < 0) {\n"
+    "            _Z_ERROR_LOG(_Z_ERR_GENERIC);\n"
+    "            ret = _Z_ERR_GENERIC;\n"
+    "        }\n\n"
+)
+if source.count(unused) != 1 or source.count(opened) != 1:
+    sys.exit(f"{path}: not the zenoh-pico this patches: update build:esp32")
+source = source.replace(unused, "    z_result_t ret = _Z_RES_OK;\n")
+source = source.replace(opened, "    if (sock->_fd != -1) {\n" + timeout + "        int optflag = 1;\n")
+path.write_text(source)
+PATCH
 printf 'name=zenoh-pico\nversion=%s\nauthor=ZettaScale\nmaintainer=ZettaScale\nsentence=Zenoh for microcontrollers\nparagraph=\ncategory=Communication\nurl=https://github.com/eclipse-zenoh/zenoh-pico\narchitectures=esp32\n' \
   "$zp_version" >"$zp_lib/library.properties"
 cp integrations/esp32/transport/rlmesh_zenoh.{c,h} "$zp_lib/src/"

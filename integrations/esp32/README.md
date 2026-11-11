@@ -103,6 +103,10 @@ The board tries its stored home addresses in order, authenticating the host
 by the key it was provisioned with. Four consecutive TCP ports from the
 host's base port must be reachable.
 
+When replies stop for five seconds the board closes its links and joins again,
+backing off to one attempt every 30 seconds for as long as it runs: a host
+restart or a Wi-Fi drop never needs a reset.
+
 ## Building and verifying from source
 
 ```sh

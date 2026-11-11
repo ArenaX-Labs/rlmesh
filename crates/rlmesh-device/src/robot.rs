@@ -46,6 +46,10 @@ pub const HOST_LOST_MS: u32 = 5000;
 /// How long past its timeout a query may go unreported before the robot
 /// counts it over: a transport whose read task is stuck never reports it.
 pub const QUERY_MARGIN_MS: u32 = 500;
+/// With no reply from the host for this long, a failure also has the
+/// transport drop and reopen its links: nothing else revives a link whose
+/// peer is gone.
+pub const LINK_LOST_MS: u32 = HOST_LOST_MS;
 /// The longest pause between rounds of home addresses.
 const MAX_BACKOFF_MS: u32 = 30_000;
 /// `ctl` requests are resent (same id) this many times before they fail.
@@ -194,6 +198,10 @@ pub enum Action {
     /// Drop every subscription and token: the robot moves to another
     /// session (the lobby, or a run), on the same host.
     Reset,
+    /// Close every link to the host, however healthy it looks: replies
+    /// stopped for [`LINK_LOST_MS`]. The next action on a class opens it
+    /// again.
+    Reconnect,
     /// Publish `payload` on `key`.
     Publish {
         /// The class.
@@ -708,6 +716,7 @@ impl Robot {
                 let Ok(peeked) = signed::peek(payload) else {
                     return;
                 };
+                self.last_heard = now_us;
                 self.start(peeked.header.host_instance, rng, now_us);
             }
             Phase::Handshake => self.handshake_reply(payload, now_us),
@@ -723,11 +732,13 @@ impl Robot {
         let msg2 = match codec::decode_handshake_reply(payload) {
             Ok(Ok(msg2)) => msg2,
             Ok(Err(refusal)) => {
+                self.last_heard = now_us;
                 self.waiting = None;
                 return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
             }
             Err(_) => return,
         };
+        self.last_heard = now_us;
         self.waiting = None;
         let Some(initiator) = self.initiator.take() else {
             return self.fail(Fault::Internal, now_us);
@@ -1287,6 +1298,7 @@ impl Robot {
             }
             Ok(ReplyOutcome::Other(_)) | Err(_) => return,
         };
+        self.last_heard = now_us;
         let joining = self.joining();
         let Some(pending) = self.pending.take() else {
             return;
@@ -1466,6 +1478,14 @@ impl Robot {
     }
 
     fn fail(&mut self, fault: Fault, now_us: u64) {
+        // Silence this long means dead links, or a host with new ones to
+        // make. Each failure from here on reopens them, at the pace of the
+        // retries below, until something answers.
+        if matches!(fault, Fault::NoReply | Fault::HostLost)
+            && now_us.saturating_sub(self.last_heard) >= u64::from(LINK_LOST_MS) * 1000
+        {
+            self.out.push(Action::Reconnect);
+        }
         let joining = self.phase != Phase::Running;
         // Nobody answered, or someone other than the host did: the address
         // is wrong or down.
@@ -1615,6 +1635,7 @@ impl Robot {
         else {
             return;
         };
+        self.last_heard = now_us;
         self.wait = None;
         let reply = *reply;
         if let Some(view) = reply.view {

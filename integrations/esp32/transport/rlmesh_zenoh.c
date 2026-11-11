@@ -121,11 +121,13 @@ static void close_sessions(rlmesh_zenoh_t* z);
 static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c) {
   if (c >= RLMESH_DEVICE_CLASSES) return NULL;
   if (!z->open[c]) {
+    if (z->unreachable[c]) return NULL;
     uint16_t port = 0;
     const char* host = rlmesh_device_robot_host(z->robot, &port);
     char connect[96];
     if (host == NULL || strlen(host) >= sizeof z->host) return NULL;
-    int n = snprintf(connect, sizeof connect, "tcp/%s:%u", host, (unsigned)(port + c));
+    int n = snprintf(connect, sizeof connect, "tcp/%s:%u#tout=" RLMESH_ZENOH_RECV_TIMEOUT_MS, host,
+                     (unsigned)(port + c));
     if (n <= 0 || (size_t)n >= sizeof connect) return NULL;
     if (port != z->port || strcmp(host, z->host) != 0) {
       undeclare(z);
@@ -135,7 +137,10 @@ static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c) {
     z_config_default(&config);
     zp_config_insert(z_loan_mut(config), Z_CONFIG_MODE_KEY, "client");
     zp_config_insert(z_loan_mut(config), Z_CONFIG_CONNECT_KEY, connect);
-    if (z_open(&z->sessions[c], z_move(config), NULL) != Z_OK) return NULL;
+    if (z_open(&z->sessions[c], z_move(config), NULL) != Z_OK) {
+      z->unreachable[c] = true;
+      return NULL;
+    }
     z->open[c] = true;
     strcpy(z->host, host);
     z->port = port;
@@ -245,9 +250,18 @@ static void undeclare(rlmesh_zenoh_t* z) {
  * satellite, another home address). */
 static void reset(rlmesh_zenoh_t* z) {
   undeclare(z);
+  memset(z->unreachable, 0, sizeof z->unreachable);
   uint16_t port = 0;
   const char* host = rlmesh_device_robot_host(z->robot, &port);
   if (host == NULL || port != z->port || strcmp(host, z->host) != 0) close_sessions(z);
+}
+
+/* Drops everything: replies stopped, and a session whose peer is gone never
+ * comes back on its own. The robot's next actions open new ones. */
+static void reconnect(rlmesh_zenoh_t* z) {
+  undeclare(z);
+  close_sessions(z);
+  memset(z->unreachable, 0, sizeof z->unreachable);
 }
 
 int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
@@ -302,6 +316,10 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
         break;
       case RLMESH_DEVICE_RESET:
         reset(z);
+        done = 0;
+        break;
+      case RLMESH_DEVICE_RECONNECT:
+        reconnect(z);
         done = 0;
         break;
       default:

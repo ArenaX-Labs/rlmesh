@@ -58,6 +58,9 @@ pub const RLMESH_DEVICE_PUBLISH: u8 = 4;
 /// Drop every subscription and token (the robot moves to another session
 /// on the same host).
 pub const RLMESH_DEVICE_RESET: u8 = 5;
+/// Close every session to the host, however healthy it looks: replies
+/// stopped. The next action on a class opens it again.
+pub const RLMESH_DEVICE_RECONNECT: u8 = 6;
 
 /// `rlmesh_device_action_t`: borrowed from the robot until the next call
 /// on it.
@@ -440,6 +443,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             payload,
         } => (RLMESH_DEVICE_PUBLISH, class, 0, 0, 0, key, Some(payload)),
         Action::Reset => (RLMESH_DEVICE_RESET, 0, 0, 0, 0, String::new(), None),
+        Action::Reconnect => (RLMESH_DEVICE_RECONNECT, 0, 0, 0, 0, String::new(), None),
     };
     r.key = key.into_bytes();
     r.key.push(0);

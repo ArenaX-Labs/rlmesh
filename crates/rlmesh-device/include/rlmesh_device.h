@@ -94,6 +94,9 @@ typedef struct rlmesh_device_robot_config_t {
 /* Drop every subscription and token: the robot moves to another session (the
  * lobby, or a run) on the same host. */
 #define RLMESH_DEVICE_RESET 5
+/* Close every session to the host, however healthy it looks: replies stopped.
+ * The next action on a class opens it again. */
+#define RLMESH_DEVICE_RECONNECT 6
 
 /* Traffic classes: the host listens on its address's port plus the class. */
 #define RLMESH_DEVICE_CLASSES 4

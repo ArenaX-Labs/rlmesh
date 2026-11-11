@@ -130,6 +130,11 @@ async fn main() {
                         linked = target;
                     }
                 }
+                Action::Reconnect => {
+                    subscribers.clear();
+                    tokens.clear();
+                    transport = link(&linked, &gates).await;
+                }
                 Action::Subscribe { class: c, sub, key } => {
                     let tx = tx.clone();
                     let subscriber = transport

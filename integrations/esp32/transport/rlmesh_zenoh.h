@@ -30,6 +30,11 @@ extern "C" {
 /* Bytes of samples queued for the robot at most: a sample past it is
  * dropped (and counted in `failed`). Replies and query ends always queue. */
 #define RLMESH_ZENOH_QUEUE_BYTES (32 * 1024)
+/* How long a read blocks zenoh-pico's one task per session, in milliseconds:
+ * its keep-alives, lease checks and query timeouts wait behind it, and closing
+ * the session waits for it. Long enough for a handshake over Wi-Fi in power
+ * save. */
+#define RLMESH_ZENOH_RECV_TIMEOUT_MS "1000"
 
 struct rlmesh_zenoh_event;
 struct rlmesh_zenoh_t;
@@ -43,6 +48,9 @@ typedef struct rlmesh_zenoh_sub_t {
 typedef struct rlmesh_zenoh_t {
   z_owned_session_t sessions[RLMESH_DEVICE_CLASSES];
   bool open[RLMESH_DEVICE_CLASSES];
+  /* Opening this class failed: not tried again before the robot's next reset,
+   * so its retries pace the attempts (each can block for seconds). */
+  bool unreachable[RLMESH_DEVICE_CLASSES];
   /* The host the open sessions reach: a reset to another closes them. */
   char host[64];
   uint16_t port;
