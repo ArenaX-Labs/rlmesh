@@ -12,12 +12,13 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 #[cfg(not(feature = "fleet"))]
 use rlmesh_device::provision::Record;
-use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot};
+use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot, SUB_COMMANDS};
 use rlmesh_session::address::AddressKey;
 use rlmesh_session::auth::{Credential, Device, HostIdentity};
 use rlmesh_session::authority::DeviceAccess;
 use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::crypto::{Rng, RngError};
+use rlmesh_session::edge::Rejection;
 use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listeners};
 use rlmesh_session::wire::{
     ChannelId, EdgeMode, Fingerprint, InputRange, Mode, ParticipantId, Plan, PriorityClass, Role,
@@ -198,6 +199,8 @@ struct Seen {
     published: u32,
     /// Samples of the part that actually went out.
     sent: u32,
+    /// Why the board last refused a chunk, and its invalid-value count.
+    refused: (Option<Rejection>, u64),
 }
 
 /// A board's transport: one session per traffic class, as zenoh-pico opens
@@ -283,7 +286,14 @@ impl Board {
                         seen.actions.push((tick.tick.mode, action.value.to_vec()));
                     }
                 }
-                seen.lock().expect("seen").latched_by = robot.estop_reason().map(|r| r.by.clone());
+                {
+                    let mut seen = seen.lock().expect("seen");
+                    seen.latched_by = robot.estop_reason().map(|r| r.by.clone());
+                    seen.refused = (
+                        robot.last_refusal(),
+                        robot.refusals(Rejection::InvalidValue),
+                    );
+                }
                 if now >= self.next_sample {
                     self.next_sample = now + 20_000;
                     if robot.publish(0, now, &pos(0.1, 0.2), now).is_ok() {
@@ -1165,4 +1175,78 @@ async fn a_board_joins_though_lost_queries_never_report_their_end() {
         })
         .await;
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+}
+
+/// A chunk the edge refuses says why, and what can't be opened at all is
+/// counted the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
+    let world = World::start().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let driven = async {
+        board
+            .run(&mut robot, Duration::from_secs(20), &seen, {
+                let done = done.clone();
+                move |_| done.load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .await;
+    };
+    let controller = async {
+        let id = ParticipantId::new("eyes").expect("id");
+        let policy = world.controller().await;
+        let snapshot = policy
+            .wait_for("the board, declared and mapped", WAIT, |s| {
+                s.parts.iter().any(|p| p.owner == id) && s.clock(&id).is_some()
+            })
+            .await
+            .expect("board");
+        let eyes = snapshot
+            .parts
+            .iter()
+            .find(|p| p.owner == id)
+            .expect("eyes")
+            .channel;
+        policy
+            .declare_binding(Fingerprint::from(1), "{}", vec![eyes], 0.0)
+            .await
+            .expect("binding");
+        policy.arm().await.expect("arm");
+        let lease = policy.grant_lease(eyes, None).await.expect("lease");
+        let tx = policy.chunk_publisher(&lease).await.expect("publisher");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let started = Instant::now();
+        // A value that isn't a number: well formed, sealed, and refused.
+        let bad = pos(f32::NAN, 0.0);
+        while seen.lock().expect("seen").refused.0.is_none() {
+            assert!(started.elapsed() < WAIT, "the board refused nothing");
+            let now = policy.session_now_ns();
+            tx.send(ChunkDraft {
+                based_on: vec![InputRange::one(ChannelId(99), 1)],
+                t0_ns: now + 1_000_000,
+                dt_ns: 20_000_000,
+                replace_from_ns: now,
+                valid_until_ns: now + 200_000_000,
+                actions: Bytes::from([bad; 5].concat()),
+                tick: 0,
+            })
+            .expect("send");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+    };
+    tokio::join!(driven, controller);
+    assert_eq!(robot.last_refusal(), Some(Rejection::InvalidValue));
+    let invalid = robot.refusals(Rejection::InvalidValue);
+    assert!(invalid >= 1);
+    assert_eq!(robot.chunks_refused(), invalid);
+
+    // Bytes that open under no key are the same kind of news.
+    let at = u64::try_from(board.start.elapsed().as_micros()).expect("µs");
+    robot.sample(SUB_COMMANDS, "not/a/chunk", &mut [1, 2, 3], at);
+    assert_eq!(robot.last_refusal(), Some(Rejection::Unauthenticated));
+    assert_eq!(robot.refusals(Rejection::Unauthenticated), 1);
+    assert_eq!(robot.chunks_refused(), invalid + 1);
 }

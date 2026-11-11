@@ -28,7 +28,7 @@ use rlmesh_session_core::auth::{self, Credential, Link, LinkError, ReplyOutcome}
 use rlmesh_session_core::crypto::Rng;
 use rlmesh_session_core::crypto::handshake::IkInitiator;
 use rlmesh_session_core::crypto::signed;
-use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick};
+use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick, Rejection};
 use rlmesh_session_core::lobby::{self, LOBBY_SESSION, Leave, Lobby, WAIT_RETRY};
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
@@ -376,6 +376,16 @@ struct Edge {
     core: EdgeCore,
     /// The latch count it last saw: a latch cleared since still fences it.
     latches_seen: u64,
+    /// Chunks it refused, and the last one's reason and when.
+    refused: u64,
+    last_refusal: Option<(Rejection, i64)>,
+}
+
+impl Edge {
+    fn refused(&mut self, reason: Rejection, now: i64) {
+        self.refused += 1;
+        self.last_refusal = Some((reason, now));
+    }
 }
 
 /// One control tick of a part's command group: session-core's
@@ -709,6 +719,28 @@ impl Robot {
     /// Chunks the edges accepted, over every attach.
     pub fn chunks_accepted(&self) -> u64 {
         self.accepted
+    }
+
+    /// Chunks the edges refused, this attach.
+    pub fn chunks_refused(&self) -> u64 {
+        self.edges.iter().map(|e| e.refused).sum()
+    }
+
+    /// Why the most recent chunk refused this attach was.
+    pub fn last_refusal(&self) -> Option<Rejection> {
+        self.edges
+            .iter()
+            .filter_map(|e| e.last_refusal)
+            .max_by_key(|(_, at)| *at)
+            .map(|(reason, _)| reason)
+    }
+
+    /// Chunks refused this attach for `reason`.
+    pub fn refusals(&self, reason: Rejection) -> u64 {
+        self.edges
+            .iter()
+            .map(|e| e.core.stats().rejected(reason))
+            .sum()
     }
 
     /// Runs the timers and returns what the transport should do next, in
@@ -1125,6 +1157,14 @@ impl Robot {
         let chunk = match link.open_chunk(&key, msg) {
             Ok(chunk) => chunk,
             Err(err) => {
+                if let Some(Some(edge)) = self
+                    .edge_of
+                    .get(index)
+                    .map(|e| e.and_then(|i| self.edges.get_mut(i)))
+                {
+                    edge.core.count_rejection(Rejection::Unauthenticated);
+                    edge.refused(Rejection::Unauthenticated, now);
+                }
                 let now_us = u64::try_from(now / 1000).unwrap_or(0);
                 return self.missing_key(&err, now_us);
             }
@@ -1138,12 +1178,12 @@ impl Robot {
             return;
         };
         apply_latch(edge, latch);
-        if edge
+        match edge
             .core
             .accept(chunk, now, self.view.as_ref(), self.observed_ns)
-            .is_ok()
         {
-            self.accepted += 1;
+            Ok(_) => self.accepted += 1,
+            Err(reason) => edge.refused(reason, now),
         }
     }
 
@@ -1169,8 +1209,7 @@ impl Robot {
     /// of e-stop signals never floods the control queue.
     /// Chunks its edges refused, by reason (nonzero only): a compact report
     /// riding each heartbeat.
-    fn rejected(&self) -> Vec<(rlmesh_session_core::edge::Rejection, u64)> {
-        use rlmesh_session_core::edge::Rejection;
+    fn rejected(&self) -> Vec<(Rejection, u64)> {
         Rejection::ALL
             .iter()
             .map(|r| {
@@ -1546,6 +1585,8 @@ impl Robot {
             edges.push(Edge {
                 core,
                 latches_seen: self.latches,
+                refused: 0,
+                last_refusal: None,
             });
         }
         for (i, part) in parts.iter().enumerate() {

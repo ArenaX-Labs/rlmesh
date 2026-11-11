@@ -20,6 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::address;
 use crate::provision::Record;
+use rlmesh_session_core::edge::Rejection;
 use rlmesh_session_core::lobby::Leave;
 
 use crate::robot::{Action, Config, Fault, Phase, PublishError, Robot};
@@ -124,6 +125,11 @@ pub struct RlmeshDeviceRobotStatus {
     /// Why it last left a run: 0 never, 1 the run closed, 2 the run lost it,
     /// 3 superseded (it stopped).
     pub left: u8,
+    /// Why the edges last refused a chunk, this attach: 0 none, or the code
+    /// `rlmesh_device_refusal_name` names.
+    pub last_refusal: u8,
+    /// Chunks the edges refused, this attach.
+    pub chunks_refused: u64,
 }
 
 /// No part: `rlmesh_device_tick_t.part` and the handover's.
@@ -789,6 +795,64 @@ fn status_code(status: CtlStatus) -> u8 {
     }
 }
 
+// The header's `RLMESH_DEVICE_REFUSALS`.
+const _: () = assert!(Rejection::ALL.len() == 17);
+
+/// A refusal's code: its place in [`Rejection::ALL`], from 1.
+fn refusal_code(reason: Rejection) -> u8 {
+    u8::try_from(reason.index() + 1).unwrap_or(0)
+}
+
+/// The refusal with `code`.
+fn refusal(code: u8) -> Option<Rejection> {
+    Rejection::ALL
+        .get(usize::from(code.checked_sub(1)?))
+        .copied()
+}
+
+/// The name of a refusal's code (1 to `RLMESH_DEVICE_REFUSALS`), static and
+/// NUL-terminated, or null for any other. The names are the wire's.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_device_refusal_name(code: u8) -> *const c_char {
+    let Some(reason) = refusal(code) else {
+        return core::ptr::null();
+    };
+    let name = match reason {
+        Rejection::Malformed => c"malformed",
+        Rejection::WrongChannel => c"wrong_channel",
+        Rejection::Estop => c"estop",
+        Rejection::StaleEpoch => c"stale_epoch",
+        Rejection::NoLease => c"no_lease",
+        Rejection::StaleToken => c"stale_token",
+        Rejection::WrongSource => c"wrong_source",
+        Rejection::WrongBinding => c"wrong_binding",
+        Rejection::LeaseExpired => c"lease_expired",
+        Rejection::StaleSeq => c"stale_seq",
+        Rejection::Expired => c"expired",
+        Rejection::TooOld => c"too_old",
+        Rejection::Empty => c"empty",
+        Rejection::InvalidValue => c"invalid_value",
+        Rejection::NoClockMapping => c"no_clock_mapping",
+        Rejection::ClockUncertain => c"clock_uncertain",
+        Rejection::Unauthenticated => c"unauthenticated",
+    };
+    name.as_ptr()
+}
+
+/// Chunks refused this attach for the refusal `code`; 0 for any other code.
+/// Costlier than the status: call it to report, not every loop.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_refusals(robot: *const DeviceRobot, code: u8) -> u64 {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return 0;
+    };
+    refusal(code).map_or(0, |reason| r.robot.refusals(reason))
+}
+
 /// Where the robot is.
 ///
 /// # Safety
@@ -858,6 +922,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_status(
                 Some(ReasonCode::EstopSignal) => 2,
                 Some(_) => 1,
             },
+            last_refusal: robot.last_refusal().map_or(0, refusal_code),
+            chunks_refused: robot.chunks_refused(),
         });
     }
     RLMESH_DEVICE_OK
@@ -1007,6 +1073,27 @@ mod tests {
         unsafe { rlmesh_device_robot_status(robot, &mut status) };
         assert_eq!(status.estop, 0);
         unsafe { rlmesh_device_robot_free(robot) };
+    }
+
+    #[test]
+    fn every_refusal_has_a_name_and_a_code_past_them_has_none() {
+        let name = |code| {
+            let name = rlmesh_device_refusal_name(code);
+            (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_str().unwrap())
+        };
+        assert_eq!(name(0), None);
+        assert_eq!(name(1), Some("malformed"));
+        assert_eq!(name(6), Some("stale_token"));
+        let last = u8::try_from(Rejection::ALL.len()).unwrap();
+        assert_eq!(name(last), Some("unauthenticated"));
+        assert_eq!(name(last + 1), None);
+        for reason in Rejection::ALL {
+            assert!(name(refusal_code(reason)).is_some(), "{reason:?}");
+        }
+        assert_eq!(
+            unsafe { rlmesh_device_robot_refusals(core::ptr::null(), 1) },
+            0
+        );
     }
 
     /// A query's timeout runs from when it was handed out, not from when

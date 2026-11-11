@@ -84,7 +84,9 @@ void controlTick(int eyes) {
 
 `publish()` returns `RLMESH_DEVICE_ERR_NOT_READY` until the robot runs and its
 stream key arrives. `robot.status()` reports the phase, fault, mode, accepted
-chunks, and heartbeat echoes. `examples/Timing` measures the crypto costs
+and refused chunks, and heartbeat echoes; `robot.lastRefusal()` says why the
+last chunk was refused, and `robot.printRefusals(Serial)` counts them by
+reason. `examples/Timing` measures the crypto costs
 on the board; build sizes and a host test do not establish real-board timing.
 
 The library runs on Arduino's loop task and sets that task's stack to 12 KB

@@ -13,6 +13,7 @@
 #error "RLMesh runs on the classic ESP32 (ESP32-WROOM-32) ESP32-C6 and ESP32-S3"
 #endif
 
+#include <Print.h>
 #include <Stream.h>
 
 #include "rlmesh_device.h"
@@ -132,6 +133,15 @@ class Robot {
   bool running() const { return status().phase == 4; }
   // Actions the transport failed to carry out.
   uint32_t transportFailures() const;
+  // Why the edges last refused a command chunk ("stale_token"), or nullptr
+  // while none has been refused this attach. status().chunks_refused counts
+  // them.
+  const char* lastRefusal() const;
+  // Chunks refused this attach for one reason, by its code (1 to
+  // RLMESH_DEVICE_REFUSALS; rlmesh_device_refusal_name names them).
+  uint64_t refusals(uint8_t code) const;
+  // Prints the refusals on one line, with a count per reason.
+  void printRefusals(Print& out) const;
 
  private:
   bool start(const rlmesh_device_robot_config_t& config);

@@ -63,6 +63,9 @@ uint32_t bootHeldSince = 0;
 float target[2] = {0, 0};  // radians: pan, tilt
 uint8_t lastPhase = 255;
 uint32_t lastReport = 0;
+uint8_t lastRefusal = 0;
+uint64_t lastRefused = 0;
+uint32_t lastRefusalReport = 0;
 uint64_t nextTick = 0;
 
 // A hobby servo: 1500 us centred, 1000 us either way over about 90 degrees.
@@ -117,6 +120,15 @@ void report() {
       Serial.print(')');
     }
     Serial.println();
+  }
+  // Why commands are refused: at once when the reason changes, and at most
+  // every 5 s while they keep coming.
+  if (s.last_refusal != lastRefusal ||
+      (s.chunks_refused != lastRefused && millis() - lastRefusalReport > 5000)) {
+    lastRefusal = s.last_refusal;
+    lastRefused = s.chunks_refused;
+    lastRefusalReport = millis();
+    robot.printRefusals(Serial);
   }
   if (robot.running() && millis() - lastReport > 5000) {
     lastReport = millis();

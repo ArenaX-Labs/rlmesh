@@ -173,4 +173,22 @@ uint32_t Robot::transportFailures() const {
   return zenoh_ != nullptr ? rlmesh_zenoh_failures(zenoh_) : 0;
 }
 
+const char* Robot::lastRefusal() const { return rlmesh_device_refusal_name(status().last_refusal); }
+
+uint64_t Robot::refusals(uint8_t code) const {
+  return robot_ != nullptr ? rlmesh_device_robot_refusals(robot_, code) : 0;
+}
+
+void Robot::printRefusals(Print& out) const {
+  rlmesh_device_robot_status_t s = status();
+  const char* last = rlmesh_device_refusal_name(s.last_refusal);
+  out.printf("  refused %llu chunks, last %s:", (unsigned long long)s.chunks_refused,
+             last != nullptr ? last : "none");
+  for (uint8_t code = 1; code <= RLMESH_DEVICE_REFUSALS; ++code) {
+    uint64_t n = refusals(code);
+    if (n != 0) out.printf(" %s %llu", rlmesh_device_refusal_name(code), (unsigned long long)n);
+  }
+  out.println();
+}
+
 }  // namespace rlmesh

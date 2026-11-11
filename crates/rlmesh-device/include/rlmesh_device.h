@@ -149,6 +149,11 @@ typedef struct rlmesh_device_robot_status_t {
   /* Why it last left a run: 0 never, 1 the run closed, 2 the run lost it,
    * 3 superseded (it stopped). */
   uint8_t left;
+  /* Why the edges last refused a chunk, this attach: 0 none, or a code
+   * rlmesh_device_refusal_name names. */
+  uint8_t last_refusal;
+  /* Chunks the edges refused, this attach. */
+  uint64_t chunks_refused;
 } rlmesh_device_robot_status_t;
 
 /* No part, in a tick. */
@@ -242,6 +247,14 @@ int rlmesh_device_robot_publish(rlmesh_device_robot_t* robot, uint8_t part, uint
                                 const uint8_t* value, size_t len, uint64_t now_us);
 int rlmesh_device_robot_status(const rlmesh_device_robot_t* robot,
                                rlmesh_device_robot_status_t* out);
+
+/* Refusal codes run from 1 to this. */
+#define RLMESH_DEVICE_REFUSALS 17
+/* The name of a refusal's code ("stale_token"), static, or NULL for any other. */
+const char* rlmesh_device_refusal_name(uint8_t code);
+/* Chunks refused this attach for the refusal code; 0 for any other. Costlier
+ * than the status: call it to report, not every loop. */
+uint64_t rlmesh_device_robot_refusals(const rlmesh_device_robot_t* robot, uint8_t code);
 
 /* USB provisioning: the board keeps a device key it makes on
  * first boot (32 random bytes from a cryptographic RNG) and the record the
