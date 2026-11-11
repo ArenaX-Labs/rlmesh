@@ -350,7 +350,10 @@ impl<'a> Binder<'a> {
                         hz(trained),
                         hz(source_hz)
                     ),
-                    vec!["    Resampling a window to another rate is Later.".into()],
+                    vec![format!(
+                        "    RLMesh does not resample a window to another rate yet: resample in the model, or declare the part at {} Hz on the robot.",
+                        hz(trained)
+                    )],
                 );
                 return None;
             }

@@ -677,7 +677,7 @@ fn mismatches_with_no_conversion_are_incompatible() {
             r#"{"hz": 50, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft", "history": 50,
                 "history_hz": 1000}}}"#,
             "ur10e",
-            "the window was trained at 1000 Hz; wrist/ft publishes at 500 Hz",
+            "the window was trained at 1000 Hz; wrist/ft publishes at 500 Hz.\n    RLMesh does not resample a window to another rate yet: resample in the model, or declare the part at 1000 Hz on the robot.",
         ),
         (
             r#"{"hz": 20, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft",
@@ -699,7 +699,7 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 20, "inputs": {"c": {"kind": "camera", "at": "wrist/cam", "format": "mono8"}}}"#,
             "ur10e",
-            "Mono ↔ RGB conversion is Later",
+            "RLMesh does not convert between mono and RGB yet: convert in the model, or declare the other format on the robot.",
         ),
         (
             r#"{"hz": 20, "inputs": {"t": {"kind": "tactile", "at": "left/hand/tactile", "shape": [108]}}}"#,
@@ -715,7 +715,7 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 20, "actions": {"l": {"kind": "joints", "at": "legs", "names": ["FL_hip_joint"]}}}"#,
             "go2",
-            "Commanding a subset of a part (scatter) is Later",
+            "RLMesh does not command a subset of a part yet: command every joint from the model, or declare the subset as its own part on the robot.",
         ),
         (
             r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "names": "positional", "count": 7}}}"#,

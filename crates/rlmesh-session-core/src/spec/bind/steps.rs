@@ -219,7 +219,7 @@ impl<'a> Binder<'a> {
                                 index.len(),
                                 part.names.len()
                             ),
-                            vec!["    Commanding a subset of a part (scatter) is Later; declare the subset as its own part.".into()],
+                            vec!["    RLMesh does not command a subset of a part yet: command every joint from the model, or declare the subset as its own part on the robot.".into()],
                         );
                         return None;
                     }

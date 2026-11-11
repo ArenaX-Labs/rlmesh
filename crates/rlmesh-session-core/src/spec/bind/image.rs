@@ -75,7 +75,7 @@ impl<'a> Binder<'a> {
                         source_format.name(),
                         input.format.name()
                     ),
-                    vec!["    Mono ↔ RGB conversion is Later.".into()],
+                    vec!["    RLMesh does not convert between mono and RGB yet: convert in the model, or declare the other format on the robot.".into()],
                 );
                 return None;
             }
