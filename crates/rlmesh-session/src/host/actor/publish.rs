@@ -2,7 +2,7 @@
 
 use crate::wire::codec;
 use crate::wire::version::{VIEW_DEVICE, VIEW_DEVICE_LEAN, VIEW_DEVICE_SEALED};
-use crate::wire::{AuthoritySnapshot, DeviceView, ParticipantId, Role};
+use crate::wire::{AuthoritySnapshot, DeviceView, Lease, ParticipantId, Role};
 use rlmesh_session_core::crypto::SignedKind;
 use rlmesh_session_core::crypto::sealed::Kind;
 use tracing::warn;
@@ -95,26 +95,34 @@ impl HostActor {
     /// The views of every robot that asked for one whose content changed
     /// since the last published (a renewal moves a lease's expiry, a
     /// heartbeat its robot's clock mapping, so one dropped for a congested
-    /// link is soon replaced), signed.
+    /// link is soon replaced), signed. A change that only refines the last
+    /// one sent ([`refines`]) waits until that one is a quarter of the lease
+    /// grace old: a board decodes every view on its control loop, and a
+    /// renewal or a clock estimate lands on nearly every publish. Anything
+    /// else (a lease granted or ended, a mode, a member, a plan) goes at
+    /// once.
     fn views_due(
         &mut self,
         snapshot: &AuthoritySnapshot,
     ) -> Vec<(ParticipantId, Vec<u8>, Option<Vec<u8>>)> {
         self.views.retain(|robot, _| asks_for_view(snapshot, robot));
+        let refine = self.refine_ns();
         let mut due = Vec::new();
         for robot in snapshot.roster.iter().map(|p| &p.id) {
             if !asks_for_view(snapshot, robot) {
                 continue;
             }
             let view = view_of(snapshot, robot, false);
-            let unchanged = self.views.get(robot).is_some_and(|last| {
-                *last
+            let wait = self.views.get(robot).is_some_and(|last| {
+                let unchanged = *last
                     == DeviceView {
                         host_ns: last.host_ns,
                         ..view.clone()
-                    }
+                    };
+                unchanged
+                    || refines(last, &view) && view.host_ns.saturating_sub(last.host_ns) < refine
             });
-            if unchanged {
+            if wait {
                 continue;
             }
             if let Some(signed) = self.sign_view(&view) {
@@ -213,16 +221,33 @@ impl HostActor {
         self.authority.snapshot(clocks, now)
     }
 
+    /// How long a refinement of a robot's view waits after the last one
+    /// sent: a quarter of the lease grace, the cadence renewals go out at.
+    fn refine_ns(&self) -> i64 {
+        i64::try_from(self.config.lease_grace.as_nanos() / 4).unwrap_or(i64::MAX)
+    }
+
     /// Heartbeats renew leases without a structural change; while any lease
     /// is held, republish often enough that an edge's local expiry never
-    /// runs ahead of the host's renewals.
+    /// runs ahead of the host's renewals: the state every quarter grace,
+    /// and the view of a robot with a leased part once its last is that
+    /// old.
     pub(super) async fn publish_renewals(&mut self, every_tick: bool) {
         if self.authority.lease_count() == 0 {
             return;
         }
-        let quarter = i64::try_from(self.config.lease_grace.as_nanos() / 4).unwrap_or(i64::MAX);
-        if every_tick || self.now().saturating_sub(self.last_publish_ns) >= quarter {
+        let quarter = self.refine_ns();
+        let now = self.now();
+        if every_tick || now.saturating_sub(self.last_publish_ns) >= quarter {
             self.publish().await;
+        } else if self
+            .views
+            .values()
+            .any(|last| !last.leases.is_empty() && now.saturating_sub(last.host_ns) >= quarter)
+        {
+            let snapshot = self.snapshot();
+            let views = self.views_due(&snapshot);
+            self.send_views(views).await;
         }
     }
 
@@ -237,6 +262,10 @@ impl HostActor {
         {
             warn!(%err, "authority publish failed");
         }
+        self.send_views(views).await;
+    }
+
+    async fn send_views(&mut self, views: Vec<(ParticipantId, Vec<u8>, Option<Vec<u8>>)>) {
         for (robot, signed, sealed) in views {
             if let Some(sealed) = sealed {
                 let sent = self
@@ -266,6 +295,37 @@ impl HostActor {
             }
         }
     }
+}
+
+/// Whether `next` differs from `last` only by refinements: each lease's
+/// expiry, moved by its holder's renewals, the clock mappings of the same
+/// participants re-estimated, and when it was taken. Its revision too: the
+/// session's, which anyone's change bumps, and which a robot only orders
+/// views by.
+fn refines(last: &DeviceView, next: &DeviceView) -> bool {
+    let leases = last.leases.len() == next.leases.len()
+        && last.leases.iter().zip(&next.leases).all(|(a, b)| {
+            *a == Lease {
+                expires_ns: a.expires_ns,
+                ..b.clone()
+            }
+        });
+    let clocks = last.clocks.len() == next.clocks.len()
+        && last
+            .clocks
+            .iter()
+            .zip(&next.clocks)
+            .all(|(a, b)| a.participant == b.participant);
+    leases
+        && clocks
+        && *last
+            == DeviceView {
+                host_ns: last.host_ns,
+                revision: last.revision,
+                leases: last.leases.clone(),
+                clocks: last.clocks.clone(),
+                ..next.clone()
+            }
 }
 
 /// `robot`'s view of `snapshot`, as it asked for it: without its parts,
@@ -301,4 +361,73 @@ pub(super) fn asks_for_view(snapshot: &AuthoritySnapshot, robot: &ParticipantId)
     snapshot.participant(robot).is_some_and(|p| {
         p.has_role(Role::Embodiment) && p.supports.iter().any(|f| f == VIEW_DEVICE)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wire::{
+        ChannelId, ClockMapping, Fingerprint, LeaseToken, Member, Mode, PriorityClass,
+    };
+
+    fn pid(id: &str) -> ParticipantId {
+        ParticipantId::new(id).expect("id")
+    }
+
+    fn view() -> DeviceView {
+        DeviceView {
+            revision: 4,
+            host_ns: 100,
+            leases: vec![Lease {
+                channel: ChannelId(1),
+                holder: pid("driver"),
+                priority: PriorityClass::Model,
+                token: LeaseToken(9),
+                ttl_ns: 250,
+                granted_ns: 0,
+                expires_ns: 300,
+                binding: Fingerprint::from(1),
+                key_id: 3,
+            }],
+            clocks: vec![ClockMapping {
+                participant: pid("eye-1"),
+                offset_ns: 5,
+                error_ns: 1,
+                rtt_ns: 2,
+                sample_ns: 0,
+                drift_bound_ppm: 100.0,
+            }],
+            members: vec![Member {
+                id: pid("driver"),
+                generation: 1,
+            }],
+            ..DeviceView::empty(pid("eye-1"))
+        }
+    }
+
+    #[test]
+    fn a_renewal_a_clock_estimate_or_anyone_elses_revision_only_refines_a_view() {
+        let last = view();
+        let mut next = view();
+        next.host_ns = 160;
+        next.revision = 7;
+        next.leases[0].expires_ns = 360;
+        next.clocks[0].offset_ns = 6;
+        next.clocks[0].error_ns = 2;
+        assert!(refines(&last, &next));
+
+        let changed: [fn(&mut DeviceView); 6] = [
+            |v| v.leases[0].token = LeaseToken(10),
+            |v| v.leases.clear(),
+            |v| v.clocks[0].participant = pid("other"),
+            |v| v.mode = Mode::Safe,
+            |v| v.members.clear(),
+            |v| v.generation = 2,
+        ];
+        for change in changed {
+            let mut next = view();
+            change(&mut next);
+            assert!(!refines(&last, &next), "{next:?}");
+        }
+    }
 }
