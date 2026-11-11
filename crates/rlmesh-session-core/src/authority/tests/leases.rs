@@ -449,3 +449,63 @@ fn a_holder_asking_for_a_peer_of_its_own_part_is_told_to_release_it() {
         err.message
     );
 }
+
+#[test]
+fn a_peer_held_at_the_same_class_is_not_preempted() {
+    let mut f = Fixture::new();
+    f.auth
+        .apply(
+            Request {
+                from: pid("rival"),
+                epoch: None,
+                request_id: 0,
+                command: attach("rival", vec![Role::Controller], PriorityClass::Model),
+            },
+            0,
+        )
+        .expect("attach");
+    f.bind("rival", 9, &["arm/tcp"]).expect("bind");
+    f.run("operator", Command::Arm, 0).expect("arm");
+    let tcp = f.grant("rival", "arm/tcp", 0).expect("grant");
+    assert_eq!(
+        Fixture::status(f.grant("policy", "arm", 0)),
+        CtlStatus::GroupBusy
+    );
+    assert_eq!(f.auth.lease(tcp.channel), Some(&tcp));
+}
+
+#[test]
+fn a_zero_ttl_takes_the_grace_and_any_other_is_taken_as_asked() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 0).expect("arm");
+    let mut grant = |path: &str, ttl_ns| {
+        let command = Command::GrantLease {
+            channels: vec![f.ch(path)],
+            release: Vec::new(),
+            binding: f.fingerprint("policy"),
+            ttl_ns: Some(ttl_ns),
+        };
+        f.run("policy", command, 10).expect("grant").leases[0].expires_ns
+    };
+    assert_eq!(grant("cmd1", 0), 10 + GRACE as i64);
+    assert_eq!(grant("cmd2", 5), 15);
+}
+
+#[test]
+fn an_estop_ends_every_lease_as_voided_by_it() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 0).expect("arm");
+    f.grant("policy", "cmd1", 0).expect("grant");
+    let estop = Command::Estop {
+        reason: "button".into(),
+        code: ReasonCode::Unspecified,
+        origin: None,
+        at_ns: 0,
+    };
+    f.run("viewer", estop, 1).expect("estop");
+    let ended = f.auth.snapshot(Vec::new(), 1).ended;
+    assert_eq!(
+        ended.last().map(|e| e.reason.code),
+        Some(ReasonCode::VoidedByEstop)
+    );
+}
