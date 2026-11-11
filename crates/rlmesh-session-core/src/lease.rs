@@ -327,7 +327,6 @@ impl LeaseClient {
             return Some(format!("epoch {} began", snapshot.epoch));
         }
         Some(match snapshot.lease(self.channel) {
-            Some(now) if now.token == token && now.holder == self.me => return None,
             Some(now) if now.holder == self.me => {
                 format!("re-issued under {} (the binding changed)", now.token)
             }
