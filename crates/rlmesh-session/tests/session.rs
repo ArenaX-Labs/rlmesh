@@ -33,6 +33,7 @@ use rlmesh_session::{
     ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
     SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
 };
+use zenoh::query::ConsolidationMode;
 
 /// Participants listen too (the OS picks the ports): in peer mode, data
 /// flows peer to peer once gossip tells peers where to connect.
@@ -805,6 +806,86 @@ async fn a_late_observer_gets_the_snapshot_by_query() {
         status(viewer.grant_lease(arm, None).await.expect_err("observer")),
         CtlStatus::Forbidden
     );
+}
+
+/// A state too large for a board's transport (zenoh-pico reassembles at most
+/// 4096 bytes and drops the rest unseen) is followed by its signed header
+/// alone, which a board reads the host instance from. Every other reader
+/// keeps the full state: the first reply, and the one Zenoh's default
+/// consolidation keeps.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_state_too_large_for_a_board_is_followed_by_its_header_alone() {
+    let world = World::start().await;
+    let policy = world
+        .join("policy", vec![Role::Controller], PriorityClass::Model, 0)
+        .await;
+    let transport = world.transport().await;
+    let key = world.host.keys().host_state();
+    let all = |consolidation| {
+        let (control, key) = (transport.control().clone(), key.clone());
+        async move {
+            let replies = control
+                .get(key)
+                .consolidation(consolidation)
+                .timeout(WAIT)
+                .await
+                .expect("query");
+            let mut out = Vec::new();
+            while let Ok(reply) = replies.recv_async().await {
+                out.push(
+                    reply
+                        .result()
+                        .expect("ok")
+                        .payload()
+                        .to_bytes()
+                        .into_owned(),
+                );
+            }
+            out
+        }
+    };
+    // A small state: one reply, as ever.
+    let small = all(ConsolidationMode::None).await;
+    assert_eq!(small.len(), 1);
+    assert!(small[0].len() < 2048, "{} bytes", small[0].len());
+
+    let table = format!(r#"{{"note": "{}"}}"#, "x".repeat(4096));
+    policy
+        .declare_binding(Fingerprint::from(7), &table, Vec::new(), 0.0)
+        .await
+        .expect("binding");
+    let both = all(ConsolidationMode::None).await;
+    assert_eq!(both.len(), 2, "the state, then its header");
+    let (state, header) = (
+        signed::peek(&both[0]).expect("signed"),
+        signed::peek(&both[1]).expect("signed"),
+    );
+    assert!(both[0].len() > 4096);
+    let decoded = codec::decode_state(state.body).expect("the full state");
+    assert!(decoded.bindings.iter().any(|b| b.table_json == table));
+    assert!(
+        header.body.is_empty() && both[1].len() < 128,
+        "{} bytes",
+        both[1].len()
+    );
+    assert_eq!(header.header.kind, signed::SignedKind::AuthorityState);
+    assert_eq!(header.header.host_instance, state.header.host_instance);
+    assert!(
+        codec::decode_state(header.body).is_err(),
+        "a header alone is no state to anyone who reads one"
+    );
+    // A reader keeping the latest reply per key keeps the full state.
+    let latest = all(ConsolidationMode::Latest).await;
+    assert_eq!(latest.len(), 1);
+    let kept = codec::decode_state(signed::peek(&latest[0]).expect("signed").body);
+    assert!(kept.is_ok_and(|s| s.bindings.iter().any(|b| b.table_json == table)));
+    // The SDK's own readers take the state.
+    let fetched = policy.fetch_authority().await.expect("fetched");
+    assert!(fetched.bindings.iter().any(|b| b.table_json == table));
+    let queried = query_authority(&transport, world.host.keys(), WAIT)
+        .await
+        .expect("queried");
+    assert!(queried.bindings.iter().any(|b| b.table_json == table));
 }
 
 #[tokio::test(flavor = "multi_thread")]

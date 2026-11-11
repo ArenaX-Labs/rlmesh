@@ -11,12 +11,54 @@ use zenoh::query::Query;
 use crate::host::HostActor;
 use crate::transport::{CONTROL_PRIORITY, RESENT_CONGESTION};
 
+/// The largest message a board's transport takes in: zenoh-pico reassembles
+/// a fragmented message in a buffer of 4096 bytes (`Z_FRAG_MAX_SIZE`, as
+/// boards are built) and drops a larger one without a word.
+const BOARD_MESSAGE: usize = 4096;
+/// What the Zenoh reply around a payload can take of that: its key
+/// expression, ids and extensions.
+const REPLY_ENVELOPE: usize = 512;
+
 impl HostActor {
+    /// Answers a `host/state` query with the signed state. A board asks it
+    /// only for the host instance in its header, and its transport drops a
+    /// state larger than [`BOARD_MESSAGE`] unseen, so it would never join.
+    /// Such a state is followed by its header alone (signed, with an empty
+    /// body). Every other reader keeps the state: one that takes the first
+    /// reply gets it first, one that keeps the latest per key (Zenoh's
+    /// default) keeps the state's timestamp over none, and a header alone
+    /// fails to decode as a state.
     pub(super) async fn on_state_query(&mut self, query: Query) {
-        match self.sign_state(&self.snapshot()) {
-            Some(signed) => Self::reply(query, signed),
-            None => Self::discard(query),
+        let Some(signed) = self.sign_state(&self.snapshot()) else {
+            return Self::discard(query);
+        };
+        if signed.len() + REPLY_ENVELOPE <= BOARD_MESSAGE {
+            return Self::reply(query, signed);
         }
+        let header = self
+            .signer
+            .sign(SignedKind::AuthorityState, &self.keys.host_state(), &[]);
+        let at = self.transport.control().new_timestamp();
+        tokio::task::spawn_blocking(move || {
+            let key = query.key_expr().clone();
+            let sent = query
+                .reply(key.clone(), signed)
+                .timestamp(at)
+                .express(true)
+                .wait()
+                .map_err(|err| err.to_string())
+                .and_then(|()| header.map_err(|err| err.to_string()))
+                .and_then(|header| {
+                    query
+                        .reply(key, header)
+                        .express(true)
+                        .wait()
+                        .map_err(|err| err.to_string())
+                });
+            if let Err(err) = sent {
+                warn!(%err, "reply failed");
+            }
+        });
     }
 
     /// Answers a robot's recovery query on `host/view/{robot}` with its

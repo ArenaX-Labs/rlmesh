@@ -34,6 +34,9 @@ const MAP: &str = r#"{"eyes": {"kind": "joints", "names": ["pan", "tilt"], "fiel
   "hz": 50, "command": "position", "safe": "hold",
   "limits": {"pos": [[-0.6, 0.6], [-0.4, 0.4]]}}}"#;
 const WAIT: Duration = Duration::from_secs(10);
+/// zenoh-pico reassembles a message in 4096 bytes (`Z_FRAG_MAX_SIZE`, as
+/// boards are built) and drops a larger one without a word.
+const PICO_MESSAGE: usize = 4096;
 
 /// SplitMix64, seeded from the clock: the handshake's ephemeral keys.
 struct Mix(u64);
@@ -228,6 +231,11 @@ struct Board {
     no_query_end: bool,
     /// Queries that never reach the host, by key.
     lose: Box<dyn FnMut(&str) -> bool + Send>,
+    /// Replies too large for zenoh-pico ([`PICO_MESSAGE`]) are lost, as
+    /// on a board.
+    pico: bool,
+    /// Replies lost for their size.
+    oversized: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Board {
@@ -248,6 +256,8 @@ impl Board {
             offline_until: None,
             no_query_end: false,
             lose: Box::new(|_| false),
+            pico: false,
+            oversized: Arc::default(),
         }
     }
 
@@ -373,6 +383,7 @@ impl Board {
                 payload,
             } => {
                 let tx = self.tx.clone();
+                let (pico, oversized) = (self.pico, self.oversized.clone());
                 let zenoh = match &self.transport {
                     Some(transport) if !(self.lose)(&key) => transport.session(class(c)).clone(),
                     _ => {
@@ -383,8 +394,10 @@ impl Board {
                 self.queries.insert(
                     id,
                     tokio::spawn(async move {
+                        // The key alone, of the reply's envelope.
+                        let fits = |bytes: &[u8]| !pico || bytes.len() + key.len() <= PICO_MESSAGE;
                         let mut get = zenoh
-                            .get(key)
+                            .get(key.clone())
                             .consolidation(ConsolidationMode::None)
                             .timeout(Duration::from_millis(u64::from(timeout_ms)));
                         if let Some(payload) = payload {
@@ -394,7 +407,12 @@ impl Board {
                             while let Ok(reply) = replies.recv_async().await {
                                 if let Ok(sample) = reply.result() {
                                     let bytes = sample.payload().to_bytes().into_owned();
-                                    let _ = tx.send(Event::Reply(id, bytes));
+                                    if fits(&bytes) {
+                                        let _ = tx.send(Event::Reply(id, bytes));
+                                    } else {
+                                        oversized
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    }
                                 }
                             }
                         }
@@ -1175,6 +1193,49 @@ async fn a_board_joins_though_lost_queries_never_report_their_end() {
         })
         .await;
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+}
+
+/// A session whose state outgrew what a board's transport takes in (here a
+/// policy's binding table alone fills it; in a session driven for a while,
+/// its participants, parts, bindings and ended leases): the board still reads
+/// the host instance and joins, and a full participant still reads the whole
+/// state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_board_joins_a_session_whose_state_outgrew_its_transport() {
+    let world = World::start().await;
+    let policy = world.controller().await;
+    let table = format!(r#"{{"note": "{}"}}"#, "x".repeat(PICO_MESSAGE));
+    policy
+        .declare_binding(Fingerprint::from(7), &table, Vec::new(), 0.0)
+        .await
+        .expect("binding");
+    let state = policy.fetch_authority().await.expect("the state");
+    assert!(
+        state.bindings.iter().any(|b| b.table_json == table),
+        "a full reader gets the whole state"
+    );
+    let state = rlmesh_session::participant::query_authority(
+        &world.transport().await,
+        world.host.keys(),
+        WAIT,
+    )
+    .await
+    .expect("the state, unverified");
+    assert!(state.bindings.iter().any(|b| b.table_json == table));
+
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    board.pico = true;
+    board
+        .run(&mut robot, WAIT, &Arc::default(), |r| {
+            r.phase() == Phase::Running
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    assert!(
+        board.oversized.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "the state itself never reached the board"
+    );
 }
 
 /// A chunk the edge refuses says why, and what can't be opened at all is
