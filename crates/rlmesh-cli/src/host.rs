@@ -63,6 +63,19 @@ pub const HOST_KEY: &str = "host.key";
 /// How often `devices.toml` is read again.
 const RELOAD: Duration = Duration::from_millis(500);
 
+/// The host's own warnings, on stderr: `RUST_LOG` filters them, `warn` when
+/// unset. A process that already has a logger (the Python package's) keeps
+/// it.
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .try_init();
+}
+
 /// The state directory: `dir`, else [`address::daemon_dir`].
 pub fn state_dir(dir: Option<&Path>) -> Result<PathBuf> {
     dir.map(Path::to_path_buf)
@@ -158,6 +171,7 @@ pub fn advertised(base: SocketAddr) -> Vec<String> {
 
 /// `rlmesh host`: hosts until SIGINT or SIGTERM.
 pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Write) -> Result<()> {
+    init_logging();
     let dir = state_dir(args.state_dir.as_deref())?;
     let identity = Arc::new(identity(&dir)?);
     let table = Table::read(&dir)?;

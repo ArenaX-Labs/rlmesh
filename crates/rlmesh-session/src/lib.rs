@@ -95,6 +95,7 @@ pub mod media;
 pub mod metrics;
 pub mod pairing;
 pub mod participant;
+mod quiet;
 #[cfg(feature = "record")]
 pub mod record;
 pub mod report;

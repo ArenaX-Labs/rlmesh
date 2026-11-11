@@ -3,6 +3,7 @@
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -45,21 +46,32 @@ struct HostProcess {
     _state: tempfile::TempDir,
     /// Its address with `local`'s key.
     address: SessionAddress,
+    /// What it wrote to stderr, when [`Self::spawn_logged`] kept it.
+    log: Arc<Mutex<String>>,
 }
 
 impl HostProcess {
     /// Spawns the host on free local ports, again on others when one was
     /// taken in between (the host then exits before printing its address).
     fn spawn() -> Self {
+        Self::spawn_with(&[], false)
+    }
+
+    /// Spawned with `args` too, keeping what it writes to stderr.
+    fn spawn_logged(args: &[&str]) -> Self {
+        Self::spawn_with(args, true)
+    }
+
+    fn spawn_with(args: &[&str], logged: bool) -> Self {
         for _ in 0..16 {
-            if let Some(host) = Self::try_spawn() {
+            if let Some(host) = Self::try_spawn(args, logged) {
                 return host;
             }
         }
         panic!("the host process never found free ports");
     }
 
-    fn try_spawn() -> Option<Self> {
+    fn try_spawn(args: &[&str], logged: bool) -> Option<Self> {
         let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
         let recordings = tempfile::tempdir().expect("tempdir");
         let state = tempfile::tempdir().expect("tempdir");
@@ -70,10 +82,26 @@ impl HostProcess {
             .args(["--record-min-free", "1B"])
             .arg("--state-dir")
             .arg(state.path())
+            .args(args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(if logged {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            })
             .spawn()
             .expect("spawn the host");
+        let log = Arc::new(Mutex::new(String::new()));
+        if let Some(stderr) = child.stderr.take() {
+            let log = log.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    let mut log = log.lock().expect("log");
+                    log.push_str(&line);
+                    log.push('\n');
+                }
+            });
+        }
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
         let mut line = String::new();
         stdout.read_line(&mut line).expect("address line");
@@ -93,6 +121,7 @@ impl HostProcess {
                 recordings,
                 _state: state,
                 address,
+                log,
             });
         }
         let _ = child.kill();
@@ -304,6 +333,60 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
         "{err}"
     );
     assert!(!host.wait_exit().success());
+}
+
+/// The host's own warnings reach its stderr: a participant it dropped, with
+/// why, once however often it happens in a row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_process_warns_once_of_a_participant_it_dropped() {
+    let host = HostProcess::spawn_logged(&["--presence-grace", "300ms"]);
+    let observer = join(
+        &host,
+        "observer",
+        vec![Role::Observer],
+        PriorityClass::Model,
+    )
+    .await;
+    let dropped = |log: &str| {
+        log.lines()
+            .filter(|l| l.contains("participant dropped from the session") && l.contains("robot"))
+            .count()
+    };
+    for _ in 0..2 {
+        let robot = join(
+            &host,
+            "robot",
+            vec![Role::Embodiment],
+            PriorityClass::Scripted,
+        )
+        .await;
+        observer
+            .wait_for("the robot", WAIT, |s| {
+                s.roster.iter().any(|p| p.id == *robot.id())
+            })
+            .await
+            .expect("attached");
+        // Gone without a word: its heartbeats stop.
+        robot.close().await;
+        observer
+            .wait_for("the robot dropped", WAIT, |s| {
+                !s.roster.iter().any(|p| p.id.as_str() == "robot")
+            })
+            .await
+            .expect("dropped");
+    }
+    let started = Instant::now();
+    while dropped(&host.log.lock().expect("log")) == 0 {
+        assert!(
+            started.elapsed() < WAIT,
+            "no warning: {}",
+            host.log.lock().expect("log")
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let log = host.log.lock().expect("log").clone();
+    assert_eq!(dropped(&log), 1, "{log}");
+    assert!(log.contains("Lost"), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -156,17 +156,25 @@ fn stalled(stall: &mut Option<Stall>, waiting: u64, taken: u64, now: Instant) ->
 
 fn watch(ports: &[u16], stop: &mpsc::Receiver<()>) {
     let mut stalls: HashMap<sys::Key, Option<Stall>> = HashMap::new();
+    let mut quiet = crate::quiet::Quiet::default();
     while let Err(mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(SCAN) {
         let now = Instant::now();
         let mut seen = HashMap::with_capacity(stalls.len());
         for link in sys::accepted(ports) {
             let mut stall = stalls.get(&link.key).copied().flatten();
+            let since = stall.map(|s| s.since);
             if stalled(&mut stall, link.waiting, link.taken, now) {
-                if sys::cut(&link) {
+                let peer = link.peer.map(|p| p.ip().to_string()).unwrap_or_default();
+                if sys::cut(&link)
+                    && let Some(held_back) = quiet.admit("link cut", &peer, now)
+                {
+                    let unread_for = since.map(|since| now.duration_since(since));
                     warn!(
                         peer = ?link.peer,
                         waiting = link.waiting,
-                        "a peer took almost nothing sent to it for {LINK_STALL:?}: its link is cut"
+                        ?unread_for,
+                        held_back,
+                        "a peer took almost nothing sent to it: its link is cut"
                     );
                 }
                 stall = None;

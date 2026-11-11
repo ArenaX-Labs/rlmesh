@@ -36,6 +36,18 @@ impl HostActor {
         if signed.len() + REPLY_ENVELOPE <= BOARD_MESSAGE {
             return Self::reply(query, signed);
         }
+        if let Some(held_back) = self
+            .quiet
+            .admit("state too large", "", std::time::Instant::now())
+        {
+            warn!(
+                session = %self.config.session,
+                bytes = signed.len(),
+                board_limit = BOARD_MESSAGE,
+                held_back,
+                "host_state answered with a header-only follow-up: the state is too large for a board"
+            );
+        }
         let header = self
             .signer
             .sign(SignedKind::AuthorityState, &self.keys.host_state(), &[]);

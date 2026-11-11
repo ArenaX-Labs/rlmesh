@@ -328,6 +328,7 @@ impl SessionHost {
             lobby_done,
             #[cfg(feature = "fleet")]
             lobby_answers,
+            quiet: crate::quiet::Quiet::default(),
         };
         actor.publish().await;
         info!(session = %actor.config.session, key = actor.keys.prefix(), "session host up");
@@ -544,6 +545,8 @@ struct HostActor {
     /// Those answers, for the host task's loop.
     #[cfg(feature = "fleet")]
     lobby_answers: mpsc::UnboundedReceiver<LobbyDone>,
+    /// Warnings held back while their subject's last one is recent.
+    quiet: crate::quiet::Quiet,
 }
 
 /// Whether a liveliness token on `key` is declared: a participant that left

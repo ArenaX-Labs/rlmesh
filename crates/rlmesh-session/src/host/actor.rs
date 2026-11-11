@@ -20,10 +20,10 @@ use rlmesh_session_core::auth::issuer::GrantId;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use zenoh::query::Query;
 
-use crate::authority::AuthorityEvent;
+use crate::authority::{AuthorityEvent, DetachReason};
 use crate::clock::OffsetEstimator;
 use crate::edge::core::Rejection;
 use crate::host::peer::Peer;
@@ -297,6 +297,7 @@ impl HostActor {
         }
         for event in events {
             info!(session = %self.config.session, "{event}");
+            self.warn_of(&event);
             match &event {
                 AuthorityEvent::Attached { participant, .. } => {
                     let generation = self.declare_echo(participant).await;
@@ -353,6 +354,31 @@ impl HostActor {
         self.epoch
             .store(self.authority.epoch().0, Ordering::Relaxed);
         self.publish().await;
+    }
+}
+
+impl HostActor {
+    /// Warns of a participant the session dropped, or a robot held: each
+    /// subject at most once per [`crate::quiet::QUIET`].
+    fn warn_of(&mut self, event: &AuthorityEvent) {
+        let session = &self.config.session;
+        let now = std::time::Instant::now();
+        match event {
+            AuthorityEvent::Detached {
+                participant,
+                reason,
+            } if *reason != DetachReason::Requested => {
+                if let Some(held_back) = self.quiet.admit("dropped", participant.as_str(), now) {
+                    warn!(%session, %participant, ?reason, held_back, "participant dropped from the session");
+                }
+            }
+            AuthorityEvent::RobotHeld { robot, reason } => {
+                if let Some(held_back) = self.quiet.admit("held", robot.as_str(), now) {
+                    warn!(%session, %robot, reason = %reason.detail, code = ?reason.code, held_back, "robot held: it takes no lease until re-armed");
+                }
+            }
+            _ => {}
+        }
     }
 }
 
