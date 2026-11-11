@@ -145,4 +145,33 @@ mod tests {
         assert!(format!("{key:?}").len() < 20, "never logged");
         assert_eq!("nope".parse::<AddressKey>(), Err(AddressKeyError));
     }
+
+    #[test]
+    fn a_link_password_is_the_base32_of_the_secrets_derived_key() {
+        let derived = crate::crypto::lp::kdf(&[1; 32], LINK_LABEL, &[]).expect("kdf");
+        assert_eq!(*link_password(&[1; 32]), base32(&derived));
+        assert_ne!(*link_password(&[1; 32]), *link_password(&[2; 32]));
+        let identity = HostIdentity::generate(&mut TestRng::new(4)).expect("identity");
+        assert_eq!(
+            *AddressKey::of(&identity).link_password(),
+            *link_password(identity.local_secret())
+        );
+    }
+
+    #[test]
+    fn base32_refuses_a_last_character_with_padding_bits_set() {
+        let text = base32(&[0; 32]);
+        assert_eq!(unbase32(&text), Some([0; 32]));
+        // The last character holds one data bit and four zero bits.
+        let padded = format!("{}b", &text[..51]);
+        assert_eq!(unbase32(&padded), None);
+    }
+
+    #[test]
+    fn an_address_keys_debug_output_never_shows_its_secret() {
+        let identity = HostIdentity::generate(&mut TestRng::new(4)).expect("identity");
+        let key = AddressKey::of(&identity);
+        crate::crypto::assert_redacted(&key, identity.local_secret());
+        assert!(!format!("{key:?}").contains(&base32(identity.local_secret())));
+    }
 }
