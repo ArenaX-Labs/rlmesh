@@ -108,16 +108,6 @@ impl Authority {
                 }
             })
             .collect::<Result<_, _>>()?;
-        // New commands in an armed session wait to be re-armed by name,
-        // unless robots re-arm on their own.
-        if armed && commands {
-            let why = self.reason(
-                ReasonCode::Unspecified,
-                from,
-                "declared commandable parts while armed",
-            );
-            self.hold(from, why, events);
-        }
         // Validated: mutate.
         let mut added = Vec::with_capacity(fresh.len());
         for mut spec in fresh {
@@ -158,6 +148,19 @@ impl Authority {
             for spec in added {
                 self.parts.insert(spec.channel, spec);
             }
+        }
+        // New commands in an armed session wait to be re-armed by name,
+        // unless robots re-arm on their own; with none left there is
+        // nothing to hold.
+        if !self.commands_any(from) {
+            self.held.remove(from);
+        } else if armed && commands {
+            let why = self.reason(
+                ReasonCode::Unspecified,
+                from,
+                "declared commandable parts while armed",
+            );
+            self.hold(from, why, events);
         }
         Ok(())
     }

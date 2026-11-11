@@ -506,3 +506,88 @@ fn estop_latches_and_needs_clear_disarm_arm() {
     f.run("operator", Command::Arm, 7).expect("arm");
     assert_eq!(f.auth.epoch(), epoch.next());
 }
+
+#[test]
+fn a_participant_that_only_publishes_is_never_held() {
+    let as_tracker = |f: &mut Fixture, generation: u32, command: Command, now: i64| {
+        let sender = Identity {
+            device: crate::auth::LOCAL_DEVICE.into(),
+            generation,
+        };
+        let request = Request {
+            from: pid("tracker"),
+            epoch: None,
+            request_id: 0,
+            command,
+        };
+        f.auth.apply_from(request, &sender, now).expect("tracker");
+    };
+    let attach_tracker = || attach("tracker", vec![Role::Embodiment], PriorityClass::Scripted);
+    let target =
+        r#"{"target": {"kind": "x/target", "hz": 30, "fields": {"xy": ["float32", [2]]}}}"#;
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 1).expect("arm");
+    f.grant("policy", "cmd1", 1).expect("driving");
+    as_tracker(&mut f, 1, attach_tracker(), 1);
+    as_tracker(&mut f, 1, declare(target), 1);
+    // Restarted, lost, back with a fallback: nothing to re-arm, ever.
+    as_tracker(&mut f, 2, attach_tracker(), 2);
+    assert!(f.auth.held(&pid("tracker")).is_none(), "restarted");
+    as_tracker(&mut f, 2, declare(target), 2);
+    f.auth.participant_lost(&pid("tracker"), 3);
+    assert!(f.auth.held(&pid("tracker")).is_none(), "lost");
+    as_tracker(&mut f, 3, attach_tracker(), 4);
+    as_tracker(&mut f, 3, declare(target), 4);
+    let safe = Command::EnterSafe {
+        reason: "camera unplugged".into(),
+        code: ReasonCode::DeviceWatchdog,
+    };
+    as_tracker(&mut f, 3, safe, 5);
+    assert!(f.auth.held(&pid("tracker")).is_none(), "fallback");
+    let snapshot = f.auth.snapshot(Vec::new(), 5);
+    assert!(snapshot.held.is_empty(), "{:?}", snapshot.held);
+    assert!(f.grant("policy", "cmd2", 5).is_ok(), "the session goes on");
+}
+
+#[test]
+fn a_hold_ends_when_the_robot_commands_nothing_or_leaves() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 1).expect("arm");
+    f.auth.participant_lost(&pid("robot"), 2);
+    assert!(f.auth.held(&pid("robot")).is_some());
+    let back = Identity {
+        device: crate::auth::LOCAL_DEVICE.into(),
+        generation: 2,
+    };
+    let as_robot = |command| Request {
+        from: pid("robot"),
+        epoch: None,
+        request_id: 0,
+        command,
+    };
+    f.auth
+        .apply_from(
+            as_robot(attach(
+                "robot",
+                vec![Role::Embodiment],
+                PriorityClass::Scripted,
+            )),
+            &back,
+            3,
+        )
+        .expect("back");
+    // Back as a sensor alone: nothing commandable left to hold.
+    let sensor = r#"{"ft": {"kind": "x/ft", "hz": 1000, "fields": {"wrench": ["float32", [6]]}}}"#;
+    f.auth
+        .apply_from(as_robot(declare(sensor)), &back, 3)
+        .expect("declare");
+    assert!(f.auth.held(&pid("robot")).is_none(), "re-declared");
+    // Commandable again while armed: held again, until it leaves.
+    f.auth
+        .apply_from(as_robot(declare(&robot_map(""))), &back, 4)
+        .expect("declare");
+    assert!(f.auth.held(&pid("robot")).is_some());
+    f.run("robot", Command::Detach, 5).expect("detach");
+    assert!(f.auth.held(&pid("robot")).is_none(), "detached");
+    assert!(f.auth.snapshot(Vec::new(), 5).held.is_empty());
+}

@@ -992,6 +992,64 @@ async fn binding_waits_for_a_named_robot_that_starts_later() {
     assert!(controller.binding().input("target").is_some());
 }
 
+/// A robot attached but not declared yet is waited for like one not
+/// attached; once it has declared, a part it lacks is refused at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_robot_attached_with_no_parts_is_waited_for_and_one_lacking_the_part_is_refused() {
+    let world = World::start().await;
+    let _robot = world.robot().await;
+    let tracker = world
+        .join("tracker", Role::Embodiment, PriorityClass::Scripted)
+        .await;
+    let config = ControllerConfig {
+        bind_timeout: Duration::from_secs(3600),
+        ..ControllerConfig::default()
+    };
+    let p = world
+        .join("reader", Role::Controller, PriorityClass::Model)
+        .await;
+    let binding = tokio::spawn({
+        let config = config.clone();
+        async move {
+            Controller::bind(
+                Arc::new(p),
+                &Policy::parse(READS_TRACKER).expect("policy"),
+                &RunOptions::named("reader").robot("ur10e").expect("robot"),
+                config,
+            )
+            .await
+        }
+    });
+    tracker.declare_parts(TRACKER).await.expect("declare");
+    let controller = tokio::time::timeout(Duration::from_secs(60), binding)
+        .await
+        .expect("bound once the tracker declared")
+        .expect("join")
+        .expect("bound");
+    assert!(controller.binding().input("target").is_some());
+
+    let p = world
+        .join("other", Role::Controller, PriorityClass::Model)
+        .await;
+    let policy = Policy::parse(
+        r#"{"hz": 50, "inputs": {"aim": {"kind": "joints", "at": "tracker:aim", "fields": ["pos"]}}}"#,
+    )
+    .expect("policy");
+    let options = RunOptions::named("other").robot("ur10e").expect("robot");
+    let bind = Controller::bind(Arc::new(p), &policy, &options, config);
+    let Err(err) = tokio::time::timeout(Duration::from_secs(60), bind)
+        .await
+        .expect("refused at once")
+    else {
+        panic!("bound");
+    };
+    assert!(
+        err.to_string()
+            .contains("no part matches; tracker's joints parts: target"),
+        "{err}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_named_input_that_never_appears_says_which_robot_and_entry() {
     let world = World::start().await;

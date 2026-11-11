@@ -144,6 +144,7 @@ impl Authority {
             self.settle_after_release(id, "its robot was lost", events);
         } else {
             self.roster.remove(id);
+            self.held.remove(id);
             if in_scene && released {
                 self.enter_safe(held, events);
             } else {
@@ -193,6 +194,7 @@ impl Authority {
         self.contract.remove(id);
         self.bindings.remove(id);
         self.roster.remove(id);
+        self.held.remove(id);
         self.seen.remove(id);
         self.needed.retain(|(p, _), _| p != id);
         self.recompute_demands(events);

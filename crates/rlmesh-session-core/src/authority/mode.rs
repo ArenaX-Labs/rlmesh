@@ -102,20 +102,28 @@ impl Authority {
     }
 
     /// `robot` takes no lease until it is re-armed by name, unless robots
-    /// re-arm on their own.
+    /// re-arm on their own. A participant with nothing commandable (one that
+    /// only publishes) is never held: there is nothing to re-arm.
     pub(super) fn hold(
         &mut self,
         robot: &ParticipantId,
         why: Reason,
         events: &mut Vec<AuthorityEvent>,
     ) {
-        if !self.config.rearm_robots {
+        if !self.config.rearm_robots && self.commands_any(robot) {
             self.held.insert(robot.clone(), why.clone());
             events.push(AuthorityEvent::RobotHeld {
                 robot: robot.clone(),
                 reason: why,
             });
         }
+    }
+
+    /// Whether `robot` has declared a commandable part.
+    pub(super) fn commands_any(&self, robot: &ParticipantId) -> bool {
+        self.parts
+            .values()
+            .any(|p| &p.owner == robot && p.command.is_some())
     }
 
     /// ACTIVE with no lease left drops back to ARMED.
