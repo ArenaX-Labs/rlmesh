@@ -537,3 +537,25 @@ fn a_host_identitys_debug_output_never_shows_its_secrets() {
         crate::crypto::assert_redacted(&identity, &secret);
     }
 }
+
+#[test]
+fn credentials_are_equal_only_for_the_same_device_and_host() {
+    let credential = Credential::local(&[9; 32], [1; 32]);
+    assert_eq!(credential, Credential::local(&[9; 32], [1; 32]));
+    assert_ne!(
+        credential,
+        Credential::local(&[8; 32], [1; 32]),
+        "another device"
+    );
+    assert_ne!(
+        credential,
+        Credential::local(&[9; 32], [2; 32]),
+        "another host"
+    );
+}
+
+#[test]
+fn a_credentials_debug_output_never_shows_its_private_key() {
+    let device = crate::crypto::StaticKeypair::from_private(&mut [5; 32]);
+    crate::crypto::assert_redacted(&Credential::new(device, [1; 32]), &[5; 32]);
+}
