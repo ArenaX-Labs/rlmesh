@@ -770,8 +770,10 @@ class Policy:
         ``under`` scopes relative selectors, ``at`` overrides an entry's
         path, ``names={"entry": "positional"}`` binds joints by index,
         ``allow`` adds conversions for every entry, and keyword captures
-        fill ``{name}`` segments. Raises :class:`BindingRefused`
-        with the binder's explanation.
+        fill ``{name}`` segments. Raises :class:`BindingRefused` with the
+        binder's explanation, at once; a robot that has not appeared yet is
+        waited for, up to the policy's ``timeout`` (then ``TimeoutError``,
+        naming it).
         """
         if self._native is not None:
             raise SessionException(f"policy {self._name} is already bound")

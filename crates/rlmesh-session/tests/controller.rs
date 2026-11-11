@@ -903,3 +903,61 @@ async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
     assert!(err.to_string().contains("the clock of mute:"), "{err}");
     assert_eq!(robot.edge_stats("arm").expect("stats").rejected_total(), 0);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_for_a_present_robot_comes_at_once() {
+    let world = World::start().await;
+    let _robot = world.robot().await;
+    let p = world
+        .join("wrong", Role::Controller, PriorityClass::Model)
+        .await;
+    let policy = Policy::parse(r#"{"hz": 50, "inputs": {"c": {"kind": "camera", "at": "cam"}}}"#)
+        .expect("policy");
+    let options = RunOptions::named("wrong").robot("ur10e").expect("robot");
+    let bind = Controller::bind(
+        Arc::new(p),
+        &policy,
+        &options,
+        ControllerConfig {
+            bind_timeout: Duration::from_secs(3600),
+            ..ControllerConfig::default()
+        },
+    );
+    let Err(err) = tokio::time::timeout(Duration::from_secs(60), bind)
+        .await
+        .expect("no wait out of the bind timeout")
+    else {
+        panic!("bound");
+    };
+    assert!(
+        err.to_string().contains("ur10e has no camera part"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binding_to_a_robot_that_never_appears_names_it() {
+    let world = World::start().await;
+    let _robot = world.robot().await;
+    let p = world
+        .join("waiter", Role::Controller, PriorityClass::Model)
+        .await;
+    let Err(err) = Controller::bind(
+        Arc::new(p),
+        &Policy::parse(COMMAND_ONLY).expect("policy"),
+        &RunOptions::named("waiter").robot("ghost").expect("robot"),
+        ControllerConfig {
+            bind_timeout: Duration::from_millis(100),
+            ..ControllerConfig::default()
+        },
+    )
+    .await
+    else {
+        panic!("bound");
+    };
+    assert!(
+        err.to_string()
+            .contains("waiting for robot ghost to declare its parts"),
+        "{err}"
+    );
+}

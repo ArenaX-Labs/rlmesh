@@ -78,6 +78,11 @@ pub struct Problem {
     pub(crate) body: Vec<String>,
     /// A names clash (grouped across entries when rendered).
     pub(crate) names: Option<NamesClash>,
+    /// The robots whose declaring would resolve it, when it comes only from
+    /// their not having appeared yet.
+    pub(crate) waiting: Vec<ParticipantId>,
+    /// What the entry is, in a refusal's words.
+    pub(crate) subject: String,
 }
 
 /// A refused binding: every problem found.
@@ -115,6 +120,42 @@ impl fmt::Display for BindError {
 }
 
 impl core::error::Error for BindError {}
+
+impl BindError {
+    /// What this refusal is waiting for, in words: `Some` when every
+    /// problem comes from robots that have not appeared yet, so the binding
+    /// may stand once they declare; `None` when the refusal is final.
+    pub fn waiting_for(&self) -> Option<String> {
+        let Self::Refused(refusal) = self else {
+            return None;
+        };
+        if refusal.problems.iter().any(|p| p.waiting.is_empty()) {
+            return None;
+        }
+        let mut robots: Vec<&str> = Vec::new();
+        for robot in refusal.problems.iter().flat_map(|p| &p.waiting) {
+            if !robots.contains(&robot.as_str()) {
+                robots.push(robot.as_str());
+            }
+        }
+        let needs: Vec<&str> = refusal
+            .problems
+            .iter()
+            .map(|p| p.subject.as_str())
+            .collect();
+        let (noun, their, need, them) = if robots.len() == 1 {
+            ("robot", "its", "needs", "it")
+        } else {
+            ("robots", "their", "need", "them")
+        };
+        let need = if needs.len() == 1 { need } else { "need" };
+        Some(format!(
+            "{noun} {} to declare {their} parts; {} {need} {them}",
+            robots.join(", "),
+            needs.join(", ")
+        ))
+    }
+}
 
 /// The callable a refusal's fix spells out, on the policy the user is
 /// binding. A Python test checks every rendered call against its signature.
@@ -227,6 +268,8 @@ pub(super) fn problem(code: Code, slot: &Slot<'_>, head: String, body: Vec<Strin
         head,
         body,
         names: None,
+        waiting: Vec::new(),
+        subject: slot.subject(),
     }
 }
 
@@ -288,7 +331,31 @@ impl<'a> Binder<'a> {
                 )],
             )
         };
-        self.problems.push(problem(Code::Unbound, slot, head, body));
+        let waiting = self.waiting(slot);
+        self.problems.push(Problem {
+            waiting,
+            ..problem(Code::Unbound, slot, head, body)
+        });
+    }
+
+    /// The robots `slot` is waiting for, if only their absence left it
+    /// without a part. A capture is shared across entries, so one robot's
+    /// absence can empty another entry's candidates; an unqualified entry
+    /// of a view may lie under a placed robot not declared yet.
+    pub(super) fn waiting(&self, slot: &Slot<'_>) -> Vec<ParticipantId> {
+        let qualified = slot.selector.as_ref().is_some_and(|s| s.robot.is_some());
+        if qualified && !self.parts.iter().any(|p| p.owner == slot.robot) {
+            return vec![slot.robot.clone()];
+        }
+        let captures = slot
+            .selector
+            .as_ref()
+            .is_some_and(|s| !s.captures().is_empty());
+        if captures || (self.view.is_some() && !qualified) {
+            self.pending.clone()
+        } else {
+            Vec::new()
+        }
     }
 
     pub(super) fn not_allowed(&mut self, slot: &Slot<'_>, what: String, allow: Allow) {

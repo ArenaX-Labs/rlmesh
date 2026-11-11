@@ -496,8 +496,10 @@ pub struct Controller {
 
 impl Controller {
     /// Waits for `robot`'s parts, binds `policy` to them, declares the
-    /// binding and opens its inputs. Call it on a Tokio runtime: the
-    /// controller's background tasks run there.
+    /// binding and opens its inputs. Only a robot that has not appeared yet
+    /// is waited for (a [`SessionError::Timeout`] naming it, past the bind
+    /// timeout); any other refusal returns at once. Call it on a Tokio
+    /// runtime: the controller's background tasks run there.
     pub async fn bind(
         participant: Arc<Participant>,
         policy: &Policy,
@@ -507,8 +509,12 @@ impl Controller {
         let robot: Option<ParticipantId> = options.robot.clone();
         let me = participant.id().clone();
         let deadline = tokio::time::Instant::now() + config.bind_timeout;
+        let first = robot.as_ref().map_or_else(
+            || "a robot to declare its parts".to_string(),
+            |r| format!("robot {r} to declare its parts"),
+        );
         participant
-            .wait_for("the robot's parts", config.bind_timeout, |view| {
+            .wait_for(&first, config.bind_timeout, |view| {
                 view.parts
                     .iter()
                     .any(|p| p.owner != me && robot.as_ref().is_none_or(|r| &p.owner == r))
@@ -516,17 +522,22 @@ impl Controller {
             .await?;
         // Robots declare one by one: a binding that names robots not
         // declared yet is tried again on each new view until it stands or
-        // the timeout passes.
+        // the timeout passes. Anything else it is refused for stands.
         let mut view = participant.watch();
         let binding = loop {
             match participant.bind(policy, options) {
                 Ok(binding) => break binding,
                 Err(err) => {
-                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-                    if left.is_zero()
-                        || !matches!(tokio::time::timeout(left, view.changed()).await, Ok(Ok(())))
-                    {
+                    let Some(waiting) = err.waiting_for() else {
                         return Err(err.into());
+                    };
+                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    match tokio::time::timeout(left, view.changed()).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => return Err(SessionError::Closed.into()),
+                        Err(_) => {
+                            return Err(SessionError::Timeout(config.bind_timeout, waiting).into());
+                        }
                     }
                 }
             }

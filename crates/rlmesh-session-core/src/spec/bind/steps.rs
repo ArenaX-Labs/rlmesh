@@ -187,6 +187,8 @@ impl<'a> Binder<'a> {
                             model: model.clone(),
                             robot: part.names.clone(),
                         }),
+                        waiting: Vec::new(),
+                        subject: slot.subject(),
                     });
                     return None;
                 }

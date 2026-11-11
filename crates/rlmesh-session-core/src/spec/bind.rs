@@ -227,6 +227,9 @@ struct Binder<'a> {
     places: &'a [Place],
     scope: Vec<String>,
     run: RunCall,
+    /// The robots required entries name or the view places that have
+    /// declared no parts yet.
+    pending: Vec<ParticipantId>,
     problems: Vec<Problem>,
     warnings: Vec<String>,
 }
@@ -344,6 +347,7 @@ pub fn bind_in(
             .map(|u| u.as_str().split('/').map(String::from).collect())
             .unwrap_or_default(),
         run: RunCall::of(options),
+        pending: Vec::new(),
         problems: Vec::new(),
         warnings: Vec::new(),
     };

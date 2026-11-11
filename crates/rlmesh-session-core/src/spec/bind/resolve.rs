@@ -11,7 +11,7 @@ use alloc::collections::BTreeMap;
 use core::time::Duration;
 
 use crate::wire::part::PartSpec;
-use crate::wire::{ChannelId, Fingerprint, StreamContract};
+use crate::wire::{ChannelId, Fingerprint, ParticipantId, StreamContract};
 
 use crate::spec::canonical;
 use crate::spec::contract;
@@ -91,8 +91,27 @@ impl<'a> Binder<'a> {
         (candidates, considered)
     }
 
+    /// The robots required entries name or the view places that have
+    /// declared no parts yet.
+    fn undeclared(&self, slots: &[Slot<'a>]) -> Vec<ParticipantId> {
+        let declared = |robot: &ParticipantId| self.parts.iter().any(|p| &p.owner == robot);
+        let placed = self.places.iter().map(|p| &p.robot);
+        let named = slots
+            .iter()
+            .filter(|s| s.required() && s.selector.as_ref().is_some_and(|x| x.robot.is_some()))
+            .map(|s| &s.robot);
+        let mut robots: Vec<ParticipantId> = Vec::new();
+        for robot in placed.chain(named) {
+            if !declared(robot) && !robots.contains(robot) {
+                robots.push(robot.clone());
+            }
+        }
+        robots
+    }
+
     pub(super) fn bind(mut self) -> Result<Binding, BindError> {
         let slots = self.slots();
+        self.pending = self.undeclared(&slots);
         let found: Vec<(Vec<Candidate<'a>>, Vec<&'a PartSpec>)> =
             slots.iter().map(|s| self.candidates(s)).collect();
         let given: Vec<(String, String)> = self
@@ -324,26 +343,30 @@ impl<'a> Binder<'a> {
                     if self.allowed(slot.entry, allow) {
                         absent[i] = true;
                     } else {
-                        self.problems.push(problem(
-                            Code::NotAllowed,
-                            slot,
-                            format!(
-                                "{}: {} has no {} part {}",
-                                slot.name(),
-                                slot.robot,
-                                slot.entry.kind_name,
-                                slot.selector.as_ref().map_or_else(String::new, |s| format!(
-                                    "at {:?}",
-                                    s.to_string()
-                                ))
+                        let waiting = self.waiting(slot);
+                        self.problems.push(Problem {
+                            waiting,
+                            ..problem(
+                                Code::NotAllowed,
+                                slot,
+                                format!(
+                                    "{}: {} has no {} part {}",
+                                    slot.name(),
+                                    slot.robot,
+                                    slot.entry.kind_name,
+                                    slot.selector.as_ref().map_or_else(String::new, |s| format!(
+                                        "at {:?}",
+                                        s.to_string()
+                                    ))
+                                )
+                                .trim_end()
+                                .to_string(),
+                                vec![
+                                    format!("    needs: {allow} (it is optional)"),
+                                    format!("    fix: add {:?} to allow", allow.name()),
+                                ],
                             )
-                            .trim_end()
-                            .to_string(),
-                            vec![
-                                format!("    needs: {allow} (it is optional)"),
-                                format!("    fix: add {:?} to allow", allow.name()),
-                            ],
-                        ));
+                        });
                     }
                 }
                 [] => self.unbound(slot, considered),
