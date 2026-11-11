@@ -274,6 +274,13 @@ pub fn foreground_sigterm_scope(
     crate::env::signals::enter_with(trigger, false)
 }
 
+/// Ends the process as an unhandled SIGINT does: the Python binding's
+/// foreground model serve on a second Ctrl-C while its stop waits on a
+/// call that will not return.
+pub fn end_by_interrupt() -> ! {
+    crate::env::signals::end_by_interrupt()
+}
+
 /// PNG-encode a render frame by Python's lenient rule (ENV-5); `None` for a
 /// value that is no image.
 pub fn encode_render_frame(frame: &Value) -> Result<Option<Vec<u8>>> {

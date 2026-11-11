@@ -70,6 +70,7 @@ impl ModelLink {
         timeout: Option<Duration>,
     ) -> Result<(ModelReply, Option<EndpointTiming>), GymError> {
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
+        let started = tokio::time::Instant::now();
         let replies = self
             .session
             .get(&self.key)
@@ -81,10 +82,19 @@ impl ModelLink {
             .timeout(timeout)
             .await
             .map_err(|e| GymError::Closed(e.to_string()))?;
-        let reply = replies
-            .recv_async()
-            .await
-            .map_err(|_| GymError::Timeout(timeout))?;
+        let reply = replies.recv_async().await.map_err(|_| {
+            // Replies that end with none before the timeout: the model's
+            // server went away while the request was in flight.
+            if started.elapsed() + crate::lockstep::exchange::ENDED_EARLY < timeout {
+                GymError::Closed(
+                    "the served model went away before it answered: its server exited or left \
+                     the session"
+                        .to_owned(),
+                )
+            } else {
+                GymError::Timeout(timeout)
+            }
+        })?;
         match reply.result() {
             Ok(sample) => Ok(decode_model_reply(payload_bytes(sample.payload()))?),
             // A Zenoh-level error (the queryable is gone).

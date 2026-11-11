@@ -1008,14 +1008,23 @@ impl PyModel {
                 tracing::info!(address = %binding, "model serving");
                 let mut serve = std::pin::pin!(binding.serve(service, close, cancel.clone()));
                 let mut poll = crate::client::signal_poll();
+                let mut interrupted = None;
                 let result = loop {
                     tokio::select! {
-                        result = &mut serve => break result.map_err(crate::lockstep::gym_err),
+                        result = &mut serve => break match interrupted {
+                            Some(err) => Err(err),
+                            None => result.map_err(crate::lockstep::gym_err),
+                        },
                         _ = poll.tick() => {
                             if let Err(err) = crate::client::check_signals() {
+                                // The first Ctrl-C drains: the predict in
+                                // progress ends, then the model closes. A
+                                // second one ends the process at once.
+                                if interrupted.is_some() {
+                                    rlmesh::binding::end_by_interrupt();
+                                }
                                 cancel.cancel();
-                                let _ = (&mut serve).await;
-                                break Err(err);
+                                interrupted = Some(err);
                             }
                         }
                     }

@@ -374,6 +374,7 @@ impl ZenohLink {
         timeout: Option<Duration>,
     ) -> Result<LockstepResult, GymError> {
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
+        let started = tokio::time::Instant::now();
         let request_id = self.last_request.fetch_add(1, Ordering::Relaxed) + 1;
         let sealed = self.sealer.seal_lockstep_request(
             &self.key,
@@ -421,9 +422,31 @@ impl ZenohLink {
         }
         // No sealed reply: the env's plain refusal, or a Zenoh-level error
         // (the queryable is gone).
-        Err(hint.unwrap_or(GymError::Timeout(timeout)))
+        Err(hint.unwrap_or_else(|| unanswered(&self.robot, started, timeout)))
     }
 }
+
+/// A request whose replies ended with none: a timeout when its time ran
+/// out, else the env's server went away while it was in flight (its
+/// process exited or it left the session), which waiting would not mend.
+pub(crate) fn unanswered(
+    robot: &ParticipantId,
+    started: tokio::time::Instant,
+    timeout: Duration,
+) -> GymError {
+    if started.elapsed() + ENDED_EARLY < timeout {
+        GymError::Closed(format!(
+            "the served env '{robot}' went away before it answered: its server exited or left the \
+             session"
+        ))
+    } else {
+        GymError::Timeout(timeout)
+    }
+}
+
+/// How much sooner than its timeout a request's replies must end for the
+/// end to be its server going away rather than the timeout.
+pub(crate) const ENDED_EARLY: Duration = Duration::from_millis(100);
 
 /// The env's failure in `json`, if it names one.
 fn failure(json: &[u8]) -> Option<GymError> {
@@ -621,4 +644,22 @@ pub async fn serve_zenoh(
     }
     drop(queryable);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn replies_that_end_early_name_the_server_going_away() {
+        let robot = ParticipantId::new("env").unwrap();
+        let started = tokio::time::Instant::now();
+        let gone = unanswered(&robot, started, Duration::from_secs(600));
+        assert!(
+            matches!(&gone, GymError::Closed(why) if why.contains("'env' went away")),
+            "{gone:?}"
+        );
+        let late = unanswered(&robot, started, Duration::from_millis(50));
+        assert!(matches!(late, GymError::Timeout(_)), "{late:?}");
+    }
 }

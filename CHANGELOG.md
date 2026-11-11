@@ -111,6 +111,8 @@ below describe development APIs; C ABI 7 is cut only when they ship.
 
 - `rlmesh check-image` checks that an image exposes the four ports its session listens on (its base port, 7447 unless the image's address names another, and the next three, one per traffic class) instead of the 0.1 port 50051.
 
+- A served env or model (`python -m rlmesh.serve`, a foreground `EnvServer.serve`, `Model.serve`) ends promptly on its launcher's signal: SIGTERM drains the call in progress, closes the env and exits 0, Ctrl-C does the same and exits 130, and a second SIGTERM or Ctrl-C while the drain waits on a call that will not return ends the process at once by that signal. A driver in a call to a server that went away now gets a `ConnectionError` saying so, not a timeout that names its full timeout.
+
 This development tree gives the Rust facade crate (`rlmesh`), the fenced C API (`rlmesh.h`, development ABI 6) and the fenced C++ wrapper (`rlmesh.hpp`, C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking

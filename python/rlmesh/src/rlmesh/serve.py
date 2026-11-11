@@ -17,6 +17,13 @@ is ``--max-batch-size`` / ``RLMESH_MAX_BATCH_SIZE``, ``--batch-window-ms`` /
 ``RLMESH_MAX_IN_FLIGHT_BATCHES`` and ``--batch-records`` /
 ``RLMESH_BATCH_RECORDS``; one left unset takes ``BatchOptions``' default.
 ``python -m rlmesh.serve --help`` lists them all.
+
+Whoever launched the process ends it. SIGTERM drains: the env or model call
+in progress finishes, the env is closed, and the process exits 0; a driver
+in a call hears that the server went away. Ctrl-C (SIGINT) does the same and
+exits 130. A second signal while the drain waits on a call that will not
+return ends the process at once, by that signal (128 + its number: 143 for
+SIGTERM, 130 for SIGINT), without closing the env.
 """
 
 from __future__ import annotations
