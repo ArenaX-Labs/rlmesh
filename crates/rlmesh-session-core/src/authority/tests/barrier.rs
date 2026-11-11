@@ -161,3 +161,29 @@ fn a_controller_that_leaves_stops_holding_up_the_barrier() {
     f.auth.participant_lost(&pid("policy"), 2);
     assert!(matches!(f.auth.take_ticks().as_slice(), [VirtualTick::Step(s)] if s.tick == 0));
 }
+
+#[test]
+fn a_controller_is_due_once_every_period_of_ticks() {
+    // 500 Hz on 1 ms ticks: every second tick.
+    let mut f = armed_at(500.0);
+    let ready = |tick| Command::Ready {
+        tick,
+        watermarks: Vec::new(),
+    };
+    let due = |ticks: &[VirtualTick]| match ticks.first() {
+        Some(VirtualTick::Observe(s)) => s.due.clone(),
+        other => panic!("{other:?}"),
+    };
+    f.run("robot", ready(0), 1).expect("ready");
+    assert_eq!(due(&f.auth.take_ticks()), [pid("policy")]);
+    let decided = Command::Decided {
+        tick: 0,
+        chunks: Vec::new(),
+    };
+    f.run("policy", decided, 2).expect("decided");
+    f.auth.take_ticks();
+    f.run("robot", ready(1), 3).expect("ready");
+    assert!(due(&f.auth.take_ticks()).is_empty());
+    f.run("robot", ready(2), 4).expect("ready");
+    assert_eq!(due(&f.auth.take_ticks()), [pid("policy")]);
+}
