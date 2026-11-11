@@ -487,3 +487,53 @@ fn a_links_debug_output_never_shows_a_delivered_keys_bytes() {
     robot.keyring_mut().install(&key, 0).expect("install");
     crate::crypto::assert_redacted(&robot, &[0xa7; 32]);
 }
+
+#[test]
+fn an_unenrolled_device_is_refused_and_the_others_stay() {
+    let (identity, mut auth) = host();
+    let laptop = Credential::local(&[9; 32], *identity.static_public());
+    handshake(&identity, &mut auth, &laptop, "cockpit").expect("enrolled");
+    auth.unenroll("laptop-josh");
+    let err = handshake(&identity, &mut auth, &laptop, "cockpit").expect_err("revoked");
+    assert_eq!(err.status, CtlStatus::Unauthenticated);
+    handshake(&identity, &mut auth, &identity.local_credential(), "robot").expect("local stays");
+}
+
+#[test]
+fn a_host_auth_reports_the_instance_it_serves() {
+    let (_, auth) = host();
+    assert_eq!(auth.host_instance(), 7);
+}
+
+#[test]
+fn a_host_id_is_a_stable_name_of_its_keys() {
+    let identity = || HostIdentity::from_secrets(&mut [6; 32], &mut [7; 32], &mut [8; 32]);
+    let id = identity().host_id();
+    assert!(id.starts_with("rlm-") && id.len() == 10, "{id}");
+    assert!(id[4..].bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+    assert_eq!(identity().host_id(), id);
+    let other = HostIdentity::from_secrets(&mut [1; 32], &mut [7; 32], &mut [8; 32]);
+    assert_ne!(other.host_id(), id);
+}
+
+#[test]
+fn stored_secrets_rebuild_the_same_identity() {
+    let identity = HostIdentity::generate(&mut TestRng::new(1)).expect("identity");
+    let (mut noise, mut sign) = ([0; 32], [0; 32]);
+    identity.write_secrets(&mut noise, &mut sign);
+    let mut local = *identity.local_secret();
+    let again = HostIdentity::from_secrets(&mut noise, &mut sign, &mut local);
+    assert_eq!(again.static_public(), identity.static_public());
+    assert_eq!(
+        again.signer(7).verifying_key(),
+        identity.signer(7).verifying_key()
+    );
+}
+
+#[test]
+fn a_host_identitys_debug_output_never_shows_its_secrets() {
+    let identity = HostIdentity::from_secrets(&mut [6; 32], &mut [7; 32], &mut [8; 32]);
+    for secret in [[6; 32], [7; 32], [8; 32]] {
+        crate::crypto::assert_redacted(&identity, &secret);
+    }
+}
