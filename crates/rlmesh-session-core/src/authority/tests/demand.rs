@@ -233,3 +233,126 @@ fn removing_a_stream_withdraws_its_demand() {
     )));
     assert!(f.auth.demands.is_empty());
 }
+
+#[test]
+fn an_action_period_must_be_positive_and_at_most_a_minute() {
+    use core::time::Duration;
+    let mut f = Fixture::new();
+    let cmd1 = f.ch("cmd1");
+    let minute = Duration::from_secs(60);
+    for (fingerprint, dt, accepted) in [
+        (70, Duration::ZERO, false),
+        (71, minute + Duration::from_nanos(1), false),
+        (72, minute, true),
+    ] {
+        let result = f.run(
+            "policy",
+            Command::DeclareBinding {
+                fingerprint: Fingerprint::from(fingerprint),
+                revision: 3,
+                table_json: "{}".into(),
+                channels: vec![cmd1],
+                replan_hz: 20.0,
+                contracts: Vec::new(),
+                grids: vec![crate::wire::ActionGrid { channel: cmd1, dt }],
+            },
+            0,
+        );
+        match result {
+            Ok(_) => assert!(accepted, "{dt:?}"),
+            Err(err) => {
+                assert!(!accepted, "{dt:?}: {err}");
+                assert_eq!(err.status, CtlStatus::InvalidRequest);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_replan_rate_must_be_finite_and_within_range() {
+    let mut f = Fixture::new();
+    let channels = vec![f.ch("cmd1")];
+    let mut declare = |fingerprint, replan_hz| {
+        f.run(
+            "policy",
+            Command::DeclareBinding {
+                fingerprint: Fingerprint::from(fingerprint),
+                revision: 3,
+                table_json: "{}".into(),
+                channels: channels.clone(),
+                replan_hz,
+                contracts: Vec::new(),
+                grids: Vec::new(),
+            },
+            0,
+        )
+    };
+    for (fingerprint, replan_hz) in [
+        (80, -1.0),
+        (81, 10_001.0),
+        (82, f64::NAN),
+        (83, f64::INFINITY),
+    ] {
+        assert_eq!(
+            Fixture::status(declare(fingerprint, replan_hz)),
+            CtlStatus::InvalidRequest,
+            "{replan_hz}"
+        );
+    }
+    declare(84, 10_000.0).expect("the highest rate");
+}
+
+#[test]
+fn windows_may_fill_the_ring_cap_exactly_but_not_exceed_it() {
+    use crate::wire::ContractMode;
+    let mut f = Fixture::new();
+    f.auth
+        .apply(
+            Request {
+                from: pid("camera"),
+                epoch: None,
+                request_id: 0,
+                command: attach("camera", vec![Role::Embodiment], PriorityClass::Scripted),
+            },
+            0,
+        )
+        .expect("attach");
+    // 1024 samples of 512 KiB is the cap; 8 bytes more per sample is over.
+    let exact = 512 << 10;
+    let part = |bytes: u64| {
+        format!(
+            r#"{{"kind": "x/blob", "hz": 1000, "send": "every", "fields": {{"blob": ["uint8", [{bytes}]]}}}}"#
+        )
+    };
+    let map = format!(
+        r#"{{"exact": {}, "over": {}}}"#,
+        part(exact),
+        part(exact + 8)
+    );
+    f.run("camera", declare(&map), 0).expect("declare");
+    let window = |channel| contract(channel, ContractMode::History, 20.0, 1024, None);
+    let (at_cap, over_cap) = (f.ch("exact"), f.ch("over"));
+    f.bind_with("policy", 90, &["cmd1"], vec![window(at_cap)])
+        .expect("exactly the cap");
+    let err = f
+        .bind_with("policy", 91, &["cmd1"], vec![window(over_cap)])
+        .expect_err("over the cap");
+    assert_eq!(err.status, CtlStatus::InvalidRequest);
+    assert!(err.message.contains("at most 512 MiB"), "{}", err.message);
+}
+
+#[test]
+fn an_unchanged_plan_keeps_its_revision_and_a_repeat_ack_reports_nothing() {
+    use crate::wire::ContractMode;
+    let mut f = Fixture::new();
+    let ft = f.ch("ft");
+    let latest = || contract(ft, ContractMode::Latest, 20.0, 1, None);
+    f.bind_with("policy", 95, &["cmd1"], vec![latest()])
+        .expect("bind");
+    assert_eq!(f.demand("ft").map(|d| d.revision), Some(1));
+    f.bind_with("operator", 96, &["cmd2"], vec![latest()])
+        .expect("the same plan");
+    assert_eq!(f.demand("ft").map(|d| d.revision), Some(1));
+    assert_eq!(f.ack("ft", 1).expect("ack").events.len(), 1);
+    assert!(f.ack("ft", 1).expect("again").events.is_empty());
+}
