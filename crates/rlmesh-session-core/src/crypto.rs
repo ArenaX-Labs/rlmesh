@@ -89,6 +89,15 @@ impl core::fmt::Debug for Key {
     }
 }
 
+/// `secret`'s public key, by the same Montgomery ladder every key exchange
+/// runs. `PublicKey::from` multiplies on the Edwards curve instead, which
+/// without precomputed tables holds a lookup table on the stack (about 2 KB
+/// more, on a board).
+pub(crate) fn x25519_public(secret: &x25519_dalek::StaticSecret) -> [u8; 32] {
+    let base = x25519_dalek::PublicKey::from(x25519_dalek::X25519_BASEPOINT_BYTES);
+    secret.diffie_hellman(&base).to_bytes()
+}
+
 /// A static X25519 key pair: a host's or a participant's Noise identity.
 #[derive(Clone)]
 pub struct StaticKeypair {
@@ -103,7 +112,7 @@ impl StaticKeypair {
         // copy left to the compiler.
         let secret = x25519_dalek::StaticSecret::from(*private);
         private.zeroize();
-        let public = x25519_dalek::PublicKey::from(&secret).to_bytes();
+        let public = x25519_public(&secret);
         Self { secret, public }
     }
 
@@ -139,6 +148,24 @@ impl core::fmt::Debug for StaticKeypair {
         f.debug_struct("StaticKeypair")
             .field("public", &self.public)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ladder and the Edwards multiply agree: the same public key.
+    #[test]
+    fn x25519_public_is_the_edwards_result() {
+        for byte in [0_u8, 1, 0x42, 0x7f, 0x80, 0xff] {
+            let mut private = [byte; 32];
+            private[0] = byte.wrapping_add(3);
+            let secret = x25519_dalek::StaticSecret::from(private);
+            let want = x25519_dalek::PublicKey::from(&secret).to_bytes();
+            assert_eq!(x25519_public(&secret), want);
+            assert_eq!(*StaticKeypair::from_private(&mut private).public(), want);
+        }
     }
 }
 
