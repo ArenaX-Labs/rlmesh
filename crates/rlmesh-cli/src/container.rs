@@ -1,13 +1,17 @@
 //! One prebuilt rlmesh image run for `doctor` and `bench`, the way the Python
 //! sandbox runs it (`rlmesh._sandbox.session.start_prebuilt_container`): the
 //! container hosts its session on the host's own port numbers, published on
-//! loopback, and serves in it under a participant name. Removed on drop.
+//! loopback, under keys made here, and serves in it under a participant
+//! name. Removed on drop.
 
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use rlmesh_session::address::{
+    AddressKey, DEFAULT_SESSION, HOST_IDENTITY_VAR, SessionAddress, launch_identity,
+};
 use rlmesh_session::transport::TrafficClass;
 
 /// The longest one readiness attempt waits, so an image that died is told
@@ -20,7 +24,8 @@ const SESSION_PORTS: u16 = TrafficClass::ALL.len() as u16;
 pub struct Container {
     id: String,
     image: String,
-    /// The participant address the container serves at.
+    /// The participant address the container serves at, with its host's
+    /// key: a credential, so print it only through `redact`.
     pub address: String,
 }
 
@@ -29,33 +34,8 @@ impl Container {
     /// sandbox's hardening flags and owner labels.
     pub fn start(image: &str, name: &str, gpus: Option<&str>) -> Result<Self> {
         let port = free_session_ports()?;
-        let last = port + SESSION_PORTS - 1;
-        let mut command = Command::new("docker");
-        command.args([
-            "run",
-            "-d",
-            "-p",
-            &format!("127.0.0.1:{port}-{last}:{port}-{last}"),
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--label",
-            "rlmesh.sandbox=1",
-            "--label",
-            &format!("rlmesh.sandbox.owner-pid={}", std::process::id()),
-        ]);
-        if let Some(gpus) = gpus {
-            command.args(["--gpus", gpus]);
-        }
-        for (key, value) in [
-            ("RLMESH_ADDRESS", format!("0.0.0.0:{port}")),
-            ("RLMESH_NAME", name.to_string()),
-        ] {
-            command.args(["-e", &format!("{key}={value}")]);
-        }
-        let output = command
-            .arg(image)
+        let (identity, key) = launch_identity()?;
+        let output = run_command(image, name, gpus, port, &identity)
             .stdin(Stdio::null())
             .output()
             .context("running docker run (is docker installed?)")?;
@@ -68,7 +48,7 @@ impl Container {
         Ok(Self {
             id: String::from_utf8_lossy(&output.stdout).trim().to_string(),
             image: image.to_string(),
-            address: format!("127.0.0.1:{port}/{name}"),
+            address: participant_address(port, key, name)?,
         })
     }
 
@@ -141,6 +121,54 @@ impl Drop for Container {
     }
 }
 
+/// The `docker run -d` of `image` hosting its session on `port` and the
+/// ports after it under `identity` ([`launch_identity`]'s text). Beyond
+/// loopback, as a container's published ports are, a session hosts only
+/// under keys its launcher passed; the secret reaches docker through its
+/// environment, never argv.
+fn run_command(image: &str, name: &str, gpus: Option<&str>, port: u16, identity: &str) -> Command {
+    let last = port + SESSION_PORTS - 1;
+    let mut command = Command::new("docker");
+    command.env(HOST_IDENTITY_VAR, identity).args([
+        "run",
+        "-d",
+        "-p",
+        &format!("127.0.0.1:{port}-{last}:{port}-{last}"),
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--label",
+        "rlmesh.sandbox=1",
+        "--label",
+        &format!("rlmesh.sandbox.owner-pid={}", std::process::id()),
+    ]);
+    if let Some(gpus) = gpus {
+        command.args(["--gpus", gpus]);
+    }
+    for (key, value) in [
+        ("RLMESH_ADDRESS", format!("0.0.0.0:{port}")),
+        ("RLMESH_NAME", name.to_string()),
+    ] {
+        command.args(["-e", &format!("{key}={value}")]);
+    }
+    command.args(["-e", HOST_IDENTITY_VAR]).arg(image);
+    command
+}
+
+/// Participant `name`'s address in the session a container hosts on
+/// loopback `port` under `key`.
+fn participant_address(port: u16, key: AddressKey, name: &str) -> Result<String> {
+    let session = SessionAddress {
+        key: Some(key),
+        ..SessionAddress::new(
+            SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            DEFAULT_SESSION,
+        )?
+    };
+    Ok(session.participant_invite(name))
+}
+
 /// A base port on 127.0.0.1 with the session ports after it free. Free when
 /// checked: `docker run` reports a port taken since.
 fn free_session_ports() -> Result<u16> {
@@ -155,4 +183,45 @@ fn free_session_ports() -> Result<u16> {
         }
     }
     bail!("found no {SESSION_PORTS} consecutive free ports on 127.0.0.1")
+}
+
+#[cfg(test)]
+mod tests {
+    use rlmesh_session::address::Address;
+
+    use super::*;
+
+    #[test]
+    fn run_passes_the_identity_by_name_and_dials_its_key() {
+        let (identity, key) = launch_identity().unwrap();
+        let command = run_command("img:tag", "env", None, 40000, &identity);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().all(|arg| !arg.contains(identity.as_str())));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-e", HOST_IDENTITY_VAR])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-e", "RLMESH_ADDRESS=0.0.0.0:40000"])
+        );
+        assert_eq!(args.last().map(String::as_str), Some("img:tag"));
+        let passed = command
+            .get_envs()
+            .find(|(name, _)| *name == HOST_IDENTITY_VAR)
+            .and_then(|(_, value)| value);
+        assert_eq!(passed.and_then(|v| v.to_str()), Some(identity.as_str()));
+
+        let address = participant_address(40000, key.clone(), "env").unwrap();
+        let parsed = Address::participant(&address).unwrap();
+        assert_eq!(parsed.key, Some(key));
+        assert_eq!(parsed.participant.as_deref(), Some("env"));
+        assert_eq!(
+            parsed.joining().unwrap().base,
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 40000))
+        );
+    }
 }

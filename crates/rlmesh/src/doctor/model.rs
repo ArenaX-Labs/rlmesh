@@ -211,8 +211,11 @@ pub(super) fn connect(
             "handshake",
             CheckStatus::Pass,
             format!(
-                "model {address} rlmesh {} on {} {}",
-                peer.package_version, peer.language, peer.language_version
+                "model {} rlmesh {} on {} {}",
+                rlmesh_session::address::redact(address),
+                peer.package_version,
+                peer.language,
+                peer.language_version
             ),
         )
         .metric("connectMs", connect_ms),

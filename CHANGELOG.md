@@ -101,6 +101,8 @@ below describe development APIs; C ABI 7 is cut only when they ship.
 
 - Models declare action pacing with `ModelSpec(timing=Timing(execution=K))` or set `execution_horizon` in `load()`, read once after loading. Rust selects and validates `run`/`bind` overrides, then the checkpoint's value, then spec timing, then 1. Served models publish the loaded value in their describe envelope. Python, Rust, C and C++ use the same selection policy; C# receives the regenerated C interop.
 
+- `rlmesh doctor` and `rlmesh bench` start the image under a host identity they make, passed in `RLMESH_HOST_IDENTITY`, and dial its keyed address. Without one, a container listening beyond loopback refused to host its session, so neither could start a 0.2 image.
+
 This development tree gives the Rust facade crate (`rlmesh`), the fenced C API (`rlmesh.h`, development ABI 6) and the fenced C++ wrapper (`rlmesh.hpp`, C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking
