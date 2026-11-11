@@ -157,6 +157,7 @@ void report() {
     Serial.printf("  views: %llu sealed, %llu signed, %llu dropped\n", (unsigned long long)sealed,
                   (unsigned long long)signedViews, (unsigned long long)droppedViews);
     robot.printChunkTiming(Serial, eyes);
+    robot.printDatagram(Serial);
   }
 }
 

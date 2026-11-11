@@ -1,6 +1,8 @@
 //! A session host for `mise run test:esp32:host`: the default session of
 //! tenant `local` on free loopback ports, printing its address with its key
-//! (as `rlmesh host` does), until killed.
+//! (as `rlmesh host` does), until killed. With `udp`, it relays the board's
+//! realtime parts over UDP on the realtime class's port number, as
+//! `rlmesh host --board-data udp` does.
 //!
 //! Its links are not gated. A loopback embedded host gates them (Zenoh
 //! `usrpwd`, keyed by the session), which zenoh-pico can't present; a board
@@ -22,6 +24,7 @@ use rlmesh_session::wire::{
 use rlmesh_session::{ChunkDraft, Participant, ParticipantConfig, SubscribeOptions};
 
 use rlmesh_session::address::{AddressKey, DEFAULT_SESSION, TENANT, session_id};
+use rlmesh_session::host::DatagramRelay;
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::TenantId;
 use rlmesh_session::{HostConfig, SessionHost};
@@ -31,10 +34,14 @@ async fn main() {
     let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
         .await
         .expect("listeners");
-    let config = HostConfig::new(
+    let mut config = HostConfig::new(
         TenantId::new(TENANT).expect("tenant"),
         session_id(DEFAULT_SESSION),
     );
+    if std::env::args().nth(1).as_deref() == Some("udp") {
+        let at = std::net::SocketAddr::new(base.ip(), base.port() + 1);
+        config.datagram = Some(DatagramRelay::bind(at).await.expect("udp"));
+    }
     let key = AddressKey::of(&config.identity);
     let host = SessionHost::start(transport, config).await.expect("host");
     println!("{base}#{key}");

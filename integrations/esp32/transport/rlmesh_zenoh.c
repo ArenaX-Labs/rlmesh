@@ -1,8 +1,13 @@
 #include "rlmesh_zenoh.h"
 
+#include <errno.h>
+#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 size_t rlmesh_zenoh_size(void) { return sizeof(rlmesh_zenoh_t); }
 
@@ -13,7 +18,7 @@ uint32_t rlmesh_zenoh_failures(rlmesh_zenoh_t* z) {
   return failed;
 }
 
-enum { EV_SAMPLE = 1, EV_REPLY = 2, EV_DONE = 3, EV_CHECKED = 4 };
+enum { EV_SAMPLE = 1, EV_REPLY = 2, EV_DONE = 3, EV_CHECKED = 4, EV_DATAGRAM = 5 };
 
 typedef struct rlmesh_zenoh_event {
   struct rlmesh_zenoh_event* next;
@@ -89,6 +94,12 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
     e->len = len;
     if (key_len > 0) memcpy(e->data, key_data, key_len);
     if (len > 0) memcpy(e->data + key_len, data, len);
+#ifdef RLMESH_ZENOH_TRACE_CHUNK
+    if (kind == EV_SAMPLE && sub >= RLMESH_DEVICE_SUB_COMMANDS &&
+        sub != RLMESH_DEVICE_SUB_VIEW_SEALED) {
+      RLMESH_ZENOH_TRACE_CHUNK(e->data + key_len, len, e->arrived_us);
+    }
+#endif
   }
   if (have) z_drop(z_move(slice));
   z_mutex_lock(z_loan_mut(z->lock));
@@ -96,6 +107,38 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
     z->failed++;
   } else {
     if (kind == EV_SAMPLE) z->queued += size;
+    if (z->tail == NULL) {
+      z->head = z->tail = e;
+      if (z->wake != NULL) z->wake(z->wake_arg);
+    } else {
+      z->tail->next = e;
+      z->tail = e;
+    }
+  }
+  z_mutex_unlock(z_loan_mut(z->lock));
+}
+
+/* Queues a datagram for the robot, from the datagram task, within the
+ * samples' bound. */
+static void push_datagram(rlmesh_zenoh_t* z, const uint8_t* data, size_t len) {
+  size_t size = sizeof(event_t) + len;
+  z_mutex_lock(z_loan_mut(z->lock));
+  bool room = z->queued + size <= RLMESH_ZENOH_QUEUE_BYTES;
+  z_mutex_unlock(z_loan_mut(z->lock));
+  event_t* e = room ? (event_t*)malloc(size) : NULL;
+  if (e != NULL) {
+    memset(e, 0, sizeof *e);
+    e->kind = EV_DATAGRAM;
+    e->arrived_us = z->now_us();
+    e->len = len;
+    memcpy(e->data, data, len);
+  }
+  z_mutex_lock(z_loan_mut(z->lock));
+  if (e == NULL) {
+    z->views.dgram_dropped++;
+  } else {
+    z->views.dgram_received++;
+    z->queued += size;
     if (z->tail == NULL) {
       z->head = z->tail = e;
       if (z->wake != NULL) z->wake(z->wake_arg);
@@ -422,6 +465,42 @@ static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list) {
   z_mutex_unlock(z_loan_mut(z->net));
 }
 
+/* Sends the datagrams that waited, without waiting on the socket: one it
+ * can't take now is dropped. Refusals in a row tell the robot the path
+ * failed. */
+static void send_datagrams(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* list) {
+  uint32_t sent = 0, unsent = 0;
+  bool failed = false;
+  z_mutex_lock(z_loan_mut(z->dgram_lock));
+  for (const rlmesh_txq_item_t* t = list; t != NULL; t = t->next) {
+    if (t->class_ != RLMESH_ZENOH_DATAGRAM_CLASS) continue;
+    if (z->dgram_fd < 0) {
+      unsent++;
+      continue;
+    }
+    ssize_t n = send(z->dgram_fd, t->data + t->key_len, t->len, MSG_DONTWAIT);
+    if (n >= 0 && (size_t)n == t->len) {
+      sent++;
+      z->dgram_refused = 0;
+      continue;
+    }
+    unsent++;
+    bool busy = n >= 0 || errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS ||
+                errno == ENOMEM || errno == EINTR;
+    if (!busy && ++z->dgram_refused >= RLMESH_ZENOH_DGRAM_FAILURES) failed = true;
+  }
+  z_mutex_unlock(z_loan_mut(z->dgram_lock));
+  if (sent == 0 && unsent == 0) return;
+  z_mutex_lock(z_loan_mut(z->lock));
+  z->views.dgram_sent += sent;
+  z->views.dgram_unsent += unsent;
+  if (failed) {
+    z->dgram_failed = true;
+    if (z->wake != NULL) z->wake(z->wake_arg);
+  }
+  z_mutex_unlock(z_loan_mut(z->lock));
+}
+
 static void* tx_task(void* arg) {
   rlmesh_zenoh_t* z = (rlmesh_zenoh_t*)arg;
   z_mutex_lock(z_loan_mut(z->lock));
@@ -435,6 +514,7 @@ static void* tx_task(void* arg) {
     z->txq.head = z->txq.tail = NULL;
     z->txq.bytes = 0;
     z_mutex_unlock(z_loan_mut(z->lock));
+    send_datagrams(z, list);
     send_all(z, list);
     while (list != NULL) {
       rlmesh_txq_item_t* next = list->next;
@@ -448,6 +528,134 @@ static void* tx_task(void* arg) {
 }
 
 __attribute__((noipa)) size_t rlmesh_zenoh_tx_stack(void) { return RLMESH_ZENOH_TX_STACK; }
+
+/* The datagram socket to host:port, connected (so only the host's datagrams
+ * arrive) and reading with a timeout, or -1. */
+static int dgram_open(const char* host, uint16_t port) {
+  char service[8];
+  snprintf(service, sizeof service, "%u", (unsigned)port);
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_DGRAM;
+  struct addrinfo* found = NULL;
+  if (getaddrinfo(host, service, &hints, &found) != 0 || found == NULL) return -1;
+  int fd = -1;
+  for (struct addrinfo* a = found; a != NULL && fd < 0; a = a->ai_next) {
+    fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+    if (fd < 0) continue;
+    struct timeval wait = {0, RLMESH_ZENOH_DGRAM_POLL_MS * 1000};
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait) != 0 ||
+        connect(fd, a->ai_addr, a->ai_addrlen) != 0) {
+      close(fd);
+      fd = -1;
+    }
+  }
+  freeaddrinfo(found);
+  return fd;
+}
+
+/* Swaps the datagram socket the send task uses, and closes the old one. */
+static void dgram_swap(rlmesh_zenoh_t* z, int fd) {
+  z_mutex_lock(z_loan_mut(z->dgram_lock));
+  int old = z->dgram_fd;
+  z->dgram_fd = fd;
+  z->dgram_refused = 0;
+  z_mutex_unlock(z_loan_mut(z->dgram_lock));
+  if (old >= 0) close(old);
+}
+
+/* The datagram socket's task: opens and closes it as the loop asks, and reads
+ * it in between. Only this task opens, closes or reads it. */
+static void* rx_task(void* arg) {
+  rlmesh_zenoh_t* z = (rlmesh_zenoh_t*)arg;
+  /* The request the socket serves (0: none). */
+  uint32_t serving = 0;
+  z_mutex_lock(z_loan_mut(z->lock));
+  for (;;) {
+    while (!z->stopping && z->dgram_want == 0 && serving == 0) {
+      z_condvar_wait(z_loan_mut(z->rx_wake), z_loan_mut(z->lock));
+    }
+    if (z->stopping) break;
+    uint32_t want = z->dgram_want;
+    if (want != serving) {
+      char host[sizeof z->dgram_host];
+      memcpy(host, z->dgram_host, sizeof host);
+      uint16_t port = z->dgram_port;
+      z_mutex_unlock(z_loan_mut(z->lock));
+      dgram_swap(z, -1);
+      int fd = want != 0 ? dgram_open(host, port) : -1;
+      dgram_swap(z, fd);
+      z_mutex_lock(z_loan_mut(z->lock));
+      serving = want;
+      if (want != 0 && fd < 0) {
+        z->dgram_failed = true;
+        if (z->wake != NULL) z->wake(z->wake_arg);
+      }
+      continue;
+    }
+    int fd = z->dgram_fd;
+    z_mutex_unlock(z_loan_mut(z->lock));
+    ssize_t n = -1;
+    if (fd >= 0) {
+      n = recv(fd, z->dgram_buf, sizeof z->dgram_buf, 0);
+    } else {
+      z_sleep_ms(RLMESH_ZENOH_DGRAM_POLL_MS);
+    }
+    if (n > RLMESH_DEVICE_DATAGRAM_MAX) {
+      z_mutex_lock(z_loan_mut(z->lock));
+      z->views.dgram_dropped++;
+      z_mutex_unlock(z_loan_mut(z->lock));
+    } else if (n > 0) {
+#ifdef RLMESH_ZENOH_TRACE_CHUNK
+      if (n > 8) RLMESH_ZENOH_TRACE_CHUNK(z->dgram_buf + 8, (size_t)n - 8, z->now_us());
+#endif
+      push_datagram(z, z->dgram_buf, (size_t)n);
+    } else if (n < 0 && fd >= 0 && errno == ECONNREFUSED) {
+      /* Nothing listens on the host's port. */
+      z_mutex_lock(z_loan_mut(z->lock));
+      z->dgram_failed = true;
+      if (z->wake != NULL) z->wake(z->wake_arg);
+      z_mutex_unlock(z_loan_mut(z->lock));
+    }
+    z_mutex_lock(z_loan_mut(z->lock));
+  }
+  z_mutex_unlock(z_loan_mut(z->lock));
+  dgram_swap(z, -1);
+  return NULL;
+}
+
+__attribute__((noipa)) size_t rlmesh_zenoh_rx_stack(void) { return RLMESH_ZENOH_RX_STACK; }
+
+/* Asks the datagram task to open the socket to the robot's host on `port`
+ * (anew), or with `port` 0 to close it; what waits to be sent goes. */
+static void dgram_request(rlmesh_zenoh_t* z, uint16_t port) {
+  uint16_t ignored = 0;
+  const char* host = port != 0 ? rlmesh_device_robot_host(z->robot, &ignored) : NULL;
+  z_mutex_lock(z_loan_mut(z->lock));
+  rlmesh_txq_drop_class(&z->txq, RLMESH_ZENOH_DATAGRAM_CLASS);
+  z->dgram_failed = false;
+  if (host != NULL && strlen(host) < sizeof z->dgram_host) {
+    strcpy(z->dgram_host, host);
+    z->dgram_port = port;
+    z->dgram_want = z->dgram_want + 1 == 0 ? 1 : z->dgram_want + 1;
+  } else {
+    z->dgram_want = 0;
+  }
+  z_condvar_signal(z_loan_mut(z->rx_wake));
+  z_mutex_unlock(z_loan_mut(z->lock));
+}
+
+/* Queues a datagram for the send task, in place of any on its lane. */
+static int datagram(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
+  rlmesh_txq_item_t* t =
+      rlmesh_txq_item(RLMESH_ZENOH_DATAGRAM_CLASS, a->key, a->payload, a->payload_len);
+  if (t == NULL) return -1;
+  z_mutex_lock(z_loan_mut(z->lock));
+  bool queued = rlmesh_txq_push(&z->txq, t);
+  z_mutex_unlock(z_loan_mut(z->lock));
+  return queued ? 0 : -1;
+}
 
 /* Drops what the send task hasn't sent. */
 static void drop_unsent(rlmesh_zenoh_t* z) {
@@ -494,6 +702,29 @@ static void reconnect(rlmesh_zenoh_t* z) {
   memset(z->unreachable, 0, sizeof z->unreachable);
 }
 
+/* Stops the tasks started so far (`tasks` of verify, send, datagram, in that
+ * order) and drops the transport's locks. */
+static void stop_tasks(rlmesh_zenoh_t* z, int tasks) {
+  z_mutex_lock(z_loan_mut(z->lock));
+  z->stopping = true;
+  z_condvar_signal(z_loan_mut(z->verify_wake));
+  z_condvar_signal(z_loan_mut(z->tx_wake));
+  z_condvar_signal(z_loan_mut(z->rx_wake));
+  z_mutex_unlock(z_loan_mut(z->lock));
+  if (tasks > 0) z_task_join(z_move(z->verify_task));
+  if (tasks > 1) z_task_join(z_move(z->tx_task));
+  if (tasks > 2) z_task_join(z_move(z->rx_task));
+}
+
+static void drop_locks(rlmesh_zenoh_t* z) {
+  z_drop(z_move(z->rx_wake));
+  z_drop(z_move(z->tx_wake));
+  z_drop(z_move(z->verify_wake));
+  z_drop(z_move(z->dgram_lock));
+  z_drop(z_move(z->net));
+  z_drop(z_move(z->lock));
+}
+
 int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
                       rlmesh_device_now_us_fn now_us) {
   if (z == NULL || robot == NULL || now_us == NULL) return -1;
@@ -501,14 +732,12 @@ int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
   z->txq.cap = RLMESH_ZENOH_TX_BYTES;
   z->robot = robot;
   z->now_us = now_us;
+  z->dgram_fd = -1;
   if (z_mutex_init(&z->lock) != Z_OK) return -1;
-  if (z_mutex_init(&z->net) != Z_OK) {
-    z_drop(z_move(z->lock));
-    return -1;
-  }
-  if (z_condvar_init(&z->verify_wake) != Z_OK || z_condvar_init(&z->tx_wake) != Z_OK) {
-    z_drop(z_move(z->net));
-    z_drop(z_move(z->lock));
+  if (z_mutex_init(&z->net) != Z_OK || z_mutex_init(&z->dgram_lock) != Z_OK ||
+      z_condvar_init(&z->verify_wake) != Z_OK || z_condvar_init(&z->tx_wake) != Z_OK ||
+      z_condvar_init(&z->rx_wake) != Z_OK) {
+    drop_locks(z);
     return -1;
   }
 #if defined(ZENOH_ARDUINO_ESP32)
@@ -518,29 +747,24 @@ int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
   z_task_attr_t tx_attrs = {.name = "rlmesh-tx",
                             .priority = RLMESH_ZENOH_TX_PRIORITY,
                             .stack_depth = rlmesh_zenoh_tx_stack()};
+  z_task_attr_t rx_attrs = {.name = "rlmesh-udp",
+                            .priority = RLMESH_ZENOH_RX_PRIORITY,
+                            .stack_depth = rlmesh_zenoh_rx_stack()};
   z_task_attr_t* verify_attr = &verify_attrs;
   z_task_attr_t* tx_attr = &tx_attrs;
+  z_task_attr_t* rx_attr = &rx_attrs;
 #else
   z_task_attr_t* verify_attr = NULL;
   z_task_attr_t* tx_attr = NULL;
+  z_task_attr_t* rx_attr = NULL;
 #endif
-  if (z_task_init(&z->verify_task, verify_attr, verify_task, z) != Z_OK) {
-    z_drop(z_move(z->tx_wake));
-    z_drop(z_move(z->verify_wake));
-    z_drop(z_move(z->net));
-    z_drop(z_move(z->lock));
-    return -1;
-  }
-  if (z_task_init(&z->tx_task, tx_attr, tx_task, z) != Z_OK) {
-    z_mutex_lock(z_loan_mut(z->lock));
-    z->stopping = true;
-    z_condvar_signal(z_loan_mut(z->verify_wake));
-    z_mutex_unlock(z_loan_mut(z->lock));
-    z_task_join(z_move(z->verify_task));
-    z_drop(z_move(z->tx_wake));
-    z_drop(z_move(z->verify_wake));
-    z_drop(z_move(z->net));
-    z_drop(z_move(z->lock));
+  int tasks = 0;
+  if (z_task_init(&z->verify_task, verify_attr, verify_task, z) == Z_OK) tasks++;
+  if (tasks == 1 && z_task_init(&z->tx_task, tx_attr, tx_task, z) == Z_OK) tasks++;
+  if (tasks == 2 && z_task_init(&z->rx_task, rx_attr, rx_task, z) == Z_OK) tasks++;
+  if (tasks < 3) {
+    stop_tasks(z, tasks);
+    drop_locks(z);
     return -1;
   }
   return 0;
@@ -593,6 +817,9 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
       case EV_REPLY:
         rlmesh_device_robot_reply(z->robot, e->query_id, e->data, e->len, now);
         break;
+      case EV_DATAGRAM:
+        rlmesh_device_robot_datagram(z->robot, e->data, e->len, now);
+        break;
       default:
         rlmesh_device_robot_query_done(z->robot, e->query_id, now);
         break;
@@ -601,6 +828,11 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
     free(e);
     e = next;
   }
+  z_mutex_lock(z_loan_mut(z->lock));
+  bool dgram_failed = z->dgram_failed;
+  z->dgram_failed = false;
+  z_mutex_unlock(z_loan_mut(z->lock));
+  if (dgram_failed) rlmesh_device_robot_datagram_failed(z->robot, z->now_us());
   rlmesh_device_action_t a;
   int rc;
   while ((rc = rlmesh_device_robot_next(z->robot, z->now_us(), &a)) == 1) {
@@ -608,6 +840,15 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
       if (publish(z, &a) != 0) count_failed(z);
       continue;
     }
+    if (a.kind == RLMESH_DEVICE_DATAGRAM) {
+      if (datagram(z, &a) != 0) count_failed(z);
+      continue;
+    }
+    if (a.kind == RLMESH_DEVICE_DATAGRAM_OPEN || a.kind == RLMESH_DEVICE_DATAGRAM_CLOSE) {
+      dgram_request(z, a.kind == RLMESH_DEVICE_DATAGRAM_OPEN ? a.port : 0);
+      continue;
+    }
+    if (a.kind == RLMESH_DEVICE_RESET || a.kind == RLMESH_DEVICE_RECONNECT) dgram_request(z, 0);
     /* The send task uses the sessions too: one zenoh-pico call at a time. */
     z_mutex_lock(z_loan_mut(z->net));
     int done = -1;
@@ -648,13 +889,7 @@ void rlmesh_zenoh_close(rlmesh_zenoh_t* z) {
   undeclare(z);
   close_sessions(z);
   z_mutex_unlock(z_loan_mut(z->net));
-  z_mutex_lock(z_loan_mut(z->lock));
-  z->stopping = true;
-  z_condvar_signal(z_loan_mut(z->verify_wake));
-  z_condvar_signal(z_loan_mut(z->tx_wake));
-  z_mutex_unlock(z_loan_mut(z->lock));
-  z_task_join(z_move(z->verify_task));
-  z_task_join(z_move(z->tx_task));
+  stop_tasks(z, 3);
   drop_unsent(z);
   free(z->view);
   z->view = NULL;
@@ -667,8 +902,5 @@ void rlmesh_zenoh_close(rlmesh_zenoh_t* z) {
     e = next;
   }
   z->head = z->tail = NULL;
-  z_drop(z_move(z->tx_wake));
-  z_drop(z_move(z->verify_wake));
-  z_drop(z_move(z->net));
-  z_drop(z_move(z->lock));
+  drop_locks(z);
 }

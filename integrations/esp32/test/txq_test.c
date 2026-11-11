@@ -79,6 +79,24 @@ int main(void) {
   rlmesh_txq_t small = {.cap = 64};
   assert(!rlmesh_txq_push(&small, sample("big", 1, 200)));
   assert(small.head == NULL && small.bytes == 0 && small.dropped == 1);
+  /* Datagrams (a class of their own) keep the newest per lane, and closing
+   * the socket withdraws them all without counting them dropped. */
+  rlmesh_txq_t mixed = {.cap = 4096};
+  for (uint32_t i = 0; i < 100; ++i) {
+    assert(rlmesh_txq_push(&mixed, rlmesh_txq_item(4, "d/eyes/servos", (uint8_t*)&i, 4)));
+    assert(rlmesh_txq_push(&mixed, rlmesh_txq_item(4, "probe", (uint8_t*)&i, 4)));
+  }
+  assert(rlmesh_txq_push(&mixed, sample("d/eyes/servos", 7, 60)));
+  assert(rlmesh_txq_push(&mixed, sample("p/eyes/hb", 7, 60)));
+  uint32_t datagrams = 0;
+  for (rlmesh_txq_item_t* t = mixed.head; t != NULL; t = t->next) datagrams += t->class_ == 4;
+  assert(datagrams == 2 && mixed.dropped == 198);
+  rlmesh_txq_drop_class(&mixed, 4);
+  assert(mixed.dropped == 198);
+  for (rlmesh_txq_item_t* t = mixed.head; t != NULL; t = t->next) assert(t->class_ != 4);
+  assert(mixed.head != NULL && mixed.head->next != NULL && mixed.head->next->next == NULL);
+  assert(mixed.tail == mixed.head->next);
+  rlmesh_txq_clear(&mixed);
   /* Draining empties it. */
   for (rlmesh_txq_item_t* t = rlmesh_txq_pop(&q); t != NULL; t = rlmesh_txq_pop(&q)) free(t);
   assert(q.head == NULL && q.tail == NULL && q.bytes == 0);

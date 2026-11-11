@@ -39,6 +39,7 @@ FRAME_BUDGET = 1024
 TASKS = (
     ("verify_task", "rlmesh_zenoh_verify_stack"),
     ("tx_task", "rlmesh_zenoh_tx_stack"),
+    ("rx_task", "rlmesh_zenoh_rx_stack"),
 )
 
 ROOT = "loopTask(void*)"

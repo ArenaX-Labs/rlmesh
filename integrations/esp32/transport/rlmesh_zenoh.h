@@ -61,6 +61,26 @@ extern "C" {
  * can't keep up. */
 #define RLMESH_ZENOH_TX_BYTES (8 * 1024)
 
+/* The datagram path (RLMESH_DEVICE_DATAGRAM_OPEN): one UDP socket for the
+ * robot, opened, read and closed by a task of its own, so neither a name
+ * lookup nor a read ever waits on the loop. It reads with a timeout, so it
+ * notices a close within RLMESH_ZENOH_DGRAM_POLL_MS. Datagrams go out on the
+ * send task, without waiting: one the socket can't take now is dropped (a
+ * newer one replaces it anyway). What arrives queues for the loop like a
+ * sample, within RLMESH_ZENOH_QUEUE_BYTES. */
+#define RLMESH_ZENOH_RX_STACK (5 * 1024)
+#define RLMESH_ZENOH_RX_PRIORITY 12
+#define RLMESH_ZENOH_DGRAM_POLL_MS 100
+/* The send task's class for datagrams: past the session classes. */
+#define RLMESH_ZENOH_DATAGRAM_CLASS RLMESH_DEVICE_CLASSES
+/* Sends refused in a row (not ones that would only block) before the robot
+ * is told the path failed. */
+#define RLMESH_ZENOH_DGRAM_FAILURES 3
+
+/* A measurement build may define RLMESH_ZENOH_TRACE_CHUNK(msg, len, arrived_us)
+ * to see each sealed action chunk as it arrives, on either path, before the
+ * robot takes it. It runs on the task that received it, and must not block. */
+
 struct rlmesh_zenoh_event;
 struct rlmesh_zenoh_view;
 struct rlmesh_zenoh_t;
@@ -91,6 +111,13 @@ typedef struct rlmesh_zenoh_view_stats_t {
   uint64_t sealed_wait_total_us;
   uint64_t sealed_open_max_us;
   uint64_t sealed_open_total_us;
+  /* The datagram socket: datagrams it sent, those it dropped because the
+   * socket was not open or could not take them now, those it received, and
+   * those it dropped received (too long, or no queue room). */
+  uint32_t dgram_sent;
+  uint32_t dgram_unsent;
+  uint32_t dgram_received;
+  uint32_t dgram_dropped;
 } rlmesh_zenoh_view_stats_t;
 
 /* A subscription's callback context. */
@@ -140,6 +167,21 @@ typedef struct rlmesh_zenoh_t {
   z_owned_task_t tx_task;
   z_owned_condvar_t tx_wake;
   rlmesh_txq_t txq;
+  /* The datagram socket's task, what the loop asked of it (open to
+   * `dgram_host`:`dgram_port` as request `dgram_want`, 0 closed) and
+   * whether a send or an open failed since the loop last looked, all under
+   * `lock`. The socket itself (`dgram_fd`, -1 none) is opened and closed only
+   * by its task, under `dgram_lock`, which the send task holds to use it. */
+  z_owned_task_t rx_task;
+  z_owned_condvar_t rx_wake;
+  uint32_t dgram_want;
+  char dgram_host[64];
+  uint16_t dgram_port;
+  bool dgram_failed;
+  uint8_t dgram_refused;
+  int dgram_fd;
+  z_owned_mutex_t dgram_lock;
+  uint8_t dgram_buf[RLMESH_DEVICE_DATAGRAM_MAX + 1];
   /* Held around every zenoh-pico call this transport makes on a session,
    * from the loop or the send task: declaring, querying, publishing, opening
    * and closing. `open` changes only under it, and only on the loop. */
@@ -168,6 +210,7 @@ void rlmesh_zenoh_view_stats(rlmesh_zenoh_t* z, rlmesh_zenoh_view_stats_t* out);
 /* The transport's tasks' stacks, for the firmware's stack check. */
 size_t rlmesh_zenoh_verify_stack(void);
 size_t rlmesh_zenoh_tx_stack(void);
+size_t rlmesh_zenoh_rx_stack(void);
 
 /* Closes every session; the robot is left to the caller. */
 void rlmesh_zenoh_close(rlmesh_zenoh_t* z);

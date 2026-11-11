@@ -4,9 +4,11 @@
  * heartbeats echoed, applied two distinct controller targets, and published
  * the applied values under its delivered stream key.
  *
- *   host_robot <host:port#secret.hostkey> [seconds]
+ *   host_robot <host:port#secret.hostkey> [seconds] [udp]
  *
- * The address is what a host prints, with its key, for its default session. */
+ * The address is what a host prints, with its key, for its default session.
+ * With `udp` the host offers its datagram path, and the commands must have
+ * come over it. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +46,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   int seconds = argc > 2 ? atoi(argv[2]) : 15;
+  int udp = argc > 3 && strcmp(argv[3], "udp") == 0;
   rlmesh_device_robot_config_t config = {argv[1], NULL, NULL, 0, "eyes", kMap, 50, fill_random};
   rlmesh_device_robot_t* robot = NULL;
   int rc = rlmesh_device_robot_new(&config, &robot);
@@ -117,6 +120,23 @@ int main(int argc, char** argv) {
          joined ? (double)(joined - start) / 1e6 : -1.0, (unsigned long long)status.echoes,
          published, status.mode, (unsigned long long)status.epoch, z.failed);
   printf("applied targets: %u, %u ticks\n", applied[0], applied[1]);
+  rlmesh_device_datagram_stats_t dgram;
+  if (rlmesh_device_robot_datagram_stats(robot, &dgram) == RLMESH_DEVICE_OK) {
+    rlmesh_zenoh_view_stats_t views;
+    rlmesh_zenoh_view_stats(&z, &views);
+    printf(
+        "datagram path: active %u, sent %llu, received %llu, lost %llu, unopened %llu, "
+        "fallbacks %lu; socket sent %lu, unsent %lu, received %lu, dropped %lu\n",
+        dgram.active, (unsigned long long)dgram.sent, (unsigned long long)dgram.received,
+        (unsigned long long)dgram.lost, (unsigned long long)dgram.unopened,
+        (unsigned long)dgram.fallbacks, (unsigned long)views.dgram_sent,
+        (unsigned long)views.dgram_unsent, (unsigned long)views.dgram_received,
+        (unsigned long)views.dgram_dropped);
+    if (udp && (!dgram.active || dgram.received == 0)) ok = 0;
+  } else if (udp) {
+    printf("the datagram path was not offered\n");
+    ok = 0;
+  }
   /* A subscription or token the transport couldn't declare fails it too. */
   if (z.failed != 0) ok = 0;
   rlmesh_zenoh_close(&z);

@@ -124,6 +124,22 @@ static inline rlmesh_txq_item_t* rlmesh_txq_pop(rlmesh_txq_t* q) {
   return t;
 }
 
+/* Drops every publication of class `class_` waiting (not counted: they were
+ * withdrawn, not crowded out). */
+static inline void rlmesh_txq_drop_class(rlmesh_txq_t* q, uint8_t class_) {
+  rlmesh_txq_item_t* prev = NULL;
+  for (rlmesh_txq_item_t* i = q->head; i != NULL;) {
+    rlmesh_txq_item_t* next = i->next;
+    if (i->class_ == class_) {
+      rlmesh_txq_drop_after(q, prev);
+      q->dropped--;
+    } else {
+      prev = i;
+    }
+    i = next;
+  }
+}
+
 /* Frees every publication waiting. */
 static inline void rlmesh_txq_clear(rlmesh_txq_t* q) {
   for (rlmesh_txq_item_t* t = rlmesh_txq_pop(q); t != NULL; t = rlmesh_txq_pop(q)) free(t);

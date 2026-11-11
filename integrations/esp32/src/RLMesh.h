@@ -163,6 +163,16 @@ class Robot {
   bool chunkTiming(int part, rlmesh_device_chunk_timing_t& out) const;
   // Prints one part's chunk timing on one line.
   void printChunkTiming(Print& out, int part) const;
+  // Whether the robot takes the host's datagram path (UDP) when the host
+  // offers it (`rlmesh host --board-data udp`): true, the default, follows the
+  // host; false keeps every part on TCP. Call it after begin(), before the
+  // first poll(); it holds from the next attach on.
+  void useDatagram(bool on);
+  // The datagram path this attach (active, sent, received, lost, reordered,
+  // unopened, fallbacks): false when the host offered none.
+  bool datagramStats(rlmesh_device_datagram_stats_t& out) const;
+  // Prints the datagram path's counters on one line, or the path in use.
+  void printDatagram(Print& out) const;
 
  private:
   bool start(const rlmesh_device_robot_config_t& config);

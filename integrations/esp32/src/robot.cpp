@@ -264,6 +264,29 @@ void Robot::printChunkTiming(Print& out, int part) const {
   out.println();
 }
 
+void Robot::useDatagram(bool on) {
+  if (robot_ != nullptr) rlmesh_device_robot_use_datagram(robot_, on ? 1 : 0);
+}
+
+bool Robot::datagramStats(rlmesh_device_datagram_stats_t& out) const {
+  out = {};
+  return robot_ != nullptr && rlmesh_device_robot_datagram_stats(robot_, &out) == RLMESH_DEVICE_OK;
+}
+
+void Robot::printDatagram(Print& out) const {
+  rlmesh_device_datagram_stats_t d;
+  if (!datagramStats(d)) {
+    out.println("  realtime parts over tcp");
+    return;
+  }
+  out.printf(
+      "  realtime parts over %s: sent %llu, received %llu, lost %llu, reordered %llu, "
+      "unopened %llu, fallbacks %lu\n",
+      d.active ? "udp" : "tcp", (unsigned long long)d.sent, (unsigned long long)d.received,
+      (unsigned long long)d.lost, (unsigned long long)d.reordered, (unsigned long long)d.unopened,
+      (unsigned long)d.fallbacks);
+}
+
 void Robot::viewCounts(uint64_t& sealed, uint64_t& signedViews, uint64_t& droppedViews) const {
   sealed = signedViews = droppedViews = 0;
   if (robot_ != nullptr) {

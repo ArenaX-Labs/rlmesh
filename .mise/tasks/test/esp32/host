@@ -32,26 +32,37 @@ cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -DZENOH_LINUX -DZENOH_C_STANDARD=11 \
   "$target_dir/debug/librlmesh_device.a" "$zp_build/lib/libzenohpico.a" -lpthread -ldl -lm \
   -o "$out/host_robot"
 
-log="$out/host.log"
-"$target_dir/debug/examples/test_host" >"$log" 2>&1 &
-host=$!
-trap 'kill "$host" 2>/dev/null || true' EXIT
-for _ in $(seq 100); do
-  [ -s "$log" ] && break
-  sleep 0.1
+# Over the session's links, then over the host's datagram path.
+host=
+trap '[ -n "$host" ] && kill "$host" 2>/dev/null || true' EXIT
+for path in tcp udp; do
+  echo "==> the board's loop, realtime parts over $path"
+  log="$out/host-$path.log"
+  "$target_dir/debug/examples/test_host" "$path" >"$log" 2>&1 &
+  host=$!
+  for _ in $(seq 100); do
+    [ -s "$log" ] && break
+    sleep 0.1
+  done
+  address="$(head -1 "$log")"
+  case "$address" in
+    *#*) ;;
+    *) echo "the test host printed no address:" >&2; cat "$log" >&2; exit 1 ;;
+  esac
+  "$out/host_robot" "$address" 15 "$path"
+  confirmed=
+  for _ in $(seq 50); do
+    grep -q 'commands confirmed:' "$log" && { confirmed=1; break; }
+    kill -0 "$host" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [ -z "$confirmed" ]; then
+    cat "$log" >&2
+    echo 'controller did not receive the applied command targets' >&2
+    exit 1
+  fi
+  cat "$log"
+  kill "$host" 2>/dev/null || true
+  wait "$host" 2>/dev/null || true
+  host=
 done
-address="$(head -1 "$log")"
-case "$address" in
-  *#*) ;;
-  *) echo "the test host printed no address:" >&2; cat "$log" >&2; exit 1 ;;
-esac
-"$out/host_robot" "$address" 15
-
-for _ in $(seq 50); do
-  grep -q 'commands confirmed:' "$log" && { cat "$log"; exit 0; }
-  kill -0 "$host" 2>/dev/null || break
-  sleep 0.1
-done
-cat "$log" >&2
-echo 'controller did not receive the applied command targets' >&2
-exit 1
