@@ -458,7 +458,8 @@ pub struct AuthoritySnapshot {
     pub demands: Vec<Demand>,
     /// Why the mode is what it is.
     pub mode_reason: Reason,
-    /// The latest lease endings, oldest first.
+    /// The latest lease endings of holders still in the roster, oldest
+    /// first.
     pub ended: Vec<LeaseEnd>,
     /// The last entry into SAFE, DISARMED or ESTOP.
     pub last_stop: LastStop,

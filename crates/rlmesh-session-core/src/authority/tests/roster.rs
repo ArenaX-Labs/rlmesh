@@ -109,8 +109,8 @@ fn a_lost_holder_stops_only_its_parts_of_one_robot() {
     assert!(f.auth.held(&pid("robot")).is_none());
     assert!(!f.auth.is_attached(&pid("policy")));
     assert!(
-        f.auth.binding(&pid("policy")).is_some(),
-        "kept for a reconnect"
+        f.auth.binding(&pid("policy")).is_none(),
+        "gone with it: its presence grace was its time to come back"
     );
     let told = events
         .iter()

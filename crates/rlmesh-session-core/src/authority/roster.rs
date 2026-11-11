@@ -108,9 +108,11 @@ impl Authority {
     /// A participant is gone: any lease it held ends (`HOLDER_LOST`), and
     /// the session and every other holder go on. A robot stays in the
     /// roster, absent, while its parts remain: the leases on them end with
-    /// `ROBOT_LOST`. Anyone else leaves the roster. Parts and bindings stay
-    /// for a reconnect. Only a scene's run stops for a lost member: it waits
-    /// for it, SAFE, until an explicit arm.
+    /// `ROBOT_LOST`, and its parts stay for a reconnect. Anyone else leaves
+    /// the roster for good, its binding with it (the presence grace was its
+    /// time to come back), unless it is a member of a scene's run, which
+    /// waits for it to rejoin. Only a scene's run stops for a lost member: it
+    /// waits for it, SAFE, until an explicit arm.
     pub(super) fn lose(&mut self, id: &ParticipantId, events: &mut Vec<AuthorityEvent>) {
         if !self.is_attached(id) {
             return;
@@ -144,7 +146,7 @@ impl Authority {
             self.settle_after_release(id, "its robot was lost", events);
         } else {
             self.roster.remove(id);
-            self.held.remove(id);
+            self.forget(id, !in_scene);
             if in_scene && released {
                 self.enter_safe(held, events);
             } else {
@@ -192,11 +194,9 @@ impl Authority {
             .collect();
         self.remove_parts(id, &owned, events);
         self.contract.remove(id);
-        self.bindings.remove(id);
         self.roster.remove(id);
-        self.held.remove(id);
         self.seen.remove(id);
-        self.needed.retain(|(p, _), _| p != id);
+        self.forget(id, true);
         self.recompute_demands(events);
         events.push(AuthorityEvent::Detached {
             participant: id.clone(),
@@ -204,6 +204,19 @@ impl Authority {
         });
         self.settle_after_release(id, "holder detached", events);
         self.barrier_gone(id, self.now_ns);
+    }
+
+    /// `id` left the roster: what the state kept for it goes with it (its
+    /// hold, why its leases ended, and its binding unless `binding` is
+    /// false), so a session's state returns to its size once its visitors
+    /// are gone.
+    fn forget(&mut self, id: &ParticipantId, binding: bool) {
+        if binding {
+            self.bindings.remove(id);
+        }
+        self.needed.retain(|(p, _), _| p != id);
+        self.held.remove(id);
+        self.ended.retain(|e| &e.lease.holder != id);
     }
 
     /// The owner changed `device`'s entry:

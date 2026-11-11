@@ -24,14 +24,15 @@ use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::version::VIEW_DEVICE;
 use rlmesh_session::wire::{
-    AuthorityView, ChannelId, ClockMode, Command, ContractMode, CtlError, CtlReply, CtlStatus,
-    Encoding, Epoch, EstopSignal, FenceError, Fingerprint, HistoryQuery, Mode, ParticipantId, Plan,
-    PriorityClass, ReasonCode, Request, Role, Sample, SessionId, TenantId, ViewReply, VirtualTick,
-    Watermark,
+    AuthoritySnapshot, AuthorityView, ChannelId, ClockMode, Command, ContractMode, CtlError,
+    CtlReply, CtlStatus, Encoding, Epoch, EstopSignal, FenceError, Fingerprint, HistoryQuery,
+    LastStop, Mode, ParticipantId, Plan, PriorityClass, Reason, ReasonCode, Request, Role, Sample,
+    SessionId, TenantId, ViewReply, VirtualTick, Watermark,
 };
 use rlmesh_session::{
-    ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
-    SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
+    AuthorityEvent, ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig,
+    SessionError, SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig,
+    VirtualConfig,
 };
 use zenoh::query::ConsolidationMode;
 
@@ -612,10 +613,11 @@ async fn a_vanished_holder_ends_its_lease_alone() {
     let policy = world.policy().await;
     let arm = channel(&policy, "arm");
     policy.arm().await.expect("arm");
-    policy.grant_lease(arm, None).await.expect("grant");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
 
     let gone = Instant::now();
     let id = policy.id().clone();
+    let mut events = world.host.events();
     let transport = policy.transport().clone();
     drop(policy);
     transport.close().await.expect("close");
@@ -627,14 +629,24 @@ async fn a_vanished_holder_ends_its_lease_alone() {
         .expect("gone");
     assert_eq!(view.mode, Mode::Armed);
     // Its lease lapses, or it is lost first: heartbeats decide, either way.
-    let ended = view.ended.last().expect("its lease ended");
+    // Why it ended left the state with its holder.
+    assert!(!view.ended.iter().any(|e| e.lease.holder == id));
+    let code = loop {
+        match events.try_recv().expect("the lease's end was told") {
+            AuthorityEvent::HolderLost { holder, code, .. } if holder == id => break code,
+            AuthorityEvent::LeaseEnded {
+                lease: ended,
+                reason,
+                ..
+            } if ended.token == lease.token => {
+                break reason.code;
+            }
+            _ => {}
+        }
+    };
     assert!(
-        matches!(
-            ended.reason.code,
-            ReasonCode::HeartbeatLapse | ReasonCode::HolderLost
-        ),
-        "{}",
-        ended.reason
+        matches!(code, ReasonCode::HeartbeatLapse | ReasonCode::HolderLost),
+        "{code:?}"
     );
     tracing::info!("holder loss in {:?}", gone.elapsed());
 }
@@ -1179,6 +1191,143 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
         .await
         .expect("withdrawn");
     wait_until("the default plan", || ft.plan() == (None, 0)).await;
+}
+
+/// The signed state's lists: its size with the counters, the mode and the
+/// clock estimates (which vary in any live session) set aside.
+fn listed_size(state: &AuthoritySnapshot) -> usize {
+    let mut state = state.clone();
+    state.revision = 0;
+    state.host_ns = 0;
+    state.epoch = Epoch::FIRST;
+    state.mode = Mode::Disarmed;
+    state.mode_reason = Reason::default();
+    state.last_stop = LastStop::default();
+    state.clocks.clear();
+    codec::encode_state(&state).len()
+}
+
+/// Nothing a departed policy leaves behind (its binding, its demands, why
+/// its leases ended, its clock) stays in the session's state: after a
+/// policy binds, drives and leaves, cleanly or lost, ten times over, the
+/// state is the size it started at.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_returns_to_its_state_size_after_policies_bind_drive_and_leave() {
+    let world = World::start_with(|c| c.presence_grace = Duration::from_millis(400)).await;
+    let robot = world.robot().await;
+    let ft = robot.publisher("ft").await.expect("publisher");
+    let initial = robot
+        .wait_for("the robot's clock", WAIT, |s| {
+            s.clock(&robot_id()).is_some()
+        })
+        .await
+        .expect("clock");
+    let mut first = None;
+    for round in 0..10 {
+        let policy = world
+            .join("policy", vec![Role::Controller], PriorityClass::Model, 0)
+            .await;
+        policy
+            .wait_for("the robot's parts", WAIT, |s| {
+                s.part_at(&robot_id(), "ft").is_some()
+            })
+            .await
+            .expect("parts");
+        let binding = policy
+            .bind(
+                &Policy::parse(WINDOWED).expect("policy"),
+                &RunOptions::named("windowed"),
+            )
+            .expect("bound");
+        policy.declare_bound(&binding).await.expect("declare");
+        if policy.authority().expect("view").mode == Mode::Disarmed {
+            arm_seen_by(&policy, &[&robot]).await;
+        }
+        let ft_channel = channel(&policy, "ft");
+        policy
+            .wait_for("ft's plan installed", WAIT, |s| {
+                s.demand(ft_channel).is_some_and(|d| d.acked == d.revision)
+            })
+            .await
+            .expect("acknowledged");
+        let lease = policy
+            .grant_lease(channel(&policy, "arm"), None)
+            .await
+            .expect("lease");
+        let now = policy.session_now_ns();
+        policy
+            .chunk_publisher(&lease)
+            .await
+            .expect("publisher")
+            .send(ChunkDraft {
+                based_on: Vec::new(),
+                t0_ns: now + 1_000_000,
+                dt_ns: 10_000_000,
+                replace_from_ns: now,
+                valid_until_ns: now + 100_000_000,
+                actions: Bytes::from(vec![0; 24 * 5]),
+                tick: 0,
+            })
+            .expect("send");
+        policy
+            .release_lease(&lease)
+            .await
+            .expect("release: a lease ending");
+        let lease = policy
+            .grant_lease(channel(&policy, "arm"), None)
+            .await
+            .expect("lease");
+        assert!(
+            policy
+                .authority()
+                .is_some_and(|s| s.lease(lease.channel).is_some())
+        );
+        if round % 2 == 0 {
+            policy.detach().await.expect("detach");
+        } else {
+            // Gone without a word: lost once the presence grace runs out.
+            policy.close().await;
+        }
+        let gone = |s: &AuthoritySnapshot| {
+            !s.roster.iter().any(|p| p.id.as_str() == "policy")
+                && !s.clocks.iter().any(|c| c.participant.as_str() == "policy")
+        };
+        let started = Instant::now();
+        while !gone(&world.host.snapshot()) {
+            assert!(
+                started.elapsed() < WAIT,
+                "round {round}: the policy never left"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let state = world.host.snapshot();
+        assert!(
+            state.bindings.is_empty(),
+            "round {round}: {:?}",
+            state.bindings
+        );
+        assert!(
+            state.demands.is_empty(),
+            "round {round}: {:?}",
+            state.demands
+        );
+        assert!(state.ended.is_empty(), "round {round}: {:?}", state.ended);
+        assert!(state.held.is_empty(), "round {round}: {:?}", state.held);
+        assert_eq!(
+            listed_size(&state),
+            listed_size(&initial),
+            "round {round}: {state:?}"
+        );
+        // Whole, it is the size the first departure left it at (which says
+        // why the mode is what it is), give or take its counters' varints.
+        let size = codec::encode_state(&state).len();
+        let first = *first.get_or_insert(size);
+        assert!(
+            size <= first + 8,
+            "round {round}: {size} bytes, from {first}"
+        );
+    }
+    drop(ft);
 }
 
 #[tokio::test(flavor = "multi_thread")]

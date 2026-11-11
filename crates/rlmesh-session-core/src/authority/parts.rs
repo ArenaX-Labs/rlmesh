@@ -193,6 +193,8 @@ impl Authority {
             self.parts.remove(id);
             for (stream, part) in streams {
                 self.sealed.remove(&stream);
+                // Stream ids are never reused: no later demand to fence.
+                self.demand_revisions.remove(&stream);
                 if self.demands.remove(&stream).is_some() {
                     events.push(AuthorityEvent::DemandChanged {
                         channel: stream,

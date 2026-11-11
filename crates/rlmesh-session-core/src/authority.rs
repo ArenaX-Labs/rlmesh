@@ -216,7 +216,8 @@ pub struct Authority {
     /// Who latched the e-stop: only that robot, or `local`, clears it.
     estop_by: Option<ParticipantId>,
     mode_reason: Reason,
-    /// The latest lease endings, oldest first.
+    /// The latest lease endings of holders still in the roster, oldest
+    /// first.
     ended: VecDeque<LeaseEnd>,
     last_stop: LastStop,
     /// The host clock of the call in progress, for the reasons it records.
