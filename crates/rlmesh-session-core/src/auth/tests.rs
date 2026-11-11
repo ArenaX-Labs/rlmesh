@@ -577,3 +577,35 @@ fn a_retry_of_a_request_still_executing_joins_it() {
     window.complete(3, "three");
     assert_eq!(window.admit(3), Admit::Done(&"three"));
 }
+
+#[test]
+fn a_view_reply_answers_its_own_request_and_names_any_other() {
+    let (mut robot, _, mut candidate) = linked_pair();
+    let answer = |request_id| {
+        codec::encode_view_reply(&ViewReply {
+            result: Ok(()),
+            view: None,
+            leases: Vec::new(),
+            request_id,
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        })
+    };
+    let mut ours = candidate
+        .down
+        .seal(Kind::CtlReply, "ctl", &answer(1))
+        .expect("seal");
+    assert!(matches!(
+        robot.reply_view("ctl", &mut ours, 1, 0),
+        Ok(ReplyOutcome::Answer(reply)) if reply.request_id == 1
+    ));
+    let mut other = candidate
+        .down
+        .seal(Kind::CtlReply, "ctl", &answer(2))
+        .expect("seal");
+    assert_eq!(
+        robot.reply_view("ctl", &mut other, 1, 0).expect("other"),
+        ReplyOutcome::Other(2)
+    );
+}
