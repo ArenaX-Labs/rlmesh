@@ -21,6 +21,7 @@ use rlmesh_session::authority::DeviceAccess;
 use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::crypto::{Rng, RngError, SignedChecker};
 use rlmesh_session::edge::Rejection;
+use rlmesh_session::host::DatagramRelay;
 use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listeners};
 use rlmesh_session::wire::{
     ChannelId, CtlStatus, EdgeMode, Fingerprint, InputRange, Mode, ParticipantId, Plan,
@@ -167,6 +168,7 @@ enum Event {
     Sample(u8, String, Vec<u8>),
     Reply(u32, Vec<u8>),
     Done(u32),
+    Datagram(Vec<u8>),
 }
 
 struct World {
@@ -175,6 +177,8 @@ struct World {
     base: std::net::SocketAddr,
     identity: Arc<HostIdentity>,
     host: SessionHost,
+    /// Its datagram path, if it relays over UDP.
+    relay: Option<Arc<DatagramRelay>>,
 }
 
 /// Client sessions to the host at `base`, one per class.
@@ -224,6 +228,7 @@ impl World {
             base,
             identity,
             host,
+            relay: None,
         }
     }
 
@@ -231,15 +236,35 @@ impl World {
         links(self.base).await
     }
 
+    /// A host that relays boards' realtime parts over UDP on loopback.
+    async fn start_datagram() -> Self {
+        let relay = DatagramRelay::bind("127.0.0.1:0".parse().expect("addr"))
+            .await
+            .expect("udp");
+        let mut world = Self::start_configured({
+            let relay = relay.clone();
+            move |config| config.datagram = Some(relay)
+        })
+        .await;
+        world.relay = Some(relay);
+        world
+    }
+
     /// Stops the host and starts a new one at the same address with the same
     /// key: a new process, a new instance, an empty roster.
     async fn restart(self) -> Self {
+        self.restart_with(None).await
+    }
+
+    /// [`Self::restart`], relaying over UDP on `datagram` when given.
+    async fn restart_with(self, datagram: Option<Arc<DatagramRelay>>) -> Self {
         let Self {
             tenant,
             session,
             base,
             identity,
             host,
+            ..
         } = self;
         host.shutdown().await;
         let started = Instant::now();
@@ -254,6 +279,7 @@ impl World {
         };
         let mut config = HostConfig::new(tenant.clone(), session);
         config.identity = identity.clone();
+        config.datagram = datagram.clone();
         let host = SessionHost::start(transport, config).await.expect("host");
         Self {
             tenant,
@@ -261,6 +287,7 @@ impl World {
             base,
             identity,
             host,
+            relay: datagram,
         }
     }
 
@@ -315,6 +342,8 @@ struct Seen {
     /// How the part's chunks arrived, and the robot's accepted count.
     timing: Option<rlmesh_session::wire::ChunkTiming>,
     accepted: u64,
+    /// The robot's end of the datagram path.
+    datagram: Option<rlmesh_session::wire::DatagramStats>,
 }
 
 /// A board's transport: one session per traffic class, as zenoh-pico opens
@@ -377,6 +406,24 @@ struct Board {
     chunks: Arc<Mutex<Vec<(Instant, u32, bool)>>>,
     /// Key deliveries never reach the robot, so grants for it wait.
     drop_keys: Arc<std::sync::atomic::AtomicBool>,
+    /// The datagram socket the robot opened, connected to the host's UDP
+    /// port, and its reader.
+    udp: Option<(Arc<tokio::net::UdpSocket>, tokio::task::JoinHandle<()>)>,
+    /// Datagrams lost on their way: those from the host, and those to it
+    /// (a probe's lane, or any other).
+    lose_down: Arc<std::sync::atomic::AtomicBool>,
+    lose_up: Arc<std::sync::atomic::AtomicBool>,
+    lose_probes: Arc<std::sync::atomic::AtomicBool>,
+    /// A send the socket refused: the robot is told on its next loop.
+    udp_failed: bool,
+    /// Every datagram that arrived from the host, kept for a replay.
+    datagrams: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// Datagrams sent, by lane.
+    sent_up: Arc<Mutex<BTreeMap<String, u32>>>,
+    /// Commands subscriptions declared on the session's links.
+    command_subscriptions: u32,
+    /// The last probe the robot sent.
+    last_probe: Option<Vec<u8>>,
 }
 
 impl Board {
@@ -413,6 +460,15 @@ impl Board {
             fades: Arc::default(),
             chunks: Arc::default(),
             drop_keys: Arc::default(),
+            udp: None,
+            lose_down: Arc::default(),
+            lose_up: Arc::default(),
+            lose_probes: Arc::default(),
+            udp_failed: false,
+            datagrams: Arc::default(),
+            sent_up: Arc::default(),
+            command_subscriptions: 0,
+            last_probe: None,
         }
     }
 
@@ -443,6 +499,7 @@ impl Board {
     /// The links die with no word to the board: a host restarted, or Wi-Fi
     /// gone. What is in flight is lost.
     fn sever(&mut self) {
+        self.close_udp();
         self.transport = None;
         self.subscribers.clear();
         self.tokens.clear();
@@ -484,6 +541,7 @@ impl Board {
                     );
                     seen.timing = robot.chunk_timing(0);
                     seen.accepted = robot.chunks_accepted();
+                    seen.datagram = robot.datagram_stats();
                 }
                 if now >= self.next_sample {
                     self.next_sample = now + 20_000;
@@ -491,6 +549,9 @@ impl Board {
                         seen.lock().expect("seen").published += 1;
                     }
                 }
+            }
+            if std::mem::take(&mut self.udp_failed) {
+                robot.datagram_failed(now_us());
             }
             for action in robot.poll(now_us()) {
                 self.carry_out(action, seen).await;
@@ -556,6 +617,15 @@ impl Board {
                             robot.query_done(id, now_us());
                         }
                     }
+                    Event::Datagram(bytes) => {
+                        if !faded && !self.lose_down.load(std::sync::atomic::Ordering::Relaxed) {
+                            self.datagrams
+                                .lock()
+                                .expect("datagrams")
+                                .push(bytes.clone());
+                            robot.datagram(&bytes, now_us());
+                        }
+                    }
                 }
                 next = self.rx.try_recv().ok();
             }
@@ -607,6 +677,9 @@ impl Board {
                 let Some(transport) = &self.transport else {
                     return;
                 };
+                if sub >= SUB_COMMANDS && sub != SUB_VIEW_SEALED {
+                    self.command_subscriptions += 1;
+                }
                 let tx = self.tx.clone();
                 let subscriber = transport
                     .session(class(c))
@@ -694,6 +767,59 @@ impl Board {
                     .await
                     .expect("publish");
             }
+            Action::DatagramOpen { port } => {
+                self.close_udp();
+                let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+                    .await
+                    .expect("udp");
+                socket
+                    .connect((self.base.ip(), port))
+                    .await
+                    .expect("connect");
+                let socket = Arc::new(socket);
+                let reader = tokio::spawn({
+                    let (socket, tx) = (socket.clone(), self.tx.clone());
+                    async move {
+                        let mut buf = vec![0; 1473];
+                        while let Ok(n) = socket.recv(&mut buf).await {
+                            let _ = tx.send(Event::Datagram(buf[..n].to_vec()));
+                        }
+                    }
+                });
+                self.udp = Some((socket, reader));
+            }
+            Action::Datagram { lane, payload } => {
+                let Some((socket, _)) = &self.udp else {
+                    self.udp_failed = true;
+                    return;
+                };
+                *self
+                    .sent_up
+                    .lock()
+                    .expect("sent")
+                    .entry(lane.clone())
+                    .or_default() += 1;
+                let probe = lane == rlmesh_device::robot::PROBE_LANE;
+                let lose = if probe {
+                    self.last_probe = Some(payload.clone());
+                    self.lose_probes.load(std::sync::atomic::Ordering::Relaxed)
+                } else {
+                    self.lose_up.load(std::sync::atomic::Ordering::Relaxed)
+                };
+                if self.faded() || lose {
+                    return;
+                }
+                if socket.send(&payload).await.is_err() {
+                    self.udp_failed = true;
+                }
+            }
+            Action::DatagramClose => self.close_udp(),
+        }
+    }
+
+    fn close_udp(&mut self) {
+        if let Some((_, reader)) = self.udp.take() {
+            reader.abort();
         }
     }
 }
@@ -703,6 +829,7 @@ impl Drop for Board {
         for query in self.queries.values() {
             query.abort();
         }
+        self.close_udp();
     }
 }
 
@@ -1148,6 +1275,7 @@ async fn a_provisioned_board_joins_its_homes_default_session_without_the_lobby()
         base,
         identity,
         host,
+        relay: None,
     };
     let record = Record {
         name: "eye-1".into(),
@@ -1229,6 +1357,7 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
         base,
         identity,
         host,
+        relay: None,
     });
     let board = |name: &str| {
         Robot::new(Config {
@@ -1826,6 +1955,7 @@ impl World {
             base,
             identity,
             host,
+            relay: None,
         }
     }
 
@@ -2322,4 +2452,522 @@ async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
     let _ = one.task.await;
     let _ = back.task.await;
     let _ = two.task.await;
+}
+
+/// A controller that leases the board's part and sends it a chunk of four
+/// actions every 33 ms until `done` holds or [`WAIT`] passes: whether it
+/// held, and the newest sample of the part the controller received.
+async fn drive_board(
+    world: &World,
+    seen: &Arc<Mutex<Seen>>,
+    mut done: impl FnMut(&Seen, bool) -> bool,
+) -> (bool, Option<Vec<u8>>) {
+    let id = ParticipantId::new("eyes").expect("id");
+    let policy = world.controller().await;
+    let snapshot = policy
+        .wait_for("the board, declared and mapped", WAIT, |s| {
+            s.parts.iter().any(|p| p.owner == id) && s.clock(&id).is_some()
+        })
+        .await
+        .expect("board");
+    let eyes = snapshot
+        .parts
+        .iter()
+        .find(|p| p.owner == id)
+        .expect("eyes")
+        .channel;
+    let samples = policy
+        .subscribe(&id, "eyes", SubscribeOptions::default())
+        .await
+        .expect("subscribe");
+    policy
+        .declare_binding(Fingerprint::from(1), "{}", vec![eyes], 0.0)
+        .await
+        .expect("binding");
+    policy.arm().await.expect("arm");
+    let lease = policy.grant_lease(eyes, None).await.expect("lease");
+    let tx = policy.chunk_publisher(&lease).await.expect("publisher");
+    let target = pos(0.25, -0.1);
+    let deadline = Instant::now() + WAIT;
+    let mut held = false;
+    while Instant::now() < deadline {
+        let now = policy.session_now_ns();
+        let _ = tx.send(ChunkDraft {
+            based_on: vec![InputRange::one(ChannelId(99), 1)],
+            t0_ns: now,
+            dt_ns: 20_000_000,
+            replace_from_ns: now,
+            valid_until_ns: now + 200_000_000,
+            actions: Bytes::from([target; 4].concat()),
+            tick: 0,
+        });
+        tokio::time::sleep(Duration::from_millis(33)).await;
+        if done(&seen.lock().expect("seen"), samples.latest().is_some()) {
+            held = true;
+            break;
+        }
+    }
+    let latest = samples.latest().map(|s| s.received.sample.payload.to_vec());
+    // Done driving: a lease that just stops sending looks like a lost path
+    // to a board on the datagram path.
+    let _ = policy.release_lease(&lease).await;
+    (held, latest)
+}
+
+/// The board's health row at the host.
+fn board_health(world: &World) -> Option<rlmesh_session::ParticipantHealth> {
+    world
+        .host
+        .health()
+        .into_iter()
+        .find(|row| row.participant.as_str() == "eyes")
+}
+
+/// Waits for the host's health of the board to satisfy `ok`.
+async fn wait_health(
+    world: &World,
+    what: &str,
+    ok: impl Fn(&rlmesh_session::ParticipantHealth) -> bool,
+) -> rlmesh_session::ParticipantHealth {
+    let mut watch = world.host.watch_health();
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(row) = board_health(world).filter(|r| ok(r)) {
+            return row;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !left.is_zero(),
+            "the host's health never showed {what}: {:?}",
+            board_health(world)
+        );
+        let _ = tokio::time::timeout(left, watch.changed()).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_on_the_datagram_path_takes_chunks_and_its_samples_reach_a_policy_and_the_recorder()
+{
+    use rlmesh_session::wire::DataPath;
+    let world = World::start_datagram().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    // A recorder, as the host's own would: an observer of every stream.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("session.mcap");
+    let observer = {
+        let mut config = ParticipantConfig::new(
+            world.tenant.clone(),
+            world.session,
+            ParticipantId::new("recorder").expect("id"),
+            vec![Role::Observer],
+            PriorityClass::Scripted,
+        );
+        config.credential = Some(world.host.credential());
+        Participant::attach(world.transport().await, config)
+            .await
+            .expect("observer")
+    };
+    let recorder = rlmesh_session::record::Recorder::start(Arc::new(observer), &path)
+        .await
+        .expect("recorder");
+    let (held, latest) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, sample| {
+            sample && seen.datagram.is_some_and(|d| d.received >= 20)
+                && seen.actions.iter().any(|(m, _)| *m == EdgeMode::Driving)
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => {
+            panic!("the board's loop ended first: {:?}", robot.fault())
+        }
+    };
+    assert!(
+        held,
+        "never driven over the datagram path: {:?}",
+        seen.lock().expect("seen").datagram
+    );
+    let stats = robot.datagram_stats().expect("offered");
+    assert!(stats.active && stats.unopened == 0, "{stats:?}");
+    assert_eq!(robot.datagram_fallbacks(), 0);
+    // Never both paths: no command subscription, no sample on the session.
+    assert_eq!(board.command_subscriptions, 0);
+    assert_eq!(
+        seen.lock().expect("seen").sent,
+        0,
+        "samples published over TCP"
+    );
+    let lanes = board.sent_up.lock().expect("sent").clone();
+    assert!(
+        lanes.keys().any(|k| k.ends_with("/eyes")) && lanes.keys().any(|k| k.ends_with("_applied")),
+        "{lanes:?}"
+    );
+    // The policy received the board's samples, relayed by the host.
+    assert_eq!(latest.as_deref(), Some(&pos(0.1, 0.2)[..]));
+    let row = tokio::select! {
+        row = wait_health(&world, "the datagram path", |r| {
+            r.data_path == DataPath::Datagram
+                && r.datagram_host.is_some_and(|h| h.received > 0 && h.sent > 0)
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    let host = row.datagram_host.expect("host counters");
+    assert!(
+        host.active && host.sent > 0 && host.unopened == 0,
+        "{host:?}"
+    );
+    let stats = recorder.finish().await.expect("finish");
+    assert!(stats.messages > 0, "{stats:?}");
+    let summary = rlmesh_session::record::summarize(&path).expect("summary");
+    let samples = summary
+        .topics
+        .iter()
+        .find(|t| t.topic == "/eyes/eyes")
+        .unwrap_or_else(|| panic!("no samples recorded: {:#?}", summary.topics));
+    assert!(
+        samples.messages > 0 && samples.undecodable == 0,
+        "{samples:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flipping_the_hosts_board_data_and_reattaching_switches_paths() {
+    let world = World::start_datagram().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    let on_udp =
+        |r: &Robot| r.phase() == Phase::Running && r.datagram_stats().is_some_and(|d| d.active);
+    board.run(&mut robot, WAIT, &seen, on_udp).await;
+    assert!(on_udp(&robot), "{:?}", robot.fault());
+    let attaches = robot.attaches();
+
+    // The host comes back without the datagram path: the board re-attaches
+    // on TCP, and is driven there.
+    let world = world.restart().await;
+    board
+        .run(&mut robot, Duration::from_secs(20), &seen, |r| {
+            r.attaches() > attaches && r.phase() == Phase::Running
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "{:?}", robot.fault());
+    assert_eq!(robot.datagram_stats(), None, "nothing offered");
+    let accepted = robot.chunks_accepted();
+    let subscriptions = board.command_subscriptions;
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, _| seen.accepted > accepted + 10) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(held, "not driven over TCP after the switch");
+    assert_eq!(board.command_subscriptions, subscriptions + 1);
+
+    // And with it again: back on UDP.
+    let attaches = robot.attaches();
+    let relay = DatagramRelay::bind("127.0.0.1:0".parse().expect("addr"))
+        .await
+        .expect("udp");
+    let world = world.restart_with(Some(relay)).await;
+    board
+        .run(&mut robot, Duration::from_secs(20), &seen, |r| {
+            r.attaches() > attaches && on_udp(r)
+        })
+        .await;
+    assert!(on_udp(&robot), "{:?}", robot.fault());
+    let accepted = robot.chunks_accepted();
+    let subscriptions = board.command_subscriptions;
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, _| {
+            seen.accepted > accepted + 10 && seen.datagram.is_some_and(|d| d.received > 10)
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(held, "not driven over UDP after the switch back");
+    assert_eq!(
+        board.command_subscriptions, subscriptions,
+        "no TCP subscription"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_or_host_without_the_path_keeps_every_part_on_tcp() {
+    use rlmesh_session::wire::DataPath;
+    // A board that does not take it (as one from before it), with a host
+    // that offers it.
+    let world = World::start_datagram().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    robot.use_datagram(false);
+    let mut board = Board::open(&world).await;
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, sample| sample && seen.accepted > 5) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(held);
+    assert_eq!(robot.datagram_stats(), None);
+    assert!(board.udp.is_none() && board.sent_up.lock().expect("sent").is_empty());
+    tokio::select! {
+        row = wait_health(&world, "the session's links", |r| {
+            r.data_path == DataPath::Session && r.datagram_host.is_none()
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    drop(board);
+
+    // A host that offers nothing, with a board that would take it.
+    let world = World::start().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, sample| sample && seen.accepted > 5) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(held);
+    assert_eq!(robot.datagram_stats(), None);
+    assert!(board.udp.is_none());
+    assert_eq!(board.command_subscriptions, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hostile_datagram_changes_nothing_but_a_counter() {
+    let world = World::start_datagram().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, sample| {
+            sample && seen.datagram.is_some_and(|d| d.received >= 10)
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(held);
+    let routes = robot
+        .view()
+        .and_then(|v| v.datagram.clone())
+        .expect("routes in the view");
+    let up = routes
+        .routes
+        .iter()
+        .find(|r| r.up)
+        .expect("an up route")
+        .route;
+    let port = board
+        .udp
+        .as_ref()
+        .expect("socket")
+        .0
+        .peer_addr()
+        .expect("peer")
+        .port();
+    let host_before = tokio::select! {
+        row = wait_health(&world, "the host's counters", |r| r.datagram_host.is_some()) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    }
+    .datagram_host
+    .expect("host counters");
+
+    // At the host, from a stranger: garbage, a sample that opens under no
+    // key, a captured probe again, and one too large. The host answers none.
+    let rogue = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("udp");
+    rogue.connect(("127.0.0.1", port)).await.expect("connect");
+    let header = |kind: u8, route: u16| {
+        let mut h = vec![0xD1, kind];
+        h.extend_from_slice(&route.to_le_bytes());
+        h.extend_from_slice(&7_u32.to_le_bytes());
+        h
+    };
+    let probe = board.last_probe.clone().expect("a probe the board sent");
+    let mut forged = header(2, up);
+    forged.extend([0x5a; 120]);
+    for datagram in [b"not a datagram".to_vec(), forged, probe, vec![0xD1; 1500]] {
+        rogue.send(&datagram).await.expect("send");
+    }
+    let mut buf = [0; 1500];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), rogue.recv(&mut buf))
+            .await
+            .is_err(),
+        "the host answered a stranger"
+    );
+
+    // At the board, as if from the host's address: garbage, a chunk
+    // datagram again, one too large.
+    let replay = board
+        .datagrams
+        .lock()
+        .expect("datagrams")
+        .last()
+        .cloned()
+        .expect("a chunk datagram");
+    let (accepted, before) = (
+        robot.chunks_accepted(),
+        robot.datagram_stats().expect("stats"),
+    );
+    for datagram in [b"garbage".to_vec(), replay, vec![0xD1; 1472]] {
+        robot.datagram(&datagram, 0);
+    }
+    let after = robot.datagram_stats().expect("stats");
+    assert_eq!(after.unopened, before.unopened + 3, "{after:?}");
+    assert_eq!(after.received, before.received);
+    assert_eq!(robot.chunks_accepted(), accepted);
+    assert_eq!(robot.phase(), Phase::Running);
+
+    // The host counted what did not open (the garbage and the oversize one
+    // name no route), and kept sending to the board: its chunks still arrive.
+    let received = after.received;
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, _| {
+            seen.datagram.is_some_and(|d| d.received >= received + 10)
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(held, "the board's chunks stopped after the forgeries");
+    let row = tokio::select! {
+        row = wait_health(&world, "the forged sample and the replayed probe", |r| {
+            r.datagram_host
+                .is_some_and(|h| h.unopened >= host_before.unopened + 2)
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    let host = row.datagram_host.expect("host counters");
+    assert!(host.active && host.fallbacks == 0, "{host:?}");
+    let relay = world.relay.as_ref().expect("relay");
+    assert!(relay.unrouted() >= 2, "{} unrouted", relay.unrouted());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_whose_chunk_datagrams_stop_falls_back_to_tcp_and_tells_the_host() {
+    use rlmesh_session::wire::DataPath;
+    use std::sync::atomic::Ordering;
+    let world = World::start_datagram().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    let lose_down = board.lose_down.clone();
+    let accepted_on_tcp = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // Driven over UDP; then every datagram from the host is lost while the
+    // control link stays healthy: the board goes back to TCP, and is driven
+    // there.
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, _| {
+            let Some(d) = seen.datagram else { return false };
+            if d.received >= 10 {
+                lose_down.store(true, Ordering::Relaxed);
+            }
+            if d.active || d.fallbacks == 0 {
+                accepted_on_tcp.store(seen.accepted, Ordering::Relaxed);
+                return false;
+            }
+            seen.accepted > accepted_on_tcp.load(Ordering::Relaxed) + 10
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(
+        held,
+        "not driven over TCP after the fallback: {:?}",
+        robot.datagram_stats()
+    );
+    assert_eq!(robot.datagram_fallbacks(), 1);
+    let stats = robot.datagram_stats().expect("stats");
+    assert!(!stats.active && stats.fallbacks == 1, "{stats:?}");
+    assert_eq!(board.command_subscriptions, 1, "subscribed over TCP once");
+    assert!(board.udp.is_none(), "the socket closed");
+    // The host heard it in the heartbeats, and stopped relaying.
+    let row = tokio::select! {
+        row = wait_health(&world, "the board's fallback", |r| {
+            r.data_path == DataPath::Session && r.datagram_board.is_some_and(|b| b.fallbacks == 1)
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(!row.datagram_host.expect("host").active || row.data_path == DataPath::Session);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_host_that_hears_no_samples_over_the_path_moves_the_board_back_to_tcp() {
+    use rlmesh_session::wire::DataPath;
+    use std::sync::atomic::Ordering;
+    let world = World::start_datagram().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    // Its samples never reach the host over UDP (its probes do).
+    board.lose_up.store(true, Ordering::Relaxed);
+    let on_udp = |r: &Robot| r.datagram_stats().is_some_and(|d| d.active);
+    board.run(&mut robot, WAIT, &seen, on_udp).await;
+    assert!(on_udp(&robot), "{:?}", robot.fault());
+    board
+        .run(&mut robot, WAIT, &seen, |r| {
+            r.datagram_stats().is_some_and(|d| !d.active)
+        })
+        .await;
+    let stats = robot.datagram_stats().expect("stats");
+    assert!(!stats.active, "{stats:?}");
+    assert_eq!(robot.datagram_fallbacks(), 0, "the host's, not the board's");
+    let row = tokio::select! {
+        row = wait_health(&world, "the host's fallback", |r| {
+            r.data_path == DataPath::Session && r.datagram_host.is_some_and(|h| h.fallbacks == 1)
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(!row.datagram_host.expect("host").active);
+    // Its samples reach a policy over TCP, and its chunks too.
+    let (held, latest) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, sample| sample && seen.accepted > 5) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    let refused: Vec<_> = Rejection::ALL
+        .iter()
+        .map(|r| (*r, robot.refusals_total(*r)))
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    assert!(
+        held,
+        "accepted {}, refused {refused:?}, sample {latest:?}, {:?}, phase {:?} attaches {}",
+        robot.chunks_accepted(),
+        robot.datagram_stats(),
+        robot.phase(),
+        robot.attaches()
+    );
+    assert_eq!(latest.as_deref(), Some(&pos(0.1, 0.2)[..]));
+    assert_eq!(board.command_subscriptions, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_on_the_datagram_path_rides_out_an_outage_of_every_link() {
+    use rlmesh_session::wire::DataPath;
+    let world = World::start_datagram().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    let fades = board.fades.clone();
+    let start = board.start;
+    let mut outage: Option<Duration> = None;
+    // Driven over UDP; then nothing at all arrives or leaves for 400 ms (the
+    // robot goes safe, as it would over TCP), and for a second and a half
+    // after: an outage of the whole link is no reason to leave the path.
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, _| {
+            let Some(d) = seen.datagram else { return false };
+            let into = start.elapsed();
+            if outage.is_none() && d.received >= 10 {
+                // One fade, from now, 400 ms long, in a period past the test.
+                *fades.lock().expect("fades") =
+                    Some((into + Duration::from_secs(600), into + Duration::from_millis(400)));
+                outage = Some(into);
+            }
+            !d.active || outage.is_some_and(|at| into > at + Duration::from_millis(1900))
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    let stats = robot.datagram_stats().expect("stats");
+    assert!(held && stats.active, "{stats:?}");
+    assert_eq!(robot.datagram_fallbacks(), 0);
+    assert_eq!(board.command_subscriptions, 0);
+    tokio::select! {
+        row = wait_health(&world, "the path still in use", |r| {
+            r.data_path == DataPath::Datagram && r.datagram_host.is_some_and(|h| h.fallbacks == 0)
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
 }

@@ -634,6 +634,16 @@ impl Link {
         )?)
     }
 
+    /// Seals a probe of the host's datagram path on `keyexpr` (the
+    /// participant's `udp`): only it and the host hold `k_up`, so the host
+    /// sends its datagrams to wherever a probe that opened came from.
+    ///
+    /// # Errors
+    /// [`LinkError::Seal`].
+    pub fn datagram_probe(&mut self, keyexpr: &str) -> Result<Vec<u8>, LinkError> {
+        Ok(self.up.seal(Kind::DatagramProbe, keyexpr, &[])?)
+    }
+
     /// Seals an observer report on `keyexpr` (the participant's `report`)
     /// for the host, which relays it in its signed health.
     ///

@@ -64,6 +64,13 @@ pub const RLMESH_DEVICE_RESET: u8 = 5;
 /// Close every session to the host, however healthy it looks: replies
 /// stopped. The next action on a class opens it again.
 pub const RLMESH_DEVICE_RECONNECT: u8 = 6;
+/// Open the datagram socket to the host on UDP `port`.
+pub const RLMESH_DEVICE_DATAGRAM_OPEN: u8 = 7;
+/// Send `payload` on the datagram socket, in place of one not yet sent on
+/// lane `key`.
+pub const RLMESH_DEVICE_DATAGRAM: u8 = 8;
+/// Close the datagram socket.
+pub const RLMESH_DEVICE_DATAGRAM_CLOSE: u8 = 9;
 
 /// `rlmesh_device_action_t`: borrowed from the robot until the next call
 /// on it.
@@ -88,6 +95,8 @@ pub struct RlmeshDeviceAction {
     pub payload: *const u8,
     /// Its length.
     pub payload_len: usize,
+    /// `RLMESH_DEVICE_DATAGRAM_OPEN`'s UDP port.
+    pub port: u16,
 }
 
 /// `rlmesh_device_robot_status_t`.
@@ -449,6 +458,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
     let Some(action) = r.queue.pop_front() else {
         return 0;
     };
+    let mut port = 0;
     let (kind, class, sub, query_id, timeout_ms, key, payload) = match action {
         Action::Subscribe { class, sub, key } => {
             (RLMESH_DEVICE_SUBSCRIBE, class, sub, 0, 0, key, None)
@@ -472,6 +482,22 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
         } => (RLMESH_DEVICE_PUBLISH, class, 0, 0, 0, key, Some(payload)),
         Action::Reset => (RLMESH_DEVICE_RESET, 0, 0, 0, 0, String::new(), None),
         Action::Reconnect => (RLMESH_DEVICE_RECONNECT, 0, 0, 0, 0, String::new(), None),
+        Action::DatagramOpen { port: udp } => {
+            port = udp;
+            (RLMESH_DEVICE_DATAGRAM_OPEN, 0, 0, 0, 0, String::new(), None)
+        }
+        Action::Datagram { lane, payload } => {
+            (RLMESH_DEVICE_DATAGRAM, 0, 0, 0, 0, lane, Some(payload))
+        }
+        Action::DatagramClose => (
+            RLMESH_DEVICE_DATAGRAM_CLOSE,
+            0,
+            0,
+            0,
+            0,
+            String::new(),
+            None,
+        ),
     };
     r.key = key.into_bytes();
     r.key.push(0);
@@ -489,9 +515,130 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             key: r.key.as_ptr().cast(),
             payload: r.payload.as_ptr(),
             payload_len: r.payload.len(),
+            port,
         });
     }
     1
+}
+
+/// A datagram from the host on the socket `RLMESH_DEVICE_DATAGRAM_OPEN`
+/// opened (at most 1472 bytes: anything longer is dropped unread).
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `data` valid for
+/// `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_datagram(
+    robot: *mut DeviceRobot,
+    data: *const u8,
+    len: usize,
+    now_us: u64,
+) -> c_int {
+    // SAFETY: per the contract.
+    let (Some(r), Some(data)) = (unsafe { robot_mut(robot) }, unsafe { bytes(data, len) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.datagram(data, now_us);
+    RLMESH_DEVICE_OK
+}
+
+/// A datagram it asked to send failed (the socket refused it or would not
+/// open; not one that would only have blocked): the robot goes back to the
+/// session's links for this attach.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_datagram_failed(
+    robot: *mut DeviceRobot,
+    now_us: u64,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.datagram_failed(now_us);
+    RLMESH_DEVICE_OK
+}
+
+/// Whether the robot takes the host's datagram path when offered (`on`
+/// nonzero, the default) or keeps every part on the session's links (0),
+/// from its next attach.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_use_datagram(
+    robot: *mut DeviceRobot,
+    on: c_int,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.use_datagram(on != 0);
+    RLMESH_DEVICE_OK
+}
+
+/// `rlmesh_device_datagram_stats_t`: the robot's end of the host's datagram
+/// path this attach.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RlmeshDeviceDatagramStats {
+    /// The path carries realtime parts now.
+    pub active: u8,
+    /// This attach gave it up for the session's links.
+    pub fell_back: u8,
+    /// Times it gave it up, over every attach.
+    pub fallbacks: u32,
+    /// Datagrams sent (samples and probes).
+    pub sent: u64,
+    /// Chunk datagrams received that opened.
+    pub received: u64,
+    /// Gaps in the host's statistics sequence, and datagrams that arrived
+    /// after a later one.
+    pub lost: u64,
+    /// Arrived after a later one.
+    pub reordered: u64,
+    /// Received but unreadable, or failed to open.
+    pub unopened: u64,
+}
+
+/// The robot's end of the datagram path this attach, into `*out`:
+/// `RLMESH_DEVICE_ERR_NOT_READY` when the host offered none (or the robot
+/// does not take it).
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_datagram_stats(
+    robot: *const DeviceRobot,
+    out: *mut RlmeshDeviceDatagramStats,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    if out.is_null() {
+        return RLMESH_DEVICE_ERR_ARG;
+    }
+    let Some(s) = r.robot.datagram_stats() else {
+        return RLMESH_DEVICE_ERR_NOT_READY;
+    };
+    // SAFETY: checked non-null; valid for a write per the contract.
+    unsafe {
+        out.write(RlmeshDeviceDatagramStats {
+            active: u8::from(s.active),
+            fell_back: u8::from(s.fallbacks > 0),
+            fallbacks: r.robot.datagram_fallbacks(),
+            sent: s.sent,
+            received: s.received,
+            lost: s.lost,
+            reordered: s.reordered,
+            unopened: s.unopened,
+        });
+    }
+    RLMESH_DEVICE_OK
 }
 
 /// # Safety
@@ -1316,6 +1463,7 @@ mod tests {
             key: core::ptr::null(),
             payload: core::ptr::null(),
             payload_len: 0,
+            port: 0,
         }
     }
 

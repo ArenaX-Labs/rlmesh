@@ -27,17 +27,20 @@ use rlmesh_session_core::auth::keyring::KeyError;
 use rlmesh_session_core::auth::{self, Credential, Link, LinkError, ReplyOutcome};
 use rlmesh_session_core::crypto::handshake::IkInitiator;
 use rlmesh_session_core::crypto::{Checked, OpenError, Rng, SignedChecker, SignedError, signed};
+use rlmesh_session_core::datagram::{
+    self, Arrivals, Header as DatagramHeader, Kind as DatagramKind,
+};
 use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick, Rejection};
 use rlmesh_session_core::lobby::{self, LOBBY_SESSION, Leave, Lobby, WAIT_RETRY};
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{
-    PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE, VIEW_DEVICE_LEAN, VIEW_DEVICE_SEALED,
+    LINK_DATAGRAM, PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE, VIEW_DEVICE_LEAN, VIEW_DEVICE_SEALED,
 };
 use rlmesh_session_core::wire::{
     AuthorityView, ChannelId, ChannelPriority, ChunkTiming, ClockMode, Command, CtlError,
-    CtlStatus, DeviceView, Epoch, Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, Plan,
-    PriorityClass, Reason, ReasonCode, Role, Sample, SessionId, SessionKeys, StreamSpec, TenantId,
-    TimingSample, Unread,
+    CtlStatus, DatagramStats, DeviceView, Epoch, Health, Heartbeat, Join, Mode, PartSpec,
+    ParticipantId, Plan, PriorityClass, Reason, ReasonCode, Role, Sample, SessionId, SessionKeys,
+    StreamSpec, TenantId, TimingSample, Unread,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -70,6 +73,17 @@ pub const MAX_RECEIVED: usize = 4096;
 
 /// The control class: the host's first port.
 pub const CLASS_CONTROL: u8 = 0;
+
+/// How often a robot on the host's datagram path probes it once a chunk
+/// datagram arrived: the host follows a new address within this.
+pub const PROBE_MS: u32 = 1000;
+/// How often it probes until one has.
+pub const PROBE_FIRST_MS: u32 = 100;
+/// The datagram lane its probes take: a newer probe replaces one not sent.
+pub const PROBE_LANE: &str = "probe";
+/// How long a robot on the path waits for its first chunk datagram while a
+/// part is leased: the host sends nothing before one of its probes arrived.
+pub const FIRST_CHUNK_MS: u32 = 1000;
 
 /// Subscription ids, for [`Robot::sample`]: `host/view/{id}`, this robot's
 /// signed device view.
@@ -225,6 +239,26 @@ pub enum Action {
         /// The bytes.
         payload: Vec<u8>,
     },
+    /// Open the datagram socket to the host it connects to now
+    /// ([`Robot::host`]), on UDP `port`: hand what arrives from there to
+    /// [`Robot::datagram`], and nothing from anywhere else. Opening it
+    /// again first closes the one open.
+    DatagramOpen {
+        /// The host's UDP port.
+        port: u16,
+    },
+    /// Send `payload`, a whole datagram, on the datagram socket. One not
+    /// yet sent on the same `lane` (a stream's key, or [`PROBE_LANE`]) is
+    /// replaced, never queued behind. A send that fails (not one that would
+    /// block) goes to [`Robot::datagram_failed`].
+    Datagram {
+        /// Its lane.
+        lane: String,
+        /// The datagram.
+        payload: Vec<u8>,
+    },
+    /// Close the datagram socket, dropping what waits to be sent.
+    DatagramClose,
 }
 
 /// Where the robot is.
@@ -532,6 +566,102 @@ impl Edge {
     }
 }
 
+/// One commandable part whose chunks come over the datagram path.
+#[derive(Debug, Clone, Copy)]
+struct DownRoute {
+    route: u16,
+    part: usize,
+    /// When its newest chunk datagram that opened arrived, and the smoothed
+    /// time between them.
+    last_us: Option<u64>,
+    period_us: u64,
+    /// Since when its part has had a lease (none: no chunks are due).
+    leased_since: Option<u64>,
+}
+
+/// This attach on the host's datagram path: offered in the handshake, its
+/// routes taken from the answer to its declaration.
+#[derive(Debug)]
+struct DatagramLink {
+    port: u16,
+    probe_key: String,
+    probe: u16,
+    down: Vec<DownRoute>,
+    /// Its streams going up, by channel, and their routes.
+    up: Vec<(ChannelId, u16)>,
+    /// It carries routes now.
+    active: bool,
+    /// This attach gave it up.
+    fell_back: bool,
+    seq: u32,
+    sent: u64,
+    arrivals: Arrivals,
+    next_probe: u64,
+    /// A chunk datagram opened since it went active.
+    heard: bool,
+    /// When it went active.
+    since: Option<u64>,
+    /// When the control link delivered again after a gap, and the newest
+    /// message from it seen so far.
+    healthy_since: u64,
+    heard_seen: u64,
+}
+
+impl DatagramLink {
+    fn offered(port: u16, probe_key: String) -> Self {
+        Self {
+            port,
+            probe_key,
+            probe: 0,
+            down: Vec::new(),
+            up: Vec::new(),
+            active: false,
+            fell_back: false,
+            seq: 0,
+            sent: 0,
+            arrivals: Arrivals::default(),
+            next_probe: 0,
+            heard: false,
+            since: None,
+            healthy_since: 0,
+            heard_seen: 0,
+        }
+    }
+
+    fn up_route(&self, channel: ChannelId) -> Option<u16> {
+        self.up
+            .iter()
+            .find(|(c, _)| *c == channel)
+            .map(|(_, r)| *r)
+            .filter(|_| self.active)
+    }
+
+    /// `payload` behind the next header of `kind` on `route`.
+    fn frame(&mut self, kind: DatagramKind, route: u16, payload: &[u8]) -> Option<Vec<u8>> {
+        let datagram = DatagramHeader {
+            kind,
+            route,
+            seq: self.seq,
+        }
+        .frame(payload)?;
+        self.seq = self.seq.wrapping_add(1);
+        self.sent += 1;
+        Some(datagram)
+    }
+
+    fn stats(&self) -> DatagramStats {
+        DatagramStats {
+            active: self.active,
+            sent: self.sent,
+            received: self.arrivals.received,
+            lost: self.arrivals.lost,
+            reordered: self.arrivals.reordered,
+            unopened: self.arrivals.unopened,
+            fallbacks: u32::from(self.fell_back),
+        }
+    }
+}
+
 /// One control tick of a part's command group: session-core's
 /// [`EdgeTick`], with the part it concerns as an index into the map.
 #[derive(Debug, Clone)]
@@ -661,6 +791,12 @@ pub struct Robot {
     /// The code it last latched with, which a cleared latch still fences
     /// an edge with.
     last_code: ReasonCode,
+    /// It takes the host's datagram path when offered.
+    datagram_wanted: bool,
+    /// The datagram path this attach, when the host offered it.
+    datagram: Option<DatagramLink>,
+    /// Times it gave the datagram path up, over every attach.
+    datagram_fallbacks: u32,
 }
 
 impl core::fmt::Debug for Robot {
@@ -785,6 +921,9 @@ impl Robot {
                 estop: None,
                 latches: 0,
                 last_code: ReasonCode::EstopLocal,
+                datagram_wanted: true,
+                datagram: None,
+                datagram_fallbacks: 0,
             },
         ))
     }
@@ -960,6 +1099,74 @@ impl Robot {
         self.attaches
     }
 
+    /// Whether it takes the host's datagram path when the host offers it
+    /// (the default): `false` keeps every part on the session's links. Takes
+    /// effect from its next attach.
+    pub fn use_datagram(&mut self, on: bool) {
+        self.datagram_wanted = on;
+    }
+
+    /// Its end of the host's datagram path this attach: `None` when the
+    /// host offered none, or it does not take it.
+    pub fn datagram_stats(&self) -> Option<DatagramStats> {
+        self.datagram.as_ref().map(DatagramLink::stats)
+    }
+
+    /// Times it gave the datagram path up, over every attach.
+    pub fn datagram_fallbacks(&self) -> u32 {
+        self.datagram_fallbacks
+    }
+
+    /// A datagram from the host on the socket of [`Action::DatagramOpen`]:
+    /// a chunk for one of its parts. One that is not, or does not open
+    /// under that part's command key, is dropped and counted; nothing else
+    /// changes.
+    pub fn datagram(&mut self, datagram: &[u8], now_us: u64) {
+        let Some(link) = self.datagram.as_mut().filter(|d| d.active) else {
+            return;
+        };
+        let route = match DatagramHeader::parse(datagram) {
+            Ok((header, _)) if header.kind == DatagramKind::Chunk => header,
+            _ => return link.arrivals.refused(),
+        };
+        let Some(at) = link.down.iter().position(|d| d.route == route.route) else {
+            return link.arrivals.refused();
+        };
+        let part = link.down[at].part;
+        let Some(payload) = copied(&datagram[datagram::HEADER_LEN..]) else {
+            link.arrivals.refused();
+            return self.drop(Received::Chunk, Dropped::NoMemory);
+        };
+        let opened = self.chunk(part, payload, ns(now_us));
+        let Some(link) = self.datagram.as_mut() else {
+            return;
+        };
+        if !opened {
+            return link.arrivals.refused();
+        }
+        link.arrivals.opened(route.seq);
+        link.heard = true;
+        if let Some(down) = link.down.get_mut(at) {
+            if let Some(last) = down.last_us {
+                let gap = now_us.saturating_sub(last);
+                down.period_us = if down.period_us == 0 {
+                    gap
+                } else {
+                    (down.period_us * 7 + gap) / 8
+                };
+            }
+            down.last_us = Some(now_us);
+        }
+    }
+
+    /// A datagram it asked to send failed (the socket refused it, or could
+    /// not open): back to the session's links for this attach.
+    pub fn datagram_failed(&mut self, now_us: u64) {
+        if self.datagram.as_ref().is_some_and(|d| d.active) {
+            self.datagram_fall_back(now_us);
+        }
+    }
+
     /// Keeps the refusals of the edges it is about to drop.
     fn retire_edges(&mut self) {
         if self.edges.is_empty() {
@@ -1000,6 +1207,9 @@ impl Robot {
                 at(self.last_heard + u64::from(HOST_LOST_MS) * 1000);
             }
             _ => {}
+        }
+        if let Some(link) = self.datagram.as_ref().filter(|d| d.active) {
+            at(link.next_probe);
         }
         for asked in self
             .waiting
@@ -1088,8 +1298,186 @@ impl Robot {
             }
             _ => {}
         }
+        if self.phase == Phase::Running {
+            self.tend_datagram(now_us);
+        }
         self.next_ctl(now_us);
         core::mem::take(&mut self.out)
+    }
+
+    /// The datagram path on each poll: a probe when one is due, and the
+    /// fallback to the session's links when a part with a lease has had no
+    /// chunk datagram for longer than it holds (and three of its chunk
+    /// periods, and [`FIRST_CHUNK_MS`] before the first) while the control
+    /// link is healthy.
+    fn tend_datagram(&mut self, now_us: u64) {
+        // A gap in the control link longer than two heartbeats: the link
+        // was down, and is healthy again only from the next message.
+        let gap_us = u64::from(self.config.heartbeat_ms)
+            .saturating_mul(2)
+            .saturating_mul(1000);
+        let heard = self.last_heard;
+        let leases: Vec<(usize, Option<u64>)> = {
+            let Some(link) = self.datagram.as_ref().filter(|d| d.active) else {
+                return;
+            };
+            link.down
+                .iter()
+                .map(|d| {
+                    let channel = self.parts.get(d.part).map(|p| p.channel);
+                    // Leased by this board's own clock: a lease the host
+                    // ended while the view saying so was lost has expired.
+                    let leased = channel
+                        .and_then(|c| {
+                            let view = self.view.as_ref()?;
+                            let lease = view.lease(c)?;
+                            let offset = view
+                                .clock(&self.config.name)
+                                .map_or(0, |m| m.offset_ns.saturating_add_unsigned(m.error_ns));
+                            (lease.expires_ns > ns(now_us).saturating_add(offset)).then_some(())
+                        })
+                        .is_some();
+                    let hold_us = self
+                        .parts
+                        .get(d.part)
+                        .and_then(|p| p.command.as_ref())
+                        .map_or(0, |c| {
+                            u64::try_from(c.hold_max.as_micros()).unwrap_or(u64::MAX)
+                        });
+                    (d.part, leased.then_some(hold_us))
+                })
+                .collect()
+        };
+        let mut silent = false;
+        if let Some(link) = self.datagram.as_mut() {
+            let since = *link.since.get_or_insert(now_us);
+            if heard.saturating_sub(link.heard_seen) > gap_us {
+                link.healthy_since = heard;
+            }
+            link.heard_seen = heard;
+            let first_us = if link.heard {
+                0
+            } else {
+                u64::from(FIRST_CHUNK_MS) * 1000
+            };
+            for (down, (_, hold_us)) in link.down.iter_mut().zip(&leases) {
+                let Some(hold_us) = hold_us else {
+                    down.leased_since = None;
+                    continue;
+                };
+                let leased_since = *down.leased_since.get_or_insert(now_us);
+                let from = [
+                    down.last_us.unwrap_or(0),
+                    leased_since,
+                    link.healthy_since,
+                    since,
+                ]
+                .into_iter()
+                .max()
+                .unwrap_or(now_us);
+                let window = (*hold_us)
+                    .max(down.period_us.saturating_mul(3))
+                    .max(first_us);
+                // Silent for the window, by what the control link went on
+                // delivering: a link that is down altogether proves nothing.
+                silent |= heard.saturating_sub(from) > window;
+            }
+        }
+        if silent {
+            return self.datagram_fall_back(now_us);
+        }
+        let Some(link) = self.datagram.as_mut() else {
+            return;
+        };
+        if now_us < link.next_probe {
+            return;
+        }
+        let every = if link.heard { PROBE_MS } else { PROBE_FIRST_MS };
+        link.next_probe = now_us + u64::from(every) * 1000;
+        let (probe, key) = (link.probe, link.probe_key.clone());
+        let Some(sealed) = self.link.as_mut().and_then(|l| l.datagram_probe(&key).ok()) else {
+            return;
+        };
+        if let Some(payload) = self
+            .datagram
+            .as_mut()
+            .and_then(|l| l.frame(DatagramKind::Probe, probe, &sealed))
+        {
+            self.out.push(Action::Datagram {
+                lane: String::from(PROBE_LANE),
+                payload,
+            });
+        }
+    }
+
+    /// Gives the datagram path up for this attach: every routed part back
+    /// to the session's links, counted, and the host told in the next
+    /// heartbeat. It is tried again at the next attach.
+    fn datagram_fall_back(&mut self, _now_us: u64) {
+        let Some(link) = self.datagram.as_mut().filter(|d| d.active) else {
+            return;
+        };
+        link.fell_back = true;
+        self.datagram_fallbacks = self.datagram_fallbacks.saturating_add(1);
+        self.leave_datagram();
+    }
+
+    /// Every routed part back to the session's links: subscribed to its
+    /// commands, its samples published on their keys.
+    fn leave_datagram(&mut self) {
+        let Some(link) = self.datagram.as_mut().filter(|d| d.active) else {
+            return;
+        };
+        link.active = false;
+        link.up.clear();
+        let parts: Vec<usize> = link.down.drain(..).map(|d| d.part).collect();
+        for part in parts {
+            self.subscribe_commands(part);
+        }
+        self.out.push(Action::DatagramClose);
+    }
+
+    /// Takes the routes the host lists now: a part whose route went is
+    /// back on the session's links (the host never adds one after the
+    /// declaration).
+    fn follow_routes(&mut self) {
+        let Some(link) = self.datagram.as_mut().filter(|d| d.active) else {
+            return;
+        };
+        let Some(routes) = self.view.as_ref().and_then(|v| v.datagram.as_ref()) else {
+            return self.leave_datagram();
+        };
+        link.up
+            .retain(|(channel, route)| routes.up(*channel) == Some(*route));
+        let mut gone = Vec::new();
+        link.down.retain(|d| {
+            let kept = routes.routes.iter().any(|r| !r.up && r.route == d.route);
+            if !kept {
+                gone.push(d.part);
+            }
+            kept
+        });
+        if link.down.is_empty() && link.up.is_empty() {
+            return self.leave_datagram();
+        }
+        for part in gone {
+            self.subscribe_commands(part);
+        }
+    }
+
+    /// Subscribes to part `part`'s commands, once.
+    fn subscribe_commands(&mut self, part: usize) {
+        let (Some(spec), Some(false)) = (self.parts.get(part), self.subscribed.get(part).copied())
+        else {
+            return;
+        };
+        let Ok(sub) = u8::try_from(usize::from(SUB_COMMANDS) + part) else {
+            return;
+        };
+        let key = self.keys.commands(&self.config.name, spec.path.as_str());
+        let class = class_of(spec.priority);
+        self.subscribed[part] = true;
+        self.out.push(Action::Subscribe { class, sub, key });
     }
 
     /// A reply to query `id`. `now_us` and `rng` drive the next step. One
@@ -1146,6 +1534,15 @@ impl Robot {
             return self.fail(Fault::Handshake, now_us);
         };
         self.generation = attached.accept.generation;
+        // The host's datagram path, when it offers one this side reads and
+        // the robot takes it: routes come with its declaration's answer.
+        self.datagram = attached
+            .accept
+            .datagram
+            .filter(|offer| self.datagram_wanted && offer.version == datagram::VERSION)
+            .map(|offer| {
+                DatagramLink::offered(offer.port, self.keys.datagram_probe(&self.config.name))
+            });
         self.link = Some(Link::new(self.config.name.clone(), attached));
         self.checker_due = true;
         self.sealed_seen = false;
@@ -1160,12 +1557,17 @@ impl Robot {
             priority: PriorityClass::Scripted,
             protocol_minor: PROTOCOL_MINOR,
             // The device view instead of the full state, without its parts
-            // after their declaration.
-            supports: alloc::vec![
-                String::from(VIEW_DEVICE),
-                String::from(VIEW_DEVICE_SEALED),
-                String::from(VIEW_DEVICE_LEAN),
-            ],
+            // after their declaration; and the datagram path when offered.
+            supports: [
+                Some(VIEW_DEVICE),
+                Some(VIEW_DEVICE_SEALED),
+                Some(VIEW_DEVICE_LEAN),
+                self.datagram.as_ref().map(|_| LINK_DATAGRAM),
+            ]
+            .into_iter()
+            .flatten()
+            .map(String::from)
+            .collect(),
             requires: Vec::new(),
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),
@@ -1248,7 +1650,7 @@ impl Robot {
                     let Some(msg) = copied(payload) else {
                         return self.drop_received(sub, Dropped::NoMemory);
                     };
-                    self.chunk(usize::from(index), msg, now);
+                    let _ = self.chunk(usize::from(index), msg, now);
                 }
             }
         }
@@ -1492,11 +1894,12 @@ impl Robot {
             if let Some(link) = self.link.as_mut()
                 && let Ok(payload) = link.seal_sample(&stream.key, &sealed, true)
             {
-                self.out.push(Action::Publish {
-                    class: stream.class,
-                    key: stream.key.clone(),
-                    payload,
-                });
+                let route = self
+                    .datagram
+                    .as_ref()
+                    .and_then(|d| d.up_route(stream.spec.channel));
+                self.out
+                    .push(send(&mut self.datagram, route, stream, payload));
             }
         }
         if let Some(action) = &tick.action {
@@ -1563,11 +1966,12 @@ impl Robot {
         };
         match link.seal_sample(&stream.key, &sample, false) {
             Ok(payload) => {
-                self.out.push(Action::Publish {
-                    class: stream.class,
-                    key: stream.key.clone(),
-                    payload,
-                });
+                let route = self
+                    .datagram
+                    .as_ref()
+                    .and_then(|d| d.up_route(stream.spec.channel));
+                self.out
+                    .push(send(&mut self.datagram, route, stream, payload));
                 Ok(())
             }
             Err(err) => {
@@ -1577,10 +1981,12 @@ impl Robot {
         }
     }
 
+    /// Opens a chunk for part `index` and hands it to its edge: whether it
+    /// opened.
     #[inline(never)]
-    fn chunk(&mut self, index: usize, msg: Vec<u8>, now: i64) {
+    fn chunk(&mut self, index: usize, msg: Vec<u8>, now: i64) -> bool {
         let (Some(key), Some(link)) = (self.command_keys.get(index), self.link.as_mut()) else {
-            return;
+            return false;
         };
         let chunk = match link.open_chunk(key, msg) {
             Ok(chunk) => chunk,
@@ -1608,7 +2014,8 @@ impl Robot {
                     edge.refused(rejection, now);
                 }
                 let now_us = u64::try_from(now / 1000).unwrap_or(0);
-                return self.missing_key(&err, now_us);
+                self.missing_key(&err, now_us);
+                return false;
             }
         };
         let latch = self.latch_now();
@@ -1617,7 +2024,7 @@ impl Robot {
             .get(index)
             .map(|e| e.and_then(|i| self.edges.get_mut(i)))
         else {
-            return;
+            return true;
         };
         apply_latch(edge, latch);
         let seq = chunk.seq;
@@ -1631,6 +2038,7 @@ impl Robot {
             }
             Err(reason) => edge.refused(reason, now),
         }
+        true
     }
 
     /// Queues `command` for `ctl`, bounded: the same request already
@@ -1750,6 +2158,7 @@ impl Robot {
         self.spare = self.view.replace(view);
         self.observed_ns = now;
         self.sync_demands();
+        self.follow_routes();
         true
     }
 
@@ -2097,8 +2506,27 @@ impl Robot {
                 last_refusal: None,
             });
         }
+        // The datagram path's routes, from the answer to the declaration: a
+        // part whose chunks ride it is never subscribed to as well.
+        let routes = self
+            .datagram
+            .as_ref()
+            .and(self.view.as_ref())
+            .and_then(|v| v.datagram.clone())
+            .unwrap_or_default();
+        let mut down = Vec::new();
         for (i, part) in parts.iter().enumerate() {
             if part.command.is_none() || self.subscribed[i] {
+                continue;
+            }
+            if let Some(route) = routes.down(part.channel) {
+                down.push(DownRoute {
+                    route,
+                    part: i,
+                    last_us: None,
+                    period_us: 0,
+                    leased_since: None,
+                });
                 continue;
             }
             let Ok(sub) = u8::try_from(usize::from(SUB_COMMANDS) + i) else {
@@ -2123,6 +2551,23 @@ impl Robot {
             .iter()
             .map(|p| self.keys.commands(me, p.path.as_str()))
             .collect();
+        let up = self
+            .samples
+            .iter()
+            .chain(&self.applied_streams)
+            .flatten()
+            .filter_map(|s| Some((s.spec.channel, routes.up(s.spec.channel)?)))
+            .collect::<Vec<_>>();
+        if let Some(link) = self.datagram.as_mut()
+            && (!down.is_empty() || !up.is_empty())
+        {
+            link.probe = routes.probe;
+            link.down = down;
+            link.up = up;
+            link.active = true;
+            link.next_probe = 0;
+            self.out.push(Action::DatagramOpen { port: link.port });
+        }
         self.parts = parts;
         self.retire_edges();
         self.edges = edges;
@@ -2172,7 +2617,7 @@ impl Robot {
                 .flat_map(|e| e.core.timing().copied())
                 .collect(),
             chunks_accepted: self.accepted,
-            datagram: None,
+            datagram: self.datagram_stats(),
         };
         let Some(link) = self.link.as_mut() else {
             return;
@@ -2285,6 +2730,9 @@ impl Robot {
     /// Forgets everything of the session it was in; the e-stop latch and
     /// the lobby's report stay.
     fn reset_session(&mut self) {
+        if self.datagram.take().is_some_and(|d| d.active) {
+            self.out.push(Action::DatagramClose);
+        }
         self.sealed_seen = false;
         self.waiting = None;
         self.initiator = None;
@@ -2491,6 +2939,32 @@ impl Robot {
         self.out.push(Action::Reset);
         self.run = None;
         self.phase = Phase::Stopped;
+    }
+}
+
+/// A sealed sample of `stream` on its way: over the datagram path on
+/// `route`, or published on its key.
+fn send(
+    datagram: &mut Option<DatagramLink>,
+    route: Option<u16>,
+    stream: &Published,
+    payload: Vec<u8>,
+) -> Action {
+    let framed = route.and_then(|route| {
+        datagram
+            .as_mut()?
+            .frame(DatagramKind::Sample, route, &payload)
+    });
+    match framed {
+        Some(framed) => Action::Datagram {
+            lane: stream.key.clone(),
+            payload: framed,
+        },
+        None => Action::Publish {
+            class: stream.class,
+            key: stream.key.clone(),
+            payload,
+        },
     }
 }
 

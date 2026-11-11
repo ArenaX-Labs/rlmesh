@@ -5555,6 +5555,7 @@ dependencies = [
  "rlmesh-session",
  "rlmesh-session-core",
  "rlmesh-tether",
+ "tempfile",
  "tokio",
  "zenoh",
  "zeroize",

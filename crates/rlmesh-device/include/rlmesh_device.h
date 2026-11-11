@@ -97,6 +97,20 @@ typedef struct rlmesh_device_robot_config_t {
 /* Close every session to the host, however healthy it looks: replies stopped.
  * The next action on a class opens it again. */
 #define RLMESH_DEVICE_RECONNECT 6
+/* Open the datagram socket to the host (rlmesh_device_robot_host) on UDP port
+ * `port`, connected to it: pass each datagram that arrives to
+ * rlmesh_device_robot_datagram, from the loop's thread. Opening it again
+ * first closes the one open. Never block the loop on it. */
+#define RLMESH_DEVICE_DATAGRAM_OPEN 7
+/* Send payload, a whole datagram, on the datagram socket, in place of any not
+ * yet sent on lane `key` (never queued behind it). A send the socket refuses,
+ * or a socket that would not open, goes to rlmesh_device_robot_datagram_failed;
+ * one that would only block is dropped. */
+#define RLMESH_DEVICE_DATAGRAM 8
+/* Close the datagram socket, dropping what waits to be sent. */
+#define RLMESH_DEVICE_DATAGRAM_CLOSE 9
+/* The most of one datagram a robot reads: anything longer is dropped. */
+#define RLMESH_DEVICE_DATAGRAM_MAX 1472
 
 /* Traffic classes: the host listens on its address's port plus the class. */
 #define RLMESH_DEVICE_CLASSES 4
@@ -117,6 +131,8 @@ typedef struct rlmesh_device_action_t {
   const char* key;
   const uint8_t* payload;
   size_t payload_len;
+  /* RLMESH_DEVICE_DATAGRAM_OPEN's UDP port. */
+  uint16_t port;
 } rlmesh_device_action_t;
 
 typedef struct rlmesh_device_robot_status_t {
@@ -236,6 +252,9 @@ uint64_t rlmesh_device_robot_next_due(const rlmesh_device_robot_t* robot, uint64
  * a sample for rlmesh_device_robot_sample. Once one is taken, signed views are
  * ignored (rlmesh_device_robot_wants_signed_views says 0). */
 #define RLMESH_DEVICE_SUB_VIEW_SEALED 255
+/* Part i's commands (action chunks) are subscription RLMESH_DEVICE_SUB_COMMANDS
+ * + i. */
+#define RLMESH_DEVICE_SUB_COMMANDS 5
 /* Whether the transport should still check signed views (1) or drop them
  * unchecked (0). */
 int rlmesh_device_robot_wants_signed_views(const rlmesh_device_robot_t* robot);
@@ -335,6 +354,46 @@ typedef struct rlmesh_device_chunk_timing_t {
  * no commands. */
 int rlmesh_device_robot_chunk_timing(const rlmesh_device_robot_t* robot, uint8_t part,
                                      rlmesh_device_chunk_timing_t* out);
+
+/* The host's datagram path (rlmesh host --board-data udp): a robot that takes
+ * it gets its realtime parts' chunks and sends their samples over UDP. */
+
+/* A datagram from the host, on the socket RLMESH_DEVICE_DATAGRAM_OPEN opened. */
+int rlmesh_device_robot_datagram(rlmesh_device_robot_t* robot, const uint8_t* data, size_t len,
+                                 uint64_t now_us);
+/* A datagram the robot asked to send failed, or its socket would not open: the
+ * robot goes back to the session's links until it attaches again. */
+int rlmesh_device_robot_datagram_failed(rlmesh_device_robot_t* robot, uint64_t now_us);
+/* Whether the robot takes the datagram path when the host offers it (on
+ * nonzero, the default) or keeps every part on the session's links (0), from
+ * its next attach. */
+int rlmesh_device_robot_use_datagram(rlmesh_device_robot_t* robot, int on);
+
+/* The robot's end of the datagram path this attach. */
+typedef struct rlmesh_device_datagram_stats_t {
+  /* The path carries its realtime parts now. */
+  uint8_t active;
+  /* This attach gave it up for the session's links. */
+  uint8_t fell_back;
+  /* Times it gave it up, over every attach. */
+  uint32_t fallbacks;
+  /* Datagrams sent (samples and probes). */
+  uint64_t sent;
+  /* Chunk datagrams received that opened. */
+  uint64_t received;
+  /* Gaps in the host's statistics sequence. */
+  uint64_t lost;
+  /* Arrived after a later one. */
+  uint64_t reordered;
+  /* Received but unreadable, or failed to open. */
+  uint64_t unopened;
+} rlmesh_device_datagram_stats_t;
+
+/* The datagram path's counters this attach, into *out: RLMESH_DEVICE_OK, or
+ * RLMESH_DEVICE_ERR_NOT_READY when the host offered none (or the robot does
+ * not take it). */
+int rlmesh_device_robot_datagram_stats(const rlmesh_device_robot_t* robot,
+                                       rlmesh_device_datagram_stats_t* out);
 
 /* USB provisioning: the board keeps a device key it makes on
  * first boot (32 random bytes from a cryptographic RNG) and the record the
