@@ -65,7 +65,7 @@ impl HostActor {
         if let Some(query) = waiting.query {
             let sealed = lock(&waiting.peer.down).seal(Kind::CtlReply, &self.keys.ctl(), &encoded);
             match sealed {
-                Ok(sealed) => Self::reply(query, sealed).await,
+                Ok(sealed) => Self::reply(query, sealed),
                 Err(err) => warn!(%err, "lobby reply not sealed"),
             }
         }

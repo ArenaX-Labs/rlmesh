@@ -13,7 +13,7 @@
 //!
 //! | Class | Zenoh priority | Reliability | Congestion | Express | Carries |
 //! |---|---|---|---|---|---|
-//! | [`TrafficClass::Control`] | RealTime | reliable | BLOCK | yes | liveliness, `ctl`, authority state and ticks, heartbeats and echoes (DROP, see below), chunks of `priority: control` parts |
+//! | [`TrafficClass::Control`] | RealTime | reliable | BLOCK | yes | liveliness, `ctl`, virtual ticks, the authority state, device views, key deliveries, heartbeats and echoes (those five DROP, see below), chunks of `priority: control` parts |
 //! | [`TrafficClass::Realtime`] | InteractiveHigh | best effort | DROP | yes | small state samples, chunks, `_applied` |
 //! | [`TrafficClass::Data`] | Data | best effort; reliable for events | DROP; BLOCK for events | no | small custom kinds, events, history replies |
 //! | [`TrafficClass::Bulk`] | DataLow | best effort | DROP | no | cameras, depth, large custom kinds |
@@ -23,8 +23,11 @@
 //! stream is reliable with BLOCK (the tick barrier counts on seqs);
 //! and heartbeats and their echoes are DROP rather than BLOCK, because a
 //! stale timing sample is worthless and the echo is sent from a transport
-//! callback, which must never block. Zenoh 1.10 treats reliability as a
-//! marker that selects the link (a reliable link for reliable data, a
+//! callback, which must never block. The host's own state, views and key
+//! deliveries are DROP too: Zenoh fans a put out to every subscriber from the
+//! calling thread, so BLOCK would let one peer that stopped reading hold the
+//! host task, and each is sent again until it lands. Zenoh 1.10 treats
+//! reliability as a marker that selects the link (a reliable link for reliable data, a
 //! best-effort link such as UDP when one exists); over the TCP and Unix
 //! socket links the session uses, every message rides a reliable link, so
 //! best-effort streams get their real-time behaviour from DROP congestion
@@ -174,8 +177,13 @@ pub(crate) async fn declare_publisher(
 /// (a stale timing sample is worthless, and the echo callback must never
 /// block), sent at once.
 pub(crate) const HEARTBEAT_CONGESTION: CongestionControl = CongestionControl::Drop;
-/// Control verbs, replies, authority updates and ticks: never dropped.
+/// Control verbs and virtual ticks: never dropped.
 pub(crate) const CONTROL_CONGESTION: CongestionControl = CongestionControl::Block;
+/// What the host task publishes and sends again until it lands (the
+/// authority state, device views, key deliveries): dropped for a link that
+/// stopped reading rather than waited on, which would hold up every other
+/// participant.
+pub(crate) const RESENT_CONGESTION: CongestionControl = CongestionControl::Drop;
 /// The Zenoh priority of session control traffic.
 pub(crate) const CONTROL_PRIORITY: Priority = Priority::RealTime;
 
@@ -205,9 +213,11 @@ pub enum Layout {
 /// Link settings applied to every session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportTuning {
-    /// The Zenoh transport lease: how long a silent peer survives. Zenoh's
-    /// default is 10 s; session heartbeats are the real liveness signal, so
-    /// sessions keep it short and a hung peer's links are torn down fast.
+    /// The Zenoh transport lease this side advertises: how long the other
+    /// end keeps a link on which this side has gone silent. Zenoh's default
+    /// is 10 s; session heartbeats are the real liveness signal, so sessions
+    /// keep it short. It does not bound how long this side keeps a peer:
+    /// that is the peer's own advertised lease.
     pub lease: Duration,
     /// Keep-alives per lease period.
     pub keep_alive: u32,

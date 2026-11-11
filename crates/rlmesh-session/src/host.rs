@@ -35,6 +35,12 @@
 //! In a virtual-clock session the host also runs the tick barrier
 //! and publishes its ticks on `host/tick`.
 //!
+//! **Slow peers**: a Zenoh send runs on the calling thread and can wait on
+//! a link that stopped reading, so the host task never makes one that could.
+//! What it publishes is dropped for a congested link and sent again; replies
+//! and history subscriptions go out from other threads. Virtual ticks are
+//! the exception: the barrier needs every one.
+//!
 //! The host is a library ([`SessionHost::start`] on any [`Transport`]);
 //! `rlmesh host` runs one in the foreground.
 
@@ -70,10 +76,12 @@ use crate::host::actor::LobbyKey;
 #[cfg(feature = "fleet")]
 use crate::host::actor::LobbyWaiting;
 use crate::host::actor::{Link, Waiting};
-use crate::host::history::{HistoryStore, Recorded, StreamKey};
+use crate::host::history::{HistoryStore, HistorySync};
 use crate::host::peer::{SharedPeers, on_heartbeat_sample, on_report_sample};
 use crate::metrics::ParticipantHealth;
-use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY, TrafficClass, Transport};
+use crate::transport::{
+    CONTROL_CONGESTION, CONTROL_PRIORITY, RESENT_CONGESTION, TrafficClass, Transport,
+};
 #[cfg(feature = "fleet")]
 use crate::wire::ReasonCode;
 
@@ -226,7 +234,7 @@ impl SessionHost {
         let publisher = control
             .declare_publisher(keys.host_state())
             .priority(CONTROL_PRIORITY)
-            .congestion_control(CONTROL_CONGESTION)
+            .congestion_control(RESENT_CONGESTION)
             .express(true)
             .await?;
         let ticks = control
@@ -274,6 +282,19 @@ impl SessionHost {
         let (lobby_done, lobby_answers) = mpsc::unbounded_channel::<LobbyDone>();
 
         let identity = config.identity.clone();
+        let history_sync = config
+            .history
+            .enabled
+            .then(|| {
+                HistorySync::start(
+                    transport.clone(),
+                    keys.clone(),
+                    store.clone(),
+                    epoch.clone(),
+                    host_keys.clone(),
+                )
+            })
+            .transpose()?;
         let mut actor = HostActor {
             transport,
             peers,
@@ -293,7 +314,7 @@ impl SessionHost {
             health_tx,
             events: events.clone(),
             store,
-            recorded: HashMap::new(),
+            history: history_sync,
             host_keys,
             waiting: HashMap::new(),
             failed: Vec::new(),
@@ -326,7 +347,9 @@ impl SessionHost {
                 drop(heartbeats);
                 drop(reports);
                 drop(history);
-                actor.recorded.clear();
+                if let Some(history) = actor.history.take() {
+                    history.stop().await;
+                }
                 actor.store.clear();
             }
         });
@@ -497,7 +520,8 @@ struct HostActor {
     health_tx: watch::Sender<Vec<ParticipantHealth>>,
     events: broadcast::Sender<AuthorityEvent>,
     store: HistoryStore,
-    recorded: HashMap<StreamKey, Recorded>,
+    /// The history subscriptions' thread, when history is on.
+    history: Option<HistorySync>,
     /// The host's own receivers of every stream key: what the history
     /// store opens samples with.
     host_keys: Arc<Mutex<Keyring>>,

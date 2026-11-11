@@ -183,7 +183,7 @@ impl HostActor {
                 query = ctl.recv_async() => match query {
                     Ok(query) => {
                         self.on_ctl(query).await;
-                        self.sync_history().await;
+                        self.sync_history();
                         self.sync_streams();
                     }
                     Err(_) => break,

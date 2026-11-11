@@ -7,7 +7,7 @@ use rlmesh_session_core::crypto::Kind;
 use tracing::warn;
 
 use crate::host::{HostActor, OsRng, lock};
-use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY};
+use crate::transport::{CONTROL_PRIORITY, RESENT_CONGESTION};
 
 impl HostActor {
     /// Keeps one stream key slot per declared part.
@@ -67,7 +67,7 @@ impl HostActor {
                     .control()
                     .put(key, sealed)
                     .priority(CONTROL_PRIORITY)
-                    .congestion_control(CONTROL_CONGESTION)
+                    .congestion_control(RESENT_CONGESTION)
                     .express(true)
                     .await
                     .map_err(|err| err.to_string()),

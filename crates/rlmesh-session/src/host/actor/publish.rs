@@ -5,15 +5,17 @@ use crate::wire::version::VIEW_DEVICE;
 use crate::wire::{AuthoritySnapshot, DeviceView, ParticipantId, Role};
 use rlmesh_session_core::crypto::SignedKind;
 use tracing::warn;
+use zenoh::Wait;
 use zenoh::query::Query;
 
 use crate::host::HostActor;
-use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY};
+use crate::transport::{CONTROL_PRIORITY, RESENT_CONGESTION};
 
 impl HostActor {
     pub(super) async fn on_state_query(&mut self, query: Query) {
-        if let Some(signed) = self.sign_state(&self.snapshot()) {
-            Self::reply(query, signed).await;
+        match self.sign_state(&self.snapshot()) {
+            Some(signed) => Self::reply(query, signed),
+            None => Self::discard(query),
         }
     }
 
@@ -21,14 +23,17 @@ impl HostActor {
     /// current view, if it asked for views.
     pub(super) async fn on_view_query(&mut self, query: Query) {
         let Some(robot) = self.keys.view_of(query.key_expr().as_str()) else {
+            Self::discard(query);
             return;
         };
         let snapshot = self.snapshot();
         if !asks_for_view(&snapshot, &robot) {
+            Self::discard(query);
             return;
         }
-        if let Some(signed) = self.sign_view(&DeviceView::of(&snapshot, &robot)) {
-            Self::reply(query, signed).await;
+        match self.sign_view(&DeviceView::of(&snapshot, &robot)) {
+            Some(signed) => Self::reply(query, signed),
+            None => Self::discard(query),
         }
     }
 
@@ -45,7 +50,9 @@ impl HostActor {
     }
 
     /// The views of every robot that asked for one whose content changed
-    /// since the last published (a renewal moves a lease's expiry), signed.
+    /// since the last published (a renewal moves a lease's expiry, a
+    /// heartbeat its robot's clock mapping, so one dropped for a congested
+    /// link is soon replaced), signed.
     fn views_due(&mut self, snapshot: &AuthoritySnapshot) -> Vec<(ParticipantId, Vec<u8>)> {
         self.views.retain(|robot, _| asks_for_view(snapshot, robot));
         let mut due = Vec::new();
@@ -85,15 +92,25 @@ impl HostActor {
     }
 
     /// Replies ride the query's priority and congestion control (Zenoh 1.x
-    /// ignores per-reply QoS), so the caller's choice decides both legs.
-    pub(super) async fn reply(query: Query, payload: Vec<u8>) {
-        if let Err(err) = query
-            .reply(query.key_expr().clone(), payload)
-            .express(true)
-            .await
-        {
-            warn!(%err, "reply failed");
-        }
+    /// ignores per-reply QoS), so the caller's choice decides both legs. A
+    /// reply to a link that stopped reading can wait there for seconds,
+    /// which is why it is sent off the host task.
+    pub(super) fn reply(query: Query, payload: Vec<u8>) {
+        tokio::task::spawn_blocking(move || {
+            if let Err(err) = query
+                .reply(query.key_expr().clone(), payload)
+                .express(true)
+                .wait()
+            {
+                warn!(%err, "reply failed");
+            }
+        });
+    }
+
+    /// Leaves a query unanswered: dropping one sends its final message,
+    /// under the same congestion control as a reply.
+    pub(super) fn discard(query: Query) {
+        tokio::task::spawn_blocking(move || drop(query));
     }
 
     pub(super) async fn publish_ticks(&mut self) {
@@ -157,7 +174,7 @@ impl HostActor {
                 .control()
                 .put(self.keys.host_view(&robot), signed)
                 .priority(CONTROL_PRIORITY)
-                .congestion_control(CONTROL_CONGESTION)
+                .congestion_control(RESENT_CONGESTION)
                 .express(true)
                 .await;
             if let Err(err) = sent {

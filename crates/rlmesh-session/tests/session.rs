@@ -1986,6 +1986,41 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     }));
 }
 
+/// A view is dropped for a congested link: only the next one repairs that,
+/// so an idle robot's must keep coming.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_robots_device_view_keeps_coming() {
+    let world = World::start().await;
+    let keys = world.host.keys();
+    let eye = world.raw("eye", Role::Observer).await;
+    let seen = Arc::new(AtomicU64::new(0));
+    let _sub = eye
+        .transport
+        .control()
+        .declare_subscriber(keys.host_views())
+        .callback({
+            let seen = seen.clone();
+            move |_| {
+                seen.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .await
+        .expect("subscribe");
+    let mut config = world.config("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0);
+    config.supports.push(VIEW_DEVICE.into());
+    let robot = Participant::attach(world.transport().await, config)
+        .await
+        .expect("attach");
+    robot.declare_parts(&raw_camera()).await.expect("declare");
+    wait_until("the first view", || seen.load(Ordering::Relaxed) > 0).await;
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let settled = seen.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(seen.load(Ordering::Relaxed) > settled, "the view stopped");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_robot_that_asks_gets_its_signed_view_and_one_that_does_not_gets_none() {
     let world = World::start().await;

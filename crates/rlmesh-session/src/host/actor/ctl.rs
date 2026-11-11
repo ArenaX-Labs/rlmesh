@@ -78,7 +78,7 @@ impl HostActor {
                     assignment: None,
                     run: None,
                 };
-                Self::reply(query, codec::encode_reply(&reply)).await;
+                Self::reply(query, codec::encode_reply(&reply));
                 return;
             }
         };
@@ -102,7 +102,9 @@ impl HostActor {
             && let Some(waiting) = self.lobby.get_mut(&lobby_key)
             && Arc::ptr_eq(&waiting.peer, &peer)
         {
-            waiting.query = Some(query);
+            if let Some(earlier) = waiting.query.replace(query) {
+                Self::discard(earlier);
+            }
             return;
         }
         // A retry of a grant still waiting for its keys joins it.
@@ -136,7 +138,10 @@ impl HostActor {
                 let (result, leases, keys) = match outcome {
                     // A verb a candidate may not send yet is dropped
                     // unanswered.
-                    Outcome::Drop => return,
+                    Outcome::Drop => {
+                        Self::discard(query);
+                        return;
+                    }
                     Outcome::Deferred(id) => {
                         lock(&peer.requests).begin(request_id);
                         if let Some(waiting) = self.waiting.get_mut(&id) {
@@ -152,7 +157,7 @@ impl HostActor {
                         let sealed =
                             lock(&peer.down).seal(Kind::CtlReply, &self.keys.ctl(), &encoded);
                         match sealed {
-                            Ok(sealed) => Self::reply(query, sealed).await,
+                            Ok(sealed) => Self::reply(query, sealed),
                             Err(err) => {
                                 warn!(participant = %peer.participant, %err, "reply not sealed")
                             }
@@ -194,7 +199,7 @@ impl HostActor {
         self.publish_ticks().await;
         let sealed = lock(&peer.down).seal(Kind::CtlReply, &self.keys.ctl(), &encoded);
         match sealed {
-            Ok(sealed) => Self::reply(query, sealed).await,
+            Ok(sealed) => Self::reply(query, sealed),
             Err(err) => warn!(participant = %peer.participant, %err, "reply not sealed"),
         }
     }

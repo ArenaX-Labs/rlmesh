@@ -70,7 +70,7 @@ impl HostActor {
                 Err(err)
             }
         };
-        Self::reply(query, codec::encode_handshake_reply(&reply)).await;
+        Self::reply(query, codec::encode_handshake_reply(&reply));
     }
 
     /// `peer`'s `Attach` was accepted: it is the generation in effect, and

@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::wire::codec;
 use crate::wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
@@ -34,6 +34,7 @@ use crate::authority::Access;
 use crate::clock::Clock;
 use crate::host::peer::SharedPeers;
 use crate::host::{HostActor, lock};
+use crate::transport::Transport;
 
 /// The most gap ranges a stream's history remembers.
 const MAX_GAPS: usize = 64;
@@ -337,31 +338,90 @@ impl HistoryStore {
 }
 
 /// A recorded stream: its ring and the subscription feeding it.
-pub(super) struct Recorded {
+struct Recorded {
     channel: ChannelId,
     _subscriber: zenoh::pubsub::Subscriber<()>,
 }
 
-impl HostActor {
+/// The streams to record, by key.
+type Wanted = BTreeMap<StreamKey, StreamSpec>;
+
+/// The history subscriptions, kept on their own thread: declaring or
+/// undeclaring one tells every linked peer, and a link that stopped reading
+/// can hold that for seconds.
+pub(super) struct HistorySync {
+    wanted: mpsc::Sender<Wanted>,
+    last: Wanted,
+    worker: std::thread::JoinHandle<()>,
+}
+
+impl HistorySync {
+    /// Starts the thread feeding `store`, opening samples with `host_keys`.
+    pub(super) fn start(
+        transport: Transport,
+        keys: SessionKeys,
+        store: HistoryStore,
+        epoch: Arc<AtomicU64>,
+        host_keys: Arc<Mutex<Keyring>>,
+    ) -> std::io::Result<Self> {
+        let (wanted, updates) = mpsc::channel();
+        let subscriptions = Subscriptions {
+            transport,
+            keys,
+            store,
+            epoch,
+            host_keys,
+            recorded: HashMap::new(),
+        };
+        let worker = std::thread::Builder::new()
+            .name("rlmesh-history".into())
+            .spawn(move || subscriptions.run(&updates))?;
+        Ok(Self {
+            wanted,
+            last: Wanted::new(),
+            worker,
+        })
+    }
+
+    /// Hands over the streams to record, if they changed.
+    fn set(&mut self, wanted: Wanted) {
+        if wanted != self.last {
+            self.last.clone_from(&wanted);
+            let _ = self.wanted.send(wanted);
+        }
+    }
+
+    /// Undeclares every subscription and stops the thread.
+    pub(super) async fn stop(self) {
+        drop(self.wanted);
+        let worker = self.worker;
+        let _ = tokio::task::spawn_blocking(move || worker.join()).await;
+    }
+}
+
+struct Subscriptions {
+    transport: Transport,
+    keys: SessionKeys,
+    store: HistoryStore,
+    epoch: Arc<AtomicU64>,
+    host_keys: Arc<Mutex<Keyring>>,
+    recorded: HashMap<StreamKey, Recorded>,
+}
+
+impl Subscriptions {
+    fn run(mut self, updates: &mpsc::Receiver<Wanted>) {
+        while let Ok(mut wanted) = updates.recv() {
+            // Only the newest list matters.
+            while let Ok(newer) = updates.try_recv() {
+                wanted = newer;
+            }
+            self.apply(wanted);
+        }
+    }
+
     /// Keeps one history subscription per recordable stream, re-subscribing
     /// when a path's stream id changes.
-    pub(super) async fn sync_history(&mut self) {
-        if !self.config.history.enabled {
-            return;
-        }
-        let wanted: BTreeMap<StreamKey, StreamSpec> = self
-            .authority
-            .parts()
-            .flat_map(|part| {
-                [
-                    part.stream().ok(),
-                    part.applied_stream().and_then(Result::ok),
-                ]
-            })
-            .flatten()
-            .filter(|s| self.config.history.bulk || s.priority != ChannelPriority::Bulk)
-            .map(|s| ((s.owner.clone(), s.path.clone()), s))
-            .collect();
+    fn apply(&mut self, wanted: Wanted) {
         let store = &self.store;
         self.recorded.retain(|key, recorded| {
             let keep = wanted
@@ -396,7 +456,7 @@ impl HostActor {
                     let (ring, keys) = (ring.clone(), self.host_keys.clone());
                     move |sample| ring.record(&keys, &data, sample.payload())
                 })
-                .await;
+                .wait();
             match subscriber {
                 Ok(subscriber) => {
                     debug!(channel = %spec.channel, path = %spec.path, "history ring");
@@ -412,6 +472,30 @@ impl HostActor {
                 Err(err) => warn!(channel = %spec.channel, %err, "history subscription failed"),
             }
         }
+    }
+}
+
+impl HostActor {
+    /// Tells the history thread which streams to record.
+    pub(super) fn sync_history(&mut self) {
+        let Some(history) = &mut self.history else {
+            return;
+        };
+        let bulk = self.config.history.bulk;
+        let wanted: Wanted = self
+            .authority
+            .parts()
+            .flat_map(|part| {
+                [
+                    part.stream().ok(),
+                    part.applied_stream().and_then(Result::ok),
+                ]
+            })
+            .flatten()
+            .filter(|s| bulk || s.priority != ChannelPriority::Bulk)
+            .map(|s| ((s.owner.clone(), s.path.clone()), s))
+            .collect();
+        history.set(wanted);
     }
 }
 
