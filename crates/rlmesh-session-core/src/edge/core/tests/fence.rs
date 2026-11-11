@@ -161,3 +161,61 @@ fn the_lease_lapses_by_the_edge_clock_alone_and_the_edge_reports_safe() {
         Some((epoch, SafeCause::LeaseLapsed))
     );
 }
+
+#[test]
+fn each_member_counts_its_chunks_losses_lateness_and_longest_gap() {
+    let mut f = Fixture::new();
+    let model = f.grant("policy", 0);
+    f.publish(0);
+    let cmd = f.ch("cmd");
+    // Seq 1 on its slot, 2 lost, 3 three ms late, 4 refused (a copy of 3),
+    // then 6 with 5 lost, 45 ms late and 40 ms after 3.
+    for (seq, t0, at, ok) in [
+        (1, 0, 0, true),
+        (3, 2 * MS, 5 * MS, true),
+        (3, 5 * MS, 5 * MS, false),
+        (6, 0, 45 * MS, true),
+    ] {
+        assert_eq!(
+            f.accept(f.chunk("policy", &model, seq, t0, 3), at).is_ok(),
+            ok
+        );
+    }
+    // A chunk that never opened reached the edge all the same.
+    f.edge.count_unread(cmd, Rejection::Unauthenticated);
+    let stats = f.edge.stats();
+    let timing = *stats.timing(cmd).expect("cmd's timing");
+    assert_eq!((timing.received, timing.accepted, timing.lost), (5, 3, 3));
+    assert_eq!(timing.late_ms, [1, 0, 1, 0, 0, 0, 1, 0]);
+    assert_eq!(timing.late_max_us, 45_000);
+    assert_eq!(timing.gap_max_us, 40_000);
+    assert_eq!(f.edge.timing().count(), 1);
+    // A new token is a new run: no loss, no gap across it.
+    let human = f.grant("operator", 100 * MS);
+    f.publish(100 * MS);
+    f.accept(f.chunk("operator", &human, 9, 100 * MS, 3), 170 * MS)
+        .expect("accept");
+    let timing = *f.edge.stats().timing(cmd).expect("timing");
+    assert_eq!((timing.lost, timing.gap_max_us), (3, 40_000));
+    assert_eq!(timing.late_ms[7], 1, "70 ms late");
+}
+
+#[test]
+fn lateness_buckets_are_powers_of_two_milliseconds() {
+    let bucket = crate::wire::ChunkTiming::bucket;
+    assert_eq!(
+        [
+            -5,
+            0,
+            999_999,
+            MS,
+            2 * MS - 1,
+            2 * MS,
+            63 * MS,
+            64 * MS,
+            i64::MAX
+        ]
+        .map(bucket),
+        [0, 0, 0, 1, 1, 2, 6, 7, 7]
+    );
+}

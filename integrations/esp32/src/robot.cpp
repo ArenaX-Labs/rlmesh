@@ -243,6 +243,27 @@ void Robot::printDropped(Print& out) const {
   out.println();
 }
 
+bool Robot::chunkTiming(int part, rlmesh_device_chunk_timing_t& out) const {
+  out = {};
+  if (robot_ == nullptr || part < 0 || part >= RLMESH_DEVICE_NO_PART) return false;
+  return rlmesh_device_robot_chunk_timing(robot_, uint8_t(part), &out) == RLMESH_DEVICE_OK;
+}
+
+void Robot::printChunkTiming(Print& out, int part) const {
+  rlmesh_device_chunk_timing_t t;
+  if (!chunkTiming(part, t)) return;
+  out.printf(
+      "  chunks received %llu accepted %llu lost %lu late max %.1f ms gap max %.1f ms, by ms:",
+      (unsigned long long)t.received, (unsigned long long)t.accepted, (unsigned long)t.lost,
+      t.late_max_us / 1000.0, t.gap_max_us / 1000.0);
+  static const char* const kBuckets[RLMESH_DEVICE_LATE_BUCKETS] = {
+      "<1", "1-2", "2-4", "4-8", "8-16", "16-32", "32-64", ">=64"};
+  for (int i = 0; i < RLMESH_DEVICE_LATE_BUCKETS; ++i) {
+    if (t.late_ms[i] != 0) out.printf(" %s %lu", kBuckets[i], (unsigned long)t.late_ms[i]);
+  }
+  out.println();
+}
+
 void Robot::viewCounts(uint64_t& sealed, uint64_t& signedViews, uint64_t& droppedViews) const {
   sealed = signedViews = droppedViews = 0;
   if (robot_ != nullptr) {

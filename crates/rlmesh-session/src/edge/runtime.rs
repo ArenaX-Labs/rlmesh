@@ -100,12 +100,14 @@ impl Shared {
         core
     }
 
-    fn on_payload(&self, key: &str, payload: &zenoh::bytes::ZBytes) {
+    fn on_payload(&self, key: &str, payload: &zenoh::bytes::ZBytes, channel: ChannelId) {
         let chunk = match self.sealer.open_chunk(key, payload.to_bytes().into_owned()) {
             Ok(chunk) => chunk,
             Err(err) => {
                 debug!(%err, "chunk refused");
-                self.core().count_rejection(Rejection::Unauthenticated);
+                let mut core = self.core();
+                core.count_unread(channel, Rejection::Unauthenticated);
+                self.report.set_timing(&core);
                 self.report.count_rejection(Rejection::Unauthenticated);
                 return;
             }
@@ -123,6 +125,7 @@ impl Shared {
             let outcome = core.accept(chunk.clone(), receive_ns, view, observed);
             self.report.set_queue_depth(core.queue_depth());
             self.report.set_clock_refused(&core);
+            self.report.set_timing(&core);
             outcome.map(|_| receive_ns)
         });
         match accepted {
@@ -199,8 +202,8 @@ impl Edge {
                     .session(TrafficClass::of(part.priority))
                     .declare_subscriber(key.clone())
                     .callback({
-                        let shared = shared.clone();
-                        move |sample| shared.on_payload(&key, sample.payload())
+                        let (shared, channel) = (shared.clone(), part.channel);
+                        move |sample| shared.on_payload(&key, sample.payload(), channel)
                     })
                     .await?,
             );

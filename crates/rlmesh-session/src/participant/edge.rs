@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::wire::{
-    AuthoritySnapshot, ClockRefusal, Command, CtlStatus, Epoch, Mode, ParticipantId, Reason,
-    ReasonCode,
+    AuthoritySnapshot, ChunkTiming, ClockRefusal, Command, CtlStatus, Epoch, Mode, ParticipantId,
+    Reason, ReasonCode,
 };
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -36,12 +36,38 @@ pub struct EdgeReport {
     rejected: [AtomicU64; Rejection::ALL.len()],
     /// One per edge whose newest clock judgement refused a chunk.
     clock_refused: Mutex<Vec<ClockRefusal>>,
+    /// Chunks accepted, over every edge of the robot.
+    accepted: AtomicU64,
+    /// How each commanded part's chunks arrived, over every edge.
+    timing: Mutex<Vec<ChunkTiming>>,
 }
 
 impl EdgeReport {
-    /// The newest accepted chunk's seq.
+    /// A chunk accepted, with `seq`: the newest.
     pub fn set_accepted(&self, seq: u64) {
         self.last_accepted.store(seq, Ordering::Relaxed);
+        self.accepted.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Chunks accepted so far.
+    pub fn accepted(&self) -> u64 {
+        self.accepted.load(Ordering::Relaxed)
+    }
+
+    /// Records how `edge`'s members' chunks arrived.
+    pub fn set_timing(&self, edge: &EdgeCore) {
+        let mut timing = lock(&self.timing);
+        for member in edge.timing() {
+            match timing.iter_mut().find(|t| t.channel == member.channel) {
+                Some(held) => *held = *member,
+                None => timing.push(*member),
+            }
+        }
+    }
+
+    /// How each commanded part's chunks arrived so far.
+    pub fn timing(&self) -> Vec<ChunkTiming> {
+        lock(&self.timing).clone()
     }
 
     /// The newest applied chunk's seq.

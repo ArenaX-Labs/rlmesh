@@ -312,6 +312,9 @@ struct Seen {
     sent: u32,
     /// Why the board last refused a chunk, and its invalid-value count.
     refused: (Option<Rejection>, u64),
+    /// How the part's chunks arrived, and the robot's accepted count.
+    timing: Option<rlmesh_session::wire::ChunkTiming>,
+    accepted: u64,
 }
 
 /// A board's transport: one session per traffic class, as zenoh-pico opens
@@ -479,6 +482,8 @@ impl Board {
                         robot.last_refusal(),
                         robot.refusals(Rejection::InvalidValue),
                     );
+                    seen.timing = robot.chunk_timing(0);
+                    seen.accepted = robot.chunks_accepted();
                 }
                 if now >= self.next_sample {
                     self.next_sample = now + 20_000;
@@ -1023,6 +1028,15 @@ async fn a_controller_drives_the_board_and_reads_its_samples() {
         seen.actions.len()
     );
     assert!(seen.published > 0);
+    // Every accepted chunk was timed, and a later refusal (the e-stop's) only
+    // received.
+    let timing = seen.timing.expect("the part's chunk timing");
+    assert_eq!(timing.accepted, seen.accepted);
+    assert!(timing.received >= timing.accepted && timing.accepted > 0);
+    assert_eq!(
+        u64::from(timing.late_ms.iter().sum::<u32>()),
+        timing.accepted
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

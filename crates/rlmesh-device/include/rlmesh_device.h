@@ -310,6 +310,32 @@ uint64_t rlmesh_device_robot_refusals_total(const rlmesh_device_robot_t* robot, 
  * joined again. */
 uint32_t rlmesh_device_robot_attaches(const rlmesh_device_robot_t* robot);
 
+/* Lateness buckets of rlmesh_device_chunk_timing_t. */
+#define RLMESH_DEVICE_LATE_BUCKETS 8
+
+/* How one commanded part's chunks arrived this attach. */
+typedef struct rlmesh_device_chunk_timing_t {
+  /* Chunks that reached its edge, whatever became of them. */
+  uint64_t received;
+  /* Chunks it accepted. */
+  uint64_t accepted;
+  /* Gaps in the seqs of accepted chunks under one lease token. */
+  uint32_t lost;
+  /* Accepted chunks by lateness on arrival against their first slot:
+   * [0, 1) ms, [1, 2), [2, 4), ... [32, 64), [64, inf). */
+  uint32_t late_ms[RLMESH_DEVICE_LATE_BUCKETS];
+  /* The latest any accepted chunk arrived, in microseconds. */
+  uint32_t late_max_us;
+  /* The longest time between two accepted chunks, in microseconds. */
+  uint32_t gap_max_us;
+} rlmesh_device_chunk_timing_t;
+
+/* How part's chunks arrived this attach, into *out: RLMESH_DEVICE_OK, or
+ * RLMESH_DEVICE_ERR_NOT_READY before the robot runs or for a part that takes
+ * no commands. */
+int rlmesh_device_robot_chunk_timing(const rlmesh_device_robot_t* robot, uint8_t part,
+                                     rlmesh_device_chunk_timing_t* out);
+
 /* USB provisioning: the board keeps a device key it makes on
  * first boot (32 random bytes from a cryptographic RNG) and the record the
  * daemon sends; the responder answers the daemon over the serial port. */

@@ -34,9 +34,10 @@ use rlmesh_session_core::wire::version::{
     PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE, VIEW_DEVICE_LEAN, VIEW_DEVICE_SEALED,
 };
 use rlmesh_session_core::wire::{
-    AuthorityView, ChannelId, ChannelPriority, ClockMode, Command, CtlError, CtlStatus, DeviceView,
-    Epoch, Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, Plan, PriorityClass, Reason,
-    ReasonCode, Role, Sample, SessionId, SessionKeys, StreamSpec, TenantId, TimingSample, Unread,
+    AuthorityView, ChannelId, ChannelPriority, ChunkTiming, ClockMode, Command, CtlError,
+    CtlStatus, DeviceView, Epoch, Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, Plan,
+    PriorityClass, Reason, ReasonCode, Role, Sample, SessionId, SessionKeys, StreamSpec, TenantId,
+    TimingSample, Unread,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -912,6 +913,14 @@ impl Robot {
         self.accepted
     }
 
+    /// How part `part`'s chunks arrived this attach: `None` for a part
+    /// that takes no commands, or before the robot runs.
+    pub fn chunk_timing(&self, part: usize) -> Option<ChunkTiming> {
+        let channel = self.parts.get(part)?.channel;
+        let edge = self.edges.get((*self.edge_of.get(part)?)?)?;
+        edge.core.timing().find(|t| t.channel == channel).copied()
+    }
+
     /// Chunks the edges refused, this attach.
     pub fn chunks_refused(&self) -> u64 {
         self.edges.iter().map(|e| e.refused).sum()
@@ -1588,12 +1597,14 @@ impl Robot {
                     }
                     _ => Rejection::Unauthenticated,
                 };
-                if let Some(Some(edge)) = self
-                    .edge_of
-                    .get(index)
-                    .map(|e| e.and_then(|i| self.edges.get_mut(i)))
-                {
-                    edge.core.count_rejection(rejection);
+                let channel = self.parts.get(index).map(|p| p.channel);
+                if let (Some(Some(edge)), Some(channel)) = (
+                    self.edge_of
+                        .get(index)
+                        .map(|e| e.and_then(|i| self.edges.get_mut(i))),
+                    channel,
+                ) {
+                    edge.core.count_unread(channel, rejection);
                     edge.refused(rejection, now);
                 }
                 let now_us = u64::try_from(now / 1000).unwrap_or(0);
@@ -2155,7 +2166,11 @@ impl Robot {
                 .iter()
                 .filter_map(|e| e.core.clock_refused().cloned())
                 .collect(),
-            chunk_timing: Vec::new(),
+            chunk_timing: self
+                .edges
+                .iter()
+                .flat_map(|e| e.core.timing().copied())
+                .collect(),
             chunks_accepted: self.accepted,
             datagram: None,
         };

@@ -157,6 +157,12 @@ class Robot {
   uint64_t refusalsTotal(uint8_t code) const;
   // Attaches the host accepted: one more each time the robot joined again.
   uint32_t attaches() const;
+  // How `part`'s command chunks arrived this attach (received, accepted,
+  // lost, lateness on arrival by bucket, the longest gap): false before the
+  // robot runs or for a part that takes no commands.
+  bool chunkTiming(int part, rlmesh_device_chunk_timing_t& out) const;
+  // Prints one part's chunk timing on one line.
+  void printChunkTiming(Print& out, int part) const;
 
  private:
   bool start(const rlmesh_device_robot_config_t& config);

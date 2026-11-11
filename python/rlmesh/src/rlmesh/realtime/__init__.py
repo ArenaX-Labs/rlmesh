@@ -627,6 +627,12 @@ class Robot:
         Accepted, rejected (and ``rejected_by`` reason), mode ticks, and
         ``clock_refused``: while its clock error refuses chunks, a dict of
         ``part``, ``participant``, ``error_ms``, ``bound_ms`` and ``message``.
+        How ``path``'s chunks arrived: ``received`` (any outcome), ``lost``
+        (gaps in their seqs under one lease), ``late_ms`` (accepted chunks
+        by lateness on arrival against their first slot, in buckets of
+        ``[0, 1)``, ``[1, 2)``, ``[2, 4)`` ... ``[64, inf)`` ms),
+        ``late_max_ms`` and ``gap_max_ms`` (the longest time between two
+        accepted chunks).
         """
         return self._native.edge_stats(path)
 

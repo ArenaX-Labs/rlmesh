@@ -54,8 +54,8 @@ use alloc::sync::Arc;
 use core::time::Duration;
 
 use crate::wire::{
-    ActionChunk, Applied, AuthorityView, ChannelId, ClockMode, ClockRefusal, EdgeMode, Epoch,
-    FenceError, LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
+    ActionChunk, Applied, AuthorityView, ChannelId, ChunkTiming, ClockMode, ClockRefusal, EdgeMode,
+    Epoch, FenceError, LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
 };
 use bytes::Bytes;
 
@@ -187,9 +187,16 @@ pub struct EdgeStats {
     pub handovers: u64,
     /// Set while the newest clock judgement refused a chunk.
     pub clock_refused: Option<ClockRefusal>,
+    /// How each member's chunks arrived.
+    pub timing: Vec<ChunkTiming>,
 }
 
 impl EdgeStats {
+    /// How `channel`'s chunks arrived, if it is a member.
+    pub fn timing(&self, channel: ChannelId) -> Option<&ChunkTiming> {
+        self.timing.iter().find(|t| t.channel == channel)
+    }
+
     /// Chunks refused for `reason`.
     pub fn rejected(&self, reason: Rejection) -> u64 {
         self.rejected
@@ -286,6 +293,35 @@ struct Member {
     max_action_age_ns: i64,
     /// (epoch, token, seq) of the newest accepted chunk.
     last: Option<(Epoch, LeaseToken, u64)>,
+    /// How its chunks arrived.
+    timing: ChunkTiming,
+    /// When the newest accepted chunk arrived (edge clock).
+    last_at: Option<i64>,
+}
+
+impl Member {
+    /// It accepted chunk `id` (epoch, token, seq), received at `receive_ns`
+    /// and `late_ns` past its first slot: counted, and its newest. A skip in
+    /// the seqs under one token is a loss, and only there is the time since
+    /// the last one a gap.
+    fn took(&mut self, id: (Epoch, LeaseToken, u64), receive_ns: i64, late_ns: i64) {
+        let timing = &mut self.timing;
+        timing.accepted += 1;
+        timing.late(late_ns);
+        if let Some((epoch, token, seq)) = self.last
+            && (epoch, token) == (id.0, id.1)
+        {
+            let skipped = id.2.saturating_sub(seq).saturating_sub(1);
+            timing.lost = timing
+                .lost
+                .saturating_add(u32::try_from(skipped).unwrap_or(u32::MAX));
+            if let Some(at) = self.last_at {
+                timing.gap(receive_ns.saturating_sub(at));
+            }
+        }
+        self.last = Some(id);
+        self.last_at = Some(receive_ns);
+    }
 }
 
 /// The edge of one command group.
@@ -384,6 +420,11 @@ impl EdgeCore {
                 period_ns: duration_i64(part.control_period()).max(1),
                 max_action_age_ns: duration_i64(command.max_action_age),
                 last: None,
+                timing: ChunkTiming {
+                    channel: part.channel,
+                    ..ChunkTiming::default()
+                },
+                last_at: None,
                 part,
             });
         }
@@ -425,6 +466,21 @@ impl EdgeCore {
     /// decode).
     pub fn count_rejection(&mut self, reason: Rejection) {
         self.rejected[reason.index()] += 1;
+    }
+
+    /// Counts a chunk for member `channel` refused before [`Self::accept`]
+    /// (one that did not open or decode): it reached the edge all the same.
+    pub fn count_unread(&mut self, channel: ChannelId, reason: Rejection) {
+        self.count_rejection(reason);
+        if let Some(member) = self.members.iter_mut().find(|m| m.part.channel == channel) {
+            member.timing.received += 1;
+        }
+    }
+
+    /// How each member's chunks arrived, without building [`Self::stats`]:
+    /// a board reports these on every heartbeat.
+    pub fn timing(&self) -> impl Iterator<Item = &ChunkTiming> {
+        self.members.iter().map(|m| &m.timing)
     }
 
     /// Chunks refused for `reason`, without building [`Self::stats`]: a
@@ -522,6 +578,13 @@ impl EdgeCore {
         view: Option<&V>,
         observed_local_ns: i64,
     ) -> Result<SpliceOutcome, Rejection> {
+        if let Some(member) = self
+            .members
+            .iter_mut()
+            .find(|m| m.part.channel == chunk.channel)
+        {
+            member.timing.received += 1;
+        }
         let result = self.validate_and_splice(chunk, receive_ns, view, observed_local_ns);
         match result {
             Ok(_) => self.accepted += 1,
@@ -640,7 +703,13 @@ impl EdgeCore {
             return Err(Rejection::StaleSeq);
         }
         let stride = member.check.stride();
-        self.members[index].last = Some((chunk.epoch, chunk.lease_token, chunk.seq));
+        let t0_ns = chunk.t0_ns.saturating_sub(edge.offset_ns);
+        let member = &mut self.members[index];
+        member.took(
+            (chunk.epoch, chunk.lease_token, chunk.seq),
+            receive_ns,
+            receive_ns.saturating_sub(t0_ns),
+        );
         self.clamped += u64::from(checked.clamped);
         let meta = Arc::new(ChunkMeta {
             source: chunk.source,
@@ -657,7 +726,7 @@ impl EdgeCore {
         Ok(self.queues[index].splice(
             Splice {
                 chunk: meta,
-                t0_ns: chunk.t0_ns.saturating_sub(edge.offset_ns),
+                t0_ns,
                 dt_ns,
                 replace_from_ns: chunk.replace_from_ns.saturating_sub(edge.offset_ns),
                 actions,
@@ -822,6 +891,7 @@ impl EdgeCore {
             clamped: self.clamped,
             handovers: self.handovers,
             clock_refused: self.clock_refused.clone(),
+            timing: self.members.iter().map(|m| m.timing).collect(),
         }
     }
 }

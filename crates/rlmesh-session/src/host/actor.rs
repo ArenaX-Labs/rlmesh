@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::wire::{ClockRefusal, CtlError, Epoch, IssuedKey, Lease, LeaseToken, ParticipantId};
+use crate::wire::{
+    ChunkTiming, ClockRefusal, CtlError, Epoch, IssuedKey, Lease, LeaseToken, ParticipantId,
+};
 use rlmesh_session_core::auth::issuer::GrantId;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -45,6 +47,10 @@ pub(super) struct Link {
     rejected: Vec<(Rejection, u64)>,
     /// Edges: why the clocks are refusing chunks (its latest heartbeat).
     clock_refused: Vec<ClockRefusal>,
+    /// Edges: how each commanded part's chunks arrived, and how many were
+    /// accepted (its latest heartbeat).
+    chunk_timing: Vec<ChunkTiming>,
+    chunks_accepted: u64,
 }
 
 type Fifo<T> = zenoh::handlers::FifoChannelHandler<T>;
@@ -316,6 +322,8 @@ impl HostActor {
                                 stats: LinkStats::new(offset.window),
                                 rejected: Vec::new(),
                                 clock_refused: Vec::new(),
+                                chunk_timing: Vec::new(),
+                                chunks_accepted: 0,
                             },
                         );
                     }

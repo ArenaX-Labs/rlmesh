@@ -978,6 +978,17 @@ impl PyRobot {
             modes.set_item(sdk::mode_name(mode), (m.ticks, m.entries))?;
         }
         d.set_item("modes", modes)?;
+        // How this part's chunks arrived: on whichever path they rode.
+        let robot = self.robot()?;
+        let timing = robot
+            .part(path)
+            .and_then(|part| stats.timing(part.channel).copied())
+            .unwrap_or_default();
+        d.set_item("received", timing.received)?;
+        d.set_item("lost", timing.lost)?;
+        d.set_item("late_ms", timing.late_ms.to_vec())?;
+        d.set_item("late_max_ms", f64::from(timing.late_max_us) * 1e-3)?;
+        d.set_item("gap_max_ms", f64::from(timing.gap_max_us) * 1e-3)?;
         Ok(d)
     }
 

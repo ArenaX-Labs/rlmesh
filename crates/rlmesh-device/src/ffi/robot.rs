@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_char, c_int};
 
 use rlmesh_session_core::wire::{
-    CtlStatus, EdgeMode, Mode, ParticipantId, ReasonCode, SessionId, TenantId,
+    CtlStatus, EdgeMode, LATE_BUCKETS, Mode, ParticipantId, ReasonCode, SessionId, TenantId,
 };
 
 use super::{
@@ -164,6 +164,26 @@ pub struct RlmeshDeviceTick {
     /// The declared safe behaviour to run now (`"hold"`, `"stop"`, ...),
     /// NUL-terminated, or null.
     pub safe: *const c_char,
+}
+
+/// `rlmesh_device_chunk_timing_t`: how one commanded part's chunks arrived
+/// this attach.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RlmeshDeviceChunkTiming {
+    /// Chunks that reached its edge, whatever became of them.
+    pub received: u64,
+    /// Chunks it accepted.
+    pub accepted: u64,
+    /// Gaps in the seqs of accepted chunks under one lease token.
+    pub lost: u32,
+    /// Accepted chunks by lateness on arrival against their first slot:
+    /// `[0, 1)` ms, `[1, 2)`, `[2, 4)`, ... `[32, 64)`, `[64, inf)`.
+    pub late_ms: [u32; LATE_BUCKETS],
+    /// The latest any accepted chunk arrived, in microseconds.
+    pub late_max_us: u32,
+    /// The longest time between two accepted chunks, in microseconds.
+    pub gap_max_us: u32,
 }
 
 /// `rlmesh_device_robot_t`: the robot, its randomness, and what the caller
@@ -1125,6 +1145,42 @@ pub unsafe extern "C" fn rlmesh_device_robot_refusals_total(
 pub unsafe extern "C" fn rlmesh_device_robot_attaches(robot: *const DeviceRobot) -> u32 {
     // SAFETY: per the contract.
     unsafe { robot.as_ref() }.map_or(0, |r| r.robot.attaches())
+}
+
+/// How part `part`'s chunks arrived this attach, into `*out`.
+/// `RLMESH_DEVICE_ERR_NOT_READY` before the robot runs or for a part that
+/// takes no commands.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_chunk_timing(
+    robot: *const DeviceRobot,
+    part: u8,
+    out: *mut RlmeshDeviceChunkTiming,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    if out.is_null() {
+        return RLMESH_DEVICE_ERR_ARG;
+    }
+    let Some(t) = r.robot.chunk_timing(usize::from(part)) else {
+        return RLMESH_DEVICE_ERR_NOT_READY;
+    };
+    // SAFETY: checked non-null; valid for a write per the contract.
+    unsafe {
+        out.write(RlmeshDeviceChunkTiming {
+            received: t.received,
+            accepted: t.accepted,
+            lost: t.lost,
+            late_ms: t.late_ms,
+            late_max_us: t.late_max_us,
+            gap_max_us: t.gap_max_us,
+        });
+    }
+    RLMESH_DEVICE_OK
 }
 
 /// Where the robot is.
