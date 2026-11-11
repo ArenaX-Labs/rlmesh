@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::wire::codec;
 use crate::wire::{
-    Command, CtlError, CtlReply, CtlStatus, DeviceView, IssuedKey, Lease, ParticipantId, ViewReply,
+    Command, CtlError, CtlReply, CtlStatus, IssuedKey, Lease, ParticipantId, ViewReply,
 };
 use rlmesh_session_core::auth::Admit;
 use rlmesh_session_core::crypto::Kind;
@@ -17,7 +17,7 @@ use crate::authority::{Applied as Accepted, Identity};
 #[cfg(feature = "fleet")]
 use crate::host::actor::LobbyWaiting;
 use crate::host::actor::Outcome;
-use crate::host::actor::publish::asks_for_view;
+use crate::host::actor::publish::{asks_for_view, view_of};
 use crate::host::peer::Peer;
 use crate::host::{HostActor, lock};
 #[cfg(feature = "fleet")]
@@ -84,6 +84,10 @@ impl HostActor {
         };
         let request = codec::decode_request(&body);
         let request_id = request.as_ref().map_or(0, |r| r.request_id);
+        // A robot that takes its view without its parts gets them here.
+        let declares = request
+            .as_ref()
+            .is_ok_and(|r| matches!(r.command, Command::DeclareParts { .. }));
         let admitted = match lock(&peer.requests).admit(request_id) {
             Admit::Done(reply) => Some(reply.clone()),
             Admit::Expired => Some(Vec::new()),
@@ -189,7 +193,14 @@ impl HostActor {
                         return;
                     }
                 };
-                let encoded = self.answer(&peer.participant, result, leases, keys, request_id);
+                let encoded = self.answer_with(
+                    &peer.participant,
+                    result,
+                    (leases, keys),
+                    request_id,
+                    (None, None),
+                    declares,
+                );
                 lock(&peer.requests).complete(request_id, encoded.clone());
                 encoded
             }
@@ -351,9 +362,12 @@ impl HostActor {
         keys: Vec<IssuedKey>,
         request_id: u64,
     ) -> Vec<u8> {
-        self.answer_with(to, result, (leases, keys), request_id, (None, None))
+        self.answer_with(to, result, (leases, keys), request_id, (None, None), false)
     }
 
+    /// [`Self::answer`] with a lobby's order or a run's state, and the
+    /// robot's parts in its view when `parts` (the answer to its
+    /// declaration).
     pub(super) fn answer_with(
         &self,
         to: &ParticipantId,
@@ -364,6 +378,7 @@ impl HostActor {
             Option<crate::wire::Assignment>,
             Option<crate::wire::RunState>,
         ),
+        parts: bool,
     ) -> Vec<u8> {
         let state = self.snapshot();
         // A robot that takes its device view gets it in place of the state: a board
@@ -371,7 +386,7 @@ impl HostActor {
         if asks_for_view(&state, to) {
             return codec::encode_view_reply(&ViewReply {
                 result,
-                view: Some(DeviceView::of(&state, to)),
+                view: Some(view_of(&state, to, parts)),
                 leases,
                 request_id,
                 keys,

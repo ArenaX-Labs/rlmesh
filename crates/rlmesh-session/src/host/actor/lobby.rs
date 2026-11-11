@@ -25,7 +25,14 @@ impl HostActor {
             Ok(LobbyReply::Run(run)) => (Ok(()), (None, Some(run))),
             Err(err) => (Err(err), (None, None)),
         };
-        self.answer_with(to, result, (Vec::new(), Vec::new()), request_id, lobby)
+        self.answer_with(
+            to,
+            result,
+            (Vec::new(), Vec::new()),
+            request_id,
+            lobby,
+            false,
+        )
     }
 
     /// Hands a lobby verb to the lobby: `RunScene`, `StopScene` and

@@ -31,7 +31,7 @@ use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick, Rejection};
 use rlmesh_session_core::lobby::{self, LOBBY_SESSION, Leave, Lobby, WAIT_RETRY};
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{
-    PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE, VIEW_DEVICE_SEALED,
+    PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE, VIEW_DEVICE_LEAN, VIEW_DEVICE_SEALED,
 };
 use rlmesh_session_core::wire::{
     AuthorityView, ChannelId, ChannelPriority, ClockMode, Command, CtlError, CtlStatus, DeviceView,
@@ -1105,8 +1105,13 @@ impl Robot {
             roles: alloc::vec![Role::Embodiment],
             priority: PriorityClass::Scripted,
             protocol_minor: PROTOCOL_MINOR,
-            // The device view instead of the full state.
-            supports: alloc::vec![String::from(VIEW_DEVICE), String::from(VIEW_DEVICE_SEALED)],
+            // The device view instead of the full state, without its parts
+            // after their declaration.
+            supports: alloc::vec![
+                String::from(VIEW_DEVICE),
+                String::from(VIEW_DEVICE_SEALED),
+                String::from(VIEW_DEVICE_LEAN),
+            ],
             requires: Vec::new(),
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),

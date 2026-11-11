@@ -31,6 +31,14 @@ pub const VIEW_DEVICE: &str = "view.device";
 /// reader and for robots that don't ask.
 pub const VIEW_DEVICE_SEALED: &str = "view.device.sealed";
 
+/// A robot's `Attach.supports` asks for its device view without its parts
+/// (`DeviceView.parts` empty), except in the answer to its
+/// `DeclareParts`: it declared them, takes the host's normalised form once
+/// from that answer, and reads nothing of them in a view after. A host
+/// listing it sends such a robot each view smaller and cheaper to decode;
+/// one that does not sends the parts, which the robot skips unread.
+pub const VIEW_DEVICE_LEAN: &str = "view.device.lean";
+
 /// A host listing it may carry a scene's places in its authority state,
 /// and policies that name no robot bind against their view ([`crate::spec::view`]). A
 /// binder that lacks it refuses to bind in a
@@ -41,8 +49,14 @@ pub const SCENE_PLACES: &str = "scene.places";
 /// Features this build implements as a host: behaviour added in later
 /// minors. `auth.sealed`: participants attach through the handshake and
 /// seal their control traffic; [`VIEW_DEVICE`]; [`VIEW_DEVICE_SEALED`];
-/// [`SCENE_PLACES`].
-pub const FEATURES: &[&str] = &["auth.sealed", VIEW_DEVICE, VIEW_DEVICE_SEALED, SCENE_PLACES];
+/// [`VIEW_DEVICE_LEAN`]; [`SCENE_PLACES`].
+pub const FEATURES: &[&str] = &[
+    "auth.sealed",
+    VIEW_DEVICE,
+    VIEW_DEVICE_SEALED,
+    VIEW_DEVICE_LEAN,
+    SCENE_PLACES,
+];
 
 /// The features in `required` that `supported` lacks (empty: compatible).
 pub fn missing_features<'a>(required: &'a [String], supported: &[String]) -> Vec<&'a str> {
@@ -71,6 +85,7 @@ mod tests {
                 "auth.sealed",
                 "view.device",
                 "view.device.sealed",
+                "view.device.lean",
                 "scene.places"
             ]
         );

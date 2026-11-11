@@ -1,7 +1,7 @@
 //! What the host publishes: the signed state, device views, virtual ticks and lease renewals.
 
 use crate::wire::codec;
-use crate::wire::version::{VIEW_DEVICE, VIEW_DEVICE_SEALED};
+use crate::wire::version::{VIEW_DEVICE, VIEW_DEVICE_LEAN, VIEW_DEVICE_SEALED};
 use crate::wire::{AuthoritySnapshot, DeviceView, ParticipantId, Role};
 use rlmesh_session_core::crypto::SignedKind;
 use rlmesh_session_core::crypto::sealed::Kind;
@@ -74,7 +74,7 @@ impl HostActor {
             Self::discard(query);
             return;
         }
-        match self.sign_view(&DeviceView::of(&snapshot, &robot)) {
+        match self.sign_view(&view_of(&snapshot, &robot, false)) {
             Some(signed) => Self::reply(query, signed),
             None => Self::discard(query),
         }
@@ -106,7 +106,7 @@ impl HostActor {
             if !asks_for_view(snapshot, robot) {
                 continue;
             }
-            let view = DeviceView::of(snapshot, robot);
+            let view = view_of(snapshot, robot, false);
             let unchanged = self.views.get(robot).is_some_and(|last| {
                 *last
                     == DeviceView {
@@ -266,6 +266,24 @@ impl HostActor {
             }
         }
     }
+}
+
+/// `robot`'s view of `snapshot`, as it asked for it: without its parts,
+/// unless `parts`, when it takes them only from the answer to its
+/// declaration ([`VIEW_DEVICE_LEAN`]).
+pub(super) fn view_of(
+    snapshot: &AuthoritySnapshot,
+    robot: &ParticipantId,
+    parts: bool,
+) -> DeviceView {
+    let mut view = DeviceView::of(snapshot, robot);
+    let lean = snapshot
+        .participant(robot)
+        .is_some_and(|p| p.supports.iter().any(|f| f == VIEW_DEVICE_LEAN));
+    if lean && !parts {
+        view.parts = Vec::new();
+    }
+    view
 }
 
 /// Whether `robot` also asked for its view sealed under its `k_down`
