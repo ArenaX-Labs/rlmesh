@@ -1,7 +1,7 @@
 //! The serve command: parsing an image's entrypoint and command into the serve
-//! invocation, and checking the address it binds and the port it exposes.
+//! invocation, and checking the address it binds and the ports it exposes.
 
-use crate::image_check::{ADDRESS_ENV, CheckReport, ImageConfig, Kind, SERVE_PORT};
+use crate::image_check::{ADDRESS_ENV, CheckReport, ImageConfig, Kind, SERVE_PORT, SESSION_PORTS};
 
 /// The `python -m rlmesh.serve ...` invocation read off an image's
 /// `Entrypoint` + `Cmd`. See [`parse_serve_command`] for the exact reading.
@@ -210,7 +210,21 @@ pub fn shell_words(script: &str) -> Vec<String> {
     words
 }
 
-/// Check the serve command, the address it binds, and the port it exposes.
+/// The base port an address (`host:port[/...]`, `:port`) names, if any.
+fn address_port(address: &str) -> Option<u16> {
+    let host = address.split(['/', '#']).next()?;
+    host.rsplit_once(':')?.1.parse().ok()
+}
+
+/// The ports a session host on `base` listens on (fewer when they would run
+/// past the last port).
+fn session_ports(base: u16) -> Vec<u16> {
+    (0..SESSION_PORTS)
+        .filter_map(|offset| base.checked_add(offset))
+        .collect()
+}
+
+/// Check the serve command, the address it binds, and the ports it exposes.
 /// `kind` is the describe label's kind when the image carries one, so `--env`
 /// can be checked against what the envelope says the image is.
 pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckReport {
@@ -238,8 +252,8 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
         // baked flag that names the same port still serves.
         report.warnings.push(format!(
             "entrypoint: --address is baked into the command; it overrides the {ADDRESS_ENV} \
-             the platform assigns per pod. Drop it (rlmesh.serve binds {ADDRESS_ENV}, \
-             default 0.0.0.0:{SERVE_PORT})"
+             a launcher sets per container. Drop it (rlmesh.serve hosts its session on \
+             {ADDRESS_ENV}, default 0.0.0.0:{SERVE_PORT})"
         ));
     }
     match (&command.target, kind) {
@@ -260,16 +274,34 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     }
     if let Some(address) = config.env_value(ADDRESS_ENV) {
         report.warnings.push(format!(
-            "env: image-level ENV {ADDRESS_ENV}={address} is set; the platform assigns it \
-             per pod, so it has no effect there"
+            "env: image-level ENV {ADDRESS_ENV}={address} is set; a launcher sets it per \
+             container, which overrides it"
         ));
     }
-    if config.exposes_port(SERVE_PORT) {
-        report.passed.push(format!("ports: EXPOSE {SERVE_PORT}"));
+    let base = command
+        .address
+        .as_deref()
+        .or(config.env_value(ADDRESS_ENV))
+        .and_then(address_port)
+        .unwrap_or(SERVE_PORT);
+    let ports = session_ports(base);
+    let missing: Vec<u16> = ports
+        .iter()
+        .copied()
+        .filter(|port| !config.exposes_port(*port))
+        .collect();
+    let range = format!("{base}-{}", base.saturating_add(SESSION_PORTS - 1));
+    if missing.is_empty() {
+        report.passed.push(format!("ports: EXPOSE {range}"));
     } else {
+        let missing: Vec<String> = missing.iter().map(u16::to_string).collect();
         report.warnings.push(format!(
-            "ports: EXPOSE {SERVE_PORT} is missing; the platform connects on {SERVE_PORT} \
-             regardless, add it so the intent is visible"
+            "ports: EXPOSE {range} is incomplete (missing {}); rlmesh.serve hosts its session \
+             on its base port {base} and the next {} (one per traffic class), and participants \
+             dial HOST:{base}#KEY/NAME on all of them. A launcher publishes them regardless; \
+             add `EXPOSE {range}` so the intent is visible",
+            missing.join(", "),
+            SESSION_PORTS - 1
         ));
     }
     report

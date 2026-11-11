@@ -109,6 +109,7 @@ below describe development APIs; C ABI 7 is cut only when they ship.
 
 - `python -m rlmesh.serve` sets a served model's batching from its environment: every `BatchOptions` field has a flag and an `RLMESH_*` variable (`--max-batch-size` / `RLMESH_MAX_BATCH_SIZE`, `--batch-window-ms` / `RLMESH_BATCH_WINDOW_MS`, `--batch-byte-budget` / `RLMESH_BATCH_BYTE_BUDGET`, `--max-in-flight-batches` / `RLMESH_MAX_IN_FLIGHT_BATCHES`, `--batch-records` / `RLMESH_BATCH_RECORDS`). A flag wins over its variable, an unset one keeps the default, and a value that does not parse stops startup, naming the variable; set for an env, they are refused.
 
+- `rlmesh check-image` checks that an image exposes the four ports its session listens on (its base port, 7447 unless the image's address names another, and the next three, one per traffic class) instead of the 0.1 port 50051.
 
 This development tree gives the Rust facade crate (`rlmesh`), the fenced C API (`rlmesh.h`, development ABI 6) and the fenced C++ wrapper (`rlmesh.hpp`, C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 

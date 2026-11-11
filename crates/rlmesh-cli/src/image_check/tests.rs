@@ -3,6 +3,9 @@
 use super::*;
 use rlmesh_proto::CURRENT_WORKFLOW_EDITION;
 
+/// What a 0.2 image exposes: its session's base port and the next three.
+const PORTS: &[&str] = &["7447/tcp", "7448/tcp", "7449/tcp", "7450/tcp"];
+
 fn image(entrypoint: &[&str], cmd: &[&str], env: &[&str], ports: &[&str]) -> ImageConfig {
     ImageConfig {
         os: "linux".to_owned(),
@@ -34,7 +37,7 @@ fn serve_command_table() {
             entrypoint: &["python", "-m", "rlmesh.serve", "pkg:Policy"],
             cmd: &[],
             env: &[],
-            ports: &["50051/tcp"],
+            ports: PORTS,
             kind: Some(Kind::Model),
             failed: &[],
             warnings: &[],
@@ -48,7 +51,10 @@ fn serve_command_table() {
             ports: &[],
             kind: Some(Kind::Env),
             failed: &[],
-            warnings: &["env: image-level ENV", "ports: EXPOSE 50051 is missing"],
+            warnings: &[
+                "env: image-level ENV",
+                "ports: EXPOSE 6000-6003 is incomplete",
+            ],
             not_checked: &[],
         },
         Case {
@@ -62,7 +68,7 @@ fn serve_command_table() {
                 "0.0.0.0:7000",
             ],
             env: &[],
-            ports: &["50051/tcp"],
+            ports: &["7000/tcp", "7001/tcp", "7002/tcp", "7003/tcp"],
             kind: None,
             failed: &[],
             warnings: &["entrypoint: --address is baked"],
@@ -73,7 +79,7 @@ fn serve_command_table() {
             entrypoint: &["python", "-m", "rlmesh.serve", "--env=pkg:Env"],
             cmd: &[],
             env: &[],
-            ports: &["50051/tcp"],
+            ports: PORTS,
             kind: Some(Kind::Model),
             failed: &["--env present=true but the describe label says kind model"],
             warnings: &[],
@@ -90,7 +96,7 @@ fn serve_command_table() {
             ],
             cmd: &[],
             env: &[],
-            ports: &["50051/tcp"],
+            ports: PORTS,
             kind: None,
             failed: &["names no module:Class"],
             warnings: &[],
@@ -101,7 +107,7 @@ fn serve_command_table() {
             entrypoint: &["python", "serve.py"],
             cmd: &[],
             env: &[],
-            ports: &["50051/tcp"],
+            ports: PORTS,
             kind: None,
             failed: &[],
             warnings: &[],
@@ -116,6 +122,17 @@ fn serve_command_table() {
             kind: None,
             failed: &[],
             warnings: &["no Entrypoint/Cmd"],
+            not_checked: &[],
+        },
+        Case {
+            name: "a 0.1 image's port only",
+            entrypoint: &["python", "-m", "rlmesh.serve", "pkg:Policy"],
+            cmd: &[],
+            env: &[],
+            ports: &["50051/tcp", "7447/tcp"],
+            kind: None,
+            failed: &[],
+            warnings: &["ports: EXPOSE 7447-7450 is incomplete (missing 7448, 7449, 7450)"],
             not_checked: &[],
         },
     ];
@@ -133,6 +150,24 @@ fn serve_command_table() {
             }
         }
     }
+}
+
+#[test]
+fn the_port_check_follows_the_session_address() {
+    let command = ["python", "-m", "rlmesh.serve", "pkg:Policy"];
+    let report = check_serve_command(&image(&command, &[], &[], PORTS), None);
+    assert!(
+        report
+            .passed
+            .contains(&"ports: EXPOSE 7447-7450".to_owned()),
+        "{report:?}"
+    );
+    let missing = check_serve_command(&image(&command, &[], &[], &[]), None);
+    let warning = &missing.warnings[0];
+    assert!(warning.contains("HOST:7447#KEY/NAME"), "{warning}");
+    assert!(!warning.contains("50051"), "{warning}");
+    assert_eq!(SERVE_PORT, 7447);
+    assert_eq!(SESSION_PORTS, 4);
 }
 
 #[test]
@@ -230,11 +265,15 @@ fn platform_must_be_linux_amd64() {
 fn docker_inspect_parses_nulls_and_ports() {
     let json = r#"[{"Os":"linux","Architecture":"amd64","Config":{"Entrypoint":null,
         "Cmd":["python","-m","rlmesh.serve","pkg:Policy"],"Env":["PATH=/usr/bin"],
-        "ExposedPorts":{"50051/tcp":{}},"Labels":null}}]"#;
+        "ExposedPorts":{"7447/tcp":{},"7448/udp":{}},"Labels":null}}]"#;
     let config = ImageConfig::from_docker_inspect(json).unwrap();
     assert_eq!(config.cmd.len(), 4);
     assert!(config.entrypoint.is_empty());
-    assert!(config.exposes_port("50051"));
+    assert!(config.exposes_port(7447));
+    assert!(
+        !config.exposes_port(7448),
+        "a UDP port is not a session port"
+    );
     assert_eq!(config.env_value("PATH"), Some("/usr/bin"));
     assert!(ImageConfig::from_docker_inspect("[]").is_err());
 }
@@ -243,7 +282,7 @@ fn docker_inspect_parses_nulls_and_ports() {
 fn oci_config_parses_like_docker_inspect() {
     // What `docker buildx imagetools inspect REF --format '{{json .Image}}'` prints.
     let json = r#"{"architecture":"amd64","os":"linux","config":{"ExposedPorts":
-        {"50051/tcp":{}},"Env":["CUDA_VERSION=12.4.1"],"Cmd":["python","-m",
+        {"7447/tcp":{}},"Env":["CUDA_VERSION=12.4.1"],"Cmd":["python","-m",
         "rlmesh.serve","pkg:Policy"],"Labels":{"dev.rlmesh.package":"{}"}},
         "rootfs":{"type":"layers","diff_ids":[]}}"#;
     let config = ImageConfig::from_oci_config(json).unwrap();
@@ -264,7 +303,7 @@ fn check_image_validates_the_variant_blocks() {
         &["python", "-m", "rlmesh.serve", "pkg:Policy"],
         &[],
         &["CUDA_VERSION=12.4.1", "NVIDIA_REQUIRE_CUDA=cuda>=12.4"],
-        &["50051/tcp"],
+        PORTS,
     );
     config.labels.insert(
         PACKAGE_LABEL.to_owned(),
@@ -526,7 +565,7 @@ fn image_declared_edition_overrides_the_label() {
         ],
         &[],
         &[],
-        &["50051/tcp"],
+        PORTS,
     );
     config.labels.insert(
         DESCRIBE_LABEL.to_owned(),
@@ -583,7 +622,7 @@ fn check_image_ties_the_label_to_the_command() {
         &["python", "-m", "rlmesh.serve", "pkg:Other"],
         &[],
         &[],
-        &["50051/tcp"],
+        PORTS,
     );
     config.labels.insert(
         DESCRIBE_LABEL.to_owned(),

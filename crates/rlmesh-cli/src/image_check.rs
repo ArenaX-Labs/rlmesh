@@ -31,8 +31,13 @@ use serde::{Deserialize, Serialize};
 pub const DESCRIBE_LABEL: &str = "dev.rlmesh.describe";
 /// OCI config label carrying packaged checkpoint declarations.
 pub const PACKAGE_LABEL: &str = "dev.rlmesh.package";
-/// The port the platform connects to a served peer on.
-pub const SERVE_PORT: &str = "50051";
+/// The base port `rlmesh.serve` hosts its session on when `RLMESH_ADDRESS`
+/// names none: the control class's; the other traffic classes listen on the
+/// ports after it ([`SESSION_PORTS`] in all).
+pub const SERVE_PORT: u16 = rlmesh_session::address::DEFAULT_PORT;
+/// The ports a session host listens on from its base port, one per traffic
+/// class, consecutive.
+pub const SESSION_PORTS: u16 = rlmesh_session::transport::TrafficClass::ALL.len() as u16;
 /// The env var `rlmesh.serve` binds.
 pub const ADDRESS_ENV: &str = "RLMESH_ADDRESS";
 /// The env var that declares a served peer's workflow edition, above
@@ -181,10 +186,11 @@ impl ImageConfig {
     }
 
     /// Whether `exposed_ports` lists `port` on any protocol.
-    pub fn exposes_port(&self, port: &str) -> bool {
-        self.exposed_ports
-            .iter()
-            .any(|entry| entry.split('/').next() == Some(port))
+    pub fn exposes_port(&self, port: u16) -> bool {
+        self.exposed_ports.iter().any(|entry| {
+            let (number, protocol) = entry.split_once('/').unwrap_or((entry, "tcp"));
+            protocol == "tcp" && number.parse() == Ok(port)
+        })
     }
 }
 
