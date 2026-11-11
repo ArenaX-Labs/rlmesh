@@ -1736,8 +1736,17 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         done.store(true, std::sync::atomic::Ordering::Relaxed);
+        // Kept past the join: dropping the last handle of a Zenoh session
+        // closes it in a nested `block_on` on this thread, which takes the
+        // wakeup the board loop's timer sends meanwhile, and the loop
+        // would never run again.
+        (policy, tx)
     };
-    tokio::join!(driven, controller);
+    let (_, _kept) = tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::join!(driven, controller)
+    })
+    .await
+    .expect("the board loop and the controller finish");
     assert!(robot.refusals(Rejection::InvalidValue) >= 1);
     // Each refusal is counted once, under its reason.
     let by_reason = || {
