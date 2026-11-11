@@ -100,7 +100,10 @@ __all__ = [
     "episode_seed",
     "eval_report",
     "frames_between",
+    "identity_key",
     "is_v2_address",
+    "launch_identity",
+    "launched_address",
     "load_run_result",
     "local_run_session",
     "merge_telemetry",
@@ -1353,7 +1356,13 @@ def eval_report(paths: list[str]) -> tuple[str, str]: ...
 
 def frames_between(a_xyz: typing.Sequence[float], a_quat_xyzw: typing.Sequence[float], b_xyz: typing.Sequence[float], b_quat_xyzw: typing.Sequence[float]) -> tuple[list[float], list[float]]: ...
 
+def identity_key(identity: str) -> str: ...
+
 def is_v2_address(text: str) -> bool: ...
+
+def launch_identity() -> tuple[str, str]: ...
+
+def launched_address(identity: str, session: str, participant: str | None = None) -> str: ...
 
 def load_run_result(paths: list[str]) -> dict[str, typing.Any]: ...
 

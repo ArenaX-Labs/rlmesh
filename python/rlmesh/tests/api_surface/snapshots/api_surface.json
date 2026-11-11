@@ -3237,6 +3237,36 @@
       }
     }
   },
+  "rlmesh.launch": {
+    "exports": [
+      "HOST_IDENTITY_VAR",
+      "identity_key",
+      "launch_identity",
+      "launched_address"
+    ],
+    "objects": {
+      "HOST_IDENTITY_VAR": {
+        "kind": "type alias",
+        "signature": "HOST_IDENTITY_VAR = 'RLMESH_HOST_IDENTITY'",
+        "stability": "Experimental"
+      },
+      "identity_key": {
+        "kind": "function",
+        "signature": "identity_key(identity: str) -> str",
+        "stability": "Experimental"
+      },
+      "launch_identity": {
+        "kind": "function",
+        "signature": "launch_identity() -> tuple[str, str]",
+        "stability": "Experimental"
+      },
+      "launched_address": {
+        "kind": "function",
+        "signature": "launched_address(identity: str, session: str, participant: str | None = None) -> str",
+        "stability": "Experimental"
+      }
+    }
+  },
   "rlmesh.managed": {
     "exports": [
       "Client",

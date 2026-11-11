@@ -84,6 +84,10 @@ pub enum Command {
     /// Run a model image and sweep how many concurrent sessions it serves,
     /// recommending `max_batch_size` (exits 1 when no size runs).
     Bench(BenchArgs),
+    /// Make the identity a session host another process runs is started
+    /// under (`RLMESH_HOST_IDENTITY`, a secret), or print the address key of
+    /// one: what a launcher passes a container, and the key it dials it by.
+    HostIdentity(HostIdentityArgs),
 }
 
 /// Shared flag selecting which named profile to act on.
@@ -424,6 +428,67 @@ pub struct ProbeImageArgs {
     #[arg(long, value_name = "SECONDS", default_value_t = 120)]
     pub timeout: u64,
     /// Print the report as JSON, in the `probe-report.json` shape.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `rlmesh host-identity` subcommands.
+#[derive(Args, Debug)]
+pub struct HostIdentityArgs {
+    #[command(subcommand)]
+    pub command: HostIdentityCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HostIdentityCommand {
+    /// Print a fresh host identity and its address key, as `identity=` and
+    /// `key=` lines. The identity is a secret: pass it to the host in
+    /// `RLMESH_HOST_IDENTITY` through the environment, never argv, and keep
+    /// it out of logs; `--out` writes it to a 0600 file instead of stdout.
+    New(HostIdentityNewArgs),
+    /// Print the address key (`key=`) of the host identity in
+    /// `RLMESH_HOST_IDENTITY`, or in `--identity-file`. The identity is a
+    /// secret, so it is never taken on the command line.
+    Key(HostIdentityKeyArgs),
+}
+
+/// The keyed address `rlmesh host-identity` prints beside the key.
+#[derive(Args, Debug)]
+pub struct LaunchAddressArgs {
+    /// Also print the keyed address (`address=`) of the session the host
+    /// serves at HOST:PORT (its base port; the default session) or
+    /// HOST:PORT/SESSION, as participants dial it from where they run.
+    #[arg(long, value_name = "HOST:PORT[/SESSION]")]
+    pub address: Option<String>,
+    /// With `--address`: print participant NAME's address in that session.
+    #[arg(long, value_name = "NAME", requires = "address")]
+    pub participant: Option<String>,
+}
+
+/// Flags for `rlmesh host-identity new`.
+#[derive(Args, Debug)]
+pub struct HostIdentityNewArgs {
+    /// Write the identity (a secret) to FILE, mode 0600, instead of
+    /// printing it.
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<std::path::PathBuf>,
+    #[command(flatten)]
+    pub address: LaunchAddressArgs,
+    /// Print `{"identity","identityFile","key","address"}` instead of lines.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Flags for `rlmesh host-identity key`.
+#[derive(Args, Debug)]
+pub struct HostIdentityKeyArgs {
+    /// Read the identity (a secret) from FILE, `-` for stdin, instead of
+    /// `RLMESH_HOST_IDENTITY`.
+    #[arg(long, value_name = "FILE")]
+    pub identity_file: Option<std::path::PathBuf>,
+    #[command(flatten)]
+    pub address: LaunchAddressArgs,
+    /// Print `{"key","address"}` instead of lines.
     #[arg(long)]
     pub json: bool,
 }

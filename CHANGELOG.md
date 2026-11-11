@@ -105,6 +105,9 @@ below describe development APIs; C ABI 7 is cut only when they ship.
 
 - A session host writes its short-lived link-password file to `RLMESH_RUNTIME_DIR` when set, else the user's runtime or cache directory, else a fresh private directory in the system temp directory, so it starts in a container with no home and a read-only root when its temp directory is writable. With nothing writable, the error names `RLMESH_RUNTIME_DIR`.
 
+- Experimental: a launcher that starts a session host in another process (`python -m rlmesh.serve` in a container) makes the host's identity and the keyed address to dial with `rlmesh host-identity new` (`--json`, `--out FILE`, `--address HOST:PORT[/SESSION]`, `--participant NAME`), and reads an identity's key with `rlmesh host-identity key`. Python has the same in `rlmesh.launch` (`launch_identity`, `identity_key`, `launched_address`), Rust in `rlmesh_session::address::{identity_key, launched_address}`. The identity is a secret: the CLI reads it from the environment or a file, never argv, and writes it 0600.
+
+
 This development tree gives the Rust facade crate (`rlmesh`), the fenced C API (`rlmesh.h`, development ABI 6) and the fenced C++ wrapper (`rlmesh.hpp`, C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking

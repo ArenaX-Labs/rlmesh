@@ -452,3 +452,34 @@ async fn one_host_serves_many_named_sessions_stops_empty_ones_and_refuses_fast_w
     single.shutdown().await;
     transport.close().await.expect("close");
 }
+
+#[test]
+fn a_launch_identity_gives_back_its_key_and_keyed_address() {
+    let (identity, key) = launch_identity().unwrap();
+    assert_eq!(identity_key(&identity).unwrap(), key);
+    assert_eq!(
+        identity_key(&format!(" {}\n", identity.as_str())).unwrap(),
+        key
+    );
+
+    let mut address = launched_address(&identity, "10.0.0.5:7447/bench").unwrap();
+    address.participant = Some("env".into());
+    let invite = address.invite();
+    assert_eq!(invite, format!("10.0.0.5:7447/bench#{key}/env"));
+    let parsed = Address::participant(&invite).unwrap();
+    assert_eq!(parsed.key, Some(key.clone()));
+    assert_eq!(parsed.session_name(), "bench");
+    assert_eq!(
+        launched_address(&identity, "10.0.0.5:7447")
+            .unwrap()
+            .invite(),
+        format!("10.0.0.5:7447#{key}")
+    );
+
+    let error = identity_key("not.an.identity").unwrap_err().to_string();
+    assert!(!error.contains("not.an.identity"), "{error}");
+    let (_, other) = launch_identity().unwrap();
+    assert_ne!(other, key);
+    assert!(launched_address(&identity, "bench").is_err(), "no host");
+    assert!(launched_address(&identity, &format!("10.0.0.5:7447#{other}")).is_err());
+}

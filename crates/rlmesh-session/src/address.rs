@@ -130,15 +130,44 @@ pub fn launch_identity() -> Result<(Zeroizing<String>, AddressKey), SessionError
     Ok((text, AddressKey::of(&identity)))
 }
 
+/// The key of the address participants join a host by when it runs under
+/// `identity` ([`launch_identity`]'s text, a secret), for a launcher that
+/// made the identity elsewhere: the key [`launch_identity`] returned with
+/// it.
+pub fn identity_key(identity: &str) -> Result<AddressKey, SessionError> {
+    Ok(AddressKey::of(&host_identity(identity)?))
+}
+
+/// The address of the session `session` (`host:port[/session]`) on a host
+/// run under `identity` ([`launch_identity`]'s text), with the host's key:
+/// set its `participant` for a participant's, and print it with
+/// [`Address::invite`] (a credential).
+pub fn launched_address(identity: &str, session: &str) -> Result<Address, SessionError> {
+    let mut address = Address::session(session)?;
+    if address.host.is_none() {
+        return Err(invalid(session, "names no host (host:port[/session])"));
+    }
+    if address.key.is_some() {
+        return Err(invalid(session, "carries a key already"));
+    }
+    address.key = Some(identity_key(identity)?);
+    Ok(address)
+}
+
 /// The host keys [`HOST_IDENTITY_VAR`] passes this process, if any.
 fn launched_identity() -> Result<Option<HostIdentity>, SessionError> {
     let Ok(text) = std::env::var(HOST_IDENTITY_VAR) else {
         return Ok(None);
     };
-    let text = Zeroizing::new(text);
+    host_identity(&Zeroizing::new(text)).map(Some)
+}
+
+/// The host keys of identity text (`{static}.{sign}.{local}`), which the
+/// error never repeats.
+fn host_identity(text: &str) -> Result<HostIdentity, SessionError> {
     let bad = || {
         SessionError::Config(format!(
-            "{HOST_IDENTITY_VAR} is not {{static}}.{{sign}}.{{local}}"
+            "a host identity ({HOST_IDENTITY_VAR}) is {{static}}.{{sign}}.{{local}}, each base32"
         ))
     };
     let mut parts = text.trim().split('.').map(unbase32);
@@ -152,9 +181,9 @@ fn launched_identity() -> Result<Option<HostIdentity>, SessionError> {
         Zeroizing::new(sign),
         Zeroizing::new(local),
     );
-    Ok(Some(HostIdentity::from_secrets(
+    Ok(HostIdentity::from_secrets(
         &mut noise, &mut sign, &mut local,
-    )))
+    ))
 }
 
 /// A parsed address: a session address has no participant. Its `Display`

@@ -2,6 +2,7 @@ mod adapters;
 mod bind;
 mod client;
 mod facade;
+mod launch;
 mod lifecycle;
 mod lockstep;
 mod model;
@@ -193,6 +194,9 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sandbox::sandbox_reap_orphans, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_session_ports, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_host_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::launch_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::identity_key, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::launched_address, m)?)?;
 
     session::register(m)?;
 

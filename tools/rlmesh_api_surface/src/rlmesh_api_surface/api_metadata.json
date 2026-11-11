@@ -91,6 +91,7 @@
     "rlmesh.types",
     "rlmesh.specs",
     "rlmesh.managed",
+    "rlmesh.launch",
     "rlmesh.recorder",
     "rlmesh.realtime",
     "rlmesh.realtime.parts"
@@ -155,6 +156,12 @@
       "stability": "Experimental",
       "status": "Experimental.",
       "title": "rlmesh.managed"
+    },
+    "rlmesh.launch": {
+      "title": "rlmesh.launch",
+      "description": "Host identities for a session host another process runs, and the keyed addresses that dial it.",
+      "stability": "Experimental",
+      "status": "Experimental."
     },
     "rlmesh.recorder": {
       "title": "rlmesh.recorder",
