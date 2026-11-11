@@ -167,6 +167,9 @@ pub(super) async fn heartbeat_loop(
             health: health_of(shared.health.load(Ordering::Relaxed)),
             rejected: shared.edge.rejected(),
             clock_refused: shared.edge.clock_refused(),
+            chunk_timing: Vec::new(),
+            chunks_accepted: 0,
+            datagram: None,
         };
         if let Err(err) = shared.send_heartbeat(heartbeat, true).await {
             warn!(participant = %shared.id, %err, "heartbeat failed");

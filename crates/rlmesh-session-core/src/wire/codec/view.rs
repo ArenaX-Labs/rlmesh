@@ -20,6 +20,7 @@ use crate::wire::authority::{
     ClockMapping, ClockMode, LastStop, Lease, Mode, PriorityClass, Reason, ReasonCode,
 };
 use crate::wire::contract::{Demand, Plan};
+use crate::wire::datagram::{DatagramRoute, DatagramRoutes};
 use crate::wire::error::{Unread, WireError};
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
 use crate::wire::view::{DeviceView, Member, ViewGrid};
@@ -63,6 +64,18 @@ pub(super) fn view_to_pb(view: &DeviceView) -> pb::DeviceView {
             })
             .collect(),
         closing: view.closing.as_ref().map(reason_to_pb),
+        datagram: view.datagram.as_ref().map(|d| pb::DatagramRoutes {
+            probe: u32::from(d.probe),
+            routes: d
+                .routes
+                .iter()
+                .map(|r| pb::DatagramRoute {
+                    route: u32::from(r.route),
+                    channel: r.channel.0,
+                    up: r.up,
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -84,6 +97,9 @@ pub const MAX_VIEW_DEMANDS: usize = 2 * MAX_VIEW_PARTS;
 pub const MAX_VIEW_MEMBERS: usize = 64;
 /// The longest text in a view (the closing reason's).
 pub const MAX_VIEW_TEXT: usize = 1024;
+/// The most datagram routes in one view: a part's chunks, its samples and
+/// its `_applied` entries.
+pub const MAX_VIEW_ROUTES: usize = 3 * MAX_VIEW_PARTS;
 
 const VIEW: &str = "device view";
 
@@ -141,6 +157,7 @@ pub fn decode_view_into(buf: &[u8], into: &mut DeviceView, parts: bool) -> Resul
     room(&mut into.members, n_members, MAX_VIEW_MEMBERS, "members")?;
 
     let (mut robot, mut mode, mut clock_mode, mut closing) = (false, 0, 0, false);
+    let mut datagram = false;
     into.epoch = Epoch(0);
     into.revision = 0;
     into.mode_reason = reason_code_from_pb(0);
@@ -234,6 +251,15 @@ pub fn decode_view_into(buf: &[u8], into: &mut DeviceView, parts: bool) -> Resul
                 }
                 reason_into(value.bytes(VIEW)?, reason)?;
             }
+            18 => {
+                let routes = into.datagram.get_or_insert_with(DatagramRoutes::default);
+                if !datagram {
+                    routes.probe = 0;
+                    routes.routes.clear();
+                    datagram = true;
+                }
+                routes_into(value.bytes(VIEW)?, routes)?;
+            }
             _ => {}
         }
     }
@@ -242,6 +268,9 @@ pub fn decode_view_into(buf: &[u8], into: &mut DeviceView, parts: bool) -> Resul
     }
     if !closing {
         into.closing = None;
+    }
+    if !datagram {
+        into.datagram = None;
     }
     into.mode = mode_of(mode)?;
     into.clock_mode = match pb::ClockMode::try_from(clock_mode) {
@@ -453,6 +482,55 @@ fn member_into(buf: &[u8], into: &mut Member) -> Result<(), WireError> {
         return Err(unread(Unread::Malformed("member id")));
     }
     Ok(())
+}
+
+fn routes_into(buf: &[u8], into: &mut DatagramRoutes) -> Result<(), WireError> {
+    const M: &str = "datagram routes";
+    let mut n = 0;
+    let mut fields = Fields::new(buf, M);
+    while let Some((tag, _)) = fields.next_field()? {
+        n += usize::from(tag == 2);
+    }
+    let total = into.routes.len().saturating_add(n);
+    room(&mut into.routes, total, MAX_VIEW_ROUTES, "datagram routes")?;
+    let mut fields = Fields::new(buf, M);
+    while let Some((tag, value)) = fields.next_field()? {
+        match tag {
+            1 => into.probe = route_id(value.u32(M)?)?,
+            2 => {
+                let route = route_from(value.bytes(M)?)?;
+                if into.routes.len() == into.routes.capacity() {
+                    return Err(unread(Unread::NoMemory));
+                }
+                into.routes.push(route);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn route_from(buf: &[u8]) -> Result<DatagramRoute, WireError> {
+    const M: &str = "datagram route";
+    let mut route = DatagramRoute {
+        route: 0,
+        channel: ChannelId(0),
+        up: false,
+    };
+    let mut fields = Fields::new(buf, M);
+    while let Some((tag, value)) = fields.next_field()? {
+        match tag {
+            1 => route.route = route_id(value.u32(M)?)?,
+            2 => route.channel = ChannelId(value.u32(M)?),
+            3 => route.up = value.bool(M)?,
+            _ => {}
+        }
+    }
+    Ok(route)
+}
+
+fn route_id(raw: u32) -> Result<u16, WireError> {
+    u16::try_from(raw).map_err(|_| unread(Unread::Malformed("datagram route id")))
 }
 
 fn reason_into(buf: &[u8], into: &mut Reason) -> Result<(), WireError> {

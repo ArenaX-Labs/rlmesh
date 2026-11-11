@@ -39,6 +39,13 @@ pub const VIEW_DEVICE_SEALED: &str = "view.device.sealed";
 /// one that does not sends the parts, which the robot skips unread.
 pub const VIEW_DEVICE_LEAN: &str = "view.device.lean";
 
+/// A robot's `Attach.supports` takes its realtime parts over the datagram
+/// path its host offered in the handshake (`HandshakeAccept.datagram`): the
+/// host lists their routes in its device view, and relays its chunks and
+/// samples between those routes and their keys. A robot that does not list
+/// it, or a host that offered nothing, keeps every part on the session.
+pub const LINK_DATAGRAM: &str = "link.datagram";
+
 /// A host listing it may carry a scene's places in its authority state,
 /// and policies that name no robot bind against their view ([`crate::spec::view`]). A
 /// binder that lacks it refuses to bind in a

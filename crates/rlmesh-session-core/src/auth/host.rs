@@ -10,7 +10,9 @@ use crate::crypto::lp::hash_labelled;
 use crate::crypto::{Rng, RngError, SealReceiver, SealSender, SignedSender};
 use crate::prelude::*;
 use crate::wire::codec;
-use crate::wire::{CtlError, CtlStatus, HandshakeAccept, HandshakeRequest, ParticipantId};
+use crate::wire::{
+    CtlError, CtlStatus, DatagramOffer, HandshakeAccept, HandshakeRequest, ParticipantId,
+};
 use alloc::collections::BTreeMap;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -181,6 +183,8 @@ pub struct HostAuth {
     last_generation: u32,
     /// Every key besides the handshake's, and the one key-id counter.
     issuer: KeyIssuer,
+    /// The datagram path each handshake offers, if any.
+    datagram: Option<DatagramOffer>,
 }
 
 /// A handshake that went wrong for a reason the initiator should hear (an
@@ -207,7 +211,14 @@ impl HostAuth {
             current: BTreeMap::new(),
             last_generation: 0,
             issuer: KeyIssuer::default(),
+            datagram: None,
         }
+    }
+
+    /// Offers `datagram` in every handshake from now on (`None`: offers
+    /// nothing, and participants keep every part on the session).
+    pub fn offer_datagram(&mut self, datagram: Option<DatagramOffer>) {
+        self.datagram = datagram;
     }
 
     /// The host's key schedule.
@@ -331,6 +342,7 @@ impl HostAuth {
             host_instance: self.host_instance,
             up_key_id,
             down_key_id,
+            datagram: self.datagram,
         };
         let (msg2, keys) = responder
             .accept(&codec::encode_handshake_accept(&accept))

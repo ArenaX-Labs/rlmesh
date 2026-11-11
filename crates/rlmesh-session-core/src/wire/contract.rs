@@ -57,6 +57,8 @@ pub struct ActionGrid {
     pub channel: ChannelId,
     /// `1 / A`, the action period.
     pub dt: Duration,
+    /// The most actions one of its chunks carries (0: not declared).
+    pub chunk: u32,
 }
 
 /// How a publisher sends one stream, derived from every admitted contract on

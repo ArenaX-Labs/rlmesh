@@ -12,6 +12,7 @@ use crate::wire::authority::{
     Reason, ReasonCode, fence,
 };
 use crate::wire::contract::Demand;
+use crate::wire::datagram::DatagramRoutes;
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
 use crate::wire::key::IssuedKey;
 use crate::wire::part::PartSpec;
@@ -146,6 +147,10 @@ pub struct DeviceView {
     pub members: Vec<Member>,
     /// Set once the run is ending: detach and return to the lobby.
     pub closing: Option<Reason>,
+    /// Its routes on the host's datagram path, once it attached with
+    /// [`LINK_DATAGRAM`](crate::wire::version::LINK_DATAGRAM) to a host
+    /// that offered one (`None`: every part rides the session).
+    pub datagram: Option<DatagramRoutes>,
 }
 
 impl DeviceView {
@@ -170,6 +175,7 @@ impl DeviceView {
             demands: Vec::new(),
             members: Vec::new(),
             closing: None,
+            datagram: None,
         }
     }
 
@@ -245,6 +251,7 @@ impl DeviceView {
             demands,
             members,
             closing: state.scene.as_ref().and_then(|s| s.closing.clone()),
+            datagram: None,
         }
     }
 }
@@ -419,6 +426,7 @@ mod tests {
             grids: vec![ActionGrid {
                 channel: ChannelId(1),
                 dt: Duration::from_millis(20),
+                chunk: 0,
             }],
         }];
         state.demands = [2, 3]

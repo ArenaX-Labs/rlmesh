@@ -268,6 +268,9 @@ fn heartbeat(me: &ParticipantId, seq: u64, epoch: Epoch, t1_ns: i64) -> Vec<u8> 
             health: Health::Ok,
             rejected: Vec::new(),
             clock_refused: Vec::new(),
+            chunk_timing: Vec::new(),
+            chunks_accepted: 0,
+            datagram: None,
         }),
     )
 }

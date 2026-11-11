@@ -143,6 +143,12 @@ impl SessionKeys {
         format!("{}/p/{id}/hb", self.prefix)
     }
 
+    /// What a robot's datagram probes are sealed on (their AAD: nothing is
+    /// published there).
+    pub fn datagram_probe(&self, id: &ParticipantId) -> String {
+        format!("{}/p/{id}/udp", self.prefix)
+    }
+
     /// Every participant's heartbeats.
     pub fn heartbeats(&self) -> String {
         format!("{}/p/*/hb", self.prefix)

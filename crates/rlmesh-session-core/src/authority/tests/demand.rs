@@ -33,6 +33,7 @@ impl Fixture {
             .map(|c| crate::wire::ActionGrid {
                 channel: *c,
                 dt: core::time::Duration::from_millis(10),
+                chunk: 0,
             })
             .collect();
         self.run(
@@ -198,6 +199,7 @@ fn contracts_a_stream_cannot_meet_are_refused_at_admission() {
         grids: vec![crate::wire::ActionGrid {
             channel: f.ch("cmd2"),
             dt: core::time::Duration::from_millis(10),
+            chunk: 0,
         }],
     };
     assert_eq!(
@@ -254,7 +256,11 @@ fn an_action_period_must_be_positive_and_at_most_a_minute() {
                 channels: vec![cmd1],
                 replan_hz: 20.0,
                 contracts: Vec::new(),
-                grids: vec![crate::wire::ActionGrid { channel: cmd1, dt }],
+                grids: vec![crate::wire::ActionGrid {
+                    channel: cmd1,
+                    dt,
+                    chunk: 0,
+                }],
             },
             0,
         );

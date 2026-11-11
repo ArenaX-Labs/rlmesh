@@ -171,6 +171,7 @@ impl Binding {
                 a.part.as_ref().map(|p| ActionGrid {
                     channel: p.channel,
                     dt: a.dt,
+                    chunk: a.chunk,
                 })
             })
             .collect()

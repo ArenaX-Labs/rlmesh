@@ -9,6 +9,7 @@ use bytes::Bytes;
 use prost::Message as _;
 
 use crate::wire::authority::{CtlError, CtlStatus, HandshakeAccept, HandshakeRequest};
+use crate::wire::datagram::DatagramOffer;
 use crate::wire::error::WireError;
 use crate::wire::ids::ParticipantId;
 
@@ -70,6 +71,10 @@ pub fn encode_handshake_accept(accept: &HandshakeAccept) -> Vec<u8> {
         host_instance: accept.host_instance,
         up_key_id: accept.up_key_id,
         down_key_id: accept.down_key_id,
+        datagram: accept.datagram.map(|d| pb::DatagramOffer {
+            port: u32::from(d.port),
+            version: u32::from(d.version),
+        }),
     }
     .encode_to_vec()
 }
@@ -90,5 +95,13 @@ pub fn decode_handshake_accept(buf: &[u8]) -> Result<HandshakeAccept, WireError>
         host_instance: accept.host_instance,
         up_key_id: accept.up_key_id,
         down_key_id: accept.down_key_id,
+        // An offer this side can't read is no offer: the session carries
+        // everything, as from a host that offers none.
+        datagram: accept.datagram.and_then(|d| {
+            Some(DatagramOffer {
+                port: u16::try_from(d.port).ok().filter(|p| *p != 0)?,
+                version: u8::try_from(d.version).ok()?,
+            })
+        }),
     })
 }

@@ -20,6 +20,7 @@ fn a_chunk_without_dt_takes_the_bindings_action_grid() {
             grids: vec![crate::wire::ActionGrid {
                 channel: cmd,
                 dt: Duration::from_millis(10),
+                chunk: 0,
             }],
         },
     );

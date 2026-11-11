@@ -7,7 +7,7 @@
 use crate::prelude::*;
 
 use crate::edge::Rejection;
-use crate::wire::heartbeat::{ClockRefusal, Health};
+use crate::wire::heartbeat::{ChunkTiming, ClockRefusal, DatagramStats, Health};
 use crate::wire::ids::{ChannelId, Epoch, ParticipantId};
 use crate::wire::report::ParticipantReport;
 
@@ -44,6 +44,40 @@ pub struct LinkHealth {
     pub report: Option<ParticipantReport>,
     /// The newest seq it has received per subscribed channel.
     pub last_seq_seen: Vec<(ChannelId, u64)>,
+    /// Edges: how each commanded part's chunks arrived.
+    pub chunk_timing: Vec<ChunkTiming>,
+    /// Edges: chunks accepted since attach.
+    pub chunks_accepted: u64,
+    /// Robots: the path their realtime parts ride (unknown for others).
+    pub data_path: DataPath,
+    /// Robots on the datagram path: the board's counters, from its
+    /// heartbeat.
+    pub datagram_board: Option<DatagramStats>,
+    /// Robots on the datagram path: the host's counters for it.
+    pub datagram_host: Option<DatagramStats>,
+}
+
+/// Which path a robot's realtime parts ride.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DataPath {
+    /// Not a robot, or not reported.
+    #[default]
+    Unknown,
+    /// The session's own links (TCP).
+    Session,
+    /// The host's datagram path (UDP).
+    Datagram,
+}
+
+impl DataPath {
+    /// `"tcp"`, `"udp"`, or `"unknown"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Session => "tcp",
+            Self::Datagram => "udp",
+        }
+    }
 }
 
 /// The host's health message.

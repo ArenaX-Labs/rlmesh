@@ -8,8 +8,11 @@ use prost::Message as _;
 
 use crate::edge::Rejection;
 use crate::wire::error::WireError;
-use crate::wire::health::{HostHealth, LinkHealth};
-use crate::wire::heartbeat::{ClockRefusal, Health, Heartbeat, HeartbeatEcho, TimingSample};
+use crate::wire::health::{DataPath, HostHealth, LinkHealth};
+use crate::wire::heartbeat::{
+    ChunkTiming, ClockRefusal, DatagramStats, Health, Heartbeat, HeartbeatEcho, LATE_BUCKETS,
+    TimingSample,
+};
 use crate::wire::ids::{ChannelId, Epoch, ParticipantId};
 use crate::wire::report::{ParticipantReport, PublisherCounters, RunCounters};
 
@@ -36,6 +39,9 @@ pub fn encode_heartbeat(hb: &Heartbeat) -> Vec<u8> {
         health: health_to_pb(hb.health) as i32,
         rejected: rejected_to_pb(&hb.rejected),
         clock_refused: clock_refused_to_pb(&hb.clock_refused),
+        chunk_timing: timings_to_pb(&hb.chunk_timing),
+        chunks_accepted: hb.chunks_accepted,
+        datagram: hb.datagram.map(datagram_to_pb),
     }
     .encode_to_vec()
 }
@@ -130,7 +136,88 @@ pub fn decode_heartbeat(buf: &[u8]) -> Result<Heartbeat, WireError> {
         health: health_from_pb(hb.health),
         rejected: rejected_from_pb(hb.rejected),
         clock_refused: clock_refused_from_pb(hb.clock_refused)?,
+        chunk_timing: timings_from_pb(hb.chunk_timing),
+        chunks_accepted: hb.chunks_accepted,
+        datagram: hb.datagram.map(datagram_from_pb),
     })
+}
+
+fn timings_to_pb(timings: &[ChunkTiming]) -> Vec<pb::ChunkTiming> {
+    timings
+        .iter()
+        .map(|t| pb::ChunkTiming {
+            channel: t.channel.0,
+            received: t.received,
+            accepted: t.accepted,
+            lost: t.lost,
+            late_ms: t.late_ms.to_vec(),
+            late_max_us: t.late_max_us,
+            gap_max_us: t.gap_max_us,
+        })
+        .collect()
+}
+
+/// Buckets past [`LATE_BUCKETS`] (a newer sender's) count in the last.
+fn timings_from_pb(timings: Vec<pb::ChunkTiming>) -> Vec<ChunkTiming> {
+    timings
+        .into_iter()
+        .map(|t| {
+            let mut late_ms = [0_u32; LATE_BUCKETS];
+            for (i, n) in t.late_ms.into_iter().enumerate() {
+                let slot = &mut late_ms[i.min(LATE_BUCKETS - 1)];
+                *slot = slot.saturating_add(n);
+            }
+            ChunkTiming {
+                channel: ChannelId(t.channel),
+                received: t.received,
+                accepted: t.accepted,
+                lost: t.lost,
+                late_ms,
+                late_max_us: t.late_max_us,
+                gap_max_us: t.gap_max_us,
+            }
+        })
+        .collect()
+}
+
+fn datagram_to_pb(d: DatagramStats) -> pb::DatagramStats {
+    pb::DatagramStats {
+        active: d.active,
+        sent: d.sent,
+        received: d.received,
+        lost: d.lost,
+        reordered: d.reordered,
+        unopened: d.unopened,
+        fallbacks: d.fallbacks,
+    }
+}
+
+fn datagram_from_pb(d: pb::DatagramStats) -> DatagramStats {
+    DatagramStats {
+        active: d.active,
+        sent: d.sent,
+        received: d.received,
+        lost: d.lost,
+        reordered: d.reordered,
+        unopened: d.unopened,
+        fallbacks: d.fallbacks,
+    }
+}
+
+fn data_path_to_pb(path: DataPath) -> pb::DataPath {
+    match path {
+        DataPath::Unknown => pb::DataPath::Unspecified,
+        DataPath::Session => pb::DataPath::Session,
+        DataPath::Datagram => pb::DataPath::Datagram,
+    }
+}
+
+fn data_path_from_pb(raw: i32) -> DataPath {
+    match pb::DataPath::try_from(raw) {
+        Ok(pb::DataPath::Session) => DataPath::Session,
+        Ok(pb::DataPath::Datagram) => DataPath::Datagram,
+        _ => DataPath::Unknown,
+    }
 }
 
 /// Encodes a heartbeat echo.
@@ -268,6 +355,11 @@ pub fn encode_health(health: &HostHealth) -> Vec<u8> {
                         seq,
                     })
                     .collect(),
+                chunk_timing: timings_to_pb(&l.chunk_timing),
+                chunks_accepted: l.chunks_accepted,
+                data_path: data_path_to_pb(l.data_path) as i32,
+                datagram_board: l.datagram_board.map(datagram_to_pb),
+                datagram_host: l.datagram_host.map(datagram_to_pb),
             })
             .collect(),
     }
@@ -304,6 +396,11 @@ pub fn decode_health(buf: &[u8]) -> Result<HostHealth, WireError> {
                         .into_iter()
                         .map(|c| (ChannelId(c.channel), c.seq))
                         .collect(),
+                    chunk_timing: timings_from_pb(l.chunk_timing),
+                    chunks_accepted: l.chunks_accepted,
+                    data_path: data_path_from_pb(l.data_path),
+                    datagram_board: l.datagram_board.map(datagram_from_pb),
+                    datagram_host: l.datagram_host.map(datagram_from_pb),
                 })
             })
             .collect::<Result<_, WireError>>()?,

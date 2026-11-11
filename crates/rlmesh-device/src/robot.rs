@@ -2148,6 +2148,9 @@ impl Robot {
                 .iter()
                 .filter_map(|e| e.core.clock_refused().cloned())
                 .collect(),
+            chunk_timing: Vec::new(),
+            chunks_accepted: 0,
+            datagram: None,
         };
         let Some(link) = self.link.as_mut() else {
             return;

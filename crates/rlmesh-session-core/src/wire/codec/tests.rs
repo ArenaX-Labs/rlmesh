@@ -15,8 +15,11 @@ use crate::wire::authority::{
     ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, Watermark,
 };
 use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
-use crate::wire::health::{HostHealth, LinkHealth};
-use crate::wire::heartbeat::{ClockRefusal, Health, Heartbeat, HeartbeatEcho, TimingSample};
+use crate::wire::datagram::{DatagramOffer, DatagramRoute, DatagramRoutes};
+use crate::wire::health::{DataPath, HostHealth, LinkHealth};
+use crate::wire::heartbeat::{
+    ChunkTiming, ClockRefusal, DatagramStats, Health, Heartbeat, HeartbeatEcho, TimingSample,
+};
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken};
 use crate::wire::lockstep::{
     LockstepOp, LockstepReply, LockstepRequest, LockstepReset, LockstepResponse, LockstepResult,
@@ -168,6 +171,7 @@ fn snapshot() -> AuthoritySnapshot {
             grids: vec![ActionGrid {
                 channel: ChannelId(1),
                 dt: Duration::from_millis(10),
+                chunk: 0,
             }],
         }],
         contract: [(pid("ur10e"), Fingerprint::from(0xabcd))].into(),

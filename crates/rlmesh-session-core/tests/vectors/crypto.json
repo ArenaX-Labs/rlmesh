@@ -89,6 +89,26 @@
       "message": "010007010203040300000000000000080112040000803f0500cebba17c5e5e010c05d625af4b90",
       "security": "mac",
       "seq": 3
+    },
+    {
+      "body": "",
+      "datagram": {
+        "bytes": "d1030102070000000101150201000001000000000000004813851ffdac63d4025e90511f9c6fcf",
+        "route": 513,
+        "seq": 7,
+        "type": 3
+      },
+      "encrypted": true,
+      "inputs": {
+        "key": "datagram probe key"
+      },
+      "key": "6390cc6dd186b664314087255fe86a9af970c5656c110ffbf9a8436377661de8",
+      "key_id": 258,
+      "keyexpr": "rlmesh/v2/acme/s/demo/p/arm-1/udp",
+      "kind": 21,
+      "message": "0101150201000001000000000000004813851ffdac63d4025e90511f9c6fcf",
+      "security": "seal",
+      "seq": 1
     }
   ],
   "signed": {

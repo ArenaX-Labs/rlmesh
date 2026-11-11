@@ -96,6 +96,97 @@ pub struct Heartbeat {
     pub rejected: Vec<(crate::edge::Rejection, u64)>,
     /// Edges: one per edge whose newest clock judgement refused a chunk.
     pub clock_refused: Vec<ClockRefusal>,
+    /// Edges: how each commanded part's chunks arrived since attach.
+    pub chunk_timing: Vec<ChunkTiming>,
+    /// Edges: chunks accepted since attach.
+    pub chunks_accepted: u64,
+    /// A board on the datagram path: its end's counters.
+    pub datagram: Option<DatagramStats>,
+}
+
+/// Lateness buckets of [`ChunkTiming::late_ms`]: `[0, 1)` ms, then
+/// `[2^(i-1), 2^i)` ms for `i` in 1..7, and the last from 64 ms up.
+pub const LATE_BUCKETS: usize = 8;
+
+/// How one commanded part's chunks arrived at its edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkTiming {
+    /// The commandable part.
+    pub channel: ChannelId,
+    /// Chunks that reached the edge, whatever became of them.
+    pub received: u64,
+    /// Chunks it accepted.
+    pub accepted: u64,
+    /// Gaps in the seqs of accepted chunks under one lease token.
+    pub lost: u32,
+    /// Accepted chunks by lateness on arrival against their first slot
+    /// ([`LATE_BUCKETS`]).
+    pub late_ms: [u32; LATE_BUCKETS],
+    /// The latest any accepted chunk arrived, in microseconds.
+    pub late_max_us: u32,
+    /// The longest time between two accepted chunks under one lease token,
+    /// in microseconds.
+    pub gap_max_us: u32,
+}
+
+impl Default for ChunkTiming {
+    fn default() -> Self {
+        Self {
+            channel: ChannelId(0),
+            received: 0,
+            accepted: 0,
+            lost: 0,
+            late_ms: [0; LATE_BUCKETS],
+            late_max_us: 0,
+            gap_max_us: 0,
+        }
+    }
+}
+
+impl ChunkTiming {
+    /// The bucket of a chunk `late_ns` late.
+    pub fn bucket(late_ns: i64) -> usize {
+        let ms = late_ns.max(0).unsigned_abs() / 1_000_000;
+        if ms == 0 {
+            0
+        } else {
+            (u64::BITS - ms.leading_zeros()).min(LATE_BUCKETS as u32 - 1) as usize
+        }
+    }
+
+    /// Counts an accepted chunk `late_ns` late.
+    pub fn late(&mut self, late_ns: i64) {
+        let slot = &mut self.late_ms[Self::bucket(late_ns)];
+        *slot = slot.saturating_add(1);
+        let us = u32::try_from(late_ns.max(0).unsigned_abs() / 1000).unwrap_or(u32::MAX);
+        self.late_max_us = self.late_max_us.max(us);
+    }
+
+    /// Counts `gap_ns` between two accepted chunks.
+    pub fn gap(&mut self, gap_ns: i64) {
+        let us = u32::try_from(gap_ns.max(0).unsigned_abs() / 1000).unwrap_or(u32::MAX);
+        self.gap_max_us = self.gap_max_us.max(us);
+    }
+}
+
+/// One end of a robot's datagram path: what it sent, and what it received
+/// by the other end's statistics sequence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DatagramStats {
+    /// The path carries the robot's realtime parts now.
+    pub active: bool,
+    /// Datagrams sent.
+    pub sent: u64,
+    /// Datagrams received that opened.
+    pub received: u64,
+    /// Gaps in the statistics sequence of those received.
+    pub lost: u64,
+    /// Those that arrived after a later one.
+    pub reordered: u64,
+    /// Received but unreadable, or failed to open under the route's key.
+    pub unopened: u64,
+    /// Times this end gave the path up for the session's own.
+    pub fallbacks: u32,
 }
 
 /// Why an edge is refusing chunks as

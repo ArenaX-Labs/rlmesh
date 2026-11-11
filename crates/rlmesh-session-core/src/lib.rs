@@ -126,6 +126,7 @@ pub mod authority;
 pub mod cache;
 pub mod clock;
 pub mod crypto;
+pub mod datagram;
 pub mod edge;
 pub mod lease;
 #[cfg(feature = "fleet")]

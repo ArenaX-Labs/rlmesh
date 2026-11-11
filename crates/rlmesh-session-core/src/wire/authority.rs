@@ -969,4 +969,6 @@ pub struct HandshakeAccept {
     pub up_key_id: u32,
     /// The id of `k_down` (host to participant).
     pub down_key_id: u32,
+    /// The host's datagram path, when it offers one.
+    pub datagram: Option<crate::wire::datagram::DatagramOffer>,
 }

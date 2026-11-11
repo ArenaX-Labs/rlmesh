@@ -67,8 +67,8 @@ pub enum HandshakeError {
 }
 
 /// The kinds the participant sends under `k_up`: ctl requests,
-/// heartbeats, participant reports and history queries.
-pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15]);
+/// heartbeats, participant reports, history queries and datagram probes.
+pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15, 21]);
 /// The kinds the host sends under `k_down`: ctl replies, heartbeat
 /// echoes, key deliveries, history pages and sealed device views.
 pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10, 20]);

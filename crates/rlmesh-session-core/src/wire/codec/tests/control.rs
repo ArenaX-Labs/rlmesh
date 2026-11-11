@@ -37,10 +37,38 @@ fn a_device_view_decodes_on_its_own_path() {
             generation: 3,
         }],
         closing: Some(Reason::new(ReasonCode::SceneEnded)),
+        datagram: None,
     };
     let bytes = encode_view(&view);
     g.add("view", &bytes);
     assert_eq!(decode_view(&bytes).expect("decode"), view);
+    // A robot on the datagram path: its routes ride the view as field 18.
+    let routed = DeviceView {
+        datagram: Some(DatagramRoutes {
+            probe: 9,
+            routes: vec![
+                DatagramRoute {
+                    route: 10,
+                    channel: ChannelId(1),
+                    up: false,
+                },
+                DatagramRoute {
+                    route: 0xffff,
+                    channel: ChannelId(2),
+                    up: true,
+                },
+            ],
+        }),
+        ..view.clone()
+    };
+    let routed_bytes = encode_view(&routed);
+    g.add("view_datagram", &routed_bytes);
+    assert_eq!(decode_view(&routed_bytes).expect("decode"), routed);
+    assert_eq!(
+        routed_bytes[..bytes.len()],
+        bytes[..],
+        "the routes only follow the view"
+    );
     // The view is its own message, not a state a board could misread.
     assert!(decode_state(&bytes).is_err());
 
@@ -80,6 +108,12 @@ fn binding_records_round_trip() {
     let binding = &state.bindings[0];
     let decoded = decode_binding(g.add("binding", &encode_binding(binding))).expect("decodes");
     assert_eq!(&decoded, binding);
+    // A binding that declares how many actions its chunks carry.
+    let mut chunked = binding.clone();
+    chunked.grids[0].chunk = 4;
+    let decoded =
+        decode_binding(g.add("binding_chunk", &encode_binding(&chunked))).expect("decodes");
+    assert_eq!(decoded, chunked);
     g.check();
 }
 
@@ -121,6 +155,7 @@ fn control_messages_round_trip() {
             grids: vec![ActionGrid {
                 channel: ChannelId(5),
                 dt: Duration::from_nanos(66_666_667),
+                chunk: 0,
             }],
         },
         Command::DemandAck {
@@ -374,11 +409,40 @@ fn control_messages_round_trip() {
         host_instance: 0xfeed,
         up_key_id: 3,
         down_key_id: 4,
+        datagram: None,
     };
     assert_eq!(
         decode_handshake_accept(g.add("handshake_accept", &encode_handshake_accept(&accept)))
             .expect("decode"),
         accept
+    );
+    let offering = HandshakeAccept {
+        datagram: Some(DatagramOffer {
+            port: 7448,
+            version: crate::datagram::VERSION,
+        }),
+        ..accept.clone()
+    };
+    assert_eq!(
+        decode_handshake_accept(g.add(
+            "handshake_accept_datagram",
+            &encode_handshake_accept(&offering)
+        ))
+        .expect("decode"),
+        offering
+    );
+    // An offer this side can't read is no offer.
+    let mut unreadable =
+        pb::HandshakeAccept::decode(&encode_handshake_accept(&offering)[..]).expect("decode");
+    unreadable.datagram = Some(pb::DatagramOffer {
+        port: 70_000,
+        version: 1,
+    });
+    assert_eq!(
+        decode_handshake_accept(&unreadable.encode_to_vec())
+            .expect("decode")
+            .datagram,
+        None
     );
 
     let hb = Heartbeat {
@@ -406,10 +470,23 @@ fn control_messages_round_trip() {
             error_ns: 19_500_000,
             bound_ns: 5_000_000,
         }],
+        chunk_timing: Vec::new(),
+        chunks_accepted: 0,
+        datagram: None,
     };
     assert_eq!(
         decode_heartbeat(g.add("heartbeat", &encode_heartbeat(&hb))).expect("decode"),
         hb
+    );
+    let timed = Heartbeat {
+        chunk_timing: vec![timing()],
+        chunks_accepted: 912,
+        datagram: Some(datagram_stats()),
+        ..hb.clone()
+    };
+    assert_eq!(
+        decode_heartbeat(g.add("heartbeat_timing", &encode_heartbeat(&timed))).expect("decode"),
+        timed
     );
     let echo = HeartbeatEcho {
         seq: 8,
@@ -494,6 +571,7 @@ fn control_messages_round_trip() {
                     }],
                     report: None,
                     last_seq_seen: vec![(ChannelId(2), 77)],
+                    ..LinkHealth::default()
                 },
                 LinkHealth {
                     participant: Some(pid("policy")),
@@ -508,6 +586,29 @@ fn control_messages_round_trip() {
             health
         );
     }
+    let routed = HostHealth {
+        epoch: Epoch(3),
+        host_ns: 1_000,
+        links: vec![LinkHealth {
+            participant: Some(pid("eye-1")),
+            heartbeats: 40,
+            chunk_timing: vec![timing()],
+            chunks_accepted: 912,
+            data_path: DataPath::Datagram,
+            datagram_board: Some(datagram_stats()),
+            datagram_host: Some(DatagramStats {
+                active: true,
+                sent: 950,
+                received: 3_000,
+                ..DatagramStats::default()
+            }),
+            ..LinkHealth::default()
+        }],
+    };
+    assert_eq!(
+        decode_health(g.add("health_datagram", &encode_health(&routed))).expect("decode"),
+        routed
+    );
     assert!(
         decode_report(b"\x0a\x01!").is_err(),
         "an invalid participant id"
@@ -630,6 +731,18 @@ fn prost_view(buf: &[u8]) -> Result<DeviceView, WireError> {
             })
         })?,
         closing: v.closing.map(reason_from_pb),
+        datagram: v.datagram.map(|d| DatagramRoutes {
+            probe: u16::try_from(d.probe).expect("a route id"),
+            routes: d
+                .routes
+                .into_iter()
+                .map(|r| DatagramRoute {
+                    route: u16::try_from(r.route).expect("a route id"),
+                    channel: ChannelId(r.channel),
+                    up: r.up,
+                })
+                .collect(),
+        }),
     })
 }
 
@@ -701,6 +814,21 @@ fn full_view() -> DeviceView {
             at_ns: 5,
             revision: 9,
             verified: true,
+        }),
+        datagram: Some(DatagramRoutes {
+            probe: 3,
+            routes: vec![
+                DatagramRoute {
+                    route: 4,
+                    channel: ChannelId(1),
+                    up: false,
+                },
+                DatagramRoute {
+                    route: 5,
+                    channel: ChannelId(1),
+                    up: true,
+                },
+            ],
         }),
     }
 }
@@ -946,4 +1074,28 @@ fn every_message_a_board_decodes_is_refused_unread_when_it_holds_too_much() {
         (CtlStatus::Unauthenticated, 256)
     );
     assert!(decode_unauthenticated(&[0xff; 64]).is_none());
+}
+
+fn timing() -> ChunkTiming {
+    ChunkTiming {
+        channel: ChannelId(2),
+        received: 950,
+        accepted: 912,
+        lost: 30,
+        late_ms: [700, 150, 40, 10, 5, 4, 2, 1],
+        late_max_us: 98_000,
+        gap_max_us: 412_000,
+    }
+}
+
+fn datagram_stats() -> DatagramStats {
+    DatagramStats {
+        active: true,
+        sent: 3_000,
+        received: 920,
+        lost: 30,
+        reordered: 2,
+        unopened: 1,
+        fallbacks: 0,
+    }
 }

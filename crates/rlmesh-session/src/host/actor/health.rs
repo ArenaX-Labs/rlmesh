@@ -83,6 +83,7 @@ impl HostActor {
                     clock_refused: link.clock_refused.clone(),
                     report,
                     last_seq_seen: row.report.last_seq_seen,
+                    ..LinkHealth::default()
                 }
             })
             .collect();

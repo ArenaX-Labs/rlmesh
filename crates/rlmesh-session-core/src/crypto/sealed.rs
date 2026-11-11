@@ -85,6 +85,9 @@ pub enum Kind {
     /// A robot's device view, sealed under its own `k_down`: what a board
     /// opens instead of checking the host's signature on every view.
     DeviceView = 20,
+    /// A robot's probe on the host's datagram path, under its `k_up`: the
+    /// host sends a robot's datagrams only to an address it opened one from.
+    DatagramProbe = 21,
 }
 
 /// A kind's level.
@@ -138,6 +141,7 @@ impl Kind {
             18 => PairReveal,
             19 => PairWait,
             20 => DeviceView,
+            21 => DatagramProbe,
             _ => return None,
         })
     }
@@ -147,7 +151,7 @@ impl Kind {
         self as u8
     }
 
-    /// The kind's level: kinds under `k_up`/`k_down` (1–6, 10, 15, 20) and
+    /// The kind's level: kinds under `k_up`/`k_down` (1–6, 10, 15, 20, 21) and
     /// pairing (16–19) are always encrypted, e-stop signals (13) never, and
     /// 7, 8, 9, 11 and 12 follow their key's [`Security`]. 14 is unassigned.
     pub fn protection(self) -> Protection {
@@ -155,7 +159,7 @@ impl Kind {
         match self {
             CtlRequest | CtlReply | Heartbeat | HeartbeatEcho | ParticipantReport | KeyDelivery
             | HistoryPage | HistoryQuery | PairCommit | PairNonce | PairReveal | PairWait
-            | DeviceView => Protection::Encrypted,
+            | DeviceView | DatagramProbe => Protection::Encrypted,
             EstopSignal => Protection::IntegrityOnly,
             ActionChunk | Sample | Applied | LockstepRequest | LockstepReply => {
                 Protection::Configured
@@ -177,7 +181,7 @@ impl Kind {
     }
 }
 
-const KINDS: usize = 20;
+const KINDS: usize = 21;
 
 /// The kinds a key may carry (its purpose and scope). A message of
 /// any other kind under that key is rejected.
@@ -799,7 +803,7 @@ mod tests {
             msg[1] = flags;
             assert_eq!(rx.open(KEYEXPR, &mut msg), Err(OpenError::Flags(flags)));
         }
-        for kind in [0, 21, 22, 255] {
+        for kind in [0, 22, 23, 255] {
             let mut msg = good.clone();
             msg[2] = kind;
             assert_eq!(
@@ -889,7 +893,7 @@ mod tests {
             KindSet::of_const(&[8, 9]),
             KindSet::of(&[Kind::Sample, Kind::Applied])
         );
-        assert_eq!(KindSet::of_const(&[0, 21, 8]), KindSet::of(&[Kind::Sample]));
+        assert_eq!(KindSet::of_const(&[0, 22, 8]), KindSet::of(&[Kind::Sample]));
     }
 
     #[test]

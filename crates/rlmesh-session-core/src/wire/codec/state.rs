@@ -262,6 +262,7 @@ pub(super) fn grid_to_pb(g: &ActionGrid) -> pb::ActionGrid {
     pb::ActionGrid {
         channel: g.channel.0,
         dt_ns: duration_ns(g.dt),
+        chunk: g.chunk,
     }
 }
 
@@ -269,6 +270,7 @@ pub(super) fn grid_from_pb(g: pb::ActionGrid) -> ActionGrid {
     ActionGrid {
         channel: ChannelId(g.channel),
         dt: Duration::from_nanos(g.dt_ns),
+        chunk: g.chunk,
     }
 }
 
