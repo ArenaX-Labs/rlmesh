@@ -103,6 +103,8 @@ below describe development APIs; C ABI 7 is cut only when they ship.
 
 - `rlmesh doctor` and `rlmesh bench` start the image under a host identity they make, passed in `RLMESH_HOST_IDENTITY`, and dial its keyed address. Without one, a container listening beyond loopback refused to host its session, so neither could start a 0.2 image.
 
+- A session host writes its short-lived link-password file to `RLMESH_RUNTIME_DIR` when set, else the user's runtime or cache directory, else a fresh private directory in the system temp directory, so it starts in a container with no home and a read-only root when its temp directory is writable. With nothing writable, the error names `RLMESH_RUNTIME_DIR`.
+
 This development tree gives the Rust facade crate (`rlmesh`), the fenced C API (`rlmesh.h`, development ABI 6) and the fenced C++ wrapper (`rlmesh.hpp`, C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking

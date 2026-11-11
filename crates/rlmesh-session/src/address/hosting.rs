@@ -292,27 +292,108 @@ pub async fn open_listeners(
             .map(|transport| (transport, base))
     };
     if let Some(dictionary) = dictionary {
-        let _ = std::fs::remove_file(dictionary);
+        discard_dictionary(&dictionary);
     }
     opened
 }
 
+/// The variable naming a directory, private to this user, for the link gate
+/// a session host writes ([`dictionary`]), ahead of every default.
+pub(crate) const RUNTIME_DIR_VAR: &str = "RLMESH_RUNTIME_DIR";
+
+/// The name prefix of the directory a link gate gets of its own in the
+/// system temp directory.
+const PRIVATE_DIR_PREFIX: &str = ".rlmesh-link-";
+
 /// Writes the `user:password` file a gated host's Zenoh reads at open; the
-/// caller removes it right after.
+/// caller removes it right after ([`discard_dictionary`]). It holds the
+/// link password, so it lives only where no other user can read it or plant
+/// a link: [`RUNTIME_DIR_VAR`], else the user's runtime or cache directory,
+/// else a fresh directory of its own in the system temp directory (a
+/// container with no home and a read-only root has neither of the others).
 fn dictionary(password: &zeroize::Zeroizing<String>) -> Result<std::path::PathBuf, SessionError> {
-    let dir = dirs::runtime_dir()
-        .or_else(dirs::cache_dir)
-        .map(|dir| dir.join("rlmesh"))
-        .ok_or_else(|| SessionError::Config("no directory for the link gate".into()))?;
     static OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = dir.join(format!(".link.{}.{n}", std::process::id()));
-    write_private(
-        &path,
-        format!("{LINK_USER}:{}", password.as_str()).as_bytes(),
-    )
-    .map_err(|err| SessionError::Config(format!("the link gate: {err}")))?;
-    Ok(path)
+    let name = format!(".link.{}.{n}", std::process::id());
+    let contents = zeroize::Zeroizing::new(format!("{LINK_USER}:{}", password.as_str()));
+    if let Some(dir) = std::env::var_os(RUNTIME_DIR_VAR) {
+        let path = std::path::Path::new(&dir).join(&name);
+        return write_private(&path, contents.as_bytes())
+            .map(|()| path)
+            .map_err(|err| {
+                SessionError::Config(format!(
+                    "the link gate in {RUNTIME_DIR_VAR}={}: {err}",
+                    std::path::Path::new(&dir).display()
+                ))
+            });
+    }
+    let defaults = [dirs::runtime_dir(), dirs::cache_dir()]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join("rlmesh"));
+    gate_in(defaults, &std::env::temp_dir(), &name, contents.as_bytes())
+}
+
+/// Writes the link gate `name` into the first of `dirs` that takes it, else
+/// into a private directory of its own in `temp`.
+fn gate_in(
+    dirs: impl IntoIterator<Item = std::path::PathBuf>,
+    temp: &std::path::Path,
+    name: &str,
+    contents: &[u8],
+) -> Result<std::path::PathBuf, SessionError> {
+    for dir in dirs {
+        let path = dir.join(name);
+        if write_private(&path, contents).is_ok() {
+            return Ok(path);
+        }
+    }
+    let written = private_temp_dir(temp).and_then(|dir| {
+        let path = dir.join(name);
+        write_private(&path, contents)
+            .map(|()| path)
+            .inspect_err(|_| {
+                let _ = std::fs::remove_dir_all(&dir);
+            })
+    });
+    written.map_err(|err| {
+        SessionError::Config(format!(
+            "no writable directory for the link gate (the runtime and cache directories, then \
+             {}: {err}); set {RUNTIME_DIR_VAR} to a directory only this user can write",
+            temp.display()
+        ))
+    })
+}
+
+/// A new directory in `temp` that only this user can enter, under a name no
+/// one can predict. Created rather than opened, so whatever another user
+/// planted under that name (a link) is refused, never followed.
+fn private_temp_dir(temp: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let mut random = [0_u8; 16];
+    rlmesh_session_core::crypto::Rng::fill_bytes(&mut crate::host::OsRng, &mut random)
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
+    let random: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let dir = temp.join(format!(
+        "{PRIVATE_DIR_PREFIX}{}-{random}",
+        std::process::id()
+    ));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
+    Ok(dir)
+}
+
+/// Removes a link gate [`dictionary`] wrote, with the directory it made of
+/// its own for it.
+fn discard_dictionary(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    if let Some(dir) = path.parent().filter(|dir| {
+        dir.file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(PRIVATE_DIR_PREFIX))
+    }) {
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
 /// Reaches the session `address` names by the hosting rule: joins the local
@@ -354,5 +435,148 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
         // Another process holds the port: join it.
         Err(_) if base.port() != 0 && listening(base) => join(base),
         Err(err) => Err(err),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::*;
+
+    /// Set in the child process [`gate_without_home`] runs.
+    const CHILD: &str = "RLMESH_TEST_LINK_GATE_CHILD";
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
+    }
+
+    /// A path no directory can be made under, whoever runs the test: a
+    /// plain file stands where the directory would.
+    fn blocked(scratch: &Path, name: &str) -> std::path::PathBuf {
+        let path = scratch.join(name);
+        std::fs::write(&path, b"").expect("write a blocking file");
+        path
+    }
+
+    #[test]
+    fn a_gate_with_no_default_directory_gets_a_private_temp_dir() {
+        let scratch = tempfile::tempdir().unwrap();
+        let temp = scratch.path().join("tmp");
+        std::fs::create_dir(&temp).unwrap();
+        let unwritable = [
+            blocked(scratch.path(), "runtime"),
+            blocked(scratch.path(), "cache"),
+        ]
+        .map(|dir| dir.join("rlmesh"));
+
+        let first = gate_in(unwritable.clone(), &temp, ".link.1", b"u:p").unwrap();
+        let second = gate_in(unwritable, &temp, ".link.1", b"u:p").unwrap();
+        let dir = first.parent().unwrap();
+        assert_eq!(dir.parent(), Some(temp.as_path()));
+        assert_ne!(
+            dir,
+            second.parent().unwrap(),
+            "each gate gets a directory of its own"
+        );
+        assert_eq!(mode(dir), 0o700);
+        assert_eq!(mode(&first), 0o600);
+        assert_eq!(std::fs::read(&first).unwrap(), b"u:p");
+
+        discard_dictionary(&first);
+        discard_dictionary(&second);
+        assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_writable_default_is_used_and_kept() {
+        let scratch = tempfile::tempdir().unwrap();
+        let cache = scratch.path().join("cache").join("rlmesh");
+        let gate = gate_in([cache.clone()], scratch.path(), ".link.2", b"u:p").unwrap();
+        assert_eq!(gate, cache.join(".link.2"));
+        discard_dictionary(&gate);
+        assert!(cache.is_dir(), "a shared directory outlives its gates");
+    }
+
+    #[test]
+    fn nothing_writable_names_the_override() {
+        let scratch = tempfile::tempdir().unwrap();
+        let temp = blocked(scratch.path(), "tmp");
+        let error = gate_in([], &temp, ".link.3", b"u:p").unwrap_err();
+        assert!(error.to_string().contains(RUNTIME_DIR_VAR), "{error}");
+    }
+
+    /// The child half of [`gate_without_home`]: hosts on loopback, which
+    /// writes the gate, in whatever environment the parent gave it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_child() {
+        if std::env::var_os(CHILD).is_none() {
+            return;
+        }
+        let base = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let mut placed = host_at(base, "gate", Duration::from_millis(250), false)
+            .await
+            .expect("host on loopback");
+        placed.close().await.expect("close");
+    }
+
+    fn host_without_home(temp: &Path, cache: &Path, runtime_dir: Option<&Path>) -> String {
+        let mut command = Command::new(std::env::current_exe().expect("test binary"));
+        command
+            .args([
+                "--exact",
+                "address::hosting::tests::gate_child",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env_remove("HOME")
+            .env_remove("XDG_RUNTIME_DIR")
+            .env_remove(crate::address::HOST_IDENTITY_VAR)
+            .env_remove(RUNTIME_DIR_VAR)
+            .env("XDG_CACHE_HOME", cache)
+            .env("TMPDIR", temp);
+        if let Some(dir) = runtime_dir {
+            command.env(RUNTIME_DIR_VAR, dir);
+        }
+        let output = command.output().expect("run the child");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            output.status.success(),
+            !text.contains("panicked"),
+            "{text}"
+        );
+        text
+    }
+
+    #[test]
+    fn gate_without_home() {
+        let scratch = tempfile::tempdir().unwrap();
+        let cache = blocked(scratch.path(), "cache");
+        let temp = scratch.path().join("tmp");
+        std::fs::create_dir(&temp).unwrap();
+
+        let text = host_without_home(&temp, &cache, None);
+        assert!(!text.contains("panicked"), "{text}");
+        assert_eq!(
+            std::fs::read_dir(&temp).unwrap().count(),
+            0,
+            "the gate is cleaned up"
+        );
+
+        let blocked_temp = blocked(scratch.path(), "no-tmp");
+        let text = host_without_home(&blocked_temp, &cache, None);
+        assert!(text.contains(RUNTIME_DIR_VAR), "{text}");
+
+        let runtime = scratch.path().join("runtime");
+        let text = host_without_home(&blocked_temp, &cache, Some(&runtime));
+        assert!(!text.contains("panicked"), "{text}");
+        assert!(runtime.is_dir());
+        assert_eq!(std::fs::read_dir(&runtime).unwrap().count(), 0);
     }
 }
