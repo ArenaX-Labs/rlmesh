@@ -324,3 +324,90 @@ fn grants_are_capped_per_device_and_robot_and_a_higher_class_evicts_the_newest_l
     assert!(decided.iter().all(|(_, r)| r.is_err()));
     let _ = (a, b, c);
 }
+
+fn join(issuer: &mut KeyIssuer, rng: &mut TestRng, who: &str, generation: u32, robot: bool) {
+    issuer
+        .attach(
+            rng,
+            Joining {
+                participant: &pid(who),
+                generation,
+                device: "local",
+                robot,
+            },
+            &Access::default(),
+            0,
+        )
+        .expect("attach");
+}
+
+#[test]
+fn attaching_the_generation_in_effect_again_changes_nothing() {
+    let mut rng = TestRng::new(9);
+    let mut issuer = KeyIssuer::default();
+    join(&mut issuer, &mut rng, "arm", 1, true);
+    let first = issuer.estop_key(&pid("arm"), 1).expect("key").key_id;
+    join(&mut issuer, &mut rng, "arm", 1, true);
+    assert_eq!(issuer.estop_key(&pid("arm"), 1).expect("key").key_id, first);
+}
+
+#[test]
+fn a_generation_that_ends_takes_back_its_undelivered_estop_key() {
+    let mut rng = TestRng::new(10);
+    let mut issuer = KeyIssuer::default();
+    join(&mut issuer, &mut rng, "arm", 1, true);
+    join(&mut issuer, &mut rng, "policy", 2, false);
+    let estop = issuer.estop_key(&pid("policy"), 2).expect("key").key_id;
+    assert!(issuer.outbox[&pid("arm")].installing(estop), "on its way");
+    issuer.detach(&pid("policy"));
+    for (who, delivery) in issuer.deliveries(0) {
+        assert!(
+            delivery.keys.iter().all(|k| k.key_id != estop),
+            "still going to {who}"
+        );
+    }
+}
+
+#[test]
+fn a_detach_fails_the_pending_grants_that_needed_it_and_no_others() {
+    let mut rng = TestRng::new(11);
+    let mut issuer = KeyIssuer::default();
+    join(&mut issuer, &mut rng, "arm", 1, true);
+    join(&mut issuer, &mut rng, "gripper", 2, true);
+    let mut prepare = |holder: &str, robot: &str, token| {
+        let request = GrantRequest {
+            holder: pid(holder),
+            holder_generation: 1,
+            device: holder.into(),
+            class: PriorityClass::Model,
+            token: LeaseToken(token),
+            parts: vec![GrantPart {
+                robot: pid(robot),
+                channel: ChannelId(1),
+                priority: ChannelPriority::Realtime,
+                security: Security::Mac,
+            }],
+            reads_all: Vec::new(),
+        };
+        issuer
+            .prepare_grant(&mut rng, request, 0)
+            .expect("prepared")
+            .id
+    };
+    let by_a = prepare("a", "arm", 1);
+    let on_gripper = prepare("b", "gripper", 2);
+    let on_arm = prepare("c", "arm", 3);
+    assert_eq!(issuer.detach(&pid("stranger")), Vec::<GrantId>::new());
+    assert_eq!(issuer.detach(&pid("a")), vec![by_a], "as holder");
+    assert_eq!(issuer.detach(&pid("arm")), vec![on_arm], "as robot");
+    assert!(issuer.grant(on_gripper).is_some());
+}
+
+#[test]
+fn an_issuers_debug_output_never_shows_a_keys_bytes() {
+    let mut rng = TestRng::new(12);
+    let mut issuer = KeyIssuer::default();
+    join(&mut issuer, &mut rng, "arm", 1, true);
+    let key = issuer.estop_key(&pid("arm"), 1).expect("key");
+    crate::crypto::assert_redacted(&issuer, &key.key.0);
+}
