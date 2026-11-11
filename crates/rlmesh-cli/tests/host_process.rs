@@ -660,6 +660,7 @@ fn the_host_keeps_its_identity_across_a_restart_with_no_key_flag() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at_once() {
     use std::os::unix::fs::PermissionsExt;
@@ -736,6 +737,7 @@ async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at
     .expect("detached");
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap() {
     use std::os::unix::fs::PermissionsExt;

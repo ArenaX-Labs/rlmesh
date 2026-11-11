@@ -206,7 +206,8 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     };
     #[cfg(not(feature = "fleet"))]
     drop(config);
-    let (apply, mut applying) = tokio::sync::mpsc::channel(4);
+    let (apply, mut applying) =
+        tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(4);
     #[cfg(unix)]
     let local = crate::pair::serve_local(crate::pair::Local {
         dir: dir.clone(),
