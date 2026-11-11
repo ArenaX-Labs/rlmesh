@@ -121,7 +121,7 @@ fn two_held_robots() -> Fixture {
     )
     .expect("attach");
     let map = r#"{"wheel": {"kind": "joints", "hz": 500, "count": 6, "fields": ["pos"],
-                  "command": "position"}}"#;
+                  "command": "position", "safe": "stop"}}"#;
     f.run("other", declare(map), 0).expect("declare");
     f.bind("policy", 11, &["cmd1", "wheel"]).expect("bind");
     for robot in ["robot", "other"] {

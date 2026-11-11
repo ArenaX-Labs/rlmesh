@@ -373,8 +373,8 @@ fn a_latched_part_goes_safe_when_its_lease_lapses() {
     let tick = f.tick(2_000 * MS + GRACE + MS);
     assert_eq!(tick.mode, EdgeMode::Safe, "safe at once, no hold");
     assert_eq!(tick.safe_behavior.as_deref(), Some("brake"));
-    assert_eq!(
-        tick.report.map(|(_, cause)| cause),
-        Some(SafeCause::LeaseLapsed)
+    assert!(
+        tick.report.is_none(),
+        "the report waits to learn whether the holder is alive"
     );
 }
