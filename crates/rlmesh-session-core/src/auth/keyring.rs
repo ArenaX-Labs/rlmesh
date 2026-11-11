@@ -1055,4 +1055,497 @@ mod tests {
         ));
         assert_eq!(Header::parse(&first).expect("header").seq, 1);
     }
+
+    /// A lease key on part 3.
+    fn lease_key(
+        id: u32,
+        purpose: KeyPurpose,
+        sender: &str,
+        robot: &str,
+        token: u64,
+        send: bool,
+    ) -> IssuedKey {
+        IssuedKey {
+            key_id: id,
+            purpose,
+            sender: Some(pid(sender)),
+            robot: Some(pid(robot)),
+            channels: vec![ChannelId(3)],
+            token: LeaseToken(token),
+            version: 0,
+            key: KeyBytes([id as u8; 32]),
+            send,
+            security: Security::Mac,
+            generation: 1,
+        }
+    }
+
+    fn estop_key(send: bool) -> IssuedKey {
+        IssuedKey {
+            robot: None,
+            channels: Vec::new(),
+            ..lease_key(40, KeyPurpose::Estop, "policy", "policy", 0, send)
+        }
+    }
+
+    fn chunk(token: u64, channel: ChannelId, source: &str) -> ActionChunk {
+        ActionChunk {
+            channel,
+            epoch: Epoch(1),
+            lease_token: LeaseToken(token),
+            seq: 1,
+            source: pid(source),
+            binding: Fingerprint::default(),
+            based_on: Vec::new(),
+            t0_ns: 0,
+            dt_ns: 1,
+            replace_from_ns: 0,
+            valid_until_ns: 1,
+            count: 1,
+            actions: Bytes::from_static(b"a"),
+            publish_ns: 0,
+            tick: 0,
+        }
+    }
+
+    /// Revision `revision` of a view with these members and lease tokens.
+    fn view(revision: u64, members: &[(&str, u32)], tokens: &[u64]) -> crate::wire::DeviceView {
+        let state = crate::authority::Authority::new(
+            crate::wire::SessionId::named("demo"),
+            crate::authority::AuthorityConfig::default(),
+        )
+        .snapshot(Vec::new(), 0);
+        let mut view = crate::wire::DeviceView::of(&state, &pid("arm"));
+        view.revision = revision;
+        view.members = members
+            .iter()
+            .map(|(id, generation)| crate::wire::view::Member {
+                id: pid(id),
+                generation: *generation,
+            })
+            .collect();
+        view.leases = tokens
+            .iter()
+            .map(|token| crate::wire::Lease {
+                channel: ChannelId(3),
+                holder: pid("policy"),
+                priority: crate::wire::PriorityClass::Model,
+                token: LeaseToken(*token),
+                ttl_ns: 1,
+                granted_ns: 0,
+                expires_ns: 1,
+                binding: Fingerprint::default(),
+                key_id: 0,
+            })
+            .collect();
+        view
+    }
+
+    fn seq(sealed: &[u8]) -> u64 {
+        Header::parse(sealed).expect("header").seq
+    }
+
+    #[test]
+    fn retiring_a_version_leaves_another_robots_slot_alone() {
+        let mut reader = Keyring::new(Some(pid("policy")), 1);
+        let other = IssuedKey {
+            robot: Some(pid("gripper")),
+            ..stream_key(10, 1, false, Security::Mac)
+        };
+        reader.install(&stream_key(9, 1, false, Security::Mac), 0);
+        reader.install(&other, 0);
+        reader.retire(9);
+        assert!(!reader.holds(9));
+        assert!(reader.holds(10), "the same parts of another robot");
+    }
+
+    #[test]
+    fn a_stream_repeat_is_refused_before_its_tag_is_checked() {
+        let mut robot = Keyring::new(Some(pid("arm")), 1);
+        let mut reader = Keyring::new(Some(pid("policy")), 1);
+        robot.install(&stream_key(9, 1, true, Security::Mac), 0);
+        reader.install(&stream_key(9, 1, false, Security::Mac), 0);
+        let msg = robot.seal_sample(KEY, &sample(1), false).expect("seal");
+        let mut windows = StreamWindows::default();
+        let (opening, version) = reader
+            .begin_open_stream(&msg, &pid("arm"), ChannelId(3), false, &windows)
+            .expect("the first");
+        windows.commit(opening.header(), version).expect("commit");
+        assert!(matches!(
+            reader.begin_open_stream(&msg, &pid("arm"), ChannelId(3), false, &windows),
+            Err(KeyError::Open(OpenError::Replayed(_)))
+        ));
+    }
+
+    #[test]
+    fn a_second_key_of_the_same_version_keeps_the_first_keys_replay_window() {
+        let header = |key_id| Header {
+            encrypted: false,
+            kind: Kind::Sample,
+            key_id,
+            seq: 1,
+        };
+        let mut windows = StreamWindows::default();
+        assert_eq!(windows.commit(&header(9), 1), Ok(false));
+        assert_eq!(windows.commit(&header(10), 1), Ok(false));
+        assert!(windows.check(&header(9)).is_err(), "still a repeat");
+        // A newer version does drop it.
+        assert_eq!(windows.commit(&header(11), 2), Ok(true));
+        assert!(windows.check(&header(9)).is_ok());
+    }
+
+    #[test]
+    fn redelivering_a_held_key_keeps_its_sender_and_counters() {
+        let key = lease_key(30, KeyPurpose::Command, "policy", "arm", 5, true);
+        let mut holder = Keyring::new(Some(pid("policy")), 1);
+        assert_eq!(holder.install(&key, 0), Some(true));
+        let good = chunk(5, ChannelId(3), "policy");
+        let first = holder.seal_chunk(KEY, &pid("arm"), &good).expect("seal");
+        assert_eq!(holder.install(&key, 1), Some(true), "a repeat delivery");
+        let second = holder.seal_chunk(KEY, &pid("arm"), &good).expect("seal");
+        assert_eq!((seq(&first), seq(&second)), (1, 2), "no nonce is reused");
+    }
+
+    #[test]
+    fn a_held_key_switches_to_sending_only_when_told_and_only_with_the_same_bytes() {
+        let receiving = lease_key(30, KeyPurpose::Command, "policy", "arm", 5, false);
+        let sending = IssuedKey {
+            send: true,
+            ..receiving.clone()
+        };
+        let mut holder = Keyring::new(Some(pid("policy")), 1);
+        assert_eq!(holder.install(&receiving, 0), Some(false));
+        assert_eq!(
+            holder.install(&receiving, 1),
+            Some(false),
+            "still receiving"
+        );
+        let forged = IssuedKey {
+            key: KeyBytes([99; 32]),
+            ..sending.clone()
+        };
+        assert_eq!(holder.install(&forged, 2), None, "other bytes");
+        assert_eq!(holder.install(&sending, 3), Some(true));
+    }
+
+    #[test]
+    fn a_delivery_that_changes_a_held_keys_scope_is_refused() {
+        let key = lease_key(30, KeyPurpose::Command, "policy", "arm", 5, false);
+        let moved = IssuedKey {
+            token: LeaseToken(6),
+            ..key.clone()
+        };
+        let mut edge = Keyring::new(Some(pid("arm")), 1);
+        edge.install(&key, 0);
+        assert_eq!(edge.install(&moved, 1), None);
+    }
+
+    #[test]
+    fn a_version_below_the_newest_seen_is_refused_though_above_the_floor() {
+        let mut reader = Keyring::new(Some(pid("policy")), 1);
+        assert_eq!(
+            reader.install(&stream_key(12, 3, false, Security::Mac), 0),
+            Some(false)
+        );
+        assert_eq!(
+            reader.install(&stream_key(11, 2, false, Security::Mac), 0),
+            None
+        );
+        assert!(!reader.holds(11));
+    }
+
+    #[test]
+    fn a_retired_lease_key_is_never_installed_again() {
+        let key = lease_key(20, KeyPurpose::Command, "policy", "arm", 5, false);
+        let mut edge = Keyring::new(Some(pid("arm")), 1);
+        edge.install(&key, 0);
+        edge.retire(20);
+        assert!(!edge.holds(20));
+        assert_eq!(edge.install(&key, 1), None);
+    }
+
+    #[test]
+    fn only_a_newer_generation_of_this_participant_ends_its_keys_and_for_good() {
+        let command = lease_key(20, KeyPurpose::Command, "policy", "arm", 5, false);
+        let mut edge = Keyring::new(Some(pid("arm")), 2);
+        edge.install(&command, 0);
+        edge.install(&stream_key(9, 1, false, Security::Mac), 0);
+        edge.observe(&view(1, &[("arm", 1)], &[5]), 1);
+        assert!(edge.holds(20) && edge.holds(9), "an older generation");
+        edge.observe(&view(2, &[("arm", 2)], &[5]), 2);
+        assert!(edge.holds(20) && edge.holds(9), "this generation");
+        edge.observe(&view(3, &[("arm", 3)], &[5]), 3);
+        assert!(!edge.holds(20) && !edge.holds(9), "a newer one");
+        assert_eq!(edge.install(&command, 4), None, "never brought back");
+    }
+
+    #[test]
+    fn an_estop_key_lives_exactly_while_its_senders_generation_does() {
+        let mut edge = Keyring::new(Some(pid("arm")), 1);
+        edge.install(&estop_key(false), 0);
+        edge.observe(&view(1, &[("policy", 1)], &[]), UNSEEN_TTL_NS);
+        assert!(edge.holds(40), "the sender's generation is in effect");
+        edge.observe(&view(2, &[("policy", 2)], &[]), UNSEEN_TTL_NS);
+        assert!(!edge.holds(40), "it was superseded");
+    }
+
+    #[test]
+    fn sends_stream_needs_a_sending_stream_key_covering_the_part() {
+        let mut robot = Keyring::new(Some(pid("arm")), 1);
+        assert!(!robot.sends_stream(ChannelId(3)), "no key");
+        robot.install(&stream_key(9, 1, false, Security::Mac), 0);
+        assert!(!robot.sends_stream(ChannelId(3)), "only receiving");
+        robot.install(
+            &IssuedKey {
+                channels: vec![ChannelId(5)],
+                ..lease_key(30, KeyPurpose::Command, "arm", "arm", 5, true)
+            },
+            0,
+        );
+        assert!(!robot.sends_stream(ChannelId(5)), "not a stream key");
+        robot.install(&stream_key(9, 1, true, Security::Mac), 0);
+        assert!(robot.sends_stream(ChannelId(3)));
+        assert!(!robot.sends_stream(ChannelId(6)), "another part");
+    }
+
+    #[test]
+    fn the_lowest_id_among_equal_versions_is_the_one_sent_under() {
+        let mut holder = Keyring::new(Some(pid("policy")), 1);
+        for id in [21, 20, 22] {
+            holder.install(
+                &lease_key(id, KeyPurpose::Command, "policy", "arm", 5, true),
+                0,
+            );
+        }
+        let request = LockstepRequest {
+            request_id: 1,
+            op: crate::wire::LockstepOp::Probe,
+        };
+        let sealed = holder
+            .seal_lockstep_request(KEY, &pid("arm"), LeaseToken(5), &request)
+            .expect("seal");
+        assert_eq!(Header::parse(&sealed).expect("header").key_id, 20);
+    }
+
+    #[test]
+    fn a_two_phase_open_checks_the_stream_key_against_its_robot_and_part() {
+        let mut robot = Keyring::new(Some(pid("arm")), 1);
+        let mut reader = Keyring::new(Some(pid("policy")), 1);
+        robot.install(&stream_key(9, 1, true, Security::Mac), 0);
+        reader.install(&stream_key(9, 1, false, Security::Mac), 0);
+        let msg = robot.seal_sample(KEY, &sample(1), false).expect("seal");
+        let windows = StreamWindows::default();
+        let sample_of =
+            |who: &str, channel| reader.begin_open_sample(&msg, &pid(who), channel, false);
+        let stream_of = |who: &str, channel| {
+            reader.begin_open_stream(&msg, &pid(who), channel, false, &windows)
+        };
+        assert!(sample_of("arm", ChannelId(3)).is_ok());
+        assert!(stream_of("arm", ChannelId(4)).is_ok());
+        for (who, channel) in [("gripper", ChannelId(3)), ("arm", ChannelId(5))] {
+            assert!(
+                matches!(sample_of(who, channel), Err(KeyError::Scope(_))),
+                "{who} {channel}"
+            );
+            assert!(
+                matches!(stream_of(who, channel), Err(KeyError::Scope(_))),
+                "{who} {channel}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chunk_is_sealed_only_under_the_command_key_of_its_robot_token_and_part() {
+        let mut holder = Keyring::new(Some(pid("policy")), 1);
+        holder.install(
+            &lease_key(30, KeyPurpose::Command, "policy", "arm", 5, true),
+            0,
+        );
+        let good = chunk(5, ChannelId(3), "policy");
+        assert!(holder.seal_chunk(KEY, &pid("arm"), &good).is_ok());
+        for (robot, bad) in [
+            ("gripper", good.clone()),
+            ("arm", chunk(6, ChannelId(3), "policy")),
+            ("arm", chunk(5, ChannelId(4), "policy")),
+        ] {
+            assert!(
+                matches!(
+                    holder.seal_chunk(KEY, &pid(robot), &bad),
+                    Err(KeyError::NoKey(_))
+                ),
+                "{robot} {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chunk_opens_only_under_a_key_for_this_robot_matching_its_part_token_and_source() {
+        let key = lease_key(30, KeyPurpose::Command, "policy", "arm", 5, false);
+        let mut edge = Keyring::new(Some(pid("arm")), 1);
+        let mut other = Keyring::new(Some(pid("gripper")), 1);
+        edge.install(&key, 0);
+        other.install(&key, 0);
+        // Whoever has the bytes can seal anything: the scope is the check.
+        let mut forger = SealSender::new(
+            30,
+            Key::from_bytes([30; 32]),
+            kinds(KeyPurpose::Command),
+            Security::Mac,
+        );
+        let mut seal = |chunk: &ActionChunk| {
+            let body = codec::encode_chunk(chunk).expect("encode").to_vec();
+            forger.seal(Kind::ActionChunk, KEY, &body).expect("seal")
+        };
+        let good = chunk(5, ChannelId(3), "policy");
+        assert_eq!(edge.open_chunk(KEY, seal(&good)).expect("in scope"), good);
+        assert!(
+            matches!(other.open_chunk(KEY, seal(&good)), Err(KeyError::Scope(_))),
+            "another robot's key"
+        );
+        for bad in [
+            chunk(5, ChannelId(4), "policy"),
+            chunk(6, ChannelId(3), "policy"),
+            chunk(5, ChannelId(3), "mallory"),
+        ] {
+            assert!(
+                matches!(edge.open_chunk(KEY, seal(&bad)), Err(KeyError::Scope(_))),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sample_is_sealed_only_under_a_stream_key_of_this_robot() {
+        let mut robot = Keyring::new(Some(pid("arm")), 1);
+        let another = IssuedKey {
+            robot: Some(pid("gripper")),
+            ..stream_key(9, 1, true, Security::Mac)
+        };
+        assert_eq!(robot.install(&another, 0), Some(true));
+        assert!(matches!(
+            robot.seal_sample(KEY, &sample(1), false),
+            Err(KeyError::NoKey(_))
+        ));
+    }
+
+    #[test]
+    fn a_lockstep_request_travels_under_its_robots_command_key_of_that_token() {
+        let key = |send| lease_key(30, KeyPurpose::Command, "policy", "arm", 5, send);
+        let mut holder = Keyring::new(Some(pid("policy")), 1);
+        let mut edge = Keyring::new(Some(pid("arm")), 1);
+        let mut other = Keyring::new(Some(pid("gripper")), 1);
+        holder.install(&key(true), 0);
+        edge.install(&key(false), 0);
+        other.install(&key(false), 0);
+        let request = LockstepRequest {
+            request_id: 1,
+            op: crate::wire::LockstepOp::Probe,
+        };
+        let sealed = holder
+            .seal_lockstep_request(KEY, &pid("arm"), LeaseToken(5), &request)
+            .expect("seal");
+        assert_eq!(
+            edge.open_lockstep_request(KEY, sealed.clone())
+                .expect("open"),
+            (request.clone(), LeaseToken(5))
+        );
+        assert!(
+            matches!(
+                other.open_lockstep_request(KEY, sealed),
+                Err(KeyError::Scope(_))
+            ),
+            "another robot's key"
+        );
+        for (robot, token) in [("gripper", 5), ("arm", 6)] {
+            assert!(
+                matches!(
+                    holder.seal_lockstep_request(KEY, &pid(robot), LeaseToken(token), &request),
+                    Err(KeyError::NoKey(_))
+                ),
+                "{robot} {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lockstep_response_travels_under_this_robots_reply_key_of_that_token() {
+        let key = |send| lease_key(31, KeyPurpose::LockstepReply, "arm", "arm", 5, send);
+        let mut edge = Keyring::new(Some(pid("arm")), 1);
+        let mut holder = Keyring::new(Some(pid("policy")), 1);
+        edge.install(&key(true), 0);
+        edge.install(
+            &lease_key(32, KeyPurpose::LockstepReply, "arm", "gripper", 7, true),
+            0,
+        );
+        holder.install(&key(false), 0);
+        let response = LockstepResponse {
+            request_id: 1,
+            result: crate::wire::LockstepResult::Probe,
+        };
+        let mut seal = || {
+            edge.seal_lockstep_response(KEY, LeaseToken(5), &response)
+                .expect("seal")
+        };
+        let (good, robot, token) = (seal(), seal(), seal());
+        assert_eq!(
+            holder
+                .open_lockstep_response(KEY, good, &pid("arm"), LeaseToken(5))
+                .expect("open"),
+            response
+        );
+        assert!(matches!(
+            holder.open_lockstep_response(KEY, robot, &pid("gripper"), LeaseToken(5)),
+            Err(KeyError::Scope(_))
+        ));
+        assert!(matches!(
+            holder.open_lockstep_response(KEY, token, &pid("arm"), LeaseToken(6)),
+            Err(KeyError::Scope(_))
+        ));
+        // Key 32 names another robot, and no key names token 6.
+        for token in [6, 7] {
+            assert!(
+                matches!(
+                    edge.seal_lockstep_response(KEY, LeaseToken(token), &response),
+                    Err(KeyError::NoKey(_))
+                ),
+                "{token}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_estop_signal_opens_only_as_coming_from_its_keys_sender() {
+        let mut member = Keyring::new(Some(pid("policy")), 1);
+        let mut edge = Keyring::new(Some(pid("arm")), 1);
+        member.install(&estop_key(true), 0);
+        edge.install(&estop_key(false), 0);
+        let signal = EstopSignal {
+            reason: "stop".into(),
+            sent_ns: 1,
+        };
+        let good = member.seal_estop(KEY, &signal).expect("seal");
+        assert_eq!(
+            edge.open_estop(KEY, good, &pid("policy")).expect("open"),
+            signal
+        );
+        let forged = member.seal_estop(KEY, &signal).expect("seal");
+        assert!(matches!(
+            edge.open_estop(KEY, forged, &pid("mallory")),
+            Err(KeyError::Scope(_))
+        ));
+    }
+
+    #[test]
+    fn a_keyrings_debug_output_never_shows_a_keys_bytes() {
+        let secret = [0xa7; 32];
+        let key = IssuedKey {
+            key: KeyBytes(secret),
+            ..stream_key(9, 1, true, Security::Mac)
+        };
+        let mut ring = Keyring::new(Some(pid("arm")), 1);
+        ring.install(&key, 0);
+        crate::crypto::assert_redacted(&ring, &secret);
+        crate::crypto::assert_redacted(&key, &secret);
+        crate::crypto::assert_redacted(&KeyBytes(secret), &secret);
+    }
 }

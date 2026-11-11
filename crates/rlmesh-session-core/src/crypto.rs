@@ -169,6 +169,28 @@ mod tests {
     }
 }
 
+/// Asserts `value` prints something and none of it is `secret`, in the
+/// forms a careless `Debug` would use: hex, a byte list, the raw bytes.
+#[cfg(test)]
+pub(crate) fn assert_redacted(value: &impl core::fmt::Debug, secret: &[u8]) {
+    let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+    let list: Vec<String> = secret.iter().map(ToString::to_string).collect();
+    let list = list.join(",");
+    for printed in [format!("{value:?}"), format!("{value:#?}")] {
+        assert!(!printed.is_empty(), "it prints something");
+        let compact: String = printed.split_whitespace().collect();
+        assert!(!compact.to_lowercase().contains(&hex), "hex in {printed}");
+        assert!(!compact.contains(&list), "the bytes in {printed}");
+        assert!(
+            !printed
+                .as_bytes()
+                .windows(secret.len())
+                .any(|w| w == secret),
+            "raw bytes in {printed}"
+        );
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_rng {
     use super::{Rng, RngError};
