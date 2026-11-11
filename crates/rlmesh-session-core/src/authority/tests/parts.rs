@@ -123,3 +123,27 @@ fn a_detaching_owner_takes_its_parts_and_their_leases_along() {
     f.run("policy", Command::Detach, 2).expect("detach");
     assert!(f.auth.binding(&pid("policy")).is_none());
 }
+
+#[test]
+fn a_seal_policy_seals_exactly_the_parts_it_names() {
+    let (arm, gripper, other) = (pid("arm"), pid("gripper"), pid("other"));
+    assert!(!SealPolicy::None.seals(&arm, "ft"));
+    assert!(SealPolicy::All.seals(&arm, "ft"));
+    let policy = SealPolicy::Parts(vec![
+        "arm/ft".into(),
+        "arm/wrist/cam".into(),
+        "gripper/*".into(),
+        "malformed".into(),
+    ]);
+    for (robot, path, sealed) in [
+        (&arm, "ft", true),
+        (&arm, "wrist/cam", true),
+        (&arm, "cmd", false),
+        (&gripper, "anything", true),
+        (&gripper, "ft", true),
+        (&other, "ft", false),
+        (&other, "anything", false),
+    ] {
+        assert_eq!(policy.seals(robot, path), sealed, "{robot}/{path}");
+    }
+}
