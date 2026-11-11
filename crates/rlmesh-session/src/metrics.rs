@@ -132,7 +132,7 @@ pub struct ParticipantHealth {
     pub offset: Option<OffsetEstimate>,
     /// The latest heartbeat's report.
     pub report: Report,
-    /// The report's streams by name, `robot:path`.
+    /// The report's streams and timed parts by name, `robot:path`.
     pub parts: BTreeMap<ChannelId, String>,
     /// Edges: how each commanded part's chunks arrived, and how many were
     /// accepted (its latest heartbeat).

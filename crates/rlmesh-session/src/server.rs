@@ -415,6 +415,17 @@ impl SessionServer {
         self.hosts.lock().await.keys().copied().collect()
     }
 
+    /// Every session's participants' link health, as of each host's last
+    /// health interval.
+    pub async fn health(&self) -> Vec<(SessionId, Vec<crate::ParticipantHealth>)> {
+        self.hosts
+            .lock()
+            .await
+            .iter()
+            .map(|(id, host)| (*id, host.health()))
+            .collect()
+    }
+
     /// Every session's latest authority snapshot.
     pub async fn snapshots(&self) -> Vec<AuthoritySnapshot> {
         self.hosts

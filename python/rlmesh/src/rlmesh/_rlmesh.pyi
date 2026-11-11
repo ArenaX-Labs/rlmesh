@@ -998,6 +998,16 @@ class V2Host:
         r"""
         Stops the host (participants see it leave).
         """
+    def health(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        Each participant's link as the host measured it, as of its last
+        health interval (about a second): dicts of `participant`,
+        `heartbeats`, `rtt_ms`, `last_heartbeat_ms`, `data_path` (a robot's
+        realtime parts: `"tcp"` or `"udp"`), `chunks_accepted`,
+        `chunk_timing` (per commanded part: `received`, `accepted`, `lost`,
+        `late_ms`, `late_max_ms`, `gap_max_ms`) and `datagram_board`,
+        `datagram_host` (each end of a robot's datagram path, or `None`).
+        """
 
 @typing.final
 class V2LockstepRobot:

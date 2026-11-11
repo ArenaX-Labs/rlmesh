@@ -46,6 +46,22 @@ impl Placed {
         self.hosted.is_some()
     }
 
+    /// Its participants' link health, when this process hosts it (empty
+    /// otherwise).
+    pub async fn health(&self) -> Vec<crate::ParticipantHealth> {
+        let Some((server, _)) = &self.hosted else {
+            return Vec::new();
+        };
+        let session = self.address.session;
+        server
+            .health()
+            .await
+            .into_iter()
+            .find(|(id, _)| *id == session)
+            .map(|(_, rows)| rows)
+            .unwrap_or_default()
+    }
+
     /// Stops the host, if this process runs it (participants see it leave).
     pub async fn close(&mut self) -> Result<(), SessionError> {
         if let Some((host, transport)) = self.hosted.take() {

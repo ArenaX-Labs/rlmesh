@@ -275,6 +275,22 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
         assert edge["received"] == edge["accepted"]
         assert len(edge["late_ms"]) == 8 and sum(edge["late_ms"]) == edge["accepted"]
         assert edge["late_max_ms"] >= 0.0 and edge["gap_max_ms"] >= 0.0
+        # The host's health carries the robot's figures from its heartbeats.
+
+        def robot_row() -> dict[str, Any] | None:
+            rows = {row["participant"]: row for row in host.health()}
+            row = rows.get("ur10e")
+            return row if row and row["chunks_accepted"] > 0 else None
+
+        wait_until(
+            "the robot's chunk timing in the host's health",
+            lambda: robot_row() is not None,
+        )
+        row = robot_row()
+        assert row is not None and row["data_path"] == "tcp"
+        assert row["datagram_board"] is None and row["datagram_host"] is None
+        timing = row["chunk_timing"]["ur10e:arm"]
+        assert timing["accepted"] > 0 and len(timing["late_ms"]) == 8
         assert edge["modes"]["safe"] == (0, 0), "a released lease never latches safe"
 
 

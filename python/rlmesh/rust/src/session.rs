@@ -467,6 +467,7 @@ pub struct PyHost {
 }
 
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PyHost {
     /// Places the session `address` names (`":0"`: hosted here on an
@@ -488,6 +489,67 @@ impl PyHost {
     /// Stops the host (participants see it leave).
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         block_on(py, async { self.host.close().await.map_err(session_err) })
+    }
+
+    /// Each participant's link as the host measured it, as of its last
+    /// health interval (about a second): dicts of `participant`,
+    /// `heartbeats`, `rtt_ms`, `last_heartbeat_ms`, `data_path` (a robot's
+    /// realtime parts: `"tcp"` or `"udp"`), `chunks_accepted`,
+    /// `chunk_timing` (per commanded part: `received`, `accepted`, `lost`,
+    /// `late_ms`, `late_max_ms`, `gap_max_ms`) and `datagram_board`,
+    /// `datagram_host` (each end of a robot's datagram path, or `None`).
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn health<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let rows = block_on(py, async { Ok(self.host.health().await) })?;
+        let list = PyList::empty(py);
+        let ms = |ns: u64| ns as f64 * 1e-6;
+        for row in rows {
+            let d = PyDict::new(py);
+            d.set_item("participant", row.participant.as_str())?;
+            d.set_item("heartbeats", row.heartbeats)?;
+            d.set_item("rtt_ms", row.rtt_ns.map(ms))?;
+            d.set_item("last_heartbeat_ms", row.last_heartbeat_age_ns.map(ms))?;
+            d.set_item("data_path", row.data_path.name())?;
+            d.set_item("chunks_accepted", row.chunks_accepted)?;
+            let timing = PyDict::new(py);
+            for t in &row.chunk_timing {
+                let part = PyDict::new(py);
+                part.set_item("received", t.received)?;
+                part.set_item("accepted", t.accepted)?;
+                part.set_item("lost", t.lost)?;
+                part.set_item("late_ms", t.late_ms.to_vec())?;
+                part.set_item("late_max_ms", f64::from(t.late_max_us) * 1e-3)?;
+                part.set_item("gap_max_ms", f64::from(t.gap_max_us) * 1e-3)?;
+                let name = row
+                    .parts
+                    .get(&t.channel)
+                    .cloned()
+                    .unwrap_or_else(|| t.channel.to_string());
+                timing.set_item(name, part)?;
+            }
+            d.set_item("chunk_timing", timing)?;
+            for (key, end) in [
+                ("datagram_board", row.datagram_board),
+                ("datagram_host", row.datagram_host),
+            ] {
+                let value = end
+                    .map(|s| {
+                        let e = PyDict::new(py);
+                        e.set_item("active", s.active)?;
+                        e.set_item("sent", s.sent)?;
+                        e.set_item("received", s.received)?;
+                        e.set_item("lost", s.lost)?;
+                        e.set_item("reordered", s.reordered)?;
+                        e.set_item("unopened", s.unopened)?;
+                        e.set_item("fallbacks", s.fallbacks)?;
+                        PyResult::Ok(e)
+                    })
+                    .transpose()?;
+                d.set_item(key, value)?;
+            }
+            list.append(d)?;
+        }
+        Ok(list)
     }
 }
 

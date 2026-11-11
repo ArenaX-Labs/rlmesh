@@ -254,6 +254,15 @@ impl EmbeddedHost {
         &self.address
     }
 
+    /// Its participants' link health, when this process hosts the session
+    /// (empty otherwise): as of the host's last health interval.
+    pub async fn health(&self) -> Vec<crate::ParticipantHealth> {
+        match self.placed.lock().await.as_ref() {
+            Some(placed) => placed.health().await,
+            None => Vec::new(),
+        }
+    }
+
     /// Stops the host, if this process runs it (participants see it leave).
     /// Idempotent.
     pub async fn close(&self) -> Result<(), SessionError> {

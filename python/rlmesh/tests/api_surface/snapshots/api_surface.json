@@ -4217,6 +4217,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "health": {
+            "kind": "function",
+            "signature": "health() -> list[dict[str, Any]]"
           }
         },
         "signature": "Host(address: str = ':0', *, lease_grace_ms: int = 250, insecure: bool = False)",

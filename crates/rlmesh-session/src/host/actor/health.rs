@@ -135,7 +135,9 @@ impl HostActor {
                     .report
                     .last_seq_seen
                     .iter()
-                    .map(|(channel, _)| (*channel, self.authority.part_name(*channel)))
+                    .map(|(channel, _)| *channel)
+                    .chain(link.chunk_timing.iter().map(|t| t.channel))
+                    .map(|channel| (channel, self.authority.part_name(channel)))
                     .collect();
                 row.chunk_timing = link.chunk_timing.clone();
                 row.chunks_accepted = link.chunks_accepted;

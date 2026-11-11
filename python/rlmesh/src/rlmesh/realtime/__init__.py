@@ -147,6 +147,20 @@ class Host:
     def __repr__(self) -> str:
         return f"Host({redact_address(self.address)!r})"
 
+    def health(self) -> list[dict[str, Any]]:
+        """Each participant's link as this host measured it, about once a second.
+
+        Dicts of ``participant``, ``heartbeats``, ``rtt_ms``,
+        ``last_heartbeat_ms``, ``data_path`` (a robot's realtime parts:
+        ``"tcp"`` or ``"udp"``), ``chunks_accepted``, ``chunk_timing`` (per
+        commanded part, by ``robot:path``: ``received``, ``accepted``,
+        ``lost``, ``late_ms``, ``late_max_ms``, ``gap_max_ms``, as in
+        :meth:`Robot.edge_stats`) and ``datagram_board`` / ``datagram_host``
+        (each end of a board's datagram path, or ``None``). Empty for a
+        session another process hosts.
+        """
+        return self._native.health()
+
     def close(self) -> None:
         """Stop the host."""
         self._native.close()
