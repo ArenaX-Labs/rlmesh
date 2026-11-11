@@ -318,10 +318,6 @@ fn declarations_failing_the_rules_are_refused_naming_the_path_and_key() {
         refused(r#"{"a": {"kind": "joints", "count": 1, "hz": 1, "command": "position", "merge": "blend"}}"#).status,
         CtlStatus::Unsupported
     );
-    assert_eq!(
-        normalise(&robot(), 2, "{}").expect_err("version").status,
-        CtlStatus::Incompatible
-    );
     let many: Vec<String> = (0..=MAX_PARTS)
         .map(|i| format!(r#""p{i}": {{"kind": "text"}}"#))
         .collect();
@@ -330,4 +326,34 @@ fn declarations_failing_the_rules_are_refused_naming_the_path_and_key() {
             .message
             .contains("at most 256")
     );
+}
+
+#[test]
+fn a_robot_on_an_older_or_equal_kind_table_is_accepted() {
+    for (declared, own) in [(1, 1), (1, 3), (2, 3), (3, 3)] {
+        assert_eq!(
+            check_spec_version(declared, own),
+            Ok(()),
+            "{declared} on {own}"
+        );
+    }
+    assert!(normalise(&robot(), SPEC_VERSION, "{}").is_ok());
+}
+
+#[test]
+fn a_robot_on_a_newer_kind_table_is_told_to_upgrade_the_host() {
+    let err = check_spec_version(4, 3).expect_err("newer");
+    assert_eq!(err.status, CtlStatus::Incompatible);
+    for needle in ["4", "3", "upgrade the host"] {
+        assert!(err.message.contains(needle), "{}", err.message);
+    }
+    let err = normalise(&robot(), SPEC_VERSION + 1, "{}").expect_err("newer");
+    assert_eq!(err.status, CtlStatus::Incompatible);
+    assert!(err.message.contains("upgrade the host"), "{}", err.message);
+}
+
+#[test]
+fn kind_table_versions_start_at_one() {
+    let err = normalise(&robot(), 0, "{}").expect_err("zero");
+    assert_eq!(err.status, CtlStatus::Incompatible);
 }

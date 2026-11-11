@@ -6,7 +6,7 @@
 //! | Schema | protobuf | Additive only. Unknown fields are ignored; unknown enum values are refused where safety depends on them (`Mode`, `PriorityClass`, `EdgeMode`, dtypes) and ignored elsewhere. |
 //! | Protocol minor | [`PROTOCOL_MINOR`], announced in `Attach` and `AuthorityState` | Monotonic, 0 at v0.2. Any minor talks to any other. New behaviour is a **feature string** (`"merge.blend"`). |
 //! | Features | `Attach.supports/requires`, `AuthorityState.supports`, `PartSpec.requires` | Attach fails with `CtlStatus::Incompatible` if the host lacks a feature the participant requires. |
-//! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | New kinds and optional settings are additive. |
+//! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | New kinds and optional settings are additive. A host accepts a robot on any table from 1 up to its own, and refuses a newer one. |
 
 #[allow(unused_imports)]
 use crate::prelude::*;

@@ -118,6 +118,25 @@ pub fn authored_paths(robot_json: &str) -> Result<Vec<String>, CtlError> {
     Ok(map.0.into_iter().map(|(path, _)| path).collect())
 }
 
+/// A host accepts a robot on any kind table from 1 up to its own.
+fn check_spec_version(declared: u32, own: u32) -> Result<(), CtlError> {
+    if declared == 0 {
+        return Err(CtlError::new(
+            CtlStatus::Incompatible,
+            "kind table version 0: versions start at 1",
+        ));
+    }
+    if declared > own {
+        return Err(CtlError::new(
+            CtlStatus::Incompatible,
+            format!(
+                "kind table version {declared} is newer than this host's {own}: upgrade the host"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Normalises `robot`'s authored map. Every part comes back with channel id
 /// zero, in authored order.
 pub fn normalise(
@@ -125,12 +144,7 @@ pub fn normalise(
     spec_version: u32,
     robot_json: &str,
 ) -> Result<Vec<PartSpec>, CtlError> {
-    if spec_version != SPEC_VERSION {
-        return Err(CtlError::new(
-            CtlStatus::Incompatible,
-            format!("kind table version {spec_version}; this host speaks {SPEC_VERSION}"),
-        ));
-    }
+    check_spec_version(spec_version, SPEC_VERSION)?;
     let mut de = serde_json::Deserializer::from_str(robot_json);
     let map: Ordered<PartDecl> = serde_path_to_error::deserialize(&mut de)
         .map_err(|err| CtlError::new(CtlStatus::InvalidRequest, format!("robot map: {err}")))?;
