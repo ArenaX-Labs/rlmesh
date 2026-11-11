@@ -93,10 +93,11 @@ impl<'a> Binder<'a> {
                 }
             }
             if let Some(schema) = &slot.entry.schema {
+                // `fields` is already in the schema's order, by name.
                 let matches = schema.len() == source_fields.len()
                     && schema
                         .iter()
-                        .zip(&source_fields)
+                        .zip(&fields)
                         .all(|(a, b)| a.name == b.name && a.shape == b.shape);
                 if !matches {
                     self.incompatible(

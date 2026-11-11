@@ -489,6 +489,29 @@ fn refusal_text(json: &str, robot_name: &str) -> String {
 }
 
 #[test]
+fn a_custom_schema_binds_in_any_authored_field_order() {
+    let robot = r#"{"pose": {"kind": "pose/coco17", "hz": 15,
+        "fields": {"xy": ["float32", [17, 2]], "conf": ["float32", [17]]}}}"#;
+    let mut parts =
+        normalise(&ParticipantId::new("cam").expect("id"), SPEC_VERSION, robot).expect("robot");
+    parts[0].channel = ChannelId(1);
+    for fields in [
+        r#"{"xy": ["float32", [17, 2]], "conf": ["float32", [17]]}"#,
+        r#"{"conf": ["float32", [17]], "xy": ["float32", [17, 2]]}"#,
+    ] {
+        let policy = format!(
+            r#"{{"hz": 15, "inputs": {{"pose": {{"kind": "pose/coco17", "at": "pose", "fields": {fields}}}}}}}"#
+        );
+        bind(
+            &Policy::parse(&policy).expect("policy"),
+            &parts,
+            &RunOptions::named("inline"),
+        )
+        .unwrap_or_else(|err| panic!("{fields}: {err}"));
+    }
+}
+
+#[test]
 fn two_actions_on_one_command_group_are_refused() {
     let text = refusal_text(
         r#"{"hz": 10, "actions": {
