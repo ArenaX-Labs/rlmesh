@@ -5432,10 +5432,10 @@ dependencies = [
  "rayon",
  "re_mp4",
  "reqwest",
- "rlmesh-adapters",
+ "rlmesh-adapters 0.2.0-alpha.0",
  "rlmesh-proto",
  "rlmesh-session",
- "rlmesh-spaces",
+ "rlmesh-spaces 0.2.0-alpha.0",
  "rustls",
  "scoped-tls-hkt",
  "serde",
@@ -5455,15 +5455,38 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-adapters"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f5d95555fd229750d57076450d0b597dba61ff977d04044a142b0e6f09c3f21"
+dependencies = [
+ "image",
+ "jpeg-encoder",
+ "rlmesh-spaces 0.1.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rlmesh-adapters"
 version = "0.2.0-alpha.0"
 dependencies = [
  "image",
  "jpeg-encoder",
  "rlmesh-session-core",
- "rlmesh-spaces",
+ "rlmesh-spaces 0.2.0-alpha.0",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rlmesh-adapters-compat"
+version = "0.2.0-alpha.0"
+dependencies = [
+ "rlmesh-adapters 0.1.0",
+ "rlmesh-adapters 0.2.0-alpha.0",
+ "serde_json",
 ]
 
 [[package]]
@@ -5473,7 +5496,7 @@ dependencies = [
  "async-trait",
  "libc",
  "rlmesh",
- "rlmesh-spaces",
+ "rlmesh-spaces 0.2.0-alpha.0",
  "serde_json",
  "tokio",
 ]
@@ -5572,11 +5595,11 @@ dependencies = [
  "pyo3-stub-gen-derive",
  "rand 0.10.1",
  "rlmesh",
- "rlmesh-adapters",
+ "rlmesh-adapters 0.2.0-alpha.0",
  "rlmesh-cli",
  "rlmesh-proto",
  "rlmesh-session",
- "rlmesh-spaces",
+ "rlmesh-spaces 0.2.0-alpha.0",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -5649,6 +5672,18 @@ dependencies = [
  "uuid",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "rlmesh-spaces"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "350e369401591693d62f5e8a45e5b2370cd305ba080e8640b25d392c27fc1a6f"
+dependencies = [
+ "chacha20 0.10.2",
+ "half",
+ "rand 0.10.1",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
