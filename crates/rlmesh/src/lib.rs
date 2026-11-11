@@ -33,9 +33,8 @@
 //!
 //! # Features
 //!
-//! - `lockstep`: the [`lockstep`] module, Gym envs and v1 model servers
-//!   over a v2 session (participant addresses for [`EnvServer`] and
-//!   local models). Pulls in `rlmesh-session`.
+//! Sessions, serving and running are always built; the features add the
+//! optional surfaces.
 //!
 //! - `viewer` (default): the live terminal/HTTP [`viewer`] behind
 //!   [`View`]. Without it a run's `view` warns and shows nothing.
