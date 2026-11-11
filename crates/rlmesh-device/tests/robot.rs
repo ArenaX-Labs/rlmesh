@@ -23,8 +23,8 @@ use rlmesh_session::crypto::{Rng, RngError, SignedChecker};
 use rlmesh_session::edge::Rejection;
 use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listeners};
 use rlmesh_session::wire::{
-    ChannelId, EdgeMode, Fingerprint, InputRange, Mode, ParticipantId, Plan, PriorityClass, Role,
-    SessionId, TenantId,
+    ChannelId, CtlStatus, EdgeMode, Fingerprint, InputRange, Mode, ParticipantId, Plan,
+    PriorityClass, Role, SessionId, TenantId,
 };
 use rlmesh_session::{
     ChunkDraft, HostConfig, Participant, ParticipantConfig, SessionHost, SubscribeOptions,
@@ -1602,6 +1602,47 @@ async fn a_board_joins_a_session_whose_state_outgrew_its_transport() {
         board.oversized.load(std::sync::atomic::Ordering::Relaxed) > 0,
         "the state itself never reached the board"
     );
+}
+
+/// Refused in a session whose state is larger than a board reassembles, a
+/// board still hears why: the refusal carries the reason, not the state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_refused_in_a_session_whose_state_outgrew_its_transport_hears_why() {
+    // Enrolled for everything but embodying a robot: its attach is refused.
+    let private = [0x44_u8; 32];
+    let mut access = DeviceAccess::new(Some(PriorityClass::Model));
+    access.roles = vec![Role::Controller];
+    let world = World::start_with(vec![Device {
+        id: "board-eyes".into(),
+        public: rlmesh_device::provision::public_key(&private),
+        access,
+    }])
+    .await;
+    let policy = world.controller().await;
+    let table = format!(r#"{{"note": "{}"}}"#, "x".repeat(PICO_MESSAGE));
+    policy
+        .declare_binding(Fingerprint::from(7), &table, Vec::new(), 0.0)
+        .await
+        .expect("binding");
+
+    let mut key = private;
+    let credential = Credential::new(
+        StaticKeypair::from_private(&mut key),
+        *world.identity.static_public(),
+    );
+    let mut robot = world.robot_as(credential);
+    let mut board = Board::open(&world).await;
+    board.pico = true;
+    board
+        .run(&mut robot, WAIT, &Arc::default(), |r| r.fault().is_some())
+        .await;
+    match robot.fault() {
+        Some(Fault::Refused(status, why)) => {
+            assert_eq!(*status, CtlStatus::NotAuthorized, "{why}");
+            assert!(why.contains("may not attach as embodiment"), "{why}");
+        }
+        other => panic!("refused without a reason: {other:?} in {:?}", robot.phase()),
+    }
 }
 
 /// A chunk the edge refuses says why, and what can't be opened at all is

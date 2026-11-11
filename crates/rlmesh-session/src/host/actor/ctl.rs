@@ -4,8 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::wire::codec;
+use std::collections::BTreeMap;
+
 use crate::wire::{
-    Command, CtlError, CtlReply, CtlStatus, IssuedKey, Lease, ParticipantId, ViewReply,
+    AuthoritySnapshot, Command, CtlError, CtlReply, CtlStatus, IssuedKey, Lease, ParticipantId,
+    ViewReply,
 };
 use rlmesh_session_core::auth::Admit;
 use rlmesh_session_core::crypto::Kind;
@@ -69,16 +72,7 @@ impl HostActor {
             Err(err) => {
                 // Unauthenticated: a plain refusal, a hint only.
                 info!(status = ?err.status, "ctl refused: {}", err.message);
-                let reply = CtlReply {
-                    result: Err(err),
-                    state: self.snapshot(),
-                    leases: Vec::new(),
-                    request_id: 0,
-                    keys: Vec::new(),
-                    assignment: None,
-                    run: None,
-                };
-                Self::reply(query, codec::encode_reply(&reply));
+                Self::reply(query, self.refusal(err, 0));
                 return;
             }
         };
@@ -124,16 +118,23 @@ impl HostActor {
         let encoded = match admitted {
             // A retry of an answered request: the same reply, sealed afresh.
             Some(cached) if !cached.is_empty() => cached,
-            Some(_) => self.answer(
-                &peer.participant,
-                Err(CtlError::new(
+            Some(_) => {
+                let expired = CtlError::new(
                     CtlStatus::Expired,
                     format!("request {request_id} is below the reply window: re-read the state"),
-                )),
-                Vec::new(),
-                Vec::new(),
-                request_id,
-            ),
+                );
+                if self.in_effect(&peer) {
+                    self.answer(
+                        &peer.participant,
+                        Err(expired),
+                        Vec::new(),
+                        Vec::new(),
+                        request_id,
+                    )
+                } else {
+                    self.refusal(expired, request_id)
+                }
+            }
             None => {
                 let outcome = match request {
                     Ok(request) => self.execute(&peer, request).await,
@@ -193,14 +194,17 @@ impl HostActor {
                         return;
                     }
                 };
-                let encoded = self.answer_with(
-                    &peer.participant,
-                    result,
-                    (leases, keys),
-                    request_id,
-                    (None, None),
-                    declares,
-                );
+                let encoded = match result {
+                    Err(err) if !self.in_effect(&peer) => self.refusal(err, request_id),
+                    result => self.answer_with(
+                        &peer.participant,
+                        result,
+                        (leases, keys),
+                        request_id,
+                        (None, None),
+                        declares,
+                    ),
+                };
                 lock(&peer.requests).complete(request_id, encoded.clone());
                 encoded
             }
@@ -227,12 +231,7 @@ impl HostActor {
                 ),
             ));
         }
-        let in_effect = self
-            .peers
-            .read()
-            .ok()
-            .and_then(|p| p.current.get(&peer.participant).cloned())
-            .is_some_and(|current| Arc::ptr_eq(&current, peer));
+        let in_effect = self.in_effect(peer);
         if !in_effect {
             if !matches!(request.command, Command::Attach { .. }) {
                 return Outcome::Drop;
@@ -352,6 +351,32 @@ impl HostActor {
         }
     }
 
+    /// Whether `peer` is the generation in effect for its participant: its
+    /// identity is established.
+    fn in_effect(&self, peer: &Arc<Peer>) -> bool {
+        self.peers
+            .read()
+            .ok()
+            .and_then(|p| p.current.get(&peer.participant).cloned())
+            .is_some_and(|current| Arc::ptr_eq(&current, peer))
+    }
+
+    /// A refusal of a requester whose identity is not established (an
+    /// attach refused, a request that did not open): the status, the
+    /// message and the state's header, never the whole state, which can be
+    /// larger than a board reassembles.
+    fn refusal(&self, err: CtlError, request_id: u64) -> Vec<u8> {
+        codec::encode_reply(&CtlReply {
+            result: Err(err),
+            state: header(self.snapshot()),
+            leases: Vec::new(),
+            request_id,
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        })
+    }
+
     /// The encoded reply: the result, the snapshot right after it and the
     /// caller's keys.
     pub(super) fn answer(
@@ -382,11 +407,13 @@ impl HostActor {
     ) -> Vec<u8> {
         let state = self.snapshot();
         // A robot that takes its device view gets it in place of the state: a board
-        // never decodes the state.
+        // never decodes the state. A refusal carries no view: the reason is
+        // what it needs, and its view keeps coming on its own.
         if asks_for_view(&state, to) {
+            let view = result.is_ok().then(|| view_of(&state, to, parts));
             return codec::encode_view_reply(&ViewReply {
                 result,
-                view: Some(view_of(&state, to, parts)),
+                view,
                 leases,
                 request_id,
                 keys,
@@ -403,5 +430,24 @@ impl HostActor {
             assignment,
             run,
         })
+    }
+}
+
+/// `state` without its lists: what the session is (its id, epoch, revision,
+/// mode and why, the host's protocol), not who is in it or what they hold.
+fn header(state: AuthoritySnapshot) -> AuthoritySnapshot {
+    AuthoritySnapshot {
+        roster: Vec::new(),
+        leases: Vec::new(),
+        clocks: Vec::new(),
+        parts: Vec::new(),
+        bindings: Vec::new(),
+        contract: BTreeMap::new(),
+        demands: Vec::new(),
+        ended: Vec::new(),
+        places: Vec::new(),
+        scene: None,
+        held: Vec::new(),
+        ..state
     }
 }
