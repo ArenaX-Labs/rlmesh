@@ -168,6 +168,8 @@ chip() {
       echo "memcpy in $name for $mcu runs from flash, not ESP-IDF's IRAM or ROM copy" >&2
       exit 1
     fi
+    # The deepest call on the loop task fits the stack the library declares.
+    python3 "$lib/test/check_stack.py" --objdump "${nm%nm}objdump" --elf "$out/$name.ino.elf"
   done
   mkdir -p "$target_dir/esp32/dist"
   python3 - "$package" "$target_dir/esp32/dist/RLMesh-$mcu.zip" <<'ZIP'

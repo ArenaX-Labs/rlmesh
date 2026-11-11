@@ -122,7 +122,9 @@ Pass `ARDUINO_CLI=/path/to/arduino-cli` to use another Arduino CLI, and
 The task stages archives in `src/<chip>/`, compiles both examples without
 transport flags, and writes installable ZIPs in `target/esp32/dist/`.
 It checks that private transport symbols are local and firmware `memcpy`
-comes from ESP-IDF's IRAM or ROM. ZIPs include zenoh-pico's license and notice.
+comes from ESP-IDF's IRAM or ROM, and `test/check_stack.py` holds the firmware's
+stack frames and deepest call chains to stated budgets. ZIPs include
+zenoh-pico's license and notice.
 
 `test:esp32:host` compiles the same C transport on Linux. A real loopback
 session host and controller send two distinct action targets; the board loop
