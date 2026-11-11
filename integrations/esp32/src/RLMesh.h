@@ -142,6 +142,16 @@ class Robot {
   uint64_t refusals(uint8_t code) const;
   // Prints the refusals on one line, with a count per reason.
   void printRefusals(Print& out) const;
+  // What the robot received and dropped over every attach, keeping what it
+  // held: `what` 0 its views, 1 replies, 2 chunks that did not open, 3
+  // anything else; `code` 1 to RLMESH_DEVICE_DROPPED
+  // (rlmesh_device_dropped_name names them).
+  uint64_t dropped(uint8_t what, uint8_t code) const;
+  // Prints what was dropped on one line, by what and why.
+  void printDropped(Print& out) const;
+  // Sealed views taken, signed views taken, and views dropped, over every
+  // attach.
+  void viewCounts(uint64_t& sealed, uint64_t& signedViews, uint64_t& droppedViews) const;
 
  private:
   bool start(const rlmesh_device_robot_config_t& config);

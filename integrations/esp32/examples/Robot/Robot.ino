@@ -66,6 +66,8 @@ uint32_t lastReport = 0;
 uint8_t lastRefusal = 0;
 uint64_t lastRefused = 0;
 uint32_t lastRefusalReport = 0;
+uint64_t lastDropped = 0;
+uint32_t lastDroppedCheck = 0;
 uint64_t nextTick = 0;
 
 // A hobby servo: 1500 us centred, 1000 us either way over about 90 degrees.
@@ -130,11 +132,30 @@ void report() {
     lastRefusalReport = millis();
     robot.printRefusals(Serial);
   }
+  // What the board could not take (a view too large for it, a reply that
+  // did not open): checked every 5 s, printed when it grew.
+  if (millis() - lastDroppedCheck > 5000) {
+    lastDroppedCheck = millis();
+    uint64_t dropped = 0;
+    for (uint8_t what = 0; what < 4; ++what) {
+      for (uint8_t code = 1; code <= RLMESH_DEVICE_DROPPED; ++code) {
+        dropped += robot.dropped(what, code);
+      }
+    }
+    if (dropped != lastDropped) {
+      lastDropped = dropped;
+      robot.printDropped(Serial);
+    }
+  }
   if (robot.running() && millis() - lastReport > 5000) {
     lastReport = millis();
     Serial.printf("  mode %u, epoch %llu, %llu chunks, %llu echoes, e-stop %u, heap %lu\n", s.mode,
                   (unsigned long long)s.epoch, (unsigned long long)s.chunks_accepted,
                   (unsigned long long)s.echoes, s.estop, (unsigned long)ESP.getFreeHeap());
+    uint64_t sealed, signedViews, droppedViews;
+    robot.viewCounts(sealed, signedViews, droppedViews);
+    Serial.printf("  views: %llu sealed, %llu signed, %llu dropped\n", (unsigned long long)sealed,
+                  (unsigned long long)signedViews, (unsigned long long)droppedViews);
   }
 }
 

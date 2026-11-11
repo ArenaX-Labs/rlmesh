@@ -208,4 +208,32 @@ void Robot::printRefusals(Print& out) const {
   out.println();
 }
 
+uint64_t Robot::dropped(uint8_t what, uint8_t code) const {
+  return robot_ != nullptr ? rlmesh_device_robot_dropped(robot_, what, code) : 0;
+}
+
+void Robot::printDropped(Print& out) const {
+  static const char* const kWhat[] = {"views", "replies", "chunks", "other"};
+  out.print("  dropped:");
+  bool any = false;
+  for (uint8_t what = 0; what < 4; ++what) {
+    for (uint8_t code = 1; code <= RLMESH_DEVICE_DROPPED; ++code) {
+      uint64_t n = dropped(what, code);
+      if (n == 0) continue;
+      out.printf(" %s %s %llu", kWhat[what], rlmesh_device_dropped_name(code),
+                 (unsigned long long)n);
+      any = true;
+    }
+  }
+  if (!any) out.print(" none");
+  out.println();
+}
+
+void Robot::viewCounts(uint64_t& sealed, uint64_t& signedViews, uint64_t& droppedViews) const {
+  sealed = signedViews = droppedViews = 0;
+  if (robot_ != nullptr) {
+    rlmesh_device_robot_view_counts(robot_, &sealed, &signedViews, &droppedViews);
+  }
+}
+
 }  // namespace rlmesh
