@@ -27,6 +27,17 @@ security fixes) until you can move both sides. Names that 0.1 exported and
   holds the arm/disarm/e-stop state and records every session as MCAP
   (a rolling window, plus kept incidents), which
   `python -m rlmesh.realtime.lerobot` exports as a LeRobot dataset.
+- `rlmesh host --board-data udp` (`RLMESH_BOARD_DATA`) carries boards'
+  realtime parts (chunks down, states and `_applied` up) over UDP on the
+  host's realtime port, sealed as before, so a lost Wi-Fi frame no longer
+  stalls the stream behind it; everything else stays on TCP, and a board
+  falls back to TCP on its own. The default is `tcp`. `--tcp-notsent-lowat`
+  bounds the host's unsent TCP backlog, for comparison.
+- Every edge times each commanded part's chunks (received, lost, lateness
+  against their slot, the longest gap), in `Robot.edge_stats`, the host's
+  health (`Host.health()`, the cockpit, recordings) and a board's
+  `printChunkTiming`. A board's heartbeat now carries its newest accepted
+  chunk's seq where it carried its count.
 - The session snapshot lists every robot held until re-armed by name, with
   why and since when; `Robot.held` and `Policy.held` read it.
 - A commanded part bounds the clock error it accepts with

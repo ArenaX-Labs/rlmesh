@@ -105,6 +105,37 @@ The board tries its stored home addresses in order, authenticating the host
 by the key it was provisioned with. Four consecutive TCP ports from the
 host's base port must be reachable.
 
+### UDP for the realtime parts
+
+A host started with `rlmesh host --board-data udp` offers its datagram path
+in the handshake: the board then takes its parts' action chunks and sends
+their states and `_applied` entries over UDP, from one socket opened after
+it attaches, to the host's base port plus one (UDP 7448 by default: open it
+in the host's firewall). Everything else stays on TCP. A lost Wi-Fi frame
+then costs that one message instead of stalling the stream behind it until
+TCP sends it again. Datagrams are sealed and replay-checked as the session's
+messages are; the board probes the host about once a second, under its own
+key, so the host follows it to a new address.
+
+`robot.useDatagram(false)`, after `begin()` and before the first `poll()`,
+keeps a board on TCP whatever the host offers; the default follows the host.
+Restart the host with `--board-data tcp` (the default) to switch every board
+back: they switch as they re-attach, with no reflash. A board that holds a
+lease but gets no chunk over UDP for longer than the part holds (and three
+chunk periods, and a second before the first chunk) while its heartbeats are
+answered, or whose sends fail, goes back to TCP until its next attach and
+tells the host.
+
+To compare the paths, the same counters run on both: `robot.printChunkTiming
+(Serial, part)` (chunks received, accepted, lost, lateness against their slot
+in log2 buckets of milliseconds and its maximum, the longest gap between
+accepted chunks), `robot.printDatagram(Serial)` (the path in use, datagrams
+sent, received, lost, reordered and unopened, and fallbacks), and the C
+getters `rlmesh_device_robot_chunk_timing` and
+`rlmesh_device_robot_datagram_stats`. The `Robot` example prints both every
+5 s. The host's `host/health` (the cockpit, recordings) carries the board's
+figures and its own end's.
+
 When replies stop for five seconds the board closes its links and joins again,
 backing off to one attempt every 30 seconds for as long as it runs: a host
 restart or a Wi-Fi drop never needs a reset.

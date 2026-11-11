@@ -330,6 +330,54 @@ to give it the usual short life instead. Any part whose command mode holds
 its target can opt in with `latch: true`; the host refuses it on a velocity
 or torque, which would run away.
 
+## The datagram path for boards
+
+Over Wi-Fi a board loses packets. On TCP one lost packet holds back
+everything behind it until it is sent again, a few hundred milliseconds
+later, and then the backlog arrives at once: chunks that are now too old
+and are refused, then states the policy has no use for. Everything a board
+streams is latest-wins anyway, so the host can carry it over UDP instead:
+
+```sh
+rlmesh host --board-data udp          # or RLMESH_BOARD_DATA=udp
+```
+
+The host then also listens on UDP at its realtime port (7448 by default:
+`RLMESH_PORT + 1`; open it in the firewall) and offers that in each
+board's handshake. A board that takes it gets its realtime parts' action
+chunks over UDP, and sends their states and `_applied` entries back the
+same way; the host relays them to and from the session, so policies, the
+recorder and the cockpit see the same samples. Everything else stays on
+TCP: joining, leases, keys, device views, e-stop, heartbeats, and any part
+declared `priority: control`. A virtual-clock session keeps TCP, as does a
+board built before this path or one told not to take it
+(`robot.useDatagram(false)` in a sketch, after `begin()`).
+
+Each datagram carries exactly the sealed message the session would carry,
+so it is authenticated (and encrypted, beyond loopback) and replay-checked
+as before; one that does not open is dropped and counted. The host sends a
+board nothing before it opened a probe from it, sealed under that board's
+own key, and follows a board whose address changes with its next probe. A
+part whose chunks or samples could be larger than one datagram (1400
+bytes) stays on TCP, and the host says so: send fewer actions per chunk to
+move it over.
+
+A board that holds a lease but gets no chunk over UDP for longer than the
+part holds (and three chunk periods) while its control link is fine, or
+whose sends fail, goes back to TCP until it next attaches, and tells the
+host; the host does the same for a board whose samples stop arriving.
+Restart the host with `--board-data tcp` (the default) to put every board
+back on TCP: they switch as they re-attach.
+
+Each attach logs the path the robot takes. The counters to compare the two
+paths with are the same on both:
+
+| Where                                                                                                                                                        | What                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A sketch: `robot.printChunkTiming(Serial, part)`, `robot.printDatagram(Serial)`; C: `rlmesh_device_robot_chunk_timing`, `rlmesh_device_robot_datagram_stats` | Per commanded part: chunks received and accepted, refusals by reason, losses (gaps in their seqs), lateness against their slot (log2 buckets in ms, and the maximum) and the longest gap between accepted chunks. The board's end of the datagram path: sent, received, lost, reordered, unopened, fallbacks. |
+| Python: `robot.edge_stats(path)`, `Host.health()`                                                                                                            | The same per part for a Python robot: `received`, `lost`, `late_ms`, `late_max_ms`, `gap_max_ms`, beside `accepted` and `rejected_by`; a hosting process's `Host.health()` has every participant's row, as below.                                                                                             |
+| `host/health`, the cockpit and recordings (`/_session/health`); `rlmesh host` logs                                                                           | Each board's chunk timing and accepted count (its heartbeats), the path it rides, and both ends' datagram counters.                                                                                                                                                                                           |
+
 ## Safety
 
 - The session starts disarmed; nothing moves until it is armed.
