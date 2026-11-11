@@ -649,6 +649,8 @@ pub struct Robot {
     ticked: Vec<Option<u64>>,
     tick_periods: Vec<u64>,
     accepted: u64,
+    /// The newest accepted chunk's seq.
+    last_accepted: u64,
     applied: u64,
     /// This robot's e-stop latch: its own stop (`ESTOP_LOCAL`)
     /// or a member's signal (`ESTOP_SIGNAL`). It outlives a session, and the
@@ -777,6 +779,7 @@ impl Robot {
                 last_get_keys: None,
                 tick_periods: Vec::new(),
                 accepted: 0,
+                last_accepted: 0,
                 applied: 0,
                 estop: None,
                 latches: 0,
@@ -1606,11 +1609,15 @@ impl Robot {
             return;
         };
         apply_latch(edge, latch);
+        let seq = chunk.seq;
         match edge
             .core
             .accept(chunk, now, self.view.as_ref(), self.observed_ns)
         {
-            Ok(_) => self.accepted += 1,
+            Ok(_) => {
+                self.accepted += 1;
+                self.last_accepted = seq;
+            }
             Err(reason) => edge.refused(reason, now),
         }
     }
@@ -2138,7 +2145,7 @@ impl Robot {
             t1_ns: ns(now_us),
             previous: self.previous.take(),
             last_seq_seen: Vec::new(),
-            last_chunk_accepted: self.accepted,
+            last_chunk_accepted: self.last_accepted,
             last_chunk_applied: self.applied,
             queue_depth,
             health: Health::Ok,
@@ -2149,7 +2156,7 @@ impl Robot {
                 .filter_map(|e| e.core.clock_refused().cloned())
                 .collect(),
             chunk_timing: Vec::new(),
-            chunks_accepted: 0,
+            chunks_accepted: self.accepted,
             datagram: None,
         };
         let Some(link) = self.link.as_mut() else {
