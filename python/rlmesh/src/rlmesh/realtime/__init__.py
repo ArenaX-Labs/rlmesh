@@ -32,6 +32,7 @@ reused at once.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from types import TracebackType
@@ -96,6 +97,19 @@ __all__ = [
 #: dict of arrays) per action entry out.
 Predict = Callable[["Observation"], Mapping[str, Any]]
 
+_log = logging.getLogger(__name__)
+
+
+def _close_leaving(close: Callable[[], object], exc: BaseException | None) -> None:
+    """Close on leaving a ``with`` block; an exception already in flight stays the one raised."""
+    if exc is None:
+        close()
+        return
+    try:
+        close()
+    except Exception as failed:
+        _log.warning("closing after %s also failed: %s", type(exc).__name__, failed)
+
 
 class Host:
     """The session at ``address`` (``[host/][session]``), by the hosting rule.
@@ -142,7 +156,7 @@ class Host:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        _close_leaving(self.close, exc)
 
 
 def _address(session: Host | str) -> str:
@@ -601,7 +615,7 @@ class Robot:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        _close_leaving(self.close, exc)
 
 
 class Meta:
@@ -901,7 +915,7 @@ class Policy:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        _close_leaving(self.close, exc)
 
 
 class SessionRecorder:
@@ -949,7 +963,7 @@ class SessionRecorder:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        _close_leaving(self.close, exc)
 
 
 def read_recording(path: str | os.PathLike[str]) -> dict[str, Any]:

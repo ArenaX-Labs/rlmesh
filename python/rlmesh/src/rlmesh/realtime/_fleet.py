@@ -16,7 +16,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from .. import _rlmesh
-from . import Robot, _json
+from . import Robot, _close_leaving, _json
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -143,7 +143,7 @@ class Scene:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        _close_leaving(self.close, exc)
 
 
 def run_scene(
