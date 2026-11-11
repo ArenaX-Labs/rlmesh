@@ -23,7 +23,9 @@ use crate::provision::Record;
 use rlmesh_session_core::edge::Rejection;
 use rlmesh_session_core::lobby::Leave;
 
-use crate::robot::{Action, Config, Fault, Phase, PublishError, Robot};
+use crate::robot::{
+    Action, Config, Dropped, Fault, MAX_RECEIVED, Phase, PublishError, Received, Robot,
+};
 
 /// `rlmesh_device_robot_config_t`.
 #[repr(C)]
@@ -550,8 +552,18 @@ pub unsafe extern "C" fn rlmesh_device_robot_sample(
     let Ok(key) = core::str::from_utf8(key) else {
         return RLMESH_DEVICE_ERR_ARG;
     };
-    // Opened in place: the transport's buffer is its own.
-    let mut copy = data.to_vec();
+    if data.len() > MAX_RECEIVED {
+        r.robot.drop_received(sub, Dropped::TooLarge);
+        return RLMESH_DEVICE_OK;
+    }
+    // Opened in place: the transport's buffer is its own. The copy may
+    // fail: dropped and counted, never an abort.
+    let mut copy = Vec::new();
+    if copy.try_reserve_exact(data.len()).is_err() {
+        r.robot.drop_received(sub, Dropped::NoMemory);
+        return RLMESH_DEVICE_OK;
+    }
+    copy.extend_from_slice(data);
     r.robot.sample(sub, key, &mut copy, now_us);
     RLMESH_DEVICE_OK
 }
@@ -687,7 +699,12 @@ pub unsafe extern "C" fn rlmesh_device_checker_check(
     let Ok(key) = core::str::from_utf8(key) else {
         return core::ptr::null_mut();
     };
-    match c.0.check(key, data.to_vec()) {
+    let mut copy = Vec::new();
+    if data.len() > MAX_RECEIVED || copy.try_reserve_exact(data.len()).is_err() {
+        return core::ptr::null_mut();
+    }
+    copy.extend_from_slice(data);
+    match c.0.check(key, copy) {
         Ok(checked) => Box::into_raw(Box::new(DeviceChecked(checked))),
         Err(_) => core::ptr::null_mut(),
     }
@@ -970,8 +987,9 @@ fn status_code(status: CtlStatus) -> u8 {
     }
 }
 
-// The header's `RLMESH_DEVICE_REFUSALS`.
+// The header's `RLMESH_DEVICE_REFUSALS` and `RLMESH_DEVICE_DROPPED`.
 const _: () = assert!(Rejection::ALL.len() == 17);
+const _: () = assert!(Dropped::ALL.len() == 6);
 
 /// A refusal's code: its place in [`Rejection::ALL`], from 1.
 fn refusal_code(reason: Rejection) -> u8 {
@@ -1012,6 +1030,56 @@ pub extern "C" fn rlmesh_device_refusal_name(code: u8) -> *const c_char {
         Rejection::Unauthenticated => c"unauthenticated",
     };
     name.as_ptr()
+}
+
+/// The name of a drop reason's code (1 to `RLMESH_DEVICE_DROPPED`), static
+/// and NUL-terminated, or null for any other.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_device_dropped_name(code: u8) -> *const c_char {
+    let Some(why) = dropped(code) else {
+        return core::ptr::null();
+    };
+    let name = match why {
+        Dropped::Unopened => c"unopened",
+        Dropped::Replayed => c"replayed",
+        Dropped::Malformed => c"malformed",
+        Dropped::TooLarge => c"too_large",
+        Dropped::NoMemory => c"no_memory",
+        Dropped::Stale => c"stale",
+    };
+    name.as_ptr()
+}
+
+/// The drop reason with `code`.
+fn dropped(code: u8) -> Option<Dropped> {
+    Dropped::ALL.get(usize::from(code.checked_sub(1)?)).copied()
+}
+
+/// What the robot received and dropped for drop reason `code`, over every
+/// attach: `what` 0 for its views, 1 for replies, 2 for chunks that did not
+/// open, 3 for anything else; 0 for any other `what` or code. A view, reply or message it cannot afford
+/// or read is dropped and counted here, and the robot keeps what it held.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_dropped(
+    robot: *const DeviceRobot,
+    what: u8,
+    code: u8,
+) -> u64 {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return 0;
+    };
+    let what = match what {
+        0 => Received::View,
+        1 => Received::Reply,
+        2 => Received::Chunk,
+        3 => Received::Other,
+        _ => return 0,
+    };
+    dropped(code).map_or(0, |why| r.robot.dropped(what, why))
 }
 
 /// Chunks refused this attach for the refusal `code`; 0 for any other code.

@@ -243,6 +243,17 @@ int rlmesh_device_robot_wants_signed_views(const rlmesh_device_robot_t* robot);
  * any pointer may be NULL. */
 int rlmesh_device_robot_view_counts(const rlmesh_device_robot_t* robot, uint64_t* sealed,
                                     uint64_t* signed_, uint64_t* refused);
+/* Drop reasons, 1 to RLMESH_DEVICE_DROPPED: what a robot received and
+ * dropped, counted, keeping what it held (its last good view). */
+#define RLMESH_DEVICE_DROPPED 6
+/* A drop reason's name (unopened, replayed, malformed, too_large, no_memory,
+ * stale), static; NULL for any other code. */
+const char* rlmesh_device_dropped_name(uint8_t code);
+/* What the robot dropped for reason code over every attach: what is 0 for
+ * its views, 1 for replies, 2 for chunks that did not open, 3 for anything
+ * else. */
+uint64_t rlmesh_device_robot_dropped(const rlmesh_device_robot_t* robot, uint8_t what,
+                                     uint8_t code);
 typedef struct rlmesh_device_checker_t rlmesh_device_checker_t;
 typedef struct rlmesh_device_checked_t rlmesh_device_checked_t;
 /* The verifier for the robot's current link, once per link (free it with

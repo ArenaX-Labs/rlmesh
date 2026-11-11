@@ -26,7 +26,7 @@ use bytes::Bytes;
 use rlmesh_session_core::auth::keyring::KeyError;
 use rlmesh_session_core::auth::{self, Credential, Link, LinkError, ReplyOutcome};
 use rlmesh_session_core::crypto::handshake::IkInitiator;
-use rlmesh_session_core::crypto::{Checked, Rng, SignedChecker, signed};
+use rlmesh_session_core::crypto::{Checked, OpenError, Rng, SignedChecker, SignedError, signed};
 use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick, Rejection};
 use rlmesh_session_core::lobby::{self, LOBBY_SESSION, Leave, Lobby, WAIT_RETRY};
 use rlmesh_session_core::wire::codec;
@@ -36,7 +36,7 @@ use rlmesh_session_core::wire::version::{
 use rlmesh_session_core::wire::{
     AuthorityView, ChannelId, ChannelPriority, ClockMode, Command, CtlError, CtlStatus, DeviceView,
     Epoch, Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, Plan, PriorityClass, Reason,
-    ReasonCode, Role, Sample, SessionId, SessionKeys, StreamSpec, TenantId, TimingSample,
+    ReasonCode, Role, Sample, SessionId, SessionKeys, StreamSpec, TenantId, TimingSample, Unread,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -63,6 +63,9 @@ const GET_KEYS_MS: u64 = 250;
 /// must not grow a board's memory. Past it the oldest that is not a stop
 /// report goes; a stop report replaces the one waiting.
 const CTL_QUEUE_MAX: usize = 16;
+/// The longest message a robot takes: what zenoh-pico reassembles at most
+/// (`Z_FRAG_MAX_SIZE`, as boards are built). Longer is dropped unread.
+pub const MAX_RECEIVED: usize = 4096;
 
 /// The control class: the host's first port.
 pub const CLASS_CONTROL: u8 = 0;
@@ -259,6 +262,91 @@ pub enum Fault {
     /// A message failed to seal or decode (a bug, or the RNG failed), or
     /// the host's parts don't match the map.
     Internal,
+}
+
+/// What a robot received and dropped ([`Robot::dropped`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Received {
+    /// Its device view, sealed or signed.
+    View,
+    /// A reply to one of its queries.
+    Reply,
+    /// A part's commands (an action chunk) that did not open: the edge's
+    /// refusal counts say why the rest were refused.
+    Chunk,
+    /// Anything else: keys, echoes, ticks, e-stop signals.
+    Other,
+}
+
+impl Received {
+    fn row(self) -> usize {
+        match self {
+            Self::View => 0,
+            Self::Reply => 1,
+            Self::Chunk => 2,
+            Self::Other => 3,
+        }
+    }
+}
+
+/// Why a robot dropped what it received ([`Robot::dropped`]). None of these
+/// costs it what it held: it keeps its last good view, and its loop goes
+/// on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dropped {
+    /// It failed to open or verify: under a key it does not hold (another
+    /// generation's, or one not delivered yet), forged, or unsigned.
+    Unopened,
+    /// A copy of one it already opened.
+    Replayed,
+    /// It opened but is malformed, or another robot's or generation's.
+    Malformed,
+    /// More than the robot takes: too long, or too many of something.
+    TooLarge,
+    /// The heap had no room for it now.
+    NoMemory,
+    /// A view no newer than the one held.
+    Stale,
+}
+
+impl Dropped {
+    /// Every reason, in code order (a code is its index plus one).
+    pub const ALL: [Self; 6] = [
+        Self::Unopened,
+        Self::Replayed,
+        Self::Malformed,
+        Self::TooLarge,
+        Self::NoMemory,
+        Self::Stale,
+    ];
+
+    fn of(err: &LinkError) -> Self {
+        let wire = match err {
+            LinkError::Wire(wire) | LinkError::Key(KeyError::Wire(wire)) => wire,
+            LinkError::Open(OpenError::Replayed(_))
+            | LinkError::Key(KeyError::Open(OpenError::Replayed(_)))
+            | LinkError::Signed(SignedError::Stale(_)) => return Self::Replayed,
+            LinkError::Key(KeyError::Scope(_)) => return Self::Malformed,
+            LinkError::Open(_) | LinkError::Signed(_) | LinkError::Key(_) => {
+                return Self::Unopened;
+            }
+            _ => return Self::Malformed,
+        };
+        match wire.why_unread() {
+            Some(Unread::TooLarge(_)) => Self::TooLarge,
+            Some(Unread::NoMemory) => Self::NoMemory,
+            _ => Self::Malformed,
+        }
+    }
+}
+
+/// `payload`, copied into an allocation that may fail: a receive path
+/// never aborts the board for want of memory.
+fn copied(payload: &[u8]) -> Option<Vec<u8>> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(payload.len()).ok()?;
+    copy.extend_from_slice(payload);
+    Some(copy)
 }
 
 /// Why [`Robot::publish`] sent nothing.
@@ -507,20 +595,24 @@ pub struct Robot {
     checker_due: bool,
     /// This link took a sealed view: signed ones are ignored from then on.
     sealed_seen: bool,
-    /// Sealed views taken, signed views taken, and views refused (not
-    /// opened, another generation's, or not newer than the one held), over
-    /// every attach.
+    /// Sealed views taken and signed views taken, over every attach.
     sealed_views: u64,
     signed_views: u64,
-    view_refusals: u64,
+    /// What it dropped, by what and why ([`Received`], [`Dropped`]), over
+    /// every attach.
+    dropped: [[u64; Dropped::ALL.len()]; 4],
     pending: Option<Pending>,
     queue: VecDeque<Command>,
     /// An unsealed refusal of the `ctl` request in flight: a hint, kept in
     /// case no sealed answer comes.
     hint: Option<Fault>,
     /// What the host says about this robot: its own signed view, or the
-    /// part of a ctl reply's state it would hold (the same).
+    /// part of a ctl reply's state it would hold (the same). Never its
+    /// parts: those are in `parts`.
     view: Option<DeviceView>,
+    /// The view held before it: the next is decoded into its buffers, so
+    /// a view like the last allocates nothing.
+    spare: Option<DeviceView>,
     /// Signed views opened from `host/view/{id}`, over every attach.
     views: u64,
     /// Local time the view was observed at.
@@ -653,11 +745,12 @@ impl Robot {
                 sealed_seen: false,
                 sealed_views: 0,
                 signed_views: 0,
-                view_refusals: 0,
+                dropped: [[0; Dropped::ALL.len()]; 4],
                 pending: None,
                 queue: VecDeque::new(),
                 hint: None,
                 view: None,
+                spare: None,
                 views: 0,
                 observed_ns: 0,
                 parts: Vec::new(),
@@ -945,8 +1038,12 @@ impl Robot {
         core::mem::take(&mut self.out)
     }
 
-    /// A reply to query `id`. `now_us` and `rng` drive the next step.
+    /// A reply to query `id`. `now_us` and `rng` drive the next step. One
+    /// longer than [`MAX_RECEIVED`] is dropped unread.
     pub fn reply(&mut self, id: u32, payload: &[u8], now_us: u64, rng: &mut dyn Rng) {
+        if payload.len() > MAX_RECEIVED {
+            return self.drop(Received::Reply, Dropped::TooLarge);
+        }
         if self.pending.as_ref().is_some_and(|p| p.query.id == id) {
             return self.ctl_reply(payload, now_us);
         }
@@ -1068,11 +1165,15 @@ impl Robot {
         }
     }
 
-    /// A sample on subscription `sub`, received on `key`.
+    /// A sample on subscription `sub`, received on `key`. One longer than
+    /// [`MAX_RECEIVED`] is dropped unread.
     pub fn sample(&mut self, sub: u8, key: &str, payload: &mut [u8], now_us: u64) {
         let now = ns(now_us);
         if self.link.is_none() {
             return;
+        }
+        if payload.len() > MAX_RECEIVED {
+            return self.drop_received(sub, Dropped::TooLarge);
         }
         // Each kind out of line: inlined, their temporaries add up in one
         // frame underneath the signature check, a board's deepest call.
@@ -1085,25 +1186,66 @@ impl Robot {
             SUB_KEYS => self.sample_keys(payload, now),
             _ => {
                 if let Some(index) = sub.checked_sub(SUB_COMMANDS) {
-                    self.chunk(usize::from(index), payload.to_vec(), now);
+                    let Some(msg) = copied(payload) else {
+                        return self.drop_received(sub, Dropped::NoMemory);
+                    };
+                    self.chunk(usize::from(index), msg, now);
                 }
             }
         }
     }
 
+    /// What the robot received on subscription `sub` and dropped unread,
+    /// counted: a transport that could not even copy it (no memory) says so
+    /// here.
+    pub fn drop_received(&mut self, sub: u8, why: Dropped) {
+        let what = match sub {
+            SUB_VIEW | SUB_VIEW_SEALED => Received::View,
+            SUB_TICK | SUB_ECHO | SUB_KEYS | SUB_ESTOP => Received::Other,
+            _ => Received::Chunk,
+        };
+        self.drop(what, why);
+    }
+
+    fn drop(&mut self, what: Received, why: Dropped) {
+        if let Some(n) = Dropped::ALL
+            .iter()
+            .position(|d| *d == why)
+            .and_then(|at| self.dropped[what.row()].get_mut(at))
+        {
+            *n += 1;
+        }
+    }
+
+    /// How many of `what` the robot dropped for `why`, over every attach.
+    pub fn dropped(&self, what: Received, why: Dropped) -> u64 {
+        Dropped::ALL
+            .iter()
+            .position(|d| *d == why)
+            .map_or(0, |at| self.dropped[what.row()][at])
+    }
+
+    /// The view to decode the next into: the one held before the current,
+    /// with its buffers.
+    fn spare(&mut self) -> DeviceView {
+        self.spare
+            .take()
+            .unwrap_or_else(|| DeviceView::empty(self.config.name.clone()))
+    }
+
     #[inline(never)]
     fn sample_view(&mut self, payload: &mut [u8], now_us: u64) {
-        let now = ns(now_us);
         if self.sealed_seen {
             return;
         }
+        let mut view = self.spare();
         let Some(link) = self.link.as_mut() else {
+            self.spare = Some(view);
             return;
         };
-        if let Ok(view) = link.open_view(&self.routes.view, payload) {
-            link.observe(&view, now);
+        let opened = link.open_view_into(&self.routes.view, payload, &mut view);
+        if self.took_view(opened, view, now_us) {
             self.signed_views += 1;
-            self.took_view(view, now_us);
         }
     }
 
@@ -1111,26 +1253,16 @@ impl Robot {
     /// cipher's cost, and from then on this link ignores signed views.
     #[inline(never)]
     fn sample_sealed_view(&mut self, payload: &mut [u8], now_us: u64) {
-        let now = ns(now_us);
+        let mut view = self.spare();
         let Some(link) = self.link.as_mut() else {
+            self.spare = Some(view);
             return;
         };
-        let Ok(view) = link.open_sealed_view(&self.routes.sealed_view, payload) else {
-            self.view_refusals += 1;
-            return;
-        };
-        if self
-            .view
-            .as_ref()
-            .is_some_and(|held| (held.revision, held.host_ns) >= (view.revision, view.host_ns))
-        {
-            self.view_refusals += 1;
-            return;
+        let opened = link.open_sealed_view_into(&self.routes.sealed_view, payload, &mut view);
+        if self.took_view(opened, view, now_us) {
+            self.sealed_seen = true;
+            self.sealed_views += 1;
         }
-        link.observe(&view, now);
-        self.sealed_seen = true;
-        self.sealed_views += 1;
-        self.took_view(view, now_us);
     }
 
     /// Whether a transport should still check signed views for this robot:
@@ -1140,19 +1272,37 @@ impl Robot {
         !self.sealed_seen
     }
 
-    /// Sealed views taken, signed views taken, and views refused (not
-    /// opened, another generation's, or not newer than the one held), over
-    /// every attach.
+    /// Sealed views taken, signed views taken, and views dropped (for any
+    /// [`Dropped`] reason), over every attach.
     pub fn view_counts(&self) -> (u64, u64, u64) {
-        (self.sealed_views, self.signed_views, self.view_refusals)
+        (
+            self.sealed_views,
+            self.signed_views,
+            self.dropped[0].iter().sum(),
+        )
     }
 
-    /// A verified signed view, from either path.
-    fn took_view(&mut self, view: DeviceView, now_us: u64) {
+    /// A view decoded into `view`, if `opened`: taken when newer than the
+    /// one held, and otherwise dropped and counted. Whichever is not held
+    /// becomes the spare.
+    fn took_view(&mut self, opened: Result<(), LinkError>, view: DeviceView, now_us: u64) -> bool {
+        if let Err(err) = opened {
+            self.spare = Some(view);
+            self.drop(Received::View, Dropped::of(&err));
+            return false;
+        }
+        let now = ns(now_us);
+        if !self.observe(view, now) {
+            self.drop(Received::View, Dropped::Stale);
+            return false;
+        }
+        if let (Some(link), Some(view)) = (self.link.as_mut(), self.view.as_ref()) {
+            link.observe(view, now);
+        }
         self.views += 1;
         self.last_heard = now_us;
-        self.observe(view, ns(now_us));
         self.check_leave(now_us);
+        true
     }
 
     /// A verifier for this link's signed broadcasts, once per link: a
@@ -1175,13 +1325,14 @@ impl Robot {
         if sub != SUB_VIEW || self.sealed_seen {
             return;
         }
+        let mut view = self.spare();
         let Some(link) = self.link.as_mut() else {
+            self.spare = Some(view);
             return;
         };
-        if let Ok(view) = link.take_view(&self.routes.view, checked) {
-            link.observe(&view, ns(now_us));
+        let opened = link.take_view_into(&self.routes.view, checked, &mut view);
+        if self.took_view(opened, view, now_us) {
             self.signed_views += 1;
-            self.took_view(view, now_us);
         }
     }
 
@@ -1189,9 +1340,9 @@ impl Robot {
     fn sample_tick(&mut self, payload: &mut [u8]) {
         let key = self.keys.host_tick();
         if let Some(link) = self.link.as_mut() {
-            // Verified to keep the host's sequence floor; lockstep isn't
-            // run on a board yet.
-            let _ = link.tick(&key, payload);
+            // Verified, not decoded, to keep the host's sequence floor;
+            // lockstep isn't run on a board yet.
+            let _ = link.verify_tick(&key, payload);
         }
     }
 
@@ -1212,7 +1363,10 @@ impl Robot {
         let Some(link) = self.link.as_mut() else {
             return;
         };
-        if let Ok((by, signal)) = link.open_estop_signal(key, payload.to_vec()) {
+        let Some(msg) = copied(payload) else {
+            return self.drop(Received::Other, Dropped::NoMemory);
+        };
+        if let Ok((by, signal)) = link.open_estop_signal(key, msg) {
             self.latch(Reason {
                 code: ReasonCode::EstopSignal,
                 by: by.to_string(),
@@ -1229,10 +1383,10 @@ impl Robot {
         let Some(link) = self.link.as_mut() else {
             return;
         };
-        if let Ok(ack) = link.keys(&key, payload, now)
-            && !ack.is_empty()
-        {
-            self.enqueue(Command::KeysAck(ack));
+        match link.keys(&key, payload, now) {
+            Ok(ack) if !ack.is_empty() => self.enqueue(Command::KeysAck(ack)),
+            Ok(_) => {}
+            Err(err) => self.drop(Received::Other, Dropped::of(&err)),
         }
     }
 
@@ -1372,13 +1526,25 @@ impl Robot {
         let chunk = match link.open_chunk(key, msg) {
             Ok(chunk) => chunk,
             Err(err) => {
+                let why = Dropped::of(&err);
+                self.drop(Received::Chunk, why);
+                // Authentic but unreadable is malformed; anything that did
+                // not open is unauthenticated.
+                let rejection = match why {
+                    Dropped::Malformed | Dropped::TooLarge | Dropped::NoMemory
+                        if matches!(err, LinkError::Key(KeyError::Wire(_))) =>
+                    {
+                        Rejection::Malformed
+                    }
+                    _ => Rejection::Unauthenticated,
+                };
                 if let Some(Some(edge)) = self
                     .edge_of
                     .get(index)
                     .map(|e| e.and_then(|i| self.edges.get_mut(i)))
                 {
-                    edge.core.count_rejection(Rejection::Unauthenticated);
-                    edge.refused(Rejection::Unauthenticated, now);
+                    edge.core.count_rejection(rejection);
+                    edge.refused(rejection, now);
                 }
                 let now_us = u64::try_from(now / 1000).unwrap_or(0);
                 return self.missing_key(&err, now_us);
@@ -1493,21 +1659,33 @@ impl Robot {
         }
     }
 
+    /// The link's keyring takes `view` (it orders views itself): out of
+    /// line, so a reply's decoder is not underneath its frames, a board's
+    /// deepest.
+    #[inline(never)]
+    fn observe_link(&mut self, view: &DeviceView, now: i64) {
+        if let Some(link) = self.link.as_mut() {
+            link.observe(view, now);
+        }
+    }
+
     /// Takes `view` if it is newer than the one held (a later revision, or
     /// a later republish of the same one): views and ctl replies arrive in
-    /// any order.
-    fn observe(&mut self, view: DeviceView, now: i64) {
+    /// any order. The one not held becomes the spare.
+    fn observe(&mut self, view: DeviceView, now: i64) -> bool {
         let order = |v: &DeviceView| (v.revision, v.host_ns);
         if self
             .view
             .as_ref()
             .is_some_and(|held| order(held) > order(&view))
         {
-            return;
+            self.spare = Some(view);
+            return false;
         }
-        self.view = Some(view);
+        self.spare = self.view.replace(view);
         self.observed_ns = now;
         self.sync_demands();
+        true
     }
 
     /// Installs the view's delivery plan on every stream this robot
@@ -1697,32 +1875,52 @@ impl Robot {
     fn ctl_reply(&mut self, payload: &[u8], now_us: u64) {
         let now = ns(now_us);
         let ctl = self.keys.ctl();
+        let Some(mut bytes) = copied(payload) else {
+            return self.drop(Received::Reply, Dropped::NoMemory);
+        };
+        let mut view = self.spare();
         let (Some(link), Some(pending)) = (self.link.as_mut(), self.pending.as_ref()) else {
+            self.spare = Some(view);
             return;
         };
-        let mut bytes = payload.to_vec();
-        let reply = match link.reply_view(&ctl, &mut bytes, pending.request, now) {
-            Ok(ReplyOutcome::Answer(reply)) => reply,
+        // Its parts, once: in the answer to its declaration.
+        let declaring = matches!(pending.command, Command::DeclareParts { .. });
+        let answer =
+            link.reply_view_into(&ctl, &mut bytes, pending.request, now, &mut view, declaring);
+        let (reply, carried) = match answer {
+            Ok(ReplyOutcome::Answer(answer)) => *answer,
             Ok(ReplyOutcome::Hint(refusal)) => {
+                self.spare = Some(view);
                 self.hint = Some(Fault::Refused(refusal.status, refusal.message));
                 return;
             }
-            Ok(ReplyOutcome::Other(_)) | Err(_) => return,
+            Ok(ReplyOutcome::Other(_)) => {
+                self.spare = Some(view);
+                return;
+            }
+            Err(err) => {
+                self.spare = Some(view);
+                return self.drop(Received::Reply, Dropped::of(&err));
+            }
         };
         self.last_heard = now_us;
         let joining = self.joining();
         let Some(pending) = self.pending.take() else {
+            self.spare = Some(view);
             return;
         };
         self.hint = None;
-        let reply = *reply;
+        let parts = core::mem::take(&mut view.parts);
         // A view participant's replies carry its view, not the state.
-        if let Some(view) = reply.view {
+        if carried {
+            self.observe_link(&view, now);
             self.observe(view, now);
             self.check_leave(now_us);
             if self.phase == Phase::Stopped || self.pending.is_none() && self.link.is_none() {
                 return;
             }
+        } else {
+            self.spare = Some(view);
         }
         match reply.result {
             Err(refusal) if joining => {
@@ -1756,7 +1954,7 @@ impl Robot {
                 });
             }
             (Phase::Declare, Command::DeclareParts { .. }) => {
-                if !self.build_edges() {
+                if !self.build_edges(&parts) {
                     return self.fail(Fault::Internal, now_us);
                 }
                 self.sync_demands();
@@ -1774,18 +1972,15 @@ impl Robot {
         self.next_ctl(now_us);
     }
 
-    /// This robot's parts as the host declared them, an edge per command
-    /// group, and a subscription to each commandable part's commands (as
-    /// the host-side `Edge::attach` does).
-    fn build_edges(&mut self) -> bool {
-        let Some(view) = self.view.as_ref() else {
-            return false;
-        };
+    /// This robot's parts as the host declared them (`declared`, from the
+    /// answer to its declaration), an edge per command group, and a
+    /// subscription to each commandable part's commands (as the host-side
+    /// `Edge::attach` does).
+    fn build_edges(&mut self, declared: &[PartSpec]) -> bool {
         let me = &self.config.name;
         let mut parts = Vec::with_capacity(self.paths.len());
         for path in &self.paths {
-            match view
-                .parts
+            match declared
                 .iter()
                 .find(|p| &p.owner == me && p.path.as_str() == path)
             {
@@ -2025,7 +2220,7 @@ impl Robot {
         self.command_keys.clear();
         self.edges.clear();
         self.edge_of = alloc::vec![None; self.paths.len()];
-        self.view = None;
+        self.spare = self.view.take().or_else(|| self.spare.take());
     }
 
     fn in_lobby(&self) -> bool {
@@ -2066,19 +2261,33 @@ impl Robot {
     fn wait_reply(&mut self, payload: &[u8], now_us: u64) {
         let now = ns(now_us);
         let ctl = self.keys.ctl();
+        let Some(mut bytes) = copied(payload) else {
+            return self.drop(Received::Reply, Dropped::NoMemory);
+        };
+        let mut view = self.spare();
         let (Some(link), Some((_, request, _))) = (self.link.as_mut(), self.wait.as_ref()) else {
+            self.spare = Some(view);
             return;
         };
-        let mut bytes = payload.to_vec();
-        let Ok(ReplyOutcome::Answer(reply)) = link.reply_view(&ctl, &mut bytes, *request, now)
-        else {
-            return;
+        let answer = link.reply_view_into(&ctl, &mut bytes, *request, now, &mut view, false);
+        let (reply, carried) = match answer {
+            Ok(ReplyOutcome::Answer(answer)) => *answer,
+            Ok(_) => {
+                self.spare = Some(view);
+                return;
+            }
+            Err(err) => {
+                self.spare = Some(view);
+                return self.drop(Received::Reply, Dropped::of(&err));
+            }
         };
         self.last_heard = now_us;
         self.wait = None;
-        let reply = *reply;
-        if let Some(view) = reply.view {
+        if carried {
+            self.observe_link(&view, now);
             self.observe(view, now);
+        } else {
+            self.spare = Some(view);
         }
         if let Err(refusal) = reply.result {
             // The lobby dropped the wait: a new one.
@@ -2252,6 +2461,8 @@ fn fault_error(fault: &Fault) -> CtlError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlmesh_session_core::wire::Member;
+    use rlmesh_session_core::wire::codec::MAX_VIEW_MEMBERS;
 
     fn robot() -> Box<Robot> {
         let keypair = |b: u8| {
@@ -2272,6 +2483,122 @@ mod tests {
             home_id: String::new(),
         })
         .unwrap()
+    }
+
+    /// Counts up: keys for a handshake no one else checks.
+    struct Counter(u8);
+
+    impl Rng for Counter {
+        fn fill_bytes(
+            &mut self,
+            dest: &mut [u8],
+        ) -> Result<(), rlmesh_session_core::crypto::RngError> {
+            for b in dest {
+                self.0 = self.0.wrapping_add(1);
+                *b = self.0;
+            }
+            Ok(())
+        }
+    }
+
+    /// A robot attached to a host it shares nothing else with: its link,
+    /// and the host's end of it, which seals what the robot opens.
+    fn attached() -> (Box<Robot>, rlmesh_session_core::auth::Candidate) {
+        use rlmesh_session_core::auth::{HostAuth, HostIdentity};
+        let mut rng = Counter(0);
+        let identity = HostIdentity::generate(&mut rng).expect("identity");
+        let mut robot = robot();
+        robot.config.credential = identity.local_credential();
+        let session = robot.session.to_string();
+        let mut auth = HostAuth::new(&identity, robot.tenant.as_str(), &session, 7);
+        let (initiator, hello) = robot
+            .config
+            .credential
+            .start(
+                &mut rng,
+                robot.tenant.as_str(),
+                &session,
+                7,
+                &robot.config.name,
+            )
+            .expect("hello");
+        let (msg2, host) = auth
+            .handshake(
+                &mut rng,
+                &identity,
+                &hello,
+                &rlmesh_session_core::authority::Access::default(),
+            )
+            .expect("handshake");
+        let attached = auth::finish(initiator, &msg2).expect("attached");
+        robot.generation = attached.accept.generation;
+        robot.link = Some(Link::new(robot.config.name.clone(), attached));
+        robot.started = true;
+        robot.phase = Phase::Running;
+        (robot, host)
+    }
+
+    #[test]
+    fn a_view_it_cannot_take_is_dropped_and_the_one_held_kept() {
+        let (mut robot, mut host) = attached();
+        let key = robot.routes.sealed_view.clone();
+        let mut seal = |body: &[u8]| {
+            host.down
+                .seal(rlmesh_session_core::crypto::Kind::DeviceView, &key, body)
+                .expect("seal")
+        };
+        let good = DeviceView {
+            revision: 3,
+            generation: robot.generation,
+            ..DeviceView::empty(robot.config.name.clone())
+        };
+        let mut msg = seal(&codec::encode_view(&good));
+        robot.sample(SUB_VIEW_SEALED, &key, &mut msg, 1);
+        assert_eq!(robot.view().map(|v| v.revision), Some(3));
+
+        let mut head = alloc::vec![0x0a, 4];
+        head.extend(b"eyes");
+        head.extend([0x50, u8::try_from(robot.generation).expect("small")]);
+        let with = |tail: &[u8]| [&head[..], tail].concat();
+        // Two thousand empty members, and a length prefix of four gigabytes.
+        let mut many = seal(&with(&[0x82, 0x01, 0x00].repeat(2000)));
+        robot.sample(SUB_VIEW_SEALED, &key, &mut many, 2);
+        let mut long = seal(&with(&[0x82, 0x01, 0xff, 0xff, 0xff, 0xff, 0x0f]));
+        robot.sample(SUB_VIEW_SEALED, &key, &mut long, 3);
+        // A real view of a session larger than a board keeps keys for.
+        let crowded = DeviceView {
+            revision: 4,
+            members: (0..=MAX_VIEW_MEMBERS)
+                .map(|i| Member {
+                    id: ParticipantId::new(alloc::format!("p{i}")).expect("id"),
+                    generation: 1,
+                })
+                .collect(),
+            ..good.clone()
+        };
+        let mut crowded = seal(&codec::encode_view(&crowded));
+        robot.sample(SUB_VIEW_SEALED, &key, &mut crowded, 4);
+        // Longer than its transport delivers: not even opened.
+        let mut huge = alloc::vec![0; MAX_RECEIVED + 1];
+        robot.sample(SUB_VIEW_SEALED, &key, &mut huge, 5);
+
+        assert_eq!(robot.dropped(Received::View, Dropped::TooLarge), 3);
+        assert_eq!(robot.dropped(Received::View, Dropped::Malformed), 1);
+        assert_eq!(robot.view_counts(), (1, 0, 4));
+        assert_eq!(
+            robot.view().map(|v| v.revision),
+            Some(3),
+            "the good one kept"
+        );
+        // The loop goes on, and the next good view is taken.
+        let _ = robot.poll(6);
+        assert_eq!(robot.phase(), Phase::Running);
+        let mut next = seal(&codec::encode_view(&DeviceView {
+            revision: 5,
+            ..good
+        }));
+        robot.sample(SUB_VIEW_SEALED, &key, &mut next, 7);
+        assert_eq!(robot.view().map(|v| v.revision), Some(5));
     }
 
     #[test]
