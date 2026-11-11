@@ -8,7 +8,7 @@
 //!   [ambiguous] input "image" (kind camera, at "*/cam") matches 2 parts:
 //!       wrist/cam   camera 640x480 @30 Hz
 //!       scene/cam   camera 1280x720 @15 Hz
-//!     fix: rlmesh.run(..., at={"image": "scene/cam"})
+//!     fix: policy.bind(at={"image": "scene/cam"})
 //! ```
 //!
 //! A binding table has one row per entry (direction, part, status, plan and

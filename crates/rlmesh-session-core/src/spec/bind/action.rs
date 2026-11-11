@@ -71,9 +71,9 @@ impl<'a> Binder<'a> {
                         part.owner
                     ),
                     vec![format!(
-                        "    fix: place {} in the scene, or bind it on its own: rlmesh.run(..., robot={:?})",
+                        "    fix: place {} in the scene, or bind it on its own: {}",
                         part.owner,
-                        part.owner.as_str()
+                        self.run.with_robot(part.owner.as_str())
                     )],
                 );
                 return None;

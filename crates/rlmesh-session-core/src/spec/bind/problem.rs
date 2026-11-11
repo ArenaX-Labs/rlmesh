@@ -1,5 +1,5 @@
-//! Refusals: their codes and problems, the re-run call they suggest, and
-//! how the binder records them.
+//! Refusals: their codes and problems, the call they suggest, and how the
+//! binder records them.
 
 use super::table::Dir;
 use super::{Binder, Slot};
@@ -116,6 +116,10 @@ impl fmt::Display for BindError {
 
 impl core::error::Error for BindError {}
 
+/// The callable a refusal's fix spells out, on the policy the user is
+/// binding. A Python test checks every rendered call against its signature.
+const BIND_CALL: &str = "policy.bind";
+
 /// The options a refusal's fix repeats, plus what it adds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RunCall {
@@ -147,6 +151,12 @@ impl RunCall {
         }
     }
 
+    pub(crate) fn with_robot(&self, robot: &str) -> String {
+        let mut call = self.clone();
+        call.robot = Some(robot.into());
+        call.render()
+    }
+
     pub(crate) fn with_at(&self, entry: &str, path: &str) -> String {
         let mut call = self.clone();
         call.at.retain(|(e, _)| e != entry);
@@ -175,9 +185,9 @@ impl RunCall {
 
     fn render(&self) -> String {
         let quote = |s: &str| format!("{s:?}");
-        let mut args = vec!["...".to_string()];
+        let mut args = Vec::new();
         if let Some(robot) = &self.robot {
-            args.push(format!("robot={}", quote(robot)));
+            args.push(quote(robot));
         }
         if let Some(under) = &self.under {
             args.push(format!("under={}", quote(under)));
@@ -205,7 +215,7 @@ impl RunCall {
             let items: Vec<String> = self.allow.iter().map(|a| quote(a)).collect();
             args.push(format!("allow=[{}]", items.join(", ")));
         }
-        format!("rlmesh.run({})", args.join(", "))
+        format!("{BIND_CALL}({})", args.join(", "))
     }
 }
 

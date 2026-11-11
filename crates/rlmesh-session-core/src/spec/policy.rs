@@ -940,7 +940,7 @@ impl Policy {
     }
 }
 
-/// How a policy is run: the overrides `rlmesh.run(...)` takes.
+/// How a policy is bound: the overrides `Policy.bind(...)` takes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunOptions {
     /// The policy's name, for the table and refusals.

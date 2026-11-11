@@ -445,6 +445,37 @@ fn pi05_libero_on_a_v2_native_libero_robot() {
     );
 }
 
+/// One fix with every option repeated: what the Python test of the hints
+/// reads, so no keyword goes unchecked.
+#[test]
+fn a_fix_repeats_every_option_the_call_gave() {
+    let options = RunOptions::named("every_option")
+        .under("right")
+        .expect("under")
+        .at("wrist", "wrist/cam")
+        .expect("at")
+        .positional("state")
+        .allow(Allow::Resize);
+    let options = RunOptions {
+        robot: Some(ParticipantId::new("aloha2").expect("id")),
+        ..options
+    };
+    let policy = Policy::parse(
+        r#"{"hz": 20,
+            "inputs": {
+                "image": {"kind": "camera", "at": "*/cam"},
+                "wrist": {"kind": "camera"},
+                "state": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
+            "actions": {}}"#,
+    )
+    .expect("policy");
+    let parts = robot("aloha2");
+    let Err(BindError::Refused(refusal)) = bind(&policy, &parts, &options) else {
+        panic!("expected a refusal");
+    };
+    golden("every_option__aloha2__refused", &refusal.to_string());
+}
+
 #[test]
 fn an_ambiguous_selector_and_an_unallowed_resize() {
     let refusal = refused("my_vla", "ur10e", RunOptions::named("my_vla"));

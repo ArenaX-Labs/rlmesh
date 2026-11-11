@@ -5,4 +5,4 @@ binding refused: pi0_single on aloha2 under "right" (2 problems)
       robot names: waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate
     no name in common, so they cannot be reordered.
     fix: if index i means the same joint on both, bind both positionally:
-         rlmesh.run(..., under="right", names={"state": "positional", "arm": "positional"})
+         policy.bind(under="right", names={"state": "positional", "arm": "positional"})
