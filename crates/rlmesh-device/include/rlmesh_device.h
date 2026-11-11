@@ -222,6 +222,27 @@ int rlmesh_device_robot_query_done(rlmesh_device_robot_t* robot, uint32_t query_
  * NUL-terminated: an e-stop signal names its sender in it). */
 int rlmesh_device_robot_sample(rlmesh_device_robot_t* robot, uint8_t sub, const char* key,
                                size_t key_len, const uint8_t* data, size_t len, uint64_t now_us);
+/* A verifier of a robot's signed broadcasts, and a broadcast it verified: a
+ * signature check takes longer than a control period on a board, so a
+ * transport can run it on another task. The sample on this subscription is a
+ * signed device view: pass it to the checker, not _robot_sample. */
+#define RLMESH_DEVICE_SUB_VIEW 0
+typedef struct rlmesh_device_checker_t rlmesh_device_checker_t;
+typedef struct rlmesh_device_checked_t rlmesh_device_checked_t;
+/* The verifier for the robot's current link, once per link (free it with
+ * _checker_free); NULL when there is no new one. */
+rlmesh_device_checker_t* rlmesh_device_robot_take_checker(rlmesh_device_robot_t* robot);
+void rlmesh_device_checker_free(rlmesh_device_checker_t* checker);
+/* Verifies a signed broadcast received on key (key_len bytes): the verified
+ * message, or NULL when it isn't the host's. On any task, one at a time per
+ * checker; about 9 KB of stack. */
+rlmesh_device_checked_t* rlmesh_device_checker_check(rlmesh_device_checker_t* checker,
+                                                     const char* key, size_t key_len,
+                                                     const uint8_t* data, size_t len);
+void rlmesh_device_checked_free(rlmesh_device_checked_t* checked);
+/* A sample on subscription sub that a checker verified, consumed here. */
+int rlmesh_device_robot_sample_checked(rlmesh_device_robot_t* robot, uint8_t sub,
+                                       rlmesh_device_checked_t* checked, uint64_t now_us);
 /* Latches this robot's e-stop for its own stop (an e-stop pin; reason may be
  * NULL): every part stops at once, with or without a host, and the host is
  * told. Only rlmesh_device_robot_clear_estop clears it. */

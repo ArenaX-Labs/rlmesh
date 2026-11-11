@@ -15,7 +15,7 @@ use super::{
     RLMESH_DEVICE_ERR_NOT_READY, RLMESH_DEVICE_OK, Random,
 };
 use rlmesh_session_core::auth::Credential;
-use rlmesh_session_core::crypto::StaticKeypair;
+use rlmesh_session_core::crypto::{Checked, SignedChecker, StaticKeypair};
 use zeroize::Zeroizing;
 
 use crate::address;
@@ -553,6 +553,117 @@ pub unsafe extern "C" fn rlmesh_device_robot_sample(
     // Opened in place: the transport's buffer is its own.
     let mut copy = data.to_vec();
     r.robot.sample(sub, key, &mut copy, now_us);
+    RLMESH_DEVICE_OK
+}
+
+/// `rlmesh_device_checker_t`: a verifier of a robot's signed broadcasts.
+#[derive(Debug)]
+pub struct DeviceChecker(SignedChecker);
+
+/// `rlmesh_device_checked_t`: a signed broadcast a checker verified.
+#[derive(Debug)]
+pub struct DeviceChecked(Checked);
+
+/// The verifier for the robot's current link, once per link (the caller
+/// frees it with `_checker_free`); null when there is no new one.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_take_checker(
+    robot: *mut DeviceRobot,
+) -> *mut DeviceChecker {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return core::ptr::null_mut();
+    };
+    match r.robot.take_checker() {
+        Some(checker) => Box::into_raw(Box::new(DeviceChecker(checker))),
+        None => core::ptr::null_mut(),
+    }
+}
+
+/// Frees a checker; null is a no-op.
+///
+/// # Safety
+/// `checker` is null or from `rlmesh_device_robot_take_checker`, and not used
+/// after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_checker_free(checker: *mut DeviceChecker) {
+    if !checker.is_null() {
+        // SAFETY: from `Box::into_raw`, per the contract.
+        drop(unsafe { Box::from_raw(checker) });
+    }
+}
+
+/// Verifies a signed broadcast received on `key`: the verified message, for
+/// `_robot_sample_checked`, or null when it isn't the host's. A pure
+/// function of the bytes and the checker, on any task but one at a time per
+/// checker. About 9 KB of stack.
+///
+/// # Safety
+/// `checker` is null or from `rlmesh_device_robot_take_checker`; `key` valid
+/// for `key_len` bytes and `data` for `len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_checker_check(
+    checker: *mut DeviceChecker,
+    key: *const c_char,
+    key_len: usize,
+    data: *const u8,
+    len: usize,
+) -> *mut DeviceChecked {
+    // SAFETY: per the contract.
+    let (Some(c), Some(key), Some(data)) = (
+        unsafe { checker.as_mut() },
+        unsafe { bytes(key.cast(), key_len) },
+        unsafe { bytes(data, len) },
+    ) else {
+        return core::ptr::null_mut();
+    };
+    let Ok(key) = core::str::from_utf8(key) else {
+        return core::ptr::null_mut();
+    };
+    match c.0.check(key, data.to_vec()) {
+        Ok(checked) => Box::into_raw(Box::new(DeviceChecked(checked))),
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+/// Frees a verified message nobody will take; null is a no-op.
+///
+/// # Safety
+/// `checked` is null or from `rlmesh_device_checker_check`, and not used
+/// after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_checked_free(checked: *mut DeviceChecked) {
+    if !checked.is_null() {
+        // SAFETY: from `Box::into_raw`, per the contract.
+        drop(unsafe { Box::from_raw(checked) });
+    }
+}
+
+/// A sample on subscription `sub` that a checker verified, consumed here.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `checked` null or from
+/// `rlmesh_device_checker_check`, and not used after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_sample_checked(
+    robot: *mut DeviceRobot,
+    sub: u8,
+    checked: *mut DeviceChecked,
+    now_us: u64,
+) -> c_int {
+    if checked.is_null() {
+        return RLMESH_DEVICE_ERR_ARG;
+    }
+    // SAFETY: from `Box::into_raw`, per the contract.
+    let checked = unsafe { Box::from_raw(checked) };
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.sample_checked(sub, &checked.0, now_us);
     RLMESH_DEVICE_OK
 }
 

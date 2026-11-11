@@ -25,9 +25,8 @@ use alloc::vec::Vec;
 use bytes::Bytes;
 use rlmesh_session_core::auth::keyring::KeyError;
 use rlmesh_session_core::auth::{self, Credential, Link, LinkError, ReplyOutcome};
-use rlmesh_session_core::crypto::Rng;
 use rlmesh_session_core::crypto::handshake::IkInitiator;
-use rlmesh_session_core::crypto::signed;
+use rlmesh_session_core::crypto::{Checked, Rng, SignedChecker, signed};
 use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick, Rejection};
 use rlmesh_session_core::lobby::{self, LOBBY_SESSION, Leave, Lobby, WAIT_RETRY};
 use rlmesh_session_core::wire::codec;
@@ -446,6 +445,9 @@ pub struct Robot {
     waiting: Option<Asked>,
     initiator: Option<IkInitiator>,
     link: Option<Link>,
+    /// The link is new, and a transport that verifies broadcasts on another
+    /// task hasn't taken its checker.
+    checker_due: bool,
     pending: Option<Pending>,
     queue: VecDeque<Command>,
     /// An unsealed refusal of the `ctl` request in flight: a hint, kept in
@@ -570,6 +572,7 @@ impl Robot {
                 waiting: None,
                 initiator: None,
                 link: None,
+                checker_due: false,
                 pending: None,
                 queue: VecDeque::new(),
                 hint: None,
@@ -862,6 +865,7 @@ impl Robot {
         };
         self.generation = attached.accept.generation;
         self.link = Some(Link::new(self.config.name.clone(), attached));
+        self.checker_due = true;
         self.phase = Phase::Attach;
         // The host answers nothing before the attach, which carries
         // the latch: stop reports queued until now are in it.
@@ -962,11 +966,46 @@ impl Robot {
             return;
         };
         if let Ok(view) = link.open_view(&key, payload) {
-            self.views += 1;
-            self.last_heard = now_us;
             link.observe(&view, now);
-            self.observe(view, now);
-            self.check_leave(now_us);
+            self.took_view(view, now_us);
+        }
+    }
+
+    /// A verified signed view, from either path.
+    fn took_view(&mut self, view: DeviceView, now_us: u64) {
+        self.views += 1;
+        self.last_heard = now_us;
+        self.observe(view, ns(now_us));
+        self.check_leave(now_us);
+    }
+
+    /// A verifier for this link's signed broadcasts, once per link: a
+    /// transport with another task to spare checks them there, off the
+    /// control loop, and hands them to [`Self::sample_checked`]. One that
+    /// never takes it passes them to [`Self::sample`], which checks them
+    /// itself.
+    pub fn take_checker(&mut self) -> Option<SignedChecker> {
+        if !core::mem::take(&mut self.checker_due) {
+            return None;
+        }
+        self.link.as_ref().map(Link::checker)
+    }
+
+    /// A signed view on [`SUB_VIEW`] that a [`Self::take_checker`] checker
+    /// verified. Only its signature check was skipped: it is still held to
+    /// this link's key, instance and floor, and to this robot's key
+    /// expression.
+    pub fn sample_checked(&mut self, sub: u8, checked: &Checked, now_us: u64) {
+        if sub != SUB_VIEW {
+            return;
+        }
+        let key = self.keys.host_view(&self.config.name);
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        if let Ok(view) = link.take_view(&key, checked) {
+            link.observe(&view, ns(now_us));
+            self.took_view(view, now_us);
         }
     }
 

@@ -12,12 +12,12 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 #[cfg(not(feature = "fleet"))]
 use rlmesh_device::provision::Record;
-use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot, SUB_COMMANDS};
+use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot, SUB_COMMANDS, SUB_VIEW};
 use rlmesh_session::address::AddressKey;
 use rlmesh_session::auth::{Credential, Device, HostIdentity};
 use rlmesh_session::authority::DeviceAccess;
 use rlmesh_session::crypto::StaticKeypair;
-use rlmesh_session::crypto::{Rng, RngError};
+use rlmesh_session::crypto::{Rng, RngError, SignedChecker};
 use rlmesh_session::edge::Rejection;
 use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listeners};
 use rlmesh_session::wire::{
@@ -236,6 +236,15 @@ struct Board {
     pico: bool,
     /// Replies lost for their size.
     oversized: Arc<std::sync::atomic::AtomicU32>,
+    /// Check signed views apart from the robot, as a board's transport
+    /// does on another task; `checker` is the current link's.
+    check_views: bool,
+    checker: Option<SignedChecker>,
+    /// Checkers taken, and views the checker refused.
+    checkers: u32,
+    views_refused: u32,
+    /// Spoils the next signed view that arrives.
+    forge_next_view: bool,
 }
 
 impl Board {
@@ -258,6 +267,11 @@ impl Board {
             lose: Box::new(|_| false),
             pico: false,
             oversized: Arc::default(),
+            check_views: false,
+            checker: None,
+            checkers: 0,
+            views_refused: 0,
+            forge_next_view: false,
         }
     }
 
@@ -322,7 +336,11 @@ impl Board {
             while let Some(event) = next {
                 match event {
                     Event::Sample(sub, key, mut bytes) => {
-                        robot.sample(sub, &key, &mut bytes, now_us());
+                        if self.check_views && sub == SUB_VIEW {
+                            self.check_view(robot, &key, bytes, now_us());
+                        } else {
+                            robot.sample(sub, &key, &mut bytes, now_us());
+                        }
                     }
                     Event::Reply(id, bytes) => robot.reply(id, &bytes, now_us(), &mut self.rng),
                     Event::Done(id) => {
@@ -334,6 +352,25 @@ impl Board {
                 }
                 next = self.rx.try_recv().ok();
             }
+        }
+    }
+
+    /// A signed view as a board's transport takes it: verified apart from
+    /// the robot, which is handed only what passed.
+    fn check_view(&mut self, robot: &mut Robot, key: &str, mut bytes: Vec<u8>, now_us: u64) {
+        if let Some(checker) = robot.take_checker() {
+            self.checker = Some(checker);
+            self.checkers += 1;
+        }
+        let Some(checker) = self.checker.as_mut() else {
+            return;
+        };
+        if std::mem::take(&mut self.forge_next_view) {
+            bytes[20] ^= 1;
+        }
+        match checker.check(key, bytes) {
+            Ok(checked) => robot.sample_checked(SUB_VIEW, &checked, now_us),
+            Err(_) => self.views_refused += 1,
         }
     }
 
@@ -509,6 +546,35 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
     // Its clock is mapped from the heartbeats' timing: an edge needs it.
     let id = ParticipantId::new("eyes").expect("id");
     assert!(snapshot.clock(&id).is_some(), "the board's clock is mapped");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_board_takes_views_checked_on_another_task_and_never_a_forged_one() {
+    let world = World::start().await;
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    board.check_views = true;
+    let seen = Arc::default();
+    board
+        .run(&mut robot, Duration::from_secs(10), &seen, |r| {
+            r.phase() == Phase::Running && r.views() >= 2
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    assert!(robot.views() >= 2, "{} views", robot.views());
+    assert_eq!(board.checkers, 1, "one checker per link");
+    assert!(robot.take_checker().is_none(), "already taken");
+    let before = robot.view().expect("a view").host_ns;
+
+    board.forge_next_view = true;
+    let views = robot.views();
+    board
+        .run(&mut robot, Duration::from_secs(10), &seen, |r| {
+            r.views() > views
+        })
+        .await;
+    assert_eq!(board.views_refused, 1, "the forged view was refused");
+    assert!(robot.view().expect("a view").host_ns > before);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
