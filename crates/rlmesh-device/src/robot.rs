@@ -43,6 +43,9 @@ pub const RETRY_MS: u32 = 1000;
 /// With no heartbeat echo and no valid signed state for this long, the host
 /// counts as lost.
 pub const HOST_LOST_MS: u32 = 5000;
+/// How long past its timeout a query may go unreported before the robot
+/// counts it over: a transport whose read task is stuck never reports it.
+pub const QUERY_MARGIN_MS: u32 = 500;
 /// The longest pause between rounds of home addresses.
 const MAX_BACKOFF_MS: u32 = 30_000;
 /// `ctl` requests are resent (same id) this many times before they fail.
@@ -153,7 +156,8 @@ pub enum ConfigError {
 /// What the transport is asked to do, on traffic class `class` (0 control,
 /// 1 realtime, 2 data, 3 bulk: the address's port plus `class`). Queries
 /// carry an id; their reply (or none) comes back through [`Robot::reply`]
-/// and [`Robot::query_done`].
+/// and [`Robot::query_done`]. The robot doesn't depend on hearing either: a
+/// query is over for it at its timeout plus [`QUERY_MARGIN_MS`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Subscribe to `key`, passing its samples to [`Robot::sample`] as
@@ -250,9 +254,29 @@ pub enum PublishError {
     Invalid,
 }
 
+/// A query the robot waits on: over at `deadline`, whatever the transport
+/// reports.
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    id: u32,
+    timeout_ms: u32,
+    deadline: u64,
+}
+
+impl Asked {
+    fn new(id: u32, timeout_ms: u32, now_us: u64) -> Self {
+        let wait = u64::from(timeout_ms) + u64::from(QUERY_MARGIN_MS);
+        Self {
+            id,
+            timeout_ms,
+            deadline: now_us + wait * 1000,
+        }
+    }
+}
+
 /// The `ctl` request in flight.
 struct Pending {
-    query: u32,
+    query: Asked,
     request: u64,
     command: Command,
     tries: u8,
@@ -287,7 +311,7 @@ pub struct Robot {
     /// The run it joined, while in one.
     run: Option<Join>,
     /// The lobby wait in flight: its query, request id and command.
-    wait: Option<(u32, u64, Command)>,
+    wait: Option<(Asked, u64, Command)>,
     /// Where it connects: one of the homes, or a run's address.
     target: (String, u16),
     /// The home it tries now, an index into `config.homes`.
@@ -320,7 +344,7 @@ pub struct Robot {
     started: bool,
     next_query: u32,
     /// The join step's query (host state, handshake).
-    waiting: Option<u32>,
+    waiting: Option<Asked>,
     initiator: Option<IkInitiator>,
     link: Option<Link>,
     pending: Option<Pending>,
@@ -603,6 +627,7 @@ impl Robot {
         if self.phase == Phase::Stopped {
             return core::mem::take(&mut self.out);
         }
+        self.expire_queries(now_us);
         if !self.started {
             self.started = true;
             let me = &self.config.name;
@@ -643,11 +668,11 @@ impl Robot {
             ]);
             // After a failure the retry timer asks, after its pause.
             if self.phase != Phase::Retry {
-                self.ask_host();
+                self.ask_host(now_us);
             }
         }
         match self.phase {
-            Phase::Retry if now_us >= self.retry_at => self.ask_host(),
+            Phase::Retry if now_us >= self.retry_at => self.ask_host(now_us),
             // Nothing from the host for HOST_LOST_MS: it is gone, or
             // restarted under a new instance. Join again.
             Phase::Running | Phase::Waiting
@@ -666,13 +691,13 @@ impl Robot {
 
     /// A reply to query `id`. `now_us` and `rng` drive the next step.
     pub fn reply(&mut self, id: u32, payload: &[u8], now_us: u64, rng: &mut dyn Rng) {
-        if self.pending.as_ref().is_some_and(|p| p.query == id) {
+        if self.pending.as_ref().is_some_and(|p| p.query.id == id) {
             return self.ctl_reply(payload, now_us);
         }
-        if self.wait.as_ref().is_some_and(|w| w.0 == id) {
+        if self.wait.as_ref().is_some_and(|w| w.0.id == id) {
             return self.wait_reply(payload, now_us);
         }
-        if self.waiting != Some(id) {
+        if self.waiting.is_none_or(|w| w.id != id) {
             return;
         }
         match self.phase {
@@ -736,20 +761,49 @@ impl Robot {
 
     /// Query `id` is over: every reply has arrived, or it timed out.
     pub fn query_done(&mut self, id: u32, now_us: u64) {
-        if self.pending.as_ref().is_some_and(|p| p.query == id) {
+        if self.pending.as_ref().is_some_and(|p| p.query.id == id) {
             return self.ctl_unanswered(now_us);
         }
-        if self.wait.as_ref().is_some_and(|w| w.0 == id) {
+        if self.wait.as_ref().is_some_and(|w| w.0.id == id) {
             // No order within WAIT_RETRY: the same request again, which
             // joins the pending wait (or fetches its cached answer).
             return self.send_wait(now_us);
         }
-        if self.waiting != Some(id) {
+        if self.waiting.is_none_or(|w| w.id != id) {
             return;
         }
         self.waiting = None;
         if matches!(self.phase, Phase::Host | Phase::Handshake) {
             self.fail(Fault::NoReply, now_us);
+        }
+    }
+
+    /// Query `id` left for the network at `now_us`, later than [`Self::poll`]
+    /// handed it out: its timeout runs from here.
+    pub fn query_sent(&mut self, id: u32, now_us: u64) {
+        let asked = self
+            .waiting
+            .iter_mut()
+            .chain(self.pending.as_mut().map(|p| &mut p.query))
+            .chain(self.wait.as_mut().map(|w| &mut w.0))
+            .find(|a| a.id == id);
+        if let Some(asked) = asked {
+            *asked = Asked::new(id, asked.timeout_ms, now_us);
+        }
+    }
+
+    /// Ends every query past its deadline, as if the transport had reported
+    /// it: a reply or end that arrives for it later names no query in
+    /// flight.
+    fn expire_queries(&mut self, now_us: u64) {
+        let due = |a: Asked| (now_us >= a.deadline).then_some(a.id);
+        let expired = [
+            self.waiting.and_then(due),
+            self.pending.as_ref().and_then(|p| due(p.query)),
+            self.wait.as_ref().and_then(|w| due(w.0)),
+        ];
+        for id in expired.into_iter().flatten() {
+            self.query_done(id, now_us);
         }
     }
 
@@ -1099,10 +1153,16 @@ impl Robot {
         id
     }
 
-    fn ask_host(&mut self) {
+    /// Queries `key` and starts its deadline.
+    fn ask(&mut self, key: String, payload: Option<Vec<u8>>, timeout: u32, now_us: u64) -> Asked {
+        let id = self.query_for(CLASS_CONTROL, key, payload, timeout);
+        Asked::new(id, timeout, now_us)
+    }
+
+    fn ask_host(&mut self, now_us: u64) {
         self.phase = Phase::Host;
-        let id = self.query(CLASS_CONTROL, self.keys.host_state(), None);
-        self.waiting = Some(id);
+        let asked = self.ask(self.keys.host_state(), None, QUERY_MS, now_us);
+        self.waiting = Some(asked);
     }
 
     #[inline(never)]
@@ -1121,8 +1181,8 @@ impl Robot {
         self.initiator = Some(initiator);
         self.phase = Phase::Handshake;
         let payload = codec::encode_handshake_request(&hello);
-        let id = self.query(CLASS_CONTROL, self.keys.handshake(), Some(payload));
-        self.waiting = Some(id);
+        let asked = self.ask(self.keys.handshake(), Some(payload), QUERY_MS, now_us);
+        self.waiting = Some(asked);
     }
 
     fn epoch(&self) -> Option<Epoch> {
@@ -1153,7 +1213,7 @@ impl Robot {
                 return self.fail(Fault::Internal, now_us);
             };
             self.hint = None;
-            let query = self.query(CLASS_CONTROL, ctl, Some(sealed));
+            let query = self.ask(ctl, Some(sealed), QUERY_MS, now_us);
             self.pending = Some(Pending {
                 query,
                 request,
@@ -1207,7 +1267,7 @@ impl Robot {
         let Ok(sealed) = link.resend(&ctl, pending.request, epoch, &pending.command) else {
             return self.fail(Fault::Internal, now_us);
         };
-        pending.query = self.query(CLASS_CONTROL, ctl, Some(sealed));
+        pending.query = self.ask(ctl, Some(sealed), QUERY_MS, now_us);
         self.pending = Some(pending);
     }
 
@@ -1538,7 +1598,7 @@ impl Robot {
             return self.fail(Fault::Internal, now_us);
         };
         let timeout = u32::try_from(WAIT_RETRY.as_millis()).unwrap_or(u32::MAX);
-        let query = self.query_for(CLASS_CONTROL, ctl, Some(sealed), timeout);
+        let query = self.ask(ctl, Some(sealed), timeout, now_us);
         self.wait = Some((query, request, command));
     }
 

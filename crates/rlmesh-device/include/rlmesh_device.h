@@ -205,7 +205,9 @@ int rlmesh_device_robot_next(rlmesh_device_robot_t* robot, uint64_t now_us,
 /* One reply to query query_id. */
 int rlmesh_device_robot_reply(rlmesh_device_robot_t* robot, uint32_t query_id, const uint8_t* data,
                               size_t len, uint64_t now_us);
-/* Query query_id is over: every reply has arrived, or it timed out. */
+/* Query query_id is over: every reply has arrived, or it timed out. The robot
+ * gives up on a query by itself soon after its timeout; this only tells it
+ * sooner. */
 int rlmesh_device_robot_query_done(rlmesh_device_robot_t* robot, uint32_t query_id,
                                    uint64_t now_us);
 /* A sample on subscription sub, received on key (key_len bytes, not

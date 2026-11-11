@@ -1,7 +1,7 @@
 //! The robot's retries with no host at all: what it asks of the transport
 //! when nothing answers, or something other than a host does.
 
-use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot};
+use rlmesh_device::robot::{Action, Config, Fault, Phase, QUERY_MARGIN_MS, QUERY_MS, Robot};
 use rlmesh_session::auth::Credential;
 use rlmesh_session::crypto::{Rng, RngError, StaticKeypair};
 use rlmesh_session::wire::{ParticipantId, SessionId, TenantId};
@@ -114,4 +114,34 @@ fn the_home_keeps_one_found_address_besides_its_stored_ones() {
     assert_eq!(robot.host(), ("10.0.0.1", 7447));
     unanswered(&mut robot, 10 * S);
     assert_eq!(robot.host(), ("10.0.0.3", 7447), "10.0.0.2 is gone");
+}
+
+/// When a query the robot asked at `now` is over without a word.
+fn deadline(now: u64) -> u64 {
+    now + u64::from(QUERY_MS + QUERY_MARGIN_MS) * 1000
+}
+
+#[test]
+fn a_query_nobody_reports_on_is_over_at_its_deadline() {
+    let mut robot = robot(&[("10.0.0.1", 7447)]);
+    let id = query(&robot.poll(0)).expect("a query");
+
+    // No reply and no end from the transport: the robot still waits, up to
+    // its own deadline.
+    robot.poll(deadline(0) - 1);
+    assert_eq!(robot.phase(), Phase::Host);
+    assert_eq!(robot.fault(), None);
+    robot.poll(deadline(0));
+    assert_eq!(robot.phase(), Phase::Retry);
+    assert_eq!(robot.fault(), Some(&Fault::NoReply));
+
+    // Whatever comes for it later changes nothing, and the normal retry
+    // follows.
+    let at = deadline(0);
+    robot.reply(id, b"late", at, &mut Zeros);
+    robot.query_done(id, at);
+    assert_eq!(robot.phase(), Phase::Retry);
+    assert_eq!(query(&robot.poll(at)), None, "it waits its pause");
+    let retried = query(&robot.poll(at + S)).expect("it asks again");
+    assert_ne!(retried, id);
 }

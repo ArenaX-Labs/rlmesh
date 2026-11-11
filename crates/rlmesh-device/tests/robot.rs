@@ -80,6 +80,16 @@ struct World {
     host: SessionHost,
 }
 
+/// Client sessions to the host at `base`, one per class.
+async fn links(base: std::net::SocketAddr) -> Transport {
+    Transport::open(
+        &TransportConfig::per_class_tcp(Some("127.0.0.1:0".parse().expect("addr")), Some(base))
+            .expect("config"),
+    )
+    .await
+    .expect("transport")
+}
+
 impl World {
     async fn start() -> Self {
         Self::start_with(Vec::new()).await
@@ -106,15 +116,7 @@ impl World {
     }
 
     async fn transport(&self) -> Transport {
-        Transport::open(
-            &TransportConfig::per_class_tcp(
-                Some("127.0.0.1:0".parse().expect("addr")),
-                Some(self.base),
-            )
-            .expect("config"),
-        )
-        .await
-        .expect("transport")
+        links(self.base).await
     }
 
     fn robot(&self, key: AddressKey) -> Box<Robot> {
@@ -163,133 +165,210 @@ struct Seen {
     published: u32,
 }
 
+/// A board's transport: one session per traffic class, as zenoh-pico opens
+/// them, kept across runs so a test can break the links under it.
+struct Board {
+    /// `None` while the links are dead: nothing goes out or comes back
+    /// until the robot asks to reopen them (zenoh-pico's sessions don't come
+    /// back on their own; Zenoh's own client would, and hide the fault).
+    transport: Option<Transport>,
+    tx: mpsc::UnboundedSender<Event>,
+    rx: mpsc::UnboundedReceiver<Event>,
+    subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+    tokens: Vec<zenoh::liveliness::LivelinessToken>,
+    queries: BTreeMap<u32, tokio::task::JoinHandle<()>>,
+    rng: Mix,
+    start: Instant,
+    next_sample: u64,
+    /// The transport never reports a query's end, as when zenoh-pico's
+    /// executor is blocked in `recv`.
+    no_query_end: bool,
+    /// Queries that never reach the host, by key.
+    lose: Box<dyn FnMut(&str) -> bool + Send>,
+}
+
+impl Board {
+    async fn open(world: &World) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            transport: Some(world.transport().await),
+            tx,
+            rx,
+            subscribers: Vec::new(),
+            tokens: Vec::new(),
+            queries: BTreeMap::new(),
+            rng: seeded(),
+            start: Instant::now(),
+            next_sample: 0,
+            no_query_end: false,
+            lose: Box::new(|_| false),
+        }
+    }
+
+    /// Runs `robot` until `done` holds or `limit` passes, carrying out its
+    /// actions as a board would. Once it runs, it ticks the part each loop
+    /// and publishes a sample every 20 ms.
+    async fn run(
+        &mut self,
+        robot: &mut Robot,
+        limit: Duration,
+        seen: &Arc<Mutex<Seen>>,
+        mut done: impl FnMut(&Robot) -> bool + Send,
+    ) {
+        let began = Instant::now();
+        let start = self.start;
+        let now_us = || u64::try_from(start.elapsed().as_micros()).expect("µs");
+        while began.elapsed() < limit && !done(robot) {
+            if robot.phase() == Phase::Running {
+                let now = now_us();
+                if let Some(tick) = robot.tick(0, now) {
+                    let mut seen = seen.lock().expect("seen");
+                    seen.mode = Some(tick.tick.mode);
+                    if let Some(action) = &tick.tick.action {
+                        seen.actions.push((tick.tick.mode, action.value.to_vec()));
+                    }
+                }
+                seen.lock().expect("seen").latched_by = robot.estop_reason().map(|r| r.by.clone());
+                if now >= self.next_sample {
+                    self.next_sample = now + 20_000;
+                    if robot.publish(0, now, &pos(0.1, 0.2), now).is_ok() {
+                        seen.lock().expect("seen").published += 1;
+                    }
+                }
+            }
+            for action in robot.poll(now_us()) {
+                self.carry_out(action).await;
+            }
+            let event = tokio::time::timeout(Duration::from_millis(1), self.rx.recv()).await;
+            let mut next = match event {
+                Ok(Some(event)) => Some(event),
+                _ => None,
+            };
+            while let Some(event) = next {
+                match event {
+                    Event::Sample(sub, key, mut bytes) => {
+                        robot.sample(sub, &key, &mut bytes, now_us());
+                    }
+                    Event::Reply(id, bytes) => robot.reply(id, &bytes, now_us(), &mut self.rng),
+                    Event::Done(id) => {
+                        self.queries.remove(&id);
+                        if !self.no_query_end {
+                            robot.query_done(id, now_us());
+                        }
+                    }
+                }
+                next = self.rx.try_recv().ok();
+            }
+        }
+    }
+
+    async fn carry_out(&mut self, action: Action) {
+        let class = |c: u8| TrafficClass::ALL[usize::from(c)];
+        match action {
+            Action::Reset => {
+                self.subscribers.clear();
+                self.tokens.clear();
+            }
+            Action::Subscribe { class: c, sub, key } => {
+                let Some(transport) = &self.transport else {
+                    return;
+                };
+                let tx = self.tx.clone();
+                let subscriber = transport
+                    .session(class(c))
+                    .declare_subscriber(key)
+                    .callback(move |sample| {
+                        let bytes = sample.payload().to_bytes().into_owned();
+                        let key = sample.key_expr().as_str().to_owned();
+                        let _ = tx.send(Event::Sample(sub, key, bytes));
+                    })
+                    .await
+                    .expect("subscribe");
+                self.subscribers.push(subscriber);
+            }
+            Action::Token { class: c, key } => {
+                let Some(transport) = &self.transport else {
+                    return;
+                };
+                let token = transport.session(class(c)).liveliness().declare_token(key);
+                self.tokens.push(token.await.expect("token"));
+            }
+            Action::Query {
+                class: c,
+                id,
+                timeout_ms,
+                key,
+                payload,
+            } => {
+                let tx = self.tx.clone();
+                let zenoh = match &self.transport {
+                    Some(transport) if !(self.lose)(&key) => transport.session(class(c)).clone(),
+                    _ => {
+                        let _ = tx.send(Event::Done(id));
+                        return;
+                    }
+                };
+                self.queries.insert(
+                    id,
+                    tokio::spawn(async move {
+                        let mut get = zenoh
+                            .get(key)
+                            .consolidation(ConsolidationMode::None)
+                            .timeout(Duration::from_millis(u64::from(timeout_ms)));
+                        if let Some(payload) = payload {
+                            get = get.payload(payload);
+                        }
+                        if let Ok(replies) = get.await {
+                            while let Ok(reply) = replies.recv_async().await {
+                                if let Ok(sample) = reply.result() {
+                                    let bytes = sample.payload().to_bytes().into_owned();
+                                    let _ = tx.send(Event::Reply(id, bytes));
+                                }
+                            }
+                        }
+                        let _ = tx.send(Event::Done(id));
+                    }),
+                );
+            }
+            Action::Publish {
+                class: c,
+                key,
+                payload,
+            } => {
+                let Some(transport) = &self.transport else {
+                    return;
+                };
+                transport
+                    .session(class(c))
+                    .put(key, payload)
+                    .await
+                    .expect("publish");
+            }
+        }
+    }
+}
+
+impl Drop for Board {
+    fn drop(&mut self) {
+        for query in self.queries.values() {
+            query.abort();
+        }
+    }
+}
+
 /// Runs `robot` over a fresh transport to the world's host until `done`
-/// holds or `limit` passes, carrying out its actions as a board would. Once
-/// it runs, it ticks the part each loop and publishes a sample every 20 ms.
+/// holds or `limit` passes (see [`Board::run`]).
 async fn drive(
     world: &World,
     mut robot: Box<Robot>,
     limit: Duration,
     seen: Arc<Mutex<Seen>>,
-    mut done: impl FnMut(&Robot) -> bool + Send,
+    done: impl FnMut(&Robot) -> bool + Send,
 ) -> Box<Robot> {
-    let transport = world.transport().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut subscribers = Vec::new();
-    let mut tokens = Vec::new();
-    let mut rng = seeded();
-    let start = Instant::now();
-    let now_us = || u64::try_from(start.elapsed().as_micros()).expect("µs");
-    let mut queries = BTreeMap::new();
-    let mut next_sample = 0;
-    while start.elapsed() < limit && !done(&robot) {
-        if robot.phase() == Phase::Running {
-            let now = now_us();
-            if let Some(tick) = robot.tick(0, now) {
-                let mut seen = seen.lock().expect("seen");
-                seen.mode = Some(tick.tick.mode);
-                if let Some(action) = &tick.tick.action {
-                    seen.actions.push((tick.tick.mode, action.value.to_vec()));
-                }
-            }
-            seen.lock().expect("seen").latched_by = robot.estop_reason().map(|r| r.by.clone());
-            if now >= next_sample {
-                next_sample = now + 20_000;
-                if robot.publish(0, now, &pos(0.1, 0.2), now).is_ok() {
-                    seen.lock().expect("seen").published += 1;
-                }
-            }
-        }
-        for action in robot.poll(now_us()) {
-            let class = |c: u8| TrafficClass::ALL[usize::from(c)];
-            match action {
-                Action::Subscribe { class: c, sub, key } => {
-                    let tx = tx.clone();
-                    let subscriber = transport
-                        .session(class(c))
-                        .declare_subscriber(key)
-                        .callback(move |sample| {
-                            let bytes = sample.payload().to_bytes().into_owned();
-                            let key = sample.key_expr().as_str().to_owned();
-                            let _ = tx.send(Event::Sample(sub, key, bytes));
-                        })
-                        .await
-                        .expect("subscribe");
-                    subscribers.push(subscriber);
-                }
-                Action::Token { class: c, key } => {
-                    let token = transport.session(class(c)).liveliness().declare_token(key);
-                    tokens.push(token.await.expect("token"));
-                }
-                Action::Reset => {
-                    subscribers.clear();
-                    tokens.clear();
-                }
-                Action::Query {
-                    class: c,
-                    id,
-                    timeout_ms,
-                    key,
-                    payload,
-                } => {
-                    let (tx, zenoh) = (tx.clone(), transport.session(class(c)).clone());
-                    queries.insert(
-                        id,
-                        tokio::spawn(async move {
-                            let mut get = zenoh
-                                .get(key)
-                                .consolidation(ConsolidationMode::None)
-                                .timeout(Duration::from_millis(u64::from(timeout_ms)));
-                            if let Some(payload) = payload {
-                                get = get.payload(payload);
-                            }
-                            if let Ok(replies) = get.await {
-                                while let Ok(reply) = replies.recv_async().await {
-                                    if let Ok(sample) = reply.result() {
-                                        let bytes = sample.payload().to_bytes().into_owned();
-                                        let _ = tx.send(Event::Reply(id, bytes));
-                                    }
-                                }
-                            }
-                            let _ = tx.send(Event::Done(id));
-                        }),
-                    );
-                }
-                Action::Publish {
-                    class: c,
-                    key,
-                    payload,
-                } => {
-                    transport
-                        .session(class(c))
-                        .put(key, payload)
-                        .await
-                        .expect("publish");
-                }
-            }
-        }
-        let event = tokio::time::timeout(Duration::from_millis(1), rx.recv()).await;
-        let mut next = match event {
-            Ok(Some(event)) => Some(event),
-            _ => None,
-        };
-        while let Some(event) = next {
-            match event {
-                Event::Sample(sub, key, mut bytes) => {
-                    robot.sample(sub, &key, &mut bytes, now_us());
-                }
-                Event::Reply(id, bytes) => robot.reply(id, &bytes, now_us(), &mut rng),
-                Event::Done(id) => {
-                    queries.remove(&id);
-                    robot.query_done(id, now_us());
-                }
-            }
-            next = rx.try_recv().ok();
-        }
-    }
-    for (_, query) in queries {
-        query.abort();
-    }
+    Board::open(world)
+        .await
+        .run(&mut robot, limit, &seen, done)
+        .await;
     robot
 }
 
@@ -626,13 +705,13 @@ const EYES_POLICY: &str = r#"{
     "hz": 25,
     "actions": {
         "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 50,
-                "chunk": 5},
+                "horizon": 5},
         "two": {"kind": "joints", "at": "eye-2:eyes", "command": "position", "hz": 50,
-                "chunk": 5}
+                "horizon": 5}
     }
 }"#;
 
-/// Both eyes to 0.25 rad pan and tilt, for the whole chunk.
+/// Both eyes to 0.25 rad pan and tilt, for the whole horizon.
 struct Gaze;
 
 impl rlmesh_session::Predictor for Gaze {
@@ -817,4 +896,34 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
     run.join().expect("run thread").expect("a clean stop");
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     one.await.expect("board 1");
+}
+
+/// zenoh-pico's executor stuck in `recv`: no query ever reports its end, and
+/// the first host query and the first `ctl` request are lost. The robot's own
+/// deadlines carry it through both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_board_joins_though_lost_queries_never_report_their_end() {
+    let world = World::start().await;
+    let seen = Arc::default();
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    board.no_query_end = true;
+    let (mut host_lost, mut ctl_lost) = (false, false);
+    board.lose = Box::new(move |key| {
+        if key.ends_with("/host/state") && !host_lost {
+            host_lost = true;
+            return true;
+        }
+        if key.ends_with("/ctl") && !ctl_lost {
+            ctl_lost = true;
+            return true;
+        }
+        false
+    });
+    board
+        .run(&mut robot, Duration::from_secs(20), &seen, |r| {
+            r.phase() == Phase::Running
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
 }

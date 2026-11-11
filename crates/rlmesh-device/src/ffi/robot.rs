@@ -429,7 +429,11 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             timeout_ms,
             key,
             payload,
-        } => (RLMESH_DEVICE_QUERY, class, 0, id, timeout_ms, key, payload),
+        } => {
+            // The actions before it may have taken a while (opening a link).
+            r.robot.query_sent(id, now_us);
+            (RLMESH_DEVICE_QUERY, class, 0, id, timeout_ms, key, payload)
+        }
         Action::Publish {
             class,
             key,
@@ -489,7 +493,9 @@ pub unsafe extern "C" fn rlmesh_device_robot_reply(
     RLMESH_DEVICE_OK
 }
 
-/// Query `query_id` is over: every reply has arrived, or it timed out.
+/// Query `query_id` is over: every reply has arrived, or it timed out. The
+/// robot gives up on a query by itself soon after its timeout; this only
+/// tells it sooner.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -996,6 +1002,38 @@ mod tests {
         );
         unsafe { rlmesh_device_robot_status(robot, &mut status) };
         assert_eq!(status.estop, 0);
+        unsafe { rlmesh_device_robot_free(robot) };
+    }
+
+    /// A query's timeout runs from when it was handed out, not from when
+    /// the robot wanted it: opening the link first can take seconds.
+    #[test]
+    fn a_query_is_timed_from_when_it_is_handed_out() {
+        let addr = address("");
+        let mut robot = core::ptr::null_mut();
+        let rc = unsafe { rlmesh_device_robot_new(&config(&addr, Some(c"eyes"), MAP), &mut robot) };
+        assert_eq!(rc, RLMESH_DEVICE_OK);
+        let mut action = empty_action();
+        // The subscriptions and the token, the first taking 3 s to link.
+        let sent = 3_000_000;
+        assert_eq!(
+            unsafe { rlmesh_device_robot_next(robot, 0, &mut action) },
+            1
+        );
+        while action.kind != RLMESH_DEVICE_QUERY {
+            assert_eq!(
+                unsafe { rlmesh_device_robot_next(robot, sent, &mut action) },
+                1
+            );
+        }
+        let timeout = u64::from(crate::robot::QUERY_MS + crate::robot::QUERY_MARGIN_MS) * 1000;
+        let mut status = RlmeshDeviceRobotStatus::default();
+        unsafe { rlmesh_device_robot_next(robot, sent + timeout - 1, &mut action) };
+        unsafe { rlmesh_device_robot_status(robot, &mut status) };
+        assert_eq!((status.phase, status.fault), (0, 0), "still waiting");
+        unsafe { rlmesh_device_robot_next(robot, sent + timeout, &mut action) };
+        unsafe { rlmesh_device_robot_status(robot, &mut status) };
+        assert_eq!((status.phase, status.fault), (5, 1), "over");
         unsafe { rlmesh_device_robot_free(robot) };
     }
 
