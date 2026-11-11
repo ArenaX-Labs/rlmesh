@@ -609,3 +609,12 @@ fn a_view_reply_answers_its_own_request_and_names_any_other() {
         ReplyOutcome::Other(2)
     );
 }
+
+#[test]
+fn a_far_id_moves_the_floor_to_just_below_it() {
+    let mut window = RequestWindow::<&str>::default();
+    assert_eq!(window.admit(65), Admit::Execute);
+    assert_eq!(window.admit(100), Admit::Execute);
+    assert_eq!(window.admit(36), Admit::Expired);
+    assert_eq!(window.admit(37), Admit::Execute);
+}
