@@ -14,8 +14,9 @@ use rlmesh_session::wire::{
     DType, LeaseToken, Mode, PriorityClass, ReasonCode, Role, SessionId, TenantId,
 };
 use rlmesh_session::{
-    Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
-    Predictor, RunError, SessionHost, SkipReason, SystemMonotonicClock, Transport, TransportConfig,
+    AuthorityEvent, Controller, ControllerConfig, HostConfig, Observation, Participant,
+    ParticipantConfig, Predictor, RunError, SessionHost, SkipReason, SystemMonotonicClock,
+    Transport, TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -579,7 +580,10 @@ fn driven_since(log: &Log, target: f32, since: Instant) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_off() {
-    let world = World::start().await;
+    // An eye whose chunks run dry past its hold (a starved test machine)
+    // goes safe on its own: re-armed at once, so only what eye 2's loss
+    // does to eye 1 decides the test, never the machine's load.
+    let world = World::start_with(|config| config.rearm_robots = true).await;
     let eye = |name: &'static str| {
         let world = &world;
         async move {
@@ -627,6 +631,7 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     })
     .await;
 
+    let mut events = world.host.events();
     // Eye 2 drops off the network: no more heartbeats, no more ticks.
     two.participant().set_heartbeats_enabled(false);
     stop_two.store(true, Ordering::Relaxed);
@@ -641,34 +646,48 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     })
     .await;
     let lost = Instant::now();
-    // Eye 1 keeps being driven. On a loaded machine a late chunk may hold it
-    // for a moment (its queue runs dry), so wait for driving rather than
-    // sample a fixed window; but losing eye 2 must never take it safe.
-    let modes = |since: Instant| {
-        let log = log_one.lock().expect("log");
-        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
-        for (_, mode, ..) in log.iter().filter(|(at, ..)| *at >= since) {
-            *counts.entry(format!("{mode:?}")).or_default() += 1;
-        }
-        counts
-    };
-    let settled = lost + Duration::from_millis(300);
-    while Instant::now() < settled || !driven_since(&log_one, 0.25, settled) {
+    // Eye 1 keeps being driven, after the loss as before it.
+    while !driven_since(&log_one, 0.25, lost) {
         assert!(
             lost.elapsed() < WAIT,
-            "eye 1 keeps moving after eye 2 is lost: {:?}",
-            modes(lost)
+            "eye 1 keeps moving after eye 2 is lost"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let since_lost = modes(lost);
+    // What the loss did, from the host's own account: it ended eye 2's
+    // lease and held eye 2, and it never stopped the session, nor ended or
+    // held anything of eye 1's.
+    let eye_one = rlmesh_session::wire::ParticipantId::new("eye-1").expect("id");
+    let mut told = Vec::new();
+    loop {
+        let event = match events.try_recv() {
+            Ok(event) => event,
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(err) => panic!("the host's events: {err}"),
+        };
+        told.push(event.to_string());
+        match event {
+            AuthorityEvent::ModeChanged { to, reason, .. } => assert!(
+                !matches!(to, Mode::Safe | Mode::Estop),
+                "one lost eye stopped the session: {reason}"
+            ),
+            AuthorityEvent::LeaseEnded { part, reason, .. } => assert!(
+                !(part.starts_with("eye-1:") && reason.by == "eye-2"),
+                "losing eye 2 ended eye 1's lease: {reason}"
+            ),
+            AuthorityEvent::RobotHeld { robot, reason } => assert!(
+                !(robot == eye_one && reason.by == "eye-2"),
+                "losing eye 2 held eye 1: {reason}"
+            ),
+            _ => {}
+        }
+    }
     assert!(
-        !since_lost.contains_key("Safe") && !since_lost.contains_key("Estop"),
-        "losing eye 2 took eye 1 safe: {since_lost:?}"
+        told.iter().any(|e| e.contains("eye-2")),
+        "the host told of eye 2's loss: {told:?}"
     );
-    let snapshot = world.host.snapshot();
     assert_ne!(
-        snapshot.mode,
+        world.host.snapshot().mode,
         Mode::Safe,
         "one lost eye never stops the session"
     );

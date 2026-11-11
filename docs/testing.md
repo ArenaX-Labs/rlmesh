@@ -19,12 +19,15 @@ mise run test:python:unit
 mise run test:python:integration
 mise run test:python:conformance
 mise run test:python:perf
+mise run test:rust:slow
 ```
 
 `test:python:perf` runs the tests marked `perf`, the ones that hold a
 wall-clock budget. A busy machine fails them whatever the code does, so every
 other run leaves them out (`addopts` in `pyproject.toml`) and `test:ci` runs
-them on its own.
+them on its own. `test:rust:slow` does the same for the Rust tests that need
+tens of seconds of wall clock: they are `#[ignore]`d with a reason naming the
+task.
 
 `test:python:conformance` holds the gates other code is measured against. The
 Gymnasium gate (`python/rlmesh/tests/conformance/test_gym_conformance.py`) runs

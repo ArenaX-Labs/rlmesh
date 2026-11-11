@@ -1701,12 +1701,22 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
         policy.arm().await.expect("arm");
         let lease = policy.grant_lease(eyes, None).await.expect("lease");
         let tx = policy.chunk_publisher(&lease).await.expect("publisher");
-        tokio::time::sleep(Duration::from_millis(300)).await;
         let started = Instant::now();
-        // A value that isn't a number: well formed, sealed, and refused.
+        // A value that isn't a number: well formed, sealed, and refused for
+        // it. Chunks that reach the board before its clock mapping or the
+        // lease are refused for that instead: sent until one is refused
+        // for its value, and the board says so.
         let bad = pos(f32::NAN, 0.0);
-        while seen.lock().expect("seen").refused.0.is_none() {
-            assert!(started.elapsed() < WAIT, "the board refused nothing");
+        let refused_for_value = || {
+            let seen = seen.lock().expect("seen");
+            seen.refused.0 == Some(Rejection::InvalidValue) && seen.refused.1 > 0
+        };
+        while !refused_for_value() {
+            assert!(
+                started.elapsed() < WAIT,
+                "the board never refused a chunk for its value: {:?}",
+                seen.lock().expect("seen").refused
+            );
             let now = policy.session_now_ns();
             tx.send(ChunkDraft {
                 based_on: vec![InputRange::one(ChannelId(99), 1)],
@@ -1723,17 +1733,27 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
         done.store(true, std::sync::atomic::Ordering::Relaxed);
     };
     tokio::join!(driven, controller);
-    assert_eq!(robot.last_refusal(), Some(Rejection::InvalidValue));
-    let invalid = robot.refusals(Rejection::InvalidValue);
-    assert!(invalid >= 1);
-    assert_eq!(robot.chunks_refused(), invalid);
+    assert!(robot.refusals(Rejection::InvalidValue) >= 1);
+    // Each refusal is counted once, under its reason.
+    let by_reason = || {
+        Rejection::ALL
+            .iter()
+            .map(|r| robot.refusals(*r))
+            .sum::<u64>()
+    };
+    let refused = robot.chunks_refused();
+    assert_eq!(by_reason(), refused);
 
     // Bytes that open under no key are the same kind of news.
+    let unauthenticated = robot.refusals(Rejection::Unauthenticated);
     let at = u64::try_from(board.start.elapsed().as_micros()).expect("µs");
     robot.sample(SUB_COMMANDS, "not/a/chunk", &mut [1, 2, 3], at);
     assert_eq!(robot.last_refusal(), Some(Rejection::Unauthenticated));
-    assert_eq!(robot.refusals(Rejection::Unauthenticated), 1);
-    assert_eq!(robot.chunks_refused(), invalid + 1);
+    assert_eq!(
+        robot.refusals(Rejection::Unauthenticated),
+        unauthenticated + 1
+    );
+    assert_eq!(robot.chunks_refused(), refused + 1);
 }
 
 /// The demo's camera robot.

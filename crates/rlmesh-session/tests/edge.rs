@@ -764,9 +764,18 @@ async fn child_process() {
             )
             .await
             .expect("subscribe");
-        // Ready: the parent starts driving once it sees this line.
+        // Ready: the parent drives until it reads the report, which goes
+        // once more than a hundred driving ticks reached this process.
         println!("CHILD_READY");
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let driving = |seen: &[(rlmesh_session::wire::Applied, Option<u8>)]| {
+            seen.iter()
+                .filter(|(a, _)| a.present && a.mode == rlmesh_session::wire::EdgeMode::Driving)
+                .count()
+        };
+        let started = Instant::now();
+        while driving(&seen.lock().expect("seen")) <= 100 && started.elapsed() < WAIT {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         let seen = seen.lock().expect("seen").clone();
         let present: Vec<_> = seen.iter().filter(|(a, _)| a.present).collect();
         let report = json!({
@@ -1050,7 +1059,6 @@ async fn the_applied_stream_reaches_an_observer_in_another_process() {
         .await
         .expect("armed");
     let lease = policy.grant_lease(cmd, None).await.expect("lease");
-    stream(&policy, &lease, 5, Duration::from_millis(600), WARMUP).await;
     let report = tokio::task::spawn_blocking(move || {
         for line in ready {
             let line = line.expect("line");
@@ -1059,16 +1067,24 @@ async fn the_applied_stream_reaches_an_observer_in_another_process() {
             }
         }
         panic!("no report");
-    })
-    .await
-    .expect("report");
+    });
+    // Drives until the other process has seen enough of it, however long
+    // a loaded machine takes to carry it there.
+    let tx = policy.chunk_publisher(&lease).await.expect("publisher");
+    tokio::time::sleep(WARMUP).await;
+    let stride = tx.stride();
+    while !report.is_finished() {
+        let mut draft = chunk(&policy, 50, 5, Duration::from_millis(150));
+        draft.actions = Bytes::from(vec![5; stride * 50]);
+        tx.send(draft).expect("send");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let report = report.await.expect("report");
     assert!(child.wait().expect("child").success());
     driven.stop();
-    // One sample per 1 kHz tick reached the other process: absent ones
+    // Ticks reached the other process as applied samples: absent ones
     // (Idle, then Hold) carry no value, present ones the dispatched action
-    // under the lease's token, in chunk order. 600 ms of streaming drives
-    // about 600 ticks; a loaded CI runner has delivered as few as 262, so
-    // the counts only check that driving reached the other process.
+    // under the lease's token, in chunk order.
     assert!(report["samples"].as_u64().expect("n") > 100, "{report}");
     assert!(report["present"].as_u64().expect("n") > 100, "{report}");
     assert!(report["driving"].as_u64().expect("n") > 100, "{report}");

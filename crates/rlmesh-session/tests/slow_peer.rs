@@ -43,7 +43,8 @@ const EVICTED: Duration = Duration::from_secs(4);
 /// The host must be gone within this of being told to stop: its transport
 /// closes within 3 s whatever its peers do.
 const SHUTDOWN: Duration = Duration::from_secs(4);
-/// How long healthy participants are watched with the deaf peer there.
+/// How long the long run watches healthy participants with the deaf peer
+/// there; the default runs watch until the host cut the peer.
 const WATCH: Duration = Duration::from_secs(30);
 /// How long the test waits for something that must happen before it calls
 /// it a hang.
@@ -570,11 +571,14 @@ impl Watched {
     }
 }
 
-/// Queries the host from `observer` every 50 ms for `watch`, and has a
-/// participant join and leave every two seconds (a join tells every link,
-/// the deaf one too), checking that the host keeps hearing `healthy`.
+/// Queries the host from `observer` every 50 ms, and has a participant
+/// join and leave every two seconds (a join tells every link, the deaf one
+/// too), checking that the host keeps hearing `healthy`: for `watch` at
+/// least, and until every link to the deaf board that filled up was cut and
+/// a participant joined and left meanwhile.
 async fn watch_healthy(
     world: &World,
+    relay: &Relay,
     observer: &Participant,
     healthy: &[&ParticipantId],
     watch: Duration,
@@ -583,7 +587,16 @@ async fn watch_healthy(
     let started = Instant::now();
     let mut joined = Instant::now();
     let mut late = 0;
-    while started.elapsed() < watch {
+    let cut = || {
+        let evictions = relay.evictions();
+        !evictions.is_empty() && evictions.iter().all(Option::is_some)
+    };
+    while started.elapsed() < watch || late == 0 || !cut() {
+        assert!(
+            started.elapsed() < HANG,
+            "the host never cut the deaf board: {:?}",
+            relay.evictions()
+        );
         let asked = Instant::now();
         match tokio::time::timeout(HANG, observer.fetch_authority()).await {
             Ok(Ok(view)) => {
@@ -652,7 +665,14 @@ async fn deaf_board_among_healthy(kernel: bool, watch: Duration) {
     wait_heard(&heard).await;
     relay.go_deaf();
 
-    let watched = watch_healthy(&world, &observer, &[robot.id(), observer.id()], watch).await;
+    let watched = watch_healthy(
+        &world,
+        &relay,
+        &observer,
+        &[robot.id(), observer.id()],
+        watch,
+    )
+    .await;
     let evictions = relay.evictions();
     filler.stop();
     // Closing them would wait on links nothing reads.
@@ -701,16 +721,24 @@ async fn deaf_board_among_healthy(kernel: bool, watch: Duration) {
 }
 
 /// The host's own rule, alone: what a host without the kernel's timeout
-/// (macOS, Windows, an older Linux) relies on.
+/// (macOS, Windows, an older Linux) relies on, until it cut the peer.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_that_stops_reading_delays_no_one_else() {
+    deaf_board_among_healthy(false, Duration::ZERO).await;
+}
+
+/// The same for [`WATCH`]: past the deaf board's own Zenoh lease, with
+/// participants joining and leaving all along.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow: 30 s of watching; mise run test:rust:slow"]
+async fn a_peer_that_stops_reading_delays_no_one_else_for_long() {
     deaf_board_among_healthy(false, WATCH).await;
 }
 
 /// With the kernel's timeout, as a Linux host runs.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_kernel_resets_a_peer_that_stops_reading() {
-    deaf_board_among_healthy(true, WATCH / 3).await;
+    deaf_board_among_healthy(true, Duration::ZERO).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -829,6 +857,9 @@ async fn a_host_process_exits_on_sigterm_past_a_peer_that_stops_reading() {
     wait_heard(&heard).await;
     relay.go_deaf();
     tokio::task::block_in_place(|| relay.wait_stuck());
+    // Stopped while the host still reads it: a BLOCK put to a host that is
+    // gone waits out the feeder's link lease.
+    filler.stop();
 
     let started = Instant::now();
     #[allow(unsafe_code)]
@@ -847,7 +878,6 @@ async fn a_host_process_exits_on_sigterm_past_a_peer_that_stops_reading() {
         std::thread::sleep(Duration::from_millis(10));
     };
     let exited = started.elapsed();
-    filler.stop();
     std::mem::forget((board, feeder));
     tracing::info!("host process exited {exited:?} after SIGTERM: {status}");
     assert!(status.success(), "the host process failed: {status}");

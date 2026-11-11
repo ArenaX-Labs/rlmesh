@@ -325,6 +325,7 @@ run = [
   "mise run test",
   "mise run test:python:api-surface",
   "mise run test:python:perf",
+  "mise run test:rust:slow",
   "mise run test:python:examples",
   "mise run test:system:harness",
   "mise run build:python:local",
@@ -348,6 +349,13 @@ export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("pure
   cargo nextest run -p rlmesh-tether -p rlmesh-cockpit -p rlmesh-session-core -p rlmesh-session -p rlmesh-cli -p rlmesh-device --all-targets --features {{vars.fenced_test}} &&
   cargo test --workspace --doc
 '''
+
+# Rust tests that need tens of seconds of wall clock are `#[ignore]`d with a
+# reason naming this task, so the default runs leave them out; test:ci runs
+# them.
+[tasks."test:rust:slow"]
+description = "Run the Rust tests ignored as slow (tens of seconds of wall clock each)"
+run = "cargo nextest run -p rlmesh-session --test slow_peer --run-ignored only"
 
 # The fast local loop: Rust tests for changed crates and their dependents,
 # plus Python tests when they can be affected. Not a gate; see the script.
