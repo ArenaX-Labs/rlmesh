@@ -51,7 +51,7 @@ use zeroize::Zeroizing;
 
 #[cfg(feature = "fleet")]
 use crate::address::credentials::remembered;
-use crate::address::hosting::{local_host, open_client};
+use crate::address::hosting::{listening, local_host, open_client};
 use crate::clock::SystemMonotonicClock;
 use crate::error::SessionError;
 use crate::participant::{Participant, ParticipantConfig};
@@ -508,6 +508,10 @@ pub struct SessionAddress {
     pub credential: Option<Credential>,
 }
 
+/// How long one try at a loopback link gets while a host in this process
+/// may still be starting ([`SessionAddress::link`]).
+const LOCAL_HOST_TRY: Duration = Duration::from_millis(500);
+
 impl SessionAddress {
     /// The session `name` (or UUID) at `base`, in the local tenant, without
     /// a key.
@@ -659,6 +663,12 @@ impl SessionAddress {
         .await
     }
 
+    /// Whether the key it joins with would come from a host on this machine
+    /// (it carries none, and no host in this process has brought one).
+    fn awaits_host_key(&self) -> bool {
+        self.credential.is_none() && self.key.is_none() && local_host(self.base).is_none()
+    }
+
     /// [`Self::join`], its config finished by `finish`.
     pub(crate) async fn join_with(
         &self,
@@ -679,10 +689,12 @@ impl SessionAddress {
         // one host reach each other through it rather than directly.
         let deadline = tokio::time::Instant::now() + host_timeout;
         // A host on this machine not up yet brings its key when it is (one
-        // this process runs, or rlmeshd's).
-        while self.credential().is_err()
-            && self.base.ip().is_loopback()
+        // this process runs, or rlmeshd's). rlmeshd's key is on disk whether
+        // or not rlmeshd is the host at this address, so holding it alone
+        // doesn't end the wait: a host listening does.
+        while self.base.ip().is_loopback()
             && tokio::time::Instant::now() < deadline
+            && (self.credential().is_err() || (self.awaits_host_key() && !listening(self.base)))
         {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -721,17 +733,29 @@ impl SessionAddress {
         deadline: tokio::time::Instant,
         waited: Duration,
     ) -> Result<Transport, SessionError> {
-        if let Some(transport) = local_host(self.base) {
-            return Ok(transport);
-        }
-        open_client(self.base, self.link_auth(), deadline)
-            .await
-            .map_err(|err| match err {
-                SessionError::Zenoh(_) => {
-                    SessionError::Timeout(waited, format!("the session host at {}", self.base))
+        loop {
+            if let Some(transport) = local_host(self.base) {
+                return Ok(transport);
+            }
+            // A host this process is still starting listens before it is
+            // known here, and gates its links: try briefly, then look again.
+            let starting = self.base.ip().is_loopback() && self.awaits_host_key();
+            let until = if starting {
+                deadline.min(tokio::time::Instant::now() + LOCAL_HOST_TRY)
+            } else {
+                deadline
+            };
+            match open_client(self.base, self.link_auth(), until).await {
+                Err(SessionError::Zenoh(_)) if until < deadline => {}
+                Err(SessionError::Zenoh(_)) => {
+                    return Err(SessionError::Timeout(
+                        waited,
+                        format!("the session host at {}", self.base),
+                    ));
                 }
-                other => other,
-            })
+                other => return other,
+            }
+        }
     }
 }
 

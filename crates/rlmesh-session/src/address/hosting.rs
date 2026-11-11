@@ -102,7 +102,7 @@ fn forget_local_host(address: &SessionAddress) {
 }
 
 /// Whether a session host answers on `base` (its control listener accepts).
-fn listening(base: SocketAddr) -> bool {
+pub(super) fn listening(base: SocketAddr) -> bool {
     TcpStream::connect_timeout(&joinable(base), Duration::from_millis(200)).is_ok()
 }
 
