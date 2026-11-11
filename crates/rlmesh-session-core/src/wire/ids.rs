@@ -9,6 +9,8 @@ use core::str::FromStr;
 
 use uuid::Uuid;
 
+use crate::wire::error::Unread;
+
 /// An id that cannot be used: it is malformed or would break the key layout.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid {kind} {value:?}: {reason}")]
@@ -129,6 +131,34 @@ impl ParticipantId {
     /// The id as a string.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// An id slot a bounded decoder fills next ([`Self::assign`]): empty,
+    /// so not a valid id until then, and nothing allocated.
+    pub(crate) const fn unset() -> Self {
+        Self(String::new())
+    }
+
+    /// Makes this id `id`, keeping its buffer: nothing is allocated when
+    /// it already is `id`, or when the buffer is long enough.
+    pub(crate) fn assign(&mut self, id: &[u8]) -> Result<(), Unread> {
+        if self.0.as_bytes() == id {
+            return Ok(());
+        }
+        let valid = !id.is_empty()
+            && id.len() <= MAX_ID_LEN
+            && id
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+        let Some(id) = valid.then(|| core::str::from_utf8(id).ok()).flatten() else {
+            return Err(Unread::Malformed("participant id"));
+        };
+        self.0.clear();
+        self.0
+            .try_reserve_exact(id.len())
+            .map_err(|_| Unread::NoMemory)?;
+        self.0.push_str(id);
+        Ok(())
     }
 }
 

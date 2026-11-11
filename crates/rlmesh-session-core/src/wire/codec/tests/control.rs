@@ -6,6 +6,7 @@ use crate::wire::codec::ctl::status_from_pb;
 use crate::wire::codec::part::channel_priority_from_pb;
 use crate::wire::codec::state::{state_from_pb, state_to_pb};
 use crate::wire::codec::stream::edge_mode_from_pb;
+use crate::wire::error::{Unread, WireError};
 
 #[test]
 fn a_device_view_decodes_on_its_own_path() {
@@ -588,4 +589,361 @@ fn unknown_enum_values_are_refused_but_unknown_statuses_are_refusals() {
         Err(CtlStatus::InvalidRequest)
     );
     assert!(status_from_pb(pb::CtlStatus::Ok as i32, String::new()).is_ok());
+}
+
+/// The view as prost and the conversions decoded it before
+/// [`decode_view_into`]: what that must agree with.
+fn prost_view(buf: &[u8]) -> Result<DeviceView, WireError> {
+    use crate::wire::codec::convert::{collect, fingerprint_from_pb};
+    use crate::wire::codec::part::part_from_pb;
+    use crate::wire::codec::state::{
+        clock_from_pb, demand_from_pb, last_stop_from_pb, lease_from_pb, reason_code_from_pb,
+        reason_from_pb,
+    };
+    let v = pb::DeviceView::decode(buf)?;
+    Ok(DeviceView {
+        robot: crate::wire::ParticipantId::new(v.robot)?,
+        epoch: Epoch(v.epoch),
+        revision: v.revision,
+        mode: mode_from_pb(v.mode)?,
+        mode_reason: reason_code_from_pb(v.mode_reason),
+        last_stop: last_stop_from_pb(v.last_stop),
+        host_ns: v.host_ns,
+        clock_mode: clock_mode_from_pb(v.clock_mode)?,
+        tick_ns: v.tick_ns,
+        generation: v.generation,
+        parts: collect(v.parts, part_from_pb)?,
+        leases: collect(v.leases, lease_from_pb)?,
+        clocks: collect(v.clocks, clock_from_pb)?,
+        grids: collect(v.grids, |g| {
+            Ok::<_, WireError>(ViewGrid {
+                binding: fingerprint_from_pb("view grid", &g.binding)?,
+                channel: ChannelId(g.channel),
+                dt: Duration::from_nanos(g.dt_ns),
+            })
+        })?,
+        demands: collect(v.demands, demand_from_pb)?,
+        members: collect(v.members, |m| {
+            Ok::<_, WireError>(Member {
+                id: crate::wire::ParticipantId::new(m.id)?,
+                generation: m.generation,
+            })
+        })?,
+        closing: v.closing.map(reason_from_pb),
+    })
+}
+
+/// eye-1's view in the demo's session (two boards, a camera, a tracker, a
+/// desk, a driver and a viewer), as the host rendered it with its part.
+const DEMO_VIEW: &str = "0a056579652d311002181e20032803320208013887d4d99941400150015ab8010a046579657312066a6f696e7473180120022a0f0a03706f73100b1a010222037261643100000000000049403a0565766572794a0370616e4a0474696c7452037261776a5f0a08706f736974696f6e120f0a03706f73100b1a010222037261641a290a03706f731210333333333333e3bf9a9999999999d9bf1a10333333333333e33f9a9999999999d93f2204686f6c642880c2d72f308084af5f380158016880e1eb1778028201056579652d3199010000000000004940622b08011206647269766572180220022880e59a7730cbbbd1d20538a79b838a4242082e9bfc4af9a6ddc048196a250a0664726976657210e6c2c79f041884a30d210000000000407f4028a4c3133094d1ffe2406a230a056579652d3110af9fb90718c6ea0c210000000000407f40289bf71230aab29fe54072110a082e9bfc4af9a6ddc010011880dac4097a1108011001180339000000000000244048018201070a0363616d10038201080a046465736b100582010a0a0664726976657210068201090a056579652d3110018201090a056579652d32100282010b0a07747261636b6572100482010a0a067669657765721007";
+
+/// [`DEMO_VIEW`]'s bytes.
+fn demo_view() -> Vec<u8> {
+    (0..DEMO_VIEW.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&DEMO_VIEW[i..i + 2], 16).expect("hex"))
+        .collect()
+}
+
+/// A view as a board in a full session holds it.
+fn full_view() -> DeviceView {
+    let state = snapshot();
+    DeviceView {
+        robot: pid("ur10e"),
+        epoch: state.epoch,
+        revision: state.revision,
+        mode: Mode::Active,
+        mode_reason: ReasonCode::FirstLease,
+        last_stop: LastStop {
+            epoch: Epoch(2),
+            revision: 4,
+        },
+        host_ns: -7,
+        clock_mode: ClockMode::Virtual,
+        tick_ns: 10,
+        generation: 3,
+        parts: vec![arm()],
+        leases: state.leases.clone(),
+        clocks: state.clocks.clone(),
+        grids: vec![ViewGrid {
+            binding: Fingerprint::from(77),
+            channel: ChannelId(1),
+            dt: Duration::from_millis(10),
+        }],
+        demands: vec![
+            Demand {
+                channel: ChannelId(1),
+                revision: 2,
+                plan: Plan::Latest { hz: 12.5 },
+                retain: Duration::from_millis(3),
+                acked: 1,
+            },
+            Demand {
+                channel: ChannelId(2),
+                revision: 1,
+                plan: Plan::Every,
+                retain: Duration::ZERO,
+                acked: 1,
+            },
+        ],
+        members: ["op", "policy", "cam", "ur10e"]
+            .iter()
+            .zip(1..)
+            .map(|(id, generation)| Member {
+                id: pid(id),
+                generation,
+            })
+            .collect(),
+        closing: Some(Reason {
+            code: ReasonCode::SceneEnded,
+            by: "op".into(),
+            detail: "the run ended".into(),
+            at_ns: 5,
+            revision: 9,
+            verified: true,
+        }),
+    }
+}
+
+#[test]
+fn a_view_decoded_in_place_is_the_one_prost_decodes_whatever_the_bytes() {
+    let view = full_view();
+    let bytes = encode_view(&view);
+    let mut held = DeviceView::empty(pid("x"));
+    decode_view_into(&bytes, &mut held, true).expect("decodes");
+    assert_eq!(held, view);
+    assert_eq!(prost_view(&bytes).expect("decodes"), view);
+    // Without its parts, the rest is the same.
+    decode_view_into(&bytes, &mut held, false).expect("decodes");
+    assert!(held.parts.is_empty());
+    assert_eq!(
+        DeviceView {
+            parts: vec![arm()],
+            ..held.clone()
+        },
+        view
+    );
+    // Whatever a byte becomes, a view decoded in place is never one prost
+    // reads otherwise.
+    let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut taken = 0;
+    for _ in 0..20_000 {
+        let mut bytes = bytes.clone();
+        for _ in 0..1 + next() % 3 {
+            let at = usize::try_from(next() % bytes.len() as u64).expect("at");
+            match next() % 3 {
+                0 => bytes[at] = u8::try_from(next() & 0xff).expect("byte"),
+                1 => bytes.truncate(at),
+                _ => bytes.insert(at, u8::try_from(next() & 0xff).expect("byte")),
+            }
+            if bytes.is_empty() {
+                break;
+            }
+        }
+        if decode_view_into(&bytes, &mut held, true).is_ok() {
+            taken += 1;
+            let reference = prost_view(&bytes).expect("prost reads what was taken in place");
+            assert_eq!(held, reference);
+        }
+    }
+    assert!(taken > 100, "{taken} mutated views decoded");
+}
+
+#[test]
+fn a_hostile_or_oversized_view_is_refused_unread() {
+    let refused = |bytes: &[u8]| {
+        let mut held = DeviceView::empty(pid("x"));
+        decode_view_into(bytes, &mut held, true)
+            .err()
+            .and_then(|e| e.why_unread())
+    };
+    let robot = |mut tail: Vec<u8>| {
+        let mut bytes = vec![0x0a, 0x06];
+        bytes.extend(b"ur10e1");
+        bytes.append(&mut tail);
+        bytes
+    };
+    // Two thousand empty members: 4 KB on the wire, refused before one is
+    // made.
+    assert_eq!(
+        refused(&robot([0x82, 0x01, 0x00].repeat(2000))),
+        Some(Unread::TooLarge("members"))
+    );
+    // Thirty-three parts.
+    assert_eq!(
+        refused(&robot([0x5a, 0x00].repeat(33))),
+        Some(Unread::TooLarge("parts"))
+    );
+    // A length prefix of four gigabytes.
+    assert_eq!(
+        refused(&robot(vec![0x82, 0x01, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x0a])),
+        Some(Unread::Malformed("length past the end"))
+    );
+    // An id longer than any, and one that isn't one.
+    let mut long = vec![0x82, 0x01, 0x84, 0x01, 0x0a, 0x81, 0x01];
+    long.extend([b'a'; 129]);
+    assert_eq!(
+        refused(&robot(long)),
+        Some(Unread::Malformed("participant id"))
+    );
+    assert_eq!(
+        refused(&robot(vec![0x82, 0x01, 0x03, 0x0a, 0x01, b'/'])),
+        Some(Unread::Malformed("participant id"))
+    );
+    // A closing reason past what a board keeps.
+    let mut view = full_view();
+    view.closing.as_mut().expect("closing").detail = "x".repeat(MAX_VIEW_TEXT + 1);
+    assert_eq!(
+        refused(&encode_view(&view)),
+        Some(Unread::TooLarge("reason"))
+    );
+    // No robot, an unknown mode: malformed.
+    assert_eq!(refused(&[0x10, 0x01]), Some(Unread::Malformed("robot")));
+    assert_eq!(
+        refused(&robot(vec![0x20, 0x63])),
+        Some(Unread::Malformed("mode"))
+    );
+}
+
+#[test]
+fn a_view_decoded_into_the_one_held_keeps_its_buffers() {
+    let view = full_view();
+    let mut next = view.clone();
+    next.host_ns += 1;
+    next.leases[0].expires_ns += 10;
+    next.clocks[0].error_ns += 1;
+    let (one, two) = (encode_view(&view), encode_view(&next));
+    let mut held = DeviceView::empty(pid("x"));
+    decode_view_into(&one, &mut held, false).expect("decodes");
+    let buffers = |v: &DeviceView| {
+        (
+            v.robot.as_str().as_ptr(),
+            v.leases.as_ptr(),
+            v.leases[0].holder.as_str().as_ptr(),
+            v.clocks.as_ptr(),
+            v.members.as_ptr(),
+            v.members[0].id.as_str().as_ptr(),
+            v.closing.as_ref().map(|c| c.detail.as_ptr()),
+        )
+    };
+    let before = buffers(&held);
+    decode_view_into(&two, &mut held, false).expect("decodes");
+    assert_eq!(held.leases[0].expires_ns, next.leases[0].expires_ns);
+    assert_eq!(buffers(&held), before, "every buffer reused");
+    // A view refused part way leaves the next one decodable all the same.
+    assert!(decode_view_into(&two[..two.len() - 3], &mut held, false).is_err());
+    decode_view_into(&one, &mut held, false).expect("decodes");
+    assert_eq!(
+        DeviceView {
+            parts: vec![arm()],
+            ..held
+        },
+        view
+    );
+}
+
+/// eye-1's view in the demo's session decodes in place to what prost made
+/// of it, its part skipped or not, and lean.
+#[test]
+fn the_demo_view_decodes_in_place_as_prost_did() {
+    let full = demo_view();
+    let view = prost_view(&full).expect("decodes");
+    assert_eq!(view.parts.len(), 1);
+    let lean = encode_view(&DeviceView {
+        parts: Vec::new(),
+        ..view.clone()
+    });
+    let mut held = DeviceView::empty(pid("x"));
+    decode_view_into(&full, &mut held, true).expect("decodes");
+    assert_eq!(held, view);
+    for bytes in [&full, &lean] {
+        decode_view_into(bytes, &mut held, false).expect("decodes");
+        assert_eq!(
+            held,
+            DeviceView {
+                parts: Vec::new(),
+                ..view.clone()
+            }
+        );
+    }
+}
+
+#[test]
+fn every_message_a_board_decodes_is_refused_unread_when_it_holds_too_much() {
+    let why = |r: Result<(), WireError>| r.err().and_then(|e| e.why_unread());
+    // Two thousand empty keys or leases: refused before a vector is made.
+    let keys = [0x32, 0x00].repeat(2000);
+    let mut view = DeviceView::empty(pid("x"));
+    assert_eq!(
+        why(decode_view_reply_into(&keys, &mut view, false).map(drop)),
+        Some(Unread::Malformed("too short"))
+    );
+    let leases = [0x22, 0x00].repeat(2000);
+    assert_eq!(
+        why(decode_view_reply_into(&leases, &mut view, false).map(drop)),
+        Some(Unread::Malformed("too short"))
+    );
+    assert_eq!(
+        why(decode_key_delivery(&[0x0a, 0x00].repeat(2000)).map(drop)),
+        Some(Unread::Malformed("too short"))
+    );
+    // More keys than any delivery holds, each a valid size.
+    let mut many = Vec::new();
+    for _ in 0..1025 {
+        many.extend([0x0a, 34, 0x42, 32]);
+        many.extend([7; 32]);
+    }
+    assert_eq!(
+        why(decode_key_delivery(&many).map(drop)),
+        Some(Unread::TooLarge("key delivery"))
+    );
+    assert_eq!(
+        why(decode_key_delivery(
+            &[0x12, 0x81, 0x02]
+                .iter()
+                .copied()
+                .chain([1; 257])
+                .collect::<Vec<_>>()
+        )
+        .map(drop)),
+        Some(Unread::TooLarge("key delivery"))
+    );
+    // Two views in one reply, a view past its caps.
+    let two = [0x4a, 0x00, 0x4a, 0x00].to_vec();
+    assert_eq!(
+        why(decode_view_reply_into(&two, &mut view, false).map(drop)),
+        Some(Unread::Malformed("two views"))
+    );
+    // A chunk computed from two thousand empty inputs.
+    assert_eq!(
+        why(decode_chunk(Bytes::from([0x32, 0x00].repeat(2000))).map(drop)),
+        Some(Unread::TooLarge("action chunk"))
+    );
+    // A stranger's unsealed answer: only its status and message are read,
+    // and anything else in it is never decoded.
+    let mut stranger = vec![0x08, 17, 0x12, 0x03, b'n', b'o', b'!'];
+    stranger.extend([0x4a, 0x00].repeat(1000));
+    let hint = decode_unauthenticated(&stranger).expect("a hint");
+    assert_eq!(hint.message, "no!");
+    let refusal = encode_view_reply(&ViewReply {
+        result: Err(CtlError::new(CtlStatus::Unauthenticated, "x".repeat(300))),
+        view: None,
+        leases: Vec::new(),
+        request_id: 0,
+        keys: Vec::new(),
+        assignment: None,
+        run: None,
+    });
+    let hint = decode_unauthenticated(&refusal).expect("a hint");
+    assert_eq!(
+        (hint.status, hint.message.len()),
+        (CtlStatus::Unauthenticated, 256)
+    );
+    assert!(decode_unauthenticated(&[0xff; 64]).is_none());
 }

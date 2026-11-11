@@ -149,6 +149,30 @@ pub struct DeviceView {
 }
 
 impl DeviceView {
+    /// A view of nothing yet for `robot`: what a decoder fills
+    /// ([`crate::wire::codec::decode_view_into`]).
+    pub fn empty(robot: ParticipantId) -> Self {
+        Self {
+            robot,
+            epoch: Epoch(0),
+            revision: 0,
+            mode: Mode::Disarmed,
+            mode_reason: ReasonCode::default(),
+            last_stop: LastStop::default(),
+            host_ns: 0,
+            clock_mode: ClockMode::default(),
+            tick_ns: 0,
+            generation: 0,
+            parts: Vec::new(),
+            leases: Vec::new(),
+            clocks: Vec::new(),
+            grids: Vec::new(),
+            demands: Vec::new(),
+            members: Vec::new(),
+            closing: None,
+        }
+    }
+
     /// `robot`'s view of `state`: its own parts, the leases on them, the
     /// clocks and grids those leases need, its streams' plans and every
     /// present member.

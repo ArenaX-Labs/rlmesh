@@ -1,12 +1,14 @@
 //! Control messages: verbs, the host's replies (with or without the
 //! state or a device view) and e-stop signal bodies.
 
+use super::bound;
 use super::convert::{
     channels, collect, fingerprint_from_pb, priority_from_pb, priority_to_pb, role_from_pb,
     role_to_pb,
 };
-use super::keys::{key_from_pb, key_to_pb};
+use super::keys::{MAX_KEYS, MIN_KEY, decode_key, key_from_pb, key_to_pb};
 use super::pb;
+use super::reader::Fields;
 use super::scene::{
     assignment_from_pb, assignment_to_pb, board_id_from_pb, board_id_to_pb, host_started_from_pb,
     host_started_to_pb, run_state_from_pb, run_state_to_pb,
@@ -17,18 +19,18 @@ use super::state::{
     state_to_pb,
 };
 use super::tick::{chunk_ref_from_pb, chunk_ref_to_pb, watermark_from_pb, watermark_to_pb};
-use super::view::{view_from_pb, view_to_pb};
+use super::view::{decode_view_into, view_to_pb};
 use crate::prelude::*;
 
 use bytes::Bytes;
 use prost::Message as _;
 
 use crate::wire::authority::{Command, CtlError, CtlReply, CtlStatus, EstopSignal, Request};
-use crate::wire::error::WireError;
+use crate::wire::error::{Unread, WireError};
 use crate::wire::ids::{ChannelId, Epoch, LeaseToken, ParticipantId};
 use crate::wire::key::KeysAck;
 use crate::wire::scene::LobbyWait;
-use crate::wire::view::ViewReply;
+use crate::wire::view::{DeviceView, ViewReply};
 
 /// Encodes a control verb.
 pub fn encode_request(request: &Request) -> Vec<u8> {
@@ -81,41 +83,126 @@ pub fn encode_view_reply(reply: &ViewReply) -> Vec<u8> {
     .encode_to_vec()
 }
 
-/// `CtlReply` without its `state` (field 3), which prost skips unread: what
-/// [`decode_view_reply`] decodes, so a board never links the authority
-/// state's decoder.
-#[derive(Clone, PartialEq, prost::Message)]
-struct ReplyWithoutState {
-    #[prost(enumeration = "pb::CtlStatus", tag = "1")]
-    status: i32,
-    #[prost(string, tag = "2")]
-    message: String,
-    #[prost(message, repeated, tag = "4")]
-    leases: Vec<pb::Lease>,
-    #[prost(uint64, tag = "5")]
-    request_id: u64,
-    #[prost(message, repeated, tag = "6")]
-    keys: Vec<pb::Key>,
-    #[prost(message, optional, tag = "7")]
-    assignment: Option<pb::Assignment>,
-    #[prost(message, optional, tag = "8")]
-    run: Option<pb::RunState>,
-    #[prost(message, optional, tag = "9")]
-    view: Option<pb::DeviceView>,
-}
-
 /// Decodes any host answer as a robot that takes its device view does:
 /// `state`, if present, is skipped unread.
+///
+/// # Errors
+/// [`WireError`]: what [`decode_view_reply_into`] refuses.
 pub fn decode_view_reply(buf: &[u8]) -> Result<ViewReply, WireError> {
-    let reply = ReplyWithoutState::decode(buf)?;
-    Ok(ViewReply {
-        result: status_from_pb(reply.status, reply.message),
-        view: reply.view.map(view_from_pb).transpose()?,
-        leases: collect(reply.leases, lease_from_pb)?,
-        request_id: reply.request_id,
-        keys: collect(reply.keys, key_from_pb)?,
-        assignment: reply.assignment.map(assignment_from_pb).transpose()?,
-        run: reply.run.map(run_state_from_pb).transpose()?,
+    let mut view = DeviceView::empty(ParticipantId::unset());
+    let (mut reply, carried) = decode_view_reply_into(buf, &mut view, true)?;
+    reply.view = carried.then_some(view);
+    Ok(reply)
+}
+
+/// The most leases one reply grants (one per part).
+const MAX_GRANTED: usize = 256;
+/// The fewest bytes a lease encodes to: a holder and a binding, tagged.
+const MIN_LEASE: usize = 13;
+/// The longest refusal message a robot keeps.
+const MAX_MESSAGE: usize = 1024;
+
+/// [`decode_view_reply`] with the reply's view decoded into `view`
+/// ([`decode_view_into`], its parts only when `parts`): the reply without
+/// it, and whether it carried one. Read field by field: the `state` is
+/// skipped unread, so a board never links its decoder; leases and keys are
+/// decoded one at a time, each capped, into vectors allocated once and
+/// fallibly; an assignment or a run is capped before it is decoded.
+///
+/// # Errors
+/// [`WireError`]: malformed, or over a cap; `view` is then unspecified.
+pub fn decode_view_reply_into(
+    buf: &[u8],
+    view: &mut DeviceView,
+    parts: bool,
+) -> Result<(ViewReply, bool), WireError> {
+    const M: &str = "ctl reply";
+    let (mut status, mut message, mut request_id) = (0, "", 0);
+    let (mut carried, mut assignment, mut run) = (None, None, None);
+    let mut fields = Fields::new(buf, M);
+    while let Some((tag, value)) = fields.next_field()? {
+        match tag {
+            1 => status = value.i32(M)?,
+            2 => message = value.str(M)?,
+            5 => request_id = value.u64(M)?,
+            7 => assignment = Some(value.bytes(M)?),
+            8 => run = Some(value.bytes(M)?),
+            9 if carried.is_some() => {
+                return Err(WireError::unread(M, Unread::Malformed("two views")));
+            }
+            9 => carried = Some(value.bytes(M)?),
+            _ => {}
+        }
+    }
+    let leases = bound::each(buf, M, (4, MAX_GRANTED, MIN_LEASE), |l| {
+        lease_from_pb(pb::Lease::decode(l)?)
+    })?;
+    let keys = bound::each(buf, M, (6, MAX_KEYS, MIN_KEY), decode_key)?;
+    let assignment = match assignment {
+        Some(a) => {
+            bound::check(a, &bound::ASSIGNMENT)?;
+            Some(assignment_from_pb(pb::Assignment::decode(a)?)?)
+        }
+        None => None,
+    };
+    let run = match run {
+        Some(r) => {
+            bound::check(r, &bound::RUN_STATE)?;
+            Some(run_state_from_pb(pb::RunState::decode(r)?)?)
+        }
+        None => None,
+    };
+    if message.len() > MAX_MESSAGE {
+        return Err(WireError::unread(M, Unread::TooLarge("message")));
+    }
+    let mut text = String::new();
+    text.try_reserve_exact(message.len())
+        .map_err(|_| WireError::unread(M, Unread::NoMemory))?;
+    text.push_str(message);
+    if let Some(carried) = carried {
+        decode_view_into(carried, view, parts)?;
+    }
+    let reply = ViewReply {
+        result: status_from_pb(status, text),
+        view: None,
+        leases,
+        request_id,
+        keys,
+        assignment,
+        run,
+    };
+    Ok((reply, carried.is_some()))
+}
+
+/// The unsealed `UNAUTHENTICATED` refusal `buf` is, if it is one: only its
+/// status and message are read (at most 256 bytes of it), whatever else it
+/// holds, and nothing is allocated for anything else. Anyone can answer
+/// `ctl`, so this reads what may be a stranger's bytes.
+pub fn decode_unauthenticated(buf: &[u8]) -> Option<CtlError> {
+    const M: &str = "ctl reply";
+    const MAX_MESSAGE: usize = 256;
+    let (mut status, mut message) = (0, "");
+    let mut fields = Fields::new(buf, M);
+    while let Some((tag, value)) = fields.next_field().ok()? {
+        match tag {
+            1 => status = value.i32(M).ok()?,
+            2 => message = value.str(M).ok()?,
+            _ => {}
+        }
+    }
+    if pb::CtlStatus::try_from(status) != Ok(pb::CtlStatus::Unauthenticated) {
+        return None;
+    }
+    let mut end = message.len().min(MAX_MESSAGE);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut text = String::new();
+    text.try_reserve_exact(end).ok()?;
+    text.push_str(&message[..end]);
+    Some(CtlError {
+        status: CtlStatus::Unauthenticated,
+        message: text,
     })
 }
 

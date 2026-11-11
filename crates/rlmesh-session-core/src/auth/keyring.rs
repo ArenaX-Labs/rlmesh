@@ -349,11 +349,8 @@ impl Keyring {
             self.held.clear();
             return;
         }
-        // Inserted one by one: `collect` sorts first, with a 4 KB stack buffer.
-        let mut live = BTreeSet::new();
-        for lease in snapshot.leases() {
-            live.insert(lease.token);
-        }
+        // Looked up in place: a set of them would allocate on every view.
+        let leases = snapshot.leases();
         let gone = &mut self.gone;
         self.held.retain(|id, held| {
             if held.scope.purpose.rotates() {
@@ -366,7 +363,7 @@ impl Keyring {
                     .and_then(|s| snapshot.generation(s))
                     .is_some_and(|g| g == held.scope.generation)
             } else {
-                live.contains(&held.scope.token)
+                leases.iter().any(|l| l.token == held.scope.token)
             };
             if current {
                 held.live = true;

@@ -1,6 +1,7 @@
 //! Key deliveries and the issued keys they carry.
 
-use super::convert::{bad_enum, channels, collect};
+use super::bound;
+use super::convert::{bad_enum, channels};
 use super::pb;
 use crate::prelude::*;
 
@@ -20,13 +21,31 @@ pub fn encode_key_delivery(delivery: &KeyDelivery) -> Vec<u8> {
     .encode_to_vec()
 }
 
-/// Decodes a key delivery.
+/// The most keys one delivery or reply carries: a generation's keys for
+/// every lease, stream and member of a large session.
+pub(super) const MAX_KEYS: usize = 1024;
+/// The fewest bytes a key encodes to: its 32 key bytes, tagged.
+pub(super) const MIN_KEY: usize = 34;
+/// The most key ids one delivery retires.
+const MAX_RETIRED: usize = 256;
+
+/// Decodes a key delivery: key by key, each capped (at most 256 parts a
+/// key), into vectors allocated once and fallibly.
+///
+/// # Errors
+/// [`WireError`]: malformed, or over a cap.
 pub fn decode_key_delivery(buf: &[u8]) -> Result<KeyDelivery, WireError> {
-    let d = pb::KeyDelivery::decode(buf)?;
+    const M: &str = "key delivery";
     Ok(KeyDelivery {
-        keys: collect(d.keys, key_from_pb)?,
-        retire_through: d.retire_through,
+        keys: bound::each(buf, M, (1, MAX_KEYS, MIN_KEY), decode_key)?,
+        retire_through: bound::each_u32(buf, M, (2, MAX_RETIRED))?,
     })
+}
+
+/// One key, capped.
+pub(super) fn decode_key(buf: &[u8]) -> Result<IssuedKey, WireError> {
+    bound::check(buf, &bound::KEY)?;
+    key_from_pb(pb::Key::decode(buf)?)
 }
 
 pub(super) fn key_to_pb(k: &IssuedKey) -> pb::Key {

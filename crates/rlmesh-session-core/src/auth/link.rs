@@ -11,7 +11,7 @@ use crate::crypto::{
 };
 use crate::prelude::*;
 use crate::wire::codec;
-use crate::wire::error::WireError;
+use crate::wire::error::{Unread, WireError};
 use crate::wire::heartbeat::{Heartbeat, HeartbeatEcho};
 use crate::wire::tick::VirtualTick;
 use crate::wire::{
@@ -137,18 +137,24 @@ pub fn open_health(
     Ok(codec::decode_health(verified.body)?)
 }
 
-/// The unsealed `UNAUTHENTICATED` refusal `msg` is, if it is one. Its own
-/// function so a decoded reply isn't held on the stack while the real one
-/// is opened and decoded.
+/// The unsealed `UNAUTHENTICATED` refusal `msg` is, if it is one: its
+/// status and message only ([`codec::decode_unauthenticated`]), since
+/// anyone can answer `ctl`. Its own function so its frame isn't under the
+/// real reply's decoder.
 #[inline(never)]
 fn unauthenticated_refusal(msg: &[u8]) -> Option<CtlError> {
-    match codec::decode_view_reply(msg) {
-        Ok(ViewReply {
-            result: Err(refusal),
-            ..
-        }) if refusal.status == CtlStatus::Unauthenticated => Some(refusal),
-        _ => None,
+    codec::decode_unauthenticated(msg)
+}
+
+/// A verified view's body decoded into `into`, its parts skipped: it must
+/// be the robot the key names.
+#[inline(never)]
+fn decode_view_into_of(keyexpr: &str, body: &[u8], into: &mut DeviceView) -> Result<(), LinkError> {
+    codec::decode_view_into(body, into, false)?;
+    if keyexpr.rsplit('/').next() != Some(into.robot.as_str()) {
+        return Err(WireError::unread("device view", Unread::Malformed("another robot's")).into());
     }
+    Ok(())
 }
 
 /// A participant generation's link to the host:
@@ -558,19 +564,52 @@ impl Link {
         request_id: u64,
         now_ns: i64,
     ) -> Result<ReplyOutcome<ViewReply>, LinkError> {
+        let mut view = DeviceView::empty(self.participant.clone());
+        Ok(
+            match self.reply_view_into(keyexpr, msg, request_id, now_ns, &mut view, true)? {
+                ReplyOutcome::Answer(answer) => {
+                    let (mut reply, carried) = *answer;
+                    if carried {
+                        self.keyring.observe(&view, now_ns);
+                    }
+                    reply.view = carried.then_some(view);
+                    ReplyOutcome::Answer(Box::new(reply))
+                }
+                ReplyOutcome::Other(id) => ReplyOutcome::Other(id),
+                ReplyOutcome::Hint(refusal) => ReplyOutcome::Hint(refusal),
+            },
+        )
+    }
+
+    /// [`Self::reply_view`] with the reply's view decoded into `into`
+    /// ([`codec::decode_view_reply_into`], its parts only when `parts`):
+    /// the answer is the reply without it, and whether it carried one. The
+    /// answer's keys are installed; its view is the caller's to observe
+    /// ([`Self::observe`]), on a frame of its own: a board's deepest call
+    /// is the keyring's.
+    ///
+    /// # Errors
+    /// [`LinkError`]: anything else, which is dropped; `into` is then
+    /// unspecified.
+    pub fn reply_view_into(
+        &mut self,
+        keyexpr: &str,
+        msg: &mut [u8],
+        request_id: u64,
+        now_ns: i64,
+        into: &mut DeviceView,
+        parts: bool,
+    ) -> Result<ReplyOutcome<(ViewReply, bool)>, LinkError> {
         let refused = unauthenticated_refusal(msg);
         match self.down.open(keyexpr, msg) {
             Ok(opened) => {
-                let reply = codec::decode_view_reply(opened.body)?;
+                let (reply, carried) = codec::decode_view_reply_into(opened.body, into, parts)?;
                 self.unanswered.remove(&reply.request_id);
                 Ok(if reply.request_id == request_id {
                     for key in &reply.keys {
                         self.keyring.install(key, now_ns);
                     }
-                    if let Some(view) = &reply.view {
-                        self.keyring.observe(view, now_ns);
-                    }
-                    ReplyOutcome::Answer(Box::new(reply))
+                    ReplyOutcome::Answer(Box::new((reply, carried)))
                 } else {
                     ReplyOutcome::Other(reply.request_id)
                 })
@@ -660,12 +699,40 @@ impl Link {
             return Err(OpenError::WrongKind(opened.header.kind).into());
         }
         let view = codec::decode_view(opened.body)?;
-        if view.robot != self.participant || view.generation != self.accept.generation {
-            return Err(
-                WireError::malformed("device view", "another robot's or generation's").into(),
-            );
-        }
+        self.own_view(&view)?;
         Ok(view)
+    }
+
+    /// [`Self::open_sealed_view`] into `into`, its parts skipped
+    /// ([`codec::decode_view_into`]): nothing is allocated once `into` has
+    /// held a view of the same members.
+    ///
+    /// # Errors
+    /// [`LinkError`]: it is dropped, and `into` is unspecified.
+    pub fn open_sealed_view_into(
+        &mut self,
+        keyexpr: &str,
+        msg: &mut [u8],
+        into: &mut DeviceView,
+    ) -> Result<(), LinkError> {
+        let opened = self.down.open(keyexpr, msg)?;
+        if opened.header.kind != Kind::DeviceView {
+            return Err(OpenError::WrongKind(opened.header.kind).into());
+        }
+        codec::decode_view_into(opened.body, into, false)?;
+        self.own_view(into)
+    }
+
+    /// A sealed view must name this robot at this generation.
+    fn own_view(&self, view: &DeviceView) -> Result<(), LinkError> {
+        if view.robot != self.participant || view.generation != self.accept.generation {
+            return Err(WireError::unread(
+                "device view",
+                Unread::Malformed("another robot's or generation's"),
+            )
+            .into());
+        }
+        Ok(())
     }
 
     /// A verifier of this link's broadcasts for another task
@@ -686,11 +753,58 @@ impl Link {
         decode_view_of(keyexpr, verified.body)
     }
 
+    /// [`Self::take_view`] into `into`, its parts skipped, as
+    /// [`Self::open_sealed_view_into`] does.
+    ///
+    /// # Errors
+    /// [`LinkError`]; `into` is then unspecified.
+    pub fn take_view_into(
+        &mut self,
+        keyexpr: &str,
+        checked: &Checked,
+        into: &mut DeviceView,
+    ) -> Result<(), LinkError> {
+        let verified = self.host.take(keyexpr, checked)?;
+        if verified.header.kind != SignedKind::DeviceView {
+            return Err(SignedError::UnknownKind(verified.header.kind.as_u8()).into());
+        }
+        decode_view_into_of(keyexpr, verified.body, into)
+    }
+
+    /// [`Self::open_view`] into `into`, its parts skipped, as
+    /// [`Self::open_sealed_view_into`] does.
+    ///
+    /// # Errors
+    /// [`LinkError`]; `into` is then unspecified.
+    pub fn open_view_into(
+        &mut self,
+        keyexpr: &str,
+        msg: &[u8],
+        into: &mut DeviceView,
+    ) -> Result<(), LinkError> {
+        let verified = self.host.verify(keyexpr, msg)?;
+        if verified.header.kind != SignedKind::DeviceView {
+            return Err(SignedError::UnknownKind(verified.header.kind.as_u8()).into());
+        }
+        decode_view_into_of(keyexpr, verified.body, into)
+    }
+
     /// Verifies a `host/tick` broadcast on `keyexpr`.
     ///
     /// # Errors
     /// [`LinkError`].
     pub fn tick(&mut self, keyexpr: &str, msg: &[u8]) -> Result<VirtualTick, LinkError> {
         open_tick(&mut self.host, keyexpr, msg)
+    }
+
+    /// Verifies a `host/tick` broadcast on `keyexpr`, keeping the host's
+    /// sequence floor, without decoding it: for a robot that runs no
+    /// lockstep.
+    ///
+    /// # Errors
+    /// [`LinkError`].
+    pub fn verify_tick(&mut self, keyexpr: &str, msg: &[u8]) -> Result<(), LinkError> {
+        self.host.verify(keyexpr, msg)?;
+        Ok(())
     }
 }

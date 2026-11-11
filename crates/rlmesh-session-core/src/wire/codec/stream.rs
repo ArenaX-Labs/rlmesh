@@ -1,6 +1,7 @@
 //! Samples, batches and action chunks: encoded as segments so the payload
 //! is never copied.
 
+use super::bound;
 use super::convert::{bad_enum, collect, fingerprint_from_pb};
 use super::pb;
 use super::state::{reason_code_from_pb, reason_code_to_pb};
@@ -236,6 +237,7 @@ pub fn encode_chunk(chunk: &ActionChunk) -> Result<Encoded, WireError> {
 
 /// Decodes an action chunk. The actions slice `buf` (no copy).
 pub fn decode_chunk(buf: Bytes) -> Result<ActionChunk, WireError> {
+    bound::check(&buf, &bound::CHUNK)?;
     let c = pb::ActionChunk::decode(buf)?;
     check_chunk_size(c.count, c.actions.len())?;
     Ok(ActionChunk {

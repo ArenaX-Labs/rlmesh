@@ -76,6 +76,7 @@ pub mod schema {
     pub const HOST_HEALTH: &str = "rlmesh.session.v2.HostHealth";
 }
 
+mod bound;
 mod convert;
 mod ctl;
 mod handshake;
@@ -85,14 +86,15 @@ mod lockstep;
 mod model;
 mod pair;
 mod part;
+mod reader;
 mod scene;
 mod state;
 mod stream;
 mod tick;
 mod view;
 pub use ctl::{
-    decode_estop_signal, decode_reply, decode_request, decode_view_reply, encode_estop_signal,
-    encode_reply, encode_request, encode_view_reply,
+    decode_estop_signal, decode_reply, decode_request, decode_unauthenticated, decode_view_reply,
+    decode_view_reply_into, encode_estop_signal, encode_reply, encode_request, encode_view_reply,
 };
 pub use handshake::{
     decode_handshake_accept, decode_handshake_reply, decode_handshake_request,
@@ -121,7 +123,10 @@ pub use stream::{
     Encoded, decode_batch, decode_chunk, decode_sample, encode_batch, encode_chunk, encode_sample,
 };
 pub use tick::{decode_history_query, decode_tick, encode_history_query, encode_tick};
-pub use view::{decode_view, encode_view};
+pub use view::{
+    MAX_VIEW_CLOCKS, MAX_VIEW_DEMANDS, MAX_VIEW_GRIDS, MAX_VIEW_LEASES, MAX_VIEW_MEMBERS,
+    MAX_VIEW_PARTS, MAX_VIEW_TEXT, decode_view, decode_view_into, encode_view,
+};
 
 #[cfg(test)]
 mod tests;

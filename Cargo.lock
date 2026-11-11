@@ -5637,6 +5637,7 @@ dependencies = [
  "libm",
  "poly1305",
  "prost",
+ "prost-types",
  "serde",
  "serde_json",
  "serde_path_to_error",

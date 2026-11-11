@@ -85,7 +85,7 @@ pub use authority::{
 };
 pub use codec::Encoded;
 pub use contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
-pub use error::WireError;
+pub use error::{Unread, WireError};
 pub use health::{HostHealth, LinkHealth};
 pub use heartbeat::{ClockRefusal, Health, Heartbeat, HeartbeatEcho, TimingSample};
 pub use ids::{
