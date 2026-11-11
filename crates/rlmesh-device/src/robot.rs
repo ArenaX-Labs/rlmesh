@@ -57,6 +57,10 @@ const MAX_BACKOFF_MS: u32 = 30_000;
 const CTL_TRIES: u8 = 3;
 /// How often a robot missing keys asks for them again (`GetKeys`).
 const GET_KEYS_MS: u64 = 250;
+/// `ctl` requests waiting to be sent, at most: a host that stops answering
+/// must not grow a board's memory. Past it the oldest that is not a stop
+/// report goes; a stop report replaces the one waiting.
+const CTL_QUEUE_MAX: usize = 16;
 
 /// The control class: the host's first port.
 pub const CLASS_CONTROL: u8 = 0;
@@ -1098,7 +1102,7 @@ impl Robot {
         if let Ok(ack) = link.keys(&key, payload, now)
             && !ack.is_empty()
         {
-            self.queue.push_back(Command::KeysAck(ack));
+            self.enqueue(Command::KeysAck(ack));
         }
     }
 
@@ -1154,7 +1158,7 @@ impl Robot {
         }
         if let Some((_, cause)) = tick.report {
             let channel = tick.channel.map(|c| c.to_string()).unwrap_or_default();
-            self.queue.push_back(Command::EnterSafe {
+            self.enqueue(Command::EnterSafe {
                 reason: alloc::format!("{channel}: {cause}"),
                 code: cause.code(),
             });
@@ -1265,6 +1269,37 @@ impl Robot {
         }
     }
 
+    /// Queues `command` for `ctl`, bounded: the same request already
+    /// waiting (or in flight) is not queued twice, a newer `EnterSafe`, key
+    /// request or stream's demand acknowledgement replaces the one waiting,
+    /// and past [`CTL_QUEUE_MAX`] the oldest
+    /// request that is not a stop report is dropped.
+    fn enqueue(&mut self, command: Command) {
+        if self.pending.as_ref().is_some_and(|p| p.command == command)
+            || self.queue.contains(&command)
+        {
+            return;
+        }
+        let same_kind = |c: &Command| match (c, &command) {
+            (Command::EnterSafe { .. }, Command::EnterSafe { .. })
+            | (Command::GetKeys, Command::GetKeys) => true,
+            (Command::DemandAck { channel: a, .. }, Command::DemandAck { channel: b, .. }) => {
+                a == b
+            }
+            _ => false,
+        };
+        self.queue.retain(|c| !same_kind(c));
+        while self.queue.len() >= CTL_QUEUE_MAX {
+            match self.queue.iter().position(|c| !is_stop(c)) {
+                Some(at) => {
+                    self.queue.remove(at);
+                }
+                None => break,
+            }
+        }
+        self.queue.push_back(command);
+    }
+
     /// A message under a key this robot doesn't hold: ask for every key of
     /// its generation, at most every [`GET_KEYS_MS`].
     fn missing_key(&mut self, err: &LinkError, now_us: u64) {
@@ -1278,7 +1313,7 @@ impl Robot {
             return;
         }
         self.last_get_keys = Some(now_us);
-        self.queue.push_back(Command::GetKeys);
+        self.enqueue(Command::GetKeys);
     }
 
     /// Latches the e-stop for `reason`, and queues its report to the host
@@ -1351,6 +1386,7 @@ impl Robot {
             return;
         };
         let wall = view.clock_mode == ClockMode::Wall;
+        let mut acks = Vec::new();
         for part in &self.parts {
             let streams = [
                 (Some(part.channel), part.send_policy().hz, part.event),
@@ -1375,12 +1411,11 @@ impl Robot {
                     channel,
                     revision: demand.revision,
                 };
-                let asked = self.queue.contains(&ack)
-                    || self.pending.as_ref().is_some_and(|p| p.command == ack);
-                if !asked {
-                    self.queue.push_back(ack);
-                }
+                acks.push(ack);
             }
+        }
+        for ack in acks {
+            self.enqueue(ack);
         }
     }
 
@@ -2078,6 +2113,64 @@ fn fault_error(fault: &Fault) -> CtlError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn robot() -> Box<Robot> {
+        let keypair = |b: u8| {
+            let mut private = zeroize::Zeroizing::new([b; 32]);
+            rlmesh_session_core::crypto::StaticKeypair::from_private(&mut private)
+        };
+        Robot::new(Config {
+            tenant: TenantId::new("test").unwrap(),
+            session: SessionId::named("default"),
+            name: ParticipantId::new("eyes").unwrap(),
+            credential: Credential::new(keypair(1), *keypair(2).public()),
+            robot_json: String::from(
+                r#"{"eyes": {"kind": "joints", "names": ["pan"], "fields": ["pos"], "hz": 50}}"#,
+            ),
+            heartbeat_ms: 50,
+            lobby: false,
+            homes: alloc::vec![(String::from("127.0.0.1"), 7447)],
+            home_id: String::new(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_host_that_never_answers_never_grows_the_ctl_queue() {
+        let mut robot = robot();
+        for i in 0..10_000_u32 {
+            robot.enqueue(Command::EnterSafe {
+                reason: alloc::format!("fall {i}"),
+                code: ReasonCode::Unspecified,
+            });
+            robot.enqueue(Command::GetKeys);
+            robot.enqueue(Command::DemandAck {
+                channel: ChannelId(i % 100),
+                revision: u64::from(i),
+            });
+        }
+        assert!(
+            robot.queue.len() <= CTL_QUEUE_MAX,
+            "{} queued",
+            robot.queue.len()
+        );
+        // The newest stop report is the one kept, and a key request is still
+        // there.
+        assert!(
+            robot
+                .queue
+                .iter()
+                .any(|c| matches!(c, Command::EnterSafe { reason, .. } if reason == "fall 9999"))
+        );
+        assert_eq!(
+            robot
+                .queue
+                .iter()
+                .filter(|c| matches!(c, Command::EnterSafe { .. }))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn a_gate_admits_its_rate_with_a_burst_of_two() {
