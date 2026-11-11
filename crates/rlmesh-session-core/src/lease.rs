@@ -1078,4 +1078,13 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn a_group_reply_granting_every_part_asked_for_holds_them_all() {
+        let mut group = LeaseGroup::new(&me(), &[ChannelId(3), ChannelId(4)], 0);
+        group.request_some(&[ChannelId(3)], Fingerprint::from(7), None, 0);
+        let reply = ok_reply(vec![lease("web-1", 9, 1_000 * MS)]);
+        assert!(group.on_reply_some(&[ChannelId(3)], &reply, None, MS));
+        assert_eq!(group.unheld(MS), vec![ChannelId(4)]);
+    }
 }
