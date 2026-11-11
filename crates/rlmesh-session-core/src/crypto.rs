@@ -31,7 +31,9 @@ pub use sealed::{
     Kind, KindSet, OpenError, Opened, Opening, SealError, SealReceiver, SealSender, Sealing,
     Security,
 };
-pub use signed::{SignError, SignedError, SignedKind, SignedReceiver, SignedSender};
+pub use signed::{
+    Checked, SignError, SignedChecker, SignedError, SignedKind, SignedReceiver, SignedSender,
+};
 
 /// A source of cryptographic randomness, implemented by the caller: the OS
 /// on a host, the hardware RNG on a board, a fixed stream in tests.

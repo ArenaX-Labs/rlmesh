@@ -6,7 +6,8 @@ use super::window::REQUEST_WINDOW;
 use super::{KeyError, Keyring};
 use crate::crypto::sealed::{HEADER_LEN, Header, TAG_LEN};
 use crate::crypto::{
-    Kind, OpenError, SealError, SealReceiver, SealSender, SignedError, SignedKind, SignedReceiver,
+    Checked, Kind, OpenError, SealError, SealReceiver, SealSender, SignedChecker, SignedError,
+    SignedKind, SignedReceiver,
 };
 use crate::prelude::*;
 use crate::wire::codec;
@@ -635,6 +636,24 @@ impl Link {
     /// [`LinkError`].
     pub fn open_view(&mut self, keyexpr: &str, msg: &[u8]) -> Result<DeviceView, LinkError> {
         open_view(&mut self.host, keyexpr, msg)
+    }
+
+    /// A verifier of this link's broadcasts for another task
+    /// ([`SignedChecker`]): a board checks them off its control loop.
+    pub fn checker(&self) -> SignedChecker {
+        self.host.checker()
+    }
+
+    /// [`Self::open_view`] for a view a [`Self::checker`] verified.
+    ///
+    /// # Errors
+    /// [`LinkError`].
+    pub fn take_view(&mut self, keyexpr: &str, checked: &Checked) -> Result<DeviceView, LinkError> {
+        let verified = self.host.take(keyexpr, checked)?;
+        if verified.header.kind != SignedKind::DeviceView {
+            return Err(SignedError::UnknownKind(verified.header.kind.as_u8()).into());
+        }
+        decode_view_of(keyexpr, verified.body)
     }
 
     /// Verifies a `host/tick` broadcast on `keyexpr`.
