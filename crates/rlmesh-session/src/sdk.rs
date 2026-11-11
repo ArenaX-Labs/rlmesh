@@ -961,3 +961,173 @@ mod tests {
         assert_eq!((next, late, rate.missed()), (50_000_000, 5_000_000, 3));
     }
 }
+
+/// One participant's link in the host's health
+/// ([`Participant::health`](crate::participant::Participant::health)),
+/// as bindings show it: durations in ms, parts by name (`robot:path`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthLink {
+    /// Whose link.
+    pub participant: String,
+    /// Heartbeats the host received from it.
+    pub heartbeats: u64,
+    /// The latest heartbeat round trip (`None`: none measured yet).
+    pub rtt_ms: Option<f64>,
+    /// Smoothed round-trip jitter.
+    pub jitter_ms: f64,
+    /// The largest gap between its heartbeats in the host's window.
+    pub heartbeat_gap_max_ms: f64,
+    /// Since its last heartbeat, when the host published.
+    pub last_heartbeat_age_ms: f64,
+    /// Its clock mapping, host minus participant, and the mapping's error
+    /// bound (`None`: not mapped yet).
+    pub offset_ms: Option<(f64, f64)>,
+    /// Its self-reported health: `ok`, `degraded`, `unhealthy` or `unknown`.
+    pub health: &'static str,
+    /// Edges: the newest chunk seq accepted (0: none).
+    pub last_chunk_accepted: u64,
+    /// Edges: the newest chunk seq applied (0: none).
+    pub last_chunk_applied: u64,
+    /// Edges: the actions queued.
+    pub queue_depth: u32,
+    /// Edges: chunks refused since it attached, by reason (nonzero only).
+    pub rejected_by: Vec<(String, u64)>,
+    /// Edges: each part whose edge refuses chunks for a clock error.
+    pub clock_refused: Vec<HealthClockRefusal>,
+    /// Each stream it publishes: the part, samples published and samples
+    /// its publication plan coalesced.
+    pub published: Vec<(String, u64, u64)>,
+    /// A bound controller's run counters, from its latest report.
+    pub run: Option<HealthRun>,
+    /// The newest seq it received per part it subscribes to.
+    pub last_seq_seen: Vec<(String, u64)>,
+}
+
+/// A part whose edge refuses chunks for a clock error.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthClockRefusal {
+    /// The part, `robot:path`.
+    pub part: String,
+    /// Whose clock mapping is over the bound.
+    pub participant: String,
+    /// The mapping's error.
+    pub error_ms: f64,
+    /// The bound the edge holds it to.
+    pub bound_ms: f64,
+}
+
+/// A controller's run counters as its latest report gave them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthRun {
+    /// `predict` calls started.
+    pub starts: u64,
+    /// `predict` calls completed.
+    pub completions: u64,
+    /// Skipped starts by reason (`busy_skip`, `waiting_for`, `stale_input`,
+    /// `window_gap`, `decode`, `no_lease`).
+    pub skipped: Vec<(&'static str, u64)>,
+    /// Chunks sent.
+    pub chunks_sent: u64,
+    /// The inference in flight's age (`None`: none).
+    pub pending_ms: Option<f64>,
+    /// Completion latency, median (`None`: none yet).
+    pub latency_p50_ms: Option<f64>,
+    /// Completion latency, 99th percentile (`None`: none yet).
+    pub latency_p99_ms: Option<f64>,
+    /// The completion rate is drifting (`rate_drift`).
+    pub drifting: bool,
+}
+
+fn ms(ns: u64) -> f64 {
+    ns as f64 * 1e-6
+}
+
+/// The links of `health`, by participant, with the parts `participant`'s
+/// authority view names.
+pub fn health_links(
+    participant: &crate::participant::Participant,
+    health: &crate::wire::HostHealth,
+) -> Vec<HealthLink> {
+    use crate::wire::Health;
+    let name = |channel: crate::wire::ChannelId| {
+        participant
+            .authority_view()
+            .with(|view| view.map_or_else(|| channel.to_string(), |v| v.part_name(channel)))
+    };
+    let nonzero = |ns: u64| (ns > 0).then(|| ms(ns));
+    health
+        .links
+        .iter()
+        .filter_map(|link| {
+            let id = link.participant.as_ref()?;
+            Some(HealthLink {
+                participant: id.to_string(),
+                heartbeats: link.heartbeats,
+                rtt_ms: nonzero(link.rtt_ns),
+                jitter_ms: ms(link.jitter_ns),
+                heartbeat_gap_max_ms: ms(link.heartbeat_gap_max_ns),
+                last_heartbeat_age_ms: ms(link.last_heartbeat_age_ns),
+                offset_ms: link
+                    .offset
+                    .map(|(offset, error)| (offset as f64 * 1e-6, ms(error))),
+                health: match link.health {
+                    Health::Unknown => "unknown",
+                    Health::Ok => "ok",
+                    Health::Degraded => "degraded",
+                    Health::Unhealthy => "unhealthy",
+                },
+                last_chunk_accepted: link.last_chunk_accepted,
+                last_chunk_applied: link.last_chunk_applied,
+                queue_depth: link.queue_depth,
+                rejected_by: link
+                    .rejected
+                    .iter()
+                    .filter(|(_, n)| *n > 0)
+                    .map(|(reason, n)| (rejection_name(*reason), *n))
+                    .collect(),
+                clock_refused: link
+                    .clock_refused
+                    .iter()
+                    .map(|r| HealthClockRefusal {
+                        part: name(r.channel),
+                        participant: r.participant.to_string(),
+                        error_ms: ms(r.error_ns),
+                        bound_ms: ms(r.bound_ns),
+                    })
+                    .collect(),
+                published: link
+                    .report
+                    .iter()
+                    .flat_map(|r| &r.streams)
+                    .map(|s| (name(s.channel), s.published, s.coalesced))
+                    .collect(),
+                run: link
+                    .report
+                    .as_ref()
+                    .and_then(|r| r.run)
+                    .map(|run| HealthRun {
+                        starts: run.starts,
+                        completions: run.completions,
+                        skipped: vec![
+                            ("busy_skip", run.busy_skips),
+                            ("waiting_for", run.waiting_for),
+                            ("stale_input", run.stale_input),
+                            ("window_gap", run.window_gap),
+                            ("decode", run.decode),
+                            ("no_lease", run.no_lease),
+                        ],
+                        chunks_sent: run.chunks_sent,
+                        pending_ms: nonzero(run.pending_ns),
+                        latency_p50_ms: nonzero(run.latency_p50_ns),
+                        latency_p99_ms: nonzero(run.latency_p99_ns),
+                        drifting: run.drifting,
+                    }),
+                last_seq_seen: link
+                    .last_seq_seen
+                    .iter()
+                    .map(|(channel, seq)| (name(*channel), *seq))
+                    .collect(),
+            })
+        })
+        .collect()
+}

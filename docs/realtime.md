@@ -213,6 +213,30 @@ within its hold time), the chunks it refused and why (`too_old`,
 part's bound), and each link's heartbeat age and jitter. It
 has Arm, Disarm, E-stop and Keep.
 
+**From a program**, any robot or policy reads the same link health the
+cockpit shows, a viewer that only reads too, while the session runs. The
+first call subscribes and waits for the host's next publication (once a
+second); after that `health()` returns the newest at once, and
+`health(wait=True)` waits for the next one:
+
+```python
+health = viewer.health()
+for name, link in health["links"].items():
+    print(name, link["rtt_ms"], link["jitter_ms"], link["rejected_by"])
+# ur10e 0.21 0.03 {'stale_token': 2}
+
+while True:
+    links = viewer.health(wait=True)["links"]
+    show(links["eye-1"]["last_chunk_applied"], links["eye-1"]["rejected_by"])
+```
+
+Each link, keyed by participant name, has its round trip, jitter,
+heartbeat gaps and clock mapping (durations in ms, as in `stats()`), what a
+robot's edges accepted and applied last and refused by reason, the parts it
+publishes and reads, and a policy's run counters. In Node it is
+`await policy.health()` and `await policy.health({ wait: true })`; in Rust
+`participant.health(timeout)` and `participant.next_health(timeout)`.
+
 ## 7. Record and export
 
 The host records every session, always: one-minute MCAP segments under

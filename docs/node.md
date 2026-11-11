@@ -77,6 +77,7 @@ block instead of the `finally`.
 | `policy.run(predict, mode=RunMode.SHADOW)`         | `await policy.run(predict, { mode: 'shadow' })`                    |
 | `policy.run(predict, resume=Resume.AUTO)`          | `await policy.run(predict, { resume: 'auto' })`                    |
 | `policy.resume()` → `["ur10e:arm"]`                | `policy.resume()` → `['ur10e:arm']`                                |
+| `policy.health(wait=True)["links"]["ur10e"]`       | `(await policy.health({ wait: true })).links['ur10e']`             |
 | `on_step=f` (`step.shadow`, `step.actions`)        | `onStep: f` (`step.shadow`, `step.actions`)                        |
 | `policy.acquire()` → `{"ur10e:arm": token}`        | `await policy.acquire()` → `{ 'ur10e:arm': token }` (`bigint`)     |
 | `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                      |

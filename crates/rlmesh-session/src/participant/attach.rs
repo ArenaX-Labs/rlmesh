@@ -439,6 +439,7 @@ impl Participant {
             _keys: deliveries,
             _host: host,
             _estops: None,
+            health_watch: tokio::sync::OnceCell::new(),
         };
         shared
             .ctl(Command::Attach {

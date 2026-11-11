@@ -9,7 +9,7 @@ use crate::wire::{
     StreamSpec, VirtualTick, Watermark,
 };
 use rlmesh_session_core::auth;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::debug;
 
 use crate::chunk::ChunkPublisher;
@@ -279,6 +279,83 @@ impl Participant {
 /// dropping it ends the subscription.
 pub struct HealthSubscription {
     _subscriber: zenoh::pubsub::Subscriber<()>,
+}
+
+/// The host's newest health, as [`Participant::health`] keeps it.
+pub(crate) struct HealthWatch {
+    latest: watch::Receiver<Option<Arc<HostHealth>>>,
+    _subscription: HealthSubscription,
+}
+
+impl Participant {
+    /// The session's live link health as the host last published it (once
+    /// a second): every attached participant's link as the host measures it
+    /// (round trip, jitter, heartbeat gaps, clock mapping), each edge's
+    /// newest accepted and applied chunk and its refusals by reason, and
+    /// each participant's latest report (publisher counters, a controller's
+    /// run counters). Times are ns. Any participant can read it, an
+    /// observer too.
+    ///
+    /// The first call subscribes (nothing is received before it) and waits
+    /// up to `timeout` for the host's first publication; later calls return
+    /// the newest at once.
+    pub async fn health(&self, timeout: Duration) -> Result<Arc<HostHealth>, SessionError> {
+        let mut latest = self.health_watch().await?.latest.clone();
+        let current = latest.borrow_and_update().clone();
+        if let Some(health) = current {
+            return Ok(health);
+        }
+        self.wait_health(&mut latest, timeout).await
+    }
+
+    /// The host's next health publication after this call (see
+    /// [`Self::health`]), waiting up to `timeout` for it.
+    pub async fn next_health(&self, timeout: Duration) -> Result<Arc<HostHealth>, SessionError> {
+        let mut latest = self.health_watch().await?.latest.clone();
+        latest.mark_unchanged();
+        self.wait_health(&mut latest, timeout).await
+    }
+
+    async fn health_watch(&self) -> Result<&HealthWatch, SessionError> {
+        self.health_watch
+            .get_or_try_init(|| async {
+                let (tx, latest) = watch::channel(None);
+                let subscription = self
+                    .host_health(move |health| {
+                        tx.send_replace(Some(Arc::new(health)));
+                    })
+                    .await?;
+                Ok(HealthWatch {
+                    latest,
+                    _subscription: subscription,
+                })
+            })
+            .await
+    }
+
+    async fn wait_health(
+        &self,
+        latest: &mut watch::Receiver<Option<Arc<HostHealth>>>,
+        timeout: Duration,
+    ) -> Result<Arc<HostHealth>, SessionError> {
+        let waited = tokio::time::timeout(timeout, async {
+            loop {
+                if latest.changed().await.is_err() {
+                    return Err(SessionError::Closed);
+                }
+                if let Some(health) = latest.borrow_and_update().clone() {
+                    return Ok(health);
+                }
+            }
+        })
+        .await;
+        waited.unwrap_or_else(|_| {
+            Err(SessionError::Timeout(
+                timeout,
+                "the session host's health (published once a second)".into(),
+            ))
+        })
+    }
 }
 
 /// The host's virtual-mode ticks, as they arrive.

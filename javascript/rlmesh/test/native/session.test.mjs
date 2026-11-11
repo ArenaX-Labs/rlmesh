@@ -305,6 +305,42 @@ test("a model set to resume on its own takes the arm back when the operator lets
   await running;
 });
 
+test("a viewer reads every link's health, each robot's refusals by reason", async () => {
+  await using one = await FakeUR10e.start(host);
+  await using two = await FakeUR10e.start(host, 'ur10e-2');
+  await using model = new rlmesh.Policy(HOLD, { session: host, name: 'model' });
+  await using viewer = new rlmesh.Policy({ hz: 25, inputs: HOLD.inputs }, { session: host, name: 'viewer' });
+  await model.bind('ur10e');
+  await viewer.bind('ur10e-2');
+  const running = model.run(() => hold(0.25), { duration: 30 });
+  await waitUntil('the model driving', () => one.driven((d) => first(d) === 0.25));
+
+  // The viewer neither publishes nor commands; its first read subscribes and waits for one.
+  let health = await viewer.health();
+  while (!(health.links['ur10e']?.lastChunkAccepted > 0)) health = await viewer.health({ wait: true });
+  const names = Object.keys(health.links).sort();
+  assert.deepEqual(names, ['model', 'ur10e', 'ur10e-2', 'viewer']);
+  for (const name of names) {
+    const link = health.links[name];
+    assert.ok(link.heartbeats > 0 && link.rttMs > 0 && link.offsetErrorMs !== null, inspect(link));
+    assert.equal(link.health, 'ok');
+  }
+  assert.deepEqual(health.links['ur10e-2'].rejectedBy, {});
+  assert.equal(health.links['ur10e'].rejected, 0);
+  assert.ok(health.links['ur10e'].published['ur10e:arm'].published > 0);
+  assert.ok(health.links.model.run.chunksSent > 0);
+  assert.ok(health.links.viewer.lastSeqSeen['ur10e-2:arm'] > 0);
+  assert.equal(health.links['ur10e'].run, null);
+
+  // A robot reads the same; the next one comes later.
+  const now = await two.robot.health();
+  const later = await two.robot.health({ wait: true });
+  assert.ok(later.hostNs > now.hostNs);
+  await assert.rejects(viewer.health({ wait: true, timeout: 0.001 }), /health/);
+  model.stop();
+  await running;
+});
+
 test('a recorder writes the session to MCAP and reads it back', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rlmesh-record-'));
   try {

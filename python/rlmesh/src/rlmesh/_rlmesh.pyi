@@ -892,6 +892,12 @@ class V2Controller:
         asked for again (once their holder lets go). Returns them,
         `robot:path`.
         """
+    def health(self, wait: builtins.bool = ..., timeout_s: builtins.float = ...) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        The session's live link health as the host last published it (once
+        a second); with `wait`, the next publication. The first call
+        subscribes and waits for one. See `Policy.health` for the fields.
+        """
     def stats(self) -> builtins.dict[builtins.str, typing.Any]:
         r"""
         The start, skip and completion counters, and the input the
@@ -1277,6 +1283,12 @@ class V2Robot:
     def now_ns(self) -> builtins.int:
         r"""
         Now on this robot's clock (`time.monotonic_ns()`).
+        """
+    def health(self, wait: builtins.bool = ..., timeout_s: builtins.float = ...) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        The session's live link health as the host last published it (once
+        a second); with `wait`, the next publication. The first call
+        subscribes and waits for one. See `Robot.health` for the fields.
         """
     def edge_stats(self, path: builtins.str) -> builtins.dict[builtins.str, typing.Any]:
         r"""

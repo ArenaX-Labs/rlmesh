@@ -135,7 +135,25 @@ interface NativeRobot {
   reportSafe(reason: string): void;
   nowNs(): bigint;
   edgeStats(path: string): NativeEdgeStats;
+  health(wait: boolean, timeoutS: number): Promise<NativeHealth>;
   close(): Promise<void>;
+}
+interface NativeHealth {
+  epoch: number;
+  hostNs: number;
+  links: {
+    participant: string; heartbeats: number; rttMs?: number | null; jitterMs: number; heartbeatGapMaxMs: number;
+    lastHeartbeatAgeMs: number; offsetMs?: number | null; offsetErrorMs?: number | null; health: string;
+    lastChunkAccepted: number; lastChunkApplied: number; queueDepth: number;
+    rejectedBy: { reason: string; count: number }[];
+    clockRefused: { part: string; participant: string; errorMs: number; boundMs: number }[];
+    published: { part: string; published: number; coalesced: number }[];
+    run?: {
+      starts: number; completions: number; skipped: { reason: string; count: number }[]; chunksSent: number;
+      pendingMs?: number | null; latencyP50Ms?: number | null; latencyP99Ms?: number | null; drifting: boolean;
+    } | null;
+    lastSeqSeen: { part: string; seq: number }[];
+  }[];
 }
 interface NativePolicy {
   readonly name: string; readonly table: string; readonly tableJson: string; readonly fingerprint: string;
@@ -157,6 +175,7 @@ interface NativePolicy {
   reply(values: NativeEntry[] | null, error: string | null): void;
   stop(): void;
   resume(): string[];
+  health(wait: boolean, timeoutS: number): Promise<NativeHealth>;
   stats(): NativeStats;
   events(): Record<string, unknown>[];
   close(): Promise<void>;
@@ -429,6 +448,106 @@ export interface EdgeStats {
   modes: Record<string, [number, number]>;
 }
 
+/**
+ * The session's live link health, as the host last published it (once a second): `epoch`,
+ * `hostNs` (the host's clock when it published) and one link per attached participant, keyed by
+ * its name. Durations are in ms, as in `RunStats` and `EdgeStats`.
+ */
+export interface SessionHealth {
+  epoch: number;
+  hostNs: number;
+  links: Record<string, LinkHealth>;
+}
+
+/** One participant's link as the host measures it. */
+export interface LinkHealth {
+  heartbeats: number;
+  /** The latest heartbeat round trip (null before one). */
+  rttMs: number | null;
+  jitterMs: number;
+  heartbeatGapMaxMs: number;
+  lastHeartbeatAgeMs: number;
+  /** Its clock mapping, host minus participant, and the mapping's error bound (null until mapped). */
+  offsetMs: number | null;
+  offsetErrorMs: number | null;
+  /** What it reports of itself: `ok`, `degraded`, `unhealthy` or `unknown`. */
+  health: string;
+  /** Robots: the newest chunk seq accepted and applied (0: none), and the actions queued. */
+  lastChunkAccepted: number;
+  lastChunkApplied: number;
+  queueDepth: number;
+  /** Robots: chunks refused since it attached, in all and by reason (as `EdgeStats` names them). */
+  rejected: number;
+  rejectedBy: Record<string, number>;
+  /** Robots: each part refusing chunks for a clock error. */
+  clockRefused: { part: string; participant: string; errorMs: number; boundMs: number }[];
+  /** Per part it publishes (`robot:path`): samples published and coalesced. */
+  published: Record<string, { published: number; coalesced: number }>;
+  /** A bound policy's counters from its latest report. */
+  run: {
+    starts: number;
+    completions: number;
+    skipped: Record<string, number>;
+    chunksSent: number;
+    pendingMs: number | null;
+    latencyP50Ms: number | null;
+    latencyP99Ms: number | null;
+    drifting: boolean;
+  } | null;
+  /** The newest seq it received per part it reads (`robot:path`). */
+  lastSeqSeen: Record<string, number>;
+}
+
+/** How `health()` reads. */
+export interface HealthOptions {
+  /** Wait for the host's next publication instead of returning the newest. */
+  wait?: boolean;
+  /** Seconds to wait (default: the object's timeout). */
+  timeout?: number;
+}
+
+function sessionHealth(h: NativeHealth): SessionHealth {
+  return {
+    epoch: h.epoch,
+    hostNs: h.hostNs,
+    links: Object.fromEntries(
+      h.links.map((l) => [
+        l.participant,
+        {
+          heartbeats: l.heartbeats,
+          rttMs: l.rttMs ?? null,
+          jitterMs: l.jitterMs,
+          heartbeatGapMaxMs: l.heartbeatGapMaxMs,
+          lastHeartbeatAgeMs: l.lastHeartbeatAgeMs,
+          offsetMs: l.offsetMs ?? null,
+          offsetErrorMs: l.offsetErrorMs ?? null,
+          health: l.health,
+          lastChunkAccepted: l.lastChunkAccepted,
+          lastChunkApplied: l.lastChunkApplied,
+          queueDepth: l.queueDepth,
+          rejected: l.rejectedBy.reduce((n, r) => n + r.count, 0),
+          rejectedBy: Object.fromEntries(l.rejectedBy.map((r) => [r.reason, r.count])),
+          clockRefused: l.clockRefused,
+          published: Object.fromEntries(l.published.map((p) => [p.part, { published: p.published, coalesced: p.coalesced }])),
+          run: l.run
+            ? {
+                starts: l.run.starts,
+                completions: l.run.completions,
+                skipped: Object.fromEntries(l.run.skipped.map((k) => [k.reason, k.count])),
+                chunksSent: l.run.chunksSent,
+                pendingMs: l.run.pendingMs ?? null,
+                latencyP50Ms: l.run.latencyP50Ms ?? null,
+                latencyP99Ms: l.run.latencyP99Ms ?? null,
+                drifting: l.run.drifting,
+              }
+            : null,
+          lastSeqSeen: Object.fromEntries(l.lastSeqSeen.map((n) => [n.part, n.seq])),
+        },
+      ]),
+    ),
+  };
+}
+
 type PublishValue = TypedArray | ArrayLike<number> | number | boolean | string;
 
 /** One sample of `owner`'s part `path` as its fields' buffers, in declaration order. */
@@ -481,6 +600,7 @@ export class Robot implements AsyncDisposable {
   private constructor(
     private native: NativeRobot,
     private onHandover?: (group: string, from: string, to: string) => void,
+    private readonly timeout: number = 10,
   ) {
     for (const part of native.parts()) {
       this.kinds.set(part.path, part.kind);
@@ -495,7 +615,7 @@ export class Robot implements AsyncDisposable {
     opts: { session: Host | string; timeout?: number; onHandover?: (group: string, from: string, to: string) => void },
   ): Promise<Robot> {
     const robot = await wait(() => native().connectRobot(address(opts.session), name, JSON.stringify(parts), opts.timeout ?? 10));
-    return new Robot(robot, opts.onHandover);
+    return new Robot(robot, opts.onHandover, opts.timeout ?? 10);
   }
 
   /**
@@ -510,7 +630,7 @@ export class Robot implements AsyncDisposable {
     opts: { home?: string; timeout?: number; onHandover?: (group: string, from: string, to: string) => void } = {},
   ): Promise<Robot> {
     const robot = await wait(() => fleet('robotFromLobby')(opts.home ?? null, name, JSON.stringify(parts), opts.timeout ?? null));
-    return new Robot(robot, opts.onHandover);
+    return new Robot(robot, opts.onHandover, opts.timeout ?? 10);
   }
 
   /** The robot's participant id. */
@@ -629,6 +749,15 @@ export class Robot implements AsyncDisposable {
   /** This robot's clock: `process.hrtime.bigint()`. */
   nowNs(): bigint {
     return call(() => this.native.nowNs());
+  }
+
+  /**
+   * The session's live link health (`SessionHealth`). The first call subscribes and waits for the
+   * host's first publication; later calls resolve to the newest at once, and `{ wait: true }` to
+   * the next one.
+   */
+  health(opts: HealthOptions = {}): Promise<SessionHealth> {
+    return wait(async () => sessionHealth(await this.native.health(opts.wait ?? false, opts.timeout ?? this.timeout)));
   }
 
   /** The counters of the edge serving `path`. */
@@ -1020,6 +1149,15 @@ export class Policy implements AsyncDisposable {
    */
   resume(): string[] {
     return call(() => this.nat().resume());
+  }
+
+  /**
+   * The session's live link health (`SessionHealth`). The first call subscribes and waits for the
+   * host's first publication; later calls resolve to the newest at once, and `{ wait: true }` to
+   * the next one. A policy that only reads reads it too.
+   */
+  health(opts: HealthOptions = {}): Promise<SessionHealth> {
+    return wait(async () => sessionHealth(await this.nat().health(opts.wait ?? false, opts.timeout ?? this.timeout)));
   }
 
   /** Starts, completions, skips by reason, chunks sent and latency. */

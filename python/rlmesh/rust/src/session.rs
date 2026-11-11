@@ -366,6 +366,99 @@ fn priority(name: &str) -> PyResult<PriorityClass> {
     sdk::priority(name).map_err(PyValueError::new_err)
 }
 
+/// The host's health as `participant` reads it (the newest, or with `wait`
+/// the next), as the dict `health()` documents.
+fn health_dict<'py>(
+    py: Python<'py>,
+    participant: &rlmesh_session::Participant,
+    wait: bool,
+    timeout_s: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let wait_for = timeout(timeout_s)?;
+    let health = block_on(py, async {
+        let health = if wait {
+            participant.next_health(wait_for).await
+        } else {
+            participant.health(wait_for).await
+        };
+        health.map_err(session_err)
+    })?;
+    let d = PyDict::new(py);
+    d.set_item("epoch", health.epoch.0)?;
+    d.set_item("host_ns", health.host_ns)?;
+    let links = PyDict::new(py);
+    for link in sdk::health_links(participant, &health) {
+        let l = PyDict::new(py);
+        l.set_item("heartbeats", link.heartbeats)?;
+        l.set_item("rtt_ms", link.rtt_ms)?;
+        l.set_item("jitter_ms", link.jitter_ms)?;
+        l.set_item("heartbeat_gap_max_ms", link.heartbeat_gap_max_ms)?;
+        l.set_item("last_heartbeat_age_ms", link.last_heartbeat_age_ms)?;
+        l.set_item("offset_ms", link.offset_ms.map(|(offset, _)| offset))?;
+        l.set_item("offset_error_ms", link.offset_ms.map(|(_, error)| error))?;
+        l.set_item("health", link.health)?;
+        l.set_item("last_chunk_accepted", link.last_chunk_accepted)?;
+        l.set_item("last_chunk_applied", link.last_chunk_applied)?;
+        l.set_item("queue_depth", link.queue_depth)?;
+        let rejected_by = PyDict::new(py);
+        for (reason, n) in &link.rejected_by {
+            rejected_by.set_item(reason, n)?;
+        }
+        l.set_item(
+            "rejected",
+            link.rejected_by.iter().map(|(_, n)| n).sum::<u64>(),
+        )?;
+        l.set_item("rejected_by", rejected_by)?;
+        let clock_refused = PyList::empty(py);
+        for r in &link.clock_refused {
+            let refused = PyDict::new(py);
+            refused.set_item("part", &r.part)?;
+            refused.set_item("participant", &r.participant)?;
+            refused.set_item("error_ms", r.error_ms)?;
+            refused.set_item("bound_ms", r.bound_ms)?;
+            clock_refused.append(refused)?;
+        }
+        l.set_item("clock_refused", clock_refused)?;
+        let published = PyDict::new(py);
+        for (part, sent, coalesced) in &link.published {
+            let p = PyDict::new(py);
+            p.set_item("published", sent)?;
+            p.set_item("coalesced", coalesced)?;
+            published.set_item(part, p)?;
+        }
+        l.set_item("published", published)?;
+        let run = link
+            .run
+            .as_ref()
+            .map(|run| {
+                let r = PyDict::new(py);
+                r.set_item("starts", run.starts)?;
+                r.set_item("completions", run.completions)?;
+                let skipped = PyDict::new(py);
+                for (reason, n) in &run.skipped {
+                    skipped.set_item(reason, n)?;
+                }
+                r.set_item("skipped", skipped)?;
+                r.set_item("chunks_sent", run.chunks_sent)?;
+                r.set_item("pending_ms", run.pending_ms)?;
+                r.set_item("latency_p50_ms", run.latency_p50_ms)?;
+                r.set_item("latency_p99_ms", run.latency_p99_ms)?;
+                r.set_item("drifting", run.drifting)?;
+                PyResult::Ok(r)
+            })
+            .transpose()?;
+        l.set_item("run", run)?;
+        let seen = PyDict::new(py);
+        for (part, seq) in &link.last_seq_seen {
+            seen.set_item(part, seq)?;
+        }
+        l.set_item("last_seq_seen", seen)?;
+        links.set_item(link.participant, l)?;
+    }
+    d.set_item("links", links)?;
+    Ok(d)
+}
+
 /// A session host in this process, on local per-class TCP ports.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Host", frozen)]
@@ -828,6 +921,21 @@ impl PyRobot {
     /// Now on this robot's clock (`time.monotonic_ns()`).
     fn now_ns(&self) -> PyResult<i64> {
         Ok(self.robot()?.participant().clock().now_ns())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one. See `Robot.health` for the fields.
+    #[pyo3(signature = (wait=false, timeout_s=10.0))]
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn health<'py>(
+        &self,
+        py: Python<'py>,
+        wait: bool,
+        timeout_s: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let robot = self.robot()?;
+        health_dict(py, robot.participant(), wait, timeout_s)
     }
 
     /// The counters of the edge serving `path`.
@@ -1667,6 +1775,21 @@ impl PyController {
     /// `robot:path`.
     fn resume(&self) -> PyResult<Vec<String>> {
         Ok(self.controller()?.resume())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one. See `Policy.health` for the fields.
+    #[pyo3(signature = (wait=false, timeout_s=10.0))]
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn health<'py>(
+        &self,
+        py: Python<'py>,
+        wait: bool,
+        timeout_s: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let controller = self.controller()?;
+        health_dict(py, controller.participant(), wait, timeout_s)
     }
 
     /// The start, skip and completion counters, and the input the

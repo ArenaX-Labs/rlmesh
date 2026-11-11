@@ -4265,6 +4265,10 @@
             "kind": "function",
             "signature": "events() -> list[dict[str, Any]]"
           },
+          "health": {
+            "kind": "function",
+            "signature": "health(*, wait: bool = False, timeout: float | None = None) -> dict[str, Any]"
+          },
           "held": {
             "kind": "property",
             "signature": "property held: list[dict[str, Any]]"
@@ -4376,6 +4380,10 @@
           "estop": {
             "kind": "function",
             "signature": "estop(reason: str = 'estop') -> None"
+          },
+          "health": {
+            "kind": "function",
+            "signature": "health(*, wait: bool = False, timeout: float | None = None) -> dict[str, Any]"
           },
           "held": {
             "kind": "property",

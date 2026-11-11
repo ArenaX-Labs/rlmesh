@@ -62,6 +62,7 @@ def wait_in_lobby(
     """
     robot = Robot.__new__(Robot)
     robot._lockstep = None
+    robot._timeout = 10.0 if timeout is None else timeout
     robot._native = _from_lobby(home, name, _json(parts), timeout)
     robot._adopt(on_handover)
     return robot

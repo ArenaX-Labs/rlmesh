@@ -56,3 +56,12 @@ pub struct HostHealth {
     /// One per attached participant.
     pub links: Vec<LinkHealth>,
 }
+
+impl HostHealth {
+    /// The link of `participant`, when it is attached.
+    pub fn link(&self, participant: &ParticipantId) -> Option<&LinkHealth> {
+        self.links
+            .iter()
+            .find(|l| l.participant.as_ref() == Some(participant))
+    }
+}

@@ -158,6 +158,8 @@ pub struct Participant {
     _state: zenoh::pubsub::Subscriber<()>,
     _echo: zenoh::pubsub::Subscriber<()>,
     _keys: zenoh::pubsub::Subscriber<()>,
+    /// The host's health, subscribed on the first [`Participant::health`].
+    health_watch: tokio::sync::OnceCell<endpoints::HealthWatch>,
 }
 
 impl Participant {

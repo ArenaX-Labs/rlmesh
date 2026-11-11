@@ -392,6 +392,7 @@ class Robot:
     ) -> None:
         if clock not in ("wall", "lockstep"):
             raise ValueError(f"clock {clock!r}: wall or lockstep")
+        self._timeout = timeout
         self._lockstep: V2LockstepRobot | None = None
         if clock == "lockstep":
             self._lockstep = V2LockstepRobot(_address(session), name, _json(parts))
@@ -606,6 +607,19 @@ class Robot:
     def now_ns(self) -> int:
         """This robot's clock: ``time.monotonic_ns()``."""
         return self._native.now_ns()
+
+    def health(
+        self, *, wait: bool = False, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """The session's live link health, as the host last published it (once a second).
+
+        The same as :meth:`Policy.health`, read through this robot's link.
+        """
+        if self._lockstep is not None:
+            raise SessionException(
+                f"robot {self.name} runs lockstep: its session has no live link health"
+            )
+        return self._native.health(wait, self._timeout if timeout is None else timeout)
 
     def edge_stats(self, path: str) -> dict[str, Any]:
         """The counters of the edge serving ``path``.
@@ -1022,6 +1036,46 @@ class Policy:
     def stop(self) -> None:
         """Ask a :meth:`run` in progress (on another thread) to return."""
         self._bound().stop()
+
+    def health(
+        self, *, wait: bool = False, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """The session's live link health, as the host last published it (once a second).
+
+        The first call subscribes (nothing is received or decoded before
+        it) and waits for the host's first publication; later calls return
+        the newest at once, and ``wait=True`` waits for the next one. Raises
+        ``TimeoutError`` past ``timeout`` seconds (default: the object's
+        ``timeout``).
+
+        Returns ``epoch``, ``host_ns`` (the host's clock when it published)
+        and ``links``: one dict per attached participant, keyed by its
+        name, as the host measures it. Durations are in ms, as in
+        :meth:`Policy.stats` and :meth:`Robot.edge_stats`:
+
+        - ``heartbeats``, ``rtt_ms`` (the latest heartbeat round trip;
+          ``None`` before one), ``jitter_ms``, ``heartbeat_gap_max_ms``,
+          ``last_heartbeat_age_ms``;
+        - ``offset_ms`` and ``offset_error_ms``: its clock mapping, host
+          minus participant, and the mapping's error bound (``None`` until
+          mapped);
+        - ``health``: what it reports of itself (``ok``, ``degraded``,
+          ``unhealthy``, ``unknown``);
+        - robots: ``last_chunk_accepted`` and ``last_chunk_applied`` (the
+          newest chunk seq, 0 for none), ``queue_depth``, ``rejected`` and
+          ``rejected_by`` (chunks refused since it attached, by reason, as
+          :meth:`Robot.edge_stats` names them), ``clock_refused`` (one dict
+          per part refusing for a clock error: ``part``, ``participant``,
+          ``error_ms``, ``bound_ms``);
+        - ``published``: per part it publishes (``robot:path``), samples
+          ``published`` and ``coalesced``; ``last_seq_seen``: the newest seq
+          it received per part it reads;
+        - ``run``: a bound policy's counters from its latest report
+          (``starts``, ``completions``, ``skipped`` by reason,
+          ``chunks_sent``, ``pending_ms``, ``latency_p50_ms``,
+          ``latency_p99_ms``, ``drifting``), else ``None``.
+        """
+        return self._bound().health(wait, self._timeout if timeout is None else timeout)
 
     def resume(self) -> list[str]:
         """Hand the parts a higher class took back to this policy; returns them (``robot:path``).

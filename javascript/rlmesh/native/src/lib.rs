@@ -482,6 +482,161 @@ pub struct EdgeStats {
     pub modes: Vec<ModeCount>,
 }
 
+/// A part whose edge refuses chunks for a clock error.
+#[napi(object)]
+pub struct HealthClockRefusal {
+    pub part: String,
+    pub participant: String,
+    pub error_ms: f64,
+    pub bound_ms: f64,
+}
+
+/// One stream a participant publishes.
+#[napi(object)]
+pub struct HealthPublished {
+    pub part: String,
+    pub published: i64,
+    pub coalesced: i64,
+}
+
+/// The newest seq a participant received of one part.
+#[napi(object)]
+pub struct HealthSeen {
+    pub part: String,
+    pub seq: i64,
+}
+
+/// A bound policy's counters from its latest report.
+#[napi(object)]
+pub struct HealthRun {
+    pub starts: i64,
+    pub completions: i64,
+    pub skipped: Vec<SkipCount>,
+    pub chunks_sent: i64,
+    pub pending_ms: Option<f64>,
+    pub latency_p50_ms: Option<f64>,
+    pub latency_p99_ms: Option<f64>,
+    pub drifting: bool,
+}
+
+/// One participant's link as the host measures it (durations in ms).
+#[napi(object)]
+pub struct HealthLink {
+    pub participant: String,
+    pub heartbeats: i64,
+    pub rtt_ms: Option<f64>,
+    pub jitter_ms: f64,
+    pub heartbeat_gap_max_ms: f64,
+    pub last_heartbeat_age_ms: f64,
+    pub offset_ms: Option<f64>,
+    pub offset_error_ms: Option<f64>,
+    pub health: String,
+    pub last_chunk_accepted: i64,
+    pub last_chunk_applied: i64,
+    pub queue_depth: u32,
+    pub rejected_by: Vec<RejectionCount>,
+    pub clock_refused: Vec<HealthClockRefusal>,
+    pub published: Vec<HealthPublished>,
+    pub run: Option<HealthRun>,
+    pub last_seq_seen: Vec<HealthSeen>,
+}
+
+/// The host's health message as a participant read it.
+#[napi(object)]
+pub struct SessionHealth {
+    pub epoch: i64,
+    /// The host's clock when it published.
+    pub host_ns: i64,
+    pub links: Vec<HealthLink>,
+}
+
+/// The host's health as `participant` reads it: the newest, or with `wait`
+/// the next.
+async fn read_health(
+    participant: &rlmesh_session::Participant,
+    wait: bool,
+    timeout_s: f64,
+) -> Result<SessionHealth> {
+    let wait_for = timeout(timeout_s)?;
+    let health = if wait {
+        participant.next_health(wait_for).await
+    } else {
+        participant.health(wait_for).await
+    }
+    .map_err(session_err)?;
+    let links = sdk::health_links(participant, &health)
+        .into_iter()
+        .map(|link| HealthLink {
+            participant: link.participant,
+            heartbeats: seq(link.heartbeats),
+            rtt_ms: link.rtt_ms,
+            jitter_ms: link.jitter_ms,
+            heartbeat_gap_max_ms: link.heartbeat_gap_max_ms,
+            last_heartbeat_age_ms: link.last_heartbeat_age_ms,
+            offset_ms: link.offset_ms.map(|(offset, _)| offset),
+            offset_error_ms: link.offset_ms.map(|(_, error)| error),
+            health: link.health.into(),
+            last_chunk_accepted: seq(link.last_chunk_accepted),
+            last_chunk_applied: seq(link.last_chunk_applied),
+            queue_depth: link.queue_depth,
+            rejected_by: link
+                .rejected_by
+                .into_iter()
+                .map(|(reason, n)| RejectionCount {
+                    reason,
+                    count: seq(n),
+                })
+                .collect(),
+            clock_refused: link
+                .clock_refused
+                .into_iter()
+                .map(|r| HealthClockRefusal {
+                    part: r.part,
+                    participant: r.participant,
+                    error_ms: r.error_ms,
+                    bound_ms: r.bound_ms,
+                })
+                .collect(),
+            published: link
+                .published
+                .into_iter()
+                .map(|(part, published, coalesced)| HealthPublished {
+                    part,
+                    published: seq(published),
+                    coalesced: seq(coalesced),
+                })
+                .collect(),
+            run: link.run.map(|run| HealthRun {
+                starts: seq(run.starts),
+                completions: seq(run.completions),
+                skipped: run
+                    .skipped
+                    .into_iter()
+                    .map(|(reason, n)| SkipCount {
+                        reason: reason.into(),
+                        count: seq(n),
+                    })
+                    .collect(),
+                chunks_sent: seq(run.chunks_sent),
+                pending_ms: run.pending_ms,
+                latency_p50_ms: run.latency_p50_ms,
+                latency_p99_ms: run.latency_p99_ms,
+                drifting: run.drifting,
+            }),
+            last_seq_seen: link
+                .last_seq_seen
+                .into_iter()
+                .map(|(part, n)| HealthSeen { part, seq: seq(n) })
+                .collect(),
+        })
+        .collect();
+    Ok(SessionHealth {
+        epoch: seq(health.epoch.0),
+        host_ns: health.host_ns,
+        links,
+    })
+}
+
 /// A robot: its map declared, a publisher per part and an edge per command
 /// group.
 #[napi]
@@ -719,6 +874,15 @@ impl NativeRobot {
         let robot = self.robot()?;
         robot.participant().disarm().await.map_err(session_err)?;
         Ok(())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one.
+    #[napi]
+    pub async fn health(&self, wait: bool, timeout_s: f64) -> Result<SessionHealth> {
+        let robot = self.robot()?;
+        read_health(robot.participant(), wait, timeout_s).await
     }
 
     /// Asks the host to keep its recent recording as an incident named
@@ -1760,6 +1924,15 @@ impl NativePolicy {
     #[napi]
     pub fn resume(&self) -> Result<Vec<String>> {
         Ok(self.controller()?.resume())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one.
+    #[napi]
+    pub async fn health(&self, wait: bool, timeout_s: f64) -> Result<SessionHealth> {
+        let controller = self.controller()?;
+        read_health(controller.participant(), wait, timeout_s).await
     }
 
     /// The start, skip and completion counters.

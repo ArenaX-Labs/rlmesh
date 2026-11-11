@@ -80,8 +80,8 @@ use crate::spec::policy::ChunkStart;
 use crate::spec::selector::Selector;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, ClockMode, CtlReply, FieldSpec, InputRange, Lease, Mode,
-    PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, RunCounters,
+    AuthoritySnapshot, ChannelId, ClockMode, CtlReply, FieldSpec, HostHealth, InputRange, Lease,
+    Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, RunCounters,
 };
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -1499,6 +1499,11 @@ impl Controller {
     /// The participant.
     pub fn participant(&self) -> &Arc<Participant> {
         &self.participant
+    }
+
+    /// The session's live link health ([`Participant::health`]).
+    pub async fn health(&self, timeout: Duration) -> Result<Arc<HostHealth>, SessionError> {
+        self.participant.health(timeout).await
     }
 
     /// A policy start now: the snapshot (session time), each input through
