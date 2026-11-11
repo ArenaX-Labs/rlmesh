@@ -1194,8 +1194,8 @@ impl PyObservation {
         self.values.clone_ref(py)
     }
 
-    /// Each input's conservative age in ns (`None`: blank, or no clock
-    /// mapping).
+    /// Each input's conservative age in ns, by entry (`None`: blank, or no
+    /// clock mapping).
     #[getter]
     fn ages(&self) -> BTreeMap<String, Option<i64>> {
         self.meta
@@ -1242,6 +1242,20 @@ impl PyObservation {
     #[getter]
     fn skew_ns(&self) -> i64 {
         self.meta.skew_ns
+    }
+
+    /// Each input's seq range delivered, by entry: `(seq_first,
+    /// seq_last)`, `None` when blank.
+    #[getter]
+    fn seqs(&self) -> BTreeMap<String, Option<(u64, u64)>> {
+        self.meta
+            .inputs
+            .iter()
+            .map(|i| {
+                let range = i.samples.first().zip(i.samples.last());
+                (i.entry.clone(), range.map(|(a, b)| (a.seq, b.seq)))
+            })
+            .collect()
     }
 
     /// Per stream, the seq range used: `(stream id, seq_first, seq_last)`.

@@ -100,6 +100,7 @@ interface NativeObservation {
   readonly blank: string[];
   readonly skewNs: bigint;
   readonly basedOn: { stream: number; seqFirst: number; seqLast: number }[];
+  readonly seqs: { entry: string; seqFirst: number; seqLast: number }[];
 }
 interface NativeField { name: string; dtype: string; shape: number[] }
 interface NativePart { path: string; kind: string; fields: NativeField[] }
@@ -644,8 +645,10 @@ export class Robot implements AsyncDisposable {
 
 /** A snapshot's metadata (`obs.meta`): ages, staleness and provenance. */
 export interface Meta {
-  /** Each input's conservative age at the snapshot (null: blank). */
+  /** Each input's conservative age at the snapshot, by entry name (null: blank). */
   agesNs: Record<string, bigint | null>;
+  /** Each input's seq range delivered, `[seqFirst, seqLast]`, by entry name (absent: blank). Entry names hold across a rebind; stream ids do not. */
+  seqs: Record<string, [number, number]>;
   /** Inputs delivered stale under `allow: hold`. */
   stale: Set<string>;
   /** Window slots padded by `allow: warmup`, by entry. */
@@ -654,7 +657,7 @@ export interface Meta {
   blank: Set<string>;
   /** The newest capture minus the oldest, across inputs. */
   skewNs: bigint;
-  /** Per stream, `[streamId, seqFirst, seqLast]`: the chunk's `based_on`. */
+  /** Per stream, `[streamId, seqFirst, seqLast]`: the chunk's `based_on`, by the ids of the binding in force (`policy.binding`). */
   basedOn: [number, number, number][];
   /** The session time the snapshot was taken at. */
   timeNs: bigint;
@@ -670,6 +673,7 @@ export class Observation {
     this.inputs = Object.fromEntries(native.takeValues().map((e) => [e.entry, input(e)]));
     this.meta = {
       agesNs: Object.fromEntries(native.ages.map((a) => [a.entry, a.ageNs ?? null])),
+      seqs: Object.fromEntries(native.seqs.map((s) => [s.entry, [s.seqFirst, s.seqLast]])),
       stale: new Set(native.stale),
       padded: Object.fromEntries(native.padded.map((p) => [p.entry, p.slots])),
       blank: new Set(native.blank),
@@ -759,7 +763,6 @@ export interface BindOptions {
  */
 export class Policy implements AsyncDisposable {
   private native: NativePolicy | null = null;
-  private bound: BindingTable | null = null;
   private readonly policyJson: string;
   // A true private field: the address carries the session's key, which an inspected Policy must not show.
   readonly #address: string;
@@ -819,8 +822,7 @@ export class Policy implements AsyncDisposable {
       }),
     );
     for (const part of this.native.publishedParts()) this.fields.set(part.path, part.fields);
-    this.bound = new BindingTable(this.native);
-    return this.bound;
+    return new BindingTable(this.native);
   }
 
   /**
@@ -840,10 +842,9 @@ export class Policy implements AsyncDisposable {
     return this.native;
   }
 
-  /** The binding table (after `bind`). */
+  /** The binding table in force (after `bind`): after a `rebound` event, the new one. */
   get binding(): BindingTable {
-    this.nat();
-    return this.bound!;
+    return new BindingTable(this.nat());
   }
 
   /** A policy start now; throws `StartSkipped` when one is skipped. */

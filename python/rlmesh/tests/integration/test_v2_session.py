@@ -1138,6 +1138,61 @@ def test_one_policy_bound_with_no_robot_drives_two_robots(host: rlmesh.Host) -> 
             eye.close()
 
 
+def test_after_a_rebind_the_binding_is_the_one_in_force_and_inputs_pair_by_entry(
+    host: rlmesh.Host,
+) -> None:
+    reader = {
+        "hz": 25,
+        "inputs": {"gaze": {"kind": "joints", "at": "eye-1:eyes", "fields": ["pos"]}},
+    }
+
+    def streams(table: rlmesh.BindingTable) -> dict[str, int]:
+        return {row["entry"]: row["channel"] for row in table.json["inputs"]}
+
+    # Another robot stays: the session never has none to bind against.
+    other = rlmesh.Robot("eye-2", EYE, session=host)
+    eye = rlmesh.Robot("eye-1", EYE, session=host)
+    try:
+        with rlmesh.Policy(reader, session=host, name="reader") as policy:
+            before = streams(policy.bind())
+            # The robot leaves and comes back: its parts get new stream ids.
+            eye.close()
+            eye = rlmesh.Robot("eye-1", EYE, session=host)
+            events: list[dict[str, Any]] = []
+
+            def rebound() -> bool:
+                events.extend(policy.events())
+                return any(e["kind"] == "rebound" for e in events)
+
+            wait_until("the policy bound again", rebound, lambda: events)
+            after = streams(policy.binding)
+            assert after.keys() == before.keys()
+            assert after["gaze"] != before["gaze"], "the binding in force"
+
+            def observed() -> rlmesh.Observation | None:
+                eye.publish("eyes", pos=np.zeros(2, dtype=np.float32))
+                try:
+                    return policy.observe()
+                except rlmesh.StartSkipped:
+                    return None
+
+            seen: list[rlmesh.Observation] = []
+            wait_until(
+                "an observation after the rebind",
+                lambda: (obs := observed()) is not None and not seen.append(obs),
+            )
+            meta = seen[0].meta
+            assert set(meta.ages_ns) == set(meta.seqs) == {"gaze"}
+            first, last = meta.seqs["gaze"] or (0, 0)
+            assert 0 < first <= last
+            # Its based_on names the new stream, which the binding pairs
+            # with the entry.
+            assert [s for s, _, _ in meta.based_on] == [after["gaze"]]
+    finally:
+        eye.close()
+        other.close()
+
+
 def test_acquire_names_each_part_by_its_robot(host: rlmesh.Host) -> None:
     # Both eyes have an "eyes" part: one token per robot's part.
     one = rlmesh.Robot("eye-1", EYE, session=host)

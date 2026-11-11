@@ -636,14 +636,20 @@ class Meta:
         "based_on",
         "blank",
         "padded",
+        "seqs",
         "skew_ns",
         "stale",
         "time_ns",
     )
 
     def __init__(self, native: V2Observation) -> None:
-        #: Each input's conservative age at the snapshot (``None``: blank).
+        #: Each input's conservative age at the snapshot, by entry name
+        #: (``None``: blank).
         self.ages_ns: dict[str, int | None] = native.ages
+        #: Each input's seq range delivered, ``(seq_first, seq_last)``, by
+        #: entry name (``None``: blank). Entry names hold across a rebind;
+        #: stream ids do not.
+        self.seqs: dict[str, tuple[int, int] | None] = native.seqs
         #: Inputs delivered stale under ``allow: hold``.
         self.stale: frozenset[str] = frozenset(native.stale)
         #: Window slots padded by ``allow: warmup``, by entry.
@@ -652,7 +658,8 @@ class Meta:
         self.blank: frozenset[str] = frozenset(native.blank)
         #: The newest capture minus the oldest, across inputs.
         self.skew_ns: int = native.skew_ns
-        #: Per stream, ``(stream id, seq_first, seq_last)``: the chunk's ``based_on``.
+        #: Per stream, ``(stream id, seq_first, seq_last)``: the chunk's
+        #: ``based_on``, by the ids of the binding in force (:attr:`Policy.binding`).
         self.based_on: list[tuple[int, int, int]] = native.based_on
         #: The session time the snapshot was taken at.
         self.time_ns: int = native.time_ns
@@ -744,7 +751,6 @@ class Policy:
         self._priority = priority
         self._timeout = timeout
         self._native: V2Controller | None = None
-        self._binding: BindingTable | None = None
         self._fields: dict[str, tuple[_Field, ...]] = {}
 
     @property
@@ -805,8 +811,7 @@ class Policy:
             )
             for part in self._native.published_parts()
         }
-        self._binding = BindingTable(self._native)
-        return self._binding
+        return BindingTable(self._native)
 
     def publish(
         self,
@@ -838,9 +843,8 @@ class Policy:
 
     @property
     def binding(self) -> BindingTable:
-        """The binding table (after :meth:`bind`)."""
-        self._bound()
-        return cast("BindingTable", self._binding)
+        """The binding table in force (after :meth:`bind`): after a ``rebound`` event, the new one."""
+        return BindingTable(self._bound())
 
     def observe(self) -> Observation:
         """A policy start now; raises :class:`StartSkipped` when one is skipped."""

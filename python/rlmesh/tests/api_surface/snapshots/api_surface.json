@@ -4208,6 +4208,10 @@
             "kind": "attribute",
             "signature": "padded: dict[str, int]"
           },
+          "seqs": {
+            "kind": "attribute",
+            "signature": "seqs: dict[str, tuple[int, int] | None]"
+          },
           "skew_ns": {
             "kind": "attribute",
             "signature": "skew_ns: int"

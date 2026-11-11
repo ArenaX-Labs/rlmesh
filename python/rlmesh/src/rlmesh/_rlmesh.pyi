@@ -1038,8 +1038,8 @@ class V2Observation:
     @property
     def ages(self) -> builtins.dict[builtins.str, typing.Optional[builtins.int]]:
         r"""
-        Each input's conservative age in ns (`None`: blank, or no clock
-        mapping).
+        Each input's conservative age in ns, by entry (`None`: blank, or no
+        clock mapping).
         """
     @property
     def stale(self) -> builtins.list[builtins.str]:
@@ -1060,6 +1060,12 @@ class V2Observation:
     def skew_ns(self) -> builtins.int:
         r"""
         The newest capture minus the oldest, across inputs.
+        """
+    @property
+    def seqs(self) -> builtins.dict[builtins.str, typing.Optional[tuple[builtins.int, builtins.int]]]:
+        r"""
+        Each input's seq range delivered, by entry: `(seq_first,
+        seq_last)`, `None` when blank.
         """
     @property
     def based_on(self) -> builtins.list[tuple[builtins.int, builtins.int, builtins.int]]:

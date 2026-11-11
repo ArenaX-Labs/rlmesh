@@ -1031,6 +1031,14 @@ pub struct InputPadding {
     pub slots: u32,
 }
 
+/// An input's seq range delivered, by entry.
+#[napi(object)]
+pub struct EntrySeqs {
+    pub entry: String,
+    pub seq_first: i64,
+    pub seq_last: i64,
+}
+
 /// Per stream, the seq range a start used.
 #[napi(object)]
 pub struct StreamSeqs {
@@ -1134,6 +1142,22 @@ impl NativeObservation {
     #[napi(getter)]
     pub fn skew_ns(&self) -> BigInt {
         BigInt::from(self.meta.skew_ns)
+    }
+
+    /// Each input's seq range delivered, by entry (none for a blank one).
+    #[napi(getter)]
+    pub fn seqs(&self) -> Vec<EntrySeqs> {
+        self.meta
+            .inputs
+            .iter()
+            .filter_map(|i| {
+                Some(EntrySeqs {
+                    entry: i.entry.clone(),
+                    seq_first: seq(i.samples.first()?.seq),
+                    seq_last: seq(i.samples.last()?.seq),
+                })
+            })
+            .collect()
     }
 
     /// Per stream, the seq range used.
