@@ -19,7 +19,7 @@ impl Rng for Zeros {
     }
 }
 
-fn robot(homes: &[(&str, u16)]) -> Robot {
+fn robot(homes: &[(&str, u16)]) -> Box<Robot> {
     let mut key = [0x42_u8; 32];
     Robot::new(Config {
         tenant: TenantId::new("local").expect("tenant"),

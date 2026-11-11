@@ -15,6 +15,7 @@
 //! address's): control on the first, a part's commands and samples on its
 //! priority's ([`Action`]'s `class`).
 
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -387,11 +388,12 @@ fn class_of(priority: ChannelPriority) -> u8 {
 }
 
 impl Robot {
-    /// A robot that starts joining on the first [`Self::poll`].
+    /// A robot that starts joining on the first [`Self::poll`], built in
+    /// its allocation: it is too large for a board's stack.
     ///
     /// # Errors
     /// [`ConfigError`]: a map the host would refuse, checked here first.
-    pub fn new(config: Config) -> Result<Self, ConfigError> {
+    pub fn new(config: Config) -> Result<Box<Self>, ConfigError> {
         if config.heartbeat_ms == 0 {
             return Err(ConfigError::Heartbeat);
         }
@@ -413,58 +415,62 @@ impl Robot {
         let target = config.homes.first().cloned().ok_or(ConfigError::NoHome)?;
         let credential = config.credential.clone();
         let stored = config.homes.len();
-        Ok(Self {
-            subscribed: alloc::vec![false; paths.len()],
-            edge_of: alloc::vec![None; paths.len()],
-            paths,
-            config,
-            tenant,
-            session,
-            keys,
-            lobby,
-            run: None,
-            wait: None,
-            target,
-            home_at: 0,
-            stored,
-            run_targets: Vec::new(),
-            run_at: 0,
-            credential,
-            home_unreachable: false,
-            backoff_ms: RETRY_MS,
-            refused_ms: RETRY_MS,
-            left: None,
-            phase: Phase::Host,
-            out: Vec::new(),
-            started: false,
-            next_query: 0,
-            waiting: None,
-            initiator: None,
-            link: None,
-            pending: None,
-            queue: VecDeque::new(),
-            hint: None,
-            view: None,
-            views: 0,
-            observed_ns: 0,
-            parts: Vec::new(),
-            edges: Vec::new(),
-            seqs: BTreeMap::new(),
-            fault: None,
-            retry_at: 0,
-            next_heartbeat: 0,
-            last_heard: 0,
-            echoes: 0,
-            heartbeat_seq: 0,
-            previous: None,
-            generation: 0,
-            last_get_keys: None,
-            accepted: 0,
-            applied: 0,
-            estop: None,
-            latches: 0,
-            last_code: ReasonCode::EstopLocal,
-        })
+        let robot = Box::<Self>::new_uninit();
+        Ok(Box::write(
+            robot,
+            Self {
+                subscribed: alloc::vec![false; paths.len()],
+                edge_of: alloc::vec![None; paths.len()],
+                paths,
+                config,
+                tenant,
+                session,
+                keys,
+                lobby,
+                run: None,
+                wait: None,
+                target,
+                home_at: 0,
+                stored,
+                run_targets: Vec::new(),
+                run_at: 0,
+                credential,
+                home_unreachable: false,
+                backoff_ms: RETRY_MS,
+                refused_ms: RETRY_MS,
+                left: None,
+                phase: Phase::Host,
+                out: Vec::new(),
+                started: false,
+                next_query: 0,
+                waiting: None,
+                initiator: None,
+                link: None,
+                pending: None,
+                queue: VecDeque::new(),
+                hint: None,
+                view: None,
+                views: 0,
+                observed_ns: 0,
+                parts: Vec::new(),
+                edges: Vec::new(),
+                seqs: BTreeMap::new(),
+                fault: None,
+                retry_at: 0,
+                next_heartbeat: 0,
+                last_heard: 0,
+                echoes: 0,
+                heartbeat_seq: 0,
+                previous: None,
+                generation: 0,
+                last_get_keys: None,
+                accepted: 0,
+                applied: 0,
+                estop: None,
+                latches: 0,
+                last_code: ReasonCode::EstopLocal,
+            },
+        ))
     }
 
     /// Where it is.

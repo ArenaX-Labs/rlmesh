@@ -158,7 +158,7 @@ pub struct RlmeshDeviceTick {
 /// `rlmesh_device_robot_t`: the robot, its randomness, and what the caller
 /// borrows from it.
 pub struct DeviceRobot {
-    robot: Robot,
+    robot: Box<Robot>,
     rng: CRng,
     queue: VecDeque<Action>,
     /// Where it connects now, NUL-terminated (refreshed by each `_next`).

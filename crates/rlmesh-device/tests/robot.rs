@@ -117,11 +117,11 @@ impl World {
         .expect("transport")
     }
 
-    fn robot(&self, key: AddressKey) -> Robot {
+    fn robot(&self, key: AddressKey) -> Box<Robot> {
         self.robot_as(key.credential())
     }
 
-    fn robot_as(&self, credential: Credential) -> Robot {
+    fn robot_as(&self, credential: Credential) -> Box<Robot> {
         Robot::new(Config {
             tenant: self.tenant.clone(),
             session: self.session,
@@ -168,11 +168,11 @@ struct Seen {
 /// it runs, it ticks the part each loop and publishes a sample every 20 ms.
 async fn drive(
     world: &World,
-    mut robot: Robot,
+    mut robot: Box<Robot>,
     limit: Duration,
     seen: Arc<Mutex<Seen>>,
     mut done: impl FnMut(&Robot) -> bool + Send,
-) -> Robot {
+) -> Box<Robot> {
     let transport = world.transport().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut subscribers = Vec::new();
