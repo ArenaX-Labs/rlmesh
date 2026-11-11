@@ -74,6 +74,8 @@ rcgen = { workspace = true }
 # Path only: a dev-dependency packaging strips (the wasm crate is unpublished).
 rlmesh-wasm = { path = "../../javascript/rlmesh/wasm" }
 serde_json = { workspace = true }
+# The slow-peer test's narrow TCP links.
+socket2 = { workspace = true, features = ["all"] }
 tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
