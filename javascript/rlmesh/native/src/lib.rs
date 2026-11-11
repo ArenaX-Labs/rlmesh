@@ -1516,7 +1516,7 @@ impl NativePolicy {
                 path: controller
                     .participant()
                     .part_by_id(l.channel)
-                    .map_or_else(|_| l.channel.to_string(), |p| p.path.to_string()),
+                    .map_or_else(|_| l.channel.to_string(), |p| p.qualified()),
                 token: BigInt::from(l.token.0),
             })
             .collect())

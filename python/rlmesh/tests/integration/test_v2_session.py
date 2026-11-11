@@ -339,7 +339,7 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
 
         # Taking over: the operator class preempts the model class.
         tokens = operator.acquire()
-        assert tokens["arm"] > model_token
+        assert tokens["ur10e:arm"] > model_token
         wait_until("the model's lease gone", lambda: not model.holds)
         streaming = threading.Event()
 
@@ -372,7 +372,7 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
                 "operator_holds": operator.holds,
             },
         )
-        assert ur.log[-1].lease_token == tokens["arm"]
+        assert ur.log[-1].lease_token == tokens["ur10e:arm"]
         assert model.stats()["skipped"]["no_lease"] > 0, (
             "a preempted model stays warm, skips its starts"
         )
@@ -396,7 +396,7 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
             lambda: {"stats": model.stats(), "holds": model.holds},
         )
         resumed = ur.log[-1].lease_token
-        assert resumed is not None and resumed > tokens["arm"]
+        assert resumed is not None and resumed > tokens["ur10e:arm"]
         model.stop()
         thread.join(WAIT)
         assert isinstance(result[0], dict)
@@ -1136,6 +1136,22 @@ def test_one_policy_bound_with_no_robot_drives_two_robots(host: rlmesh.Host) -> 
     finally:
         for eye in eyes:
             eye.close()
+
+
+def test_acquire_names_each_part_by_its_robot(host: rlmesh.Host) -> None:
+    # Both eyes have an "eyes" part: one token per robot's part.
+    one = rlmesh.Robot("eye-1", EYE, session=host)
+    two = rlmesh.Robot("eye-2", EYE, session=host)
+    try:
+        one.arm()
+        with rlmesh.Policy(EYES, session=host, name="tracker") as policy:
+            policy.bind()
+            tokens = policy.acquire()
+            assert sorted(tokens) == ["eye-1:eyes", "eye-2:eyes"]
+            assert all(token > 0 for token in tokens.values())
+    finally:
+        one.close()
+        two.close()
 
 
 def test_a_robot_held_in_an_armed_session_needs_a_rearm_by_name(

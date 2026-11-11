@@ -864,7 +864,7 @@ class Policy:
         Waits, up to the policy's ``timeout``, for the host to measure the
         clocks an edge needs, so a chunk sent right after is not rejected
         (``TimeoutError`` naming whose is missing). Returns the lease token
-        per part; raises :class:`SessionRefused` (``status`` ``LEASE_BUSY``,
+        per part, keyed ``robot:path`` (``{"ur10e:arm": token}``); raises :class:`SessionRefused` (``status`` ``LEASE_BUSY``,
         ``GROUP_BUSY``, ``NOT_READY``, ...) when they cannot be granted.
         """
         return dict(self._bound().acquire())

@@ -74,7 +74,7 @@ block instead of the `finally`.
 | `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                                  |
 | `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }`      |
 | `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                       |
-| `policy.acquire()` → `{"arm": token}`              | `await policy.acquire()` → `{ arm: token }` (`bigint`)             |
+| `policy.acquire()` → `{"ur10e:arm": token}`        | `await policy.acquire()` → `{ 'ur10e:arm': token }` (`bigint`)     |
 | `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                      |
 | `with SessionRecorder(path, session=host)`         | `const rec = await SessionRecorder.start(path, { session: host })` |
 | `read_recording(path)`                             | `await readRecording(path)`                                        |

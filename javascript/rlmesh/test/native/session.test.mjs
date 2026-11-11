@@ -235,7 +235,7 @@ test('an operator preempts the model and hands back under a fresh token', async 
 
   // Taking over: the operator class preempts the model class.
   const tokens = await operator.acquire();
-  assert.ok(tokens.arm > modelToken);
+  assert.ok(tokens['ur10e:arm'] > modelToken);
   await waitUntil("the model's lease gone", () => !model.holds);
   let streaming = true;
   const teleop = (async () => {
@@ -253,7 +253,7 @@ test('an operator preempts the model and hands back under a fresh token', async 
   // A failure below stops the stream before the operator is disposed, so it is the one reported.
   await using _stopTeleop = { [Symbol.asyncDispose]: () => ((streaming = false), teleop) };
   await waitUntil('the operator driving', () => ur.driven((d) => first(d) === 0.75));
-  assert.equal(ur.log.at(-1).leaseToken, tokens.arm);
+  assert.equal(ur.log.at(-1).leaseToken, tokens['ur10e:arm']);
   assert.ok(model.stats().skipped.no_lease > 0, 'a preempted model stays warm, skips its starts');
 
   // A model cannot take it back while the operator holds it.
@@ -265,7 +265,7 @@ test('an operator preempts the model and hands back under a fresh token', async 
   await operator.release();
   await waitUntil('the model driving again', () => ur.driven((d) => first(d) === 0.25));
   const resumed = ur.log.at(-1).leaseToken;
-  assert.ok(resumed !== null && resumed > tokens.arm);
+  assert.ok(resumed !== null && resumed > tokens['ur10e:arm']);
   model.stop();
   assert.equal(typeof (await running).starts, 'number');
 });

@@ -855,8 +855,9 @@ class V2Controller:
     def acquire(self) -> builtins.list[tuple[builtins.str, builtins.int]]:
         r"""
         Takes the binding's leases now, preempting a lower class; from then
-        on they are kept. Raises `SessionRefused` (`LEASE_BUSY`,
-        `GROUP_BUSY`, `NOT_READY`, ...) when they cannot be granted.
+        on they are kept. Returns `(robot:path, token)` per part. Raises
+        `SessionRefused` (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) when
+        they cannot be granted.
         """
     def release(self) -> None:
         r"""

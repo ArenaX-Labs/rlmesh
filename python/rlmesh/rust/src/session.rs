@@ -1509,8 +1509,9 @@ impl PyController {
     }
 
     /// Takes the binding's leases now, preempting a lower class; from then
-    /// on they are kept. Raises `SessionRefused` (`LEASE_BUSY`,
-    /// `GROUP_BUSY`, `NOT_READY`, ...) when they cannot be granted.
+    /// on they are kept. Returns `(robot:path, token)` per part. Raises
+    /// `SessionRefused` (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) when
+    /// they cannot be granted.
     fn acquire(&self, py: Python<'_>) -> PyResult<Vec<(String, u64)>> {
         let controller = self.controller()?;
         let leases = block_on(py, {
@@ -1523,7 +1524,7 @@ impl PyController {
                 let path = controller
                     .participant()
                     .part_by_id(l.channel)
-                    .map_or_else(|_| l.channel.to_string(), |p| p.path.to_string());
+                    .map_or_else(|_| l.channel.to_string(), |p| p.qualified());
                 (path, l.token.0)
             })
             .collect())

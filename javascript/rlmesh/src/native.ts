@@ -860,7 +860,7 @@ export class Policy implements AsyncDisposable {
     return Object.fromEntries(sent.map((s) => [s.entry, s.seq ?? null]));
   }
 
-  /** Take the binding's leases now (preempting a lower class), then keep them. Resolves to the token per part. */
+  /** Take the binding's leases now (preempting a lower class), then keep them. Resolves to the token per part, keyed `robot:path`. */
   async acquire(): Promise<Record<string, bigint>> {
     const leases = await wait(() => this.nat().acquire());
     return Object.fromEntries(leases.map((l) => [l.path, l.token]));
