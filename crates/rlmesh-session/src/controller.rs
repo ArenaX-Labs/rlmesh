@@ -12,8 +12,8 @@
 //!   chunk sender per granted lease. On the wall clock it waits until the
 //!   host has mapped this controller's clock and its robots' (an edge
 //!   rejects chunks until then). [`Controller::acquire`] takes them at
-//!   once (an operator taking over), [`Controller::release`] gives them
-//!   back.
+//!   once (an operator taking over), once those clocks are mapped;
+//!   [`Controller::release`] gives them back.
 //! - [`Controller::send`] packs `predict`'s output per action entry
 //!   (`ActionRow::pack`) and sends one timed chunk per commanded part:
 //!   `t0` at the snapshot (or at send, `t0: "send"`), the binding's action
@@ -47,7 +47,8 @@ use crate::spec::apply::{ApplyError, Value};
 use crate::spec::policy::ChunkStart;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::{
-    ChannelId, ClockMode, InputRange, Lease, Mode, ParticipantId, Reason, ReasonCode, RunCounters,
+    AuthoritySnapshot, ChannelId, ClockMode, InputRange, Lease, Mode, ParticipantId, Reason,
+    ReasonCode, RunCounters,
 };
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -76,7 +77,8 @@ const REQUEST_GAP: Duration = Duration::from_millis(50);
 pub struct ControllerConfig {
     /// The lease ttl (`None`: the session's lease grace).
     pub lease_ttl: Option<Duration>,
-    /// How long [`Controller::bind`] waits for the robot's parts.
+    /// How long [`Controller::bind`] waits for the robot's parts, and
+    /// [`Controller::acquire`] for the clocks to be mapped.
     pub bind_timeout: Duration,
     /// How often a wanted lease is re-requested while it is refused (it is
     /// also re-requested on every authority change).
@@ -223,29 +225,49 @@ impl Leases {
     }
 
     /// Whether the host has mapped this controller's clock and the clock of
-    /// every present robot it commands. An edge rejects a chunk until both
-    /// are mapped (`NoClockMapping`), so leases taken earlier only produce
-    /// rejected chunks; a ticked session needs no mapping. A robot that is
-    /// gone has no mapping and is asked for no lease, so it never keeps the
-    /// others waiting.
+    /// every present robot it commands (see [`unmapped_clocks`]).
     fn clocks_mapped(&self, participant: &Participant) -> bool {
-        let me = participant.id();
         let channels = self.group().channels();
         participant.authority_view().with(|view| {
-            let Some(view) = view else {
-                return false;
-            };
-            if view.clock_mode != ClockMode::Wall {
-                return true;
-            }
-            view.clock(me).is_some()
-                && channels.iter().all(|c| {
-                    view.part(*c).is_some_and(|part| {
-                        view.clock(&part.owner).is_some()
-                            || !view.participant(&part.owner).is_some_and(|p| p.present)
-                    })
-                })
+            view.is_some_and(|view| unmapped_clocks(view, participant.id(), &channels).is_empty())
         })
+    }
+
+    /// Waits until the clocks are mapped, or the session stops being armed
+    /// (the grant then says why).
+    async fn wait_for_clocks(
+        &self,
+        participant: &Participant,
+        timeout: Duration,
+    ) -> Result<(), SessionError> {
+        let channels = self.group().channels();
+        let me = participant.id().clone();
+        let what = "the session host to measure the clocks of this controller and its robots";
+        let waited = participant
+            .wait_for(what, timeout, |view| {
+                !matches!(view.mode, Mode::Armed | Mode::Active)
+                    || unmapped_clocks(view, &me, &channels).is_empty()
+            })
+            .await;
+        match waited {
+            Err(SessionError::Timeout(timeout, _)) => {
+                let unmapped = participant.authority().map_or_else(Vec::new, |view| {
+                    unmapped_clocks(&view, &me, &channels)
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect()
+                });
+                Err(SessionError::Timeout(
+                    timeout,
+                    format!(
+                        "the session host to measure the clock of {}: an edge rejects chunks \
+                         until it has",
+                        unmapped.join(", ")
+                    ),
+                ))
+            }
+            other => other.map(|_| ()),
+        }
     }
 
     /// Requests the leases not held, robot by robot, so a robot that is
@@ -341,6 +363,34 @@ impl Leases {
     }
 }
 
+/// Who still needs a clock mapping before `me` can command `channels`: an
+/// edge rejects a chunk until its robot's clock and its sender's are mapped
+/// (`NoClockMapping`), so leases taken earlier only produce rejected chunks.
+/// A ticked session needs none, and a robot that is gone is asked for no
+/// lease, so it never keeps the others waiting.
+fn unmapped_clocks<'a>(
+    view: &'a AuthoritySnapshot,
+    me: &'a ParticipantId,
+    channels: &[ChannelId],
+) -> Vec<&'a ParticipantId> {
+    if view.clock_mode != ClockMode::Wall {
+        return Vec::new();
+    }
+    let mut unmapped: Vec<&ParticipantId> = Vec::new();
+    if view.clock(me).is_none() {
+        unmapped.push(me);
+    }
+    for part in channels.iter().filter_map(|c| view.part(*c)) {
+        if view.clock(&part.owner).is_none()
+            && view.participant(&part.owner).is_some_and(|p| p.present)
+            && !unmapped.contains(&&part.owner)
+        {
+            unmapped.push(&part.owner);
+        }
+    }
+    unmapped
+}
+
 /// Keeps the leases while they are wanted (see the module docs).
 async fn keep_leases(
     participant: Arc<Participant>,
@@ -432,6 +482,8 @@ pub struct Controller {
     schedule: Arc<Mutex<StartSchedule>>,
     events: Arc<Mutex<VecDeque<RunEvent>>>,
     runtime: tokio::runtime::Handle,
+    /// How long [`Self::acquire`] waits for the clocks to be mapped.
+    clock_timeout: Duration,
     stop: AtomicBool,
     /// The run loop's current phase offset (ns after the replan grid).
     phase_offset_ns: AtomicI64,
@@ -524,6 +576,7 @@ impl Controller {
             schedule,
             events,
             runtime: tokio::runtime::Handle::current(),
+            clock_timeout: config.bind_timeout,
             stop: AtomicBool::new(false),
             phase_offset_ns: AtomicI64::new(0),
             runs: AtomicU64::new(0),
@@ -662,9 +715,15 @@ impl Controller {
     }
 
     /// Takes the binding's leases now (all or none), preempting a lower
-    /// class; from then on the keeper holds them. A refusal (`LEASE_BUSY`,
-    /// `GROUP_BUSY`, `NOT_READY`, ...) leaves the keeper as it was.
+    /// class; from then on the keeper holds them. First waits for the host
+    /// to map the clocks an edge needs (a [`SessionError::Timeout`] naming
+    /// whose is missing, past the bind timeout), so a chunk sent right after
+    /// is not rejected. A refusal (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`,
+    /// ...) leaves the keeper as it was.
     pub async fn acquire(&self) -> Result<Vec<Lease>, SessionError> {
+        self.leases
+            .wait_for_clocks(&self.participant, self.clock_timeout)
+            .await?;
         let leases = self.leases.grant(&self.participant).await?;
         self.leases.want.store(true, Ordering::Relaxed);
         Ok(leases)

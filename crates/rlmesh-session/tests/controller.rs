@@ -813,3 +813,93 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
     keep_two.abort();
     host.close().await.expect("close");
 }
+
+/// Commands the arm, and reads nothing: nothing to warm or install.
+const COMMAND_ONLY: &str = r#"{
+    "hz": 50,
+    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
+                        "hz": 100, "chunk": 5}}
+}"#;
+
+fn command_values() -> Vec<(String, Value)> {
+    let tensor = Tensor::from_f64(DType::F32, vec![5, 6], &[0.0; 30]);
+    vec![("arm".into(), Value::Tensor(tensor))]
+}
+
+/// A controller bound and acquired at once, as an operator's first command
+/// is, before the host has measured its clock.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_chunk_after_an_explicit_acquire_is_accepted() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    for round in 0..5 {
+        let id = format!("op{round}");
+        let p = world
+            .join(&id, Role::Controller, PriorityClass::Operator)
+            .await;
+        let options = RunOptions::named(&id).robot("ur10e").expect("robot");
+        let controller = Controller::bind(
+            Arc::new(p),
+            &Policy::parse(COMMAND_ONLY).expect("policy"),
+            &options,
+            ControllerConfig::default(),
+        )
+        .await
+        .expect("bind");
+        controller.acquire().await.expect("acquire");
+        let before = robot.edge_stats("arm").expect("stats").accepted;
+        let now = controller.participant().session_now_ns();
+        controller.send(&command_values(), &[], now).expect("send");
+        wait_until("the first chunk reaches the edge", || {
+            let stats = robot.edge_stats("arm").expect("stats");
+            stats.accepted > before || stats.rejected_total() > 0
+        })
+        .await;
+        let stats = robot.edge_stats("arm").expect("stats");
+        assert_eq!(stats.rejected_total(), 0, "round {round}: {stats:?}");
+        controller.release().await.expect("release");
+    }
+}
+
+/// A controller whose clock the host never maps: no heartbeat after attach.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let transport = Transport::open(
+        &TransportConfig::per_class_tcp(
+            Some("127.0.0.1:0".parse().expect("addr")),
+            Some(world.base),
+        )
+        .expect("config"),
+    )
+    .await
+    .expect("transport");
+    let mut config = ParticipantConfig::new(
+        world.tenant.clone(),
+        world.session,
+        rlmesh_session::wire::ParticipantId::new("mute").expect("id"),
+        vec![Role::Controller],
+        PriorityClass::Operator,
+    );
+    config.clock = SystemMonotonicClock.shared();
+    config.heartbeat_period = Duration::from_secs(3600);
+    config.credential = Some(world.host.credential());
+    let p = Participant::attach(transport, config)
+        .await
+        .expect("attach");
+    let controller = Controller::bind(
+        Arc::new(p),
+        &Policy::parse(COMMAND_ONLY).expect("policy"),
+        &RunOptions::named("mute").robot("ur10e").expect("robot"),
+        ControllerConfig {
+            bind_timeout: Duration::from_millis(500),
+            ..ControllerConfig::default()
+        },
+    )
+    .await
+    .expect("bind");
+    let err = controller.acquire().await.expect_err("never mapped");
+    assert!(err.to_string().contains("the clock of mute:"), "{err}");
+    assert_eq!(robot.edge_stats("arm").expect("stats").rejected_total(), 0);
+}

@@ -859,9 +859,11 @@ class Policy:
     def acquire(self) -> dict[str, int]:
         """Take the binding's leases now (preempting a lower class), then keep them.
 
-        Returns the lease token per part; raises :class:`SessionRefused`
-        (``status`` ``LEASE_BUSY``, ``GROUP_BUSY``, ``NOT_READY``, ...)
-        when they cannot be granted.
+        Waits, up to the policy's ``timeout``, for the host to measure the
+        clocks an edge needs, so a chunk sent right after is not rejected
+        (``TimeoutError`` naming whose is missing). Returns the lease token
+        per part; raises :class:`SessionRefused` (``status`` ``LEASE_BUSY``,
+        ``GROUP_BUSY``, ``NOT_READY``, ...) when they cannot be granted.
         """
         return dict(self._bound().acquire())
 
