@@ -626,6 +626,11 @@ pub struct Robot {
     command_keys: Vec<String>,
     edges: Vec<Edge>,
     edge_of: Vec<Option<usize>>,
+    /// Chunks refused by attaches before this one, by reason (in
+    /// [`Rejection::ALL`]'s order): empty until the first edges retire.
+    refused_before: Vec<u64>,
+    /// Attaches the host accepted, in any session.
+    attaches: u32,
     /// Command subscriptions made (they outlive a restart).
     subscribed: Vec<bool>,
     /// Each stream's seq and delivery plan.
@@ -758,6 +763,8 @@ impl Robot {
                 applied_streams: Vec::new(),
                 command_keys: Vec::new(),
                 edges: Vec::new(),
+                refused_before: Vec::new(),
+                attaches: 0,
                 seqs: BTreeMap::new(),
                 fault: None,
                 retry_at: 0,
@@ -919,6 +926,41 @@ impl Robot {
     /// Chunks refused this attach for `reason`.
     pub fn refusals(&self, reason: Rejection) -> u64 {
         self.edges.iter().map(|e| e.core.rejected(reason)).sum()
+    }
+
+    /// Chunks refused for `reason` over every attach, this one included.
+    pub fn refusals_total(&self, reason: Rejection) -> u64 {
+        self.refused_before
+            .get(reason.index())
+            .copied()
+            .unwrap_or(0)
+            + self.refusals(reason)
+    }
+
+    /// Chunks the edges refused over every attach, this one included.
+    pub fn chunks_refused_total(&self) -> u64 {
+        self.refused_before.iter().sum::<u64>() + self.chunks_refused()
+    }
+
+    /// Attaches the host accepted, in any session: one more each time the
+    /// robot joined again.
+    pub fn attaches(&self) -> u32 {
+        self.attaches
+    }
+
+    /// Keeps the refusals of the edges it is about to drop.
+    fn retire_edges(&mut self) {
+        if self.edges.is_empty() {
+            return;
+        }
+        if self.refused_before.is_empty() {
+            self.refused_before = alloc::vec![0; Rejection::ALL.len()];
+        }
+        for edge in &self.edges {
+            for (total, reason) in self.refused_before.iter_mut().zip(Rejection::ALL) {
+                *total += edge.core.rejected(reason);
+            }
+        }
     }
 
     /// The next moment, on this board's clock, the robot has something to
@@ -1937,6 +1979,12 @@ impl Robot {
             }
             _ => {}
         }
+        if matches!(
+            (self.phase, &pending.command),
+            (Phase::Attach, Command::Attach { .. })
+        ) {
+            self.attaches = self.attaches.saturating_add(1);
+        }
         match (self.phase, &pending.command) {
             (Phase::Attach, Command::Attach { .. }) if self.in_lobby() => {
                 // In the lobby a robot never declares: it waits.
@@ -2058,6 +2106,7 @@ impl Robot {
             .map(|p| self.keys.commands(me, p.path.as_str()))
             .collect();
         self.parts = parts;
+        self.retire_edges();
         self.edges = edges;
         self.edge_of = edge_of;
         self.tick_periods = self
@@ -2223,6 +2272,7 @@ impl Robot {
         self.samples.clear();
         self.applied_streams.clear();
         self.command_keys.clear();
+        self.retire_edges();
         self.edges.clear();
         self.edge_of = alloc::vec![None; self.paths.len()];
         self.spare = self.view.take().or_else(|| self.spare.take());

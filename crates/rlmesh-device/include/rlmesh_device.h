@@ -303,6 +303,12 @@ const char* rlmesh_device_refusal_name(uint8_t code);
 /* Chunks refused this attach for the refusal code; 0 for any other. Costlier
  * than the status: call it to report, not every loop. */
 uint64_t rlmesh_device_robot_refusals(const rlmesh_device_robot_t* robot, uint8_t code);
+/* Chunks refused for the refusal code over every attach, this one included;
+ * code 0 counts every reason. */
+uint64_t rlmesh_device_robot_refusals_total(const rlmesh_device_robot_t* robot, uint8_t code);
+/* Attaches the host accepted, in any session: one more each time the robot
+ * joined again. */
+uint32_t rlmesh_device_robot_attaches(const rlmesh_device_robot_t* robot);
 
 /* USB provisioning: the board keeps a device key it makes on
  * first boot (32 random bytes from a cryptographic RNG) and the record the

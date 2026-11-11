@@ -205,7 +205,21 @@ void Robot::printRefusals(Print& out) const {
     uint64_t n = refusals(code);
     if (n != 0) out.printf(" %s %llu", rlmesh_device_refusal_name(code), (unsigned long long)n);
   }
+  out.printf("; %llu over %lu attaches:", (unsigned long long)refusalsTotal(0),
+             (unsigned long)attaches());
+  for (uint8_t code = 1; code <= RLMESH_DEVICE_REFUSALS; ++code) {
+    uint64_t n = refusalsTotal(code);
+    if (n != 0) out.printf(" %s %llu", rlmesh_device_refusal_name(code), (unsigned long long)n);
+  }
   out.println();
+}
+
+uint64_t Robot::refusalsTotal(uint8_t code) const {
+  return robot_ != nullptr ? rlmesh_device_robot_refusals_total(robot_, code) : 0;
+}
+
+uint32_t Robot::attaches() const {
+  return robot_ != nullptr ? rlmesh_device_robot_attaches(robot_) : 0;
 }
 
 uint64_t Robot::dropped(uint8_t what, uint8_t code) const {

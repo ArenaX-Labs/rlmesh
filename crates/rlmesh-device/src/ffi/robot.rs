@@ -1096,6 +1096,37 @@ pub unsafe extern "C" fn rlmesh_device_robot_refusals(robot: *const DeviceRobot,
     refusal(code).map_or(0, |reason| r.robot.refusals(reason))
 }
 
+/// Chunks refused for the refusal `code` over every attach, this one
+/// included; `code` 0 counts every reason, and any other code past them 0.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_refusals_total(
+    robot: *const DeviceRobot,
+    code: u8,
+) -> u64 {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return 0;
+    };
+    if code == 0 {
+        return r.robot.chunks_refused_total();
+    }
+    refusal(code).map_or(0, |reason| r.robot.refusals_total(reason))
+}
+
+/// Attaches the host accepted, in any session: one more each time the robot
+/// joined again.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_attaches(robot: *const DeviceRobot) -> u32 {
+    // SAFETY: per the contract.
+    unsafe { robot.as_ref() }.map_or(0, |r| r.robot.attaches())
+}
+
 /// Where the robot is.
 ///
 /// # Safety
@@ -1337,6 +1368,14 @@ mod tests {
         }
         assert_eq!(
             unsafe { rlmesh_device_robot_refusals(core::ptr::null(), 1) },
+            0
+        );
+        assert_eq!(
+            unsafe { rlmesh_device_robot_refusals_total(core::ptr::null(), 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { rlmesh_device_robot_attaches(core::ptr::null()) },
             0
         );
     }

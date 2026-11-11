@@ -1475,6 +1475,11 @@ async fn a_board_reopens_its_links_and_rejoins_a_restarted_host() {
         })
         .await;
     assert_eq!(board.reconnects, 0, "fault: {:?}", robot.fault());
+    assert_eq!(robot.attaches(), 1);
+    // Bytes that open under no key: a refusal this attach counts.
+    let at = u64::try_from(board.start.elapsed().as_micros()).expect("µs");
+    robot.sample(SUB_COMMANDS, "not/a/chunk", &mut [1, 2, 3], at);
+    assert_eq!(robot.refusals(Rejection::Unauthenticated), 1);
 
     let world = world.restart().await;
     board.sever();
@@ -1489,6 +1494,12 @@ async fn a_board_reopens_its_links_and_rejoins_a_restarted_host() {
         .await;
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
     assert!(board.reconnects >= 1, "it reopened its links");
+    // This attach's refusals start over; the lifetime's are kept.
+    assert_eq!(robot.attaches(), 2);
+    assert_eq!(robot.refusals(Rejection::Unauthenticated), 0);
+    assert_eq!(robot.chunks_refused(), 0);
+    assert_eq!(robot.refusals_total(Rejection::Unauthenticated), 1);
+    assert_eq!(robot.chunks_refused_total(), 1);
     let roster = world.host.snapshot().roster;
     assert!(roster.iter().any(|p| p.id.as_str() == "eyes" && p.present));
 }

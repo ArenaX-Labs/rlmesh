@@ -152,6 +152,11 @@ class Robot {
   // Sealed views taken, signed views taken, and views dropped, over every
   // attach.
   void viewCounts(uint64_t& sealed, uint64_t& signedViews, uint64_t& droppedViews) const;
+  // Chunks refused for one reason over every attach, this one included
+  // (code 0: every reason).
+  uint64_t refusalsTotal(uint8_t code) const;
+  // Attaches the host accepted: one more each time the robot joined again.
+  uint32_t attaches() const;
 
  private:
   bool start(const rlmesh_device_robot_config_t& config);
