@@ -20,7 +20,7 @@ use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::crypto::{Rng, RngError};
 use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listeners};
 use rlmesh_session::wire::{
-    ChannelId, EdgeMode, Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, Role,
+    ChannelId, EdgeMode, Fingerprint, InputRange, Mode, ParticipantId, Plan, PriorityClass, Role,
     SessionId, TenantId,
 };
 use rlmesh_session::{
@@ -196,6 +196,8 @@ struct Seen {
     /// Who the e-stop latch names, while latched.
     latched_by: Option<String>,
     published: u32,
+    /// Samples of the part that actually went out.
+    sent: u32,
 }
 
 /// A board's transport: one session per traffic class, as zenoh-pico opens
@@ -290,7 +292,7 @@ impl Board {
                 }
             }
             for action in robot.poll(now_us()) {
-                self.carry_out(action).await;
+                self.carry_out(action, seen).await;
             }
             let event = tokio::time::timeout(Duration::from_millis(1), self.rx.recv()).await;
             let mut next = match event {
@@ -315,7 +317,7 @@ impl Board {
         }
     }
 
-    async fn carry_out(&mut self, action: Action) {
+    async fn carry_out(&mut self, action: Action, seen: &Arc<Mutex<Seen>>) {
         let class = |c: u8| TrafficClass::ALL[usize::from(c)];
         match action {
             Action::Reset => {
@@ -398,6 +400,9 @@ impl Board {
                 let Some(transport) = &self.transport else {
                     return;
                 };
+                if key.ends_with("/eyes") {
+                    seen.lock().expect("seen").sent += 1;
+                }
                 transport
                     .session(class(c))
                     .put(key, payload)
@@ -956,6 +961,115 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
     run.join().expect("run thread").expect("a clean stop");
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     one.await.expect("board 1");
+}
+
+/// A policy that reads the board's part as an input (latest, below its 50 Hz)
+/// and commands it.
+const READING_POLICY: &str = r#"{
+    "hz": 30,
+    "inputs": {"eyes": {"kind": "joints", "at": "eye-1:eyes"}},
+    "actions": {
+        "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 50,
+                "horizon": 5}
+    }
+}"#;
+
+/// A part bound as a policy's input: the board installs the host's delivery
+/// plan and acknowledges it, so the lease is granted, and then publishes at
+/// the plan's rate rather than its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_policy_reading_a_boards_part_gets_its_lease_and_the_plan_applies() {
+    let world = Arc::new(World::start().await);
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let board = tokio::spawn({
+        let (world, seen, stop) = (world.clone(), seen.clone(), stop.clone());
+        let robot = Robot::new(Config {
+            tenant: world.tenant.clone(),
+            session: world.session,
+            name: ParticipantId::new("eye-1").expect("id"),
+            credential: AddressKey::of(&world.identity).credential(),
+            robot_json: MAP.to_owned(),
+            heartbeat_ms: 50,
+            lobby: false,
+            homes: vec![(world.base.ip().to_string(), world.base.port())],
+            home_id: String::new(),
+        })
+        .expect("a valid map");
+        async move {
+            drive(&world, robot, Duration::from_secs(40), seen, move |_| {
+                stop.load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .await
+        }
+    });
+    let id = ParticipantId::new("eye-1").expect("id");
+    let arm = world.controller().await;
+    let snapshot = arm
+        .wait_for("the board, declared and mapped", WAIT, |s| {
+            s.parts.iter().any(|p| p.owner == id) && s.clock(&id).is_some()
+        })
+        .await
+        .expect("board");
+    let channel = snapshot
+        .parts
+        .iter()
+        .find(|p| p.owner == id)
+        .expect("eyes")
+        .channel;
+    arm.arm().await.expect("arm");
+    let policy = {
+        let mut config = ParticipantConfig::new(
+            world.tenant.clone(),
+            world.session,
+            ParticipantId::new("tracker").expect("id"),
+            vec![Role::Controller],
+            PriorityClass::Model,
+        );
+        config.heartbeat_period = Duration::from_millis(20);
+        config.credential = Some(world.host.credential());
+        let p = Participant::attach(world.transport().await, config)
+            .await
+            .expect("tracker");
+        rlmesh_session::Controller::bind(
+            Arc::new(p),
+            &rlmesh_session::spec::Policy::parse(READING_POLICY).expect("policy"),
+            &rlmesh_session::spec::RunOptions::named("tracker"),
+            rlmesh_session::ControllerConfig::default(),
+        )
+        .await
+        .expect("a binding with an input")
+    };
+    let started = Instant::now();
+    let refused = loop {
+        match policy.acquire().await {
+            Ok(_) => break None,
+            Err(err) if started.elapsed() > WAIT => break Some(err),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    };
+    assert!(refused.is_none(), "never granted: {refused:?}");
+    let demand = world
+        .host
+        .snapshot()
+        .demand(channel)
+        .cloned()
+        .expect("the input's demand");
+    assert_eq!(demand.acked, demand.revision, "{demand:?}");
+    assert_eq!(demand.plan, Plan::Latest { hz: 30.0 });
+
+    // It offers 50 Hz: at most 30 go out, whatever else the machine is doing.
+    let before = seen.lock().expect("seen").sent;
+    let started = Instant::now();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let sent = seen.lock().expect("seen").sent - before;
+    let bound = started.elapsed().as_secs_f64() * 30.0 + 3.0;
+    assert!(
+        f64::from(sent) <= bound && sent > 0,
+        "{sent} samples sent, at most {bound}"
+    );
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    board.await.expect("board");
 }
 
 /// A host restarted under a board that was not: the links are dead and only

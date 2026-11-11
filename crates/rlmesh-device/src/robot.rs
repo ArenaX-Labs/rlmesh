@@ -9,7 +9,9 @@
 //! the state; handshake on `hs`; `Attach` and `DeclareParts` sealed on
 //! `ctl`; then build an edge per command group, subscribe to each part's
 //! commands, and heartbeat. Any failure starts over from the handshake after
-//! [`RETRY_MS`].
+//! [`RETRY_MS`]. While running it installs the delivery plan of each stream
+//! it publishes and acknowledges each revision, as a session's publisher
+//! does: a lease that depends on the stream waits for that.
 //!
 //! Traffic rides the host's per-class sessions (one port each, from the
 //! address's): control on the first, a part's commands and samples on its
@@ -31,9 +33,9 @@ use rlmesh_session_core::lobby::{self, LOBBY_SESSION, Leave, Lobby, WAIT_RETRY};
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session_core::wire::{
-    AuthorityView, ChannelId, ChannelPriority, Command, CtlError, CtlStatus, DeviceView, Epoch,
-    Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode,
-    Role, Sample, SessionId, SessionKeys, TenantId, TimingSample,
+    AuthorityView, ChannelId, ChannelPriority, ClockMode, Command, CtlError, CtlStatus, DeviceView,
+    Epoch, Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, Plan, PriorityClass, Reason,
+    ReasonCode, Role, Sample, SessionId, SessionKeys, TenantId, TimingSample,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -290,6 +292,85 @@ struct Pending {
     tries: u8,
 }
 
+/// At most a rate of samples, with a burst of two so that jitter around the
+/// rate is not decimation. Whole microseconds: a classic ESP32 has no
+/// double-precision unit, and this runs on every sample.
+#[derive(Debug)]
+struct Gate {
+    period_us: u64,
+    credit_us: u64,
+    last_us: Option<u64>,
+}
+
+impl Gate {
+    const BURST: u64 = 2;
+
+    fn new(hz: f64) -> Self {
+        // A cast saturates; the host admits only rates above zero.
+        let period_us = ((1e6 / hz) as u64).max(1);
+        Self {
+            period_us,
+            credit_us: period_us.saturating_mul(Self::BURST),
+            last_us: None,
+        }
+    }
+
+    fn admit(&mut self, now_us: u64) -> bool {
+        if let Some(last) = self.last_us {
+            let earned = self.credit_us.saturating_add(now_us.saturating_sub(last));
+            self.credit_us = earned.min(self.period_us.saturating_mul(Self::BURST));
+        }
+        self.last_us = Some(now_us);
+        let admitted = self.credit_us >= self.period_us;
+        if admitted {
+            self.credit_us -= self.period_us;
+        }
+        admitted
+    }
+}
+
+/// One stream as this robot publishes it.
+#[derive(Debug, Default)]
+struct Outlet {
+    seq: u64,
+    /// The demand revision installed (0: none, the default plan).
+    revision: u64,
+    plan: Option<Plan>,
+    /// The plan's rate, or the `send` ceiling; `None` sends every sample.
+    gate: Option<Gate>,
+}
+
+impl Outlet {
+    /// Installs demand revision `revision` (`None`: no demand). Every plan
+    /// is one a board can follow, since each only limits what is offered;
+    /// a new kind of plan fails to compile here until it is decided.
+    fn install(&mut self, revision: u64, plan: Option<Plan>, ceiling: Option<f64>, fixed: bool) {
+        let rate = match plan {
+            _ if fixed => None,
+            // Compared by hand: `f64::min` is a libm call no firmware links.
+            Some(Plan::Latest { hz }) => Some(ceiling.filter(|c| *c < hz).unwrap_or(hz)),
+            Some(Plan::Every) | None => ceiling,
+        };
+        if self.revision == revision && self.plan == plan && self.gate.is_some() == rate.is_some() {
+            return;
+        }
+        self.revision = revision;
+        self.plan = plan;
+        self.gate = rate.map(Gate::new);
+    }
+
+    /// Whether a sample offered at `now_us` goes out: a coalesced one takes
+    /// no seq, so a gap at a subscriber is still a loss.
+    fn admit(&mut self, now_us: u64) -> bool {
+        self.gate.as_mut().is_none_or(|g| g.admit(now_us))
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
+    }
+}
+
 /// One command group's edge.
 struct Edge {
     core: EdgeCore,
@@ -373,7 +454,8 @@ pub struct Robot {
     edge_of: Vec<Option<usize>>,
     /// Command subscriptions made (they outlive a restart).
     subscribed: Vec<bool>,
-    seqs: BTreeMap<ChannelId, u64>,
+    /// Each stream's seq and delivery plan.
+    seqs: BTreeMap<ChannelId, Outlet>,
     fault: Option<Fault>,
     retry_at: u64,
     next_heartbeat: u64,
@@ -931,12 +1013,14 @@ impl Robot {
             else {
                 continue;
             };
-            let seq = self.seqs.entry(stream.channel).or_insert(0);
-            *seq += 1;
+            let outlet = self.seqs.entry(stream.channel).or_default();
+            if !outlet.admit(now_us) {
+                continue;
+            }
             let sealed = Sample {
                 channel: stream.channel,
                 epoch,
-                seq: *seq,
+                seq: outlet.next_seq(),
                 capture_ns: now,
                 publish_ns: now,
                 tick: 0,
@@ -979,7 +1063,8 @@ impl Robot {
     }
 
     /// Publishes a sample of part `part`: `value` in its dense layout,
-    /// captured at `capture_us` (this board's clock).
+    /// captured at `capture_us` (this board's clock). Under a delivery plan
+    /// that coalesces it, nothing is sent and it still succeeds.
     ///
     /// # Errors
     /// [`PublishError`]: nothing was sent.
@@ -1000,12 +1085,14 @@ impl Robot {
         stream
             .check_payload(value)
             .map_err(|_| PublishError::Invalid)?;
-        let seq = self.seqs.entry(stream.channel).or_insert(0);
-        *seq += 1;
+        let outlet = self.seqs.entry(stream.channel).or_default();
+        if !outlet.admit(now_us) {
+            return Ok(());
+        }
         let sample = Sample {
             channel: stream.channel,
             epoch: self.view.as_ref().map_or(Epoch(0), |s| s.epoch),
-            seq: *seq,
+            seq: outlet.next_seq(),
             capture_ns: ns(capture_us),
             publish_ns: ns(now_us),
             tick: 0,
@@ -1139,6 +1226,49 @@ impl Robot {
         }
         self.view = Some(view);
         self.observed_ns = now;
+        self.sync_demands();
+    }
+
+    /// Installs the view's delivery plan on every stream this robot
+    /// publishes, and acknowledges any revision the host hasn't heard about
+    /// yet. Every view asks again, so an acknowledgement lost with its query
+    /// is sent anew.
+    fn sync_demands(&mut self) {
+        let Some(view) = self.view.as_ref() else {
+            return;
+        };
+        let wall = view.clock_mode == ClockMode::Wall;
+        for part in &self.parts {
+            let streams = [
+                (Some(part.channel), part.send_policy().hz, part.event),
+                (part.applied_channel, None, false),
+            ];
+            for (channel, ceiling, event) in streams {
+                let Some(channel) = channel else {
+                    continue;
+                };
+                let demand = view.demands.iter().find(|d| d.channel == channel);
+                let fixed = event || !wall;
+                self.seqs.entry(channel).or_default().install(
+                    demand.map_or(0, |d| d.revision),
+                    demand.map(|d| d.plan),
+                    ceiling.filter(|_| !fixed),
+                    fixed,
+                );
+                let Some(demand) = demand.filter(|d| d.acked < d.revision) else {
+                    continue;
+                };
+                let ack = Command::DemandAck {
+                    channel,
+                    revision: demand.revision,
+                };
+                let asked = self.queue.contains(&ack)
+                    || self.pending.as_ref().is_some_and(|p| p.command == ack);
+                if !asked {
+                    self.queue.push_back(ack);
+                }
+            }
+        }
     }
 
     fn query(&mut self, class: u8, key: String, payload: Option<Vec<u8>>) -> u32 {
@@ -1348,6 +1478,7 @@ impl Robot {
                 if !self.build_edges() {
                     return self.fail(Fault::Internal, now_us);
                 }
+                self.sync_demands();
                 self.phase = Phase::Running;
                 self.fault = None;
                 self.refused_ms = RETRY_MS;
@@ -1806,5 +1937,49 @@ fn fault_error(fault: &Fault) -> CtlError {
             CtlError::new(CtlStatus::NotPresent, "no reply from the run's host")
         }
         Fault::Internal => CtlError::new(CtlStatus::InvalidRequest, "the robot failed to join"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_gate_admits_its_rate_with_a_burst_of_two() {
+        let mut gate = Gate::new(10.0);
+        let admitted = (0..100_u64).filter(|i| gate.admit(i * 10_000)).count();
+        assert!((10..=12).contains(&admitted), "{admitted} of 100 at 100 Hz");
+        // Jitter around the declared rate is not decimation.
+        let mut gate = Gate::new(30.0);
+        let admitted = (0..300_u64)
+            .filter(|i| gate.admit(i * 33_334 + if i % 2 == 0 { 2_000 } else { 0 }))
+            .count();
+        assert_eq!(admitted, 300);
+    }
+
+    #[test]
+    fn an_outlet_follows_its_plan_within_the_send_ceiling() {
+        let offered =
+            |outlet: &mut Outlet| (0..50_u64).filter(|i| outlet.admit(i * 20_000)).count();
+        // No demand and no ceiling: every sample.
+        let mut outlet = Outlet::default();
+        outlet.install(0, None, None, false);
+        assert_eq!(offered(&mut outlet), 50);
+        // Latest at 10 Hz, from 50 Hz.
+        let mut outlet = Outlet::default();
+        outlet.install(1, Some(Plan::Latest { hz: 10.0 }), None, false);
+        assert!((10..=12).contains(&offered(&mut outlet)));
+        assert_eq!(outlet.revision, 1);
+        // A ceiling below the plan wins, and holds under `every`.
+        let mut outlet = Outlet::default();
+        outlet.install(1, Some(Plan::Latest { hz: 40.0 }), Some(10.0), false);
+        assert!((10..=12).contains(&offered(&mut outlet)));
+        let mut outlet = Outlet::default();
+        outlet.install(2, Some(Plan::Every), Some(10.0), false);
+        assert!((10..=12).contains(&offered(&mut outlet)));
+        // Events and non-wall clocks send every sample, whatever the plan.
+        let mut outlet = Outlet::default();
+        outlet.install(3, Some(Plan::Latest { hz: 1.0 }), None, true);
+        assert_eq!(offered(&mut outlet), 50);
     }
 }
