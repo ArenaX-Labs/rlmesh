@@ -36,21 +36,34 @@
 //!   process stopped returns. A run on a session that is not armed waits
 //!   for it, and says so once each time the session leaves ARMED or ACTIVE
 //!   ([`RunEvent::WaitingToArm`], [`Controller::waiting`]).
+//! - **Rebinding.** A background watcher follows every robot the binding
+//!   reads or commands, and the robots its selectors name. When one comes
+//!   back, restarts, declares its parts again or appears, the controller
+//!   binds the policy again against the session's current parts: a changed
+//!   table is declared (the host re-issues the leases it holds under a fresh
+//!   token, which the keeper takes over without asking again) and the inputs
+//!   are opened afresh, so a restarted publisher's samples are taken from its
+//!   first. An input whose publisher is gone reports it once
+//!   ([`RunEvent::InputLost`]), its skipped starts count as
+//!   `publisher_gone`, and coming back reports [`RunEvent::Rebound`]. If a
+//!   part the binding uses comes back as something the policy cannot bind to,
+//!   the run stops with [`RunError::Rebind`] naming it.
 //!
 //! [`Controller::run`] and [`Controller::send`] block: call them from a
 //! plain thread, not from inside the async runtime.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crate::spec::apply::{ApplyError, Value};
 use crate::spec::policy::ChunkStart;
+use crate::spec::selector::Selector;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, ClockMode, InputRange, Lease, Mode, ParticipantId, Reason,
-    ReasonCode, RunCounters,
+    AuthoritySnapshot, ChannelId, ClockMode, CtlReply, InputRange, Lease, Mode, PartSpec,
+    ParticipantId, Reason, ReasonCode, RunCounters,
 };
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -153,6 +166,11 @@ pub enum RunError<E> {
     /// (`ROBOT_LOST`) or the host's liveliness went away (`HOST_LOST`).
     #[error("the session was lost: {0}")]
     Lost(Reason),
+    /// A part the binding uses came back as something the policy cannot
+    /// bind to (another kind, shape or rate): the part, what changed and
+    /// the binder's refusal. The leases were released.
+    #[error("{0}")]
+    Rebind(String),
 }
 
 /// The model side of [`Controller::run`].
@@ -217,7 +235,71 @@ impl Leases {
             if let LeaseChange::Revoked(reason) = change {
                 let part = snapshot.part_name(channel);
                 info!(participant = %participant.id(), %part, %reason, "lease lost");
-                self.publishers().remove(&channel);
+                // A rebind may have taken the part over under a new token
+                // meanwhile: only a sender of no held token goes.
+                let held = self.group().lease(channel, now).map(|l| l.token);
+                let mut publishers = self.publishers();
+                if publishers
+                    .get(&channel)
+                    .is_some_and(|p| Some(p.token()) != held)
+                {
+                    publishers.remove(&channel);
+                }
+            }
+        }
+    }
+
+    /// Takes over the leases the host re-issued for `binding` when it was
+    /// declared (`state`, the reply): a lease group over its parts holding
+    /// them, and a chunk sender per token. The parts not re-issued are
+    /// left to the keeper.
+    async fn rebind(
+        &self,
+        participant: &Participant,
+        binding: &Binding,
+        state: &AuthoritySnapshot,
+    ) {
+        let _request = self.request.lock().await;
+        let me = participant.id();
+        let channels = binding.channels();
+        let now = participant.clock().now_ns();
+        let estimate = participant.clock_estimate();
+        let mut group = LeaseGroup::new(me, &channels, 0);
+        for lease in state.leases.iter().filter(|l| {
+            &l.holder == me && l.binding == binding.fingerprint && channels.contains(&l.channel)
+        }) {
+            // Sent a full ttl ago: the local deadline is the host expiry's
+            // bound alone, never one this side made up.
+            let ttl = i64::try_from(lease.ttl_ns).unwrap_or(i64::MAX);
+            let _ = group.request_some(&[lease.channel], binding.fingerprint, None, now - ttl);
+            let reply = CtlReply {
+                result: Ok(()),
+                state: state.clone(),
+                leases: vec![lease.clone()],
+                request_id: 0,
+                keys: Vec::new(),
+                assignment: None,
+                run: None,
+            };
+            group.on_reply_some(&[lease.channel], &reply, estimate.as_ref(), now);
+        }
+        let held = group.held(now);
+        *self.group() = group;
+        self.publishers().retain(|channel, p| {
+            held.iter()
+                .any(|l| l.channel == *channel && l.token == p.token())
+        });
+        for lease in &held {
+            if self.publishers().contains_key(&lease.channel) {
+                continue;
+            }
+            match participant.chunk_publisher(lease).await {
+                Ok(publisher) => {
+                    let part = state.part_name(lease.channel);
+                    info!(participant = %me, %part, token = %lease.token, "lease kept across a rebind");
+                    self.publishers().insert(lease.channel, publisher);
+                }
+                Err(err) => warn!(participant = %me, %err, "no chunk sender after a rebind"),
             }
         }
     }
@@ -464,6 +546,510 @@ async fn watch_pending(
     }
 }
 
+/// A binding and the inputs opened for it, swapped together when the
+/// controller binds again.
+struct Bound {
+    binding: Arc<Binding>,
+    inputs: Inputs,
+}
+
+/// One robot a binding reads, commands or names, as the authority state
+/// shows it: present or not, its process (generation) and its parts'
+/// streams.
+#[derive(Clone, Debug, PartialEq)]
+struct Source {
+    present: bool,
+    generation: u32,
+    parts: Vec<(String, ChannelId)>,
+}
+
+impl Source {
+    /// `robot` in `view`; `None` when the session has never heard of it.
+    fn of(view: &AuthoritySnapshot, robot: &ParticipantId) -> Option<Self> {
+        let info = view.participant(robot);
+        let parts: Vec<(String, ChannelId)> = view
+            .parts
+            .iter()
+            .filter(|p| &p.owner == robot)
+            .map(|p| (p.path.to_string(), p.channel))
+            .collect();
+        if info.is_none() && parts.is_empty() {
+            return None;
+        }
+        Some(Self {
+            present: info.is_some_and(|i| i.present),
+            generation: info.map_or(0, |i| i.generation),
+            parts,
+        })
+    }
+}
+
+/// An input whose publisher is gone.
+#[derive(Clone, Debug, PartialEq)]
+struct Gone {
+    entry: String,
+    part: String,
+    why: String,
+}
+
+/// What the watcher knows of the binding's sources.
+#[derive(Default)]
+struct Sources {
+    /// Each watched robot as it was last looked at.
+    seen: BTreeMap<ParticipantId, Option<Source>>,
+    /// The inputs whose publisher is gone.
+    gone: Vec<Gone>,
+    /// Why the binding no longer stands: ends a run.
+    failed: Option<String>,
+}
+
+/// Binds the policy again when its sources change (see the module docs).
+struct Rebinder {
+    policy: Policy,
+    options: RunOptions,
+    bound: Mutex<Arc<Bound>>,
+    sources: Mutex<Sources>,
+}
+
+impl Rebinder {
+    fn bound(&self) -> Arc<Bound> {
+        self.bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn sources(&self) -> MutexGuard<'_, Sources> {
+        self.sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The robots to follow: those `binding` reads or commands, the robots
+    /// the policy's selectors (and the run's `at` overrides) name, and the
+    /// robot it was bound to.
+    fn watched(&self, binding: &Binding) -> BTreeSet<ParticipantId> {
+        let mut robots = BTreeSet::new();
+        robots.insert(binding.robot.clone());
+        robots.extend(binding.places.iter().map(|p| p.robot.clone()));
+        let parts = binding
+            .inputs
+            .iter()
+            .filter_map(|r| r.part.as_ref())
+            .chain(binding.actions.iter().filter_map(|r| r.part.as_ref()));
+        robots.extend(parts.map(|p| p.owner.clone()));
+        let entries = self
+            .policy
+            .inputs
+            .iter()
+            .map(|i| &i.entry)
+            .chain(self.policy.actions.iter().map(|a| &a.entry));
+        for entry in entries {
+            let selector = match self.options.at.get(&entry.name) {
+                Some(path) => Some(Selector::literal(path)),
+                None => entry.at.clone(),
+            };
+            robots.extend(selector.and_then(|s| s.robot));
+        }
+        robots
+    }
+
+    fn look(
+        &self,
+        participant: &Participant,
+        binding: &Binding,
+    ) -> Option<BTreeMap<ParticipantId, Option<Source>>> {
+        let watched = self.watched(binding);
+        participant.authority_view().with(|view| {
+            let view = view?;
+            Some(
+                watched
+                    .into_iter()
+                    .map(|robot| {
+                        let source = Source::of(view, &robot);
+                        (robot, source)
+                    })
+                    .collect(),
+            )
+        })
+    }
+
+    /// Takes the sources as they are now as the ones bound against.
+    fn settle(&self, participant: &Participant) {
+        let bound = self.bound();
+        if let Some(seen) = self.look(participant, &bound.binding) {
+            self.sources().seen = seen;
+        }
+    }
+
+    /// Looks at the sources again: reports inputs whose publisher went away,
+    /// and binds again when one came back, restarted, declared its parts
+    /// again or appeared.
+    async fn check(
+        &self,
+        participant: &Participant,
+        leases: &Leases,
+        events: &Mutex<VecDeque<RunEvent>>,
+    ) {
+        let before = {
+            let sources = self.sources();
+            if sources.failed.is_some() {
+                return;
+            }
+            sources.seen.clone()
+        };
+        let bound = self.bound();
+        let Some(now) = self.look(participant, &bound.binding) else {
+            return;
+        };
+        if now == before {
+            return;
+        }
+        let gone_before = participant.authority_view().with(|v| {
+            v.map(|v| gone_inputs(v, &bound.binding))
+                .unwrap_or_default()
+        });
+        let changed: Vec<ParticipantId> = now
+            .iter()
+            .filter(|(robot, source)| before.get(*robot) != Some(*source))
+            .map(|(robot, _)| robot.clone())
+            .collect();
+        let rebound = match self
+            .rebind(participant, leases, &bound, &before, &now, &changed)
+            .await
+        {
+            Ok(rebound) => rebound,
+            Err(Failed::Transient(err)) => {
+                // Looked at again on the next view.
+                warn!(participant = %participant.id(), %err, "binding again failed; retrying");
+                return;
+            }
+            Err(Failed::Stands(why)) => {
+                warn!(participant = %participant.id(), "{why}");
+                self.sources().failed = Some(why);
+                return;
+            }
+        };
+        let current = self.bound();
+        let gone_now = participant.authority_view().with(|v| {
+            v.map(|v| gone_inputs(v, &current.binding))
+                .unwrap_or_default()
+        });
+        let mut sources = self.sources();
+        sources.seen = now;
+        let reported: Vec<String> = sources.gone.iter().map(|g| g.entry.clone()).collect();
+        // A part declared again in one step is bound again at once: only
+        // what stays gone, or went blank, was lost.
+        for lost in gone_before.iter().filter(|g| !reported.contains(&g.entry)) {
+            let blank = current
+                .binding
+                .input(&lost.entry)
+                .is_some_and(|row| row.part.is_none());
+            if !blank && !gone_now.iter().any(|g| g.entry == lost.entry) {
+                continue;
+            }
+            let meanwhile = if blank {
+                "it reads blank until it is back".to_string()
+            } else {
+                format!(
+                    "starts that need it are skipped ({}) until it is back",
+                    SkipReason::PublisherGone
+                )
+            };
+            push_event(
+                events,
+                RunEvent::InputLost {
+                    part: lost.part.clone(),
+                    message: format!(
+                        "input {:?} lost its publisher: {}; {meanwhile}",
+                        lost.entry, lost.why
+                    ),
+                },
+            );
+        }
+        sources.gone = gone_now;
+        drop(sources);
+        if let Some(event) = rebound {
+            push_event(events, event);
+        }
+    }
+
+    /// Binds the policy against the current parts when a robot it follows
+    /// changed; declares the table when it changed, and opens the inputs
+    /// afresh when a part moved or a robot it reads restarted. The event to
+    /// report, if it bound again.
+    async fn rebind(
+        &self,
+        participant: &Participant,
+        leases: &Leases,
+        bound: &Bound,
+        before: &BTreeMap<ParticipantId, Option<Source>>,
+        now: &BTreeMap<ParticipantId, Option<Source>>,
+        changed: &[ParticipantId],
+    ) -> Result<Option<RunEvent>, Failed> {
+        let old = &bound.binding;
+        let next = match participant.bind(&self.policy, &self.options) {
+            Ok(next) => next,
+            Err(err) if err.waiting_for().is_some() => return Ok(None),
+            Err(err) => {
+                let uses = rows(old).any(|(_, part)| changed.contains(&part.owner));
+                if !uses {
+                    warn!(participant = %participant.id(), %err, "a robot the policy names cannot be bound");
+                    return Ok(None);
+                }
+                let changes = participant.authority_view().with(|view| {
+                    view.map(|view| what_changed(view, old, changed))
+                        .unwrap_or_default()
+                });
+                return Err(Failed::Stands(format!(
+                    "{changes}: policy {} no longer binds, so its run stopped.\n{err}",
+                    self.options.name
+                )));
+            }
+        };
+        // A robot it reads whose process changed: its seqs start over, so
+        // its streams are subscribed afresh.
+        let restarted: Vec<&ParticipantId> = changed
+            .iter()
+            .filter(|robot| {
+                let generation = |s: &BTreeMap<ParticipantId, Option<Source>>| {
+                    s.get(*robot)
+                        .cloned()
+                        .flatten()
+                        .map(|s| (s.present, s.generation))
+                };
+                generation(now).is_some_and(|(present, _)| present)
+                    && generation(before) != generation(now)
+            })
+            .collect();
+        let reads_restarted = rows(&next).any(|(_, part)| restarted.contains(&&part.owner));
+        if next.fingerprint == old.fingerprint && !reads_restarted {
+            return Ok(None);
+        }
+        if next.fingerprint != old.fingerprint {
+            let state = participant
+                .declare_bound(&next)
+                .await
+                .map_err(|err| match err {
+                    SessionError::Rejected(refusal) => Failed::Stands(format!(
+                        "the session refused policy {}'s binding again: {}",
+                        self.options.name, refusal.message
+                    )),
+                    other => Failed::Transient(other),
+                })?;
+            leases.rebind(participant, &next, &state).await;
+        }
+        let inputs = Inputs::open(participant, &next)
+            .await
+            .map_err(Failed::Transient)?;
+        let message = rebound_message(old, &next, &restarted, before);
+        let parts = rebound_parts(old, &next, &restarted);
+        *self
+            .bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(Bound {
+            binding: Arc::new(next),
+            inputs,
+        });
+        info!(participant = %participant.id(), "{message}");
+        Ok((!parts.is_empty()).then_some(RunEvent::Rebound { parts, message }))
+    }
+}
+
+/// Why binding again did not happen.
+enum Failed {
+    /// Tried again on the next view.
+    Transient(SessionError),
+    /// The binding no longer stands.
+    Stands(String),
+}
+
+/// Every part a binding reads or commands, by entry.
+fn rows(binding: &Binding) -> impl Iterator<Item = (&str, &PartSpec)> {
+    binding
+        .inputs
+        .iter()
+        .filter_map(|r| Some((r.entry.as_str(), r.part.as_ref()?)))
+        .chain(
+            binding
+                .actions
+                .iter()
+                .filter_map(|r| Some((r.entry.as_str(), r.part.as_ref()?))),
+        )
+}
+
+/// The inputs of `binding` whose publisher `view` shows gone: absent, or no
+/// longer declaring the part.
+fn gone_inputs(view: &AuthoritySnapshot, binding: &Binding) -> Vec<Gone> {
+    binding
+        .inputs
+        .iter()
+        .filter_map(|row| {
+            let part = row.part.as_ref()?;
+            let owner = &part.owner;
+            let why = match view.participant(owner) {
+                Some(info) if info.present => {
+                    if view.parts.iter().any(|p| p.channel == part.channel) {
+                        return None;
+                    }
+                    format!("{owner} no longer declares {}", part.path)
+                }
+                Some(info) => match &info.left {
+                    Some(reason) => format!("{owner} left the session ({reason})"),
+                    None => format!("{owner} left the session"),
+                },
+                None => format!("{owner} left the session"),
+            };
+            Some(Gone {
+                entry: row.entry.clone(),
+                part: part.qualified(),
+                why,
+            })
+        })
+        .collect()
+}
+
+/// How the parts `old` binds on the `changed` robots differ in `view`:
+/// `robot:path` and what changed, for a refusal.
+fn what_changed(view: &AuthoritySnapshot, old: &Binding, changed: &[ParticipantId]) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut said = Vec::new();
+    for (_, part) in rows(old).filter(|(_, p)| changed.contains(&p.owner)) {
+        if seen.contains(&part.path.as_str()) {
+            continue;
+        }
+        seen.push(part.path.as_str());
+        let now = view
+            .parts
+            .iter()
+            .find(|p| p.owner == part.owner && p.path == part.path);
+        let Some(now) = now else {
+            said.push(format!("{} is no longer declared", part.qualified()));
+            continue;
+        };
+        let mut diffs = Vec::new();
+        if now.kind != part.kind {
+            diffs.push(format!("kind {}, now {}", part.kind, now.kind));
+        }
+        let fields = |p: &PartSpec| -> Vec<String> {
+            p.fields
+                .iter()
+                .map(|f| format!("{} {:?}{:?}", f.name, f.dtype, f.shape))
+                .collect()
+        };
+        if fields(now) != fields(part) {
+            diffs.push(format!(
+                "fields {}, now {}",
+                fields(part).join(", "),
+                fields(now).join(", ")
+            ));
+        }
+        if now.hz.to_bits() != part.hz.to_bits() {
+            diffs.push(format!("{} Hz, now {} Hz", part.hz, now.hz));
+        }
+        if now.names != part.names {
+            diffs.push(format!("names {:?}, now {:?}", part.names, now.names));
+        }
+        if now.command != part.command {
+            diffs.push("its command, changed".into());
+        }
+        if diffs.is_empty() && now.channel != part.channel {
+            diffs.push("declared again".into());
+        }
+        if !diffs.is_empty() {
+            said.push(format!(
+                "{} came back changed ({})",
+                part.qualified(),
+                diffs.join("; ")
+            ));
+        }
+    }
+    if said.is_empty() {
+        let robots: Vec<String> = changed.iter().map(ToString::to_string).collect();
+        return format!("{} declared other parts", robots.join(", "));
+    }
+    said.join("; ")
+}
+
+/// The parts bound again: those that moved to another stream, those a
+/// restarted robot publishes, and the inputs and actions that bound where
+/// they were blank or dropped.
+fn rebound_parts(old: &Binding, next: &Binding, restarted: &[&ParticipantId]) -> Vec<String> {
+    let mut parts = Vec::new();
+    for (entry, part) in rows(next) {
+        let before = rows(old).find(|(e, _)| *e == entry).map(|(_, p)| p);
+        let moved = before.is_none_or(|b| b.channel != part.channel || b.owner != part.owner);
+        if (moved || restarted.contains(&&part.owner)) && !parts.contains(&part.qualified()) {
+            parts.push(part.qualified());
+        }
+    }
+    parts
+}
+
+/// What binding again did, in words.
+fn rebound_message(
+    old: &Binding,
+    next: &Binding,
+    restarted: &[&ParticipantId],
+    before: &BTreeMap<ParticipantId, Option<Source>>,
+) -> String {
+    let mut said = Vec::new();
+    for (entry, part) in rows(next) {
+        let was = rows(old).find(|(e, _)| *e == entry).map(|(_, p)| p);
+        let owner = &part.owner;
+        let line = match was {
+            None => format!(
+                "{entry:?} reads {} now that {owner} is in the session",
+                part.qualified()
+            ),
+            Some(was) if was.channel != part.channel || was.owner != part.owner => {
+                format!(
+                    "{entry:?} is bound again to {}, declared again",
+                    part.qualified()
+                )
+            }
+            Some(_) if restarted.contains(&owner) => {
+                let back = before
+                    .get(owner)
+                    .cloned()
+                    .flatten()
+                    .is_some_and(|s| !s.present);
+                let how = if back { "is back" } else { "restarted" };
+                format!("{entry:?} reads {} again: {owner} {how}", part.qualified())
+            }
+            Some(_) => continue,
+        };
+        said.push(line);
+    }
+    for row in next.inputs.iter().filter(|r| r.part.is_none()) {
+        if old.input(&row.entry).is_some_and(|r| r.part.is_some()) {
+            said.push(format!("{:?} is blank now", row.entry));
+        }
+    }
+    if said.is_empty() {
+        return format!("policy {} bound again", next.policy);
+    }
+    format!("policy {} bound again: {}", next.policy, said.join("; "))
+}
+
+/// Follows the binding's sources until cancelled (see the module docs).
+async fn watch_sources(
+    participant: Arc<Participant>,
+    rebinder: Arc<Rebinder>,
+    leases: Arc<Leases>,
+    events: Arc<Mutex<VecDeque<RunEvent>>>,
+    cancel: CancellationToken,
+) {
+    let mut view = participant.watch();
+    loop {
+        rebinder.check(&participant, &leases, &events).await;
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            changed = view.changed() => if changed.is_err() { return },
+        }
+    }
+}
+
 fn push_event(events: &Mutex<VecDeque<RunEvent>>, event: RunEvent) {
     warn!(%event, "controller");
     let mut events = events
@@ -478,8 +1064,7 @@ fn push_event(events: &Mutex<VecDeque<RunEvent>>, event: RunEvent) {
 /// A bound policy: see the module docs.
 pub struct Controller {
     participant: Arc<Participant>,
-    binding: Binding,
-    inputs: Inputs,
+    rebinder: Arc<Rebinder>,
     leases: Arc<Leases>,
     schedule: Arc<Mutex<StartSchedule>>,
     events: Arc<Mutex<VecDeque<RunEvent>>>,
@@ -546,6 +1131,16 @@ impl Controller {
         };
         participant.declare_bound(&binding).await?;
         let inputs = Inputs::open(&participant, &binding).await?;
+        let rebinder = Arc::new(Rebinder {
+            policy: policy.clone(),
+            options: options.clone(),
+            bound: Mutex::new(Arc::new(Bound {
+                binding: Arc::new(binding.clone()),
+                inputs,
+            })),
+            sources: Mutex::new(Sources::default()),
+        });
+        rebinder.settle(&participant);
         let leases = Arc::new(Leases {
             group: Mutex::new(LeaseGroup::new(participant.id(), &binding.channels(), 0)),
             publishers: Mutex::new(BTreeMap::new()),
@@ -580,11 +1175,17 @@ impl Controller {
                 config.pending_after,
                 cancel.clone(),
             )),
+            tokio::spawn(watch_sources(
+                participant.clone(),
+                rebinder.clone(),
+                leases.clone(),
+                events.clone(),
+                cancel.clone(),
+            )),
         ];
         Ok(Self {
             participant,
-            binding,
-            inputs,
+            rebinder,
             leases,
             schedule,
             events,
@@ -612,9 +1213,10 @@ impl Controller {
         self.participant.clone()
     }
 
-    /// The binding table.
-    pub fn binding(&self) -> &Binding {
-        &self.binding
+    /// The binding table in force (it changes when the controller binds
+    /// again).
+    pub fn binding(&self) -> Arc<Binding> {
+        self.rebinder.bound().binding.clone()
     }
 
     /// The participant.
@@ -626,7 +1228,7 @@ impl Controller {
     /// its plan, and the session time it was taken at.
     pub fn observe(&self) -> Result<(Observation, i64), ObserveError> {
         let now = self.participant.session_now_ns();
-        self.inputs.observe(now).map(|o| (o, now))
+        self.rebinder.bound().inputs.observe(now).map(|o| (o, now))
     }
 
     /// Whether this controller holds every lease its binding commands.
@@ -650,7 +1252,7 @@ impl Controller {
     /// no lease and how to re-arm it, by the authority state: no request to
     /// the host.
     pub fn held_refusals(&self) -> Vec<(ParticipantId, String)> {
-        let channels = self.binding.channels();
+        let channels = self.binding().channels();
         self.participant.authority_view().with(|view| {
             let Some(view) = view else {
                 return Vec::new();
@@ -673,7 +1275,7 @@ impl Controller {
     /// session is not armed: its mode in words. `None` while armed or
     /// active, and for a policy that commands nothing.
     pub fn waiting(&self) -> Option<String> {
-        if self.binding.channels().is_empty() {
+        if self.binding().channels().is_empty() {
             return None;
         }
         let mode = self
@@ -808,17 +1410,18 @@ impl Controller {
         based_on: &[InputRange],
         snapshot_ns: i64,
     ) -> Result<Vec<(String, Sent)>, SendError> {
+        let binding = self.binding();
         if let Some((entry, _)) = values
             .iter()
-            .find(|(entry, _)| self.binding.action(entry).is_none())
+            .find(|(entry, _)| binding.action(entry).is_none())
         {
             return Err(SendError::Value(format!(
                 "{entry:?} is not an action of this policy (its actions: {})",
-                self.action_names()
+                action_names(&binding)
             )));
         }
-        let mut sent = Vec::with_capacity(self.binding.actions.len());
-        for row in &self.binding.actions {
+        let mut sent = Vec::with_capacity(binding.actions.len());
+        for row in &binding.actions {
             let Some(part) = &row.part else {
                 sent.push((row.entry.clone(), Sent::Dropped));
                 continue;
@@ -872,20 +1475,6 @@ impl Controller {
         Ok(sent)
     }
 
-    fn action_names(&self) -> String {
-        let names: Vec<String> = self
-            .binding
-            .actions
-            .iter()
-            .map(|a| format!("{:?}", a.entry))
-            .collect();
-        if names.is_empty() {
-            "none".into()
-        } else {
-            names.join(", ")
-        }
-    }
-
     /// Runs the policy loop until [`Self::stop`], `duration`, or a
     /// failure, then gives the leases back. Blocks the calling thread,
     /// which is where `predict` runs.
@@ -900,7 +1489,6 @@ impl Controller {
         let now = || clock.now_ns();
         let end =
             duration.map(|d| now().saturating_add(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)));
-        let commands = !self.binding.channels().is_empty();
         let mut recovered_at: Option<i64> = None;
         let mut clock_refused = Vec::new();
         let mut held = Vec::new();
@@ -911,7 +1499,7 @@ impl Controller {
             .authority_view()
             .with(|v| v.is_none_or(|v| v.clock_mode == ClockMode::Wall));
         let mut phase = if wall {
-            PhaseAlign::for_binding(&self.binding)
+            PhaseAlign::for_binding(&self.binding())
         } else {
             None
         };
@@ -928,6 +1516,9 @@ impl Controller {
                     break Ok(());
                 }
                 break Err(RunError::Lost(reason));
+            }
+            if let Some(why) = self.rebinder.sources().failed.clone() {
+                break Err(RunError::Rebind(why));
             }
             self.report_waiting(&mut waiting);
             let off = offset(&phase);
@@ -949,7 +1540,7 @@ impl Controller {
             let (observation, snapshot_ns) = match self.observe() {
                 Ok(observed) => observed,
                 Err(ObserveError::Skipped(skip)) => {
-                    let reason = skip.reason();
+                    let reason = self.skip_reason(&skip);
                     self.skip(t - off, reason);
                     // A gap inside a window: ask the host's store to fill it
                     // (recovery), at most every 100 ms.
@@ -957,9 +1548,10 @@ impl Controller {
                         && recovered_at.is_none_or(|at| t - at >= RECOVER_GAP_NS)
                     {
                         recovered_at = Some(t);
+                        let bound = self.rebinder.bound();
                         match self
                             .runtime
-                            .block_on(self.inputs.recover(&self.participant))
+                            .block_on(bound.inputs.recover(&self.participant))
                         {
                             Ok(n) => debug!(samples = n, "window gap recovery"),
                             Err(err) => warn!(%err, "window gap recovery failed"),
@@ -982,6 +1574,7 @@ impl Controller {
             self.report_held(&mut held);
             // Any lease held is enough: a robot that is gone or stopped on
             // its own never starves the others (its actions go unsent).
+            let commands = self.binding().actions.iter().any(|a| a.part.is_some());
             if commands && !self.holds_any() {
                 self.skip(t - off, SkipReason::NoLease);
                 if let Some(phase) = phase.as_mut() {
@@ -1039,7 +1632,7 @@ impl Controller {
                 if let Some(scene) = &view.scene {
                     return scene.closing.clone();
                 }
-                let robot = view.participant(&self.binding.robot)?;
+                let robot = view.participant(&self.binding().robot)?;
                 (!robot.present).then(|| robot.left.clone().unwrap_or_default())
             })
         })
@@ -1067,6 +1660,22 @@ impl Controller {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Why a start is skipped: `publisher_gone` when an input it waits for
+    /// or finds stale has no publisher any more.
+    fn skip_reason(&self, skip: &crate::cache::Skip) -> SkipReason {
+        let reason = skip.reason();
+        if reason == SkipReason::WindowGap {
+            return reason;
+        }
+        let sources = self.rebinder.sources();
+        let gone = |entry: &String| sources.gone.iter().any(|g| &g.entry == entry);
+        if skip.waiting.iter().chain(&skip.stale).any(gone) {
+            SkipReason::PublisherGone
+        } else {
+            reason
+        }
+    }
+
     fn skip(&self, now_ns: i64, reason: SkipReason) {
         let event = self.schedule().skip(now_ns, reason);
         if let Some(event) = event {
@@ -1087,8 +1696,9 @@ impl Controller {
     }
 
     /// The input the run loop's starts are aligned to, if any.
-    pub fn aligned_input(&self) -> Option<&str> {
-        PhaseAlign::input(&self.binding).map(|i| self.binding.inputs[i].entry.as_str())
+    pub fn aligned_input(&self) -> Option<String> {
+        let binding = self.binding();
+        PhaseAlign::input(&binding).map(|i| binding.inputs[i].entry.clone())
     }
 
     /// The start and completion counters.
@@ -1111,6 +1721,19 @@ impl Drop for Controller {
     fn drop(&mut self) {
         self.participant.set_run_source(None);
         self.cancel.cancel();
+    }
+}
+
+fn action_names(binding: &Binding) -> String {
+    let names: Vec<String> = binding
+        .actions
+        .iter()
+        .map(|a| format!("{:?}", a.entry))
+        .collect();
+    if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(", ")
     }
 }
 

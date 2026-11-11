@@ -10,8 +10,10 @@
 //!   Overdue starts are never accumulated or replayed in a burst.
 //! - **Skipped starts** keep their reason: `waiting_for` (an input never
 //!   received in this epoch), `stale_input`, `window_gap`, `decode` (a
-//!   sample did not decode or fit its plan) and `no_lease` (a standby, or
-//!   a preempted controller: its inputs stay warm, `predict` does not run).
+//!   sample did not decode or fit its plan), `no_lease` (a standby, or
+//!   a preempted controller: its inputs stay warm, `predict` does not run)
+//!   and `publisher_gone` (an input's publisher left the session or
+//!   withdrew the part, until it is back).
 //! - **`rate_drift`** (scope `policy`): the completion rate over a window of
 //!   `max(1 s, 4 / R)`, counting silent intervals, outside `[0.8, 1.25] × R`,
 //!   with hysteresis (one event per transition). It is suppressed until the
@@ -56,17 +58,21 @@ pub enum SkipReason {
     Decode,
     /// The controller does not hold its leases (a standby, or preempted).
     NoLease,
+    /// A required input's publisher is gone: it left the session, or no
+    /// longer declares the part (`publisher_gone`).
+    PublisherGone,
 }
 
 impl SkipReason {
     /// Every reason, in report order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Busy,
         Self::Waiting,
         Self::StaleInput,
         Self::WindowGap,
         Self::Decode,
         Self::NoLease,
+        Self::PublisherGone,
     ];
 
     /// The report name (`busy_skip`, `waiting_for`, ...).
@@ -78,6 +84,7 @@ impl SkipReason {
             Self::WindowGap => "window_gap",
             Self::Decode => "decode",
             Self::NoLease => "no_lease",
+            Self::PublisherGone => "publisher_gone",
         }
     }
 
@@ -97,6 +104,7 @@ impl SkipReason {
             Self::WindowGap => 3,
             Self::Decode => 4,
             Self::NoLease => 5,
+            Self::PublisherGone => 6,
         }
     }
 }
@@ -145,6 +153,23 @@ pub enum RunEvent {
         /// The session's mode, and what the run waits for.
         message: String,
     },
+    /// A bound input's publisher went away: it left the session, or no
+    /// longer declares the part.
+    InputLost {
+        /// The input's part, `robot:path`.
+        part: String,
+        /// What happened, and what the run does meanwhile.
+        message: String,
+    },
+    /// The controller bound again against the session's current parts: an
+    /// input's publisher came back or restarted, or a blank input's
+    /// publisher appeared.
+    Rebound {
+        /// The parts bound again, `robot:path`.
+        parts: Vec<String>,
+        /// What changed.
+        message: String,
+    },
 }
 
 impl fmt::Display for RunEvent {
@@ -172,7 +197,9 @@ impl fmt::Display for RunEvent {
             }
             Self::RobotHeld { message }
             | Self::ClockRefused { message }
-            | Self::WaitingToArm { message } => f.write_str(message),
+            | Self::WaitingToArm { message }
+            | Self::InputLost { message, .. }
+            | Self::Rebound { message, .. } => f.write_str(message),
         }
     }
 }
@@ -185,7 +212,7 @@ pub struct RunStats {
     /// `predict` calls completed.
     pub completions: u64,
     /// Slots skipped, by reason ([`SkipReason::ALL`] order).
-    pub skipped: [u64; 6],
+    pub skipped: [u64; SkipReason::ALL.len()],
     /// Chunks sent.
     pub chunks_sent: u64,
     /// Chunks that could not be packed or sent.
@@ -410,7 +437,7 @@ impl StartSchedule {
     }
 
     fn dominant_cause(&self) -> &'static str {
-        let mut counts = [0_u64; 6];
+        let mut counts = [0_u64; SkipReason::ALL.len()];
         for (_, reason) in &self.skips {
             counts[reason.index()] += 1;
         }
@@ -659,7 +686,9 @@ mod tests {
                 RunEvent::InferencePending { .. } => (false, "pending"),
                 RunEvent::RobotHeld { .. }
                 | RunEvent::ClockRefused { .. }
-                | RunEvent::WaitingToArm { .. } => (false, "other"),
+                | RunEvent::WaitingToArm { .. }
+                | RunEvent::InputLost { .. }
+                | RunEvent::Rebound { .. } => (false, "other"),
             })
             .collect();
         assert_eq!(drift.len(), 2, "one event per transition: {events:?}");

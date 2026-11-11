@@ -1252,7 +1252,7 @@ fn run_stats(controller: &Controller) -> RunStats {
     let stats = controller.stats();
     let ms = |d: Option<Duration>| d.map(|d| d.as_secs_f64() * 1e3);
     RunStats {
-        aligned_to: controller.aligned_input().map(str::to_string),
+        aligned_to: controller.aligned_input(),
         phase_offset_ms: controller.phase_offset().as_secs_f64() * 1e3,
         starts: seq(stats.starts),
         completions: seq(stats.completions),
@@ -1581,6 +1581,7 @@ impl NativePolicy {
                 &[("reason", format!("{:?}", sdk::reason_name(reason.code)))],
                 format!("the session was lost: {reason}"),
             )),
+            Ok(Err(RunError::Rebind(why))) => Err(binding_refused(why)),
             Err(join) => Err(exception(format!("the run loop failed: {join}"))),
         }
     }
@@ -1656,6 +1657,8 @@ impl NativePolicy {
                     RunEvent::RobotHeld { .. } => info.kind = "robot_held".into(),
                     RunEvent::ClockRefused { .. } => info.kind = "clock_refused".into(),
                     RunEvent::WaitingToArm { .. } => info.kind = "waiting_to_arm".into(),
+                    RunEvent::InputLost { .. } => info.kind = "input_lost".into(),
+                    RunEvent::Rebound { .. } => info.kind = "rebound".into(),
                 }
                 info
             })

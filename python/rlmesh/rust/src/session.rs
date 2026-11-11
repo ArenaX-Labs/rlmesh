@@ -1578,6 +1578,16 @@ impl PyController {
             Err(RunError::Predict(err)) => Err(err),
             Err(RunError::Send(err)) => Err(send_err(err)),
             Err(err @ RunError::Lost(_)) => Err(lost_err(&err)),
+            Err(RunError::Rebind(why)) => Err(Python::attach(|py| {
+                let err = BindingRefused::new_err(why);
+                match err
+                    .value(py)
+                    .setattr("problems", Vec::<(String, String, String)>::new())
+                {
+                    Ok(()) => err,
+                    Err(set) => set,
+                }
+            })),
         }
     }
 
@@ -1652,6 +1662,14 @@ impl PyController {
                 RunEvent::RobotHeld { .. } => d.set_item("kind", "robot_held")?,
                 RunEvent::ClockRefused { .. } => d.set_item("kind", "clock_refused")?,
                 RunEvent::WaitingToArm { .. } => d.set_item("kind", "waiting_to_arm")?,
+                RunEvent::InputLost { part, .. } => {
+                    d.set_item("kind", "input_lost")?;
+                    d.set_item("part", part)?;
+                }
+                RunEvent::Rebound { parts, .. } => {
+                    d.set_item("kind", "rebound")?;
+                    d.set_item("parts", parts)?;
+                }
             }
             list.append(d)?;
         }

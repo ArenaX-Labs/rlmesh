@@ -894,6 +894,13 @@ class Policy:
         On a session that is not armed it waits for an operator to arm it,
         commanding nothing: it warns once each time (a ``waiting_to_arm``
         event), and :meth:`stats` says so under ``waiting``.
+
+        When an input's publisher goes away (an ``input_lost`` event) the
+        starts that need it are skipped as ``publisher_gone``; when it comes
+        back, restarts or declares its parts again, the policy binds again on
+        its own (a ``rebound`` event) and keeps the leases it holds. A part
+        that comes back as something the policy cannot read raises
+        :class:`BindingRefused`, naming it and what changed.
         """
         native = self._bound()
 
@@ -925,7 +932,7 @@ class Policy:
         return self._bound().held
 
     def events(self) -> list[dict[str, Any]]:
-        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``."""
+        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``, ``input_lost`` (with ``part``), ``rebound`` (with ``parts``)."""
         return self._bound().events()
 
     def close(self) -> None:

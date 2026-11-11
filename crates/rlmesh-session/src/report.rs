@@ -38,7 +38,9 @@ pub fn run_counters(stats: &RunStats, pending: Option<Duration>) -> RunCounters 
         starts: stats.starts,
         completions: stats.completions,
         busy_skips: stats.skipped(SkipReason::Busy),
-        waiting_for: stats.skipped(SkipReason::Waiting),
+        // The wire has no counter of its own for a gone publisher: its
+        // starts wait for the input, as `waiting_for`.
+        waiting_for: stats.skipped(SkipReason::Waiting) + stats.skipped(SkipReason::PublisherGone),
         stale_input: stats.skipped(SkipReason::StaleInput),
         window_gap: stats.skipped(SkipReason::WindowGap),
         decode: stats.skipped(SkipReason::Decode),
@@ -130,7 +132,7 @@ mod tests {
             drifting: true,
             ..RunStats::default()
         };
-        stats.skipped = [3, 2, 1, 4, 0, 6];
+        stats.skipped = [3, 2, 1, 4, 0, 6, 0];
         let c = run_counters(&stats, Some(Duration::from_secs(2)));
         assert_eq!((c.starts, c.completions, c.chunks_sent), (10, 9, 9));
         assert_eq!(
