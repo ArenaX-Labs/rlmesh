@@ -89,3 +89,75 @@ fn a_virtual_session_ticks_through_the_barrier() {
         CtlStatus::Unsupported
     );
 }
+
+/// A virtual session, armed: `robot`, and `policy` bound to `cmd1` at
+/// `replan_hz`.
+fn armed_at(replan_hz: f64) -> Fixture {
+    let mut auth = Authority::new(
+        SessionId::new(),
+        AuthorityConfig {
+            virtual_clock: Some(VirtualConfig::default()),
+            ..AuthorityConfig::default()
+        },
+    );
+    for (id, roles, priority) in [
+        ("robot", vec![Role::Embodiment], PriorityClass::Scripted),
+        ("policy", vec![Role::Controller], PriorityClass::Model),
+    ] {
+        auth.apply(
+            Request {
+                from: pid(id),
+                epoch: None,
+                request_id: 0,
+                command: attach(id, roles, priority),
+            },
+            0,
+        )
+        .expect("attach");
+    }
+    let mut f = Fixture { auth };
+    f.run("robot", declare(&robot_map("")), 0).expect("declare");
+    let channels = vec![f.ch("cmd1")];
+    f.run(
+        "policy",
+        Command::DeclareBinding {
+            fingerprint: Fingerprint::from(5),
+            revision: 1,
+            table_json: "{}".into(),
+            channels,
+            replan_hz,
+            contracts: Vec::new(),
+            grids: Vec::new(),
+        },
+        0,
+    )
+    .expect("bind");
+    f.run("policy", Command::Arm, 0).expect("arm");
+    f
+}
+
+fn ready_first_tick(f: &mut Fixture) {
+    let ready = Command::Ready {
+        tick: 0,
+        watermarks: Vec::new(),
+    };
+    f.run("robot", ready, 1).expect("ready");
+}
+
+#[test]
+fn a_controller_that_never_replans_is_not_due() {
+    let mut f = armed_at(0.0);
+    ready_first_tick(&mut f);
+    let ticks = f.auth.take_ticks();
+    assert!(matches!(ticks.first(), Some(VirtualTick::Observe(s)) if s.due.is_empty()));
+}
+
+#[test]
+fn a_controller_that_leaves_stops_holding_up_the_barrier() {
+    let mut f = armed_at(500.0);
+    ready_first_tick(&mut f);
+    let ticks = f.auth.take_ticks();
+    assert!(matches!(ticks.as_slice(), [VirtualTick::Observe(s)] if s.due == [pid("policy")]));
+    f.auth.participant_lost(&pid("policy"), 2);
+    assert!(matches!(f.auth.take_ticks().as_slice(), [VirtualTick::Step(s)] if s.tick == 0));
+}
