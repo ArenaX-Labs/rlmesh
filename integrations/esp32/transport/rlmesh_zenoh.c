@@ -373,10 +373,9 @@ static int publish(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   rlmesh_txq_item_t* t = rlmesh_txq_item(a->class_, a->key, a->payload, a->payload_len);
   if (t == NULL) return -1;
   z_mutex_lock(z_loan_mut(z->lock));
-  bool idle = z->txq.head == NULL;
   bool queued = rlmesh_txq_push(&z->txq, t);
-  if (idle && queued) z_condvar_signal(z_loan_mut(z->tx_wake));
   z_mutex_unlock(z_loan_mut(z->lock));
+  /* rlmesh_zenoh_poll wakes the send task once it has queued them all. */
   return queued ? 0 : -1;
 }
 
@@ -636,6 +635,11 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
     z_mutex_unlock(z_loan_mut(z->net));
     if (done != 0) count_failed(z);
   }
+  /* One wake for everything this poll queued: a tick's samples leave in one
+   * write. */
+  z_mutex_lock(z_loan_mut(z->lock));
+  if (z->txq.head != NULL) z_condvar_signal(z_loan_mut(z->tx_wake));
+  z_mutex_unlock(z_loan_mut(z->lock));
   return rc < 0 ? rc : 0;
 }
 

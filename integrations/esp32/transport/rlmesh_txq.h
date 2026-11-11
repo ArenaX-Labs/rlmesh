@@ -1,8 +1,11 @@
-/* The transport's queue of publications waiting for its send task: bounded in
- * bytes, and when a slow link fills it, the oldest publication on the same key
- * expression goes first (a stream's newer sample supersedes it), else the
- * oldest of all. It never grows past its bound, however long the link stalls.
- * Not locked: the transport holds its lock around every call. */
+/* The transport's queue of publications waiting for its send task, in two
+ * lanes. A sample (any class but control) is latest-wins per key expression: a
+ * newer one replaces the one waiting, so a slow link lowers a stream's rate
+ * instead of queueing it. Control publications (heartbeats) queue in order and
+ * go first. Bounded in bytes: past the bound the oldest sample goes, and only
+ * when no sample is left the oldest control publication. It never grows past
+ * its bound, however long the link stalls. Not locked: the transport holds its
+ * lock around every call. */
 
 #ifndef RLMESH_TXQ_H_
 #define RLMESH_TXQ_H_
@@ -65,15 +68,27 @@ static inline void rlmesh_txq_drop_after(rlmesh_txq_t* q, rlmesh_txq_item_t* pre
   free(t);
 }
 
-/* Takes `t`, which the queue then owns. While over its bound, drops the oldest
- * other publication on `t`'s key, else the oldest of all. False when `t` alone
- * is over the bound (then dropped). */
+/* The class whose publications are never replaced or dropped for a sample. */
+#define RLMESH_TXQ_CONTROL 0
+
+/* Takes `t`, which the queue then owns: a sample replaces the one waiting on
+ * its key. While over the bound, drops the oldest sample, else the oldest
+ * control publication (never `t`). False when `t` alone is over the bound
+ * (then dropped). */
 static inline bool rlmesh_txq_push(rlmesh_txq_t* q, rlmesh_txq_item_t* t) {
   size_t size = rlmesh_txq_size(t);
   if (size > q->cap) {
     free(t);
     q->dropped++;
     return false;
+  }
+  if (t->class_ != RLMESH_TXQ_CONTROL) {
+    for (rlmesh_txq_item_t *p = NULL, *i = q->head; i != NULL; p = i, i = i->next) {
+      if (i->class_ == t->class_ && strcmp((const char*)i->data, (const char*)t->data) == 0) {
+        rlmesh_txq_drop_after(q, p);
+        break;
+      }
+    }
   }
   if (q->tail == NULL) {
     q->head = q->tail = t;
@@ -84,16 +99,16 @@ static inline bool rlmesh_txq_push(rlmesh_txq_t* q, rlmesh_txq_item_t* t) {
   q->bytes += size;
   while (q->bytes > q->cap) {
     rlmesh_txq_item_t* prev = NULL;
-    rlmesh_txq_item_t* same = NULL;
+    rlmesh_txq_item_t* sample = NULL;
     for (rlmesh_txq_item_t *p = NULL, *i = q->head; i != t; p = i, i = i->next) {
-      if (strcmp((const char*)i->data, (const char*)t->data) == 0) {
+      if (i->class_ != RLMESH_TXQ_CONTROL) {
         prev = p;
-        same = i;
+        sample = i;
         break;
       }
     }
-    /* None on its key: the oldest goes (never `t`, the newest). */
-    rlmesh_txq_drop_after(q, same != NULL ? prev : NULL);
+    /* No sample left: the oldest control publication (never `t`). */
+    rlmesh_txq_drop_after(q, sample != NULL ? prev : NULL);
   }
   return true;
 }
