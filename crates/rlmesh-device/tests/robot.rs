@@ -194,13 +194,28 @@ impl World {
 
     /// A host that knows `devices` besides `local`.
     async fn start_with(devices: Vec<Device>) -> Self {
+        Self::start_configured(|config| config.devices = devices).await
+    }
+
+    /// A host that signs device views and seals none, as one from before
+    /// sealed views.
+    async fn start_unsealed() -> Self {
+        Self::start_configured(|config| {
+            config
+                .supports
+                .retain(|f| f != rlmesh_session::wire::version::VIEW_DEVICE_SEALED);
+        })
+        .await
+    }
+
+    async fn start_configured(configure: impl FnOnce(&mut HostConfig)) -> Self {
         let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
             .await
             .expect("host transport");
         let tenant = TenantId::new("test").expect("tenant");
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);
-        config.devices = devices;
+        configure(&mut config);
         let identity = config.identity.clone();
         let host = SessionHost::start(transport, config).await.expect("host");
         Self {
@@ -343,7 +358,8 @@ struct Board {
     checks: u32,
     checks_after_sealed: u32,
     /// Sealed views never reach the robot, as from a host that doesn't seal.
-    drop_sealed: bool,
+    /// Signed views that arrived after the first sealed one.
+    signed_after_sealed: u32,
     /// The first sealed view that arrived, kept for a replay.
     first_sealed: Option<(String, Vec<u8>)>,
     /// The last sealed view that arrived.
@@ -387,7 +403,7 @@ impl Board {
             forge_next_view: false,
             checks: 0,
             checks_after_sealed: 0,
-            drop_sealed: false,
+            signed_after_sealed: 0,
             first_sealed: None,
             last_sealed: None,
             taken: Arc::default(),
@@ -486,18 +502,17 @@ impl Board {
                     Event::Sample(SUB_KEYS, ..)
                         if self.drop_keys.load(std::sync::atomic::Ordering::Relaxed) => {}
                     Event::Sample(sub, key, mut bytes) => {
+                        if sub == SUB_VIEW && self.first_sealed.is_some() {
+                            self.signed_after_sealed += 1;
+                        }
                         if sub == SUB_VIEW_SEALED {
-                            if self.drop_sealed {
-                                // A host that doesn't seal.
-                            } else {
-                                if self.first_sealed.is_none() {
-                                    self.first_sealed = Some((key.clone(), bytes.clone()));
-                                }
-                                self.last_sealed = Some((key.clone(), bytes.clone()));
-                                self.take(Took::SealedView, || {
-                                    robot.sample(sub, &key, &mut bytes, now_us());
-                                });
+                            if self.first_sealed.is_none() {
+                                self.first_sealed = Some((key.clone(), bytes.clone()));
                             }
+                            self.last_sealed = Some((key.clone(), bytes.clone()));
+                            self.take(Took::SealedView, || {
+                                robot.sample(sub, &key, &mut bytes, now_us());
+                            });
                         } else if self.check_views && sub == SUB_VIEW {
                             self.check_view(robot, &key, bytes, now_us());
                         } else if sub == SUB_VIEW {
@@ -750,12 +765,11 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_board_takes_views_checked_on_another_task_and_never_a_forged_one() {
-    let world = World::start().await;
+    // Signed views only, as from a host that doesn't seal them.
+    let world = World::start_unsealed().await;
     let mut robot = world.robot(AddressKey::of(&world.identity));
     let mut board = Board::open(&world).await;
     board.check_views = true;
-    // Signed views only, as from a host that doesn't seal them.
-    board.drop_sealed = true;
     let seen = Arc::default();
     board
         .run(&mut robot, Duration::from_secs(10), &seen, |r| {
@@ -837,6 +851,10 @@ async fn a_board_takes_sealed_views_and_checks_no_signature_after_the_first() {
         "no signature check after the first sealed view ({} before)",
         board.checks
     );
+    assert_eq!(
+        board.signed_after_sealed, 0,
+        "no signed view sent once it takes sealed ones"
+    );
 
     // The first sealed view again: a replay, refused and counted.
     let (key, mut first) = board.first_sealed.clone().expect("a sealed view");
@@ -848,11 +866,10 @@ async fn a_board_takes_sealed_views_and_checks_no_signature_after_the_first() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_board_falls_back_to_signed_views_from_a_host_that_doesnt_seal() {
-    let world = World::start().await;
+    let world = World::start_unsealed().await;
     let mut robot = world.robot(AddressKey::of(&world.identity));
     let mut board = Board::open(&world).await;
     board.check_views = true;
-    board.drop_sealed = true;
     let seen = Arc::default();
     board
         .run(&mut robot, Duration::from_secs(15), &seen, |r| {

@@ -107,16 +107,14 @@ impl HostActor {
     /// The views of every robot that asked for one whose content changed
     /// since the last published (a renewal moves a lease's expiry, a
     /// heartbeat its robot's clock mapping, so one dropped for a congested
-    /// link is soon replaced), signed. A change that only refines the last
+    /// link is soon replaced), sealed for a robot that asked for that
+    /// ([`Self::send_views`] signs the rest). A change that only refines the last
     /// one sent ([`refines`]) waits until that one is a quarter of the lease
     /// grace old: a board decodes every view on its control loop, and a
     /// renewal or a clock estimate lands on nearly every publish. Anything
     /// else (a lease granted or ended, a mode, a member, a plan) goes at
     /// once.
-    fn views_due(
-        &mut self,
-        snapshot: &AuthoritySnapshot,
-    ) -> Vec<(ParticipantId, Vec<u8>, Option<Vec<u8>>)> {
+    fn views_due(&mut self, snapshot: &AuthoritySnapshot) -> Vec<(DeviceView, Option<Vec<u8>>)> {
         self.views.retain(|robot, _| asks_for_view(snapshot, robot));
         let refine = self.refine_ns();
         let mut due = Vec::new();
@@ -137,13 +135,11 @@ impl HostActor {
             if wait {
                 continue;
             }
-            if let Some(signed) = self.sign_view(&view) {
-                let sealed = asks_for_sealed_view(snapshot, robot)
-                    .then(|| self.seal_view(&view))
-                    .flatten();
-                due.push((robot.clone(), signed, sealed));
-                self.views.insert(robot.clone(), view);
-            }
+            let sealed = asks_for_sealed_view(snapshot, robot)
+                .then(|| self.seal_view(&view))
+                .flatten();
+            self.views.insert(robot.clone(), view.clone());
+            due.push((view, sealed));
         }
         due
     }
@@ -277,8 +273,14 @@ impl HostActor {
         self.send_views(views).await;
     }
 
-    async fn send_views(&mut self, views: Vec<(ParticipantId, Vec<u8>, Option<Vec<u8>>)>) {
-        for (robot, signed, sealed) in views {
+    /// Publishes each view: sealed to a robot that asked for that, and
+    /// otherwise signed on its `host/view/{robot}`, which only that robot
+    /// subscribes to. A robot that takes sealed views drops signed ones
+    /// unread, so it gets the signed view only when the sealed one could
+    /// not be sent (its generation not in effect yet, or a failed put).
+    async fn send_views(&mut self, views: Vec<(DeviceView, Option<Vec<u8>>)>) {
+        for (view, sealed) in views {
+            let robot = view.robot.clone();
             if let Some(sealed) = sealed {
                 let sent = self
                     .transport
@@ -288,10 +290,15 @@ impl HostActor {
                     .congestion_control(RESENT_CONGESTION)
                     .express(true)
                     .await;
-                if let Err(err) = sent {
-                    warn!(%robot, %err, "sealed device view publish failed");
+                match sent {
+                    Ok(()) => continue,
+                    Err(err) => warn!(%robot, %err, "sealed device view publish failed"),
                 }
             }
+            let Some(signed) = self.sign_view(&view) else {
+                self.views.remove(&robot);
+                continue;
+            };
             let sent = self
                 .transport
                 .control()
@@ -359,9 +366,11 @@ pub(super) fn view_of(
 }
 
 /// Whether `robot` also asked for its view sealed under its `k_down`
-/// ([`VIEW_DEVICE_SEALED`]).
+/// ([`VIEW_DEVICE_SEALED`]), from a host that lists sealed views among its
+/// features.
 pub(super) fn asks_for_sealed_view(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> bool {
-    asks_for_view(snapshot, robot)
+    snapshot.supports.iter().any(|f| f == VIEW_DEVICE_SEALED)
+        && asks_for_view(snapshot, robot)
         && snapshot
             .participant(robot)
             .is_some_and(|p| p.supports.iter().any(|f| f == VIEW_DEVICE_SEALED))
