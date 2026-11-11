@@ -13,7 +13,7 @@ use bytes::Bytes;
 #[cfg(not(feature = "fleet"))]
 use rlmesh_device::provision::Record;
 use rlmesh_device::robot::{
-    Action, Config, Fault, Phase, Robot, SUB_COMMANDS, SUB_VIEW, SUB_VIEW_SEALED,
+    Action, Config, Fault, Phase, Robot, SUB_COMMANDS, SUB_KEYS, SUB_VIEW, SUB_VIEW_SEALED,
 };
 use rlmesh_session::address::AddressKey;
 use rlmesh_session::auth::{Credential, Device, HostIdentity};
@@ -39,6 +39,97 @@ const WAIT: Duration = Duration::from_secs(10);
 /// zenoh-pico reassembles a message in 4096 bytes (`Z_FRAG_MAX_SIZE`, as
 /// boards are built) and drops a larger one without a word.
 const PICO_MESSAGE: usize = 4096;
+
+/// The system allocator, counting what the calling thread allocates while
+/// [`counted`] runs: a board's heap, as one receive spends it.
+struct Counting;
+
+/// What one counted call allocated.
+#[derive(Clone, Copy, Debug, Default)]
+struct Allocs {
+    /// Allocations and reallocations made.
+    count: u32,
+    /// Bytes they asked for.
+    bytes: usize,
+    /// The largest single request.
+    largest: usize,
+    /// The most held at once beyond what was held before.
+    peak: usize,
+    live: isize,
+}
+
+thread_local! {
+    static COUNTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ALLOCS: std::cell::Cell<Allocs> = const {
+        std::cell::Cell::new(Allocs { count: 0, bytes: 0, largest: 0, peak: 0, live: 0 })
+    };
+}
+
+impl Counting {
+    fn note(grew: usize, shrank: usize) {
+        if !COUNTING.with(std::cell::Cell::get) {
+            return;
+        }
+        ALLOCS.with(|a| {
+            let mut allocs = a.get();
+            if grew > 0 {
+                allocs.count += 1;
+                allocs.bytes += grew;
+                allocs.largest = allocs.largest.max(grew);
+            }
+            allocs.live += grew.cast_signed() - shrank.cast_signed();
+            allocs.peak = allocs.peak.max(allocs.live.max(0).cast_unsigned());
+            a.set(allocs);
+        });
+    }
+}
+
+// SAFETY: the system allocator's, with a thread-local tally beside it.
+#[allow(unsafe_code)]
+unsafe impl std::alloc::GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        Self::note(layout.size(), 0);
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        Self::note(0, layout.size());
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new: usize) -> *mut u8 {
+        Self::note(new, layout.size());
+        unsafe { std::alloc::System.realloc(ptr, layout, new) }
+    }
+}
+
+#[global_allocator]
+static COUNTING_ALLOC: Counting = Counting;
+
+/// Runs `f`, with what it allocated on this thread.
+fn counted<R>(f: impl FnOnce() -> R) -> (R, Allocs) {
+    ALLOCS.with(|a| a.set(Allocs::default()));
+    COUNTING.with(|c| c.set(true));
+    let out = f();
+    COUNTING.with(|c| c.set(false));
+    (out, ALLOCS.with(std::cell::Cell::get))
+}
+
+/// One message a board took, and what taking it cost.
+#[derive(Clone, Copy, Debug)]
+struct Taken {
+    at: Instant,
+    what: Took,
+    took: Duration,
+    allocs: Allocs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Took {
+    SealedView,
+    SignedView,
+    Reply,
+}
 
 /// SplitMix64, seeded from the clock: the handshake's ephemeral keys.
 struct Mix(u64);
@@ -255,6 +346,18 @@ struct Board {
     drop_sealed: bool,
     /// The first sealed view that arrived, kept for a replay.
     first_sealed: Option<(String, Vec<u8>)>,
+    /// The last sealed view that arrived.
+    last_sealed: Option<(String, Vec<u8>)>,
+    /// Views and replies taken, with their cost.
+    taken: Arc<Mutex<Vec<Taken>>>,
+    /// A fading link: within each period, nothing arrives or leaves for
+    /// the first part.
+    fades: Arc<Mutex<Option<(Duration, Duration)>>>,
+    /// Each chunk that arrived: when, the key it was sealed under, and
+    /// whether the robot refused it as unauthenticated.
+    chunks: Arc<Mutex<Vec<(Instant, u32, bool)>>>,
+    /// Key deliveries never reach the robot, so grants for it wait.
+    drop_keys: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Board {
@@ -286,7 +389,36 @@ impl Board {
             checks_after_sealed: 0,
             drop_sealed: false,
             first_sealed: None,
+            last_sealed: None,
+            taken: Arc::default(),
+            fades: Arc::default(),
+            chunks: Arc::default(),
+            drop_keys: Arc::default(),
         }
+    }
+
+    /// Whether the link is in a fade now.
+    fn faded(&self) -> bool {
+        self.fades
+            .lock()
+            .expect("fades")
+            .is_some_and(|(period, fade)| {
+                let into = self.start.elapsed().as_micros() % period.as_micros().max(1);
+                into < fade.as_micros()
+            })
+    }
+
+    /// Hands `robot` a message as `take` does, timed and counted.
+    fn take(&self, what: Took, take: impl FnOnce()) {
+        let started = Instant::now();
+        let ((), allocs) = counted(take);
+        let took = started.elapsed();
+        self.taken.lock().expect("taken").push(Taken {
+            at: started,
+            what,
+            took,
+            allocs,
+        });
     }
 
     /// The links die with no word to the board: a host restarted, or Wi-Fi
@@ -348,7 +480,11 @@ impl Board {
                 _ => None,
             };
             while let Some(event) = next {
+                let faded = self.faded();
                 match event {
+                    Event::Sample(..) | Event::Reply(..) if faded => {}
+                    Event::Sample(SUB_KEYS, ..)
+                        if self.drop_keys.load(std::sync::atomic::Ordering::Relaxed) => {}
                     Event::Sample(sub, key, mut bytes) => {
                         if sub == SUB_VIEW_SEALED {
                             if self.drop_sealed {
@@ -357,15 +493,43 @@ impl Board {
                                 if self.first_sealed.is_none() {
                                     self.first_sealed = Some((key.clone(), bytes.clone()));
                                 }
-                                robot.sample(sub, &key, &mut bytes, now_us());
+                                self.last_sealed = Some((key.clone(), bytes.clone()));
+                                self.take(Took::SealedView, || {
+                                    robot.sample(sub, &key, &mut bytes, now_us());
+                                });
                             }
                         } else if self.check_views && sub == SUB_VIEW {
                             self.check_view(robot, &key, bytes, now_us());
+                        } else if sub == SUB_VIEW {
+                            self.take(Took::SignedView, || {
+                                robot.sample(sub, &key, &mut bytes, now_us());
+                            });
+                        } else if sub >= SUB_COMMANDS {
+                            let key_id = rlmesh_session::crypto::sealed::Header::parse(&bytes)
+                                .map_or(0, |h| h.key_id);
+                            let before = robot.refusals(Rejection::Unauthenticated);
+                            robot.sample(sub, &key, &mut bytes, now_us());
+                            let refused = robot.refusals(Rejection::Unauthenticated) > before;
+                            self.chunks.lock().expect("chunks").push((
+                                Instant::now(),
+                                key_id,
+                                refused,
+                            ));
                         } else {
                             robot.sample(sub, &key, &mut bytes, now_us());
                         }
                     }
-                    Event::Reply(id, bytes) => robot.reply(id, &bytes, now_us(), &mut self.rng),
+                    Event::Reply(id, bytes) => {
+                        let rng = &mut self.rng;
+                        let started = Instant::now();
+                        let ((), allocs) = counted(|| robot.reply(id, &bytes, now_us(), rng));
+                        self.taken.lock().expect("taken").push(Taken {
+                            at: started,
+                            what: Took::Reply,
+                            took: started.elapsed(),
+                            allocs,
+                        });
+                    }
                     Event::Done(id) => {
                         self.queries.remove(&id);
                         if !self.no_query_end {
@@ -453,7 +617,9 @@ impl Board {
                 let tx = self.tx.clone();
                 let (pico, oversized) = (self.pico, self.oversized.clone());
                 let zenoh = match &self.transport {
-                    Some(transport) if !(self.lose)(&key) => transport.session(class(c)).clone(),
+                    Some(transport) if !(self.lose)(&key) && !self.faded() => {
+                        transport.session(class(c)).clone()
+                    }
                     _ => {
                         let _ = tx.send(Event::Done(id));
                         return;
@@ -496,6 +662,9 @@ impl Board {
                 let Some(transport) = &self.transport else {
                     return;
                 };
+                if self.faded() {
+                    return;
+                }
                 if key.ends_with("/eyes") {
                     seen.lock().expect("seen").sent += 1;
                 }
@@ -1496,4 +1665,534 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
     assert_eq!(robot.last_refusal(), Some(Rejection::Unauthenticated));
     assert_eq!(robot.refusals(Rejection::Unauthenticated), 1);
     assert_eq!(robot.chunks_refused(), invalid + 1);
+}
+
+/// The demo's camera robot.
+const CAMERA_PARTS: &str = r#"{"rgb": {"kind": "camera", "width": 32, "height": 24, "hz": 30}}"#;
+
+/// The demo's tracker: three custom streams.
+const TRACKER_PARTS: &str = r#"{
+    "target": {"kind": "track/target", "hz": 30, "fields": {"xy": ["float32", [2]]}},
+    "face": {"kind": "track/face", "hz": 30, "fields": {"box": ["float32", [4]]}},
+    "hand": {"kind": "track/hand", "hz": 30, "fields": {"xyz": ["float32", [3]]}}
+}"#;
+
+/// The demo's viewer: six inputs, no actions.
+const VIEWER_POLICY: &str = r#"{
+    "hz": 10,
+    "inputs": {
+        "rgb": {"kind": "camera", "at": "cam:rgb"},
+        "one": {"kind": "joints", "at": "eye-1:eyes"},
+        "two": {"kind": "joints", "at": "eye-2:eyes"},
+        "target": {"kind": "track/target", "at": "tracker:target",
+                   "fields": {"xy": ["float32", [2]]}},
+        "face": {"kind": "track/face", "at": "tracker:face", "fields": {"box": ["float32", [4]]}},
+        "hand": {"kind": "track/hand", "at": "tracker:hand", "fields": {"xyz": ["float32", [3]]}}
+    }
+}"#;
+
+impl World {
+    /// A host whose robots re-arm on their own, as the demo's does.
+    async fn start_rearming() -> Self {
+        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+            .await
+            .expect("host transport");
+        let tenant = TenantId::new("test").expect("tenant");
+        let session = SessionId::new();
+        let mut config = HostConfig::new(tenant.clone(), session);
+        config.rearm_robots = true;
+        let identity = config.identity.clone();
+        let host = SessionHost::start(transport, config).await.expect("host");
+        Self {
+            tenant,
+            session,
+            base,
+            identity,
+            host,
+        }
+    }
+
+    async fn join(&self, id: &str, roles: Vec<Role>, class: PriorityClass) -> Participant {
+        let mut config = ParticipantConfig::new(
+            self.tenant.clone(),
+            self.session,
+            ParticipantId::new(id).expect("id"),
+            roles,
+            class,
+        );
+        config.heartbeat_period = Duration::from_millis(20);
+        config.credential = Some(self.host.credential());
+        Participant::attach(self.transport().await, config)
+            .await
+            .expect("participant")
+    }
+
+    fn board(&self, name: &str) -> Box<Robot> {
+        Robot::new(Config {
+            tenant: self.tenant.clone(),
+            session: self.session,
+            name: ParticipantId::new(name).expect("id"),
+            credential: AddressKey::of(&self.identity).credential(),
+            robot_json: MAP.to_owned(),
+            heartbeat_ms: 50,
+            lobby: false,
+            homes: vec![(self.base.ip().to_string(), self.base.port())],
+            home_id: String::new(),
+        })
+        .expect("a valid map")
+    }
+
+    /// Waits until the host's state satisfies `done`.
+    async fn until(
+        &self,
+        what: &str,
+        done: impl Fn(&rlmesh_session::wire::AuthoritySnapshot) -> bool,
+    ) {
+        let started = Instant::now();
+        while !done(&self.host.snapshot()) {
+            assert!(started.elapsed() < WAIT, "never: {what}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+/// A board running on its own task until `stop`, with its log of what it
+/// took and its fades.
+struct Running {
+    task: tokio::task::JoinHandle<(Box<Robot>, Board)>,
+    taken: Arc<Mutex<Vec<Taken>>>,
+    fades: Arc<Mutex<Option<(Duration, Duration)>>>,
+    chunks: Arc<Mutex<Vec<(Instant, u32, bool)>>>,
+    drop_keys: Arc<std::sync::atomic::AtomicBool>,
+    seen: Arc<Mutex<Seen>>,
+}
+
+async fn run_board(
+    world: &Arc<World>,
+    mut robot: Box<Robot>,
+    stop: &Arc<std::sync::atomic::AtomicBool>,
+) -> Running {
+    let mut board = Board::open(world).await;
+    let (taken, fades, chunks) = (
+        board.taken.clone(),
+        board.fades.clone(),
+        board.chunks.clone(),
+    );
+    let drop_keys = board.drop_keys.clone();
+    let seen: Arc<Mutex<Seen>> = Arc::default();
+    let task = tokio::spawn({
+        let (seen, stop) = (seen.clone(), stop.clone());
+        async move {
+            board
+                .run(&mut robot, Duration::from_secs(120), &seen, move |_| {
+                    stop.load(std::sync::atomic::Ordering::Relaxed)
+                })
+                .await;
+            (robot, board)
+        }
+    });
+    Running {
+        task,
+        taken,
+        fades,
+        chunks,
+        drop_keys,
+        seen,
+    }
+}
+
+/// Views taken per second, replies per second, and what one view cost at
+/// most, over `taken`.
+fn rates(taken: &[Taken]) -> (f64, f64, Allocs, Duration) {
+    let (Some(first), Some(last)) = (taken.first(), taken.last()) else {
+        return (0.0, 0.0, Allocs::default(), Duration::ZERO);
+    };
+    let span = last.at.duration_since(first.at).as_secs_f64().max(1e-3);
+    let views: Vec<&Taken> = taken
+        .iter()
+        .filter(|t| t.what == Took::SealedView)
+        .collect();
+    let replies = taken.iter().filter(|t| t.what == Took::Reply).count();
+    let worst = views.iter().fold(Allocs::default(), |w, t| Allocs {
+        count: w.count.max(t.allocs.count),
+        bytes: w.bytes.max(t.allocs.bytes),
+        largest: w.largest.max(t.allocs.largest),
+        peak: w.peak.max(t.allocs.peak),
+        live: 0,
+    });
+    let slowest = views.iter().map(|t| t.took).max().unwrap_or_default();
+    (
+        views.len() as f64 / span,
+        replies as f64 / span,
+        worst,
+        slowest,
+    )
+}
+
+/// The demo's session: two boards with a commanded part each, a camera
+/// robot, a tracker publishing three parts, a desk, a driver commanding both
+/// boards and a viewer reading six parts. What a board's view carries and
+/// costs it, and how it grows as each joins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_boards_view_in_the_demo_session() {
+    use rlmesh_session_core::wire::{DeviceView, codec};
+    let world = Arc::new(World::start_rearming().await);
+    let eye = ParticipantId::new("eye-1").expect("id");
+    let view_of = |world: &World| DeviceView::of(&world.host.snapshot(), &eye);
+    let mut growth = Vec::new();
+    let mut grew = |label: &str, world: &World| {
+        let view = view_of(world);
+        growth.push((
+            label.to_owned(),
+            codec::encode_view(&view).len(),
+            view.parts.len(),
+            view.members.len(),
+            view.clocks.len(),
+            view.leases.len(),
+        ));
+    };
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let one = run_board(&world, world.board("eye-1"), &stop).await;
+    world
+        .until("eye-1 declared and mapped", |s| s.clock(&eye).is_some())
+        .await;
+    grew("eye-1", &world);
+    let two = run_board(&world, world.board("eye-2"), &stop).await;
+    let eye_two = ParticipantId::new("eye-2").expect("id");
+    world
+        .until("eye-2 declared and mapped", |s| s.clock(&eye_two).is_some())
+        .await;
+    grew("eye-2", &world);
+    let cam = world
+        .join("cam", vec![Role::Embodiment], PriorityClass::Scripted)
+        .await;
+    cam.declare_parts(CAMERA_PARTS).await.expect("camera");
+    grew("cam", &world);
+    let tracker = world
+        .join("tracker", vec![Role::Embodiment], PriorityClass::Scripted)
+        .await;
+    tracker.declare_parts(TRACKER_PARTS).await.expect("tracker");
+    grew("tracker", &world);
+    let desk = world
+        .join("desk", vec![Role::Controller], PriorityClass::Operator)
+        .await;
+    desk.arm().await.expect("arm");
+    grew("desk", &world);
+    let driver = rlmesh_session::Controller::bind(
+        Arc::new(
+            world
+                .join("driver", vec![Role::Controller], PriorityClass::Model)
+                .await,
+        ),
+        &rlmesh_session::spec::Policy::parse(EYES_POLICY).expect("policy"),
+        &rlmesh_session::spec::RunOptions::named("driver"),
+        rlmesh_session::ControllerConfig::default(),
+    )
+    .await
+    .expect("the driver binds both boards");
+    let driver = Arc::new(driver);
+    let run = std::thread::spawn({
+        let driver = driver.clone();
+        move || driver.run(&mut Gaze, Some(Duration::from_secs(120)))
+    });
+    let driven = |seen: &Arc<Mutex<Seen>>| {
+        seen.lock()
+            .expect("seen")
+            .actions
+            .iter()
+            .rev()
+            .take(3)
+            .filter(|(mode, value)| *mode == EdgeMode::Driving && value[..] == pos(0.25, 0.25))
+            .count()
+            == 3
+    };
+    let started = Instant::now();
+    while !(driven(&one.seen) && driven(&two.seen)) {
+        assert!(
+            started.elapsed() < WAIT,
+            "the driver never drove both boards"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    grew("driver", &world);
+    let viewer = rlmesh_session::Controller::bind(
+        Arc::new(
+            world
+                .join("viewer", vec![Role::Controller], PriorityClass::Model)
+                .await,
+        ),
+        &rlmesh_session::spec::Policy::parse(VIEWER_POLICY).expect("policy"),
+        &rlmesh_session::spec::RunOptions::named("viewer"),
+        rlmesh_session::ControllerConfig::default(),
+    )
+    .await
+    .expect("the viewer binds six inputs");
+    world
+        .until("the viewer's demands on both boards", |s| {
+            s.demands.len() >= 2
+        })
+        .await;
+    grew("viewer", &world);
+
+    // Driven, steady: what each view costs eye-1, and how often one comes.
+    one.taken.lock().expect("taken").clear();
+    let started = Instant::now();
+    while one
+        .taken
+        .lock()
+        .expect("taken")
+        .iter()
+        .filter(|t| t.what == Took::SealedView)
+        .count()
+        < 100
+    {
+        assert!(started.elapsed() < WAIT, "eye-1 takes views");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let steady = one.taken.lock().expect("taken").clone();
+
+    // eye-2 on a fading link: 400 ms of nothing every 1.5 s.
+    two.taken.lock().expect("taken").clear();
+    *two.fades.lock().expect("fades") =
+        Some((Duration::from_millis(1500), Duration::from_millis(400)));
+    let token = |s: &rlmesh_session::wire::AuthoritySnapshot| {
+        s.parts
+            .iter()
+            .find(|p| p.owner == eye_two)
+            .and_then(|p| s.lease(p.channel))
+            .map(|l| l.token)
+    };
+    one.taken.lock().expect("taken").clear();
+    // Until its lease lapsed and was granted again three times.
+    let mut tokens = std::collections::BTreeSet::new();
+    let started = Instant::now();
+    while tokens.len() < 4 {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "eye-2's lease never lapses"
+        );
+        tokens.extend(token(&world.host.snapshot()));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    *two.fades.lock().expect("fades") = None;
+    let fading = two.taken.lock().expect("taken").clone();
+    let beside = one.taken.lock().expect("taken").clone();
+
+    let snapshot = world.host.snapshot();
+    let view = DeviceView::of(&snapshot, &eye);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    driver.stop();
+    let _ = run.join();
+    drop(viewer);
+    let (one_robot, one_board) = one.task.await.expect("eye-1");
+    let _ = two.task.await.expect("eye-2");
+    let sealed = one_board.last_sealed.clone().expect("a sealed view").1;
+    let views = |taken: &[Taken]| -> Vec<Taken> {
+        taken
+            .iter()
+            .filter(|t| t.what == Took::SealedView)
+            .copied()
+            .collect()
+    };
+    let (steady_rate, steady_replies, worst, slowest) = rates(&steady);
+    let (fading_rate, fading_replies, _, _) = rates(&fading);
+    let (beside_rate, _, _, _) = rates(&beside);
+    let steady = views(&steady);
+    let free = steady.iter().filter(|t| t.allocs.count == 0).count();
+    eprintln!(
+        "eye-1's view: {} B sealed ({} B with its part); host-side it has {} part spec(s), \
+         {} members, {} clocks, {} lease(s), {} grid(s), {} plan(s)",
+        sealed.len(),
+        codec::encode_view(&view).len(),
+        view.parts.len(),
+        view.members.len(),
+        view.clocks.len(),
+        view.leases.len(),
+        view.grids.len(),
+        view.demands.len(),
+    );
+    eprintln!(
+        "driven: {steady_rate:.1} views/s, {steady_replies:.1} replies/s; {free} of {} views \
+         allocated nothing, the most any did: {worst:?}; slowest taken in {slowest:?}",
+        steady.len()
+    );
+    eprintln!(
+        "eye-2 on a fading link: {fading_rate:.1} views/s, {fading_replies:.1} replies/s, {} \
+         leases in {:.1} s; eye-1 meanwhile {beside_rate:.1} views/s",
+        tokens.len(),
+        fading
+            .last()
+            .zip(fading.first())
+            .map_or(0.0, |(l, f)| l.at.duration_since(f.at).as_secs_f64())
+    );
+    eprintln!("as each joined (who, bytes with its part, parts, members, clocks, leases):");
+    for row in &growth {
+        eprintln!("  {row:?}");
+    }
+    // Its own part only, and none of it on the wire after its declaration.
+    assert!(view.parts.iter().all(|p| p.owner == eye));
+    assert!(
+        sealed.len() + 150 < codec::encode_view(&view).len(),
+        "the sealed view carries no part"
+    );
+    assert_eq!(
+        view.members.len(),
+        7,
+        "every present member, for its e-stop keys"
+    );
+    // A view like the last allocates nothing; one that grows the view's
+    // room or changes the keys held, a few small blocks.
+    assert!(
+        free * 10 >= steady.len() * 9,
+        "{free} of {} views allocated nothing",
+        steady.len()
+    );
+    // Refinements at most every quarter of the lease grace, plus changes.
+    assert!(
+        steady_rate < 20.0 && beside_rate < 20.0,
+        "{steady_rate} and {beside_rate} views/s"
+    );
+    assert_eq!(one_robot.view_counts().2, 0, "eye-1 dropped no view");
+}
+
+/// A board that resets while driven (its loop stops dead, and a new process
+/// joins under its name before the host has counted the old one lost)
+/// refuses as unauthenticated only the chunks already in flight under its
+/// old generation's lease: the driver stops sending under a lease the
+/// moment its view shows it ended, even while its lease keeper is busy
+/// with another robot's grant (here one whose key deliveries are lost, so
+/// each grant waits out its time).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
+    let world = Arc::new(World::start_rearming().await);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let one_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let one = run_board(&world, world.board("eye-1"), &one_stop).await;
+    let two = run_board(&world, world.board("eye-2"), &stop).await;
+    let (eye, eye_two) = (
+        ParticipantId::new("eye-1").expect("id"),
+        ParticipantId::new("eye-2").expect("id"),
+    );
+    world
+        .until("both boards mapped", |s| {
+            s.clock(&eye).is_some() && s.clock(&eye_two).is_some()
+        })
+        .await;
+    let desk = world
+        .join("desk", vec![Role::Controller], PriorityClass::Operator)
+        .await;
+    desk.arm().await.expect("arm");
+    let driver = Arc::new(
+        rlmesh_session::Controller::bind(
+            Arc::new(
+                world
+                    .join("driver", vec![Role::Controller], PriorityClass::Model)
+                    .await,
+            ),
+            &rlmesh_session::spec::Policy::parse(EYES_POLICY).expect("policy"),
+            &rlmesh_session::spec::RunOptions::named("driver"),
+            // Leases that outlast a reset: the driver must stop on the
+            // view, not on its lease running out.
+            rlmesh_session::ControllerConfig {
+                lease_ttl: Some(Duration::from_secs(2)),
+                ..rlmesh_session::ControllerConfig::default()
+            },
+        )
+        .await
+        .expect("the driver binds both boards"),
+    );
+    let run = std::thread::spawn({
+        let driver = driver.clone();
+        move || driver.run(&mut Gaze, Some(Duration::from_secs(120)))
+    });
+    let driven = |seen: &Arc<Mutex<Seen>>| {
+        seen.lock()
+            .expect("seen")
+            .actions
+            .iter()
+            .rev()
+            .take(3)
+            .filter(|(mode, value)| *mode == EdgeMode::Driving && value[..] == pos(0.25, 0.25))
+            .count()
+            == 3
+    };
+    let started = Instant::now();
+    while !(driven(&one.seen) && driven(&two.seen)) {
+        assert!(
+            started.elapsed() < WAIT,
+            "the driver never drove both boards"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let lease = |s: &rlmesh_session::wire::AuthoritySnapshot, robot: &ParticipantId| {
+        s.parts
+            .iter()
+            .find(|p| &p.owner == robot)
+            .and_then(|p| s.lease(p.channel))
+            .map(|l| l.key_id)
+    };
+
+    // Every lease again, eye-2's grant waiting on keys it never gets: the
+    // driver's lease keeper stays busy with it.
+    two.drop_keys
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    desk.disarm().await.expect("disarm");
+    desk.arm().await.expect("arm");
+    world
+        .until("eye-1 leased again, eye-2 not", |s| {
+            lease(s, &eye).is_some() && lease(s, &eye_two).is_none()
+        })
+        .await;
+    let before = lease(&world.host.snapshot(), &eye).expect("eye-1's lease");
+    let started = Instant::now();
+    while !driven(&one.seen) {
+        assert!(started.elapsed() < WAIT, "eye-1 is driven again");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // The reset: nothing more in or out of the old process, and a new one
+    // joins at once.
+    *one.fades.lock().expect("fades") =
+        Some((Duration::from_secs(3600), Duration::from_secs(3600)));
+    let back = run_board(&world, world.board("eye-1"), &stop).await;
+    world
+        .until("eye-1's new process declared", |s| {
+            s.participant(&eye)
+                .is_some_and(|p| p.present && p.generation > 1)
+                && lease(s, &eye) != Some(before)
+        })
+        .await;
+    // Its commands subscribed, then two seconds: the old lease's whole ttl.
+    let started = Instant::now();
+    while back.chunks.lock().expect("chunks").is_empty() && started.elapsed() < WAIT {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(2) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let chunks = back.chunks.lock().expect("chunks").clone();
+    let refused: Vec<u32> = chunks.iter().filter(|c| c.2).map(|c| c.1).collect();
+    eprintln!(
+        "after its reset eye-1 took {} chunks and refused {} as unauthenticated, under keys {:?}; \
+         its lease before was under key {before}",
+        chunks.len(),
+        refused.len(),
+        refused.iter().collect::<std::collections::BTreeSet<_>>()
+    );
+    assert!(
+        refused.len() <= 3,
+        "{} chunks under the old generation's lease refused",
+        refused.len()
+    );
+
+    two.drop_keys
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    one_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    driver.stop();
+    let _ = run.join();
+    let _ = one.task.await;
+    let _ = back.task.await;
+    let _ = two.task.await;
 }
