@@ -1,14 +1,15 @@
 //! What the host publishes: the signed state, device views, virtual ticks and lease renewals.
 
 use crate::wire::codec;
-use crate::wire::version::VIEW_DEVICE;
+use crate::wire::version::{VIEW_DEVICE, VIEW_DEVICE_SEALED};
 use crate::wire::{AuthoritySnapshot, DeviceView, ParticipantId, Role};
 use rlmesh_session_core::crypto::SignedKind;
+use rlmesh_session_core::crypto::sealed::Kind;
 use tracing::warn;
 use zenoh::Wait;
 use zenoh::query::Query;
 
-use crate::host::HostActor;
+use crate::host::{HostActor, lock};
 use crate::transport::{CONTROL_PRIORITY, RESENT_CONGESTION};
 
 /// The largest message a board's transport takes in: zenoh-pico reassembles
@@ -95,7 +96,10 @@ impl HostActor {
     /// since the last published (a renewal moves a lease's expiry, a
     /// heartbeat its robot's clock mapping, so one dropped for a congested
     /// link is soon replaced), signed.
-    fn views_due(&mut self, snapshot: &AuthoritySnapshot) -> Vec<(ParticipantId, Vec<u8>)> {
+    fn views_due(
+        &mut self,
+        snapshot: &AuthoritySnapshot,
+    ) -> Vec<(ParticipantId, Vec<u8>, Option<Vec<u8>>)> {
         self.views.retain(|robot, _| asks_for_view(snapshot, robot));
         let mut due = Vec::new();
         for robot in snapshot.roster.iter().map(|p| &p.id) {
@@ -114,11 +118,34 @@ impl HostActor {
                 continue;
             }
             if let Some(signed) = self.sign_view(&view) {
-                due.push((robot.clone(), signed));
+                let sealed = asks_for_sealed_view(snapshot, robot)
+                    .then(|| self.seal_view(&view))
+                    .flatten();
+                due.push((robot.clone(), signed, sealed));
                 self.views.insert(robot.clone(), view);
             }
         }
         due
+    }
+
+    /// A robot's view sealed under its own `k_down` (kind 20), for a robot
+    /// that asked ([`VIEW_DEVICE_SEALED`]): only it and the host hold the
+    /// key, so it opens the view at a symmetric cipher's cost instead of
+    /// checking a signature. `None` before its generation is in effect.
+    fn seal_view(&self, view: &DeviceView) -> Option<Vec<u8>> {
+        let peer = self
+            .peers
+            .read()
+            .ok()
+            .and_then(|p| p.current.get(&view.robot).cloned())?;
+        lock(&peer.down)
+            .seal(
+                Kind::DeviceView,
+                &self.keys.participant_view(&view.robot),
+                &codec::encode_view(view),
+            )
+            .map_err(|err| warn!(robot = %view.robot, %err, "device view not sealed"))
+            .ok()
     }
 
     /// The snapshot as a `Signed` broadcast.
@@ -210,7 +237,20 @@ impl HostActor {
         {
             warn!(%err, "authority publish failed");
         }
-        for (robot, signed) in views {
+        for (robot, signed, sealed) in views {
+            if let Some(sealed) = sealed {
+                let sent = self
+                    .transport
+                    .control()
+                    .put(self.keys.participant_view(&robot), sealed)
+                    .priority(CONTROL_PRIORITY)
+                    .congestion_control(RESENT_CONGESTION)
+                    .express(true)
+                    .await;
+                if let Err(err) = sent {
+                    warn!(%robot, %err, "sealed device view publish failed");
+                }
+            }
             let sent = self
                 .transport
                 .control()
@@ -226,6 +266,15 @@ impl HostActor {
             }
         }
     }
+}
+
+/// Whether `robot` also asked for its view sealed under its `k_down`
+/// ([`VIEW_DEVICE_SEALED`]).
+pub(super) fn asks_for_sealed_view(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> bool {
+    asks_for_view(snapshot, robot)
+        && snapshot
+            .participant(robot)
+            .is_some_and(|p| p.supports.iter().any(|f| f == VIEW_DEVICE_SEALED))
 }
 
 /// Whether `robot` is an embodiment in `snapshot`'s roster that asked for its

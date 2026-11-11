@@ -153,6 +153,12 @@ impl SessionKeys {
         format!("{}/p/{id}/hb/echo", self.prefix)
     }
 
+    /// One robot's device view, sealed under its own `k_down`
+    /// ([`crate::wire::version::VIEW_DEVICE_SEALED`]).
+    pub fn participant_view(&self, id: &ParticipantId) -> String {
+        format!("{}/p/{id}/view", self.prefix)
+    }
+
     /// Key deliveries from the host to one participant.
     pub fn participant_keys(&self, id: &ParticipantId) -> String {
         format!("{}/p/{id}/keys", self.prefix)

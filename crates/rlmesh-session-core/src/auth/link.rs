@@ -638,6 +638,36 @@ impl Link {
         open_view(&mut self.host, keyexpr, msg)
     }
 
+    /// Opens this robot's device view sealed under `k_down` on `keyexpr`
+    /// (`p/{robot}/view`) in place: what a host listing
+    /// [`crate::wire::version::VIEW_DEVICE_SEALED`] sends a robot that asked.
+    /// Only the host and this generation hold `k_down`, so it is as
+    /// authentic as the signed view for this robot: the key expression (the
+    /// session and the robot) is in the tag, the key ends with the
+    /// generation, and a replayed seq is refused. The view must name this
+    /// robot at this generation; that it is newer than the one held is the
+    /// caller's to check, as for a signed view.
+    ///
+    /// # Errors
+    /// [`LinkError`]: it is dropped.
+    pub fn open_sealed_view(
+        &mut self,
+        keyexpr: &str,
+        msg: &mut [u8],
+    ) -> Result<DeviceView, LinkError> {
+        let opened = self.down.open(keyexpr, msg)?;
+        if opened.header.kind != Kind::DeviceView {
+            return Err(OpenError::WrongKind(opened.header.kind).into());
+        }
+        let view = codec::decode_view(opened.body)?;
+        if view.robot != self.participant || view.generation != self.accept.generation {
+            return Err(
+                WireError::malformed("device view", "another robot's or generation's").into(),
+            );
+        }
+        Ok(view)
+    }
+
     /// A verifier of this link's broadcasts for another task
     /// ([`SignedChecker`]): a board checks them off its control loop.
     pub fn checker(&self) -> SignedChecker {

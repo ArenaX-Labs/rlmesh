@@ -70,8 +70,8 @@ pub enum HandshakeError {
 /// heartbeats, participant reports and history queries.
 pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15]);
 /// The kinds the host sends under `k_down`: ctl replies, heartbeat
-/// echoes, key deliveries and history pages.
-pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10]);
+/// echoes, key deliveries, history pages and sealed device views.
+pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10, 20]);
 
 /// The participant's result of an IK handshake ([`IkInitiator::finish`]):
 /// `k_up`, `k_down` and `h`. The keys leave only as the participant's

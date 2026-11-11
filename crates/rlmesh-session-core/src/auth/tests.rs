@@ -618,3 +618,76 @@ fn a_far_id_moves_the_floor_to_just_below_it() {
     assert_eq!(window.admit(36), Admit::Expired);
     assert_eq!(window.admit(37), Admit::Execute);
 }
+
+#[test]
+fn a_sealed_view_opens_only_for_its_robot_generation_key_and_expression() {
+    let (identity, mut auth) = host();
+    let local = identity.local_credential();
+    let (attached, mut first) = handshake(&identity, &mut auth, &local, "robot").expect("first");
+    let mut link = Link::new(pid("robot"), attached);
+    let key = "rlmesh/v2/local/s/demo/p/robot/view";
+    let snapshot = crate::authority::Authority::new(
+        crate::wire::SessionId::named("demo"),
+        crate::authority::AuthorityConfig::default(),
+    )
+    .snapshot(Vec::new(), 0);
+    let view = |robot: &str, generation: u32, revision: u64| DeviceView {
+        robot: pid(robot),
+        generation,
+        revision,
+        ..DeviceView::of(&snapshot, &pid(robot))
+    };
+    let seal = |candidate: &mut Candidate, view: &DeviceView| {
+        candidate
+            .down
+            .seal(Kind::DeviceView, key, &codec::encode_view(view))
+            .expect("seal")
+    };
+
+    // Its own view, at its generation, opens.
+    let generation = first.generation;
+    let mut msg = seal(&mut first, &view("robot", generation, 3));
+    let replay = msg.clone();
+    let opened = link.open_sealed_view(key, &mut msg).expect("open");
+    assert_eq!((opened.revision, opened.generation), (3, generation));
+    // The same bytes again: a replay.
+    let mut again = replay;
+    assert!(link.open_sealed_view(key, &mut again).is_err());
+    // Another robot's view, or another generation's, under this key.
+    let mut other = seal(&mut first, &view("eyes", generation, 4));
+    assert!(link.open_sealed_view(key, &mut other).is_err());
+    let mut later = seal(&mut first, &view("robot", generation + 1, 5));
+    assert!(link.open_sealed_view(key, &mut later).is_err());
+    // Received on another robot's key expression.
+    let mut moved = seal(&mut first, &view("robot", generation, 6));
+    assert!(
+        link.open_sealed_view("rlmesh/v2/local/s/demo/p/eyes/view", &mut moved)
+            .is_err()
+    );
+    // A ctl reply's kind under the same key is not a view.
+    let mut reply = first
+        .down
+        .seal(
+            Kind::CtlReply,
+            key,
+            &codec::encode_view(&view("robot", generation, 7)),
+        )
+        .expect("seal");
+    assert!(link.open_sealed_view(key, &mut reply).is_err());
+
+    // Attached again: the old generation's key opens nothing on the new
+    // link, the new one's does.
+    let (attached, mut second) = handshake(&identity, &mut auth, &local, "robot").expect("second");
+    let mut relinked = Link::new(pid("robot"), attached);
+    let mut stale = seal(&mut first, &view("robot", generation, 8));
+    assert!(relinked.open_sealed_view(key, &mut stale).is_err());
+    let renewed = second.generation;
+    let mut fresh = seal(&mut second, &view("robot", renewed, 9));
+    assert_eq!(
+        relinked
+            .open_sealed_view(key, &mut fresh)
+            .expect("fresh")
+            .revision,
+        9
+    );
+}

@@ -24,6 +24,13 @@ pub const SPEC_VERSION: u32 = 1;
 /// listing it publishes on `host/view/{robot}`.
 pub const VIEW_DEVICE: &str = "view.device";
 
+/// A robot's `Attach.supports` asks for its device view sealed under its
+/// own `k_down` on `p/{robot}/view` as well (kind 20): a board opens that at
+/// a symmetric cipher's cost instead of checking a signature on each view.
+/// A host listing it publishes both; the signed one stays for every other
+/// reader and for robots that don't ask.
+pub const VIEW_DEVICE_SEALED: &str = "view.device.sealed";
+
 /// A host listing it may carry a scene's places in its authority state,
 /// and policies that name no robot bind against their view ([`crate::spec::view`]). A
 /// binder that lacks it refuses to bind in a
@@ -33,9 +40,9 @@ pub const SCENE_PLACES: &str = "scene.places";
 
 /// Features this build implements as a host: behaviour added in later
 /// minors. `auth.sealed`: participants attach through the handshake and
-/// seal their control traffic; [`VIEW_DEVICE`];
+/// seal their control traffic; [`VIEW_DEVICE`]; [`VIEW_DEVICE_SEALED`];
 /// [`SCENE_PLACES`].
-pub const FEATURES: &[&str] = &["auth.sealed", VIEW_DEVICE, SCENE_PLACES];
+pub const FEATURES: &[&str] = &["auth.sealed", VIEW_DEVICE, VIEW_DEVICE_SEALED, SCENE_PLACES];
 
 /// The features in `required` that `supported` lacks (empty: compatible).
 pub fn missing_features<'a>(required: &'a [String], supported: &[String]) -> Vec<&'a str> {
@@ -58,6 +65,14 @@ mod tests {
             missing_features(&["merge.blend".into(), "frame.fixed".into()], &supported),
             vec!["merge.blend"]
         );
-        assert_eq!(FEATURES, ["auth.sealed", "view.device", "scene.places"]);
+        assert_eq!(
+            FEATURES,
+            [
+                "auth.sealed",
+                "view.device",
+                "view.device.sealed",
+                "scene.places"
+            ]
+        );
     }
 }
