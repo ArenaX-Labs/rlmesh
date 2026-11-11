@@ -740,6 +740,62 @@ def test_eyes_with_no_state_export_and_an_idle_eye_keeps_its_last_action(
     np.testing.assert_allclose(rows[-1]["action"], [0.25, 0.25, 0.5, 0.5])
 
 
+def test_a_run_on_a_disarmed_session_says_it_waits_to_be_armed(
+    host: rlmesh.Host,
+) -> None:
+    arm_map = {
+        "arm": {
+            "kind": "joints",
+            "count": 2,
+            "fields": ["pos"],
+            "hz": 100,
+            "command": "position",
+            "safe": "stop",
+        }
+    }
+    hold = {
+        "hz": 25,
+        "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position"}},
+    }
+    robot = rlmesh.Robot("arm", arm_map, session=host)
+    stop = threading.Event()
+
+    def loop() -> None:
+        rate = rlmesh.Rate(200)
+        while not stop.is_set():
+            robot.due("arm")
+            rate.sleep()
+
+    ticker = threading.Thread(target=loop, daemon=True)
+    ticker.start()
+    try:
+        with rlmesh.Policy(hold, session=host, name="hold") as policy:
+            policy.bind("arm")
+            thread, out = in_thread(
+                lambda: policy.run(
+                    lambda obs: {"arm": np.zeros((1, 2), np.float32)}, duration=30.0
+                )
+            )
+            wait_until(
+                "the run says it waits",
+                lambda: any(e["kind"] == "waiting_to_arm" for e in policy.events()),
+            )
+            waiting = policy.stats()["waiting"]
+            assert waiting.startswith("the session is DISARMED"), waiting
+            assert "robot.arm()" in waiting
+            assert thread.is_alive() and not raised(out)
+            robot.arm()
+            wait_until("the run commands once armed", lambda: policy.holds)
+            assert policy.stats()["waiting"] is None
+            policy.stop()
+            thread.join(WAIT)
+            assert not raised(out)
+    finally:
+        stop.set()
+        ticker.join(WAIT)
+        robot.close()
+
+
 def test_a_raising_predict_releases_the_leases_and_propagates(
     host: rlmesh.Host,
 ) -> None:

@@ -1655,6 +1655,7 @@ impl NativePolicy {
                     }
                     RunEvent::RobotHeld { .. } => info.kind = "robot_held".into(),
                     RunEvent::ClockRefused { .. } => info.kind = "clock_refused".into(),
+                    RunEvent::WaitingToArm { .. } => info.kind = "waiting_to_arm".into(),
                 }
                 info
             })

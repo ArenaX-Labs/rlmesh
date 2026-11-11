@@ -890,6 +890,10 @@ class Policy:
         Raises :class:`SessionLost` (``reason`` ``robot_lost`` or
         ``host_lost``) when the robot's heartbeats lapse or the host is
         gone. Stops after ``duration`` seconds or on :meth:`stop`.
+
+        On a session that is not armed it waits for an operator to arm it,
+        commanding nothing: it warns once each time (a ``waiting_to_arm``
+        event), and :meth:`stats` says so under ``waiting``.
         """
         native = self._bound()
 
@@ -910,6 +914,8 @@ class Policy:
         phased just after (wall clock), ``phase_offset_ms`` how far.
         ``clock_refused`` says, per leased part whose edge refuses this
         policy's chunks for its clock, the measured error and the bound.
+        ``waiting`` says what the policy waits for before it can command
+        (the session not armed), or is ``None``.
         """
         return self._bound().stats()
 
@@ -919,7 +925,7 @@ class Policy:
         return self._bound().held
 
     def events(self) -> list[dict[str, Any]]:
-        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``."""
+        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``."""
         return self._bound().events()
 
     def close(self) -> None:

@@ -1619,6 +1619,7 @@ impl PyController {
             .map(|(_, message)| message)
             .collect();
         d.set_item("clock_refused", refused)?;
+        d.set_item("waiting", controller.waiting())?;
         Ok(d)
     }
 
@@ -1650,6 +1651,7 @@ impl PyController {
                 }
                 RunEvent::RobotHeld { .. } => d.set_item("kind", "robot_held")?,
                 RunEvent::ClockRefused { .. } => d.set_item("kind", "clock_refused")?,
+                RunEvent::WaitingToArm { .. } => d.set_item("kind", "waiting_to_arm")?,
             }
             list.append(d)?;
         }

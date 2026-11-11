@@ -1019,3 +1019,68 @@ async fn a_named_input_that_never_appears_says_which_robot_and_entry() {
     );
     assert!(text.contains("at \"tracker:target\""), "{text}");
 }
+
+/// Echoes the arm's joints as one action: nothing else to read.
+struct Echo;
+
+impl Predictor for Echo {
+    type Error = String;
+
+    fn predict(&mut self, _: Observation, _: i64) -> Result<Vec<(String, Value)>, Self::Error> {
+        Ok(command_values())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_on_a_disarmed_session_says_it_waits_to_be_armed() {
+    let world = World::start().await;
+    let p = world
+        .join("ur10e", Role::Embodiment, PriorityClass::Scripted)
+        .await;
+    let robot = Arc::new(
+        Robot::declare(p, UR10E, EdgeConfig::default())
+            .await
+            .expect("declare"),
+    );
+    let p = world
+        .join("waiter", Role::Controller, PriorityClass::Model)
+        .await;
+    let controller = Arc::new(
+        Controller::bind(
+            Arc::new(p),
+            &Policy::parse(COMMAND_ONLY).expect("policy"),
+            &RunOptions::named("waiter").robot("ur10e").expect("robot"),
+            ControllerConfig::default(),
+        )
+        .await
+        .expect("bind"),
+    );
+    let waiting = controller.waiting().expect("disarmed");
+    assert!(waiting.starts_with("the session is DISARMED"), "{waiting}");
+    let run = {
+        let controller = controller.clone();
+        std::thread::spawn(move || controller.run(&mut Echo, None))
+    };
+    let waits = |controller: &Controller| {
+        controller
+            .drain_events()
+            .into_iter()
+            .filter(|e| matches!(e, rlmesh_session::RunEvent::WaitingToArm { .. }))
+            .count()
+    };
+    let mut seen = 0;
+    wait_until("the run says it waits", || {
+        seen += waits(&controller);
+        seen > 0
+    })
+    .await;
+    robot.participant().arm().await.expect("arm");
+    wait_until("the run commands once armed", || controller.holds_any()).await;
+    assert_eq!(controller.waiting(), None);
+    controller.stop();
+    run.join()
+        .expect("run")
+        .map_err(|e| e.to_string())
+        .expect("ran");
+    assert_eq!(seen + waits(&controller), 1, "warned once while disarmed");
+}

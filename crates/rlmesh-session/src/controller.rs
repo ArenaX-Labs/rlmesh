@@ -33,7 +33,9 @@
 //!   [`RunError::Lost`]. In a scene's run a lost robot may rejoin: the loop
 //!   keeps going without a lease (`no_lease`) and asks for its leases again
 //!   once the run is re-armed; only the run closing stops it, and a run this
-//!   process stopped returns.
+//!   process stopped returns. A run on a session that is not armed waits
+//!   for it, and says so once each time the session leaves ARMED or ACTIVE
+//!   ([`RunEvent::WaitingToArm`], [`Controller::waiting`]).
 //!
 //! [`Controller::run`] and [`Controller::send`] block: call them from a
 //! plain thread, not from inside the async runtime.
@@ -667,6 +669,50 @@ impl Controller {
         })
     }
 
+    /// What this controller waits for before it can command, when the
+    /// session is not armed: its mode in words. `None` while armed or
+    /// active, and for a policy that commands nothing.
+    pub fn waiting(&self) -> Option<String> {
+        if self.binding.channels().is_empty() {
+            return None;
+        }
+        let mode = self
+            .participant
+            .authority_view()
+            .with(|v| v.map(|v| v.mode))?;
+        let arm = "robot.arm(), or Arm in the cockpit";
+        match mode {
+            Mode::Armed | Mode::Active => None,
+            Mode::Disarmed => Some(format!(
+                "the session is DISARMED: this policy commands nothing until it is armed ({arm})"
+            )),
+            Mode::Safe => Some(format!(
+                "the session is SAFE: this policy commands nothing until it is armed again ({arm})"
+            )),
+            Mode::Estop => Some(
+                "the session is in ESTOP: this policy commands nothing until the e-stop is \
+                 cleared and the session disarmed and armed again"
+                    .into(),
+            ),
+        }
+    }
+
+    /// Reports what the run waits for, once each time it changes.
+    fn report_waiting(&self, reported: &mut Option<String>) {
+        let now = self.waiting();
+        if let Some(message) = &now
+            && reported.as_ref() != Some(message)
+        {
+            push_event(
+                &self.events,
+                RunEvent::WaitingToArm {
+                    message: message.clone(),
+                },
+            );
+        }
+        *reported = now;
+    }
+
     /// Reports each robot held since the last look (`reported`).
     fn report_held(&self, reported: &mut Vec<ParticipantId>) {
         let now = self.held_refusals();
@@ -858,6 +904,7 @@ impl Controller {
         let mut recovered_at: Option<i64> = None;
         let mut clock_refused = Vec::new();
         let mut held = Vec::new();
+        let mut waiting = None;
         // Wall clock only: virtual and lockstep starts stay on their ticks.
         let wall = self
             .participant
@@ -882,6 +929,7 @@ impl Controller {
                 }
                 break Err(RunError::Lost(reason));
             }
+            self.report_waiting(&mut waiting);
             let off = offset(&phase);
             self.phase_offset_ns.store(off, Ordering::Relaxed);
             let t = now();

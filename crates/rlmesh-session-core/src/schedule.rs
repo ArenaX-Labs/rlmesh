@@ -139,6 +139,12 @@ pub enum RunEvent {
         /// The refusal in words.
         message: String,
     },
+    /// The session is not armed, so the run takes no lease and commands
+    /// nothing until it is.
+    WaitingToArm {
+        /// The session's mode, and what the run waits for.
+        message: String,
+    },
 }
 
 impl fmt::Display for RunEvent {
@@ -164,7 +170,9 @@ impl fmt::Display for RunEvent {
             Self::InferencePending { pending } => {
                 write!(f, "inference pending for {:.1} s", pending.as_secs_f64())
             }
-            Self::RobotHeld { message } | Self::ClockRefused { message } => f.write_str(message),
+            Self::RobotHeld { message }
+            | Self::ClockRefused { message }
+            | Self::WaitingToArm { message } => f.write_str(message),
         }
     }
 }
@@ -649,7 +657,9 @@ mod tests {
                     drifting, cause, ..
                 } => (*drifting, *cause),
                 RunEvent::InferencePending { .. } => (false, "pending"),
-                RunEvent::RobotHeld { .. } | RunEvent::ClockRefused { .. } => (false, "other"),
+                RunEvent::RobotHeld { .. }
+                | RunEvent::ClockRefused { .. }
+                | RunEvent::WaitingToArm { .. } => (false, "other"),
             })
             .collect();
         assert_eq!(drift.len(), 2, "one event per transition: {events:?}");
