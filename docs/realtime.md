@@ -182,7 +182,8 @@ The cockpit joins as an observer and shows every part's declared and
 measured rate, the lease and mode timeline, and **why each robot is or
 isn't moving**: its edge mode with the reason (`queue_dry`: no valid chunk
 within its hold time), the chunks it refused and why (`too_old`,
-`no_lease`, ...), and each link's heartbeat age and jitter. It
+`no_lease`, and for `clock_uncertain` the measured error against the
+part's bound), and each link's heartbeat age and jitter. It
 has Arm, Disarm, E-stop and Keep.
 
 ## 7. Record and export
@@ -255,6 +256,13 @@ or torque, which would run away.
   `parts.Safe.STOP`, `parts.Safe.HOLD` or `parts.Safe.custom("park")`.
 - Every part's limits are enforced on the robot's side, by its edge,
   whatever a policy sends.
+- A commanded part refuses chunks while a clock's error is above its
+  `max_clock_error_ms`: by default a quarter of its `max_action_age_ms`
+  (50 ms at the default 200 ms), never below 5 ms, and for a command group
+  the smallest of its members. The host refuses a value above half of
+  `max_action_age_ms`. A chunk counts as older by the error of both clocks,
+  so raising the bound never loosens the age limit. A refusal says what it
+  measured against which bound, in the cockpit and in `edge_stats`.
 - Beyond loopback the host encrypts every sample and command; see the
   [threat model](threat-model.md) for what it does and doesn't defend.
 

@@ -1635,6 +1635,11 @@ impl Robot {
             queue_depth,
             health: Health::Ok,
             rejected: self.rejected(),
+            clock_refused: self
+                .edges
+                .iter()
+                .filter_map(|e| e.core.clock_refused().cloned())
+                .collect(),
         };
         let key = self.keys.heartbeat(&self.config.name);
         let Some(link) = self.link.as_mut() else {

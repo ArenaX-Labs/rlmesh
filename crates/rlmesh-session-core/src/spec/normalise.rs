@@ -222,6 +222,7 @@ pub fn part_json(part: &PartSpec) -> Value {
             "safe": c.safe_behavior,
             "hold_max_ms": ms(c.hold_max),
             "max_action_age_ms": ms(c.max_action_age),
+            "max_clock_error_ms": ms(c.max_clock_error),
             "merge": "replace",
             "reference": c.reference,
             "group": c.group,

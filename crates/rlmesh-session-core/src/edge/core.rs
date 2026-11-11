@@ -31,14 +31,17 @@
 //! - slot positions (`t0`, `replace_from`) convert as `t − θ`;
 //! - **deadlines** (`valid_until`, the lease expiry) convert conservatively,
 //!   `t − θ − ε`, so an offset error can only shorten them;
-//! - a chunk's life is capped at receipt + the part's `max_action_age`;
+//! - a chunk may be up to `ε_ctrl + ε_edge` older than it reads, so its
+//!   life ends at `min(valid_until − θ, receipt + max_action_age) − ε_ctrl −
+//!   ε_edge`;
 //! - the transit check: `receipt_session − publish_session + ε_ctrl +
 //!   ε_edge` (the controller's `publish_ns` through its own mapping) above
 //!   `max_action_age` rejects the chunk;
-//! - with no mapping, or `ε` above [`EdgeConfig::max_clock_error`] (5 ms by
-//!   default), chunks are refused and the lease cannot be timed, unless
-//!   [`EdgeConfig::require_clock_mapping`] is off (every participant on one
-//!   clock).
+//! - with no mapping, chunks are refused and the lease cannot be timed,
+//!   unless [`EdgeConfig::require_clock_mapping`] is off (every participant
+//!   on one clock);
+//! - either `ε` above the part's `max_clock_error` (a group's smallest)
+//!   refuses the chunk, and [`EdgeCore::clock_refused`] says by how much.
 //!
 //! In virtual and lockstep sessions every time is session time and no
 //! mapping is needed: the host times leases, and the edge's clock is the
@@ -51,8 +54,8 @@ use alloc::sync::Arc;
 use core::time::Duration;
 
 use crate::wire::{
-    ActionChunk, Applied, AuthorityView, ChannelId, ClockMode, EdgeMode, Epoch, FenceError,
-    LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
+    ActionChunk, Applied, AuthorityView, ChannelId, ClockMode, ClockRefusal, EdgeMode, Epoch,
+    FenceError, LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
 };
 use bytes::Bytes;
 
@@ -74,15 +77,12 @@ pub struct EdgeConfig {
     /// times are read as edge time and a delayed snapshot can extend the
     /// lease.
     pub require_clock_mapping: bool,
-    /// Refuse chunks while a mapping's error bound exceeds this (`max_clock_error`).
-    pub max_clock_error: Duration,
 }
 
 impl Default for EdgeConfig {
     fn default() -> Self {
         Self {
             require_clock_mapping: true,
-            max_clock_error: Duration::from_millis(5),
         }
     }
 }
@@ -121,7 +121,7 @@ pub enum Rejection {
     InvalidValue,
     /// No clock mapping yet ([`EdgeConfig::require_clock_mapping`]).
     NoClockMapping,
-    /// The clock error bound exceeds [`EdgeConfig::max_clock_error`].
+    /// A clock's error bound exceeds the part's `max_clock_error`.
     ClockUncertain,
     /// Not sealed under a command key this robot holds for the chunk's
     /// part, token and source: not the lease holder's.
@@ -185,6 +185,8 @@ pub struct EdgeStats {
     pub clamped: u64,
     /// Handovers between group members.
     pub handovers: u64,
+    /// Set while the newest clock judgement refused a chunk.
+    pub clock_refused: Option<ClockRefusal>,
 }
 
 impl EdgeStats {
@@ -294,6 +296,10 @@ pub struct EdgeCore {
     members: Vec<Member>,
     queues: Vec<ActionQueue>,
     config: EdgeConfig,
+    /// The smallest `max_clock_error` of the members.
+    max_clock_error_ns: u64,
+    /// Set while the newest clock judgement refused a chunk.
+    clock_refused: Option<ClockRefusal>,
     safe_behavior: Arc<str>,
     fallback: Fallback,
     accepted: u64,
@@ -337,6 +343,7 @@ impl EdgeCore {
         let mut members = Vec::with_capacity(parts.len());
         let mut ladders = Vec::with_capacity(parts.len());
         let mut queues = Vec::with_capacity(parts.len());
+        let mut max_clock_error = first_command.max_clock_error;
         for part in parts {
             let command = part
                 .command
@@ -355,6 +362,7 @@ impl EdgeCore {
             {
                 return Err(GroupError::NotOneGroup(part.channel));
             }
+            max_clock_error = max_clock_error.min(command.max_clock_error);
             let check =
                 CommandCheck::new(&command).ok_or(GroupError::NotCommandable(part.channel))?;
             let delivery = if command.is_delta() {
@@ -385,6 +393,8 @@ impl EdgeCore {
             members,
             queues,
             config,
+            max_clock_error_ns: u64::try_from(max_clock_error.as_nanos()).unwrap_or(u64::MAX),
+            clock_refused: None,
             safe_behavior: Arc::from(first_command.safe_behavior.as_str()),
             fallback: Fallback::new(duration_i64(first_command.hold_max), ladders),
             accepted: 0,
@@ -415,6 +425,11 @@ impl EdgeCore {
     /// decode).
     pub fn count_rejection(&mut self, reason: Rejection) {
         self.rejected[reason.index()] += 1;
+    }
+
+    /// Why the clocks are refusing chunks, while the newest judgement did.
+    pub fn clock_refused(&self) -> Option<&ClockRefusal> {
+        self.clock_refused.as_ref()
     }
 
     /// The robot finished a handover: the group may dispatch again.
@@ -541,12 +556,19 @@ impl EdgeCore {
         }
         let edge = self.clock(view, &self.me);
         let source = self.clock(view, &chunk.source);
-        let max_clock_error = duration_i64(self.config.max_clock_error);
         if !edge.ticked {
             if self.config.require_clock_mapping && !(edge.mapped && source.mapped) {
                 return Err(Rejection::NoClockMapping);
             }
-            if edge.error_ns > max_clock_error || source.error_ns > max_clock_error {
+            self.clock_refused = ClockRefusal::judge(
+                chunk.channel,
+                self.max_clock_error_ns,
+                [
+                    (&self.me, edge.error_ns.unsigned_abs()),
+                    (&chunk.source, source.error_ns.unsigned_abs()),
+                ],
+            );
+            if self.clock_refused.is_some() {
                 return Err(Rejection::ClockUncertain);
             }
         }
@@ -589,8 +611,9 @@ impl EdgeCore {
         let valid_until_ns = chunk
             .valid_until_ns
             .saturating_sub(edge.offset_ns)
+            .min(receive_ns.saturating_add(member.max_action_age_ns))
             .saturating_sub(edge.error_ns)
-            .min(receive_ns.saturating_add(member.max_action_age_ns));
+            .saturating_sub(source.error_ns);
         if valid_until_ns <= receive_ns {
             return Err(Rejection::Expired);
         }
@@ -792,6 +815,7 @@ impl EdgeCore {
             safe_reports: self.safe_reports,
             clamped: self.clamped,
             handovers: self.handovers,
+            clock_refused: self.clock_refused.clone(),
         }
     }
 }

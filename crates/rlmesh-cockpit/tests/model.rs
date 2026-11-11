@@ -9,7 +9,9 @@ use rlmesh_cockpit::timeline::Tone;
 use rlmesh_cockpit::values::Value;
 use rlmesh_cockpit::{Input, View};
 use rlmesh_session::edge::Rejection;
-use rlmesh_session::wire::{Command, EdgeMode, LeaseToken, Mode, ReasonCode};
+use rlmesh_session::wire::{
+    ClockRefusal, Command, EdgeMode, LeaseToken, Mode, ParticipantId, ReasonCode,
+};
 
 fn close(a: Option<f64>, b: f64, tol: f64) -> bool {
     a.is_some_and(|a| (a - b).abs() <= tol)
@@ -274,6 +276,34 @@ fn an_edge_says_why_it_is_not_moving_and_what_it_refused() {
             "edge ur10e refused chunks: 3 stale_token",
             "edge ur10e/arm: driving -> safe (QUEUE_DRY)",
         ]
+    );
+}
+
+#[test]
+fn a_clock_refusal_says_what_was_measured_against_which_bound() {
+    let mut w = World::ur10e();
+    w.run(300);
+    let view = w.model.view(w.now);
+    assert_eq!(view.edges[0].clock_refused, None);
+    let channel = w.channel("arm");
+    w.rejected = vec![(Rejection::ClockUncertain, 4)];
+    w.clock_refused = vec![ClockRefusal {
+        channel,
+        participant: ParticipantId::new("ur10e").expect("id"),
+        error_ns: 19_500_000,
+        bound_ns: 5_000_000,
+    }];
+    w.run(300);
+    let view = w.model.view(w.now);
+    let want = "ur10e:arm refuses chunks: clock error 19.5 ms is above its 5 ms bound; \
+                raise max_clock_error_ms or improve the link";
+    assert_eq!(view.edges[0].clock_refused.as_deref(), Some(want));
+    assert!(
+        view.timeline
+            .iter()
+            .any(|r| r.kind == "edge" && r.text.contains(want)),
+        "{:?}",
+        view.timeline
     );
 }
 

@@ -27,6 +27,10 @@ security fixes) until you can move both sides. Names that 0.1 exported and
   holds the arm/disarm/e-stop state and records every session as MCAP
   (a rolling window, plus kept incidents), which
   `python -m rlmesh.realtime.lerobot` exports as a LeRobot dataset.
+- A commanded part bounds the clock error it accepts with
+  `max_clock_error_ms` (by default a quarter of `max_action_age_ms`, at
+  least 5 ms) in place of a fixed 5 ms, and a `clock_uncertain` refusal now
+  says what was measured against which bound.
 - A lost lease holder stops only the parts it held: its leases end, those
   parts go to their safe behaviour as after a release, and the session and
   every other holder go on with no re-arm.

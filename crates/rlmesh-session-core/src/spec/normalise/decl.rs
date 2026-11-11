@@ -133,6 +133,7 @@ pub(super) const COMMAND: &[&str] = &[
     "safe",
     "hold_max_ms",
     "max_action_age_ms",
+    "max_clock_error_ms",
     "latch",
     "limits",
     "merge",

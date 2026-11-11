@@ -7,7 +7,7 @@
 use crate::prelude::*;
 
 use crate::edge::Rejection;
-use crate::wire::heartbeat::Health;
+use crate::wire::heartbeat::{ClockRefusal, Health};
 use crate::wire::ids::{ChannelId, Epoch, ParticipantId};
 use crate::wire::report::ParticipantReport;
 
@@ -38,6 +38,8 @@ pub struct LinkHealth {
     pub health: Health,
     /// Edges: chunks refused since attach, by reason.
     pub rejected: Vec<(Rejection, u64)>,
+    /// Edges: one per edge whose newest clock judgement refused a chunk.
+    pub clock_refused: Vec<ClockRefusal>,
     /// Its latest observer report.
     pub report: Option<ParticipantReport>,
     /// The newest seq it has received per subscribed channel.

@@ -576,6 +576,47 @@ impl Controller {
         self.leases.group().held(self.participant.clock().now_ns())
     }
 
+    /// Each leased part whose edge refuses this controller's chunks for its
+    /// clock, by the authority state: the part and the refusal in words.
+    pub fn clock_refusals(&self) -> Vec<(ChannelId, String)> {
+        let leases = self.leases();
+        let me = self.participant.id();
+        self.participant.authority_view().with(|view| {
+            let Some(view) = view else {
+                return Vec::new();
+            };
+            leases
+                .iter()
+                .filter_map(|lease| {
+                    let refusal = view.clock_refusal(lease.channel, me)?;
+                    let part = view.part(lease.channel)?;
+                    Some((
+                        lease.channel,
+                        refusal.explain(&part.owner, part.path.as_str()),
+                    ))
+                })
+                .collect()
+        })
+    }
+
+    /// Reports each part that began refusing for its clock since the last
+    /// look (`refused`).
+    fn report_clock_refusals(&self, refused: &mut Vec<ChannelId>) {
+        let now = self.clock_refusals();
+        for (channel, message) in &now {
+            if !refused.contains(channel) {
+                warn!(participant = %self.participant.id(), "{message}");
+                push_event(
+                    &self.events,
+                    RunEvent::ClockRefused {
+                        message: message.clone(),
+                    },
+                );
+            }
+        }
+        *refused = now.into_iter().map(|(channel, _)| channel).collect();
+    }
+
     /// Takes the binding's leases now (all or none), preempting a lower
     /// class; from then on the keeper holds them. A refusal (`LEASE_BUSY`,
     /// `GROUP_BUSY`, `NOT_READY`, ...) leaves the keeper as it was.
@@ -701,6 +742,7 @@ impl Controller {
             duration.map(|d| now().saturating_add(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)));
         let commands = !self.binding.channels().is_empty();
         let mut recovered_at: Option<i64> = None;
+        let mut clock_refused = Vec::new();
         // Wall clock only: virtual and lockstep starts stay on their ticks.
         let wall = self
             .participant
@@ -799,6 +841,7 @@ impl Controller {
             };
             match self.send(&values, &based_on, snapshot_ns) {
                 Ok(sent) => {
+                    self.report_clock_refusals(&mut clock_refused);
                     let mut schedule = self.schedule();
                     for (_, outcome) in sent {
                         if let Sent::Seq(_) = outcome {

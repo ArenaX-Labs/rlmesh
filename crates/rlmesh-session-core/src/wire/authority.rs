@@ -10,6 +10,7 @@ use core::fmt;
 
 use crate::wire::action::ChunkRef;
 use crate::wire::contract::{ActionGrid, Demand, StreamContract};
+use crate::wire::heartbeat::ClockRefusal;
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId, SessionId};
 use crate::wire::key::{IssuedKey, KeysAck};
 use crate::wire::part::{PartSpec, StreamSpec};
@@ -491,6 +492,36 @@ impl AuthoritySnapshot {
                 None
             }
         })
+    }
+
+    /// The refusal the edge of `channel` gives `source`'s chunks for its
+    /// clock, judged from this state as the edge judges it.
+    pub fn clock_refusal(
+        &self,
+        channel: ChannelId,
+        source: &ParticipantId,
+    ) -> Option<ClockRefusal> {
+        if self.clock_mode != ClockMode::Wall {
+            return None;
+        }
+        let part = self.part(channel)?;
+        let command = part.command.as_ref()?;
+        let bound = match &command.group {
+            Some(group) => self
+                .group_members(&part.owner, group)
+                .filter_map(|p| p.command.as_ref())
+                .map(|c| c.max_clock_error)
+                .min()?,
+            None => command.max_clock_error,
+        };
+        ClockRefusal::judge(
+            channel,
+            u64::try_from(bound.as_nanos()).unwrap_or(u64::MAX),
+            [
+                (&part.owner, self.clock(&part.owner)?.error_ns),
+                (source, self.clock(source)?.error_ns),
+            ],
+        )
     }
 
     /// The commandable parts of `robot` in command group `group`.

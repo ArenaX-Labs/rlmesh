@@ -417,6 +417,8 @@ message Heartbeat {
   Health health = 11;
   // Edges: chunks refused since attach, by reason (only nonzero reasons).
   repeated RejectionCount rejected = 12;
+  // Edges: one per edge whose newest clock judgement refused a chunk.
+  repeated ClockRefusal clock_refused = 13;
 }
 
 // Why an edge refused a chunk.
@@ -444,6 +446,18 @@ enum Rejection {
 message RejectionCount {
   Rejection reason = 1;
   uint64 count = 2;
+}
+
+// Why an edge is refusing chunks as REJECTION_CLOCK_UNCERTAIN.
+message ClockRefusal {
+  // The part whose chunk it refused.
+  uint32 channel = 1;
+  // Whose clock mapping is over the bound.
+  string participant = 2;
+  // The mapping's measured error.
+  uint64 error_ns = 3;
+  // The bound the edge held it to.
+  uint64 bound_ns = 4;
 }
 
 // One participant's link and edge as the host sees them (in HostHealth):
@@ -475,6 +489,8 @@ message LinkHealth {
   ParticipantReport report = 15;
   // The newest seq it has received per subscribed channel.
   repeated ChannelSeq last_seq_seen = 16;
+  // Edges: one per edge whose newest clock judgement refused a chunk.
+  repeated ClockRefusal clock_refused = 17;
 }
 
 // Host -> observers on host/health, signed, about once a second: why a
@@ -595,6 +611,9 @@ message Command {
   // While the commanding lease is held, keep applying the last target with
   // no age expiry and no wait. Only on a mode that holds its target.
   bool latch = 12;
+  // The largest error, on either end's clock mapping, the edge takes chunks
+  // under.
+  uint64 max_clock_error_ns = 13;
 }
 
 // A part as the host normalised it, in AuthorityState.

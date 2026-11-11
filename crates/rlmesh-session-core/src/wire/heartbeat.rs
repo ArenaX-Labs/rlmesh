@@ -94,6 +94,66 @@ pub struct Heartbeat {
     pub health: Health,
     /// Edges: chunks refused since attach, by reason (nonzero only).
     pub rejected: Vec<(crate::edge::Rejection, u64)>,
+    /// Edges: one per edge whose newest clock judgement refused a chunk.
+    pub clock_refused: Vec<ClockRefusal>,
+}
+
+/// Why an edge is refusing chunks as
+/// [`Rejection::ClockUncertain`](crate::edge::Rejection::ClockUncertain).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClockRefusal {
+    /// The part whose chunk it refused.
+    pub channel: ChannelId,
+    /// Whose clock mapping is over the bound.
+    pub participant: ParticipantId,
+    /// The mapping's measured error.
+    pub error_ns: u64,
+    /// The bound the edge held it to.
+    pub bound_ns: u64,
+}
+
+impl ClockRefusal {
+    /// The refusal `clocks` (`(whose, error)`) earn a chunk for `channel`
+    /// under `bound_ns`, naming the worst clock; `None` when every one is
+    /// within it.
+    pub fn judge(
+        channel: ChannelId,
+        bound_ns: u64,
+        clocks: [(&ParticipantId, u64); 2],
+    ) -> Option<Self> {
+        let [first, second] = clocks;
+        let (participant, error_ns) = if second.1 > first.1 { second } else { first };
+        (error_ns > bound_ns).then(|| Self {
+            channel,
+            participant: participant.clone(),
+            error_ns,
+            bound_ns,
+        })
+    }
+
+    /// The refusal in words, for `robot`'s part at `path`.
+    pub fn explain(&self, robot: &ParticipantId, path: &str) -> String {
+        let whose = if self.participant == *robot {
+            String::new()
+        } else {
+            format!("{}'s ", self.participant)
+        };
+        format!(
+            "{robot}:{path} refuses chunks: {whose}clock error {} ms is above its {} ms bound; \
+             raise max_clock_error_ms or improve the link",
+            millis_text(self.error_ns),
+            millis_text(self.bound_ns),
+        )
+    }
+}
+
+/// Nanoseconds as milliseconds to one decimal, without a trailing `.0`.
+fn millis_text(ns: u64) -> String {
+    let tenths = ns.saturating_add(50_000) / 100_000;
+    match tenths % 10 {
+        0 => format!("{}", tenths / 10),
+        decimal => format!("{}.{decimal}", tenths / 10),
+    }
 }
 
 /// Host to participant, on the control class.
@@ -141,6 +201,32 @@ mod tests {
         assert_eq!(s.offset_ns(), 5_000_000_000);
         assert_eq!(s.rtt_ns(), 600_000);
         assert!(s.is_valid());
+    }
+
+    #[test]
+    fn a_refusal_names_the_worst_clock_and_reads_in_milliseconds() {
+        let robot = ParticipantId::new("eye-1").expect("id");
+        let policy = ParticipantId::new("policy").expect("id");
+        let channel = ChannelId(4);
+        assert_eq!(
+            ClockRefusal::judge(channel, 5_000_000, [(&robot, 5_000_000), (&policy, 1)]),
+            None
+        );
+        let refusal = ClockRefusal::judge(channel, 5_000_000, [(&robot, 19_500_000), (&policy, 1)])
+            .expect("over");
+        assert_eq!(
+            refusal.explain(&robot, "eyes"),
+            "eye-1:eyes refuses chunks: clock error 19.5 ms is above its 5 ms bound; \
+             raise max_clock_error_ms or improve the link"
+        );
+        let refusal = ClockRefusal::judge(channel, 5_000_000, [(&robot, 1), (&policy, 7_000_000)])
+            .expect("over");
+        assert_eq!(refusal.participant, policy);
+        assert!(
+            refusal
+                .explain(&robot, "eyes")
+                .contains("policy's clock error 7 ms"),
+        );
     }
 
     #[test]

@@ -520,3 +520,53 @@ fn latch_is_refused_on_a_mode_that_does_not_hold_its_target() {
         idle.message
     );
 }
+
+fn clock_bound(extra: &str) -> Result<Duration, CtlError> {
+    let map = format!(
+        r#"{{"arm": {{"kind": "joints", "count": 2, "hz": 50, "command": "position",
+                     "safe": "stop"{extra}}}}}"#
+    );
+    let parts = normalise(&robot(), SPEC_VERSION, &map)?;
+    Ok(parts[0].command.as_ref().expect("command").max_clock_error)
+}
+
+#[test]
+fn the_clock_bound_defaults_to_a_quarter_of_the_age_and_at_least_5_ms() {
+    assert_eq!(clock_bound("").expect("map"), Duration::from_millis(50));
+    assert_eq!(
+        clock_bound(r#", "max_action_age_ms": 1000"#).expect("map"),
+        Duration::from_millis(250)
+    );
+    assert_eq!(
+        clock_bound(r#", "max_action_age_ms": 8"#).expect("map"),
+        Duration::from_millis(5),
+        "the floor holds even above half of a very short age"
+    );
+}
+
+#[test]
+fn an_explicit_clock_bound_is_kept_up_to_half_the_age() {
+    assert_eq!(
+        clock_bound(r#", "max_clock_error_ms": 12.5"#).expect("map"),
+        Duration::from_micros(12_500)
+    );
+    assert_eq!(
+        clock_bound(r#", "max_clock_error_ms": 100"#).expect("half"),
+        Duration::from_millis(100)
+    );
+    let err = clock_bound(r#", "max_clock_error_ms": 100.5"#).expect_err("above half");
+    assert!(err.message.contains("meaningless"), "{}", err.message);
+    assert!(
+        err.message.contains("max_action_age_ms (200)"),
+        "{}",
+        err.message
+    );
+    for bad in ["0", "-1"] {
+        let err = clock_bound(&format!(r#", "max_clock_error_ms": {bad}"#)).expect_err(bad);
+        assert!(
+            err.message.contains("max_clock_error_ms"),
+            "{}",
+            err.message
+        );
+    }
+}

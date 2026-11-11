@@ -217,3 +217,14 @@ def test_latch_is_given_only_when_set(build: Any) -> None:
     assert "latch" not in build()
     assert build(latch=True)["latch"] is True
     assert build(latch=False)["latch"] is False
+
+
+def test_a_commanded_part_takes_a_clock_error_bound() -> None:
+    part = parts.joints(
+        ("pan",),
+        hz=50,
+        command="position",
+        safe=parts.Safe.STOP,
+        max_clock_error_ms=25,
+    )
+    assert part["max_clock_error_ms"] == 25

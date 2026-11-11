@@ -399,6 +399,12 @@ fn control_messages_round_trip() {
         queue_depth: 40,
         health: Health::Degraded,
         rejected: vec![(Rejection::StaleToken, 3), (Rejection::TooOld, 1)],
+        clock_refused: vec![ClockRefusal {
+            channel: ChannelId(2),
+            participant: pid("ur10e"),
+            error_ns: 19_500_000,
+            bound_ns: 5_000_000,
+        }],
     };
     assert_eq!(
         decode_heartbeat(g.add("heartbeat", &encode_heartbeat(&hb))).expect("decode"),
@@ -479,6 +485,12 @@ fn control_messages_round_trip() {
                     queue_depth: 3,
                     health: Health::Degraded,
                     rejected: vec![(Rejection::Unauthenticated, 2), (Rejection::NoLease, 5)],
+                    clock_refused: vec![ClockRefusal {
+                        channel: ChannelId(2),
+                        participant: pid("op"),
+                        error_ns: 6_000_000,
+                        bound_ns: 5_000_000,
+                    }],
                     report: None,
                     last_seq_seen: vec![(ChannelId(2), 77)],
                 },

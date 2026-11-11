@@ -127,6 +127,12 @@ pub enum RunEvent {
         /// How long.
         pending: Duration,
     },
+    /// A robot's edge began refusing this controller's chunks for its
+    /// clock, as the authority state shows it.
+    ClockRefused {
+        /// The refusal in words.
+        message: String,
+    },
 }
 
 impl fmt::Display for RunEvent {
@@ -152,6 +158,7 @@ impl fmt::Display for RunEvent {
             Self::InferencePending { pending } => {
                 write!(f, "inference pending for {:.1} s", pending.as_secs_f64())
             }
+            Self::ClockRefused { message } => f.write_str(message),
         }
     }
 }
@@ -636,6 +643,7 @@ mod tests {
                     drifting, cause, ..
                 } => (*drifting, *cause),
                 RunEvent::InferencePending { .. } => (false, "pending"),
+                RunEvent::ClockRefused { .. } => (false, "clock"),
             })
             .collect();
         assert_eq!(drift.len(), 2, "one event per transition: {events:?}");

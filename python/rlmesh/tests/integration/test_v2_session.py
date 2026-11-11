@@ -270,6 +270,7 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
         assert any(path == "arm" for path, _, _ in driving[-1].based_on)
         edge = ur.robot.edge_stats("arm")
         assert edge["accepted"] > 0 and edge["rejected"] == 0, edge["rejected_by"]
+        assert edge["clock_refused"] is None
         assert edge["modes"]["safe"] == (0, 0), "a released lease never latches safe"
 
 

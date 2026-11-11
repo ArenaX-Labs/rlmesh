@@ -63,8 +63,8 @@ pub struct ChunkMeta {
     pub based_on: Vec<InputRange>,
     /// Edge clock at receipt.
     pub receive_ns: i64,
-    /// `valid_until` in the edge clock, conservatively converted and clamped
-    /// to receipt + `max_action_age`.
+    /// `valid_until` in the edge clock, clamped to receipt +
+    /// `max_action_age`, both less the error of the two clocks.
     pub valid_until_ns: i64,
 }
 

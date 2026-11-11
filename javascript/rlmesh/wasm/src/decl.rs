@@ -485,6 +485,9 @@ mod tests {
             safe_behavior: "stop".into(),
             hold_max: CommandSpec::DEFAULT_HOLD_MAX,
             max_action_age: CommandSpec::DEFAULT_MAX_ACTION_AGE,
+            max_clock_error: CommandSpec::default_max_clock_error(
+                CommandSpec::DEFAULT_MAX_ACTION_AGE,
+            ),
             merge: rlmesh_session_core::wire::MergePolicy::Replace,
             reference: String::new(),
             group: None,

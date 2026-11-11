@@ -599,7 +599,12 @@ class Robot:
         return self._native.now_ns()
 
     def edge_stats(self, path: str) -> dict[str, Any]:
-        """The counters of the edge serving ``path``: accepted, rejected (and ``rejected_by`` reason), mode ticks."""
+        """The counters of the edge serving ``path``.
+
+        Accepted, rejected (and ``rejected_by`` reason), mode ticks, and
+        ``clock_refused``: while its clock error refuses chunks, a dict of
+        ``part``, ``participant``, ``error_ms``, ``bound_ms`` and ``message``.
+        """
         return self._native.edge_stats(path)
 
     def close(self) -> None:
@@ -894,11 +899,13 @@ class Policy:
 
         ``aligned_to`` names the input whose publication the starts are
         phased just after (wall clock), ``phase_offset_ms`` how far.
+        ``clock_refused`` says, per leased part whose edge refuses this
+        policy's chunks for its clock, the measured error and the bound.
         """
         return self._bound().stats()
 
     def events(self) -> list[dict[str, Any]]:
-        """Take the events reported so far: ``rate_drift``, ``inference_pending``."""
+        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``clock_refused``."""
         return self._bound().events()
 
     def close(self) -> None:

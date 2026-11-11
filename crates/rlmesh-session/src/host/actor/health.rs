@@ -24,6 +24,7 @@ impl HostActor {
         };
         link.stats.on_heartbeat(t2);
         link.rejected = heartbeat.rejected;
+        link.clock_refused = heartbeat.clock_refused;
         link.stats.on_report(Report {
             last_seq_seen: heartbeat.last_seq_seen,
             last_chunk_accepted: heartbeat.last_chunk_accepted,
@@ -79,6 +80,7 @@ impl HostActor {
                     queue_depth: row.report.queue_depth,
                     health: row.report.health,
                     rejected: link.rejected.clone(),
+                    clock_refused: link.clock_refused.clone(),
                     report,
                     last_seq_seen: row.report.last_seq_seen,
                 }

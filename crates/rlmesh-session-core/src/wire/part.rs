@@ -455,6 +455,9 @@ pub struct CommandSpec {
     pub hold_max: Duration,
     /// The edge's cap on a chunk's life from receipt.
     pub max_action_age: Duration,
+    /// The largest error, on either end's clock mapping, the edge takes
+    /// chunks under.
+    pub max_clock_error: Duration,
     /// How chunks merge: `Replace` only.
     pub merge: MergePolicy,
     /// `current` or `target` (delta modes).
@@ -476,6 +479,14 @@ impl CommandSpec {
     pub const DEFAULT_HOLD_MAX: Duration = Duration::from_millis(100);
     /// The default open-loop budget.
     pub const DEFAULT_MAX_ACTION_AGE: Duration = Duration::from_millis(200);
+    /// The least clock error bound a part gets without declaring one.
+    pub const MIN_DEFAULT_MAX_CLOCK_ERROR: Duration = Duration::from_millis(5);
+
+    /// The clock error bound of a part that declares none: a quarter of its
+    /// `max_action_age`, at least [`Self::MIN_DEFAULT_MAX_CLOCK_ERROR`].
+    pub fn default_max_clock_error(max_action_age: Duration) -> Duration {
+        (max_action_age / 4).max(Self::MIN_DEFAULT_MAX_CLOCK_ERROR)
+    }
 
     /// Whether this is a delta mode: each action is dispatched at
     /// most once, and Hold dispatches nothing.
@@ -774,6 +785,7 @@ pub(crate) mod tests {
                 safe_behavior: "stop".into(),
                 hold_max: CommandSpec::DEFAULT_HOLD_MAX,
                 max_action_age: CommandSpec::DEFAULT_MAX_ACTION_AGE,
+                max_clock_error: Duration::from_millis(30),
                 merge: MergePolicy::Replace,
                 reference: String::new(),
                 group: Some("arm".into()),

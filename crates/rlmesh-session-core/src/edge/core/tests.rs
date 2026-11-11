@@ -41,7 +41,16 @@ fn robot_map(hold_last: bool) -> String {
                         "command": "delta", "safe": "stop", "group": "arm"}},
             "latched": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
                         "command": "position", "hold_max_ms": 10, "safe": "brake",
-                        "latch": true}}
+                        "latch": true}},
+            "short": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
+                      "command": "position", "safe": "stop", "max_action_age_ms": 40}},
+            "tight": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
+                      "command": "position", "safe": "stop", "max_clock_error_ms": 5}},
+            "mixed": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
+                      "command": "position", "safe": "stop", "group": "mixed"}},
+            "mixed/strict": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
+                             "command": "position", "safe": "stop", "group": "mixed",
+                             "max_clock_error_ms": 5}}
         }}"#
     )
 }

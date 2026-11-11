@@ -12,13 +12,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::wire::{
-    AuthoritySnapshot, Command, CtlStatus, Epoch, Mode, ParticipantId, Reason, ReasonCode,
+    AuthoritySnapshot, ClockRefusal, Command, CtlStatus, Epoch, Mode, ParticipantId, Reason,
+    ReasonCode,
 };
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::edge::Rejection;
+use crate::edge::{EdgeCore, Rejection};
 use crate::error::SessionError;
 #[cfg(doc)]
 use crate::participant::ParticipantConfig;
@@ -33,6 +34,8 @@ pub struct EdgeReport {
     /// Chunks refused, by reason in [`Rejection::ALL`] order, over every
     /// edge of the robot.
     rejected: [AtomicU64; Rejection::ALL.len()],
+    /// One per edge whose newest clock judgement refused a chunk.
+    clock_refused: Mutex<Vec<ClockRefusal>>,
 }
 
 impl EdgeReport {
@@ -64,6 +67,18 @@ impl EdgeReport {
             .map(|r| (*r, self.rejected[r.index()].load(Ordering::Relaxed)))
             .filter(|(_, n)| *n > 0)
             .collect()
+    }
+
+    /// Records `edge`'s newest clock judgement.
+    pub fn set_clock_refused(&self, edge: &EdgeCore) {
+        let mut refused = lock(&self.clock_refused);
+        refused.retain(|r| !edge.parts().any(|p| p.channel == r.channel));
+        refused.extend(edge.clock_refused().cloned());
+    }
+
+    /// One per edge whose newest clock judgement refused a chunk.
+    pub fn clock_refused(&self) -> Vec<ClockRefusal> {
+        lock(&self.clock_refused).clone()
     }
 
     /// `(last accepted, last applied, queue depth)`.

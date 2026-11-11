@@ -16,7 +16,7 @@ use crate::wire::authority::{
 };
 use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 use crate::wire::health::{HostHealth, LinkHealth};
-use crate::wire::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
+use crate::wire::heartbeat::{ClockRefusal, Health, Heartbeat, HeartbeatEcho, TimingSample};
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken};
 use crate::wire::lockstep::{
     LockstepOp, LockstepReply, LockstepRequest, LockstepReset, LockstepResponse, LockstepResult,

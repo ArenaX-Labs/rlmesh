@@ -1653,6 +1653,7 @@ impl NativePolicy {
                         info.kind = "inference_pending".into();
                         info.pending_s = Some(pending.as_secs_f64());
                     }
+                    RunEvent::ClockRefused { .. } => info.kind = "clock_refused".into(),
                 }
                 info
             })

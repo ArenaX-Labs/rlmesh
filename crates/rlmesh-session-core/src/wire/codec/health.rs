@@ -9,7 +9,7 @@ use prost::Message as _;
 use crate::edge::Rejection;
 use crate::wire::error::WireError;
 use crate::wire::health::{HostHealth, LinkHealth};
-use crate::wire::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
+use crate::wire::heartbeat::{ClockRefusal, Health, Heartbeat, HeartbeatEcho, TimingSample};
 use crate::wire::ids::{ChannelId, Epoch, ParticipantId};
 use crate::wire::report::{ParticipantReport, PublisherCounters, RunCounters};
 
@@ -35,6 +35,7 @@ pub fn encode_heartbeat(hb: &Heartbeat) -> Vec<u8> {
         queue_depth: hb.queue_depth,
         health: health_to_pb(hb.health) as i32,
         rejected: rejected_to_pb(&hb.rejected),
+        clock_refused: clock_refused_to_pb(&hb.clock_refused),
     }
     .encode_to_vec()
 }
@@ -59,6 +60,32 @@ fn health_from_pb(raw: i32) -> Health {
 }
 
 /// Rejection counts on the wire: the reason's stats index plus one.
+fn clock_refused_to_pb(refused: &[ClockRefusal]) -> Vec<pb::ClockRefusal> {
+    refused
+        .iter()
+        .map(|r| pb::ClockRefusal {
+            channel: r.channel.0,
+            participant: r.participant.to_string(),
+            error_ns: r.error_ns,
+            bound_ns: r.bound_ns,
+        })
+        .collect()
+}
+
+fn clock_refused_from_pb(refused: Vec<pb::ClockRefusal>) -> Result<Vec<ClockRefusal>, WireError> {
+    refused
+        .into_iter()
+        .map(|r| {
+            Ok(ClockRefusal {
+                channel: ChannelId(r.channel),
+                participant: r.participant.parse()?,
+                error_ns: r.error_ns,
+                bound_ns: r.bound_ns,
+            })
+        })
+        .collect()
+}
+
 fn rejected_to_pb(rejected: &[(Rejection, u64)]) -> Vec<pb::RejectionCount> {
     rejected
         .iter()
@@ -102,6 +129,7 @@ pub fn decode_heartbeat(buf: &[u8]) -> Result<Heartbeat, WireError> {
         queue_depth: hb.queue_depth,
         health: health_from_pb(hb.health),
         rejected: rejected_from_pb(hb.rejected),
+        clock_refused: clock_refused_from_pb(hb.clock_refused)?,
     })
 }
 
@@ -230,6 +258,7 @@ pub fn encode_health(health: &HostHealth) -> Vec<u8> {
                 queue_depth: l.queue_depth,
                 health: health_to_pb(l.health) as i32,
                 rejected: rejected_to_pb(&l.rejected),
+                clock_refused: clock_refused_to_pb(&l.clock_refused),
                 report: l.report.as_ref().map(report_to_pb),
                 last_seq_seen: l
                     .last_seq_seen
@@ -268,6 +297,7 @@ pub fn decode_health(buf: &[u8]) -> Result<HostHealth, WireError> {
                     queue_depth: l.queue_depth,
                     health: health_from_pb(l.health),
                     rejected: rejected_from_pb(l.rejected),
+                    clock_refused: clock_refused_from_pb(l.clock_refused)?,
                     report: l.report.map(report_from_pb).transpose()?,
                     last_seq_seen: l
                         .last_seq_seen

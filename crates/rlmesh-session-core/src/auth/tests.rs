@@ -134,6 +134,7 @@ fn a_link_seals_verbs_and_heartbeats_and_takes_only_the_hosts_replies_and_broadc
         queue_depth: 0,
         health: crate::wire::heartbeat::Health::Ok,
         rejected: Vec::new(),
+        clock_refused: Vec::new(),
     };
     let mut hb = link.heartbeat("hb", &heartbeat).expect("seal");
     assert_eq!(

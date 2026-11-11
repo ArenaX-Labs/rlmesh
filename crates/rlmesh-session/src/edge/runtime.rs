@@ -122,6 +122,7 @@ impl Shared {
             let mut core = self.core();
             let outcome = core.accept(chunk.clone(), receive_ns, view, observed);
             self.report.set_queue_depth(core.queue_depth());
+            self.report.set_clock_refused(&core);
             outcome.map(|_| receive_ns)
         });
         match accepted {

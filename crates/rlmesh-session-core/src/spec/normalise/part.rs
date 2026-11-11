@@ -65,6 +65,7 @@ pub(super) struct PartDecl {
     safe: Option<String>,
     hold_max_ms: Option<f64>,
     max_action_age_ms: Option<f64>,
+    max_clock_error_ms: Option<f64>,
     latch: Option<bool>,
     limits: Option<BTreeMap<String, LimitDecl>>,
     merge: Option<String>,
@@ -77,7 +78,7 @@ pub(super) struct PartDecl {
 impl PartDecl {
     /// The keys this declaration sets.
     fn present(&self) -> Vec<&'static str> {
-        let keys: [(&'static str, bool); 43] = [
+        let keys: [(&'static str, bool); 44] = [
             ("kind", true),
             ("hz", self.hz.is_some()),
             ("send", self.send.is_some()),
@@ -116,6 +117,7 @@ impl PartDecl {
             ("safe", self.safe.is_some()),
             ("hold_max_ms", self.hold_max_ms.is_some()),
             ("max_action_age_ms", self.max_action_age_ms.is_some()),
+            ("max_clock_error_ms", self.max_clock_error_ms.is_some()),
             ("latch", self.latch.is_some()),
             ("limits", self.limits.is_some()),
             ("merge", self.merge.is_some()),
@@ -644,6 +646,29 @@ pub(super) fn part(
                     ),
                 ));
             }
+            let max_action_age = decl
+                .max_action_age_ms
+                .map(|ms| millis(path, "max_action_age_ms", ms, false))
+                .transpose()?
+                .unwrap_or(CommandSpec::DEFAULT_MAX_ACTION_AGE);
+            let max_clock_error = match decl.max_clock_error_ms {
+                Some(ms) => {
+                    let bound = millis(path, "max_clock_error_ms", ms, false)?;
+                    if bound > max_action_age / 2 {
+                        return Err(invalid(
+                            path,
+                            format!(
+                                "max_clock_error_ms {ms} is above half of max_action_age_ms ({}): \
+                                 a chunk's age counts the error of both clocks, so an error \
+                                 that large makes the age limit meaningless",
+                                max_action_age.as_secs_f64() * 1e3
+                            ),
+                        ));
+                    }
+                    bound
+                }
+                None => CommandSpec::default_max_clock_error(max_action_age),
+            };
             (
                 Some(CommandSpec {
                     hold_last,
@@ -659,11 +684,8 @@ pub(super) fn part(
                         .map(|ms| millis(path, "hold_max_ms", ms, true))
                         .transpose()?
                         .unwrap_or(CommandSpec::DEFAULT_HOLD_MAX),
-                    max_action_age: decl
-                        .max_action_age_ms
-                        .map(|ms| millis(path, "max_action_age_ms", ms, false))
-                        .transpose()?
-                        .unwrap_or(CommandSpec::DEFAULT_MAX_ACTION_AGE),
+                    max_action_age,
+                    max_clock_error,
                     merge,
                     reference,
                     group: decl.group.map(|g| name(path, "group", &g)).transpose()?,

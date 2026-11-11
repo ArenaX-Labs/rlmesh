@@ -836,6 +836,22 @@ impl PyRobot {
             }
         }
         d.set_item("rejected_by", rejected_by)?;
+        let clock_refused = stats
+            .clock_refused
+            .as_ref()
+            .map(|r| {
+                let robot = self.robot()?;
+                let path = robot.path_of(r.channel).unwrap_or(path);
+                let refused = PyDict::new(py);
+                refused.set_item("part", path)?;
+                refused.set_item("participant", r.participant.as_str())?;
+                refused.set_item("error_ms", r.error_ns as f64 * 1e-6)?;
+                refused.set_item("bound_ms", r.bound_ns as f64 * 1e-6)?;
+                refused.set_item("message", r.explain(robot.participant().id(), path))?;
+                PyResult::Ok(refused)
+            })
+            .transpose()?;
+        d.set_item("clock_refused", clock_refused)?;
         d.set_item("clamped", stats.clamped)?;
         d.set_item("handovers", stats.handovers)?;
         d.set_item("safe_reports", stats.safe_reports)?;
@@ -1560,6 +1576,12 @@ impl PyController {
         d.set_item("latency_p99_ms", ms(stats.latency_p99))?;
         d.set_item("latency_max_ms", ms(stats.latency_max))?;
         d.set_item("drifting", stats.drifting)?;
+        let refused: Vec<String> = controller
+            .clock_refusals()
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect();
+        d.set_item("clock_refused", refused)?;
         Ok(d)
     }
 
@@ -1589,6 +1611,7 @@ impl PyController {
                     d.set_item("kind", "inference_pending")?;
                     d.set_item("pending_s", pending.as_secs_f64())?;
                 }
+                RunEvent::ClockRefused { .. } => d.set_item("kind", "clock_refused")?,
             }
             list.append(d)?;
         }

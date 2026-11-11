@@ -59,6 +59,7 @@ fn command_to_pb(c: &CommandSpec) -> pb::Command {
         safe_behavior: c.safe_behavior.clone(),
         hold_max_ns: duration_ns(c.hold_max),
         max_action_age_ns: duration_ns(c.max_action_age),
+        max_clock_error_ns: duration_ns(c.max_clock_error),
         merge: match c.merge {
             MergePolicy::Replace => pb::MergePolicy::Replace,
         } as i32,
@@ -87,6 +88,7 @@ fn command_from_pb(c: pb::Command) -> Result<CommandSpec, WireError> {
         safe_behavior: c.safe_behavior,
         hold_max: Duration::from_nanos(c.hold_max_ns),
         max_action_age: Duration::from_nanos(c.max_action_age_ns),
+        max_clock_error: Duration::from_nanos(c.max_clock_error_ns),
         merge: match pb::MergePolicy::try_from(c.merge) {
             Ok(pb::MergePolicy::Replace | pb::MergePolicy::Unspecified) => MergePolicy::Replace,
             Err(_) => return Err(bad_enum("merge policy", c.merge)),

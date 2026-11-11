@@ -363,6 +363,7 @@ mod tests {
             safe_behavior: "stop".into(),
             hold_max: Duration::from_millis(100),
             max_action_age: Duration::from_millis(200),
+            max_clock_error: Duration::from_millis(50),
             merge: MergePolicy::Replace,
             reference: "current".into(),
             group: None,

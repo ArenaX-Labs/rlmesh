@@ -67,9 +67,9 @@ fn clock_conversion_never_extends_a_deadline_and_transit_is_checked() {
     chunk.valid_until_ns = session_now + 30 * MS;
     chunk.publish_ns = 0;
     f.accept(chunk, 0).expect("accept");
-    // valid_until converts to 30 − 2 = 28 ms local.
-    assert_eq!(f.tick(27 * MS).mode, EdgeMode::Driving);
-    let tick = f.tick(29 * MS);
+    // valid_until converts to 30 − 2 − 2 = 26 ms local.
+    assert_eq!(f.tick(25 * MS).mode, EdgeMode::Driving);
+    let tick = f.tick(27 * MS);
     assert_eq!(
         tick.mode,
         EdgeMode::Hold,
@@ -96,10 +96,11 @@ fn clock_conversion_never_extends_a_deadline_and_transit_is_checked() {
         Err(Rejection::LeaseExpired)
     );
 
-    // An uncertain or missing mapping refuses chunks (5 ms by default).
+    // An uncertain or missing mapping refuses chunks (a quarter of the
+    // part's 200 ms age by default).
     let mut f = Fixture::new();
     let lease = f.grant("policy", 0);
-    f.mapping = Some((0, 6 * MS as u64));
+    f.mapping = Some((0, 51 * MS as u64));
     f.publish(0);
     assert_eq!(
         f.accept(f.chunk("policy", &lease, 1, 0, 10), 0),
@@ -116,6 +117,101 @@ fn clock_conversion_never_extends_a_deadline_and_transit_is_checked() {
         EdgeMode::Idle,
         "untimed and nothing applied"
     );
+}
+
+fn at_error(path: &str, error_ms: u64) -> (Fixture, Result<SpliceOutcome, Rejection>) {
+    let mut f = Fixture::with(EdgeConfig::default(), true, &[path], None);
+    let lease = f.grant_with("policy", path, &[], 0);
+    f.mapping = Some((0, error_ms * MS as u64));
+    f.publish(0);
+    let chunk = f.chunk_for(path, "policy", &lease, 1, 0, 10, 0.0);
+    let outcome = f.accept(chunk, 0);
+    (f, outcome)
+}
+
+#[test]
+fn a_chunk_is_judged_against_its_parts_clock_bound() {
+    let (f, outcome) = at_error("cmd", 20);
+    outcome.expect("20 ms under the default 50 ms");
+    assert_eq!(f.edge.clock_refused(), None);
+
+    let (f, outcome) = at_error("tight", 20);
+    assert_eq!(outcome, Err(Rejection::ClockUncertain));
+    let refused = f.edge.clock_refused().expect("explained");
+    assert_eq!(
+        (refused.error_ns, refused.bound_ns),
+        (20 * MS as u64, 5 * MS as u64)
+    );
+    assert_eq!(f.edge.stats().clock_refused.as_ref(), Some(refused));
+}
+
+#[test]
+fn a_group_takes_its_strictest_members_clock_bound() {
+    let mut f = Fixture::with(
+        EdgeConfig::default(),
+        true,
+        &["mixed", "mixed/strict"],
+        None,
+    );
+    let lease = f.grant_with("policy", "mixed", &[], 0);
+    f.mapping = Some((0, 20 * MS as u64));
+    f.publish(0);
+    let chunk = f.chunk_for("mixed", "policy", &lease, 1, 0, 10, 0.0);
+    assert_eq!(f.accept(chunk, 0), Err(Rejection::ClockUncertain));
+    let snapshot = f.snapshot.as_ref().expect("published");
+    let channel = lease.channel;
+    assert_eq!(
+        snapshot.clock_refusal(channel, &pid("policy")).as_ref(),
+        f.edge.clock_refused(),
+        "the authority state judges as the edge does"
+    );
+}
+
+#[test]
+fn a_passing_judgement_clears_the_refusal() {
+    let (mut f, outcome) = at_error("tight", 20);
+    assert_eq!(outcome, Err(Rejection::ClockUncertain));
+    let lease = f.snapshot.as_ref().expect("published").leases[0].clone();
+    f.mapping = Some((0, MS as u64));
+    f.publish(0);
+    let chunk = f.chunk_for("tight", "policy", &lease, 2, 0, 10, 0.0);
+    f.accept(chunk, 0).expect("back within the bound");
+    assert_eq!(f.edge.clock_refused(), None);
+}
+
+#[test]
+fn a_chunks_life_is_shortened_by_both_clocks_error() {
+    // 5 ms of error on each clock, a 40 ms age: an action counts as up to
+    // 10 ms older, so a long chunk plays to 30 ms, not 40.
+    let mut f = Fixture::with(EdgeConfig::default(), true, &["short"], None);
+    let lease = f.grant_with("policy", "short", &[], 0);
+    f.mapping = Some((0, 5 * MS as u64));
+    f.publish(0);
+    let mut chunk = f.chunk_for("short", "policy", &lease, 1, 0, 60, 0.0);
+    chunk.valid_until_ns = 90 * MS;
+    f.accept(chunk, 0).expect("accept");
+    assert_eq!(f.tick(29 * MS).mode, EdgeMode::Driving);
+    assert_eq!(f.tick(31 * MS).mode, EdgeMode::Hold);
+
+    // A window the source stated counts both clocks too.
+    let mut f = Fixture::new();
+    let lease = f.grant("policy", 0);
+    f.mapping = Some((0, 10 * MS as u64));
+    f.publish(0);
+    let mut chunk = f.chunk("policy", &lease, 1, 0, 100);
+    chunk.valid_until_ns = 50 * MS;
+    f.accept(chunk, 0).expect("accept");
+    assert_eq!(f.tick(29 * MS).mode, EdgeMode::Driving);
+    assert_eq!(f.tick(31 * MS).mode, EdgeMode::Hold, "50 − 10 − 10");
+
+    // The transit check counts them as well: 121 + 80 > 200.
+    let mut f = Fixture::new();
+    let lease = f.grant("policy", 0);
+    f.mapping = Some((0, 40 * MS as u64));
+    f.publish(0);
+    let mut chunk = f.chunk("policy", &lease, 1, 0, 10);
+    chunk.publish_ns = -121 * MS;
+    assert_eq!(f.accept(chunk, 0), Err(Rejection::TooOld));
 }
 
 #[test]
