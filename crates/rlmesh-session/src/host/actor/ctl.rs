@@ -20,7 +20,7 @@ use crate::authority::{Applied as Accepted, Identity};
 #[cfg(feature = "fleet")]
 use crate::host::actor::LobbyWaiting;
 use crate::host::actor::Outcome;
-use crate::host::actor::publish::{asks_for_view, view_of};
+use crate::host::actor::publish::asks_for_view;
 use crate::host::peer::Peer;
 use crate::host::{HostActor, lock};
 #[cfg(feature = "fleet")]
@@ -410,7 +410,7 @@ impl HostActor {
         // never decodes the state. A refusal carries no view: the reason is
         // what it needs, and its view keeps coming on its own.
         if asks_for_view(&state, to) {
-            let view = result.is_ok().then(|| view_of(&state, to, parts));
+            let view = result.is_ok().then(|| self.view_for(&state, to, parts));
             return codec::encode_view_reply(&ViewReply {
                 result,
                 view,

@@ -86,10 +86,23 @@ impl HostActor {
             Self::discard(query);
             return;
         }
-        match self.sign_view(&view_of(&snapshot, &robot, false)) {
+        match self.sign_view(&self.view_for(&snapshot, &robot, false)) {
             Some(signed) => Self::reply(query, signed),
             None => Self::discard(query),
         }
+    }
+
+    /// `robot`'s view of `snapshot` as it asked for it ([`view_of`]), with
+    /// its datagram routes while it is on the path.
+    pub(super) fn view_for(
+        &self,
+        snapshot: &AuthoritySnapshot,
+        robot: &ParticipantId,
+        parts: bool,
+    ) -> DeviceView {
+        let mut view = view_of(snapshot, robot, parts);
+        view.datagram = self.routes_of(robot);
+        view
     }
 
     /// A robot's view as a `Signed` broadcast (kind 22).
@@ -122,7 +135,7 @@ impl HostActor {
             if !asks_for_view(snapshot, robot) {
                 continue;
             }
-            let view = view_of(snapshot, robot, false);
+            let view = self.view_for(snapshot, robot, false);
             let wait = self.views.get(robot).is_some_and(|last| {
                 let unchanged = *last
                     == DeviceView {

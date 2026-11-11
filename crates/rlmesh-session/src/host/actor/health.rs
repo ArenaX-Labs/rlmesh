@@ -27,6 +27,7 @@ impl HostActor {
         link.clock_refused = heartbeat.clock_refused;
         link.chunk_timing = heartbeat.chunk_timing;
         link.chunks_accepted = heartbeat.chunks_accepted;
+        link.datagram = heartbeat.datagram;
         link.stats.on_report(Report {
             last_seq_seen: heartbeat.last_seq_seen,
             last_chunk_accepted: heartbeat.last_chunk_accepted,
@@ -69,6 +70,7 @@ impl HostActor {
                     .as_ref()
                     .and_then(|p| p.current.get(id))
                     .and_then(|peer| lock(&peer.report).clone());
+                let (data_path, datagram_host) = self.data_path(id);
                 LinkHealth {
                     participant: Some(id.clone()),
                     heartbeats: row.heartbeats,
@@ -87,7 +89,9 @@ impl HostActor {
                     last_seq_seen: row.report.last_seq_seen,
                     chunk_timing: link.chunk_timing.clone(),
                     chunks_accepted: link.chunks_accepted,
-                    ..LinkHealth::default()
+                    data_path,
+                    datagram_board: link.datagram,
+                    datagram_host,
                 }
             })
             .collect();
@@ -133,6 +137,10 @@ impl HostActor {
                     .iter()
                     .map(|(channel, _)| (*channel, self.authority.part_name(*channel)))
                     .collect();
+                row.chunk_timing = link.chunk_timing.clone();
+                row.chunks_accepted = link.chunks_accepted;
+                (row.data_path, row.datagram_host) = self.data_path(id);
+                row.datagram_board = link.datagram;
                 row
             })
             .collect()

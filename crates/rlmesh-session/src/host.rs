@@ -49,10 +49,12 @@
 
 mod actor;
 mod config;
+mod datagram;
 mod history;
 mod peer;
 
 pub use config::{HistoryConfig, HostConfig, KeepRecording};
+pub use datagram::DatagramRelay;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicU64;
@@ -196,6 +198,13 @@ impl SessionHost {
         for (robot, pin) in &config.pins {
             auth.pin(robot, Some(pin.clone()));
         }
+        // Wall-clock sessions only: a virtual clock's barrier counts on every
+        // sample, which a datagram may lose.
+        let datagram = config
+            .datagram
+            .clone()
+            .filter(|_| config.virtual_clock.is_none());
+        auth.offer_datagram(datagram.as_ref().map(|relay| relay.offer()));
         let signer = config.identity.signer(host_instance);
 
         let (hb_tx, hb_rx) = mpsc::channel(HEARTBEAT_QUEUE);
@@ -329,6 +338,7 @@ impl SessionHost {
             #[cfg(feature = "fleet")]
             lobby_answers,
             quiet: crate::quiet::Quiet::default(),
+            datagram: datagram.map(actor::DatagramSession::new),
         };
         actor.publish().await;
         info!(session = %actor.config.session, key = actor.keys.prefix(), "session host up");
@@ -547,6 +557,8 @@ struct HostActor {
     lobby_answers: mpsc::UnboundedReceiver<LobbyDone>,
     /// Warnings held back while their subject's last one is recent.
     quiet: crate::quiet::Quiet,
+    /// Its robots on the host's datagram path, when it offers one.
+    datagram: Option<actor::DatagramSession>,
 }
 
 /// Whether a liveliness token on `key` is declared: a participant that left

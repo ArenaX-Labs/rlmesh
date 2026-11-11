@@ -46,6 +46,7 @@ use rlmesh_session::auth::address::{base32, unbase32};
 use rlmesh_session::authority::SealPolicy;
 #[cfg(feature = "fleet")]
 use rlmesh_session::discovery;
+use rlmesh_session::host::DatagramRelay;
 use rlmesh_session::pairing::PairService;
 use rlmesh_session::record::Rolling;
 use rlmesh_session::server::SessionServer;
@@ -54,7 +55,7 @@ use rlmesh_session::wire::{PairInfo, Role, TenantId};
 use rlmesh_session::{HostConfig, SystemMonotonicClock};
 use zeroize::Zeroizing;
 
-use crate::cli::HostArgs;
+use crate::cli::{BoardData, HostArgs};
 use crate::devices::{DEVICES, Pin, Table};
 #[cfg(feature = "fleet")]
 use crate::lobby::Home;
@@ -204,6 +205,19 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     let (transport, base) = address::open_listeners_with(base, None, tuning)
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
+    if args.board_data == BoardData::Udp {
+        // The realtime class's port number, on UDP.
+        let at = SocketAddr::new(base.ip(), base.port().saturating_add(1));
+        let relay = DatagramRelay::bind(at)
+            .await
+            .with_context(|| format!("could not listen on udp/{at} for --board-data udp"))?;
+        writeln!(
+            stdout,
+            "boards' realtime parts over UDP port {} (open it in the firewall)",
+            relay.port()
+        )?;
+        config.datagram = Some(relay);
+    }
     let recordings = recordings(args)?;
     let server = Arc::new(match &recordings {
         Some(dir) => {

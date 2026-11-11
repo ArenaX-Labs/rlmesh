@@ -3,6 +3,9 @@
 
 mod access;
 mod ctl;
+mod datagram;
+
+pub(super) use datagram::DatagramSession;
 mod grant;
 mod handshake;
 mod health;
@@ -16,7 +19,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::wire::{
-    ChunkTiming, ClockRefusal, CtlError, Epoch, IssuedKey, Lease, LeaseToken, ParticipantId,
+    ChunkTiming, ClockRefusal, CtlError, DatagramStats, Epoch, IssuedKey, Lease, LeaseToken,
+    ParticipantId,
 };
 use rlmesh_session_core::auth::issuer::GrantId;
 use tokio::sync::mpsc;
@@ -51,6 +55,9 @@ pub(super) struct Link {
     /// accepted (its latest heartbeat).
     chunk_timing: Vec<ChunkTiming>,
     chunks_accepted: u64,
+    /// A board on the datagram path: its end's counters (its latest
+    /// heartbeat).
+    datagram: Option<DatagramStats>,
 }
 
 type Fifo<T> = zenoh::handlers::FifoChannelHandler<T>;
@@ -245,6 +252,7 @@ impl HostActor {
                     // heartbeats bring goes out on the tick it arrives,
                     // not a quarter grace later.
                     self.publish_renewals(heard.listening()).await;
+                    self.check_datagram().await;
                 }
                 _ = republish.tick() => self.publish().await,
                 _ = health_out.tick() => self.publish_health().await,
@@ -306,6 +314,7 @@ impl HostActor {
             self.warn_of(&event);
             match &event {
                 AuthorityEvent::Attached { participant, .. } => {
+                    self.log_data_path(participant);
                     let generation = self.declare_echo(participant).await;
                     let offset = self.config.offset;
                     // A new generation is a new process, on its own clock.
@@ -324,6 +333,7 @@ impl HostActor {
                                 clock_refused: Vec::new(),
                                 chunk_timing: Vec::new(),
                                 chunks_accepted: 0,
+                                datagram: None,
                             },
                         );
                     }
@@ -359,6 +369,7 @@ impl HostActor {
             .issuer()
             .end_tokens(|token| authority.leases().any(|l| l.token == token));
         self.sync_streams();
+        self.sync_datagram().await;
         self.epoch
             .store(self.authority.epoch().0, Ordering::Relaxed);
         self.publish().await;

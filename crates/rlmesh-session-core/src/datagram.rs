@@ -294,11 +294,17 @@ impl Arrivals {
 /// redirects the stream (nor turns the host on a third party), and a robot
 /// whose address changes (NAT rebinding, a DHCP renewal) is followed with
 /// its next one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Learned<A> {
     at: Option<A>,
     /// Times it moved after the first.
     pub moves: u32,
+}
+
+impl<A> Default for Learned<A> {
+    fn default() -> Self {
+        Self { at: None, moves: 0 }
+    }
 }
 
 impl<A: PartialEq + Copy> Learned<A> {
@@ -327,11 +333,20 @@ impl<A: PartialEq + Copy> Learned<A> {
 
 /// One route's datagram waiting to go: only the newest. A newer one replaces
 /// it, so a path that cannot keep up sends the latest instead of a backlog.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Latest<T> {
     waiting: Option<T>,
     /// Datagrams replaced before they went.
     pub replaced: u64,
+}
+
+impl<T> Default for Latest<T> {
+    fn default() -> Self {
+        Self {
+            waiting: None,
+            replaced: 0,
+        }
+    }
 }
 
 impl<T> Latest<T> {

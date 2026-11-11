@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 
-use crate::wire::{ChannelId, Health, ParticipantId};
+use crate::wire::{ChannelId, ChunkTiming, DataPath, DatagramStats, Health, ParticipantId};
 
 use crate::clock::OffsetEstimate;
 
@@ -40,6 +40,11 @@ pub struct Report {
 }
 
 impl LinkStats {
+    /// When the newest heartbeat arrived (host clock).
+    pub fn last_arrival_ns(&self) -> Option<i64> {
+        self.last_arrival_ns
+    }
+
     /// Stats over the last `window` heartbeat gaps.
     pub fn new(window: usize) -> Self {
         Self {
@@ -99,6 +104,11 @@ impl LinkStats {
             offset: estimate,
             report: self.report.clone(),
             parts: BTreeMap::new(),
+            chunk_timing: Vec::new(),
+            chunks_accepted: 0,
+            data_path: DataPath::Unknown,
+            datagram_board: None,
+            datagram_host: None,
         }
     }
 }
@@ -124,6 +134,18 @@ pub struct ParticipantHealth {
     pub report: Report,
     /// The report's streams by name, `robot:path`.
     pub parts: BTreeMap<ChannelId, String>,
+    /// Edges: how each commanded part's chunks arrived, and how many were
+    /// accepted (its latest heartbeat).
+    pub chunk_timing: Vec<ChunkTiming>,
+    /// Edges: chunks accepted since attach.
+    pub chunks_accepted: u64,
+    /// Robots: the path their realtime parts ride.
+    pub data_path: DataPath,
+    /// Robots on the datagram path: the board's counters (its heartbeat)
+    /// and the host's for it.
+    pub datagram_board: Option<DatagramStats>,
+    /// The host's counters for it.
+    pub datagram_host: Option<DatagramStats>,
 }
 
 fn ms(ns: u64) -> f64 {
@@ -167,6 +189,23 @@ impl fmt::Display for ParticipantHealth {
                 self.report.last_chunk_accepted,
                 self.report.last_chunk_applied,
                 self.report.queue_depth
+            )?;
+        }
+        if self.data_path != DataPath::Unknown {
+            write!(f, " path={}", self.data_path.name())?;
+        }
+        if let (Some(board), Some(host)) = (self.datagram_board, self.datagram_host) {
+            write!(
+                f,
+                " udp down sent={} got={} lost={} unopened={} up sent={} got={} lost={} unopened={}",
+                host.sent,
+                board.received,
+                board.lost,
+                board.unopened,
+                board.sent,
+                host.received,
+                host.lost,
+                host.unopened
             )?;
         }
         Ok(())

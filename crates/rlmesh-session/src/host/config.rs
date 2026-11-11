@@ -115,6 +115,10 @@ pub struct HostConfig {
     /// recording, and says where. `None` by default: refused UNSUPPORTED. A
     /// recording [`crate::server::SessionServer`] sets it.
     pub keep: Option<KeepRecording>,
+    /// The host's datagram path: robots that take it get their realtime
+    /// parts over UDP. `None` by default: every part rides the session's
+    /// links, and the handshake offers nothing. Wall-clock sessions only.
+    pub datagram: Option<Arc<crate::host::DatagramRelay>>,
 }
 
 /// Keeps `session`'s recent recording as an incident named `label`: where
@@ -159,6 +163,7 @@ impl HostConfig {
             #[cfg(feature = "fleet")]
             lobby: None,
             keep: None,
+            datagram: None,
         }
     }
 
@@ -209,7 +214,8 @@ impl std::fmt::Debug for HostConfig {
             .field("devices", &self.devices)
             .field("pins", &self.pins)
             .field("rearm_robots", &self.rearm_robots)
-            .field("places", &self.places);
+            .field("places", &self.places)
+            .field("datagram", &self.datagram.as_ref().map(|d| d.port()));
         #[cfg(feature = "fleet")]
         f.field("scene", &self.scene)
             .field("lobby", &self.lobby.is_some());
