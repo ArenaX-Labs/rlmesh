@@ -63,7 +63,10 @@
 //!   are opened afresh, so a restarted publisher's samples are taken from its
 //!   first. An input whose publisher is gone reports it once
 //!   ([`RunEvent::InputLost`]), its skipped starts count as
-//!   `publisher_gone`, and coming back reports [`RunEvent::Rebound`]. If a
+//!   `publisher_gone`, and coming back reports [`RunEvent::Rebound`]. A
+//!   robot it uses that left with all its parts (closed, or restarting) is
+//!   waited for the same way, its only robot too: the run never ends for
+//!   it. If a
 //!   part the binding uses comes back as something the policy cannot bind to,
 //!   the run stops with [`RunError::Rebind`] naming it.
 //!
@@ -1066,6 +1069,16 @@ impl Rebinder {
         let next = match participant.bind(&self.policy, &self.options) {
             Ok(next) => next,
             Err(err) if err.waiting_for().is_some() => return Ok(None),
+            // A robot it uses left with its parts (it closed, or its
+            // process is restarting): its inputs are lost meanwhile, and it
+            // binds again once the robot declares its parts.
+            Err(_)
+                if participant
+                    .authority_view()
+                    .with(|view| view.is_some_and(|view| !gone_robots(view, old).is_empty())) =>
+            {
+                return Ok(None);
+            }
             Err(err) => {
                 let uses = rows(old).any(|(_, part)| changed.contains(&part.owner));
                 if !uses {
@@ -1151,6 +1164,19 @@ fn rows(binding: &Binding) -> impl Iterator<Item = (&str, &PartSpec)> {
                 .iter()
                 .filter_map(|r| Some((r.entry.as_str(), r.part.as_ref()?))),
         )
+}
+
+/// The robots `binding` reads or commands that declare no part in `view`:
+/// gone from the session, or not declaring their parts yet.
+fn gone_robots<'a>(view: &AuthoritySnapshot, binding: &'a Binding) -> Vec<&'a ParticipantId> {
+    let mut gone: Vec<&ParticipantId> = Vec::new();
+    for (_, part) in rows(binding) {
+        let owner = &part.owner;
+        if !gone.contains(&owner) && !view.parts.iter().any(|p| &p.owner == owner) {
+            gone.push(owner);
+        }
+    }
+    gone
 }
 
 /// The inputs of `binding` whose publisher `view` shows gone: absent, or no

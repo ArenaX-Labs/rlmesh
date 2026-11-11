@@ -754,3 +754,116 @@ async fn a_blank_input_reads_its_robot_once_it_joins() {
     eye_loop.end();
     arm_loop.end();
 }
+
+/// Reads the arm and holds it at 0.5.
+const HOLD: &str = r#"{
+    "hz": 50,
+    "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
+    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
+                        "hz": 100, "chunk": 5}}
+}"#;
+
+/// Holds the arm at 0.5.
+struct Hold;
+
+impl Predictor for Hold {
+    type Error = String;
+
+    fn predict(&mut self, _: Observation, _: i64) -> Result<Vec<(String, Value)>, String> {
+        Ok(vec![(
+            "arm".into(),
+            Value::Tensor(Tensor::from_f64(DType::F32, vec![5, 6], &[0.5; 30])),
+        )])
+    }
+}
+
+/// A policy whose only robot closes cleanly: the run keeps going, its starts
+/// skipped as `publisher_gone` with the robot named, for as long as the
+/// robot stays away; when a robot of that name comes back, the policy binds
+/// again and drives it. Bound to the robot by name (`named`), or to the
+/// session's view.
+async fn only_robot_closes_and_returns(named: bool) {
+    let world = World::start().await;
+    let arm = world.robot("ur10e", ARM).await;
+    arm.participant().arm().await.expect("arm");
+    let log: Log = Arc::default();
+    let arm_loop = spin_arm(arm.clone(), log.clone());
+    let p = world.join("holder", vec![Role::Controller]).await;
+    let options = if named {
+        RunOptions::named("holder").robot("ur10e").expect("robot")
+    } else {
+        RunOptions::named("holder")
+    };
+    let holder = Arc::new(
+        Controller::bind(
+            Arc::new(p),
+            &Policy::parse(HOLD).expect("policy"),
+            &options,
+            ControllerConfig::default(),
+        )
+        .await
+        .expect("bind"),
+    );
+    let mut events = Events::new(&holder);
+    let running = {
+        let holder = holder.clone();
+        std::thread::spawn(move || {
+            holder.run(
+                &mut Hold,
+                RunConfig::default().duration(Duration::from_secs(120)),
+            )
+        })
+    };
+    let started = Instant::now();
+    wait_until("the arm held at 0.5", || driven_since(&log, 0.5, started)).await;
+
+    // Its only robot shuts down cleanly: its parts go with it.
+    arm_loop.end();
+    rlmesh_session::sdk::close_robot(arm).await.expect("detach");
+    wait_until("the run reports the input lost", || {
+        events.lost("ur10e:arm")
+    })
+    .await;
+    let lost = events
+        .seen
+        .iter()
+        .find_map(|e| match e {
+            RunEvent::InputLost { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .expect("lost");
+    assert_eq!(
+        lost,
+        "input \"q\" lost its publisher: ur10e left the session; starts that need it are \
+         skipped (publisher_gone) until it is back"
+    );
+    // It waits as long as the robot stays away, and never exits.
+    let gone = holder.stats().skipped(SkipReason::PublisherGone);
+    wait_until("starts skipped while the robot is away", || {
+        holder.stats().skipped(SkipReason::PublisherGone) >= gone + 25
+    })
+    .await;
+    assert!(!running.is_finished(), "the run stopped");
+
+    // A robot of that name comes back.
+    let arm = world.robot("ur10e", ARM).await;
+    let arm_loop = spin_arm(arm.clone(), log.clone());
+    let back = Instant::now();
+    wait_until("the run binds again", || events.rebound("ur10e:arm")).await;
+    wait_until("the arm held again", || driven_since(&log, 0.5, back)).await;
+    assert!(holder.holds());
+
+    holder.stop();
+    running.join().expect("run").expect("a clean stop");
+    arm_loop.end();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_policy_bound_to_its_only_robot_by_name_binds_again_when_it_closes_and_returns() {
+    only_robot_closes_and_returns(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_policy_bound_to_the_view_of_its_only_robot_binds_again_when_it_closes_and_returns() {
+    only_robot_closes_and_returns(false).await;
+}

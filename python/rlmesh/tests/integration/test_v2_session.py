@@ -471,6 +471,54 @@ def test_a_model_set_to_resume_on_its_own_takes_the_arm_back_when_the_operator_l
         assert isinstance(result[0], dict)
 
 
+def test_a_policy_whose_only_robot_closes_binds_again_when_it_returns(
+    host: rlmesh.Host,
+) -> None:
+    def hold(obs: rlmesh.Observation) -> dict[str, Any]:
+        return {"arm": np.full((10, 6), 0.25, dtype=np.float32)}
+
+    def driving(ur: FakeUR10e) -> bool:
+        return raised(result) or ur.driven(
+            lambda d: float(np.asarray(d.value)[0]) == 0.25
+        )
+
+    with rlmesh.Policy(HOLD, session=host, name="model") as model:
+        ur = FakeUR10e(host).__enter__()
+        model.bind("ur10e")
+        thread, result = in_thread(lambda: model.run(hold, duration=60.0))
+        wait_until("the model driving", lambda: driving(ur))
+
+        # The robot closes cleanly: the run waits for it, and says why.
+        ur.__exit__(None, None, None)
+        skipped = 0
+
+        def waiting() -> bool:
+            nonlocal skipped
+            raised(result)
+            skipped = model.stats()["skipped"]["publisher_gone"]
+            return skipped >= 10
+
+        wait_until("starts skipped while the robot is away", waiting)
+        lost = [e for e in model.events() if e["kind"] == "input_lost"]
+        assert lost and lost[0]["part"] == "ur10e:arm", lost
+        assert "ur10e left the session" in lost[0]["message"]
+        assert thread.is_alive()
+
+        # A robot of that name comes back: the policy binds again, and
+        # drives it once it is re-armed by name.
+        with FakeUR10e(host) as back:
+            wait_until(
+                "the policy bound again",
+                lambda: raised(result)
+                or any(e["kind"] == "rebound" for e in model.events()),
+            )
+            back.robot.rearm("ur10e")
+            wait_until("the model driving again", lambda: driving(back))
+            model.stop()
+            thread.join(WAIT)
+        assert isinstance(result[0], dict)
+
+
 def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
     host: rlmesh.Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

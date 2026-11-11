@@ -166,6 +166,13 @@ robot stays held across a disarm or a session-wide SAFE: `arm()` never
 clears it. `camera.held` (or a policy's `held`) lists every robot held, why
 and since when.
 
+**When a robot closes** (its program exits cleanly, or restarts), a
+policy bound to it keeps running: `policy.events()` says `input_lost`
+(`input "q" lost its publisher: ur10e left the session; ...`), its starts
+are skipped as `publisher_gone`, and when a robot of that name declares its
+parts again the policy binds to them on its own (`rebound`) and drives it
+once it is re-armed. It waits for as long as the robot stays away.
+
 **When a policy drops off** (a crash, a lost link, or a new process
 joining under its name), the host ends only the leases it held. Those
 parts go to their declared safe behaviour, as after a release; the session
