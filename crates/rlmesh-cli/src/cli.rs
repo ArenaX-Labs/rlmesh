@@ -589,6 +589,12 @@ pub struct HostArgs {
     /// seals (encrypts) every part by default; on loopback it MACs.
     #[arg(long)]
     pub no_seal: bool,
+    /// Bound the bytes each accepted TCP link may hold unsent
+    /// (`TCP_NOTSENT_LOWAT`, Linux only): what a slow link can't take waits
+    /// in the host's queues, where stale samples are dropped, instead of in
+    /// the socket. Off by default; for measuring lossy links.
+    #[arg(long, value_name = "BYTES", value_parser = clap::value_parser!(u32).range(1..))]
+    pub tcp_notsent_lowat: Option<u32>,
     /// Host at most this many sessions: the default one and those its
     /// participants name. A session no participant attaches to within 10 s
     /// stops.

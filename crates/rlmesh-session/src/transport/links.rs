@@ -77,8 +77,9 @@ pub(crate) enum Cut {
 impl LinkGuard {
     /// Guards the links accepted on `ports`, or nothing when there are
     /// none. Where this platform can't see them, it watches nothing and
-    /// cuts nothing.
-    pub(crate) fn start(mut ports: Vec<u16>) -> Option<Self> {
+    /// cuts nothing. On Linux, `notsent_lowat` bounds what each accepted
+    /// link holds unsent (`TCP_NOTSENT_LOWAT`).
+    pub(crate) fn start(mut ports: Vec<u16>, notsent_lowat: Option<u32>) -> Option<Self> {
         ports.retain(|port| *port != 0);
         ports.sort_unstable();
         ports.dedup();
@@ -89,7 +90,7 @@ impl LinkGuard {
         if !sys::SUPPORTED {
             return Some(Self { ports, _stop: stop });
         }
-        sys::bound_silent_links(&ports);
+        sys::bound_silent_links(&ports, notsent_lowat);
         let watched = ports.clone();
         let spawned = std::thread::Builder::new()
             .name("rlmesh-links".into())
@@ -422,35 +423,47 @@ mod sys {
     }
 
     /// Sets [`super::LINK_SILENCE`] as the `TCP_USER_TIMEOUT` of the
-    /// sockets listening on `ports`: the sockets they accept inherit it
-    /// (Zenoh has no option for it).
+    /// sockets listening on `ports`, and `notsent_lowat` as their
+    /// `TCP_NOTSENT_LOWAT`: the sockets they accept inherit both (Zenoh has
+    /// no option for either).
     #[cfg(target_os = "linux")]
-    pub(super) fn bound_silent_links(ports: &[u16]) {
+    pub(super) fn bound_silent_links(ports: &[u16], notsent_lowat: Option<u32>) {
         let timeout_ms = super::LINK_SILENCE.as_millis() as libc::c_int;
-        let mut bounded = 0;
+        let lowat = notsent_lowat.map(|n| libc::c_int::try_from(n).unwrap_or(libc::c_int::MAX));
+        let set = |fd: RawFd, name: libc::c_int, value: libc::c_int| {
+            // SAFETY: the value is valid for the given length.
+            unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::IPPROTO_TCP,
+                    name,
+                    (&raw const value).cast(),
+                    size_of::<libc::c_int>() as libc::socklen_t,
+                ) == 0
+            }
+        };
+        let (mut bounded, mut low) = (0, 0);
         for fd in descriptors() {
             if on_ports(fd, ports) != Some(true) {
                 continue;
             }
-            // SAFETY: the value is valid for the given length.
-            let set = unsafe {
-                libc::setsockopt(
-                    fd,
-                    libc::IPPROTO_TCP,
-                    libc::TCP_USER_TIMEOUT,
-                    (&raw const timeout_ms).cast(),
-                    size_of::<libc::c_int>() as libc::socklen_t,
-                )
-            };
-            if set == 0 {
-                bounded += 1;
+            bounded += usize::from(set(fd, libc::TCP_USER_TIMEOUT, timeout_ms));
+            if let Some(lowat) = lowat {
+                low += usize::from(set(fd, libc::TCP_NOTSENT_LOWAT, lowat));
             }
         }
         tracing::debug!(?ports, bounded, "listeners reset silent links");
+        if let Some(lowat) = lowat {
+            tracing::info!(?ports, lowat, listeners = low, "TCP_NOTSENT_LOWAT set");
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn bound_silent_links(_ports: &[u16]) {}
+    pub(super) fn bound_silent_links(_ports: &[u16], notsent_lowat: Option<u32>) {
+        if notsent_lowat.is_some() {
+            tracing::warn!("TCP_NOTSENT_LOWAT is set on Linux only: ignored");
+        }
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -468,12 +481,41 @@ mod sys {
         false
     }
 
-    pub(super) fn bound_silent_links(_ports: &[u16]) {}
+    pub(super) fn bound_silent_links(_ports: &[u16], notsent_lowat: Option<u32>) {
+        if notsent_lowat.is_some() {
+            tracing::warn!("TCP_NOTSENT_LOWAT is set on Linux only: ignored");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[allow(unsafe_code)]
+    fn accepted_links_inherit_the_listeners_unsent_bound() {
+        use std::os::fd::AsRawFd;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        sys::bound_silent_links(&[port], Some(4096));
+        let _client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        let (accepted, _) = listener.accept().expect("accept");
+        let mut value: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: valid out pointers for an int option.
+        let got = unsafe {
+            libc::getsockopt(
+                accepted.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                libc::TCP_NOTSENT_LOWAT,
+                (&raw mut value).cast(),
+                &raw mut len,
+            )
+        };
+        assert_eq!((got, value), (0, 4096));
+    }
 
     #[test]
     fn a_link_stalls_only_when_its_peer_takes_almost_nothing_for_the_whole_window() {

@@ -49,6 +49,7 @@ use rlmesh_session::discovery;
 use rlmesh_session::pairing::PairService;
 use rlmesh_session::record::Rolling;
 use rlmesh_session::server::SessionServer;
+use rlmesh_session::transport::TransportTuning;
 use rlmesh_session::wire::{PairInfo, Role, TenantId};
 use rlmesh_session::{HostConfig, SystemMonotonicClock};
 use zeroize::Zeroizing;
@@ -196,7 +197,11 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
         config.seal = SealPolicy::All;
     }
     config.health_log = None;
-    let (transport, base) = address::open_listeners(base, None)
+    let tuning = TransportTuning {
+        notsent_lowat: args.tcp_notsent_lowat,
+        ..TransportTuning::default()
+    };
+    let (transport, base) = address::open_listeners_with(base, None, tuning)
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
     let recordings = recordings(args)?;

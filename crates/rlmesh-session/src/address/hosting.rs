@@ -259,6 +259,19 @@ pub async fn open_listeners(
     base: SocketAddr,
     password: Option<&zeroize::Zeroizing<String>>,
 ) -> Result<(Transport, SocketAddr), SessionError> {
+    open_listeners_with(base, password, TransportTuning::default()).await
+}
+
+/// [`open_listeners`] with `tuning` for every session (its `link` is the
+/// gate `password` makes).
+///
+/// # Errors
+/// As [`open_listeners`].
+pub async fn open_listeners_with(
+    base: SocketAddr,
+    password: Option<&zeroize::Zeroizing<String>>,
+    tuning: TransportTuning,
+) -> Result<(Transport, SocketAddr), SessionError> {
     let dictionary = password.map(dictionary).transpose()?;
     let tuning = TransportTuning {
         link: password
@@ -267,7 +280,7 @@ pub async fn open_listeners(
                 password: password.clone(),
                 dictionary: Some(dictionary),
             }),
-        ..TransportTuning::default()
+        ..tuning
     };
     let open = |base| {
         TransportConfig::per_class_tcp(Some(base), None).map(|c| c.with_tuning(tuning.clone()))

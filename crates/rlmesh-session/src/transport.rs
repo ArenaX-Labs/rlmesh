@@ -246,6 +246,11 @@ pub struct TransportTuning {
     pub connect_timeout: Option<Duration>,
     /// The embedded host's link gate (Zenoh `usrpwd`).
     pub link: Option<LinkAuth>,
+    /// A listening host's bound on the bytes each accepted TCP link holds
+    /// unsent (`TCP_NOTSENT_LOWAT`, Linux only): a link that can't keep up
+    /// then waits in Zenoh's queues, where congestion control drops what is
+    /// stale, instead of in the socket. `None` leaves the kernel's default.
+    pub notsent_lowat: Option<u32>,
 }
 
 /// The `usrpwd` gate of an embedded host's links: the password
@@ -280,6 +285,7 @@ impl Default for TransportTuning {
             client: false,
             connect_timeout: None,
             link: None,
+            notsent_lowat: None,
         }
     }
 }
@@ -638,7 +644,7 @@ async fn guard(sessions: &[zenoh::Session], config: &TransportConfig) -> Option<
             }
         }
     }
-    LinkGuard::start(ports).map(Arc::new)
+    LinkGuard::start(ports, config.tuning.notsent_lowat).map(Arc::new)
 }
 
 /// `n` `tcp/127.0.0.1:{port}` endpoints on ports that were free a moment
@@ -732,6 +738,7 @@ mod tests {
             client: false,
             connect_timeout: None,
             link: None,
+            notsent_lowat: None,
         };
         let endpoints = Endpoints {
             listen: vec!["tcp/127.0.0.1:0".into()],
