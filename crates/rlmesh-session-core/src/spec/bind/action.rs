@@ -60,7 +60,8 @@ impl<'a> Binder<'a> {
         replan: f64,
     ) -> Option<ActionRow> {
         let kind = Kind::parse(&part.kind).unwrap_or(Kind::Custom);
-        let path = part.path.to_string();
+        let path = self.part_name(part);
+        let declared = self.declared(part).path.to_string();
         if self.view.is_some() {
             if !self.places.iter().any(|p| p.robot == part.owner) {
                 self.incompatible(
@@ -108,12 +109,12 @@ impl<'a> Binder<'a> {
             )];
             if kind == Kind::Pose {
                 body.push(format!(
-                    "    RLMesh does not do IK (scope rule). Declare {path:?} with \"command\": {mode:?}"
+                    "    RLMesh does not do IK (scope rule). Declare {declared:?} with \"command\": {mode:?}"
                 ));
                 body.push("    and serve it from your robot or controller.".into());
             } else {
                 body.push(format!(
-                    "    Declare {path:?} with \"command\": {mode:?} if the robot accepts commands there."
+                    "    Declare {declared:?} with \"command\": {mode:?} if the robot accepts commands there."
                 ));
             }
             self.incompatible(

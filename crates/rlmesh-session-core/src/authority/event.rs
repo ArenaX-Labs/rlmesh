@@ -64,14 +64,20 @@ pub enum AuthorityEvent {
     LeaseGranted {
         /// The lease.
         lease: Lease,
+        /// Its part, `robot:path`.
+        part: String,
     },
     /// A higher class took a held lease (on the part itself, or on another
     /// member of its command group).
     LeasePreempted {
         /// The fenced lease.
         previous: Lease,
+        /// Its part, `robot:path`.
+        part: String,
         /// The new lease.
         by: Lease,
+        /// Its part, `robot:path`.
+        by_part: String,
     },
     /// A rebinding re-issued a lease under a fresh token.
     LeaseRebound {
@@ -79,11 +85,15 @@ pub enum AuthorityEvent {
         previous: Lease,
         /// The lease under the new binding.
         lease: Lease,
+        /// Its part, `robot:path`.
+        part: String,
     },
     /// A lease ended.
     LeaseEnded {
         /// The lease.
         lease: Lease,
+        /// Its part, `robot:path`.
+        part: String,
         /// Why.
         reason: Reason,
     },
@@ -129,6 +139,8 @@ pub enum AuthorityEvent {
         owner: ParticipantId,
         /// Their new stream ids.
         channels: Vec<ChannelId>,
+        /// The parts, each `robot:path`.
+        parts: Vec<String>,
     },
     /// Parts left the table (removed, re-declared with another schema, or
     /// their owner detached); their ids are retired.
@@ -137,6 +149,8 @@ pub enum AuthorityEvent {
         owner: ParticipantId,
         /// The retired stream ids.
         channels: Vec<ChannelId>,
+        /// The parts, each `robot:path`.
+        parts: Vec<String>,
     },
     /// A controller declared a new binding.
     BindingDeclared {
@@ -149,6 +163,8 @@ pub enum AuthorityEvent {
     DemandChanged {
         /// The stream.
         channel: ChannelId,
+        /// Its part, `robot:path`.
+        part: String,
         /// Its new demand.
         demand: Option<Demand>,
     },
@@ -156,6 +172,8 @@ pub enum AuthorityEvent {
     DemandInstalled {
         /// The stream.
         channel: ChannelId,
+        /// Its part, `robot:path`.
+        part: String,
         /// The installed revision.
         revision: u64,
     },
@@ -185,32 +203,43 @@ impl fmt::Display for AuthorityEvent {
                 reason,
             } => write!(f, "mode {from} -> {to} at {epoch} ({reason})"),
             Self::ModeReason { mode, reason } => write!(f, "mode {mode} stays ({reason})"),
-            Self::LeaseGranted { lease } => write!(
+            Self::LeaseGranted { lease, part } => write!(
                 f,
-                "lease {} granted to {} ({:?}) token {} binding {}",
-                lease.channel, lease.holder, lease.priority, lease.token, lease.binding
+                "lease {part} granted to {} ({:?}) token {} binding {}",
+                lease.holder, lease.priority, lease.token, lease.binding
             ),
-            Self::LeasePreempted { previous, by } => write!(
+            Self::LeasePreempted {
+                previous,
+                part,
+                by,
+                by_part,
+            } => write!(
                 f,
-                "lease {} of {} ({:?}, {}) preempted by {} on {} ({:?}, {})",
-                previous.channel,
+                "lease {part} of {} ({:?}, {}) preempted by {} on {by_part} ({:?}, {})",
                 previous.holder,
                 previous.priority,
                 previous.token,
                 by.holder,
-                by.channel,
                 by.priority,
                 by.token
             ),
-            Self::LeaseRebound { previous, lease } => write!(
+            Self::LeaseRebound {
+                previous,
+                lease,
+                part,
+            } => write!(
                 f,
-                "lease {} of {} rebound: {} -> {} (binding {})",
-                lease.channel, lease.holder, previous.token, lease.token, lease.binding
+                "lease {part} of {} rebound: {} -> {} (binding {})",
+                lease.holder, previous.token, lease.token, lease.binding
             ),
-            Self::LeaseEnded { lease, reason } => write!(
+            Self::LeaseEnded {
+                lease,
+                part,
+                reason,
+            } => write!(
                 f,
-                "lease {} of {} token {} ended ({reason})",
-                lease.channel, lease.holder, lease.token
+                "lease {part} of {} token {} ended ({reason})",
+                lease.holder, lease.token
             ),
             Self::HolderLost {
                 holder,
@@ -225,26 +254,26 @@ impl fmt::Display for AuthorityEvent {
             Self::RobotRearmed { robot, by } => write!(f, "robot {robot} re-armed by {by}"),
             Self::EstopLatched { by, reason } => write!(f, "ESTOP latched by {by}: {reason}"),
             Self::EstopCleared { by } => write!(f, "ESTOP latch cleared by {by}"),
-            Self::PartsDeclared { owner, channels } => {
-                write!(f, "{owner} declared parts {channels:?}")
+            Self::PartsDeclared { owner, parts, .. } => {
+                write!(f, "{owner} declared parts {}", parts.join(", "))
             }
-            Self::PartsRemoved { owner, channels } => {
-                write!(f, "parts {channels:?} of {owner} removed")
+            Self::PartsRemoved { owner, parts, .. } => {
+                write!(f, "parts {} of {owner} removed", parts.join(", "))
             }
             Self::BindingDeclared {
                 participant,
                 fingerprint,
             } => write!(f, "{participant} bound {fingerprint}"),
             Self::DemandChanged {
-                channel,
+                part,
                 demand: Some(d),
-            } => write!(f, "demand {channel} revision {}: {:?}", d.revision, d.plan),
+                ..
+            } => write!(f, "demand {part} revision {}: {:?}", d.revision, d.plan),
             Self::DemandChanged {
-                channel,
-                demand: None,
-            } => write!(f, "demand {channel} withdrawn"),
-            Self::DemandInstalled { channel, revision } => {
-                write!(f, "demand {channel} revision {revision} installed")
+                part, demand: None, ..
+            } => write!(f, "demand {part} withdrawn"),
+            Self::DemandInstalled { part, revision, .. } => {
+                write!(f, "demand {part} revision {revision} installed")
             }
             Self::BarrierTimeout { tick } => write!(f, "virtual barrier timed out at tick {tick}"),
         }

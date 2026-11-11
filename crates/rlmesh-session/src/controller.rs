@@ -211,7 +211,8 @@ impl Leases {
                 .on_snapshot(&snapshot, participant.clock_estimate().as_ref(), now);
         for (channel, change) in changes {
             if let LeaseChange::Revoked(reason) = change {
-                info!(participant = %participant.id(), %channel, %reason, "lease lost");
+                let part = snapshot.part_name(channel);
+                info!(participant = %participant.id(), %part, %reason, "lease lost");
                 self.publishers().remove(&channel);
             }
         }
@@ -317,7 +318,10 @@ impl Leases {
                 continue;
             }
             let publisher = participant.chunk_publisher(lease).await?;
-            info!(participant = %participant.id(), channel = %lease.channel, token = %lease.token, "lease granted");
+            let part = participant
+                .authority()
+                .map_or_else(|| lease.channel.to_string(), |v| v.part_name(lease.channel));
+            info!(participant = %participant.id(), %part, token = %lease.token, "lease granted");
             self.publishers().insert(lease.channel, publisher);
         }
         Ok(granted)

@@ -88,7 +88,12 @@ impl Authority {
                     self.leases.insert(channel, lease.clone());
                     let why = self.reason(ReasonCode::Rebound, &from, "");
                     self.record_end(&previous, why, Some(&lease));
-                    events.push(AuthorityEvent::LeaseRebound { previous, lease });
+                    let part = self.part_name(channel);
+                    events.push(AuthorityEvent::LeaseRebound {
+                        previous,
+                        lease,
+                        part,
+                    });
                 }
                 None => {
                     let why = self.reason(ReasonCode::Released, &from, "rebound without the part");
@@ -121,6 +126,21 @@ impl Authority {
         })
     }
 
+    /// How a refusal or log names a stream: `robot:path`; a stream the
+    /// table does not hold keeps its id.
+    pub fn part_name(&self, channel: ChannelId) -> String {
+        self.stream_part(channel).map_or_else(
+            || channel.to_string(),
+            |(p, applied)| {
+                if applied {
+                    format!("{}:{}", p.owner, p.path.applied())
+                } else {
+                    p.qualified()
+                }
+            },
+        )
+    }
+
     /// Admission: every contract names a stream once and is one the
     /// stream can meet, the rings fit the cap, and every grid is on a
     /// commanded part.
@@ -130,7 +150,10 @@ impl Authority {
         let mut rings = Vec::with_capacity(record.contracts.len());
         for c in &record.contracts {
             if !seen.insert(c.channel) {
-                return Err(invalid(format!("two contracts on {}", c.channel)));
+                return Err(invalid(format!(
+                    "two contracts on {}",
+                    self.part_name(c.channel)
+                )));
             }
             let (part, applied) = self.stream_part(c.channel).ok_or_else(|| {
                 CtlError::new(
@@ -153,13 +176,14 @@ impl Authority {
             if !record.channels.contains(&g.channel) || !gridded.insert(g.channel) {
                 return Err(invalid(format!(
                     "an action grid on {}, which the binding does not command once",
-                    g.channel
+                    self.part_name(g.channel)
                 )));
             }
             if g.dt.is_zero() || g.dt > MAX_ACTION_DT {
                 return Err(invalid(format!(
                     "the action period on {} is {:?}",
-                    g.channel, g.dt
+                    self.part_name(g.channel),
+                    g.dt
                 )));
             }
         }
@@ -197,6 +221,7 @@ impl Authority {
             self.demands.remove(&channel);
             events.push(AuthorityEvent::DemandChanged {
                 channel,
+                part: self.part_name(channel),
                 demand: None,
             });
         }
@@ -221,6 +246,7 @@ impl Authority {
             self.demands.insert(channel, demand.clone());
             events.push(AuthorityEvent::DemandChanged {
                 channel,
+                part: self.part_name(channel),
                 demand: Some(demand),
             });
         }
@@ -248,39 +274,41 @@ impl Authority {
         events: &mut Vec<AuthorityEvent>,
     ) -> Result<(), CtlError> {
         self.require_role(from, Role::Embodiment)?;
+        let part = self.part_name(channel);
         let owner = self
             .stream_part(channel)
             .map(|(p, _)| p.owner.clone())
             .ok_or_else(|| {
                 CtlError::new(
                     CtlStatus::UnknownPath,
-                    format!("{channel} is not a declared stream"),
+                    format!("{part} is not a declared stream"),
                 )
             })?;
         if &owner != from {
             return Err(CtlError::new(
                 CtlStatus::Forbidden,
-                format!("{channel} is published by {owner}"),
+                format!("{part} is published by {owner}"),
             ));
         }
         let demand = self.demands.get_mut(&channel).ok_or_else(|| {
-            CtlError::new(
-                CtlStatus::InvalidRequest,
-                format!("{channel} has no demand"),
-            )
+            CtlError::new(CtlStatus::InvalidRequest, format!("{part} has no demand"))
         })?;
         if revision > demand.revision {
             return Err(CtlError::new(
                 CtlStatus::InvalidRequest,
                 format!(
-                    "{channel}: revision {revision} is ahead of the demand's {}",
+                    "{part}: revision {revision} is ahead of the demand's {}",
                     demand.revision
                 ),
             ));
         }
         if revision > demand.acked {
             demand.acked = revision;
-            events.push(AuthorityEvent::DemandInstalled { channel, revision });
+            events.push(AuthorityEvent::DemandInstalled {
+                channel,
+                part,
+                revision,
+            });
         }
         Ok(())
     }

@@ -120,7 +120,16 @@ impl HostActor {
         let now = self.now();
         self.links
             .iter()
-            .map(|(id, link)| link.stats.health(id, link.estimator.estimate(now), now))
+            .map(|(id, link)| {
+                let mut row = link.stats.health(id, link.estimator.estimate(now), now);
+                row.parts = row
+                    .report
+                    .last_seq_seen
+                    .iter()
+                    .map(|(channel, _)| (*channel, self.authority.part_name(*channel)))
+                    .collect();
+                row
+            })
             .collect()
     }
 

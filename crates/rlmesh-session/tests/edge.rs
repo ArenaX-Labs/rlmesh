@@ -509,6 +509,12 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
         (ended.reason.code, ended.reason.by.as_str()),
         (ReasonCode::VoidedBySafe, robot.id().as_str())
     );
+    let part = format!("{}:cmd: ", robot.id());
+    assert!(
+        ended.reason.detail.starts_with(&part),
+        "{}",
+        ended.reason.detail
+    );
     stop.store(true, Ordering::Relaxed);
     ticker.join().expect("ticker");
     let stats = edge.stats();

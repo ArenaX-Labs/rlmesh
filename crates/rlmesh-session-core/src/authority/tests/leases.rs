@@ -336,3 +336,46 @@ fn the_snapshot_fence_matches_the_host() {
     let later = f.auth.snapshot(Vec::new(), 2);
     assert!(later.is_newer_than(&snap));
 }
+
+#[test]
+fn refusals_and_events_name_the_part_as_robot_and_path() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 0).expect("arm");
+    let lease = f.grant("operator", "cmd2", 0).expect("operator lease");
+    let busy = f.grant("policy", "cmd2", 1).expect_err("held higher");
+    assert_eq!(
+        busy.message,
+        "robot:cmd2 is held by operator at Operator; policy at Model cannot preempt it"
+    );
+    f.grant("operator", "arm", 2).expect("group lease");
+    let group = f.grant("policy", "arm/tcp", 3).expect_err("group held");
+    assert_eq!(
+        group.message,
+        "robot:arm, in the command group of robot:arm/tcp, is held by operator at Operator"
+    );
+    let release = f.release("script", &lease, 4).expect_err("not the holder");
+    assert!(
+        release
+            .message
+            .starts_with("robot:cmd2 is held by operator"),
+        "{}",
+        release.message
+    );
+    let granted = f
+        .run(
+            "policy",
+            Command::GrantLease {
+                channels: vec![f.ch("cmd1")],
+                release: Vec::new(),
+                binding: f.fingerprint("policy"),
+                ttl_ns: None,
+            },
+            5,
+        )
+        .expect("free part");
+    let line = granted.events[0].to_string();
+    assert!(
+        line.starts_with("lease robot:cmd1 granted to policy"),
+        "{line}"
+    );
+}

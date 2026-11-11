@@ -32,9 +32,9 @@ impl<'a> Binder<'a> {
         let kind = Kind::parse(&part.kind).unwrap_or(Kind::Custom);
         let applied = input.source == Source::Applied;
         let path = if applied {
-            part.path.applied()
+            self.applied_name(part)
         } else {
-            part.path.to_string()
+            self.part_name(part)
         };
         let before = self.problems.len();
         let source_fields: Vec<FieldSpec> = if applied {
@@ -46,7 +46,7 @@ impl<'a> Binder<'a> {
                         format!(
                             "{}: {} has no command, so no applied stream.",
                             slot.name(),
-                            part.path
+                            self.part_name(part)
                         ),
                         Vec::new(),
                     );

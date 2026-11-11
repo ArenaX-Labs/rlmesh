@@ -619,7 +619,7 @@ impl BrowserLink {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => {
                 let stream = part.stream().map_err(|reason| SessionError::WrongChannel {
-                    channel: part.channel,
+                    part: part.qualified(),
                     reason,
                 })?;
                 let qos = stream_qos(&stream, view.clock_mode);

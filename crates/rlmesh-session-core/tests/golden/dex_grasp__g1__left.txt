@@ -16,4 +16,4 @@ replan 30 Hz
   hand    30 Hz (default)  8 × 33.3 ms = 267 ms  267 ms  100 Hz (default)  200 ms (default)
 
   warnings
-    action "hand": a chunk covers 267 ms, but left/hand's edge plays at most 200 ms of it (max_action_age_ms); the rest is never dispatched.
+    action "hand": a chunk covers 267 ms, but g1:left/hand's edge plays at most 200 ms of it (max_action_age_ms); the rest is never dispatched.

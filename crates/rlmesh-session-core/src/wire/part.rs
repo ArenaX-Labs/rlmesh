@@ -593,6 +593,11 @@ pub struct PartSpec {
 }
 
 impl PartSpec {
+    /// How refusals and logs name it: `robot:path`.
+    pub fn qualified(&self) -> String {
+        format!("{}:{}", self.owner, self.path)
+    }
+
     /// Its sample stream.
     pub fn stream(&self) -> Result<StreamSpec, String> {
         Ok(StreamSpec {
@@ -683,6 +688,11 @@ pub struct StreamSpec {
 }
 
 impl StreamSpec {
+    /// How refusals and logs name it: `robot:path`.
+    pub fn qualified(&self) -> String {
+        format!("{}:{}", self.owner, self.path)
+    }
+
     /// Whether several samples can share a batch (raw packed values).
     pub fn batchable(&self) -> bool {
         self.encoding == Encoding::Raw && matches!(self.layout, Layout::Packed { .. })

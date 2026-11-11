@@ -362,7 +362,7 @@ impl SamplePublisher {
     ) -> Result<Option<u64>, SessionError> {
         let outlet = &*self.outlet;
         let invalid = |reason: String| SessionError::InvalidValue {
-            channel: outlet.spec.channel,
+            part: outlet.spec.qualified(),
             reason,
         };
         match (outlet.spec.applied, applied) {
@@ -691,7 +691,9 @@ impl SampleSubscriber {
                         }
                     }
                 }
-                Err(err) => warn!(channel = %state.spec.channel, %err, "history unavailable"),
+                Err(err) => {
+                    warn!(part = %state.spec.qualified(), %err, "history unavailable");
+                }
             }
             // Hold the warming lock while flushing, so no live sample can
             // overtake the buffered ones.

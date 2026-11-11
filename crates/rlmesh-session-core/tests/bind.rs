@@ -547,7 +547,7 @@ fn two_actions_on_one_command_group_are_refused() {
             "cartesian": {"kind": "pose", "at": "arm/tcp", "command": "delta", "chunk": 1}}}"#,
         "ur10e",
     );
-    assert!(text.contains("[duplicate_target] actions \"joints\" and \"cartesian\" command arm and arm/tcp, members of one command group \"arm\"."), "{text}");
+    assert!(text.contains("[duplicate_target] actions \"joints\" and \"cartesian\" command ur10e:arm and ur10e:arm/tcp, members of one command group \"arm\"."), "{text}");
 }
 
 #[test]
@@ -586,7 +586,7 @@ fn conversions_need_allow_unless_lossless() {
             "units": {"pos": "mm"}}}}"#,
         "ur10e",
     );
-    assert!(text.contains("[not_allowed] input \"p\": arm/tcp publishes pos in m, the model wants mm\n    needs: units"), "{text}");
+    assert!(text.contains("[not_allowed] input \"p\": ur10e:arm/tcp publishes pos in m, the model wants mm\n    needs: units"), "{text}");
     // Quaternion order is automatic; the depth camera's millimetres are not.
     let ok = inline(
         r#"{"hz": 10, "inputs": {"o": {"kind": "imu", "at": "pelvis/imu", "fields": ["orientation"],
@@ -624,7 +624,7 @@ fn conversions_need_allow_unless_lossless() {
         "ur10e",
     );
     assert!(
-        text.contains("arm has 6 joints, the model names 2 of them\n    needs: select"),
+        text.contains("ur10e:arm has 6 joints, the model names 2 of them\n    needs: select"),
         "{text}"
     );
     let text = refusal_text(
@@ -661,7 +661,7 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 10, "actions": {"a": {"kind": "joints", "at": "arm", "command": "velocity"}}}"#,
             "ur10e",
-            "arm accepts \"position\".\n    RLMesh does not convert between command modes.",
+            "ur10e:arm accepts \"position\".\n    RLMesh does not convert between command modes.",
         ),
         (
             r#"{"hz": 10, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "reference": "target"}}}"#,
@@ -671,13 +671,13 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 1000, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "hz": 1000}}}"#,
             "ur10e",
-            "faster than arm/tcp's control rate of 500 Hz",
+            "faster than ur10e:arm/tcp's control rate of 500 Hz",
         ),
         (
             r#"{"hz": 50, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft", "history": 50,
                 "history_hz": 1000}}}"#,
             "ur10e",
-            "the window was trained at 1000 Hz; wrist/ft publishes at 500 Hz.\n    RLMesh does not resample a window to another rate yet: resample in the model, or declare the part at 1000 Hz on the robot.",
+            "the window was trained at 1000 Hz; ur10e:wrist/ft publishes at 500 Hz.\n    RLMesh does not resample a window to another rate yet: resample in the model, or declare the part at 1000 Hz on the robot.",
         ),
         (
             r#"{"hz": 20, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft",
@@ -694,7 +694,7 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 20, "inputs": {"c": {"kind": "camera", "at": "wrist/cam", "history": 4}}}"#,
             "ur10e",
-            "a window of 4 needs every sample, but wrist/cam publishes latest(max_mbps=20)",
+            "a window of 4 needs every sample, but ur10e:wrist/cam publishes latest(max_mbps=20)",
         ),
         (
             r#"{"hz": 20, "inputs": {"c": {"kind": "camera", "at": "wrist/cam", "format": "mono8"}}}"#,
@@ -720,7 +720,7 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "names": "positional", "count": 7}}}"#,
             "ur10e",
-            "the model has 7 joints; arm has 6.",
+            "the model has 7 joints; ur10e:arm has 6.",
         ),
     ] {
         let text = refusal_text(json, robot_name);
@@ -954,6 +954,29 @@ fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
         ]
     );
     golden("spans__eyeball_rig__refused", &refusal.to_string());
+}
+
+#[test]
+fn a_views_refusal_names_a_part_as_its_robot_declared_it() {
+    let (parts, places) = eyeball_rig(&[]);
+    let target = Target {
+        parts: &parts,
+        places: &places,
+    };
+    let policy = Policy::parse(
+        r#"{"hz": 30, "actions": {"gaze": {"kind": "joints", "at": "eyes/left/gaze",
+            "names": "positional", "count": 7}}}"#,
+    )
+    .expect("policy");
+    let refusal = match bind_in(&policy, &target, &RunOptions::named("seven")) {
+        Err(BindError::Refused(refusal)) => *refusal,
+        other => panic!("{other:?}"),
+    };
+    let text = refusal.to_string();
+    assert!(
+        text.contains("the model has 7 joints; eye-l:gaze has 2."),
+        "{text}"
+    );
 }
 
 #[test]

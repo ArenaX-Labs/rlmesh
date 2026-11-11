@@ -182,7 +182,8 @@ impl Inner {
                 }),
                 Ok(None) => self.bump(|s| s.coalesced += 1),
                 Err(err) => {
-                    warn!(channel = %self.publisher.spec().channel, %err, "frame send failed");
+                    let spec = self.publisher.spec();
+                    warn!(part = %spec.qualified(), %err, "frame send failed");
                     self.bump(|s| s.send_errors += 1);
                 }
             }
@@ -247,7 +248,7 @@ impl ImagePublisher {
         let expected = usize::from(inner.width) * usize::from(inner.height) * 3;
         if rgb.len() != expected {
             return Err(SessionError::InvalidValue {
-                channel: self.spec().channel,
+                part: self.spec().qualified(),
                 reason: format!("frame is {} bytes, not {expected}", rgb.len()),
             });
         }
@@ -279,16 +280,15 @@ impl ImagePublisher {
     /// height, in 1 (grey) or 3 components. Never blocks on the link.
     pub fn offer_jpeg(&self, capture_ns: i64, jpeg: Bytes) -> Result<Offer, SessionError> {
         let inner = &self.inner;
-        let channel = self.spec().channel;
         if !matches!(self.spec().encoding, Encoding::Jpeg { .. }) {
             return Err(SessionError::WrongChannel {
-                channel,
+                part: self.spec().qualified(),
                 reason: "a JPEG frame for a part not declared `encoding: jpeg`".into(),
             });
         }
         let max = usize::from(inner.width) * usize::from(inner.height) * 3 + MAX_ENCODED_OVERHEAD;
         let header = jpeg_header(&jpeg).ok_or_else(|| SessionError::InvalidValue {
-            channel,
+            part: self.spec().qualified(),
             reason: "not a JPEG (no start-of-frame header)".into(),
         })?;
         if (header.height, header.width) != (inner.height, inner.width)
@@ -296,7 +296,7 @@ impl ImagePublisher {
             || jpeg.len() > max
         {
             return Err(SessionError::InvalidValue {
-                channel,
+                part: self.spec().qualified(),
                 reason: format!(
                     "jpeg is {}x{} in {} components ({} bytes), declared {}x{} rgb (at most {max})",
                     header.width,
@@ -432,7 +432,7 @@ fn image_dims(spec: &StreamSpec) -> Result<(u16, u16), SessionError> {
         _ => None,
     };
     dims.ok_or_else(|| SessionError::WrongChannel {
-        channel: spec.channel,
+        part: spec.qualified(),
         reason: "not one uint8 [H, W, 3] image field with 16-bit dimensions".into(),
     })
 }
@@ -468,10 +468,10 @@ pub fn decode_payload(spec: &StreamSpec, leaf: &[u8]) -> Result<Vec<u8>, Session
         Encoding::Raw => leaf.to_vec(),
         Encoding::Jpeg { .. } => {
             let decoded = image::load_from_memory_with_format(leaf, image::ImageFormat::Jpeg)
-                .map_err(|err| SessionError::Media(format!("{} jpeg: {err}", spec.channel)))?;
+                .map_err(|err| SessionError::Media(format!("{} jpeg: {err}", spec.qualified())))?;
             if (decoded.width(), decoded.height()) != (u32::from(width), u32::from(height)) {
                 return Err(SessionError::InvalidValue {
-                    channel: spec.channel,
+                    part: spec.qualified(),
                     reason: format!(
                         "jpeg is {}x{}, declared {width}x{height}",
                         decoded.width(),
@@ -485,7 +485,7 @@ pub fn decode_payload(spec: &StreamSpec, leaf: &[u8]) -> Result<Vec<u8>, Session
     let expected = usize::from(width) * usize::from(height) * 3;
     if pixels.len() != expected {
         return Err(SessionError::InvalidValue {
-            channel: spec.channel,
+            part: spec.qualified(),
             reason: format!("image is {} bytes, not {expected}", pixels.len()),
         });
     }

@@ -4,7 +4,7 @@
 //! Edge-side lag metrics (`action_age_at_apply`, deadline misses, fallback
 //! time) live in [`edge`](crate::edge); the heartbeat carries its queue report.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 
 use crate::wire::{ChannelId, Health, ParticipantId};
@@ -98,6 +98,7 @@ impl LinkStats {
                 .map(|at| (now_ns - at).max(0).unsigned_abs()),
             offset: estimate,
             report: self.report.clone(),
+            parts: BTreeMap::new(),
         }
     }
 }
@@ -121,6 +122,8 @@ pub struct ParticipantHealth {
     pub offset: Option<OffsetEstimate>,
     /// The latest heartbeat's report.
     pub report: Report,
+    /// The report's streams by name, `robot:path`.
+    pub parts: BTreeMap<ChannelId, String>,
 }
 
 fn ms(ns: u64) -> f64 {
@@ -152,7 +155,10 @@ impl fmt::Display for ParticipantHealth {
             )?;
         }
         for (channel, seq) in &self.report.last_seq_seen {
-            write!(f, " {channel}#{seq}")?;
+            match self.parts.get(channel) {
+                Some(part) => write!(f, " {part}#{seq}")?,
+                None => write!(f, " {channel}#{seq}")?,
+            }
         }
         if self.report.last_chunk_accepted > 0 {
             write!(

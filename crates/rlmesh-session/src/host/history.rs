@@ -469,7 +469,9 @@ impl Subscriptions {
                         },
                     );
                 }
-                Err(err) => warn!(channel = %spec.channel, %err, "history subscription failed"),
+                Err(err) => {
+                    warn!(part = %spec.qualified(), %err, "history subscription failed");
+                }
             }
         }
     }

@@ -75,7 +75,7 @@ fn a_lease_waits_until_every_bound_stream_installed_its_plan() {
     let err = f.grant("policy", "cmd1", 0).expect_err("not installed");
     assert_eq!(err.status, CtlStatus::NotReady);
     assert!(
-        err.message.contains("ft has not installed"),
+        err.message.contains("robot:ft has not installed"),
         "{}",
         err.message
     );
@@ -229,7 +229,7 @@ fn removing_a_stream_withdraws_its_demand() {
     let applied = f.run("robot", Command::Detach, 1).expect("detach");
     assert!(applied.events.iter().any(|e| matches!(
         e,
-        AuthorityEvent::DemandChanged { channel, demand: None } if *channel == ft
+        AuthorityEvent::DemandChanged { channel, demand: None, .. } if *channel == ft
     )));
     assert!(f.auth.demands.is_empty());
 }

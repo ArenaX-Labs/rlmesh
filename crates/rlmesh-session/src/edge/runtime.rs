@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::participant::{LocalLatch, Sealer};
-use crate::wire::{ActionChunk, ChannelId, ClockMode};
+use crate::wire::{ActionChunk, ChannelId, ClockMode, PartSpec};
 use crate::{
     AuthorityView, Clock, EdgeReport, Participant, SafeReporter, SamplePublisher, TrafficClass,
 };
@@ -283,11 +283,17 @@ impl Edge {
             shared.report.set_applied(action.chunk.seq);
         }
         if let Some((epoch, cause)) = tick.report {
-            let channel = tick.channel.map(|c| c.to_string()).unwrap_or_default();
-            info!(%channel, %cause, "edge fell back on its own account");
+            let part = shared
+                .core()
+                .parts()
+                .filter(|p| tick.channel.is_none_or(|c| p.channel == c))
+                .map(PartSpec::qualified)
+                .collect::<Vec<_>>()
+                .join(", ");
+            info!(%part, %cause, "edge fell back on its own account");
             shared
                 .reporter
-                .report(epoch, cause.code(), format!("{channel}: {cause}"));
+                .report(epoch, cause.code(), format!("{part}: {cause}"));
         }
         tick
     }

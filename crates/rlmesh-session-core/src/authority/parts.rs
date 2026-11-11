@@ -41,7 +41,7 @@ impl Authority {
             return Err(CtlError::new(
                 CtlStatus::Unsupported,
                 format!(
-                    "{from}/{path}: this session seals the part, and this robot process can't seal it"
+                    "{from}:{path}: this session seals the part, and this robot process can't seal it"
                 ),
             ));
         }
@@ -70,7 +70,7 @@ impl Authority {
         let refuse_leased = |path: &str| {
             CtlError::new(
                 CtlStatus::InvalidTransition,
-                format!("{path}: a commandable part is not re-declared while it is leased"),
+                format!("{from}:{path}: a commandable part is not re-declared while it is leased"),
             )
         };
         let mut keep = BTreeSet::new();
@@ -153,6 +153,7 @@ impl Authority {
             events.push(AuthorityEvent::PartsDeclared {
                 owner: from.clone(),
                 channels: added.iter().map(|p| p.channel).collect(),
+                parts: added.iter().map(|p| p.qualified()).collect(),
             });
             for spec in added {
                 self.parts.insert(spec.channel, spec);
@@ -171,29 +172,37 @@ impl Authority {
         if channels.is_empty() {
             return;
         }
+        let parts = channels.iter().map(|c| self.part_name(*c)).collect();
         for id in channels {
-            if let Some(part) = self.parts.remove(id) {
-                for stream in [Some(part.channel), part.applied_channel]
-                    .into_iter()
-                    .flatten()
-                {
-                    self.sealed.remove(&stream);
-                    if self.demands.remove(&stream).is_some() {
-                        events.push(AuthorityEvent::DemandChanged {
-                            channel: stream,
-                            demand: None,
-                        });
-                    }
-                }
-            }
             if let Some(lease) = self.leases.remove(id) {
                 let why = self.reason(ReasonCode::PartRemoved, owner, "");
                 self.end(lease, why, events);
+            }
+            let streams: Vec<(ChannelId, String)> = self
+                .parts
+                .get(id)
+                .map(|part| [Some(part.channel), part.applied_channel])
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|stream| (stream, self.part_name(stream)))
+                .collect();
+            self.parts.remove(id);
+            for (stream, part) in streams {
+                self.sealed.remove(&stream);
+                if self.demands.remove(&stream).is_some() {
+                    events.push(AuthorityEvent::DemandChanged {
+                        channel: stream,
+                        part,
+                        demand: None,
+                    });
+                }
             }
         }
         events.push(AuthorityEvent::PartsRemoved {
             owner: owner.clone(),
             channels: channels.to_vec(),
+            parts,
         });
     }
 

@@ -102,9 +102,9 @@ pub fn sample_bytes(part: &PartSpec, applied: bool) -> u64 {
 /// `_applied` stream), or `Ok`.
 pub fn admit(contract: &StreamContract, part: &PartSpec, applied: bool) -> Result<(), String> {
     let path = if applied {
-        part.path.applied()
+        format!("{}:{}", part.owner, part.path.applied())
     } else {
-        part.path.to_string()
+        part.qualified()
     };
     let d = contract.delivery_hz;
     if !(d.is_finite() && d > 0.0 && d <= 10_000.0) {
@@ -299,7 +299,7 @@ mod tests {
         .expect_err("5 ms against latest@20");
         assert_eq!(
             err,
-            "ft: max_age_ms 5 is below the 50 ms between samples of latest@20"
+            "r:ft: max_age_ms 5 is below the 50 ms between samples of latest@20"
         );
         let slow_ft = part(r#"{"ft": {"kind": "wrench", "frame": "tool0", "hz": 100}}"#);
         assert_eq!(
@@ -308,7 +308,7 @@ mod tests {
                 &slow_ft,
                 false
             ),
-            Err("ft: max_age_ms 5 is below the 10 ms between samples of history@20".into()),
+            Err("r:ft: max_age_ms 5 is below the 10 ms between samples of history@20".into()),
             "a window at 100 Hz: one sample every 10 ms"
         );
         assert!(
@@ -336,7 +336,7 @@ mod tests {
                 &decimated,
                 false
             ),
-            Err("ft: a window of 50 needs every sample, but it publishes latest(hz=100)".into())
+            Err("r:ft: a window of 50 needs every sample, but it publishes latest(hz=100)".into())
         );
         let slow = part(r#"{"ft": {"kind": "wrench", "frame": "tool0", "hz": 10}}"#);
         assert!(

@@ -32,7 +32,7 @@ impl Participant {
     pub async fn publisher(&self, path: &str) -> Result<SamplePublisher, SessionError> {
         let part = self.own_part(path)?;
         let stream = part.stream().map_err(|reason| SessionError::WrongChannel {
-            channel: part.channel,
+            part: part.qualified(),
             reason,
         })?;
         self.stream_publisher(stream).await
@@ -46,7 +46,7 @@ impl Participant {
     ) -> Result<SamplePublisher, SessionError> {
         if stream.owner != self.shared.id {
             return Err(SessionError::WrongChannel {
-                channel: stream.channel,
+                part: stream.qualified(),
                 reason: format!("published by {}, not {}", stream.owner, self.shared.id),
             });
         }
@@ -103,7 +103,7 @@ impl Participant {
     ) -> Result<SampleSubscriber, SessionError> {
         let part = self.part(robot, path)?;
         let stream = part.stream().map_err(|reason| SessionError::WrongChannel {
-            channel: part.channel,
+            part: part.qualified(),
             reason,
         })?;
         self.subscribe_stream(stream, options).await
@@ -121,11 +121,11 @@ impl Participant {
         let stream = part
             .applied_stream()
             .ok_or_else(|| SessionError::WrongChannel {
-                channel: part.channel,
+                part: part.qualified(),
                 reason: "not a commandable part".into(),
             })?
             .map_err(|reason| SessionError::WrongChannel {
-                channel: part.channel,
+                part: part.qualified(),
                 reason,
             })?;
         self.subscribe_stream(stream, options).await

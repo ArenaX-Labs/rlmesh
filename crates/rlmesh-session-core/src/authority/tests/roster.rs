@@ -83,7 +83,7 @@ fn heartbeats_renew_and_a_lapse_ends_only_that_holders_leases() {
     assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Active, epoch));
     assert!(events.iter().any(|e| matches!(
         e,
-        AuthorityEvent::LeaseEnded { lease, reason }
+        AuthorityEvent::LeaseEnded { lease, reason, .. }
             if lease.token == a.token && reason.code == ReasonCode::HeartbeatLapse
     )));
     assert!(f.auth.lease(f.ch("cmd1")).is_none());

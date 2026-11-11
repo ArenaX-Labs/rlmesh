@@ -489,15 +489,17 @@ impl<'a> Binder<'a> {
                 let head = if pa.channel == pb.channel {
                     format!(
                         "actions {:?} and {:?} both command {}.",
-                        b.entry, a.entry, pa.path
+                        b.entry,
+                        a.entry,
+                        self.part_name(pa)
                     )
                 } else {
                     format!(
                         "actions {:?} and {:?} command {} and {}, members of one command group {:?}.",
                         b.entry,
                         a.entry,
-                        pb.path,
-                        pa.path,
+                        self.part_name(pb),
+                        self.part_name(pa),
                         group(pa).unwrap_or_default()
                     )
                 };
@@ -568,10 +570,15 @@ impl<'a> Binder<'a> {
                     .find(|s| s.dir == Dir::In && s.entry.name == row.entry)
                 {
                     let why = why.split_once(": ").map_or(why.as_str(), |(_, w)| w);
+                    let name = if applied {
+                        self.applied_name(part)
+                    } else {
+                        self.part_name(part)
+                    };
                     let head = format!(
                         "{}: {}.",
                         slot.name(),
-                        why.replace("it publishes", &format!("{} publishes", row.path()))
+                        why.replace("it publishes", &format!("{name} publishes"))
                     );
                     let robots_bound = why.contains("max_age_ms")
                         && slots
@@ -581,8 +588,7 @@ impl<'a> Binder<'a> {
                             .all(|i| i.max_age.is_none());
                     let body = if robots_bound {
                         vec![format!(
-                            "    The bound is the robot's own max_age_ms on {}; a slower delivery cannot meet it.",
-                            row.path()
+                            "    The bound is the robot's own max_age_ms on {name}; a slower delivery cannot meet it.",
                         )]
                     } else {
                         Vec::new()

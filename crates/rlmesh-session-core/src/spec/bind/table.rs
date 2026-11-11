@@ -98,16 +98,6 @@ pub struct InputRow {
     pub warmup: bool,
 }
 
-impl InputRow {
-    pub(super) fn path(&self) -> String {
-        match (&self.part, self.applied) {
-            (Some(p), true) => p.path.applied(),
-            (Some(p), false) => p.path.to_string(),
-            (None, _) => "none".into(),
-        }
-    }
-}
-
 /// A bound action.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionRow {

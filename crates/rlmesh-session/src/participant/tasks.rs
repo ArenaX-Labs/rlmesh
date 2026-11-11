@@ -229,7 +229,14 @@ async fn sync_demands(shared: &Shared) {
     for (channel, revision) in acks {
         match shared.ctl(Command::DemandAck { channel, revision }).await {
             Ok(_) => debug!(participant = %shared.id, %channel, revision, "demand installed"),
-            Err(err) => warn!(participant = %shared.id, %channel, %err, "demand ack failed"),
+            Err(err) => {
+                let part = shared
+                    .view
+                    .borrow()
+                    .as_ref()
+                    .map_or_else(|| channel.to_string(), |v| v.part_name(channel));
+                warn!(participant = %shared.id, %part, %err, "demand ack failed");
+            }
         }
     }
 }

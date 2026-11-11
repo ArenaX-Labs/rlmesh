@@ -68,12 +68,18 @@ impl Authority {
         let mut named = BTreeSet::new();
         for channel in grant.channels.iter().chain(&grant.release) {
             if !named.insert(*channel) {
-                return Err(invalid(format!("{channel} is named twice")));
+                return Err(invalid(format!(
+                    "{} is named twice",
+                    self.part_name(*channel)
+                )));
             }
         }
         for channel in &grant.channels {
             let Some(part) = self.commandable(*channel) else {
-                return Err(invalid(format!("{channel} is not a commandable part")));
+                return Err(invalid(format!(
+                    "{} is not a commandable part",
+                    self.part_name(*channel)
+                )));
             };
             if !self.is_attached(&part.owner) {
                 return Err(CtlError::new(
@@ -114,7 +120,11 @@ impl Authority {
         if let Some(outside) = grant.channels.iter().find(|c| !record.channels.contains(c)) {
             return Err(CtlError::new(
                 CtlStatus::NotBound,
-                format!("{outside} is outside binding {}", record.fingerprint),
+                format!(
+                    "{} is outside binding {}",
+                    self.part_name(*outside),
+                    record.fingerprint
+                ),
             ));
         }
         // Install before authority.
@@ -125,16 +135,7 @@ impl Authority {
                 .get(&c.channel)
                 .is_some_and(|d| needed.is_some_and(|n| d.installed(n)));
             if !installed {
-                let path = self
-                    .stream_part(c.channel)
-                    .map(|(p, applied)| {
-                        if applied {
-                            p.path.applied()
-                        } else {
-                            p.path.to_string()
-                        }
-                    })
-                    .unwrap_or_else(|| c.channel.to_string());
+                let path = self.part_name(c.channel);
                 return Err(CtlError::new(
                     CtlStatus::NotReady,
                     format!(
@@ -147,7 +148,10 @@ impl Authority {
         }
         for channel in &grant.release {
             if self.leases.get(channel).is_none_or(|l| &l.holder != from) {
-                return Err(invalid(format!("{channel} is not held by {from}")));
+                return Err(invalid(format!(
+                    "{} is not held by {from}",
+                    self.part_name(*channel)
+                )));
             }
         }
         for (i, a) in grant.channels.iter().enumerate() {
@@ -172,8 +176,10 @@ impl Authority {
                     return Err(CtlError::new(
                         CtlStatus::LeaseBusy,
                         format!(
-                            "{channel} is held by {} at {:?}; {from} at {priority:?} cannot preempt it",
-                            l.holder, l.priority
+                            "{} is held by {} at {:?}; {from} at {priority:?} cannot preempt it",
+                            self.part_name(*channel),
+                            l.holder,
+                            l.priority
                         ),
                     ));
                 }
@@ -188,7 +194,8 @@ impl Authority {
                         return Err(CtlError::new(
                             CtlStatus::GroupBusy,
                             format!(
-                                "{from} holds {peer} in the same command group: release it in the same request"
+                                "{from} holds {} in the same command group: release it in the same request",
+                                self.part_name(peer)
                             ),
                         ));
                     }
@@ -197,8 +204,11 @@ impl Authority {
                         return Err(CtlError::new(
                             CtlStatus::GroupBusy,
                             format!(
-                                "{peer}, in the command group of {channel}, is held by {} at {:?}",
-                                l.holder, l.priority
+                                "{}, in the command group of {}, is held by {} at {:?}",
+                                self.part_name(peer),
+                                self.part_name(*channel),
+                                l.holder,
+                                l.priority
                             ),
                         ));
                     }
@@ -246,17 +256,21 @@ impl Authority {
                 binding: grant.binding,
                 key_id: 0,
             };
+            let part = self.part_name(*channel);
             events.push(match self.leases.insert(*channel, lease.clone()) {
                 Some(previous) => {
                     let why = self.reason(ReasonCode::Preempted, from, "");
                     self.record_end(&previous, why, Some(&lease));
                     AuthorityEvent::LeasePreempted {
                         previous,
+                        part: part.clone(),
                         by: lease.clone(),
+                        by_part: part,
                     }
                 }
                 None => AuthorityEvent::LeaseGranted {
                     lease: lease.clone(),
+                    part,
                 },
             });
             granted.push(lease);
@@ -267,7 +281,13 @@ impl Authority {
             {
                 let why = self.reason(ReasonCode::Preempted, from, "");
                 self.record_end(&previous, why, Some(&by));
-                events.push(AuthorityEvent::LeasePreempted { previous, by });
+                let (part, by_part) = (self.part_name(peer), self.part_name(by.channel));
+                events.push(AuthorityEvent::LeasePreempted {
+                    previous,
+                    part,
+                    by,
+                    by_part,
+                });
             }
         }
         if self.mode == Mode::Armed && !self.leases.is_empty() {
@@ -304,15 +324,17 @@ impl Authority {
                     return Err(CtlError::new(
                         CtlStatus::StaleToken,
                         format!(
-                            "{channel} is held by {} with {}, not {from} with {token}",
-                            lease.holder, lease.token
+                            "{} is held by {} with {}, not {from} with {token}",
+                            self.part_name(*channel),
+                            lease.holder,
+                            lease.token
                         ),
                     ));
                 }
                 None => {
                     return Err(CtlError::new(
                         CtlStatus::StaleToken,
-                        format!("no lease on {channel}"),
+                        format!("no lease on {}", self.part_name(*channel)),
                     ));
                 }
             }
@@ -343,7 +365,12 @@ impl Authority {
     /// events of their own).
     pub(super) fn end(&mut self, lease: Lease, reason: Reason, events: &mut Vec<AuthorityEvent>) {
         self.record_end(&lease, reason.clone(), None);
-        events.push(AuthorityEvent::LeaseEnded { lease, reason });
+        let part = self.part_name(lease.channel);
+        events.push(AuthorityEvent::LeaseEnded {
+            lease,
+            part,
+            reason,
+        });
     }
 
     pub(super) fn end_leases_of(

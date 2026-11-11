@@ -212,7 +212,7 @@ impl Access {
         };
         if !entry.covers(robot, path) {
             return Err(refused(format!(
-                "{device} may not lease {robot}/{path} (its parts: {:?})",
+                "{device} may not lease {robot}:{path} (its parts: {:?})",
                 entry.parts
             )));
         }
@@ -345,7 +345,7 @@ mod tests {
         let err = access
             .check_lease("laptop", &ur, "base", PriorityClass::Model)
             .expect_err("outside its parts");
-        assert!(err.message.contains("ur10e/base"), "{err}");
+        assert!(err.message.contains("ur10e:base"), "{err}");
         assert_eq!(
             status(access.check_lease("laptop", &ur, "arm", PriorityClass::Operator)),
             denied

@@ -293,7 +293,7 @@ impl Participant {
     pub fn part(&self, robot: &ParticipantId, path: &str) -> Result<PartSpec, SessionError> {
         self.authority()
             .and_then(|view| view.part_at(robot, path).cloned())
-            .ok_or_else(|| SessionError::UnknownPart(format!("{robot}/{path}")))
+            .ok_or_else(|| SessionError::UnknownPart(format!("{robot}:{path}")))
     }
 
     /// One of this embodiment's own parts.

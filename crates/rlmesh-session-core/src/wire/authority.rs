@@ -508,6 +508,13 @@ impl AuthoritySnapshot {
         self.parts.iter().find(|p| p.channel == channel)
     }
 
+    /// How a refusal or log names a stream: `robot:path`; one this
+    /// snapshot does not hold keeps its id.
+    pub fn part_name(&self, channel: ChannelId) -> String {
+        self.stream(channel)
+            .map_or_else(|| channel.to_string(), |s| s.qualified())
+    }
+
     /// The part at `path` of `robot`.
     pub fn part_at(&self, robot: &ParticipantId, path: &str) -> Option<&PartSpec> {
         self.parts

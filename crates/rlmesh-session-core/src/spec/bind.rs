@@ -137,6 +137,28 @@ fn joint_count(fields: &[FieldSpec]) -> u32 {
         .unwrap_or(0)
 }
 
+impl Binder<'_> {
+    /// `part` as its robot declared it (a view renames it).
+    fn declared<'p>(&'p self, part: &'p PartSpec) -> &'p PartSpec {
+        self.parts
+            .iter()
+            .find(|p| p.channel == part.channel)
+            .unwrap_or(part)
+    }
+
+    /// How a refusal names `part`: `robot:path`.
+    fn part_name(&self, part: &PartSpec) -> String {
+        let own = self.declared(part);
+        own.qualified()
+    }
+
+    /// How a refusal names `part`'s applied stream.
+    fn applied_name(&self, part: &PartSpec) -> String {
+        let own = self.declared(part);
+        format!("{}:{}", own.owner, own.path.applied())
+    }
+}
+
 /// Pads the first column to its widest value plus `gap`.
 fn two_columns(rows: &[(String, String)], gap: usize) -> Vec<String> {
     let width = rows

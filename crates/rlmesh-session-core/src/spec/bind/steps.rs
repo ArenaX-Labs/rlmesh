@@ -51,7 +51,8 @@ impl<'a> Binder<'a> {
         point: Option<&String>,
     ) -> bool {
         let kind = Kind::parse(&part.kind).unwrap_or(Kind::Custom);
-        let path = part.path.as_str();
+        let path = self.part_name(part);
+        let declared = self.declared(part).path.to_string();
         let checks = [
             (
                 "frame",
@@ -92,7 +93,7 @@ impl<'a> Binder<'a> {
                 format!("{} wants {key} {want}; {found}", slot.name()),
                 vec![
                     format!(
-                        "    RLMesh does not transform frames. Publish the {} in {want} (as {path:?},",
+                        "    RLMesh does not transform frames. Publish the {} in {want} (as {declared:?},",
                         kind.value_noun()
                     ),
                     format!(
