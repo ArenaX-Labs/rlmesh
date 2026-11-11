@@ -379,3 +379,73 @@ fn refusals_and_events_name_the_part_as_robot_and_path() {
         "{line}"
     );
 }
+
+#[test]
+fn the_host_fence_holds_through_the_expiry_instant_and_no_later() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 0).expect("arm");
+    let lease = f.grant("policy", "cmd4", 10).expect("grant");
+    let (channel, epoch) = (lease.channel, f.auth.epoch());
+    f.auth
+        .check_fence(channel, lease.token, epoch, lease.expires_ns)
+        .expect("at the instant");
+    assert!(matches!(
+        f.auth
+            .check_fence(channel, lease.token, epoch, lease.expires_ns + 1),
+        Err(FenceError::Expired { .. })
+    ));
+}
+
+#[test]
+fn lease_count_counts_the_leases_held() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 0).expect("arm");
+    assert_eq!(f.auth.lease_count(), 0);
+    f.grant("policy", "cmd1", 0).expect("grant");
+    f.grant("policy", "cmd2", 0).expect("grant");
+    assert_eq!(f.auth.lease_count(), 2);
+}
+
+#[test]
+fn an_authority_reports_the_session_it_was_made_for() {
+    let session = SessionId::named("demo");
+    let auth = Authority::new(session, AuthorityConfig::default());
+    assert_eq!(auth.session(), session);
+}
+
+#[test]
+fn a_lease_of_the_same_class_is_not_preempted() {
+    let mut f = Fixture::new();
+    f.auth
+        .apply(
+            Request {
+                from: pid("rival"),
+                epoch: None,
+                request_id: 0,
+                command: attach("rival", vec![Role::Controller], PriorityClass::Model),
+            },
+            0,
+        )
+        .expect("attach");
+    f.bind("rival", 9, &["cmd1"]).expect("bind");
+    f.run("operator", Command::Arm, 0).expect("arm");
+    f.grant("policy", "cmd1", 0).expect("grant");
+    assert_eq!(
+        Fixture::status(f.grant("rival", "cmd1", 0)),
+        CtlStatus::LeaseBusy
+    );
+}
+
+#[test]
+fn a_holder_asking_for_a_peer_of_its_own_part_is_told_to_release_it() {
+    let mut f = Fixture::new();
+    f.run("operator", Command::Arm, 0).expect("arm");
+    f.grant("policy", "arm", 0).expect("grant");
+    let err = f.grant("policy", "arm/tcp", 0).expect_err("refused");
+    assert_eq!(err.status, CtlStatus::GroupBusy);
+    assert!(
+        err.message.contains("release it in the same request"),
+        "{}",
+        err.message
+    );
+}
