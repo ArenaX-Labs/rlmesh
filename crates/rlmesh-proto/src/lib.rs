@@ -1163,6 +1163,7 @@ mod tests {
         CURRENT_WORKFLOW_EDITION, SUPPORTED_WORKFLOW_EDITIONS, SessionOffer,
         negotiate_session_floor, negotiate_workflow_edition, supported_workflow_editions,
     };
+    use super::{DEFAULTS_2026_06, DEFAULTS_2026_10, Edition, defaults};
 
     /// One tier of a negotiation case: what it CAN drive, and what it WANTs
     /// (`None` = undeclared, which negotiation reads as `max(can)`).
@@ -2241,6 +2242,24 @@ mod tests {
             offer.preferred.as_deref(),
             Some(CURRENT_WORKFLOW_EDITION),
             "an undeclared build wants its current edition"
+        );
+    }
+
+    /// A run between peers on different editions executes at their floor,
+    /// but the env keeps running its own edition's defaults: correct only
+    /// while every retained row is equal.
+    #[test]
+    fn retained_edition_rows_stay_equal_until_an_env_is_pinned_to_the_floor() {
+        assert_eq!(defaults(Edition::E2026_06), &DEFAULTS_2026_06);
+        assert_eq!(defaults(Edition::E2026_10), &DEFAULTS_2026_10);
+        assert_eq!(
+            DEFAULTS_2026_06, DEFAULTS_2026_10,
+            "the 2026.06 and 2026.10 edition defaults now differ. A run whose env and model \
+             negotiated a floor below the env's edition still steps the env under the env's \
+             own row: see the TODO in `RunEdition::with_model` \
+             (crates/rlmesh/src/model/local.rs). Before the rows may differ, decide how the \
+             env is pinned to the run's floor (sent with each reset, or the pairing refused \
+             at bind), implement it there, then drop this assertion"
         );
     }
 }

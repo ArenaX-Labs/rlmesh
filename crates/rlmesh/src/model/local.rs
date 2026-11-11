@@ -256,7 +256,9 @@ impl RunEdition {
     ) -> Result<rlmesh_proto::Edition> {
         let selected = match (&self.env, handler.workflow_editions().await?) {
             // TODO: pin the env to the floor on reset once an edition changes
-            // what an env does; while one edition exists, the floor is the env's.
+            // what an env does; while every retained edition's defaults row is
+            // equal, the floor is the env's (guarded by rlmesh-proto's
+            // `retained_edition_rows_stay_equal_until_an_env_is_pinned_to_the_floor`).
             (Some(env), Some(model)) => {
                 crate::floor::env_floor(env, &model, declared)?.selected_workflow_edition
             }
