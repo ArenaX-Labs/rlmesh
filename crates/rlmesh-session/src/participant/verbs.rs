@@ -22,6 +22,31 @@ use crate::report::RunSource;
 use crate::sample::{SampleSubscriber, SubscribeOptions};
 use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY};
 
+/// A refusal for a policy whose entries name `me`, its own participant: its
+/// own parts are never bound to it, so it would wait for itself.
+fn names_itself(policy: &Policy, options: &RunOptions, me: &ParticipantId) -> Option<BindError> {
+    let inputs = policy.inputs.iter().map(|i| ("input", &i.entry));
+    let actions = policy.actions.iter().map(|a| ("action", &a.entry));
+    let named: Vec<String> = inputs
+        .chain(actions)
+        .filter(|(_, entry)| !options.at.contains_key(&entry.name))
+        .filter_map(|(what, entry)| {
+            let at = entry.at.as_ref()?;
+            (at.robot.as_ref() == Some(me))
+                .then(|| format!("{what} {:?} (at {:?})", entry.name, at.to_string()))
+        })
+        .collect();
+    if named.is_empty() {
+        return None;
+    }
+    Some(BindError::Options(format!(
+        "{} names {me}, this policy itself: a policy never reads or commands the parts it \
+         publishes, so it would wait for itself; keep the value inside predict, or bind another \
+         policy to it",
+        named.join(", ")
+    )))
+}
+
 impl Participant {
     /// Relays another clock's heartbeats (a gateway's browser): this
     /// participant's own heartbeats stop, [`Self::send_heartbeat`] seals and
@@ -239,6 +264,9 @@ impl Participant {
     /// robot: the binding table, or the refusal listing
     /// every problem.
     pub fn bind(&self, policy: &Policy, options: &RunOptions) -> Result<Binding, BindError> {
+        if let Some(refusal) = names_itself(policy, options, &self.shared.id) {
+            return Err(refusal);
+        }
         let view = self.shared.view.borrow();
         match view.as_ref() {
             Some(state) => {

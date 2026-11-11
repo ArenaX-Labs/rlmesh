@@ -1172,3 +1172,39 @@ async fn a_run_on_a_disarmed_session_says_it_waits_to_be_armed() {
         .expect("ran");
     assert_eq!(seen + waits(&controller), 1, "warned once while disarmed");
 }
+
+/// A policy that reads a part of its own would wait for itself: refused at
+/// once, never waited for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_policy_reading_its_own_part_is_refused_at_once() {
+    let world = World::start().await;
+    let _robot = world.robot().await;
+    let p = world
+        .join("tracker", Role::Controller, PriorityClass::Model)
+        .await;
+    let policy = Policy::parse(
+        r#"{"hz": 50, "inputs": {"aim": {"kind": "joints", "at": "tracker:aim", "fields": ["pos"]}},
+            "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position"}}}"#,
+    )
+    .expect("policy");
+    let started = Instant::now();
+    let Err(err) = Controller::bind(
+        Arc::new(p),
+        &policy,
+        &RunOptions::named("tracker").robot("ur10e").expect("robot"),
+        ControllerConfig::default(),
+    )
+    .await
+    else {
+        panic!("bound");
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "waited for itself"
+    );
+    let text = err.to_string();
+    assert!(
+        text.contains(r#"input "aim" (at "tracker:aim") names tracker, this policy itself"#),
+        "{text}"
+    );
+}
