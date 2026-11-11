@@ -254,7 +254,7 @@ async fn a_peer_that_stops_reading_delays_no_one_else() {
     robot
         .declare_parts(
             r#"{"arm": {"kind": "joints", "hz": 100, "count": 6, "fields": ["pos"],
-                        "command": "position"}}"#,
+                        "command": "position", "safe": "stop"}}"#,
         )
         .await
         .expect("declare");

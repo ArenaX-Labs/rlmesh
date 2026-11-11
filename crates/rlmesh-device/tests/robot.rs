@@ -780,13 +780,13 @@ const EYES_POLICY: &str = r#"{
     "hz": 25,
     "actions": {
         "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 50,
-                "horizon": 5},
+                "chunk": 5},
         "two": {"kind": "joints", "at": "eye-2:eyes", "command": "position", "hz": 50,
-                "horizon": 5}
+                "chunk": 5}
     }
 }"#;
 
-/// Both eyes to 0.25 rad pan and tilt, for the whole horizon.
+/// Both eyes to 0.25 rad pan and tilt, for the whole chunk.
 struct Gaze;
 
 impl rlmesh_session::Predictor for Gaze {
@@ -980,7 +980,7 @@ const READING_POLICY: &str = r#"{
     "inputs": {"eyes": {"kind": "joints", "at": "eye-1:eyes"}},
     "actions": {
         "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 50,
-                "horizon": 5}
+                "chunk": 5}
     }
 }"#;
 
