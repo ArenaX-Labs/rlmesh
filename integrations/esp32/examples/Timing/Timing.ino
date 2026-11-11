@@ -44,7 +44,7 @@ void setup() {
                 (unsigned long)(tick * 1000 / kTickUs % 10));
   Serial.printf("heap: %lu free, %lu lowest\n", (unsigned long)ESP.getFreeHeap(),
                 (unsigned long)ESP.getMinFreeHeap());
-  // loopTask's stack is 8 KB.
+  // The library sets loopTask's stack to 12 KB.
   Serial.printf("stack: %lu bytes never used\n", (unsigned long)uxTaskGetStackHighWaterMark(NULL));
 }
 

@@ -87,6 +87,13 @@ stream key arrives. `robot.status()` reports the phase, fault, mode, accepted
 chunks, and heartbeat echoes. `examples/Timing` measures the crypto costs
 on the board; build sizes and a host test do not establish real-board timing.
 
+The library runs on Arduino's loop task and sets that task's stack to 12 KB
+in place of the default 8 KB, because checking one host signature alone needs
+8.6 KB. A sketch needs no setting for this. `SET_LOOP_TASK_STACK_SIZE` in a
+sketch replaces the library's value, so keep it at 12 KB or more, and add what
+the sketch's own `loop()` needs below `robot.poll()`. Call `robot.begin()` and
+`robot.poll()` from the loop task, or from a task with a stack at least as big.
+
 An optional normally closed e-stop button in `Robot` latches the board's
 stop. The example clears it only after BOOT is held for two seconds with
 the e-stop released. Disarm and arm the session before driving again.
