@@ -523,6 +523,10 @@ pub struct Robot {
     previous: Option<TimingSample>,
     generation: u32,
     last_get_keys: Option<u64>,
+    /// When each part was last ticked and its control period, in
+    /// microseconds: a board's loop can sleep until the next tick is due.
+    ticked: Vec<Option<u64>>,
+    tick_periods: Vec<u64>,
     accepted: u64,
     applied: u64,
     /// This robot's e-stop latch: its own stop (`ESTOP_LOCAL`)
@@ -594,6 +598,7 @@ impl Robot {
             Self {
                 subscribed: alloc::vec![false; paths.len()],
                 edge_of: alloc::vec![None; paths.len()],
+                ticked: alloc::vec![None; paths.len()],
                 paths,
                 config,
                 tenant,
@@ -642,6 +647,7 @@ impl Robot {
                 previous: None,
                 generation: 0,
                 last_get_keys: None,
+                tick_periods: Vec::new(),
                 accepted: 0,
                 applied: 0,
                 estop: None,
@@ -792,6 +798,50 @@ impl Robot {
     /// Chunks refused this attach for `reason`.
     pub fn refusals(&self, reason: Rejection) -> u64 {
         self.edges.iter().map(|e| e.core.rejected(reason)).sum()
+    }
+
+    /// The next moment, on this board's clock, the robot has something to
+    /// do without new input: actions or a `ctl` request waiting, a retry, a
+    /// heartbeat, the host's silence running out, a query's deadline, or a
+    /// part's next control tick (from when it was last ticked, by its control
+    /// period). A board's loop sleeps until then, or until the transport has
+    /// input, instead of spinning. `None` when nothing is scheduled.
+    pub fn next_due(&self) -> Option<u64> {
+        if !self.out.is_empty() || !self.started {
+            return Some(0);
+        }
+        if self.phase == Phase::Stopped {
+            return None;
+        }
+        if self.pending.is_none() && self.link.is_some() && !self.queue.is_empty() {
+            return Some(0);
+        }
+        let mut due: Option<u64> = None;
+        let mut at = |t: u64| due = Some(due.map_or(t, |d| d.min(t)));
+        match self.phase {
+            Phase::Retry => at(self.retry_at),
+            Phase::Running | Phase::Waiting => {
+                at(self.next_heartbeat);
+                at(self.last_heard + u64::from(HOST_LOST_MS) * 1000);
+            }
+            _ => {}
+        }
+        for asked in self
+            .waiting
+            .iter()
+            .chain(self.pending.as_ref().map(|p| &p.query))
+            .chain(self.wait.as_ref().map(|w| &w.0))
+        {
+            at(asked.deadline);
+        }
+        for (i, last) in self.ticked.iter().enumerate() {
+            if let (Some(last), Some(period), Some(Some(_))) =
+                (last, self.tick_periods.get(i), self.edge_of.get(i))
+            {
+                at(last.saturating_add(*period));
+            }
+        }
+        due
     }
 
     /// Runs the timers and returns what the transport should do next, in
@@ -1112,6 +1162,9 @@ impl Robot {
     /// on its own account. `None` for a part that takes no commands, or
     /// before the robot runs.
     pub fn tick(&mut self, part: usize, now_us: u64) -> Option<Tick> {
+        if let Some(at) = self.ticked.get_mut(part) {
+            *at = Some(now_us);
+        }
         let now = ns(now_us);
         let index = (*self.edge_of.get(part)?)?;
         let latch = self.latch_now();
@@ -1727,6 +1780,11 @@ impl Robot {
         self.parts = parts;
         self.edges = edges;
         self.edge_of = edge_of;
+        self.tick_periods = self
+            .parts
+            .iter()
+            .map(|p| u64::try_from(p.control_period().as_micros()).unwrap_or(u64::MAX))
+            .collect();
         self.seqs.clear();
         true
     }

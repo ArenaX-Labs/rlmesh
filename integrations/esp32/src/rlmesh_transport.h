@@ -14,6 +14,7 @@ uint32_t rlmesh_zenoh_failures(rlmesh_zenoh_t* z);
 int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
                       rlmesh_device_now_us_fn now_us);
 int rlmesh_zenoh_poll(rlmesh_zenoh_t* z);
+void rlmesh_zenoh_on_input(rlmesh_zenoh_t* z, void (*wake)(void*), void* arg);
 void rlmesh_zenoh_close(rlmesh_zenoh_t* z);
 #ifdef __cplusplus
 }

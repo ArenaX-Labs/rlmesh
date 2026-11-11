@@ -222,6 +222,11 @@ int rlmesh_device_robot_query_done(rlmesh_device_robot_t* robot, uint32_t query_
  * NUL-terminated: an e-stop signal names its sender in it). */
 int rlmesh_device_robot_sample(rlmesh_device_robot_t* robot, uint8_t sub, const char* key,
                                size_t key_len, const uint8_t* data, size_t len, uint64_t now_us);
+/* Microseconds from now_us until the robot next has something to do without new
+ * input (a heartbeat, a retry, a query's deadline, a part's next control tick):
+ * 0 when that is now, UINT64_MAX when nothing is scheduled. A board's loop
+ * sleeps until then, or until the transport has input, instead of spinning. */
+uint64_t rlmesh_device_robot_next_due(const rlmesh_device_robot_t* robot, uint64_t now_us);
 /* A verifier of a robot's signed broadcasts, and a broadcast it verified: a
  * signature check takes longer than a control period on a board, so a
  * transport can run it on another task. The sample on this subscription is a

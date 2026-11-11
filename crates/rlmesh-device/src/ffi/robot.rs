@@ -556,6 +556,30 @@ pub unsafe extern "C" fn rlmesh_device_robot_sample(
     RLMESH_DEVICE_OK
 }
 
+/// Microseconds from `now_us` until the robot next has something to do
+/// without new input (`Robot::next_due`): 0 when that is now, `UINT64_MAX`
+/// when nothing is scheduled. A board's loop sleeps until then, or until the
+/// transport has input.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_next_due(
+    robot: *const DeviceRobot,
+    now_us: u64,
+) -> u64 {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return 0;
+    };
+    if !r.queue.is_empty() {
+        return 0;
+    }
+    r.robot
+        .next_due()
+        .map_or(u64::MAX, |due| due.saturating_sub(now_us))
+}
+
 /// `rlmesh_device_checker_t`: a verifier of a robot's signed broadcasts.
 #[derive(Debug)]
 pub struct DeviceChecker(SignedChecker);

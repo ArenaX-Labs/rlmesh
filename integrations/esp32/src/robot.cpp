@@ -14,6 +14,17 @@
 namespace rlmesh {
 
 namespace {
+// poll() sleeps until the robot is next due or something arrives, at most
+// this long, so a sketch's loop() never spins on its core: with zenoh-pico
+// running, a core that never blocks leaves the radio dropping most of what it
+// receives (a classic ESP32 on Wi-Fi, measured: 30 to 70% of pings lost,
+// joins failing for ever). The cap leaves a sketch's own work (buttons, the
+// provisioning port) waiting no longer than this.
+const uint32_t kMaxWaitUs = 5000;
+
+// The transport's input wakes the task that polls: it is the one that began.
+void wakeLoop(void* task) { xTaskNotifyGive(static_cast<TaskHandle_t>(task)); }
+
 // The NVS namespace and key of the e-stop latch.
 const char* const kLatchSpace = "rlmesh-estop";
 const char* const kLatchKey = "latched";
@@ -81,6 +92,7 @@ bool Robot::start(const rlmesh_device_robot_config_t& config) {
     end();
     return false;
   }
+  rlmesh_zenoh_on_input(zenoh_, &wakeLoop, xTaskGetCurrentTaskHandle());
   return true;
 }
 
@@ -89,6 +101,11 @@ void Robot::poll() {
   rlmesh_zenoh_poll(zenoh_);
   discover();
   persistLatch();
+  // Whole ticks only: a shorter wait would round to none, or up past it.
+  uint64_t due = rlmesh_device_robot_next_due(robot_, esp32::nowUs());
+  TickType_t ticks =
+      TickType_t((due < kMaxWaitUs ? due : kMaxWaitUs) / (1000 * portTICK_PERIOD_MS));
+  if (ticks > 0) ulTaskNotifyTake(pdTRUE, ticks);
 }
 
 void Robot::persistLatch() {

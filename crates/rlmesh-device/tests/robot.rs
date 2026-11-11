@@ -578,6 +578,42 @@ async fn a_board_takes_views_checked_on_another_task_and_never_a_forged_one() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_board_is_next_due_by_its_heartbeat_and_its_control_tick() {
+    let world = World::start().await;
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    board
+        .run(&mut robot, Duration::from_secs(10), &Arc::default(), |r| {
+            r.phase() == Phase::Running
+        })
+        .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    // The board's clock, as its run read it.
+    let now_us = || u64::try_from(board.start.elapsed().as_micros()).expect("µs");
+    // Drained: nothing waits, so the next due moment is the heartbeat's, at
+    // most a period away.
+    let now = now_us();
+    let _ = robot.poll(now);
+    let due = robot.next_due().expect("a heartbeat is scheduled");
+    assert!(
+        due <= now + 50_000,
+        "due {} us after now",
+        due.saturating_sub(now)
+    );
+    // Once ticked, the part's next tick (50 Hz) bounds it too.
+    let part = robot.part("eyes").expect("part");
+    let ticked = now_us();
+    let _ = robot.tick(part, ticked);
+    let _ = robot.poll(ticked);
+    let due = robot.next_due().expect("due");
+    assert!(
+        due <= ticked + 20_000,
+        "due {} us after the tick",
+        due.saturating_sub(ticked)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_board_latched_before_it_joins_still_joins_and_reports_the_latch() {
     let world = World::start().await;
     let mut robot = world.robot(AddressKey::of(&world.identity));
