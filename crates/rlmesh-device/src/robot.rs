@@ -337,6 +337,14 @@ impl Gate {
     }
 }
 
+/// What a stream nobody demands (no delivery plan, no `send` ceiling) is
+/// published at, in hertz. The spec's default, every sample, suits a robot on
+/// a wired host; a board on Wi-Fi carrying a 50 Hz state and its applied
+/// stream (100 messages a second) to no reader measurably slows its own link
+/// (round trips to the board 60 ms at 50 Hz, 46 ms with one stream at 5 Hz).
+/// A demand raises it at once: `every`, or `latest@N` within the ceiling.
+pub const UNDEMANDED_HZ: f64 = 10.0;
+
 /// One stream as this robot publishes it.
 #[derive(Debug, Default)]
 struct Outlet {
@@ -357,7 +365,8 @@ impl Outlet {
             _ if fixed => None,
             // Compared by hand: `f64::min` is a libm call no firmware links.
             Some(Plan::Latest { hz }) => Some(ceiling.filter(|c| *c < hz).unwrap_or(hz)),
-            Some(Plan::Every) | None => ceiling,
+            Some(Plan::Every) => ceiling,
+            None => Some(ceiling.unwrap_or(UNDEMANDED_HZ)),
         };
         if self.revision == revision && self.plan == plan && self.gate.is_some() == rate.is_some() {
             return;
@@ -2319,9 +2328,13 @@ mod tests {
     fn an_outlet_follows_its_plan_within_the_send_ceiling() {
         let offered =
             |outlet: &mut Outlet| (0..50_u64).filter(|i| outlet.admit(i * 20_000)).count();
-        // No demand and no ceiling: every sample.
+        // No demand and no ceiling: a board's default rate, from 50 Hz.
         let mut outlet = Outlet::default();
         outlet.install(0, None, None, false);
+        assert!((10..=12).contains(&offered(&mut outlet)));
+        // Demanded `every`: every sample.
+        let mut outlet = Outlet::default();
+        outlet.install(1, Some(Plan::Every), None, false);
         assert_eq!(offered(&mut outlet), 50);
         // Latest at 10 Hz, from 50 Hz.
         let mut outlet = Outlet::default();
