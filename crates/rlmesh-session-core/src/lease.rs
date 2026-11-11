@@ -940,4 +940,142 @@ mod tests {
             }]
         );
     }
+
+    fn ok_reply(leases: Vec<Lease>) -> CtlReply {
+        CtlReply {
+            request_id: 0,
+            result: Ok(()),
+            state: snapshot(5, 0, Mode::Active, leases.clone()),
+            leases,
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        }
+    }
+
+    /// What `snapshot` does to a lease on part 3 held under token 9.
+    fn change(snapshot: &AuthoritySnapshot) -> Option<LeaseChange> {
+        let mut client = LeaseClient::new(me(), ChannelId(3), 0);
+        granted(&mut client, None);
+        client.on_snapshot(snapshot, None, 10 * MS)
+    }
+
+    #[test]
+    fn a_new_token_for_this_holder_revokes_the_old_lease_as_a_reissue() {
+        let reissued = snapshot(6, 1, Mode::Active, vec![lease("web-1", 10, 1_000 * MS)]);
+        assert_eq!(
+            change(&reissued),
+            Some(LeaseChange::Revoked(format!(
+                "re-issued under {} (the binding changed)",
+                LeaseToken(10)
+            )))
+        );
+    }
+
+    #[test]
+    fn the_same_token_under_another_holder_is_not_this_holders_lease() {
+        let taken = snapshot(6, 1, Mode::Active, vec![lease("supervisor", 9, 1_000 * MS)]);
+        assert!(
+            matches!(change(&taken), Some(LeaseChange::Revoked(ref r)) if r.contains("preempted by supervisor"))
+        );
+    }
+
+    #[test]
+    fn a_missing_lease_is_explained_by_the_mode() {
+        for (mode, why) in [
+            (Mode::Active, "ended by the host"),
+            (Mode::Safe, "lapsed: the session is SAFE"),
+            (Mode::Estop, "the session is in ESTOP"),
+        ] {
+            assert_eq!(
+                change(&snapshot(6, 1, mode, Vec::new())),
+                Some(LeaseChange::Revoked(why.into())),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_end_of_this_part_under_this_token_explains_the_loss() {
+        let end = |ended: Lease| LeaseEnd {
+            lease: ended,
+            reason: Reason {
+                code: ReasonCode::HeartbeatLapse,
+                by: "web-1".into(),
+                ..Reason::default()
+            },
+            by: None,
+        };
+        let mut gone = snapshot(6, 1, Mode::Active, Vec::new());
+        gone.ended.push(end(Lease {
+            channel: ChannelId(4),
+            ..lease("web-1", 9, 1_000 * MS)
+        }));
+        gone.ended.push(end(lease("web-1", 8, 1_000 * MS)));
+        assert_eq!(
+            change(&gone),
+            Some(LeaseChange::Revoked("ended by the host".into()))
+        );
+    }
+
+    #[test]
+    fn a_reply_grants_a_client_only_its_own_part_and_holder() {
+        let other_part = Lease {
+            channel: ChannelId(4),
+            ..lease("web-1", 8, 1_000 * MS)
+        };
+        let other_holder = lease("supervisor", 7, 1_000 * MS);
+        let mut client = LeaseClient::new(me(), ChannelId(3), 0);
+        client.request(Fingerprint::from(7), None, 0);
+        let reply = ok_reply(vec![
+            other_part,
+            other_holder,
+            lease("web-1", 9, 1_000 * MS),
+        ]);
+        assert!(client.on_reply(&reply, None, MS));
+        assert_eq!(client.token(), LeaseToken(9));
+    }
+
+    #[test]
+    fn a_group_reply_missing_a_part_is_not_all_held() {
+        let parts = [ChannelId(3), ChannelId(4)];
+        let reply = ok_reply(vec![lease("web-1", 9, 1_000 * MS)]);
+        let mut group = LeaseGroup::new(&me(), &parts, 0);
+        group.request(Fingerprint::from(7), None, 0);
+        assert!(!group.on_reply(&reply, None, MS));
+        assert_eq!(group.unheld(MS), vec![ChannelId(4)]);
+        let mut some = LeaseGroup::new(&me(), &parts, 0);
+        some.request_some(&parts, Fingerprint::from(7), None, 0);
+        assert!(!some.on_reply_some(&parts, &reply, None, MS));
+    }
+
+    #[test]
+    fn a_group_releases_one_verb_per_token_with_all_its_parts() {
+        let parts = [ChannelId(3), ChannelId(4), ChannelId(5)];
+        let on = |channel, token| Lease {
+            channel,
+            ..lease("web-1", token, 1_000 * MS)
+        };
+        let mut group = LeaseGroup::new(&me(), &parts, 0);
+        group.request(Fingerprint::from(7), None, 0);
+        let reply = ok_reply(vec![
+            on(ChannelId(3), 9),
+            on(ChannelId(4), 9),
+            on(ChannelId(5), 10),
+        ]);
+        assert!(group.on_reply(&reply, None, MS));
+        assert_eq!(
+            group.release(),
+            vec![
+                Command::ReleaseLease {
+                    channels: vec![ChannelId(3), ChannelId(4)],
+                    token: LeaseToken(9)
+                },
+                Command::ReleaseLease {
+                    channels: vec![ChannelId(5)],
+                    token: LeaseToken(10)
+                }
+            ]
+        );
+    }
 }
