@@ -65,6 +65,14 @@ impl<'a> Binder<'a> {
         let scope: Vec<&str> = self.scope.iter().map(String::as_str).collect();
         let mut candidates = Vec::new();
         let mut considered = Vec::new();
+        // An optional entry that may go blank (or be dropped) never binds to
+        // the parts a robot left behind: it binds as if the robot had never
+        // joined, and the controller binds it again once the robot is back.
+        let leave = match slot.dir {
+            Dir::In => Allow::Blank,
+            Dir::Out => Allow::Drop,
+        };
+        let skip_absent = !slot.required() && self.allowed(slot.entry, leave);
         // A qualified selector resolves in its robot's own map, view or not.
         let qualified = slot.selector.as_ref().is_some_and(|s| s.robot.is_some());
         let pool: Vec<&'a PartSpec> = match self.view {
@@ -76,7 +84,7 @@ impl<'a> Binder<'a> {
                 .collect(),
         };
         for part in pool {
-            if !Self::kind_matches(slot.entry, part) {
+            if !Self::kind_matches(slot.entry, part) || (skip_absent && self.gone(&part.owner)) {
                 continue;
             }
             let matched = match &slot.selector {
@@ -89,6 +97,12 @@ impl<'a> Binder<'a> {
             }
         }
         (candidates, considered)
+    }
+
+    /// Whether `robot` was in the session and is gone (its parts stay for
+    /// its return).
+    fn gone(&self, robot: &ParticipantId) -> bool {
+        self.roster.iter().any(|p| &p.id == robot && !p.present)
     }
 
     /// The robots required entries name or the view places that have

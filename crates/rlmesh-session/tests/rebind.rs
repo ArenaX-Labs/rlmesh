@@ -2,7 +2,9 @@
 //! policy that publishes restarts, a robot whose state is an input
 //! restarts, a camera robot restarts. The controller binds again on its own
 //! and keeps driving the robot it commands; a part that comes back as
-//! something the policy cannot read stops the run.
+//! something the policy cannot read stops the run. An optional input that
+//! may be blanked binds blank at once while its robot is gone, and reads it
+//! once it is back.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -643,5 +645,107 @@ async fn a_part_that_comes_back_as_something_else_stops_the_run_and_says_what_ch
         "{why}"
     );
     assert!(!driver.holds(), "the run let go of the arm");
+    arm_loop.end();
+}
+
+/// Reads the arm and, when it is there, a camera.
+const OPTIONAL_CAMERA: &str = r#"{
+    "hz": 50,
+    "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
+               "target": {"kind": "camera", "at": "eye:rgb", "size": [24, 32],
+                          "optional": true, "allow": ["blank"]}},
+    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
+                        "hz": 100, "chunk": 5}}
+}"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_optional_input_whose_robot_is_gone_binds_blank_at_once() {
+    let world = World::start().await;
+    let _arm = world.robot("ur10e", ARM).await;
+    // Lost: its parts stay in the session for its return.
+    let eye = world.robot("eye", EYE).await;
+    kill(eye.participant()).await;
+    drop(eye);
+    wait_until("the host loses the camera", || !world.present("eye")).await;
+    let bound = tokio::time::timeout(
+        Duration::from_secs(60),
+        world.bind("lost", OPTIONAL_CAMERA, Duration::from_secs(3600)),
+    )
+    .await
+    .expect("no wait for the gone camera");
+    let binding = bound.binding();
+    let row = binding.input("target").expect("target");
+    assert!(
+        row.part.is_none(),
+        "bound to the gone camera: {}",
+        binding.table()
+    );
+
+    // Left cleanly: its parts went with it.
+    let eye = world.robot("eye", EYE).await;
+    rlmesh_session::sdk::close_robot(eye).await.expect("detach");
+    let bound = tokio::time::timeout(
+        Duration::from_secs(60),
+        world.bind("left", OPTIONAL_CAMERA, Duration::from_secs(3600)),
+    )
+    .await
+    .expect("no wait for the camera that left");
+    let binding = bound.binding();
+    let row = binding.input("target").expect("target");
+    assert!(row.part.is_none(), "{}", binding.table());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blank_input_reads_its_robot_once_it_joins() {
+    let world = World::start().await;
+    let arm = world.robot("ur10e", ARM).await;
+    arm.participant().arm().await.expect("arm");
+    let log: Log = Arc::default();
+    let arm_loop = spin_arm(arm.clone(), log.clone());
+    let driver = Arc::new(world.bind("driver", OPTIONAL_CAMERA, WAIT).await);
+    assert!(
+        driver
+            .binding()
+            .input("target")
+            .expect("target")
+            .part
+            .is_none()
+    );
+    let mut events = Events::new(&driver);
+    let running = run(&driver);
+    // Blank: zeros, so the arm goes to a quarter.
+    let started = Instant::now();
+    wait_until("the arm driven with the camera blank", || {
+        driven_since(&log, 0.25, started)
+    })
+    .await;
+
+    let eye = world.robot("eye", EYE).await;
+    let eye_loop = spin_publish(
+        publish_robot(eye.clone(), "rgb"),
+        vec![vec![200_u8; 32 * 24 * 3]],
+        Arc::default(),
+    );
+    let joined = Instant::now();
+    wait_until("the arm driven by the camera", || {
+        driven_since(&log, 0.75, joined)
+    })
+    .await;
+    wait_until("the run reports the input bound", || {
+        events.rebound("eye:rgb")
+    })
+    .await;
+    assert!(
+        driver
+            .binding()
+            .input("target")
+            .expect("target")
+            .part
+            .is_some()
+    );
+
+    driver.stop();
+    running.join().expect("run").expect("a clean stop");
+    eye_loop.end();
     arm_loop.end();
 }

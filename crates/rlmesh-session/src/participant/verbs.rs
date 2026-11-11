@@ -256,6 +256,7 @@ impl Participant {
                     let target = Target {
                         parts: &others,
                         places: &state.places,
+                        roster: &state.roster,
                     };
                     crate::spec::bind_in(policy, &target, options)
                 } else {

@@ -892,6 +892,7 @@ fn one_policy_binds_across_placed_robots() {
     let target = Target {
         parts: &parts,
         places: &places,
+        ..Target::default()
     };
     let b = bind_in(
         &policy("eyeball_tracker"),
@@ -935,6 +936,7 @@ fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
     let target = Target {
         parts: &parts,
         places: &places,
+        ..Target::default()
     };
     let spans = Policy::parse(
         r#"{"hz": 30, "actions": {
@@ -962,6 +964,7 @@ fn a_views_refusal_names_a_part_as_its_robot_declared_it() {
     let target = Target {
         parts: &parts,
         places: &places,
+        ..Target::default()
     };
     let policy = Policy::parse(
         r#"{"hz": 30, "actions": {"gaze": {"kind": "joints", "at": "eyes/left/gaze",
@@ -1032,4 +1035,39 @@ fn switches_and_values_bind_by_kind() {
     let relay = binding.action("relay").expect("relay");
     assert_eq!(relay.delivers.to_string(), "bool [1]");
     assert_eq!(relay.chunk, 1);
+}
+
+#[test]
+fn a_custom_kind_blanks_from_its_fields_schema() {
+    let policy = Policy::parse(
+        r#"{"hz": 15, "inputs": {"pose": {"kind": "pose/coco17", "at": "tracker:aim",
+            "optional": true, "allow": ["blank"],
+            "fields": {"xy": ["float32", [17, 2]], "conf": ["float32", [17]]}}}}"#,
+    )
+    .expect("policy");
+    let bound = bind(&policy, &robot("ur10e"), &RunOptions::named("inline"))
+        .unwrap_or_else(|err| panic!("{err}"));
+    let row = bound.input("pose").expect("pose");
+    assert_eq!(row.status, Status::Blank);
+    assert_eq!(
+        row.delivers.to_string(),
+        "{conf: f32 [17], xy: f32 [17, 2]}",
+        "{}",
+        bound.table()
+    );
+    let rlmesh_session_core::spec::apply::Value::Dict(fields) = row.apply(&[]).expect("blank")
+    else {
+        panic!("not a dict");
+    };
+    let shapes: Vec<(String, Vec<u32>)> = fields
+        .iter()
+        .map(|(name, t)| (name.clone(), t.shape.clone()))
+        .collect();
+    assert_eq!(
+        shapes,
+        [
+            ("conf".to_string(), vec![17]),
+            ("xy".to_string(), vec![17, 2])
+        ]
+    );
 }

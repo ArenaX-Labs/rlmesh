@@ -478,6 +478,31 @@ impl<'a> Binder<'a> {
                         .collect(),
                 )
             }
+            // A custom kind's schema gives every field's dtype and shape.
+            Kind::Custom if input.shape.is_none() && input.dtype.is_none() => {
+                let Some(schema) = &slot.entry.schema else {
+                    self.incompatible(slot, undeclared("a fields schema"), Vec::new());
+                    return None;
+                };
+                let picked: Vec<&FieldSpec> = match &input.fields {
+                    Some(names) => names
+                        .iter()
+                        .filter_map(|n| schema.iter().find(|f| &f.name == n))
+                        .collect(),
+                    None => schema.iter().collect(),
+                };
+                (
+                    "zeros per field of the schema".to_string(),
+                    picked
+                        .into_iter()
+                        .map(|f| Delivered {
+                            name: f.name.clone(),
+                            dtype: f.dtype,
+                            shape: f.shape.clone(),
+                        })
+                        .collect(),
+                )
+            }
             _ => {
                 let (Some(shape), Some(dtype)) = (&input.shape, input.dtype) else {
                     self.incompatible(slot, undeclared("a shape and a dtype"), Vec::new());

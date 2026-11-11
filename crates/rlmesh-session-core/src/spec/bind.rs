@@ -33,7 +33,7 @@
 use crate::prelude::*;
 
 use crate::wire::part::{DType, FieldSpec, PartSpec};
-use crate::wire::{AuthoritySnapshot, ParticipantId, Place};
+use crate::wire::{AuthoritySnapshot, ParticipantId, ParticipantInfo, Place};
 
 use crate::spec::explain::hz;
 use crate::spec::kinds::Kind;
@@ -225,6 +225,9 @@ struct Binder<'a> {
     /// The view's parts under their view paths, when binding a view.
     view: Option<&'a [PartSpec]>,
     places: &'a [Place],
+    /// Who is in the session: a robot that was and is gone now offers its
+    /// last parts to required entries only.
+    roster: &'a [ParticipantInfo],
     scope: Vec<String>,
     run: RunCall,
     /// The robots required entries name or the view places that have
@@ -242,6 +245,9 @@ pub struct Target<'a> {
     pub parts: &'a [PartSpec],
     /// Where each placed robot's parts appear in the view.
     pub places: &'a [Place],
+    /// Who is in the session (empty: unknown, every robot counts as
+    /// present).
+    pub roster: &'a [ParticipantInfo],
 }
 
 impl<'a> Target<'a> {
@@ -250,6 +256,7 @@ impl<'a> Target<'a> {
         Self {
             parts: &state.parts,
             places: &state.places,
+            roster: &state.roster,
         }
     }
 }
@@ -341,6 +348,7 @@ pub fn bind_in(
         parts,
         view: view.as_deref(),
         places: if view.is_some() { places } else { &[] },
+        roster: target.roster,
         scope: options
             .under
             .as_ref()
