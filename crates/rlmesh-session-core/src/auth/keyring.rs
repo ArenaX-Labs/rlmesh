@@ -199,7 +199,10 @@ pub enum KeyError {
 pub struct Keyring {
     me: Option<ParticipantId>,
     generation: u32,
-    held: BTreeMap<u32, Held>,
+    /// Boxed: a key's receiver and sender take hundreds of bytes, and a
+    /// map node holds eleven entries inline, so the first key would take a
+    /// block of kilobytes, which a board's fragmented heap may not have.
+    held: BTreeMap<u32, Box<Held>>,
     marks: BTreeMap<Slot, Mark>,
     /// Fixed keys this process dropped: never installed again, so a late
     /// delivery or recovery reply never restarts their counters (a reused
@@ -292,7 +295,7 @@ impl Keyring {
             .then(|| SealSender::new(key.key_id, new(key.key.0), kinds(key.purpose), key.security));
         self.held.insert(
             key.key_id,
-            Held {
+            Box::new(Held {
                 rx: SealReceiver::new(key.key_id, new(key.key.0), kinds(key.purpose), key.security),
                 key: new(key.key.0),
                 tx,
@@ -300,7 +303,7 @@ impl Keyring {
                 live: false,
                 opened: false,
                 scope,
-            },
+            }),
         );
         Some(key.send)
     }
