@@ -889,8 +889,10 @@ fn action(name: &str, value: Value, policy_allow: Allows) -> Result<Action, Stri
     if let Some(key) = decl
         .set_keys()
         .into_iter()
-        .find(|k| INPUT_ONLY.contains(k) || *k == "max_age_ms")
+        // A custom action's fields schema is not an input key; skip it
+        // without ending the search.
         .filter(|k| !(*k == "fields" && matches!(decl.fields, Some(EntryFields::Schema(_)))))
+        .find(|k| INPUT_ONLY.contains(k) || *k == "max_age_ms")
     {
         return Err(format!("{where_}: {key} is an input key"));
     }
@@ -1133,6 +1135,11 @@ mod tests {
             (
                 r#"{"hz": 1, "actions": {"a": {"kind": "joints", "history": 3}}}"#,
                 "input key",
+            ),
+            (
+                r#"{"hz": 1, "actions": {"a": {"kind": "x/arm", "fields": {"v": ["float32", [1]]},
+                    "history": 3}}}"#,
+                "history is an input key",
             ),
             (
                 r#"{"hz": 1, "actions": {"a": {"kind": "joints", "chunk": 0}}}"#,
