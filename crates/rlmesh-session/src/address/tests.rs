@@ -255,6 +255,11 @@ fn a_keyed_address_carries_its_key_through_a_participant_name() {
     let malformed = format!("127.0.0.1:7447/bench 3#{key}");
     let err = Address::session(&malformed).expect_err("a bad name");
     assert!(!err.to_string().contains(secret), "{err}");
+    // Nor in the address an upgrade error suggests.
+    let old = format!("lockstep://127.0.0.1:7447/local/bench#{key}/env");
+    let err = Address::participant(&old).expect_err("an old address");
+    assert!(err.to_string().contains("127.0.0.1:7447/bench#"), "{err}");
+    assert!(!err.to_string().contains(secret), "{err}");
 }
 
 /// A host reached on its base port but not on its other classes' (a

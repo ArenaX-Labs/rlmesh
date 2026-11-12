@@ -290,7 +290,8 @@ fn lockstep_upgrade(text: &str, rest: &str) -> SessionError {
         [base, robot] => format!("{base}/{robot}"),
         _ => "[host/][session/]participant".to_string(),
     };
-    let text = redact(text);
+    // The suggestion is built from the rejected address: its key stays out too.
+    let (text, new) = (redact(text), redact(&new));
     SessionError::Config(format!(
         "address {text:?}: lockstep:// addresses are gone (a robot's clock is declared, not \
          addressed); use {new:?}"
