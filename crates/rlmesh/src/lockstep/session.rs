@@ -644,9 +644,37 @@ async fn attach_driver(
         options.timeout,
     )
     .await?;
-    let snapshot = participant
+    let snapshot = match participant
         .wait_for("the lockstep robot's parts", options.timeout, ready)
-        .await?;
+        .await
+    {
+        Ok(snapshot) => snapshot,
+        // Name the robots that did declare parts: a misspelt name reads as
+        // a robot not joined yet, which the session cannot tell apart.
+        Err(SessionError::Timeout(waited, _)) => {
+            let mut there: Vec<String> = participant
+                .authority()
+                .map(|s| s.parts.iter().map(|p| p.owner.to_string()).collect())
+                .unwrap_or_default();
+            there.sort();
+            there.dedup();
+            let there = match there.is_empty() {
+                true => "none yet".to_string(),
+                false => there.join(", "),
+            };
+            participant.close().await;
+            return Err(SessionError::Timeout(
+                waited,
+                format!(
+                    "robot {:?} to declare its parts in session {} (robots there: {there})",
+                    address.robot.as_str(),
+                    address.session
+                ),
+            )
+            .into());
+        }
+        Err(err) => return Err(err.into()),
+    };
     let parts = own_parts(&snapshot, &address.robot);
     Ok(Attached {
         participant,

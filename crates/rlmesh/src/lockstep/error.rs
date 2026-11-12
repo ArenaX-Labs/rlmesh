@@ -68,13 +68,68 @@ impl GymError {
         }
     }
 
-    /// Whether retrying can help.
+    /// Whether the env stays usable after this failure: its own
+    /// recoverable flag, or a reply that did not come in time. What the
+    /// driver records on an env call; see [`is_transient`](Self::is_transient)
+    /// for whether to retry a call.
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::Env(error) => error.is_recoverable,
             Self::Timeout(_) => true,
             _ => false,
         }
+    }
+
+    /// Whether retrying the same call can succeed, as
+    /// [`crate::Error::is_transient`] answers it: a peer not reachable or not
+    /// there yet (no host listening, no reply in time, the robot not joined,
+    /// its lease held by another driver), or the env's recoverable failure.
+    /// A refusal that the same call meets again is not: a key the host does
+    /// not accept, a malformed address or map, a protocol the session lacks.
+    ///
+    /// A driver that dials a peer that may still be starting retries
+    /// [`connect`](crate::lockstep::connect) while this holds and stops at
+    /// once when it does not. A robot name the session never sees reads as
+    /// one not joined yet: the session cannot tell them apart.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Env(error) => error.is_recoverable,
+            Self::Timeout(_) | Self::Closed(_) => true,
+            Self::Session(error) => session_transient(error),
+            Self::Map(_)
+            | Self::Malformed(_)
+            | Self::Value(_)
+            | Self::Refused(_)
+            | Self::Wire(_)
+            | Self::Config(_) => false,
+        }
+    }
+}
+
+/// Whether a session failure can clear on its own: the transport, a
+/// deadline, or a refusal of a state that moves (a lease, an epoch, a
+/// member arriving).
+fn session_transient(error: &SessionError) -> bool {
+    use rlmesh_session::wire::CtlStatus;
+    match error {
+        SessionError::Zenoh(_)
+        | SessionError::NoReply(_)
+        | SessionError::Pending { .. }
+        | SessionError::Timeout(..)
+        | SessionError::Io(_)
+        | SessionError::Closed => true,
+        SessionError::Rejected(refusal) | SessionError::Unverified(refusal) => matches!(
+            refusal.status,
+            CtlStatus::StaleEpoch
+                | CtlStatus::StaleToken
+                | CtlStatus::InvalidTransition
+                | CtlStatus::LeaseBusy
+                | CtlStatus::GroupBusy
+                | CtlStatus::RobotBusy
+                | CtlStatus::NotReady
+                | CtlStatus::NotPresent
+        ),
+        _ => false,
     }
 }
 

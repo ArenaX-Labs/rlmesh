@@ -411,7 +411,8 @@ impl Error {
     }
 
     /// Whether the session remains usable: the Environment or Model error's
-    /// own flag, and false for every other class.
+    /// own flag, and false for every other class. Whether to retry a call is
+    /// [`Error::is_transient`].
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::Attached(attached) => attached.error.is_recoverable(),
@@ -421,11 +422,18 @@ impl Error {
         }
     }
 
-    /// Whether retrying the same request may succeed: the recoverable flag,
-    /// plus transport failures and deadlines. The facade's own retry and
-    /// driver plumbing use it; it is not the user-facing
-    /// [`Error::is_recoverable`].
-    pub(crate) fn is_transient(&self) -> bool {
+    /// Whether retrying the same call can succeed: a recoverable failure
+    /// ([`Error::is_recoverable`]), a transport failure
+    /// ([`Error::Connection`]) or a deadline ([`Error::Timeout`]). Every
+    /// other class is final: the same call meets it again.
+    ///
+    /// The runtime records a model or env failure as recoverable when this
+    /// holds, and a run's env connect retries while it does. A
+    /// [`ModelHandler`](crate::binding::model::ModelHandler) signals a
+    /// failure worth retrying with [`Error::model_recoverable`], or
+    /// [`Error::Connection`] / [`Error::Timeout`] for its own transport; any
+    /// other error is final.
+    pub fn is_transient(&self) -> bool {
         match self {
             Self::Attached(attached) => attached.error.is_transient(),
             _ => matches!(self, Self::Connection(_) | Self::Timeout(_)) || self.is_recoverable(),

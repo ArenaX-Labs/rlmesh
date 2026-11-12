@@ -776,6 +776,12 @@ impl SessionAddress {
             };
             match open_client(self.base, self.link_auth(), until).await {
                 Err(SessionError::Zenoh(_)) if until < deadline => {}
+                // A host that listens all the same gates its links with a
+                // key this participant does not hold: final, unlike one not
+                // up yet.
+                Err(SessionError::Zenoh(_)) if listening(self.base) => {
+                    return Err(hosting::refused_link(self.base));
+                }
                 Err(SessionError::Zenoh(_)) => {
                     return Err(SessionError::Timeout(
                         waited,

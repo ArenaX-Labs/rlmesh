@@ -105,6 +105,8 @@ fn error_of(fault: ModelFault) -> Error {
 fn link_error(err: GymError) -> Error {
     match err {
         GymError::Timeout(t) => Error::Timeout(t),
+        // Retrying cannot help (a key the host does not accept): final.
+        other if !other.is_transient() => Error::Protocol(other.to_string()),
         other => Error::Connection(other.to_string()),
     }
 }

@@ -106,6 +106,9 @@ pub(crate) fn lockstep_error(error: crate::lockstep::GymError) -> Error {
         error if env_held(&error) => Error::Connection(ENV_HELD.into()),
         GymError::Timeout(timeout) => Error::Timeout(timeout),
         GymError::Closed(why) => Error::Connection(why),
+        // A refusal the same call meets again (a key the host does not
+        // accept): final, so not the transient ConnectionError class.
+        error @ GymError::Session(_) if !error.is_transient() => Error::Protocol(error.to_string()),
         GymError::Session(error) => Error::Connection(error.to_string()),
         GymError::Map(why) | GymError::Config(why) | GymError::Value(why) => {
             Error::invalid_argument(why)

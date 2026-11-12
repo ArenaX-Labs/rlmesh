@@ -292,6 +292,19 @@ async fn an_embedded_host_stays_on_loopback_and_links_only_with_its_key() {
                 .is_err()
         );
     }
+    // Joined through the hosting rule, the wrong key is a refusal, final and
+    // soon, not a timeout like a host that does not listen yet.
+    let started = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let refused = open_client(placed.address.base, wrong.clone(), deadline)
+        .await
+        .expect_err("refused");
+    assert_eq!(
+        refused.refusal().map(|e| e.status),
+        Some(CtlStatus::Unauthenticated),
+        "{refused}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(10), "{refused}");
     let linked = Transport::open(&client(placed.address.base, placed.address.link_auth()))
         .await
         .expect("the key's password links");

@@ -132,11 +132,16 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
             env.close()
 
         _, wrong = launch.launch_identity()
-        # The link gate refuses the wrong key, so the dial never links.
-        with pytest.raises((ConnectionError, TimeoutError)):
+        # The link gate refuses the wrong key: a refusal retrying cannot get
+        # past (not the ConnectionError a launcher retries until the host
+        # listens), said well within the timeout.
+        started = time.monotonic()
+        with pytest.raises(rlmesh.ProtocolException) as refused:
             rlmesh.RemoteEnv(
-                f"127.0.0.1:{port}#{wrong}/env", connect_timeout_seconds=3
+                f"127.0.0.1:{port}#{wrong}/env", connect_timeout_seconds=30
             ).reset(seed=0)
+        assert time.monotonic() - started < 15
+        assert wrong not in str(refused.value)
     finally:
         proc.terminate()
         try:

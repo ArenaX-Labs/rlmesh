@@ -126,6 +126,26 @@ pub(super) fn listening(base: SocketAddr) -> bool {
 /// before [`open_client`] tries one without.
 const GATED_TRY: Duration = Duration::from_secs(1);
 
+/// How long [`open_client`]'s link without the password gets after the
+/// gated one failed. A loopback link opens in milliseconds; a host that
+/// still listens after both failed refused them ([`refused_link`]).
+const UNGATED_TRY: Duration = Duration::from_secs(2);
+
+/// A host that listens at `base` but refused every link offered it: the
+/// key this participant joins with is not that host's (a wrong or stale
+/// one, or none where it gates links). Final, unlike a host that does not
+/// listen yet: retrying with the same key cannot link.
+pub(crate) fn refused_link(base: SocketAddr) -> SessionError {
+    SessionError::Rejected(crate::wire::CtlError::new(
+        crate::wire::CtlStatus::Unauthenticated,
+        format!(
+            "the session host at {base} listens but refused this participant's link: the \
+             address's key is not that host's (a wrong or stale key, or none). Join with the \
+             address its host printed or its launcher made (it ends in #key)"
+        ),
+    ))
+}
+
 /// Links to the host at `base` as a Zenoh client within `timeout`, with no
 /// password (a LAN host's, as rlmeshd's pairing endpoint is reached).
 pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, SessionError> {
@@ -174,7 +194,18 @@ pub(super) async fn open_client(
     if gated.is_ok() || !listening(base) {
         return gated;
     }
-    open(None, deadline).await
+    match open(
+        None,
+        deadline.min(tokio::time::Instant::now() + UNGATED_TRY),
+    )
+    .await
+    {
+        // Listening, yet neither link opened: the host gates its links
+        // with another key. Zenoh reports that as a connect timeout, the
+        // same as a host not up yet, so say it here.
+        Err(SessionError::Zenoh(_)) if listening(base) => Err(refused_link(base)),
+        other => other,
+    }
 }
 
 /// Hosts session `name` in this process on `base` (port 0: OS-assigned),
