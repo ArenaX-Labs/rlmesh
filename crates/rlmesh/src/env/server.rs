@@ -120,6 +120,8 @@ struct Resources {
     options: ServeOptions,
     close_timeout: Duration,
     close_env_on_shutdown: bool,
+    /// Announce the env once it answers (`None` for a run's own server).
+    announce: Option<crate::binding::Announce>,
 }
 
 enum State {

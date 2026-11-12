@@ -123,6 +123,7 @@ __all__ = [
     "sandbox_session_ports",
     "sandbox_start_env",
     "sandbox_stop_env",
+    "set_ready_hook",
     "space_spec_from_gym_space",
     "text_space_spec",
     "tuple_space_spec",
@@ -474,7 +475,7 @@ class PyEnvServer:
         r"""
         Alias for env_contract.
         """
-    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ...) -> PyEnvServer:
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ..., announce: builtins.bool = ...) -> PyEnvServer:
         r"""
         Create a new RLMesh environment server.
         # Arguments
@@ -577,7 +578,7 @@ class PyVectorEnvServer:
     def env_contract(self) -> EnvContract: ...
     @property
     def spec(self) -> EnvContract: ...
-    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ...) -> PyVectorEnvServer:
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ..., announce: builtins.bool = ...) -> PyVectorEnvServer:
         r"""
         Create a new vectorized RLMesh environment server.
         # Arguments
@@ -1423,7 +1424,7 @@ def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None
     `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
     declaration. Returns the winner (validated and trimmed) and whether
     resolution stopped at a set-but-blank variable; `(None, False)` leaves
-    Python's `pyproject.toml` rung and the float warning to the caller.
+    Python's `pyproject.toml` rung to the caller.
     """
 
 def run_cli(args: list[str]) -> int: ...
@@ -1437,6 +1438,13 @@ def sandbox_session_ports() -> int: ...
 def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None) -> SandboxRunInfo: ...
 
 def sandbox_stop_env(*, container_id: str) -> None: ...
+
+def set_ready_hook(hook: typing.Optional[typing.Any]) -> None:
+    r"""
+    Call `hook` with `{kind, participant, address, port, pid}` as each env or
+    model this process serves becomes able to answer (`None` clears it). The
+    address is redacted; `python -m rlmesh.serve` prints its serving line here.
+    """
 
 def space_spec_from_gym_space(space: object) -> SpaceSpec: ...
 

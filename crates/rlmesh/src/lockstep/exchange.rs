@@ -608,13 +608,15 @@ async fn timed(
 }
 
 /// Serves `handler` on `key` until `cancel` fires, opening requests and
-/// sealing replies under the lease keys `sealer` holds.
-pub async fn serve_zenoh(
+/// sealing replies under the lease keys `sealer` holds. `ready` runs once
+/// requests can arrive; what it returns lives as long as the serve.
+pub async fn serve_zenoh<R>(
     session: zenoh::Session,
     key: String,
     handler: Arc<dyn LockstepHandler>,
     cancel: CancellationToken,
     sealer: Sealer,
+    ready: Option<impl FnOnce() -> R>,
 ) -> Result<(), GymError> {
     // Held as a transport: a serve cancelled with the last handle closes it
     // off the dropping thread.
@@ -625,6 +627,7 @@ pub async fn serve_zenoh(
         .complete(true)
         .await
         .map_err(|e| GymError::Closed(e.to_string()))?;
+    let _ready = ready.map(|ready| ready());
     let concurrent = handler.concurrent();
     loop {
         let query = tokio::select! {

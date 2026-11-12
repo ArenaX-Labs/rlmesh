@@ -24,7 +24,7 @@ use crate::{Error, Result, ServeOptions};
 impl EnvServer {
     /// Serve one env.
     pub fn new<E: Env + Send + 'static>(env: E, options: EnvServerOptions) -> Result<EnvServer> {
-        Self::build(Served::Lanes(vec![Box::new(env)]), options, None)
+        Self::build(Served::Lanes(vec![Box::new(env)]), options, None, true)
     }
 
     /// Serve `envs` as the lanes of one `num_envs = N` endpoint, each on its
@@ -41,6 +41,7 @@ impl EnvServer {
             ),
             options,
             None,
+            true,
         )
     }
 
@@ -50,7 +51,7 @@ impl EnvServer {
         env: V,
         options: EnvServerOptions,
     ) -> Result<EnvServer> {
-        Self::build(Served::Vector(Box::new(env)), options, None)
+        Self::build(Served::Vector(Box::new(env)), options, None, true)
     }
 
     /// A factory serve's server: the edition was resolved by the caller.
@@ -59,7 +60,7 @@ impl EnvServer {
         options: EnvServerOptions,
         publish: Publish,
     ) -> Result<EnvServer> {
-        Self::build(Served::Lanes(envs), options, Some(publish))
+        Self::build(Served::Lanes(envs), options, Some(publish), true)
     }
 
     pub(crate) fn vector_resolved(
@@ -67,7 +68,7 @@ impl EnvServer {
         options: EnvServerOptions,
         publish: Publish,
     ) -> Result<EnvServer> {
-        Self::build(Served::Vector(env), options, Some(publish))
+        Self::build(Served::Vector(env), options, Some(publish), true)
     }
 
     /// Override publication identity for an in-repo non-Rust binding, before
@@ -132,15 +133,17 @@ impl EnvServer {
             crate::run::LoopbackEnv::Env(env) => Served::Lanes(vec![env]),
             crate::run::LoopbackEnv::Vector(env) => Served::Vector(env),
         };
-        Self::build(served, options, None)
+        Self::build(served, options, None, false)
     }
 
     /// `factory`: a factory serve's publication, whose edition the caller
-    /// resolved.
+    /// resolved. `announce`: whether the env is served for others to reach
+    /// (not a run's own loopback), so it says when it answers.
     fn build(
         served: Served,
         options: EnvServerOptions,
         factory: Option<Publish>,
+        announce: bool,
     ) -> Result<EnvServer> {
         // Step 1: at least one lane (the traits guarantee the spaces).
         let mut served = match served {
@@ -226,6 +229,7 @@ impl EnvServer {
 
         // Step 5: the address.
         let address = normalize_bind_address(&options)?;
+        let announce = announce.then(|| crate::binding::Announce::from_env(&address));
         let serve = options.options.clone().unwrap_or_default();
         serve.validate()?;
 
@@ -283,6 +287,7 @@ impl EnvServer {
                     options,
                     close_timeout,
                     close_env_on_shutdown,
+                    announce,
                 }))),
                 detached: Mutex::new(None),
                 abandoned: Arc::new(Mutex::new(Vec::new())),

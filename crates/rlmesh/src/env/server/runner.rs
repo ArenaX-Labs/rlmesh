@@ -127,6 +127,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
         options,
         close_timeout,
         close_env_on_shutdown,
+        announce,
     } = resources;
     let id = shared.id;
     let contract = shared.contract.clone();
@@ -137,6 +138,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
         close_timeout,
         close_env_on_shutdown,
         shutdown: shared.shutdown.clone(),
+        announce,
     };
     match served {
         Served::Lanes(lanes) => {
@@ -187,6 +189,7 @@ struct ServeParts {
     close_timeout: Duration,
     close_env_on_shutdown: bool,
     shutdown: ShutdownTrigger,
+    announce: Option<crate::binding::Announce>,
 }
 
 /// What [`drive`] serves: a transport env, natively too with the `lockstep`
@@ -208,6 +211,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
         close_timeout,
         close_env_on_shutdown,
         shutdown,
+        announce,
     } = parts;
     let serve = move || -> Result<()> {
         runtime.block_on(async move {
@@ -225,6 +229,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
                     let options = crate::lockstep::ServeOptions {
                         workflow_edition: options.workflow_edition.clone(),
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
+                        announce,
                     };
                     let served = binding
                         .serve(Arc::clone(&environment) as _, options, cancel)

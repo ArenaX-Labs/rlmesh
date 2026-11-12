@@ -1677,7 +1677,7 @@ class ModelBase(Generic[ObsT, ActT]):
         so its check stays at the route resolve).
         """
         from .._load_native import load_native
-        from .._server import EnvServer, VectorServerEnvLike
+        from .._server import EnvServer, VectorServerEnvLike, loopback
 
         if (
             not hasattr(env_obj, "single_observation_space")
@@ -1692,27 +1692,31 @@ class ModelBase(Generic[ObsT, ActT]):
                 local_contract(env_obj),
                 trust_entrypoints=self._trust_entrypoints,
             )
-        # The in-process server is part of THIS call, so it takes the caller's
-        # already-resolved declaration verbatim instead of re-resolving and
-        # possibly landing on a different edition than the runtime tier.
         address = (
             f"{self._env_session}/run-{uuid.uuid4().hex[:12]}/env"
             if self._env_session is not None
             else f"{load_native('local_run_session')()}/env"
         )
-        server = EnvServer(
-            cast("VectorServerEnvLike", env_obj),
-            address,
-            framework=getattr(env_obj, "_bridge", None),
-            options=(
-                load_native("ServeOptions")(workflow_edition=workflow_edition)
-                if workflow_edition is not None
-                else None
-            ),
-            # The env is borrowed (or built here): its close() is the
-            # caller's decision, not the in-process server's.
-            close_env_on_shutdown=False,
-        )
+        # The in-process server is part of THIS call, so it takes the caller's
+        # already-resolved declaration verbatim instead of re-resolving and
+        # possibly landing on a different edition than the runtime tier.
+        token = loopback.set(True)
+        try:
+            server = EnvServer(
+                cast("VectorServerEnvLike", env_obj),
+                address,
+                framework=getattr(env_obj, "_bridge", None),
+                options=(
+                    load_native("ServeOptions")(workflow_edition=workflow_edition)
+                    if workflow_edition is not None
+                    else None
+                ),
+                # The env is borrowed (or built here): its close() is the
+                # caller's decision, not the in-process server's.
+                close_env_on_shutdown=False,
+            )
+        finally:
+            loopback.reset(token)
         server.start()
         return server
 
@@ -1791,6 +1795,9 @@ class ModelBase(Generic[ObsT, ActT]):
         A spec'd model resolves its adapter per env from the env contract each
         route's resolve delivers, then applies it around predict; a spec-less /
         ``NO_ADAPTER`` model serves its own predict directly.
+
+        With ``RLMESH_READY_FILE`` set, the model writes that file once it can
+        answer and removes it when it stops.
 
         A session checks no endpoint token yet, so a set
         ``RLMESH_MODEL_ENDPOINT_TOKEN`` is refused: keep the session on a

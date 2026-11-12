@@ -116,6 +116,8 @@ pub struct ModelBinding {
     session: SessionAddress,
     name: ParticipantId,
     placed: Placed,
+    /// The address serving was asked for, to announce it at.
+    requested: String,
 }
 
 /// The model's address without the key, for logs.
@@ -137,6 +139,7 @@ impl ModelBinding {
             session: placed.address.clone(),
             name,
             placed,
+            requested: address.to_owned(),
         })
     }
 
@@ -190,7 +193,15 @@ impl ModelBinding {
             shutdown: shutdown.clone(),
             sessions: std::sync::Mutex::default(),
         });
-        answer_in(joins, participant, self.session.clone(), shutdown).await
+        let ready = crate::binding::Announce::from_env(&self.requested);
+        answer_in(
+            joins,
+            participant,
+            self.session.clone(),
+            shutdown,
+            Some(ready),
+        )
+        .await
     }
 }
 

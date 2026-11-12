@@ -218,7 +218,9 @@ impl<H: ModelHandler + 'static> Joins<H> {
         });
         let joins = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(err) = answer_in(joins.clone(), participant, address.clone(), cancel).await {
+            if let Err(err) =
+                answer_in(joins.clone(), participant, address.clone(), cancel, None).await
+            {
                 warn!(%err, session = %address, "model left an invited session");
             }
             #[cfg(test)]
@@ -244,19 +246,26 @@ impl<H: ModelHandler + 'static> Joins<H> {
 }
 
 /// Answers on `participant`'s session (at `session`) until `cancel`
-/// fires, then leaves it. Boxed: an invitation answered there serves the
-/// invited session with this same future.
+/// fires, then leaves it, announcing `ready` once it answers. Boxed: an
+/// invitation answered there serves the invited session with this same
+/// future.
 pub(super) fn answer_in<H: ModelHandler + 'static>(
     joins: Arc<Joins<H>>,
     participant: Participant,
     session: SessionAddress,
     cancel: CancellationToken,
+    ready: Option<crate::binding::Announce>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GymError>> + Send>> {
     Box::pin(async move {
         let lockstep = lockstep_transport(participant.transport(), &session).await?;
         let key = participant.keys().model(&joins.name);
         info!(model = %joins.name, %key, "model serving");
-        let served = serve_zenoh(lockstep.clone(), key, joins, cancel).await;
+        let invite = session.participant_invite(joins.name.as_str());
+        let ready = ready.map(|announce| {
+            let name = joins.name.clone();
+            move || announce.ready("model", name.as_str(), &invite)
+        });
+        let served = serve_zenoh(lockstep.clone(), key, joins, cancel, ready).await;
         if crate::lockstep::session::owns_links(participant.transport()) {
             let _ = lockstep.close().await;
         }
@@ -266,12 +275,14 @@ pub(super) fn answer_in<H: ModelHandler + 'static>(
 }
 
 /// Answers the model's requests on `key` until `cancel` fires. Requests run
-/// side by side; the handler's lock orders forwards.
-async fn serve_zenoh<H: ModelHandler + 'static>(
+/// side by side; the handler's lock orders forwards. `ready` runs once
+/// requests can arrive; what it returns lives as long as the serve.
+async fn serve_zenoh<H: ModelHandler + 'static, R>(
     session: Transport,
     key: String,
     joins: Arc<Joins<H>>,
     cancel: CancellationToken,
+    ready: Option<impl FnOnce() -> R>,
 ) -> Result<(), GymError> {
     let queryable = session
         .control()
@@ -279,6 +290,7 @@ async fn serve_zenoh<H: ModelHandler + 'static>(
         .complete(true)
         .await
         .map_err(|e| GymError::Closed(e.to_string()))?;
+    let _ready = ready.map(|ready| ready());
     loop {
         let query = tokio::select! {
             () = cancel.cancelled() => break,
@@ -460,6 +472,7 @@ mod blocking_tests {
                 participant,
                 host.address.clone(),
                 CancellationToken::new(),
+                None,
             );
             // Answering over its own lockstep session once that answers.
             tokio::select! {

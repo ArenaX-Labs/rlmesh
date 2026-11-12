@@ -16,6 +16,9 @@ COPY entrypoint.py .
 # A session host listens on four consecutive ports.
 EXPOSE 7447-7450
 ENV RLMESH_ADDRESS=0.0.0.0:7447
+# Written once the env answers, removed when it stops.
+ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json
+HEALTHCHECK --interval=2s --start-period=120s CMD test -f /tmp/rlmesh-ready.json
 # Or skip entrypoint.py and serve the recipe directly:
 #   ENTRYPOINT ["python", "-m", "rlmesh.serve", "--env", "entrypoint:MyEnv"]
 ENTRYPOINT ["python", "entrypoint.py"]

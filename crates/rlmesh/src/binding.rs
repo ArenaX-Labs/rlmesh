@@ -30,6 +30,10 @@ pub use rlmesh_proto::{
     peer_info_override, supported_workflow_editions, update_peer_info_override,
 };
 
+/// The readiness signal: the serving hook a binding prints its line from,
+/// and the `RLMESH_READY_FILE` a launcher waits on.
+pub use crate::ready::{Announce, READY_FILE_ENV, Ready, ready_file_from_env, set_ready_hook};
+
 /// Resolve a native participant's workflow edition (COR-6): rungs 1 to 4;
 /// `None` when it floats.
 pub fn resolve_workflow_edition(sources: EditionSources<'_>) -> Result<Option<String>> {

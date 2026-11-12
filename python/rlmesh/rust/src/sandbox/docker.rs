@@ -474,6 +474,9 @@ WORKDIR /opt/rlmesh\n\
 {}\
 \n\
 RUN sh -lc {}\n\n\
+# Written once the env answers, removed when it stops.\n\
+ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json\n\
+HEALTHCHECK --interval=2s --start-period=300s CMD test -f /tmp/rlmesh-ready.json\n\n\
 ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
         spec.base_image,
         source_copy,
@@ -1077,6 +1080,8 @@ mod tests {
         assert!(dockerfile.contains("gymnasium"));
         assert!(dockerfile.contains("pygame"));
         assert!(dockerfile.contains("rlmesh._bootstrap.sandbox_env"));
+        assert!(dockerfile.contains("ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json"));
+        assert!(dockerfile.contains("HEALTHCHECK"));
         assert!(!dockerfile.contains("COPY source"));
         assert!(!dockerfile.contains("COPY bootstrap.json"));
         assert!(!dockerfile.contains("bootstrap.json"));

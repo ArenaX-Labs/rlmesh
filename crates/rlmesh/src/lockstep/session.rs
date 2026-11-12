@@ -284,6 +284,8 @@ pub struct ServeOptions {
     pub workflow_edition: Option<String>,
     /// Record the session to this MCAP file (the lockstep tee).
     pub record: Option<PathBuf>,
+    /// Announce the robot once it answers (`None` for a run's own server).
+    pub announce: Option<crate::binding::Announce>,
 }
 
 /// Checks that an env with `contract` maps to a robot before
@@ -571,12 +573,17 @@ async fn serve_robot(
     };
     let key = participant.keys().lockstep(&address.robot);
     info!(robot = %address.robot, %key, "lockstep robot serving");
+    let invite = address.invite();
+    let ready = options
+        .announce
+        .map(|announce| move || announce.ready("env", address.robot.as_str(), &invite));
     let served = serve_zenoh(
         lockstep.control().clone(),
         key,
         handler.clone(),
         shutdown,
         participant.sealer(),
+        ready,
     )
     .await;
 

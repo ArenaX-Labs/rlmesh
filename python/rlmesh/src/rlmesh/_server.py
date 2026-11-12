@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import signal
@@ -71,6 +72,12 @@ def _stop_server(server: PyEnvServer | PyVectorEnvServer) -> None:
     server.shutdown()
     server.wait(_FINALIZE_JOIN_SECONDS)
 
+
+#: Set while a run stands up its own server in front of a local env: that
+#: server is no participant a launcher waits on, so it announces nothing.
+loopback: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rlmesh_env_server_loopback", default=False
+)
 
 #: Env var the platform sets to the contract branch it expects this env to serve,
 #: as a JSON object of discriminant bindings. Unset asserts nothing.
@@ -179,6 +186,10 @@ class EnvServer:
         ...         return None
         >>> server = EnvServer(TinyEnv(), "localhost:5555/tiny")  # doctest: +SKIP
         >>> server.serve()  # doctest: +SKIP
+
+    With ``RLMESH_READY_FILE`` set, the server writes that file once the env
+    can answer and removes it when it stops (see ``python -m rlmesh.serve
+    --help``).
 
     ``close_env_on_shutdown`` (default ``True``) calls the env's ``close()`` when
     the server stops; pass ``False`` for a server standing in front of an env
@@ -303,6 +314,7 @@ class EnvServer:
             options=options,
             native_values=native_values,
             close_env_on_shutdown=close_env_on_shutdown,
+            announce=not loopback.get(),
         )
         # A server still running when CPython finalizes is fatal: its serve and
         # lane threads call into the interpreter as it tears down. Stop it from

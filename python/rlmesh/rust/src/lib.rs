@@ -163,6 +163,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
         lifecycle::resolve_workflow_edition_rungs,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(lifecycle::set_ready_hook, m)?)?;
     m.add_class::<lifecycle::PyBuildInfo>()?;
     m.add_function(wrap_pyfunction!(lifecycle::build_info, m)?)?;
     m.add_function(wrap_pyfunction!(client::normalize_connect_address, m)?)?;
