@@ -195,9 +195,15 @@ class Host:
         ``"tcp"`` or ``"udp"``), ``chunks_accepted``, ``chunk_timing`` (per
         commanded part, by ``robot:path``: ``received``, ``accepted``,
         ``lost``, ``late_ms``, ``late_max_ms``, ``gap_max_ms``, as in
-        :meth:`Robot.edge_stats`) and ``datagram_board`` / ``datagram_host``
-        (each end of a board's datagram path, or ``None``). Empty for a
-        session another process hosts.
+        :meth:`Robot.edge_stats`), ``datagram_board`` / ``datagram_host``
+        (each end of a board's datagram path, or ``None``), ``path_time``
+        (a robot offered the datagram path: ``udp_s`` and ``tcp_s`` its
+        realtime parts rode each path since it attached, and the host's
+        ``fallbacks`` and ``returns`` between them; else ``None``) and
+        ``datagram_relay`` (how long the host took to relay its chunks,
+        subscriber to socket: ``ms``, counts in buckets ``[0, 1)``,
+        ``[1, 2)``, ``[2, 4)`` ... ``[64, inf)`` ms, and ``max_ms``; else
+        ``None``). Empty for a session another process hosts.
         """
         return cast("list[HostLink]", self._native.health())
 
