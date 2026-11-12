@@ -40,7 +40,7 @@ fn closing_a_scene_disarms_ends_every_lease_and_reaches_the_device_view() {
         want
     );
     let view = crate::wire::DeviceView::of(&state, &pid("robot"));
-    assert_eq!(closing(view.closing.as_ref()), want);
+    assert_eq!(closing(crate::wire::AuthorityView::closing(&view)), want);
     // Nothing arms it or leases in it again.
     assert_eq!(
         Fixture::status(f.run("operator", Command::Arm, 6)),

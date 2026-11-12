@@ -73,3 +73,37 @@ impl VirtualTick {
         (self.epoch(), self.tick(), phase)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ticks_order_by_epoch_then_tick_with_observe_before_step() {
+        let observe = |epoch, tick| {
+            VirtualTick::Observe(TickState {
+                epoch: Epoch(epoch),
+                tick,
+                watermarks: Vec::new(),
+                due: Vec::new(),
+            })
+        };
+        let step = |epoch, tick| {
+            VirtualTick::Step(Step {
+                epoch: Epoch(epoch),
+                tick,
+                chunks: Vec::new(),
+            })
+        };
+        let order = [
+            observe(1, 7),
+            step(1, 7),
+            observe(1, 8),
+            step(1, 8),
+            observe(2, 1),
+        ]
+        .map(|t| t.order());
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+        assert_eq!(order[1], (Epoch(1), 7, 1));
+    }
+}
