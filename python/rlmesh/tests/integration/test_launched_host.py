@@ -123,7 +123,10 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
         text=True,
     )
     try:
-        _serving(proc)
+        serving = _serving(proc)
+        # Stdout is the container's log: the key is a credential.
+        assert printed["key"] not in serving
+        assert "#…/env" in serving
         env = rlmesh.RemoteEnv(printed["address"], connect_timeout_seconds=20)
         try:
             observation, _ = env.reset(seed=0)
@@ -145,6 +148,9 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
     finally:
         proc.terminate()
         try:
-            proc.wait(timeout=15)
+            rest, _ = proc.communicate(timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
+            rest, _ = proc.communicate()
+    assert printed["key"] not in rest
+    assert identity.strip() not in rest

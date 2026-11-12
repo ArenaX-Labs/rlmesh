@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use rlmesh_session_core::auth::AddressKey;
 
-#[cfg(doc)]
 use crate::address::HOST_IDENTITY_VAR;
 use crate::address::credentials::{hosted_key, write_private};
 use crate::address::{
@@ -260,9 +259,14 @@ async fn serve_at(
     let launched = launched_identity()?;
     if !base.ip().is_loopback() && !insecure && launched.is_none() {
         return Err(SessionError::Config(format!(
-            "an embedded host listens on loopback only, not {base}: for a session other \
+            "an embedded host listens on loopback only, not {base}, unless its launcher passes \
+             it a host identity: set {HOST_IDENTITY_VAR} to the identity \
+             `rlmesh host-identity new --address HOST:PORT --participant NAME` (or \
+             rlmesh.launch) makes, through the environment, and dial the keyed address it \
+             prints; or listen on 127.0.0.1:{port} for this machine only. For a session other \
              machines join, run `rlmesh host`; to accept that anyone who can reach {base} can \
-             try this host, pass insecure (Host(insecure=True))"
+             try this host, pass insecure (Host(insecure=True))",
+            port = base.port(),
         )));
     }
     let mut config = HostConfig::new(TenantId::new(TENANT)?, session_id(name));

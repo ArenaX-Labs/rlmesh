@@ -7,6 +7,15 @@ or a bare predict / make-env callable. Serves as ``RLMESH_NAME`` (default
 ``0.0.0.0:7447``, hosted here); point your Dockerfile ``ENTRYPOINT`` here
 instead of hand-writing a serve loop.
 
+Hosting beyond loopback, as the default ``0.0.0.0`` does, takes a host
+identity: whoever launches the container passes one in
+``RLMESH_HOST_IDENTITY`` (a secret, through the environment, never argv) and
+dials the keyed address its key forms. ``rlmesh host-identity new --address
+HOST:PORT --participant NAME`` makes both (``rlmesh.launch`` in Python); a
+sandbox does it for you. Without one, the process refuses to start and says
+so before it loads anything; ``RLMESH_ADDRESS=127.0.0.1:7447`` serves this
+machine only, with no identity. The serving line never shows the key.
+
 Every option has a command-line flag and an ``RLMESH_*`` environment variable,
 so a container is configured through its environment alone; a flag wins over
 its variable, and a value that does not parse stops the process at startup,
@@ -100,6 +109,7 @@ def _stamp_startup(
     ``workflow_edition`` is what the handshake declares, so the envelope is
     told the same value rather than re-resolving the class on its own.
     """
+    from ._client._endpoint import redact_address
     from ._peer_info import register_python_peer_info
     from ._rlmesh import DESCRIBE_METADATA_KEY
 
@@ -116,7 +126,13 @@ def _stamp_startup(
         )
         + list(_marks.items())
     )
-    print(f"RLMesh serving {kind} on {address} (startup: {phases})", flush=True)
+    # Stdout is a container's log, and the key a credential: the line shows
+    # the address without it, for an env (whose bound address carries it)
+    # as for a model.
+    print(
+        f"RLMesh serving {kind} on {redact_address(address)} (startup: {phases})",
+        flush=True,
+    )
 
 
 def _handshake_describe(
@@ -156,8 +172,49 @@ __all__ = ["main", "serve_env", "serve_model", "startup_marks"]
 
 # Where a model or env serves by default: the default session, hosted in this
 # process on the well-known port, on all interfaces (a container's published
-# ports).
+# ports), which takes a host identity in RLMESH_HOST_IDENTITY.
 _ADDRESS = "0.0.0.0:7447"
+_HOST_IDENTITY_VAR = "RLMESH_HOST_IDENTITY"
+
+
+class _NoHostIdentityError(ValueError):
+    """An all-interfaces address served without a launch identity."""
+
+
+def _refuse_unlaunched_wide_bind(address: str) -> None:
+    """Refuse ``address`` before anything loads when it cannot host here.
+
+    A session hosted on all interfaces needs the launch identity its
+    launcher passes; without one the native host refuses to bind, and only
+    after a model's weights loaded. This mirrors the hosting rule for an
+    unspecified host (``0.0.0.0`` / ``[::]``, a container's) only, and lets
+    the process join when another host already listens on that port here.
+    """
+    if os.environ.get(_HOST_IDENTITY_VAR):
+        return
+    first = address.removeprefix("rlmesh://").split("/", 1)[0].split("#", 1)[0]
+    if first.startswith("["):
+        host, _, port = first[1:].partition("]")
+        port = port.removeprefix(":")
+    else:
+        host, _, port = first.rpartition(":")
+    if host not in ("0.0.0.0", "::") or not port.isdigit():
+        return
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.2):
+            return
+    except OSError:
+        pass
+    raise _NoHostIdentityError(
+        f"serving on {first} (all interfaces) needs a host identity: set "
+        f"{_HOST_IDENTITY_VAR}, through the environment, to the identity "
+        "`rlmesh host-identity new --address HOST:PORT --participant NAME` makes "
+        "(rlmesh.launch in Python), and dial the keyed address it prints; or set "
+        f"RLMESH_ADDRESS=127.0.0.1:{port} to serve this machine only"
+    )
+
 
 # A served model's batching: each integer rlmesh.BatchOptions field, the
 # environment variable behind its flag, the least value it takes and its help.
@@ -346,7 +403,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=os.environ.get("RLMESH_ADDRESS") or None,
         help=(
             f"The session to serve in (default {_ADDRESS}, which hosts it here on "
-            "all interfaces). Defaults to RLMESH_ADDRESS."
+            f"all interfaces under the host identity in {_HOST_IDENTITY_VAR}; "
+            "127.0.0.1:PORT needs none). Defaults to RLMESH_ADDRESS."
         ),
     )
     parser.add_argument(
@@ -488,6 +546,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 workflow_edition=args.workflow_edition,
                 batching=batching,
             )
+    except _NoHostIdentityError as exc:
+        parser.error(str(exc))
     except KeyboardInterrupt:
         # Ctrl-C is how an operator stops a served container: the serve loop has
         # already drained and closed by the time the interrupt surfaces here, so
@@ -544,6 +604,7 @@ def serve_model(
     """
     from ._editions import serve_options_declaring
 
+    _refuse_unlaunched_wide_bind(address)
     model = _resolve_model(model_source, binding)
     _mark("model")
     _warn_without_spec(model)
@@ -562,18 +623,19 @@ def serve_model(
 def _warn_without_spec(model: object) -> None:
     """Say once, on stderr, when the served model declares no ``ModelSpec``.
 
-    Serving still works (a spec-less model serves its own predict), but the
-    ``rlmesh doctor`` cannot synthesize inputs for it without a reference env. ``rlmesh check <module:Class>`` fails on the same
-    condition before the build.
+    Serving still works (a spec-less model serves its own predict), but
+    ``rlmesh doctor`` cannot synthesize inputs for it without a reference
+    env. ``rlmesh check <module:Class>`` fails on the same condition before
+    the build.
     """
     from .adapters.specs import ModelSpec
 
     if isinstance(getattr(model, "spec", None), ModelSpec):
         return
     print(
-        "RLMesh: the served model declares no spec; the managed platform cannot "
-        "test it with generated inputs when you onboard it. Set "
-        "`spec = ModelSpec(...)` on the class.",
+        "RLMesh: the served model declares no spec, so it cannot be tested with "
+        "generated inputs (rlmesh doctor, rlmesh check) without a reference env. "
+        "Set `spec = ModelSpec(...)` on the class.",
         file=sys.stderr,
         flush=True,
     )
@@ -650,6 +712,7 @@ def serve_env(
 
     from ._bootstrap.loaders import construct_authored_env
 
+    _refuse_unlaunched_wide_bind(address)
     framework = _normalize_framework(framework)
     # Lanes are the default for num_envs > 1; the gym fan-out only on request.
     gym_vectorized = num_envs > 1 and vectorization_mode is not None

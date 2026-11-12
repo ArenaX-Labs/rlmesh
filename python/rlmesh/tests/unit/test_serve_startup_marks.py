@@ -233,3 +233,52 @@ def test_envelope_preferred_edition_is_what_the_serve_options_declare(
     assert envelope["runtime"]["supported_workflow_editions"] == list(
         build_info().supported_workflow_editions
     )
+
+
+def test_the_serving_line_never_shows_the_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An env's bound address is its invite, key included; stdout is a
+    # container's log, so the line shows it without the key, as a model's.
+    import rlmesh._peer_info as peer_info
+
+    monkeypatch.setattr(serve, "_marks", {})
+    monkeypatch.setattr(peer_info, "register_python_peer_info", lambda extra=None: None)
+    monkeypatch.setenv("RLMESH_HOST_IDENTITY", "launched")
+
+    class Server:
+        def __init__(self, env: object, address: str, **_: object) -> None:
+            self.address = "127.0.0.1:7610#SECRETKEY.HOSTKEY/env"
+
+        def serve(self) -> None: ...
+
+    monkeypatch.setattr(rlmesh, "EnvServer", Server)
+    serve.serve_env(lambda: object(), "0.0.0.0:7610/env")
+
+    out = capsys.readouterr().out
+    assert out.startswith("RLMesh serving env on 127.0.0.1:7610#…/env (startup: ")
+    assert "SECRET" not in out
+
+
+def test_all_interfaces_without_a_launch_identity_stops_before_loading(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    made: list[object] = []
+    monkeypatch.delenv("RLMESH_HOST_IDENTITY", raising=False)
+    monkeypatch.setattr(
+        serve, "resolve_entrypoint", lambda *a, **k: lambda: made.append(1)
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        serve.main(["--env", "pkg:Env", "--address", f"0.0.0.0:{port}"])
+
+    assert stopped.value.code == 2
+    assert made == [], "nothing is constructed before the refusal"
+    err = capsys.readouterr().err
+    assert "RLMESH_HOST_IDENTITY" in err
+    assert f"RLMESH_ADDRESS=127.0.0.1:{port}" in err
