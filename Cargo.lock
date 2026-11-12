@@ -5486,6 +5486,8 @@ version = "0.2.0-alpha.0"
 dependencies = [
  "rlmesh-adapters 0.1.0",
  "rlmesh-adapters 0.2.0-alpha.0",
+ "rlmesh-spaces 0.1.0",
+ "rlmesh-spaces 0.2.0-alpha.0",
  "serde_json",
 ]
 
