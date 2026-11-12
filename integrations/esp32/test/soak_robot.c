@@ -6,20 +6,27 @@
  * reads the bytes the process holds on its heap: the robot's, the
  * transport's and zenoh-pico's together, as a board's one heap holds them.
  *
- *   soak_robot <host:port#secret.hostkey> <cycles> <cut|hold|race> [max-growth]
+ *   soak_robot <host:port#secret.hostkey> <cycles> <cut|hold|race|load> [max]
  *
  * `cut` resets every link; `hold` carries nothing for longer than the robot
  * waits for its host, then resets them (an outage the board notices first).
  * Either fails when a cycle does not end with commands flowing, or when the
  * heap held after the last two cycles exceeds that after the first two by more
- * than max-growth bytes (default 2048). `race` publishes from two threads on
+ * than `max` bytes (default 2048). `race` publishes from two threads on
  * one zenoh-pico session while its links reset every 20 ms, for `cycles`
  * seconds: zenoh-pico clearing a failed link under a publisher crashes it.
- * SOAK_TRACE set prints the robot's state every second. */
+ * `load` drives the board for `cycles` seconds as a policy does (30 chunks a
+ * second to each part, its state published at 50 Hz and read at 200 Hz), every
+ * link stalled for 1.5 s every 10 s, and fails if the heap ever held more than
+ * `max` bytes. SOAK_CAP=<bytes> makes the heap that small, as a board's is:
+ * past it an allocation fails, and one that aborts fails the run. SOAK_SITES
+ * prints where the most was held at the peak; SOAK_TRACE the robot's state. */
 
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <dlfcn.h>
 #include <errno.h>
+#include <execinfo.h>
 #include <malloc.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -74,6 +81,7 @@ typedef struct {
   int pairs;
   atomic_int cut;
   atomic_int hold;
+  atomic_long forwarded;
   atomic_int stop;
 } proxy_t;
 
@@ -174,6 +182,7 @@ static void* proxy_task(void* arg) {
         if (!(fds[CLASSES + 2 * i + side].revents & (POLLIN | POLLHUP | POLLERR))) continue;
         ssize_t got = read(p->pair[i][side], buf, sizeof buf);
         bool ok = got > 0;
+        if (ok) atomic_fetch_add(&p->forwarded, (long)got);
         for (ssize_t off = 0; ok && off < got;) {
           ssize_t w = write(p->pair[i][1 - side], buf + off, (size_t)(got - off));
           if (w <= 0) ok = false;
@@ -193,7 +202,11 @@ static void* proxy_task(void* arg) {
 
 #ifndef __SANITIZE_ADDRESS__
 /* Every allocation in the process goes through these, so the bytes held are
- * counted exactly, on every thread (glibc's own statistics see one arena). */
+ * counted exactly, on every thread (glibc's own statistics see one arena),
+ * with the most ever held. SOAK_CAP=<bytes> makes the heap that small: an
+ * allocation past it fails, as a board's would. SOAK_SITES=1 also records
+ * where each live block was allocated, and prints the sites holding the most
+ * at the peak. */
 extern void* __libc_malloc(size_t);
 extern void* __libc_calloc(size_t, size_t);
 extern void* __libc_realloc(void*, size_t);
@@ -201,39 +214,158 @@ extern void* __libc_memalign(size_t, size_t);
 extern void __libc_free(void*);
 static atomic_long live_bytes;
 static atomic_long live_blocks;
+static atomic_long peak_bytes;
+static atomic_long refused_allocs;
+static atomic_long total_allocs;
+static long heap_cap;
+
+#define SITE_FRAMES 16
+#define SITES 8192
+#define SLOTS (1u << 20)
+typedef struct {
+  uint64_t hash;
+  void* frames[SITE_FRAMES];
+  int depth;
+  long live;
+} site_t;
+static site_t sites[SITES];
+static long sites_at_peak[SITES];
+static long sites_peak;
+static struct {
+  void* p;
+  int site;
+} slots[SLOTS];
+#define TOMBSTONE ((void*)1)
+static pthread_mutex_t sites_lock = PTHREAD_MUTEX_INITIALIZER;
+static __thread int in_hook;
+static int tracking;
+
+static uint32_t slot_of(void* p) { return (uint32_t)(((uintptr_t)p >> 4) * 2654435761u) % SLOTS; }
+
+static void track(void* p, long size) {
+  if (!tracking || in_hook) return;
+  in_hook = 1;
+  void* frames[SITE_FRAMES + 2];
+  int depth = backtrace(frames, SITE_FRAMES + 2) - 2;
+  uint64_t hash = 1469598103934665603u;
+  for (int i = 0; i < depth; ++i) hash = (hash ^ (uintptr_t)frames[i + 2]) * 1099511628211u;
+  pthread_mutex_lock(&sites_lock);
+  int site = (int)(hash % SITES);
+  while (sites[site].depth != 0 && sites[site].hash != hash) site = (site + 1) % SITES;
+  if (sites[site].depth == 0) {
+    sites[site].hash = hash;
+    sites[site].depth = depth > 0 ? depth : 1;
+    memcpy(sites[site].frames, frames + 2, sizeof(void*) * (size_t)(depth > 0 ? depth : 0));
+  }
+  sites[site].live += size;
+  uint32_t at = slot_of(p);
+  while (slots[at].p != NULL && slots[at].p != TOMBSTONE) at = (at + 1) % SLOTS;
+  slots[at].p = p;
+  slots[at].site = site;
+  long live = atomic_load(&live_bytes);
+  if (live > sites_peak + 256) {
+    sites_peak = live;
+    for (int i = 0; i < SITES; ++i) sites_at_peak[i] = sites[i].live;
+  }
+  pthread_mutex_unlock(&sites_lock);
+  in_hook = 0;
+}
+
+static void untrack(void* p, long size) {
+  if (!tracking) return;
+  pthread_mutex_lock(&sites_lock);
+  for (uint32_t at = slot_of(p), n = 0; slots[at].p != NULL && n < SLOTS;
+       at = (at + 1) % SLOTS, ++n) {
+    if (slots[at].p == p) {
+      sites[slots[at].site].live -= size;
+      slots[at].p = TOMBSTONE;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&sites_lock);
+}
+
+static void* main_base;
+static void print_sites(void) {
+  if (!tracking) return;
+  Dl_info self;
+  if (dladdr((void*)&print_sites, &self)) main_base = self.dli_fbase;
+  printf("allocation sites holding the most at the peak (%ld bytes):\n", sites_peak);
+  for (int shown = 0; shown < 30; ++shown) {
+    int best = -1;
+    for (int i = 0; i < SITES; ++i) {
+      if (sites_at_peak[i] > 0 && (best < 0 || sites_at_peak[i] > sites_at_peak[best])) best = i;
+    }
+    if (best < 0) break;
+    printf("  %7ld B  site", sites_at_peak[best]);
+    /* Addresses in this executable (not position-independent), for
+     * addr2line; those in shared libraries are left out. */
+    for (int f = 0; f < sites[best].depth; ++f) {
+      Dl_info info;
+      uintptr_t pc = (uintptr_t)sites[best].frames[f];
+      if (dladdr((void*)pc, &info) && info.dli_fbase == main_base) {
+        printf(" %#lx", (unsigned long)(pc - 1));
+      }
+    }
+    printf("\n");
+    sites_at_peak[best] = 0;
+  }
+}
+
+static bool over_cap(size_t n) {
+  if (heap_cap > 0 && atomic_load(&live_bytes) + (long)n > heap_cap) {
+    atomic_fetch_add(&refused_allocs, 1);
+    return true;
+  }
+  return false;
+}
 
 static void* counted(void* p) {
   if (p != NULL) {
-    atomic_fetch_add(&live_bytes, (long)malloc_usable_size(p));
+    long size = (long)malloc_usable_size(p);
+    long live = atomic_fetch_add(&live_bytes, size) + size;
     atomic_fetch_add(&live_blocks, 1);
+    atomic_fetch_add(&total_allocs, 1);
+    for (long peak = atomic_load(&peak_bytes);
+         live > peak && !atomic_compare_exchange_weak(&peak_bytes, &peak, live);) {
+    }
+    track(p, size);
   }
   return p;
 }
 
 static void uncounted(void* p) {
   if (p != NULL) {
-    atomic_fetch_sub(&live_bytes, (long)malloc_usable_size(p));
+    long size = (long)malloc_usable_size(p);
+    untrack(p, size);
+    atomic_fetch_sub(&live_bytes, size);
     atomic_fetch_sub(&live_blocks, 1);
   }
 }
 
-void* malloc(size_t n) { return counted(__libc_malloc(n)); }
-void* calloc(size_t n, size_t size) { return counted(__libc_calloc(n, size)); }
+void* malloc(size_t n) { return over_cap(n) ? NULL : counted(__libc_malloc(n)); }
+void* calloc(size_t n, size_t size) {
+  return over_cap(n * size) ? NULL : counted(__libc_calloc(n, size));
+}
 void free(void* p) {
   uncounted(p);
   __libc_free(p);
 }
 void* realloc(void* p, size_t n) {
   size_t before = p != NULL ? malloc_usable_size(p) : 0;
+  if (n > before && over_cap(n - before)) return NULL;
+  /* Uncounted first: the block may move. */
+  uncounted(p);
   void* q = __libc_realloc(p, n);
-  if (q != NULL || n == 0) {
-    atomic_fetch_sub(&live_bytes, (long)before);
-    if (p != NULL) atomic_fetch_sub(&live_blocks, 1);
-    counted(q);
+  if (q == NULL && n != 0) {
+    counted(p);
+    return NULL;
   }
-  return q;
+  return counted(q);
 }
-void* memalign(size_t align, size_t n) { return counted(__libc_memalign(align, n)); }
+void* memalign(size_t align, size_t n) {
+  return over_cap(n) ? NULL : counted(__libc_memalign(align, n));
+}
 void* aligned_alloc(size_t align, size_t n) { return memalign(align, n); }
 int posix_memalign(void** out, size_t align, size_t n) {
   void* p = memalign(align, n);
@@ -243,10 +375,22 @@ int posix_memalign(void** out, size_t align, size_t n) {
 }
 
 static size_t heap_live(void) { return (size_t)atomic_load(&live_bytes); }
+static void heap_watch(void) {
+  void* warm[2];
+  backtrace(warm, 2); /* loads the unwinder before any hook needs it */
+  if (getenv("SOAK_CAP") != NULL) heap_cap = atol(getenv("SOAK_CAP"));
+  tracking = getenv("SOAK_SITES") != NULL;
+}
+static long heap_peak(void) { return atomic_load(&peak_bytes); }
 #else
 /* Under AddressSanitizer, its allocator is the one that counts. */
 static atomic_long live_blocks;
+static atomic_long refused_allocs;
+static atomic_long total_allocs;
 static size_t heap_live(void) { return 0; }
+static void heap_watch(void) {}
+static long heap_peak(void) { return 0; }
+static void print_sites(void) {}
 #endif
 
 /* `race`: one zenoh-pico session to the host through the proxy, publishing
@@ -296,10 +440,18 @@ static int race(proxy_t* proxy, int seconds) {
   return 0;
 }
 
+/* Every receive the robot dropped for want of memory. */
+static uint64_t dropped_no_memory(const rlmesh_device_robot_t* robot) {
+  uint64_t n = 0;
+  for (uint8_t what = 0; what < 4; ++what) n += rlmesh_device_robot_dropped(robot, what, 5);
+  return n;
+}
+
 int main(int argc, char** argv) {
+  heap_watch();
   if (argc < 4) {
     fprintf(stderr,
-            "usage: soak_robot <host:port#secret.hostkey> <cycles> <cut|hold|race> [max-growth]\n");
+            "usage: soak_robot <host:port#secret.hostkey> <cycles> <cut|hold|race|load> [max]\n");
     return 2;
   }
   int cycles = atoi(argv[2]);
@@ -360,6 +512,95 @@ int main(int argc, char** argv) {
   size_t least = SIZE_MAX;
   uint64_t hold_until = 0;
   const uint64_t cycle_limit = 30u * 1000000u;
+  /* `load`: driven for `cycles` seconds, every link stalled for 1.5 s every
+   * 10 s and then released (a weak link); the heap's peak and standing. */
+  if (strcmp(argv[3], "load") == 0) {
+    long budget = argc > 4 ? atol(argv[4]) : 0;
+    uint64_t end = start + (uint64_t)cycles * 1000000u, warm = start + 5000000u;
+    uint64_t next_stall = start + 10000000u, stall_end = 0, released = 0;
+    size_t standing = SIZE_MAX;
+    long driven_peak = 0, allocs_warm = 0;
+    bool warmed = false;
+    while (now_us() < end) {
+      rlmesh_zenoh_poll(&z);
+      rlmesh_device_robot_status(robot, &status);
+      uint64_t now = now_us();
+      static uint64_t next_trace;
+      if (getenv("SOAK_TRACE") != NULL && now >= next_trace) {
+        next_trace = now + 500000;
+        rlmesh_zenoh_view_stats_t v;
+        rlmesh_zenoh_view_stats(&z, &v);
+        printf(
+            "  t %5.1f echoes %llu accepted %llu superseded %u failed %u unsent %u live %zu "
+            "relayed %ld\n",
+            (double)(now - start) / 1e6, (unsigned long long)status.echoes,
+            (unsigned long long)status.chunks_accepted, v.superseded, v.failed, v.tx_dropped,
+            heap_live(), atomic_load(&proxy.forwarded));
+      }
+      static uint8_t last_phase = 255;
+      if (status.phase != last_phase) {
+        last_phase = status.phase;
+        printf("  %6.1f s  phase %u  fault %u\n", (double)(now - start) / 1e6, status.phase,
+               status.fault);
+      }
+      if (!warmed && now >= warm) {
+        /* The join's own allocations are not the burst's. */
+        warmed = true;
+        driven_peak = (long)heap_live();
+        allocs_warm = atomic_load(&total_allocs);
+      }
+      if (stall_end == 0 && now >= next_stall) {
+        atomic_store(&proxy.hold, 1);
+        stall_end = now + 1500000u;
+      } else if (stall_end != 0 && now >= stall_end) {
+        atomic_store(&proxy.hold, 0);
+        stall_end = 0;
+        released = now;
+        next_stall = now + 10000000u;
+      }
+      if (status.phase == 4 && now >= next_sample) {
+        for (int i = 0; i < PARTS; ++i) {
+          rlmesh_device_tick_t tick;
+          if (rlmesh_device_robot_tick(robot, (uint8_t)parts[i], now, &tick) == 1 &&
+              tick.has_action && tick.value_len == sizeof position[i]) {
+            memcpy(position[i], tick.value, sizeof position[i]);
+          }
+          rlmesh_device_robot_publish(robot, (uint8_t)parts[i], now, (const uint8_t*)position[i],
+                                      sizeof position[i], now);
+        }
+        next_sample = now + 20000;
+      }
+      if (warmed) {
+        size_t live = heap_live();
+        if ((long)live > driven_peak) driven_peak = (long)live;
+        /* Standing: the least held while running, away from a stall. */
+        if (status.phase == 4 && stall_end == 0 && now > released + 3000000u && live < standing) {
+          standing = live;
+        }
+      }
+      struct timespec pause = {0, 1000000};
+      nanosleep(&pause, NULL);
+    }
+    long peak = heap_peak();
+    printf(
+        "load: %llu chunks accepted, %u attaches, %llu receives dropped for memory, "
+        "%ld allocations refused\n",
+        (unsigned long long)status.chunks_accepted, rlmesh_device_robot_attaches(robot),
+        (unsigned long long)dropped_no_memory(robot), atomic_load(&refused_allocs));
+    printf("load: %.0f allocations a second while driven\n",
+           (double)(atomic_load(&total_allocs) - allocs_warm) / (double)(cycles - 5));
+    printf("load: heap standing %zu, peak while driven %ld (sampled), peak ever %ld, budget %ld\n",
+           standing, driven_peak, peak, budget);
+    print_sites();
+    bool ok_load =
+        status.chunks_accepted > (uint64_t)cycles * 20u && (budget == 0 || peak <= budget);
+    rlmesh_zenoh_close(&z);
+    rlmesh_device_robot_free(robot);
+    atomic_store(&proxy.stop, 1);
+    pthread_join(proxy_thread, NULL);
+    printf(ok_load ? "ok\n" : "FAIL\n");
+    return ok_load ? 0 : 1;
+  }
   while (cycle <= cycles) {
     rlmesh_zenoh_poll(&z);
     rlmesh_device_robot_status(robot, &status);
@@ -380,12 +621,16 @@ int main(int argc, char** argv) {
         }
         rlmesh_device_robot_publish(robot, (uint8_t)parts[i], now, (const uint8_t*)position[i],
                                     sizeof position[i], now);
+#ifdef RLMESH_DEVICE_LATE_BUCKETS
         /* What a board's status line reads each period. */
         rlmesh_device_chunk_timing_t timing;
         rlmesh_device_robot_chunk_timing(robot, (uint8_t)parts[i], &timing);
+#endif
       }
+#ifdef RLMESH_DEVICE_LATE_BUCKETS
       rlmesh_device_datagram_stats_t dgram;
       rlmesh_device_robot_datagram_stats(robot, &dgram);
+#endif
       next_sample = now + 20000;
     }
     if (status.phase == 4 && settle_until == 0 && hold_until == 0 && now >= broke_at + 1000000 &&

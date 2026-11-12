@@ -99,3 +99,11 @@ echo "==> the board's heap across re-attaches, every link reset each time"
 start_host tcp soak
 "$out/soak_robot" "$address" 8 cut 2048
 stop_host
+# The budget, in bytes held on this process's heap (zenoh-pico's, the
+# transport's and the robot's; 64-bit, so above a board's): an allocation past
+# it fails, as on a board.
+budget=$((77 * 1024))
+echo "==> the board's heap under a policy's load on a link that stalls, within $budget bytes"
+start_host tcp soak
+SOAK_CAP=$budget "$out/soak_robot" "$address" 40 load "$budget"
+stop_host

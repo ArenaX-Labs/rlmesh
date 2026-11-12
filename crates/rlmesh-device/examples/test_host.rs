@@ -21,7 +21,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rlmesh_session::transport::{Transport, TransportConfig};
 use rlmesh_session::wire::{
-    ChannelId, Fingerprint, InputRange, ParticipantId, PriorityClass, Role,
+    ChannelId, Command, ContractMode, Fingerprint, InputRange, ParticipantId, PriorityClass, Role,
+    StreamContract,
 };
 use rlmesh_session::{ChunkDraft, Participant, ParticipantConfig, SubscribeOptions};
 
@@ -139,10 +140,11 @@ async fn main() {
     }
 }
 
-/// Drives every commanded part of the board, 30 chunks a second of two
-/// actions each, with leases granted again whenever the last ones ended (the
+/// Reads every commanded part of the board's state at 200 Hz and drives it
+/// with 30 chunks a second of two actions each, with leases granted again whenever the last ones ended (the
 /// board attached anew), never giving up.
 async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
+    let mut revision = 1000;
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
         let Some(snapshot) = policy.authority() else {
@@ -158,8 +160,29 @@ async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
             continue;
         }
         let channels: Vec<ChannelId> = parts.iter().map(|p| p.channel).collect();
+        // Each part's state read at 200 Hz: the board publishes at its full
+        // rate, as under a policy that binds it.
+        revision += 1;
         let _ = policy
-            .declare_binding(Fingerprint::from(1), "{}", channels.clone(), 0.0)
+            .command(Command::DeclareBinding {
+                fingerprint: Fingerprint::from(1),
+                revision,
+                table_json: "{}".into(),
+                channels: channels.clone(),
+                replan_hz: 0.0,
+                contracts: channels
+                    .iter()
+                    .map(|&channel| StreamContract {
+                        channel,
+                        mode: ContractMode::Latest,
+                        delivery_hz: 200.0,
+                        history: 1,
+                        max_age: None,
+                        max_age_explicit: false,
+                    })
+                    .collect(),
+                grids: Vec::new(),
+            })
             .await;
         let _ = policy.arm().await;
         let _ = policy.rearm(owner).await;
