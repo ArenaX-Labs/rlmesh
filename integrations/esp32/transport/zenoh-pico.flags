@@ -1,0 +1,9 @@
+# zenoh-pico's configuration for the boards, and for the Linux build that
+# tests their transport (one flag per line; build:esp32, test:esp32:host).
+# Messages and batches as boards reassemble and send them.
+-DFRAG_MAX_SIZE=4096
+-DBATCH_UNICAST_SIZE=2048
+-DBATCH_MULTICAST_SIZE=2048
+# A board dials its host: it never scouts, nor joins a multicast group.
+-DZ_FEATURE_LINK_UDP_MULTICAST=0
+-DZ_FEATURE_SCOUTING=0

@@ -2,7 +2,9 @@
 //! tenant `local` on free loopback ports, printing its address with its key
 //! (as `rlmesh host` does), until killed. With `udp`, it relays the board's
 //! realtime parts over UDP on the realtime class's port number, as
-//! `rlmesh host --board-data udp` does.
+//! `rlmesh host --board-data udp` does. With `soak` after that, it drives
+//! every commanded part of the board for as long as it runs, granting their
+//! leases again whenever the board attaches anew, for the board's soak.
 //!
 //! Its links are not gated. A loopback embedded host gates them (Zenoh
 //! `usrpwd`, keyed by the session), which zenoh-pico can't present; a board
@@ -38,6 +40,7 @@ async fn main() {
         TenantId::new(TENANT).expect("tenant"),
         session_id(DEFAULT_SESSION),
     );
+    let soak = std::env::args().nth(2).as_deref() == Some("soak");
     if std::env::args().nth(1).as_deref() == Some("udp") {
         let at = std::net::SocketAddr::new(base.ip(), base.port() + 1);
         config.datagram = Some(DatagramRelay::bind(at).await.expect("udp"));
@@ -65,6 +68,9 @@ async fn main() {
         .await
         .expect("controller");
     let owner = ParticipantId::new("eyes").expect("id");
+    if soak {
+        drive_forever(&policy, &owner).await;
+    }
     let snapshot = policy
         .wait_for("board declared and mapped", Duration::from_secs(15), |s| {
             s.parts.iter().any(|p| p.owner == owner) && s.clock(&owner).is_some()
@@ -129,6 +135,69 @@ async fn main() {
                 );
                 std::io::stdout().flush().expect("stdout");
             }
+        }
+    }
+}
+
+/// Drives every commanded part of the board, 30 chunks a second of two
+/// actions each, with leases granted again whenever the last ones ended (the
+/// board attached anew), never giving up.
+async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let Some(snapshot) = policy.authority() else {
+            continue;
+        };
+        let parts: Vec<_> = snapshot
+            .parts
+            .iter()
+            .filter(|p| &p.owner == owner && p.command.is_some())
+            .cloned()
+            .collect();
+        if parts.is_empty() || snapshot.clock(owner).is_none() {
+            continue;
+        }
+        let channels: Vec<ChannelId> = parts.iter().map(|p| p.channel).collect();
+        let _ = policy
+            .declare_binding(Fingerprint::from(1), "{}", channels.clone(), 0.0)
+            .await;
+        let _ = policy.arm().await;
+        let _ = policy.rearm(owner).await;
+        let Ok(leases) = policy.grant_leases(channels, Vec::new(), None).await else {
+            continue;
+        };
+        let mut publishers = Vec::new();
+        for lease in &leases {
+            if let Ok(publisher) = policy.chunk_publisher(lease).await {
+                publishers.push((lease.clone(), publisher));
+            }
+        }
+        'driving: loop {
+            for (lease, publisher) in &publishers {
+                let held = policy.authority().is_some_and(|s| {
+                    s.lease(lease.channel)
+                        .is_some_and(|l| l.token == lease.token)
+                });
+                // Each joint's centre, as many as the part has.
+                let width = publisher.stride() / 4;
+                let action: Vec<u8> = std::iter::repeat_n(0.0_f32, width)
+                    .flat_map(f32::to_le_bytes)
+                    .collect();
+                let now = policy.session_now_ns();
+                let sent = publisher.send(ChunkDraft {
+                    based_on: vec![InputRange::one(ChannelId(99), 1)],
+                    t0_ns: now + 1_000_000,
+                    dt_ns: 20_000_000,
+                    replace_from_ns: now,
+                    valid_until_ns: now + 200_000_000,
+                    actions: Bytes::from(action.repeat(2)),
+                    tick: 0,
+                });
+                if !held || sent.is_err() {
+                    break 'driving;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(33)).await;
         }
     }
 }

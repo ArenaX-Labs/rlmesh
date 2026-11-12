@@ -27,11 +27,10 @@ zp_src="$(.mise/tasks/build/zenoh-pico)"
 zp_version="${zp_src##*/src-}"
 zp="$target_dir/zenoh-pico"
 zp_lib="$zp/arduino/zenoh-pico"
-# A board dials its host: it never scouts, nor joins a multicast group.
-if ! cmake -S "$zp_src" -B "$zp/config" -DZP_PLATFORM=arduino_esp32 -DFRAG_MAX_SIZE=4096 \
-  -DBATCH_UNICAST_SIZE=2048 -DBATCH_MULTICAST_SIZE=2048 -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF \
-  -DZ_FEATURE_LINK_UDP_MULTICAST=0 -DZ_FEATURE_SCOUTING=0 \
-  >"$zp/config.log" 2>&1; then
+# shellcheck disable=SC2046 # one flag per word
+if ! cmake -S "$zp_src" -B "$zp/config" -DZP_PLATFORM=arduino_esp32 \
+  $(grep -v '^#' integrations/esp32/transport/zenoh-pico.flags) \
+  -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF >"$zp/config.log" 2>&1; then
   cat "$zp/config.log" >&2
   exit 1
 fi
@@ -53,6 +52,8 @@ cp "$zp/config/include/zenoh-pico/config.h" "$zp_lib/src/zenoh-pico/"
   mkdir -p "$zp_lib/src/zp/$(dirname "$file")"
   cp "$zp_src/$file" "$zp_lib/src/zp/$file"
 done
+# Sends that race zenoh-pico's own handling of a failed link (see the script).
+python3 integrations/esp32/transport/patch_zenoh_pico.py "$zp_lib/src/zp"
 # zenoh-pico's ESP32 TCP link sets no receive timeout, though its ESP32 UDP
 # link and its POSIX and lwIP TCP links do. One task per session reads, so a
 # silent peer would block its lease checks and query timeouts for ever, and

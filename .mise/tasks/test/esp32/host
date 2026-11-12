@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run the ESP32 library's transport (integrations/esp32/transport/rlmesh_zenoh.c, over zenoh-pico) and the device robot on Linux against a real session host (rlmesh-device's examples/test_host, ungated: zenoh-pico can't present an embedded host's usrpwd link gate): the board's loop with Linux's clock and randomness"
+#MISE description="Run the ESP32 library's transport (integrations/esp32/transport/rlmesh_zenoh.c, over zenoh-pico) and the device robot on Linux against a real session host (rlmesh-device's examples/test_host, ungated: zenoh-pico can't present an embedded host's usrpwd link gate): the board's loop with Linux's clock and randomness, its links reset under it, and its heap across re-attaches"
 #MISE dir="{{ config_root }}"
 # Local only: it fetches and builds zenoh-pico.
 set -euo pipefail
@@ -7,13 +7,25 @@ set -euo pipefail
 target_dir="${CARGO_TARGET_DIR:-target}"
 out="$target_dir/esp32-host"
 zp_src="$(.mise/tasks/build/zenoh-pico)"
-zp_build="$target_dir/zenoh-pico/linux"
+# zenoh-pico as the boards build it: their flags and patches. A new flag or
+# patch builds it anew.
+flags=integrations/esp32/transport/zenoh-pico.flags
+patcher=integrations/esp32/transport/patch_zenoh_pico.py
+stamp="$(cat "$flags" "$patcher" | sha256sum | cut -c1-12)"
+zp_build="$target_dir/zenoh-pico/linux-$stamp"
 mkdir -p "$out"
 
 if [ ! -f "$zp_build/lib/libzenohpico.a" ]; then
   echo "==> zenoh-pico for Linux"
-  cmake -S "$zp_src" -B "$zp_build" -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=OFF \
-    -DBUILD_TESTING=OFF -DBUILD_SHARED_LIBS=OFF >"$out/zenoh-pico.log" 2>&1 &&
+  rm -rf "$zp_build"
+  mkdir -p "$zp_build"
+  cp -r "$zp_src" "$zp_build/src"
+  rm -rf "$zp_build/src/.git"
+  python3 "$patcher" "$zp_build/src"
+  # shellcheck disable=SC2046 # one flag per word
+  cmake -S "$zp_build/src" -B "$zp_build" -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=OFF \
+    -DBUILD_TESTING=OFF -DBUILD_SHARED_LIBS=OFF $(grep -v '^#' "$flags") \
+    >"$out/zenoh-pico.log" 2>&1 &&
     cmake --build "$zp_build" --target zenohpico_static -j 4 >>"$out/zenoh-pico.log" 2>&1 ||
     { cat "$out/zenoh-pico.log" >&2; exit 1; }
 fi
@@ -26,19 +38,20 @@ cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -Iintegrations/esp32/transport \
 echo "==> the board's loop"
 # The header the library compiles against, staged as build:esp32 does.
 cp crates/rlmesh-device/include/rlmesh_device.h integrations/esp32/src/
-cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -DZENOH_LINUX -DZENOH_C_STANDARD=11 \
-  -I"$zp_build/include" -I"$zp_src/include" -Iintegrations/esp32/src -Iintegrations/esp32/transport \
-  integrations/esp32/test/host_robot.c integrations/esp32/transport/rlmesh_zenoh.c \
-  "$target_dir/debug/librlmesh_device.a" "$zp_build/lib/libzenohpico.a" -lpthread -ldl -lm \
-  -o "$out/host_robot"
+for test in host_robot soak_robot; do
+  cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -DZENOH_LINUX -DZENOH_C_STANDARD=11 \
+    -I"$zp_build/include" -I"$zp_build/src/include" -Iintegrations/esp32/src \
+    -Iintegrations/esp32/transport "integrations/esp32/test/$test.c" \
+    integrations/esp32/transport/rlmesh_zenoh.c "$target_dir/debug/librlmesh_device.a" \
+    "$zp_build/lib/libzenohpico.a" -lpthread -ldl -lm -o "$out/$test"
+done
 
-# Over the session's links, then over the host's datagram path.
 host=
 trap '[ -n "$host" ] && kill "$host" 2>/dev/null || true' EXIT
-for path in tcp udp; do
-  echo "==> the board's loop, realtime parts over $path"
-  log="$out/host-$path.log"
-  "$target_dir/debug/examples/test_host" "$path" >"$log" 2>&1 &
+# Starts the test host (`$@`: its arguments), logging to $log, and sets
+# $address to what it prints.
+start_host() {
+  "$target_dir/debug/examples/test_host" "$@" >"$log" 2>&1 &
   host=$!
   for _ in $(seq 100); do
     [ -s "$log" ] && break
@@ -49,6 +62,18 @@ for path in tcp udp; do
     *#*) ;;
     *) echo "the test host printed no address:" >&2; cat "$log" >&2; exit 1 ;;
   esac
+}
+stop_host() {
+  kill "$host" 2>/dev/null || true
+  wait "$host" 2>/dev/null || true
+  host=
+}
+
+# Over the session's links, then over the host's datagram path.
+for path in tcp udp; do
+  echo "==> the board's loop, realtime parts over $path"
+  log="$out/host-$path.log"
+  start_host "$path"
   "$out/host_robot" "$address" 15 "$path"
   confirmed=
   for _ in $(seq 50); do
@@ -62,7 +87,15 @@ for path in tcp udp; do
     exit 1
   fi
   cat "$log"
-  kill "$host" 2>/dev/null || true
-  wait "$host" 2>/dev/null || true
-  host=
+  stop_host
 done
+
+log="$out/host-soak.log"
+echo "==> zenoh-pico publishing while its links reset under it"
+start_host tcp soak
+"$out/soak_robot" "$address" 10 race
+stop_host
+echo "==> the board's heap across re-attaches, every link reset each time"
+start_host tcp soak
+"$out/soak_robot" "$address" 8 cut 2048
+stop_host
