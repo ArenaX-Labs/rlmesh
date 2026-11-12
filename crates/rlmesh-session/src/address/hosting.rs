@@ -619,6 +619,93 @@ mod tests {
         text
     }
 
+    const KEYLESS_CHILD: &str = "RLMESH_TEST_KEYLESS_CHILD";
+
+    /// The child half of [`a_keyless_join_takes_a_key_only_for_a_loopback_host`]:
+    /// runs with a scratch rlmeshd state directory holding a `local` key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn keyless_child() {
+        use crate::address::credentials::credential;
+        use crate::wire::CtlStatus;
+        if std::env::var_os(KEYLESS_CHILD).is_none() {
+            return;
+        }
+        let daemon: AddressKey = std::fs::read_to_string(
+            crate::address::daemon_dir()
+                .expect("state dir")
+                .join(crate::address::LOCAL_KEY),
+        )
+        .expect("the scratch daemon key")
+        .parse()
+        .expect("a key");
+        // A host this process runs beyond loopback (as a launched container's is).
+        let wide = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
+        let mut host = host_at(wide, "lan", Duration::from_millis(250), true)
+            .await
+            .expect("insecure host");
+        let port = host.address.base.port();
+        let hosted = host.address.key.clone().expect("hosted key");
+        let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        // Dialed on loopback, a keyless join finds this process's own key...
+        assert_eq!(
+            credential(loopback, None).expect("hosted key"),
+            hosted.credential()
+        );
+        // ...and for a loopback port nothing here hosts, rlmeshd's.
+        let other = SocketAddr::from((Ipv4Addr::LOCALHOST, port.wrapping_add(7)));
+        assert_eq!(
+            credential(other, None).expect("daemon key"),
+            daemon.credential()
+        );
+        // Dialed at any other address, the same host, the same port: no key
+        // stands in, so the join is refused before it reaches the host.
+        let remote = SocketAddr::from(([192, 0, 2, 7], port));
+        let refused = credential(remote, None).expect_err("no key beyond loopback");
+        assert_eq!(
+            refused.refusal().map(|r| r.status),
+            Some(CtlStatus::Unauthenticated),
+            "{refused}"
+        );
+        assert!(crate::address::link_auth(remote, Some(&hosted)).is_none());
+        host.close().await.expect("close");
+    }
+
+    /// Whether a join without a key is accepted is decided by the joining
+    /// process alone, from the address it dials: on loopback it may use a
+    /// key it already holds (a host it runs, rlmeshd's 0600 file); beyond
+    /// loopback, none. The host never waives the handshake for anyone
+    /// (`an_embedded_host_stays_on_loopback_and_links_only_with_its_key`).
+    #[test]
+    fn a_keyless_join_takes_a_key_only_for_a_loopback_host() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (_, key) = crate::address::launch_identity().unwrap();
+        crate::address::write_private(
+            &scratch.path().join(crate::address::LOCAL_KEY),
+            key.to_string().as_bytes(),
+        )
+        .unwrap();
+        let output = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "address::hosting::tests::keyless_child",
+                "--nocapture",
+            ])
+            .env(KEYLESS_CHILD, "1")
+            .env(crate::address::STATE_DIR_VAR, scratch.path())
+            .env_remove(crate::address::HOST_IDENTITY_VAR)
+            .output()
+            .expect("run the child");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success() && text.contains("1 passed"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn gate_without_home() {
         let scratch = tempfile::tempdir().unwrap();
