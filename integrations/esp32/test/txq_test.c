@@ -99,7 +99,8 @@ int main(void) {
   assert(mixed.tail == mixed.head->next);
   rlmesh_txq_clear(&mixed);
   /* What the send task took out and is still sending counts against the
-   * bound: a link that blocks mid-send never holds twice the bound. */
+   * bound, up to half of it: a link that blocks mid-send never holds twice
+   * the bound, and the newest samples still queue behind it. */
   rlmesh_txq_t sending = {.cap = 2048};
   for (int i = 0; i < 12; ++i) {
     snprintf(key, sizeof key, "d/eyes/part%d", i);
@@ -110,9 +111,11 @@ int main(void) {
   assert(sending.head == NULL && sending.inflight == taken_bytes);
   for (uint32_t i = 0; i < 1000; ++i) {
     snprintf(key, sizeof key, "d/eyes/part%u", i % 40);
-    rlmesh_txq_push(&sending, sample(key, i, 100));
-    assert(sending.bytes + sending.inflight <= sending.cap);
+    assert(rlmesh_txq_push(&sending, sample(key, i, 100)));
+    assert(sending.bytes + rlmesh_txq_sending(&sending) <= sending.cap);
+    assert(sending.bytes + sending.inflight <= sending.cap * 3 / 2);
   }
+  assert(sending.tail != NULL && seq_of(sending.tail) == 999);
   rlmesh_txq_sent(&sending);
   while (taken != NULL) {
     rlmesh_txq_item_t* next = taken->next;

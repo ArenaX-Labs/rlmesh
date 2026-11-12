@@ -63,9 +63,11 @@ extern "C" {
  * tasks. */
 #define RLMESH_ZENOH_TX_STACK (8 * 1024)
 #define RLMESH_ZENOH_TX_PRIORITY 12
-/* Bytes of publications waiting to go out at most, with those the network task
- * is sending: past it the oldest sample, then the oldest heartbeat, is dropped
- * (counted in rlmesh_zenoh_failures), as with a link that can't keep up. */
+/* Bytes of publications waiting to go out at most, with up to half of it of
+ * those the network task is sending (so a stalled send never crowds out the
+ * newest state): past it the oldest sample, then the oldest heartbeat, is
+ * dropped (counted in rlmesh_zenoh_failures), as with a link that can't keep
+ * up. */
 #define RLMESH_ZENOH_TX_BYTES (4 * 1024)
 
 /* The datagram path (RLMESH_DEVICE_DATAGRAM_OPEN): one UDP socket for the

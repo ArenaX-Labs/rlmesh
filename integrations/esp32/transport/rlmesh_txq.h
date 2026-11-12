@@ -4,9 +4,10 @@
  * instead of queueing it. Control publications (heartbeats) queue in order and
  * go first. Bounded in bytes: past the bound the oldest sample goes, and only
  * when no sample is left the oldest control publication. What the send task
- * took out and is still sending counts against the bound too, so all of it
- * never grows past the bound, however long the link stalls. Not locked: the transport holds its
- * lock around every call. */
+ * took out and is still sending counts against the bound too, up to half of
+ * it: a send held up by the link never takes the room of the newest samples,
+ * and all of it together stays within one and a half bounds, however long the
+ * link stalls. Not locked: the transport holds its lock around every call. */
 
 #ifndef RLMESH_TXQ_H_
 #define RLMESH_TXQ_H_
@@ -71,6 +72,11 @@ static inline void rlmesh_txq_drop_after(rlmesh_txq_t* q, rlmesh_txq_item_t* pre
   free(t);
 }
 
+/* What is being sent counts against the bound, at most half of it. */
+static inline size_t rlmesh_txq_sending(const rlmesh_txq_t* q) {
+  return q->inflight < q->cap / 2 ? q->inflight : q->cap / 2;
+}
+
 /* The class whose publications are never replaced or dropped for a sample. */
 #define RLMESH_TXQ_CONTROL 0
 
@@ -80,7 +86,7 @@ static inline void rlmesh_txq_drop_after(rlmesh_txq_t* q, rlmesh_txq_item_t* pre
  * (then dropped). */
 static inline bool rlmesh_txq_push(rlmesh_txq_t* q, rlmesh_txq_item_t* t) {
   size_t size = rlmesh_txq_size(t);
-  if (size + q->inflight > q->cap) {
+  if (size + rlmesh_txq_sending(q) > q->cap) {
     free(t);
     q->dropped++;
     return false;
@@ -100,7 +106,7 @@ static inline bool rlmesh_txq_push(rlmesh_txq_t* q, rlmesh_txq_item_t* t) {
     q->tail = t;
   }
   q->bytes += size;
-  while (q->bytes + q->inflight > q->cap) {
+  while (q->bytes + rlmesh_txq_sending(q) > q->cap) {
     rlmesh_txq_item_t* prev = NULL;
     rlmesh_txq_item_t* sample = NULL;
     for (rlmesh_txq_item_t *p = NULL, *i = q->head; i != t; p = i, i = i->next) {
