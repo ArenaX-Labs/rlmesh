@@ -40,6 +40,16 @@ impl fmt::Debug for Placed {
 }
 
 impl Placed {
+    /// The session at `address`, joined rather than hosted: what a
+    /// participant that must not host in another's place (a driver dialing
+    /// a keyed address) reaches it as.
+    pub fn joined(address: SessionAddress) -> Self {
+        Self {
+            address,
+            hosted: None,
+        }
+    }
+
     /// Whether this process hosts the session.
     pub fn hosts(&self) -> bool {
         self.hosted.is_some()
@@ -463,8 +473,7 @@ fn discard_dictionary(path: &std::path::Path) {
 /// Reaches the session `address` names by the hosting rule: joins the local
 /// host on [`well_known_port`] (or on the explicit local port) when one
 /// listens, else hosts the session in this process there; a bind that
-/// loses a race joins the winner. Another machine's host is joined, and so
-/// is the host an address's key names, wherever it is. Leases
+/// loses a race joins the winner. Another machine's host is joined. Leases
 /// in a session this process hosts lapse `lease_grace` after their holder's
 /// last heartbeat.
 pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, SessionError> {
@@ -490,10 +499,6 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
             }
             base
         }
-        // A key names the host that holds it: join it, listening yet or not.
-        // Hosted here under fresh keys, a driver retrying until its env
-        // listens would take the port that env is about to bind.
-        Placement::Host(base) if address.key.is_some() => return join(base),
         // An explicit port: hosted here, unless another process (or this
         // one) already holds it.
         Placement::Host(base) if base.port() != 0 && listening(base) => return join(base),

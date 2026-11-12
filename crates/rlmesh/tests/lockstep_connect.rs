@@ -125,15 +125,15 @@ async fn a_connect_failure_says_whether_retrying_can_succeed() {
     let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let free_port = free.local_addr().unwrap().port();
     drop(free);
-    let absent = rlmesh::lockstep::connect(
-        &format!("127.0.0.1:{free_port}#{key}/env"),
-        options(Duration::from_secs(2)),
-    )
-    .await
-    .err()
-    .expect("nobody listens");
-    assert!(absent.is_transient(), "{absent}");
+    let keyed = format!("127.0.0.1:{free_port}#{key}/env");
+    let dialing = tokio::spawn(async move {
+        rlmesh::lockstep::connect(&keyed, options(Duration::from_secs(3))).await
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // While it dials, the port stays free for the env.
     assert!(std::net::TcpListener::bind(("127.0.0.1", free_port)).is_ok());
+    let absent = dialing.await.unwrap().err().expect("nobody listens");
+    assert!(absent.is_transient(), "{absent}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

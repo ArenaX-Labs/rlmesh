@@ -94,12 +94,20 @@ pub struct LockstepAddress {
 
 impl LockstepAddress {
     /// Parses the participant address `text` and places its session by the
-    /// hosting rule.
-    async fn place(text: &str) -> Result<(Self, Placed), GymError> {
+    /// hosting rule; a `driver` given a key only joins.
+    async fn place(text: &str, driver: bool) -> Result<(Self, Placed), GymError> {
         let address = participant_address(text)?;
         let robot = ParticipantId::new(address.participant.clone().unwrap_or_default())
             .map_err(|e| GymError::Config(e.to_string()))?;
-        let placed = place(&address, LEASE_GRACE).await?;
+        // A key names the host that holds it. A driver retrying until its
+        // env listens must not host in that host's place under fresh keys:
+        // it would hold the port the env is about to bind. A server may
+        // (re)host at the address it printed.
+        let placed = if driver && address.key.is_some() {
+            Placed::joined(address.joining()?)
+        } else {
+            place(&address, LEASE_GRACE).await?
+        };
         Ok((
             Self {
                 session: placed.address.clone(),
@@ -307,7 +315,7 @@ impl std::fmt::Debug for LockstepBinding {
 /// the hosting rule and attaches the robot, so a name another participant
 /// holds is refused here.
 pub async fn bind(address: &str) -> Result<LockstepBinding, GymError> {
-    let (address, mut placed) = LockstepAddress::place(address).await?;
+    let (address, mut placed) = LockstepAddress::place(address, false).await?;
     let attached = join(
         &address.session,
         address.robot.clone(),
@@ -631,7 +639,7 @@ async fn attach_driver(
     options: &ConnectOptions,
     ready: impl FnMut(&AuthoritySnapshot) -> bool,
 ) -> Result<Attached, GymError> {
-    let (address, placed) = LockstepAddress::place(address).await?;
+    let (address, placed) = LockstepAddress::place(address, true).await?;
     let id = match &options.id {
         Some(id) => id.clone(),
         None => format!("driver-{}", uuid_suffix()),
