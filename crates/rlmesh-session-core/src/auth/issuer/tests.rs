@@ -108,6 +108,10 @@ fn a_robots_new_generation_rotates_its_streams_and_retires_the_old_version() {
         .map(|(s, _)| s.version)
         .collect();
     assert_eq!(policy, vec![2], "retire_through dropped version 1 ({v1:?})");
+    assert!(
+        v1.iter().all(|id| !issuer.keys.contains_key(id)),
+        "the host forgot version 1's key"
+    );
     // Recovery hands the new generation its sending key only.
     let recovered: Vec<IssuedKey> = issuer
         .get_keys(&pid("arm"), 3, &Access::default())
@@ -397,10 +401,168 @@ fn a_detach_fails_the_pending_grants_that_needed_it_and_no_others() {
     let by_a = prepare("a", "arm", 1);
     let on_gripper = prepare("b", "gripper", 2);
     let on_arm = prepare("c", "arm", 3);
+    // A robot's cap counts its own pending grants, not the gripper's.
+    let more = [prepare("d", "arm", 4), prepare("e", "arm", 5)];
     assert_eq!(issuer.detach(&pid("stranger")), Vec::<GrantId>::new());
     assert_eq!(issuer.detach(&pid("a")), vec![by_a], "as holder");
-    assert_eq!(issuer.detach(&pid("arm")), vec![on_arm], "as robot");
+    assert_eq!(
+        issuer.detach(&pid("arm")),
+        vec![on_arm, more[0], more[1]],
+        "as robot"
+    );
     assert!(issuer.grant(on_gripper).is_some());
+}
+
+/// The lease keys of token `token` in `keys`, as `(key id, send)`.
+fn lease_keys(keys: &[IssuedKey], token: u64) -> Vec<(u32, bool)> {
+    let mut out: Vec<(u32, bool)> = keys
+        .iter()
+        .filter(|k| k.token == LeaseToken(token))
+        .map(|k| (k.key_id, k.send))
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+#[test]
+fn a_committed_grant_hands_its_holder_the_keys_until_its_token_ends() {
+    let mut rng = TestRng::new(13);
+    let mut issuer = KeyIssuer::default();
+    let mut rings = BTreeMap::new();
+    // One generation for all, so only identity tells the keys apart.
+    for (who, robot) in [("arm", true), ("policy", false), ("viewer", false)] {
+        join(&mut issuer, &mut rng, who, 1, robot);
+        rings.insert(pid(who), Keyring::new(Some(pid(who)), 1));
+    }
+    let request = |holder: &str, token, reads_all: Vec<ParticipantId>| GrantRequest {
+        holder: pid(holder),
+        holder_generation: 1,
+        device: holder.into(),
+        class: PriorityClass::Model,
+        token: LeaseToken(token),
+        parts: [
+            (1, ChannelPriority::Realtime),
+            (3, ChannelPriority::Control),
+        ]
+        .map(|(channel, priority)| GrantPart {
+            robot: pid("arm"),
+            channel: ChannelId(channel),
+            priority,
+            security: Security::Mac,
+        })
+        .to_vec(),
+        reads_all,
+    };
+    let access = Access::default();
+    let id = issuer
+        .prepare_grant(&mut rng, request("policy", 7, vec![pid("arm")]), 0)
+        .expect("prepared")
+        .id;
+    assert!(
+        issuer.ready_grants(0).is_empty(),
+        "the robot has not installed"
+    );
+    assert!(
+        lease_keys(&issuer.get_keys(&pid("policy"), 1, &access), 7).is_empty(),
+        "nothing for the holder before the commit"
+    );
+    for t in 0..4 {
+        exchange(&mut issuer, &mut rings, &[], t);
+    }
+    assert!(
+        issuer.host_delivery().is_none() && issuer.deliveries(4 + RETRY_NS).is_empty(),
+        "everything acknowledged: nothing to send, even after the retry interval"
+    );
+    let ready: Vec<(GrantId, bool)> = issuer
+        .ready_grants(4)
+        .into_iter()
+        .map(|(g, r)| (g, r.is_ok()))
+        .collect();
+    assert_eq!(ready, [(id, true)]);
+    let committed = issuer.commit_grant(id).expect("pending");
+    assert!(issuer.commit_grant(id).is_none(), "committed once");
+    // A k_cmd per transport priority, which the holder sends under, and
+    // the robot's k_obs, which it receives.
+    let mut held: Vec<(KeyPurpose, bool, Security)> = committed
+        .keys
+        .iter()
+        .map(|k| (k.purpose, k.send, k.security))
+        .collect();
+    held.sort_by_key(|(p, ..)| *p);
+    assert_eq!(
+        held,
+        [
+            (KeyPurpose::Command, true, Security::Mac),
+            (KeyPurpose::Command, true, Security::Mac),
+            (KeyPurpose::LockstepReply, false, Security::Mac),
+        ]
+    );
+    let mut parts: Vec<ChannelId> = committed.key_ids.iter().map(|(c, _)| *c).collect();
+    parts.sort_unstable();
+    assert_eq!(parts, [ChannelId(1), ChannelId(3)]);
+    assert_ne!(committed.key_ids[0].1, committed.key_ids[1].1);
+    // Recovery: the holder and the robot get the grant's keys, each
+    // sending under its own; a bystander of the same generation gets none.
+    let holder = lease_keys(&committed.keys, 7);
+    let flipped: Vec<(u32, bool)> = holder.iter().map(|(id, send)| (*id, !send)).collect();
+    assert_eq!(
+        lease_keys(&issuer.get_keys(&pid("policy"), 1, &access), 7),
+        holder
+    );
+    assert_eq!(
+        lease_keys(&issuer.get_keys(&pid("arm"), 1, &access), 7),
+        flipped
+    );
+    assert!(lease_keys(&issuer.get_keys(&pid("viewer"), 1, &access), 7).is_empty());
+    // The robot also holds every other member's k_estop, to receive.
+    let estops: Vec<(Option<ParticipantId>, bool)> = issuer
+        .get_keys(&pid("arm"), 1, &access)
+        .into_iter()
+        .filter(|k| k.purpose == KeyPurpose::Estop)
+        .map(|k| (k.sender, k.send))
+        .collect();
+    assert_eq!(
+        estops,
+        [
+            (Some(pid("arm")), true),
+            (Some(pid("policy")), false),
+            (Some(pid("viewer")), false)
+        ]
+    );
+    // Its token ends: the committed keys go; a pending grant's stay.
+    let pending = issuer
+        .prepare_grant(&mut rng, request("viewer", 8, Vec::new()), 5)
+        .expect("prepared");
+    issuer.end_tokens(|_| false);
+    let robot = issuer.get_keys(&pid("arm"), 1, &access);
+    assert!(lease_keys(&robot, 7).is_empty());
+    assert_eq!(
+        lease_keys(&robot, 8).len(),
+        2,
+        "grant {} pending",
+        pending.id
+    );
+}
+
+#[test]
+fn syncing_the_same_streams_again_sends_nothing() {
+    let mut rng = TestRng::new(14);
+    let mut issuer = KeyIssuer::default();
+    let mut rings = BTreeMap::new();
+    for (who, generation) in [("arm", 1), ("policy", 2)] {
+        join(&mut issuer, &mut rng, who, generation, false);
+        rings.insert(pid(who), Keyring::new(Some(pid(who)), generation));
+    }
+    issuer
+        .sync_streams(&mut rng, &arm_stream(), &Access::default(), 0)
+        .expect("sync");
+    for t in 0..4 {
+        exchange(&mut issuer, &mut rings, &[], t);
+    }
+    issuer
+        .sync_streams(&mut rng, &arm_stream(), &Access::default(), 4)
+        .expect("again");
+    assert!(issuer.host_delivery().is_none() && issuer.deliveries(5).is_empty());
 }
 
 #[test]
