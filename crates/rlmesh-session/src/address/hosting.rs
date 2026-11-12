@@ -127,6 +127,17 @@ pub(super) fn local_host(base: SocketAddr) -> Option<Transport> {
         .map(|(transport, _)| Transport::ridden(transport))
 }
 
+/// The host this process runs whose key is `key`, however the address
+/// naming it is spelled (a container's published port, a LAN address).
+pub(super) fn local_host_keyed(key: &AddressKey) -> Option<Transport> {
+    local_hosts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values()
+        .find(|(_, hosted)| hosted == key)
+        .map(|(transport, _)| Transport::ridden(transport))
+}
+
 /// This process stopped hosting at `address`: forget its transport.
 fn forget_local_host(address: &SessionAddress) {
     local_hosts()

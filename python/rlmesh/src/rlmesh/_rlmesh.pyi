@@ -105,7 +105,6 @@ __all__ = [
     "launch_identity",
     "launched_address",
     "load_run_result",
-    "local_run_session",
     "merge_telemetry",
     "model_answers",
     "model_describe",
@@ -118,6 +117,7 @@ __all__ = [
     "resolve_execution_horizon",
     "resolve_workflow_edition_rungs",
     "run_cli",
+    "run_session",
     "sandbox_host_identity",
     "sandbox_reap_orphans",
     "sandbox_session_ports",
@@ -1391,8 +1391,6 @@ def launched_address(identity: str, session: str, participant: str | None = None
 
 def load_run_result(paths: list[str]) -> dict[str, typing.Any]: ...
 
-def local_run_session() -> str: ...
-
 def merge_telemetry(rows: list[dict[str, typing.Any]]) -> list[dict[str, typing.Any]]: ...
 
 def model_answers(address: str, timeout_s: float) -> None: ...
@@ -1428,6 +1426,8 @@ def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None
     """
 
 def run_cli(args: list[str]) -> int: ...
+
+def run_session(model: str | None = None) -> str: ...
 
 def sandbox_host_identity() -> tuple[str, str]: ...
 

@@ -38,6 +38,21 @@ Without a sandbox, a container serving on every interface needs a key its launch
 
 Each image sets `RLMESH_READY_FILE`, so `docker ps` shows it healthy once the env or model answers. A launcher can wait on the same file (`test -f /tmp/rlmesh-ready.json`) instead of reading the log. The file holds `{"kind", "participant", "address", "port", "pid"}`, the address without its key, and goes away when the server stops.
 
+For a model, with the identity in a file:
+
+```bash
+rlmesh host-identity new --out model.identity --address 127.0.0.1:7447 --participant model
+# prints key=... and address=127.0.0.1:7447#<key>/model
+RLMESH_HOST_IDENTITY="$(cat model.identity)" \
+  docker run --rm -e RLMESH_HOST_IDENTITY -p 7447-7450:7447-7450 my-model:latest
+```
+
+```python
+result = rlmesh.Model("127.0.0.1:7447#<key>/model").run(MyLocalEnv(), episodes=1)
+```
+
+`run` and `bind` serve a local env in a session of its own on the model's host, through the ports the container publishes, so the model reaches it inside its own container. From another machine, dial the same key at the address that reaches those ports (`10.0.0.5:7447#<key>/model`). An env given by address instead is joined by the model, which must reach that address from inside its container.
+
 ## The bare protocol contract
 
 For orchestrators and custom launchers. A session host listens on four consecutive ports (7447-7450), one per traffic class. Both containers host a session on `RLMESH_ADDRESS` (default `0.0.0.0:7447`) and serve in it as `RLMESH_NAME` (`env` or `model`). A sandbox picks four free ports, hosts the session on them and publishes them to the same numbers on loopback, so a session address means the same inside the container and out. A participant that joins a session host another process runs joins it as a Zenoh client, which the host routes for, so the published ports are all the machine outside needs to reach.

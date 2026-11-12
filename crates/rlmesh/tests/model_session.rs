@@ -334,7 +334,11 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
     let mut model = ServedModel::new(address, Duration::from_secs(10));
     model.join("127.0.0.1:1/nowhere").await.unwrap();
     let err = resolve(&model).await.unwrap_err();
-    assert!(err.to_string().contains("can't reach"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("could not reach the env's session at 127.0.0.1:1/nowhere"),
+        "{err}"
+    );
 
     cancel.cancel();
     served.await.unwrap().unwrap();

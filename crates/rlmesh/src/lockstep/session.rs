@@ -14,7 +14,7 @@
 //! control endpoint. A driver and an env in one process skip it: the
 //! driver calls the env's handler directly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
@@ -26,7 +26,7 @@ use rlmesh_session::spec::Kind;
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
-    ParticipantId, PriorityClass, Role, SessionKeys,
+    ParticipantId, PriorityClass, Role, SessionId, SessionKeys,
 };
 use rlmesh_session::{Participant, SessionError, Transport};
 use tokio_util::sync::CancellationToken;
@@ -112,6 +112,10 @@ impl LockstepAddress {
         // (re)host at the address it printed.
         let placed = if driver && address.key.is_some() {
             Placed::joined(address.joining()?)
+        } else if let Some(joining) = take_beside(&address)? {
+            // A run's env beside a served model: that model's host holds the
+            // port, and one not up yet is waited for, never hosted for.
+            Placed::joined(joining)
         } else {
             place(&address, LEASE_GRACE).await?
         };
@@ -201,6 +205,55 @@ pub fn local_run_session() -> Result<String, GymError> {
         .clone()
         .map_err(GymError::Config)?;
     Ok(format!("{base}/run-{}", uuid_suffix()))
+}
+
+/// A fresh session for a run's local env on the host of the served model at
+/// `model` (a participant address), under the key it carries: the model then
+/// answers there on its own host, in its own process, so a model that can't
+/// reach this machine (one in a container, on another network) still drives
+/// the env, which this process reaches the way it reaches the model.
+pub fn run_session_beside(model: &str) -> Result<String, GymError> {
+    let own = participant_address(model)?.joining()?;
+    let session = SessionAddress {
+        key: own.key,
+        ..SessionAddress::new(own.base, &format!("run-{}", uuid_suffix()))?
+    };
+    beside()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert((session.base, session.session));
+    Ok(session.invite())
+}
+
+/// The sessions [`run_session_beside`] made, by host and session, until an
+/// env server binds there.
+fn beside() -> &'static Mutex<HashSet<(SocketAddr, SessionId)>> {
+    static BESIDE: OnceLock<Mutex<HashSet<(SocketAddr, SessionId)>>> = OnceLock::new();
+    BESIDE.get_or_init(Mutex::default)
+}
+
+/// `address` resolved for joining, when it names a session made beside a
+/// served model (once: its server binds there once).
+fn take_beside(address: &Address) -> Result<Option<SessionAddress>, GymError> {
+    if address.session.is_none() {
+        return Ok(None);
+    }
+    let joining = address.joining()?;
+    let made = beside()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&(joining.base, joining.session));
+    Ok(made.then_some(joining))
+}
+
+/// Where a run serves its local env, in a session of its own: beside the
+/// served model at `model` ([`run_session_beside`]), else on this process's
+/// shared host ([`local_run_session`]).
+pub fn run_session(model: Option<&str>) -> Result<String, GymError> {
+    match model {
+        Some(model) => run_session_beside(model),
+        None => local_run_session(),
+    }
 }
 
 /// Joins `session` as `id`.

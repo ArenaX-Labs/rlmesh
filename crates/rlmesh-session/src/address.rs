@@ -57,7 +57,7 @@ use crate::address::credentials::hosted_key;
 #[cfg(feature = "fleet")]
 use crate::address::credentials::remembered;
 use crate::address::host_keys::filed_key;
-use crate::address::hosting::{listening, local_host, open_client};
+use crate::address::hosting::{listening, local_host, local_host_keyed, open_client};
 use crate::clock::SystemMonotonicClock;
 use crate::error::SessionError;
 use crate::participant::{Participant, ParticipantConfig};
@@ -718,6 +718,40 @@ impl SessionAddress {
             && self.filed().is_none()
     }
 
+    /// The host this process runs that it names, ridden: by its key when it
+    /// carries one (an address spelled as another network reaches the host,
+    /// such as a container's published port, still names it, and a host
+    /// here at that address under another key does not), else by its
+    /// address.
+    fn hosted_here(&self) -> Option<Transport> {
+        match &self.key {
+            Some(key) => local_host_keyed(key),
+            None => local_host(self.base),
+        }
+    }
+
+    /// Whether its host answers within `within`: one this process runs, or
+    /// one that accepts a connection at its address. A participant that
+    /// cannot reach the host learns so here rather than at its join's end.
+    pub async fn reachable(&self, within: Duration) -> bool {
+        if self.hosted_here().is_some() {
+            return true;
+        }
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            if tokio::time::timeout_at(deadline, listening(self.base))
+                .await
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// The key file of this user's host at its address, when the join takes
     /// its key from one (it carries none, and this process has none).
     fn filed(&self) -> Option<std::path::PathBuf> {
@@ -849,7 +883,7 @@ impl SessionAddress {
         waited: Duration,
     ) -> Result<Transport, SessionError> {
         loop {
-            if let Some(transport) = local_host(self.base) {
+            if let Some(transport) = self.hosted_here() {
                 return Ok(transport);
             }
             // A host this process is still starting listens before it is

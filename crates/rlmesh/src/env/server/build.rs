@@ -115,20 +115,28 @@ impl EnvServer {
     }
 
     /// The loopback server a run or session stands up in front of a local
-    /// env: bound on `127.0.0.1`, publishing nothing, never closing the env
-    /// (its caller does) and taking the caller's resolved edition.
+    /// env: in a session of its own, publishing nothing, never closing the
+    /// env (its caller does) and taking the caller's resolved edition. The
+    /// run's driver, in this process, calls the env directly either way.
+    /// Driving the served model at `beside`, the session is on that model's
+    /// host, which the model reaches in its own process; else on this
+    /// process's shared loopback host.
     pub(crate) fn loopback(
         env: crate::run::LoopbackEnv,
         edition: Option<String>,
+        beside: Option<&str>,
     ) -> Result<EnvServer> {
         let options = EnvServerOptions {
-            // In-process on the v2 lockstep path when the build has it, in a
-            // session of this process's shared host: the run's driver then
-            // calls the env directly.
             address: Some(format!(
                 "{}/env",
-                crate::lockstep::local_run_session()
-                    .map_err(|err| Error::Internal(err.to_string()))?
+                match beside {
+                    // The model's address, already checked: only resolving
+                    // its host name can fail, which a retry may get past.
+                    Some(model) => crate::lockstep::run_session_beside(model)
+                        .map_err(|err| Error::Connection(err.to_string()))?,
+                    None => crate::lockstep::local_run_session()
+                        .map_err(|err| Error::Internal(err.to_string()))?,
+                }
             )),
             options: Some(ServeOptions {
                 workflow_edition: edition,

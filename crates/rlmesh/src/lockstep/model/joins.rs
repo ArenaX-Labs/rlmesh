@@ -33,6 +33,10 @@ pub(super) struct Joins<H> {
     pub(super) sessions: std::sync::Mutex<HashMap<SessionKey, Joined>>,
 }
 
+/// How long an invited model waits for the session's host to answer before
+/// it calls the session out of reach.
+const REACH: Duration = Duration::from_secs(3);
+
 /// A session as its host knows it, however its address is spelled.
 type SessionKey = (std::net::SocketAddr, TenantId, SessionId);
 
@@ -158,6 +162,13 @@ impl<H: ModelHandler + 'static> Joins<H> {
         key: SessionKey,
         cancel: CancellationToken,
     ) -> Result<(), ModelFault> {
+        // A session out of the model's reach (an address only its driver's
+        // network reaches, such as its loopback) fails the invitation in
+        // seconds, before the driver's own wait for the answer runs out.
+        if !address.reachable(REACH.min(self.timeout)).await {
+            self.forget(&key);
+            return Err(self.unreachable(&address, "nothing answers there"));
+        }
         let joined = address
             .join_declaring(
                 self.name.as_str(),
@@ -171,16 +182,7 @@ impl<H: ModelHandler + 'static> Joins<H> {
             Ok(participant) => participant,
             Err(e) => {
                 self.forget(&key);
-                return Err(fault(
-                    "UNAVAILABLE",
-                    format!(
-                        "model {} can't reach the session at {address}: {e}; run `rlmesh host` \
-                         somewhere both machines can reach, pass `session=`, or serve the env \
-                         at an address its host can reach",
-                        self.name
-                    ),
-                    false,
-                ));
+                return Err(self.unreachable(&address, &e.to_string()));
             }
         };
         // Alone in the session: every inviter is gone, whether or not it
@@ -228,6 +230,20 @@ impl<H: ModelHandler + 'static> Joins<H> {
             joins.forget(&key);
         });
         Ok(())
+    }
+
+    /// The model could not reach the env's session at `address`, and why.
+    fn unreachable(&self, address: &SessionAddress, why: &str) -> ModelFault {
+        fault(
+            "UNAVAILABLE",
+            format!(
+                "model '{}' could not reach the env's session at {address} from where it is \
+                 served: {why}. Pass the env itself to run() or bind(), which serves it on the \
+                 model's host, or serve it at an address the model's host reaches",
+                self.name
+            ),
+            false,
+        )
     }
 
     /// One inviter of the session at `text` left; the last one's leaving

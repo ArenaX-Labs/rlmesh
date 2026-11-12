@@ -52,6 +52,9 @@ mod link;
 mod served;
 mod service;
 
+#[cfg(all(test, target_os = "linux"))]
+mod reach_tests;
+
 pub use link::{DEFAULT_TIMEOUT, ModelBinding, ModelConnection, ModelLink};
 pub use served::ServedModel;
 

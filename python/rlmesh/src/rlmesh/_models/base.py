@@ -9,7 +9,6 @@ import dataclasses
 import functools
 import inspect
 import os
-import uuid
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import (
@@ -723,9 +722,9 @@ class ModelBase(Generic[ObsT, ActT]):
         #: A served model's participant address (``Model("lab:7447/openpi")``):
         #: runs, bindings and serves then drive that model.
         self._served_address: str | None = None
-        #: The host a run or binding serves a local env on, each in a session
-        #: of its own, when not this process's: a sandboxed model's, which its
-        #: container can reach.
+        #: Set for a model served in a sandbox container (its own session):
+        #: a ``SandboxEnv`` it runs against is then joined at that container's
+        #: address on their shared Docker network, which this one reaches.
         self._env_session: str | None = None
         #: The random baseline (``Model(RANDOM_SAMPLE)``): runs and bindings
         #: sample the env's action space.
@@ -1405,7 +1404,8 @@ class ModelBase(Generic[ObsT, ActT]):
         :class:`~rlmesh.SandboxEnv` lends its container to the run and attaches
         again after), or a local env object -- served
         in this process for
-        the duration of the run (tag it via
+        the duration of the run, in a session on a served model's own host,
+        which that model reaches wherever it runs (tag it via
         :func:`rlmesh.adapters.tag` for a spec'd model). Both the model and a
         caller's env are borrowed: the run releases what it created (the
         in-process server, a factory-built env, the runtime session) and leaves
@@ -1669,9 +1669,9 @@ class ModelBase(Generic[ObsT, ActT]):
     def _serve_here(self, env_obj: object, workflow_edition: str | None) -> EnvServer:
         """Serve the local env ``env_obj`` in this process for one run or binding.
 
-        In a session of this process's shared host, so the driver calls the
-        env directly; or in a fresh session on :attr:`_env_session`'s host
-        when set. A local single env's spec/tags pairing is pre-flighted
+        In a session of its own, on a served model's host (which the model
+        reaches, wherever it runs), else on this process's shared host;
+        the driver calls the env directly either way. A local single env's spec/tags pairing is pre-flighted
         here, so a mismatch surfaces as the typed ``AdapterResolutionError``
         (a vector env's local spaces are batched while tags describe one lane,
         so its check stays at the route resolve).
@@ -1692,16 +1692,12 @@ class ModelBase(Generic[ObsT, ActT]):
                 local_contract(env_obj),
                 trust_entrypoints=self._trust_entrypoints,
             )
-        address = (
-            f"{self._env_session}/run-{uuid.uuid4().hex[:12]}/env"
-            if self._env_session is not None
-            else f"{load_native('local_run_session')()}/env"
-        )
         # The in-process server is part of THIS call, so it takes the caller's
         # already-resolved declaration verbatim instead of re-resolving and
         # possibly landing on a different edition than the runtime tier.
         token = loopback.set(True)
         try:
+            address = f"{load_native('run_session')(self._served_address)}/env"
             server = EnvServer(
                 cast("VectorServerEnvLike", env_obj),
                 address,

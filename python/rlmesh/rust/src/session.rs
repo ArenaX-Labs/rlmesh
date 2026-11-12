@@ -98,7 +98,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScene>()?;
     m.add_function(wrap_pyfunction!(parse_address, m)?)?;
     m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
-    m.add_function(wrap_pyfunction!(local_run_session, m)?)?;
+    m.add_function(wrap_pyfunction!(run_session, m)?)?;
     m.add_function(wrap_pyfunction!(frames_between, m)?)?;
     crate::lockstep::register(m)?;
     Ok(())
@@ -181,20 +181,22 @@ fn frames_between(
     (t.xyz, t.quat_xyzw)
 }
 
-/// A fresh session on this process's shared in-process host, for a run's
-/// local env.
+/// A fresh session for a run's local env: on the host of the served model
+/// at `model` when given, which the model reaches; else on this process's
+/// shared in-process host.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def local_run_session() -> str: ...
+def run_session(model: str | None = None) -> str: ...
 "#
     )
 )]
 #[pyfunction]
-fn local_run_session() -> PyResult<String> {
-    rlmesh::lockstep::local_run_session().map_err(crate::lockstep::gym_err)
+#[pyo3(signature = (model = None))]
+fn run_session(model: Option<&str>) -> PyResult<String> {
+    rlmesh::lockstep::run_session(model).map_err(crate::lockstep::gym_err)
 }
 
 /// An address refused as the ValueError class, without the error's kind.

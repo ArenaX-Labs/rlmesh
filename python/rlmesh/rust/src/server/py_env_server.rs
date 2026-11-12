@@ -159,14 +159,16 @@ fn construct_server(
     rlmesh::ext::ConnectAddress::parse(address).map_err(to_py_err)?;
     rlmesh::lockstep::check(env_contract.clone())
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    let binding = runtime
-        .block_on(rlmesh::lockstep::bind(address))
-        .map_err(|e| match e {
-            rlmesh::lockstep::GymError::Config(why) => {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(why)
-            }
-            other => PyErr::new::<pyo3::exceptions::PyConnectionError, _>(other.to_string()),
-        })?;
+    // Without the GIL: the host it joins may be a Python thread's of this
+    // process (a model serving beside a run's env) still starting.
+    let binding =
+        Python::attach(|py| py.detach(|| runtime.block_on(rlmesh::lockstep::bind(address))))
+            .map_err(|e| match e {
+                rlmesh::lockstep::GymError::Config(why) => {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(why)
+                }
+                other => PyErr::new::<pyo3::exceptions::PyConnectionError, _>(other.to_string()),
+            })?;
     Ok(PyEnvServer {
         id,
         address: binding.address(),

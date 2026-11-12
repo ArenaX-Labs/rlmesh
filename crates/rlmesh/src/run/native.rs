@@ -181,6 +181,11 @@ pub(crate) async fn run_route(
         )?,
     };
     check_horizon(execution_horizon, native_chunk)?;
+    // A local env is served on a served model's host, which it reaches.
+    let beside = match &model {
+        Driven::Served(model) => Some(model.address().to_string()),
+        _ => None,
+    };
     let make_handler: MakeHandler = match model {
         Driven::Prepared(model) => Box::new(move |_| model.handler),
         Driven::Local(model) => {
@@ -237,6 +242,7 @@ pub(crate) async fn run_route(
         let plan = Plan {
             ended: ended.clone(),
             make_handler,
+            beside,
             budget,
             seeds: seeds.unwrap_or_default(),
             caps,
@@ -345,6 +351,8 @@ impl Drop for OwnedMadeEnv {
 struct Plan {
     ended: Arc<std::sync::atomic::AtomicBool>,
     make_handler: MakeHandler,
+    /// The served model's address, whose host serves a local env.
+    beside: Option<String>,
     budget: u64,
     seeds: Vec<i64>,
     caps: super::options::Caps,
@@ -465,7 +473,7 @@ async fn run_body(
                     LoopbackEnv::Vector(Box::new(LentVectorEnv::new(&**env, port.clone())))
                 }
             };
-            let server = EnvServer::loopback(lent, plan.edition.clone())?;
+            let server = EnvServer::loopback(lent, plan.edition.clone(), plan.beside.as_deref())?;
             server.start()?;
             Dial {
                 address: server.address().to_string(),

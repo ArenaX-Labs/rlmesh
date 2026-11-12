@@ -35,13 +35,25 @@ SERVER_STARTUP_TIMEOUT = 30.0
 
 
 def _free_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(("127.0.0.1", 0))
-        port: int = sock.getsockname()[1]
+    """A free local port whose next three are free too: a session host
+    listens on all four (one per traffic class)."""
+    for _ in range(64):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        held: list[socket.socket] = []
+        try:
+            for offset in range(4):
+                sock = socket.socket()
+                held.append(sock)
+                sock.bind(("127.0.0.1", port + offset))
+        except OSError:
+            continue
+        finally:
+            for sock in held:
+                sock.close()
         return port
-    finally:
-        sock.close()
+    raise RuntimeError("no four consecutive free local ports")
 
 
 def _run_example(relative: str, *args: str) -> subprocess.CompletedProcess[str]:
