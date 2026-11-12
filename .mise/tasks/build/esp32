@@ -52,64 +52,9 @@ cp "$zp/config/include/zenoh-pico/config.h" "$zp_lib/src/zenoh-pico/"
   mkdir -p "$zp_lib/src/zp/$(dirname "$file")"
   cp "$zp_src/$file" "$zp_lib/src/zp/$file"
 done
-# Sends that race zenoh-pico's own handling of a failed link (see the script).
+# The boards' fixes to zenoh-pico: its links' bounds, its own handling of a
+# failed link, its ESP32 port's tasks (see the script).
 python3 integrations/esp32/transport/patch_zenoh_pico.py "$zp_lib/src/zp"
-# zenoh-pico's ESP32 TCP link sets no receive timeout, though its ESP32 UDP
-# link and its POSIX and lwIP TCP links do. One task per session reads, so a
-# silent peer would block its lease checks and query timeouts for ever, and
-# closing the session too. rlmesh_zenoh.c gives the timeout in the locator.
-python3 - "$zp_lib/src/zp/src/link/transport/tcp/tcp_esp32.c" <<'PATCH'
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-source = path.read_text()
-unused = "    _ZP_UNUSED(tout);\n    z_result_t ret = _Z_RES_OK;\n"
-opened = "    if (sock->_fd != -1) {\n        int optflag = 1;\n"
-timeout = (
-    "        z_time_t tv;\n"
-    "        tv.tv_sec = tout / (uint32_t)1000;\n"
-    "        tv.tv_usec = (tout % (uint32_t)1000) * (uint32_t)1000;\n"
-    "        if (setsockopt(sock->_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(tv)) < 0) {\n"
-    "            _Z_ERROR_LOG(_Z_ERR_GENERIC);\n"
-    "            ret = _Z_ERR_GENERIC;\n"
-    "        }\n\n"
-)
-if source.count(unused) != 1 or source.count(opened) != 1:
-    sys.exit(f"{path}: not the zenoh-pico this patches: update build:esp32")
-source = source.replace(unused, "    z_result_t ret = _Z_RES_OK;\n")
-source = source.replace(opened, "    if (sock->_fd != -1) {\n" + timeout + "        int optflag = 1;\n")
-path.write_text(source)
-PATCH
-# The transport's own tasks (rlmesh-*) on the core the radio already uses:
-# unpinned, one woken from the loop would preempt it on its own core, which
-# has a control period to keep. zenoh-pico's own tasks stay unpinned, as
-# upstream has them. Single-core chips have only core 0.
-python3 - "$zp_lib/src/zp/src/system/arduino/esp32/system.c" <<'PATCH'
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-source = path.read_text()
-create = "xTaskCreate((void *)z_task_wrapper, attr->name, attr->stack_depth, z_arg, attr->priority, &task->handle)"
-pinned = (
-    "xTaskCreatePinnedToCore((void *)z_task_wrapper, attr->name, attr->stack_depth, z_arg, attr->priority, "
-    "&task->handle, strncmp(attr->name, \"rlmesh-\", 7) == 0 ? 0 : tskNO_AFFINITY)"
-)
-# A joined task's event group was never deleted: one leaked per closed
-# session, every reconnect.
-join = "    return _z_task_cancel(task);\n}\n\nz_result_t _z_task_detach"
-joined = (
-    "    z_result_t ret = _z_task_cancel(task);\n"
-    "    vEventGroupDelete(task->join_event);\n"
-    "    task->join_event = NULL;\n"
-    "    return ret;\n}\n\nz_result_t _z_task_detach"
-)
-if source.count(create) != 1 or source.count(join) != 1:
-    sys.exit(f"{path}: not the zenoh-pico this patches: update build:esp32")
-source = source.replace(create, pinned).replace(join, joined)
-path.write_text(source.replace("#include <unistd.h>\n", "#include <string.h>\n#include <unistd.h>\n", 1))
-PATCH
 printf 'name=zenoh-pico\nversion=%s\nauthor=ZettaScale\nmaintainer=ZettaScale\nsentence=Zenoh for microcontrollers\nparagraph=\ncategory=Communication\nurl=https://github.com/eclipse-zenoh/zenoh-pico\narchitectures=esp32\n' \
   "$zp_version" >"$zp_lib/library.properties"
 cp integrations/esp32/transport/rlmesh_zenoh.{c,h} integrations/esp32/transport/rlmesh_txq.h "$zp_lib/src/"
