@@ -96,9 +96,18 @@ pinned = (
     "xTaskCreatePinnedToCore((void *)z_task_wrapper, attr->name, attr->stack_depth, z_arg, attr->priority, "
     "&task->handle, strncmp(attr->name, \"rlmesh-\", 7) == 0 ? 0 : tskNO_AFFINITY)"
 )
-if source.count(create) != 1:
+# A joined task's event group was never deleted: one leaked per closed
+# session, every reconnect.
+join = "    return _z_task_cancel(task);\n}\n\nz_result_t _z_task_detach"
+joined = (
+    "    z_result_t ret = _z_task_cancel(task);\n"
+    "    vEventGroupDelete(task->join_event);\n"
+    "    task->join_event = NULL;\n"
+    "    return ret;\n}\n\nz_result_t _z_task_detach"
+)
+if source.count(create) != 1 or source.count(join) != 1:
     sys.exit(f"{path}: not the zenoh-pico this patches: update build:esp32")
-source = source.replace(create, pinned)
+source = source.replace(create, pinned).replace(join, joined)
 path.write_text(source.replace("#include <unistd.h>\n", "#include <string.h>\n#include <unistd.h>\n", 1))
 PATCH
 printf 'name=zenoh-pico\nversion=%s\nauthor=ZettaScale\nmaintainer=ZettaScale\nsentence=Zenoh for microcontrollers\nparagraph=\ncategory=Communication\nurl=https://github.com/eclipse-zenoh/zenoh-pico\narchitectures=esp32\n' \
