@@ -510,3 +510,209 @@ fn a_launch_identity_gives_back_its_key_and_keyed_address() {
     assert!(launched_address(&identity, "bench").is_err(), "no host");
     assert!(launched_address(&identity, &format!("10.0.0.5:7447#{other}")).is_err());
 }
+
+/// The scratch directory of [`a_launched_host_is_joined_from_another_machine`]'s
+/// processes, set in them only: the identities and keys (0600 files, never
+/// argv) and the ports the host listens on.
+const ACROSS: &str = "RLMESH_TEST_ACROSS_DIR";
+
+/// The host and the client of [`a_launched_host_is_joined_from_another_machine`],
+/// each in a process of its own, so nothing in-process supplies the key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn across_role() {
+    let Some(dir) = std::env::var_os(ACROSS).map(std::path::PathBuf::from) else {
+        return;
+    };
+    let ip: std::net::IpAddr = std::env::var("RLMESH_TEST_HOST_IP")
+        .expect("the host's address")
+        .parse()
+        .expect("an IP");
+    if std::env::var("RLMESH_TEST_ROLE").as_deref() == Ok("host") {
+        across_host(&dir, ip).await;
+    } else {
+        across_client(&dir, ip).await;
+    }
+}
+
+async fn across_host(dir: &std::path::Path, ip: std::net::IpAddr) {
+    let grace = Duration::from_secs(1);
+    // Launched (its identity in HOST_IDENTITY_VAR): every link gated.
+    let gated = host_at(SocketAddr::new(ip, 0), "across", grace, false)
+        .await
+        .expect("a launched host beyond loopback");
+    // A host that gates no link, as `rlmesh host` or an insecure one.
+    let identity = std::fs::read_to_string(dir.join("lan-identity")).expect("identity");
+    let mut config = HostConfig::new(TenantId::new(TENANT).expect("tenant"), session_id("across"));
+    config.identity = std::sync::Arc::new(host_identity(&identity).expect("identity"));
+    config.clock = SystemMonotonicClock.shared();
+    let (transport, lan) = open_listeners(SocketAddr::new(ip, 0), None)
+        .await
+        .expect("listen");
+    let _lan = SessionHost::start(transport, config).await.expect("host");
+    let ports = format!("{} {}", gated.address.base.port(), lan.port());
+    std::fs::write(dir.join("ports.partial"), ports).expect("write");
+    std::fs::rename(dir.join("ports.partial"), dir.join("ports")).expect("rename");
+    // Until the script stops this process.
+    std::future::pending::<()>().await;
+}
+
+async fn across_client(dir: &std::path::Path, ip: std::net::IpAddr) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let ports = loop {
+        if let Ok(text) = std::fs::read_to_string(dir.join("ports")) {
+            break text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host never listened"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let (gated, lan) = ports.split_once(' ').expect("two ports");
+    let key = |name: &str| std::fs::read_to_string(dir.join(name)).expect("key");
+    let (_, wrong) = launch_identity().expect("identity");
+    let wrong = wrong.to_string();
+    // A slowed link (RLMESH_TEST_NETEM): every Zenoh open takes seconds.
+    let slow = std::env::var_os("RLMESH_TEST_NETEM").is_some();
+    let timeout = Duration::from_secs(if slow { 40 } else { 10 });
+    let join = |port: &str, key: Option<&str>| {
+        let text = match key {
+            Some(key) => format!("{ip}:{port}/across#{key}"),
+            None => format!("{ip}:{port}/across"),
+        };
+        async move {
+            let address: SessionAddress = text.parse().expect("an address");
+            let started = std::time::Instant::now();
+            let joined = address
+                .join(
+                    "driver",
+                    vec![Role::Observer],
+                    PriorityClass::Scripted,
+                    timeout,
+                )
+                .await;
+            (joined, started.elapsed())
+        }
+    };
+
+    if slow {
+        // A host that gates nothing, slow to open a link: not a refusal.
+        let (joined, took) = join(lan, Some(&key("lan-key"))).await;
+        let joined = joined.expect("a slow host that gates nothing admits a keyed address");
+        eprintln!("ACROSS slowed link, ungated host, its key: joined in {took:?}");
+        joined.close().await;
+        let (joined, took) = join(gated, Some(&key("key"))).await;
+        joined
+            .expect("a slow launched host admits its keyed address")
+            .close()
+            .await;
+        eprintln!("ACROSS slowed link, launched host, its key: joined in {took:?}");
+        let (refused, took) = join(gated, Some(&wrong)).await;
+        let err = refused.err().expect("a wrong key is refused");
+        eprintln!("ACROSS slowed link, launched host, a wrong key: refused in {took:?}");
+        assert_eq!(
+            err.refusal().map(|e| e.status),
+            Some(CtlStatus::Unauthenticated),
+            "{err}"
+        );
+        return;
+    }
+
+    let (joined, took) = join(gated, Some(&key("key"))).await;
+    let joined = joined.expect("a launched host admits its keyed address from another machine");
+    eprintln!("ACROSS launched host, its key: joined in {took:?}");
+    joined.close().await;
+
+    let (refused, took) = join(gated, Some(&wrong)).await;
+    let err = refused.err().expect("a wrong key is refused");
+    let text = err.to_string();
+    eprintln!("ACROSS launched host, a wrong key: refused in {took:?}");
+    assert!(!text.contains(&wrong[..20]), "the error repeats the key");
+    assert_eq!(
+        err.refusal().map(|e| e.status),
+        Some(CtlStatus::Unauthenticated),
+        "{text}"
+    );
+    assert!(text.contains("key"), "{text}");
+    assert!(
+        took < Duration::from_secs(3),
+        "refused at once, not timed out: {text}"
+    );
+
+    let (refused, took) = join(gated, None).await;
+    let err = refused.err().expect("no key is refused");
+    eprintln!("ACROSS launched host, no key: refused in {took:?}: {err}");
+    assert!(err.to_string().contains("key"), "{err}");
+
+    let (joined, took) = join(lan, Some(&key("lan-key"))).await;
+    let joined = joined.expect("a host that gates nothing admits a keyed address");
+    eprintln!("ACROSS ungated host, its key: joined in {took:?}");
+    joined.close().await;
+}
+
+#[test]
+fn a_launched_host_is_joined_from_another_machine() {
+    across(None);
+}
+
+#[test]
+fn a_slow_link_to_a_host_is_no_refusal() {
+    // A 0.3 s round trip: a TCP connect outlasts a short probe, and a
+    // link's four Zenoh opens take seconds, refused or not.
+    across(Some("delay 150ms"));
+}
+
+/// Runs [`across_role`]'s host and client on two networks, the link between
+/// them slowed by `netem` (tc netem arguments).
+fn across(netem: Option<&str>) {
+    let dir = tempfile::tempdir().expect("scratch");
+    let (identity, key) = launch_identity().expect("identity");
+    let (lan_identity, lan_key) = launch_identity().expect("identity");
+    for (name, secret) in [
+        ("identity", identity.to_string()),
+        ("key", key.to_string()),
+        ("lan-identity", lan_identity.to_string()),
+        ("lan-key", lan_key.to_string()),
+    ] {
+        write_private(&dir.path().join(name), secret.as_bytes()).expect("write");
+    }
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-across-netns.sh");
+    // The host alone gets the identity, in its environment.
+    let dispatch = format!(
+        "if [ \"$RLMESH_TEST_ROLE\" = host ]; then \
+         {HOST_IDENTITY_VAR}=$(cat \"${ACROSS}/identity\"); export {HOST_IDENTITY_VAR}; fi; \
+         exec \"$1\" --exact address::tests::across_role --nocapture"
+    );
+    let mut command = std::process::Command::new("sh");
+    if let Some(netem) = netem {
+        command.env("RLMESH_TEST_NETEM", netem);
+    }
+    let output = command
+        .arg(script)
+        .args(["sh", "-c", &dispatch, "sh"])
+        .arg(std::env::current_exe().expect("test binary"))
+        .env(ACROSS, dir.path())
+        .env(STATE_DIR_VAR, dir.path().join("state"))
+        .env(
+            crate::address::hosting::RUNTIME_DIR_VAR,
+            dir.path().join("run"),
+        )
+        .env_remove(HOST_IDENTITY_VAR)
+        .output()
+        .expect("run the script");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for secret in [identity.to_string(), key.to_string(), lan_key.to_string()] {
+        assert!(!text.contains(&secret[..20]), "a secret reached the output");
+    }
+    eprintln!("{text}");
+    if output.status.code() == Some(77) {
+        eprintln!("skipped: no network namespaces (or, unslowed, no non-loopback address)");
+        return;
+    }
+    assert!(output.status.success(), "{text}");
+}

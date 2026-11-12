@@ -154,3 +154,104 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
             rest, _ = proc.communicate()
     assert printed["key"] not in rest
     assert identity.strip() not in rest
+
+
+# The repo's script that runs a command as a host and as a client on another
+# network (two network namespaces, else this machine's non-loopback address).
+ACROSS_NETNS = Path(__file__).resolve().parents[4] / "scripts" / "test-across-netns.sh"
+
+ACROSS_DISPATCH = """
+if [ "$RLMESH_TEST_ROLE" = host ]; then
+    RLMESH_HOST_IDENTITY=$(cat "$RLMESH_TEST_DIR/identity")
+    # Every interface, as a container serves; the client dials the host's IP.
+    RLMESH_ADDRESS="0.0.0.0:$RLMESH_TEST_PORT"
+    export RLMESH_HOST_IDENTITY RLMESH_ADDRESS
+    # Kept apart from the client's output, which a failure shows.
+    exec "$0" -m rlmesh.serve --env launched_env:Env >"$RLMESH_TEST_DIR/host.log" 2>&1
+fi
+exec "$0" across_client.py
+"""
+
+ACROSS_CLIENT = """
+import os
+import sys
+import time
+
+import rlmesh
+from rlmesh import launch
+
+where = f"{os.environ['RLMESH_TEST_HOST_IP']}:{os.environ['RLMESH_TEST_PORT']}"
+with open(os.path.join(os.environ["RLMESH_TEST_DIR"], "key"), encoding="utf-8") as f:
+    key = f.read().strip()
+env = rlmesh.RemoteEnv(f"{where}#{key}/env", connect_timeout_seconds=60)
+try:
+    observation, _ = env.reset(seed=0)
+    assert observation is not None
+finally:
+    env.close()
+print("ACROSS the keyed address joined", flush=True)
+
+_, wrong = launch.launch_identity()
+started = time.monotonic()
+try:
+    rlmesh.RemoteEnv(f"{where}#{wrong}/env", connect_timeout_seconds=20).reset(seed=0)
+except rlmesh.ProtocolException as refused:
+    took = time.monotonic() - started
+    message = str(refused)
+    assert wrong[:20] not in message, "the error repeats the key"
+    assert "key" in message, message
+    assert took < 5, f"refused only after {took:.1f}s: {message}"
+    print(f"ACROSS a wrong key refused in {took:.2f}s: {message}", flush=True)
+else:
+    sys.exit("a wrong key joined")
+"""
+
+
+def test_a_served_env_is_reachable_from_another_machine(tmp_path: Path) -> None:
+    """The keyed address alone joins a launched env across a real network."""
+    from rlmesh import launch
+    from rlmesh._rlmesh import sandbox_session_ports
+
+    (tmp_path / "launched_env.py").write_text(ENV_SOURCE, encoding="utf-8")
+    (tmp_path / "across_client.py").write_text(ACROSS_CLIENT, encoding="utf-8")
+    identity, key = launch.launch_identity()
+    for name, secret in (("identity", identity), ("key", key)):
+        path = tmp_path / name
+        path.write_text(secret, encoding="utf-8")
+        path.chmod(0o600)
+    env = {
+        key_: value
+        for key_, value in os.environ.items()
+        if key_ != "RLMESH_HOST_IDENTITY"
+    }
+    env.update(
+        RLMESH_TEST_DIR=str(tmp_path),
+        RLMESH_TEST_PORT=str(sandbox_session_ports()),
+        RLMESH_WORKFLOW_EDITION="",
+        RLMESH_STATE_DIR=str(tmp_path / "state"),
+    )
+    done = subprocess.run(
+        ["sh", str(ACROSS_NETNS), "sh", "-c", ACROSS_DISPATCH, sys.executable],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    secrets = (identity, key)
+
+    def scrubbed(text: str) -> str:
+        for secret in secrets:
+            text = text.replace(secret, "<secret>")
+        return text
+
+    output = done.stdout + done.stderr
+    leaked = any(secret[:20] in output for secret in secrets)
+    assert not leaked, "a secret reached the client's output"
+    if done.returncode == 77:
+        pytest.skip(output.strip())
+    host_log = tmp_path / "host.log"
+    host = scrubbed(host_log.read_text(encoding="utf-8")) if host_log.exists() else ""
+    assert done.returncode == 0, f"{output}\nhost:\n{host}"
+    assert "ACROSS the keyed address joined" in output, output
