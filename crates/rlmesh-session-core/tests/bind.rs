@@ -1114,3 +1114,360 @@ fn a_custom_kind_blanks_from_its_fields_schema() {
         ]
     );
 }
+
+/// An inline robot's parts, channels assigned as [`robot`] does.
+fn inline_robot(json: &str) -> Vec<PartSpec> {
+    let mut parts =
+        normalise(&ParticipantId::new("bot").expect("id"), SPEC_VERSION, json).expect("robot");
+    let mut next = 0;
+    for part in &mut parts {
+        next += 1;
+        part.channel = ChannelId(next);
+        if part.command.is_some() {
+            next += 1;
+            part.applied_channel = Some(ChannelId(next));
+        }
+    }
+    parts
+}
+
+fn on_inline(robot: &str, policy: &str) -> Result<Binding, BindError> {
+    bind(
+        &Policy::parse(policy).expect("policy"),
+        &inline_robot(robot),
+        &RunOptions::named("inline"),
+    )
+}
+
+fn delivers(binding: &Binding, entry: &str) -> String {
+    match (binding.input(entry), binding.action(entry)) {
+        (Some(row), _) => row.delivers.to_string(),
+        (_, Some(row)) => row.delivers.to_string(),
+        _ => panic!("no entry {entry}"),
+    }
+}
+
+#[test]
+fn a_range_rescales_only_when_it_differs_and_only_when_allowed() {
+    let gripper = |dir: &str, range: &str, allow: &str| {
+        format!(
+            r#"{{"hz": 10, "{dir}": {{"g": {{"kind": "gripper", "at": "gripper", "range": {range}}}}},
+                "allow": [{allow}]}}"#
+        )
+    };
+    let same = inline(&gripper("actions", "[0, 1]", ""), "ur10e").expect("same range");
+    assert_eq!(same.action("g").expect("g").plan.to_string(), "none");
+    let text = refusal_text(&gripper("actions", "[-1, 1]", ""), "ur10e");
+    assert!(
+        text.contains("the model emits -1…1, ur10e:gripper takes 0…1\n    needs: rescale"),
+        "{text}"
+    );
+    let same = inline(&gripper("inputs", "[0, 1]", ""), "ur10e").expect("same range");
+    assert_eq!(plan(&same, "g"), "none");
+    let text = refusal_text(&gripper("inputs", "[-1, 1]", ""), "ur10e");
+    assert!(
+        text.contains("ur10e:gripper ranges 0…1, the model wants -1…1\n    needs: rescale"),
+        "{text}"
+    );
+    let rescaled = inline(&gripper("inputs", "[-1, 1]", r#""rescale""#), "ur10e").expect("allowed");
+    assert_eq!(plan(&rescaled, "g"), "rescale(0…1 → -1…1)");
+    // An integer field is rescaled into float32.
+    let knob = r#"{"knob": {"kind": "acme/knob", "hz": 10, "fields": {"v": ["int16", [1]]},
+        "range": {"v": [0, 100]}}}"#;
+    let b = on_inline(
+        knob,
+        r#"{"hz": 10, "inputs": {"k": {"kind": "acme/knob", "at": "knob",
+            "fields": {"v": ["int16", [1]]}, "range": [0, 1]}}, "allow": ["rescale"]}"#,
+    )
+    .expect("allowed");
+    assert_eq!(delivers(&b, "k"), "f32 [1]");
+}
+
+#[test]
+fn an_action_converts_units_and_rotation_into_the_parts_and_may_run_at_its_control_rate() {
+    let b = inline(
+        r#"{"hz": 10, "actions": {"q": {"kind": "joints", "at": "arm", "units": {"pos": "deg"},
+            "chunk": 10}}}"#,
+        "ur10e",
+    )
+    .expect("units");
+    assert_eq!(
+        b.action("q").expect("q").plan.to_string(),
+        "auto units(pos deg → rad)"
+    );
+    let b = inline(
+        r#"{"hz": 10, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "command": "delta",
+            "rotation": "quat_xyzw", "chunk": 10}}, "allow": ["rotation"]}"#,
+        "ur10e",
+    )
+    .expect("rotation");
+    let t = b.action("t").expect("t");
+    assert_eq!(t.plan.to_string(), "rotation(rot quat_xyzw → axis_angle)");
+    assert_eq!(t.delivers.to_string(), "f32 [10, 7]");
+    // One delta per control tick at most: exactly the control rate binds.
+    inline(
+        r#"{"hz": 500, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "command": "delta",
+            "hz": 500, "chunk": 10}}}"#,
+        "ur10e",
+    )
+    .expect("at the control rate");
+}
+
+#[test]
+fn a_custom_action_binds_by_its_fields_schema_up_to_the_chunk_cap() {
+    let bot = |fields: &str, units: &str| {
+        format!(
+            r#"{{"x": {{"kind": "acme/arm", "hz": 100, "fields": {{"q": ["float32", [1]]}},
+                "command": "go", "safe": "hold", "command_fields": {fields}{units}}}}}"#
+        )
+    };
+    let action = |fields: &str, chunk: u32| {
+        format!(
+            r#"{{"hz": 1, "actions": {{"x": {{"kind": "acme/arm", "at": "x", "fields": {fields},
+                "chunk": {chunk}}}}}}}"#
+        )
+    };
+    let two = r#"{"q": ["float32", [4]], "v": ["float32", [2]]}"#;
+    for fields in [two, r#"{"v": ["float32", [2]], "q": ["float32", [4]]}"#] {
+        on_inline(&bot(two, ""), &action(fields, 10)).unwrap_or_else(|e| panic!("{fields}: {e}"));
+    }
+    for fields in [
+        r#"{"q": ["float32", [4]], "v": ["float32", [3]]}"#,
+        r#"{"q": ["float32", [4]]}"#,
+    ] {
+        let err = on_inline(&bot(two, ""), &action(fields, 10)).expect_err(fields);
+        assert!(
+            err.to_string().contains("do not match the declared schema"),
+            "{err}"
+        );
+    }
+    // A command field keeps its own unit: no conversion to declare.
+    let b = on_inline(
+        &bot(r#"{"q": ["float32", [2]]}"#, r#", "units": {"q": "tick"}"#),
+        &action(r#"{"q": ["float32", [2]]}"#, 10),
+    )
+    .expect("own unit");
+    assert_eq!(b.action("x").expect("x").plan.to_string(), "none");
+    // A chunk of exactly 4 MiB binds; one more element per action does not.
+    let field = |n: u32| format!(r#"{{"q": ["float32", [{n}]]}}"#);
+    on_inline(&bot(&field(1024), ""), &action(&field(1024), 1024)).expect("4 MiB");
+    let err = on_inline(&bot(&field(1026), ""), &action(&field(1026), 1024)).expect_err("over");
+    assert!(
+        err.to_string().contains("over the 4 MiB chunk cap"),
+        "{err}"
+    );
+}
+
+#[test]
+fn image_fits_and_conversions_need_their_allows() {
+    let camera = |extra: &str, allow: &str| {
+        format!(
+            r#"{{"hz": 10, "inputs": {{"c": {{"kind": "camera", "at": "wrist/cam"{extra}}}}},
+                "allow": [{allow}]}}"#
+        )
+    };
+    for (extra, allow, want) in [
+        (r#", "fields": ["image"]"#, "", "decode(jpeg)"),
+        (
+            r#", "crop": 0.5"#,
+            "",
+            "decode(jpeg) → crop(0.5 of 640x480 → 320x240)",
+        ),
+        // Scaled by 1 to fit, then padded: nothing is enlarged.
+        (
+            r#", "size": [640, 640]"#,
+            r#""resize", "pad""#,
+            "decode(jpeg) → pad(640x480 → 640x640, bilinear)",
+        ),
+        (
+            r#", "size": [480, 480]"#,
+            r#""resize", "crop""#,
+            "decode(jpeg) → crop(640x480 → 480x480, bilinear)",
+        ),
+        (
+            r#", "size": [240, 640]"#,
+            r#""resize", "stretch""#,
+            "decode(jpeg) → stretch(640x480 → 640x240, bilinear)",
+        ),
+        (
+            r#", "size": [480, 320]"#,
+            r#""resize", "stretch""#,
+            "decode(jpeg) → stretch(640x480 → 320x480, bilinear)",
+        ),
+        (r#", "format": "bgr8""#, r#""bgr""#, "decode(jpeg) → bgr"),
+    ] {
+        let b = inline(&camera(extra, allow), "ur10e").unwrap_or_else(|e| panic!("{extra}: {e}"));
+        assert_eq!(plan(&b, "c"), want, "{extra}");
+    }
+    for (extra, allow, needle) in [
+        (
+            r#", "fields": ["depth"]"#,
+            "",
+            "fields are not selectable on an image",
+        ),
+        (
+            r#", "size": [800, 400]"#,
+            r#""resize", "stretch""#,
+            "(1:2), which enlarges it\n    needs: upscale",
+        ),
+        (
+            r#", "size": [240, 320]"#,
+            "",
+            "the model wants 320x240 (4:3)\n    needs: resize\n",
+        ),
+        (
+            r#", "size": [224, 224]"#,
+            r#""resize""#,
+            "needs: one of crop | pad | stretch to change the aspect ratio",
+        ),
+        (
+            r#", "format": "bgr8""#,
+            "",
+            "is rgb8, the model wants bgr8\n    needs: bgr",
+        ),
+    ] {
+        let text = refusal_text(&camera(extra, allow), "ur10e");
+        assert!(text.contains(needle), "{extra}: {text}");
+    }
+    // A depth image already in the model's unit needs no conversion.
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"d": {"kind": "depth", "at": "head/depth", "units": {"depth": "mm"}}}}"#,
+        "g1",
+    )
+    .expect("mm");
+    assert_eq!(
+        (plan(&b, "d"), delivers(&b, "d")),
+        ("none".into(), "u16 [480, 640]".into())
+    );
+}
+
+#[test]
+fn input_fields_keep_their_dtype_and_affines_count_elements() {
+    let b = on_inline(
+        r#"{"arm": {"kind": "joints", "count": 2, "hz": 10, "dtype": "float64"}}"#,
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
+            "units": {"pos": "deg"}}}}"#,
+    )
+    .expect("units");
+    assert_eq!(delivers(&b, "q"), "f64 [2]");
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos", "vel"],
+            "scale": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}}}"#,
+        "ur10e",
+    )
+    .expect("one scale per element of the concatenation");
+    assert_eq!(plan(&b, "q"), "fields pos, vel → scale(12 values)");
+    let text = refusal_text(
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos", "vel"],
+            "scale": [1, 2, 3, 4, 5, 6]}}}"#,
+        "ur10e",
+    );
+    assert!(
+        text.contains("scale has 6 values for 12 elements"),
+        "{text}"
+    );
+    // One field counts all its elements; mixed dtypes take one value each.
+    let pose = |fields: &str, scale: usize| {
+        let scale = vec!["1"; scale].join(", ");
+        on_inline(
+            &format!(r#"{{"pose": {{"kind": "pose/coco17", "hz": 15, "fields": {fields}}}}}"#),
+            &format!(
+                r#"{{"hz": 15, "inputs": {{"p": {{"kind": "pose/coco17", "at": "pose",
+                    "fields": {fields}, "scale": [{scale}]}}}}}}"#
+            ),
+        )
+    };
+    pose(r#"{"a": ["float32", [17, 2]]}"#, 34).expect("34 elements");
+    let err =
+        pose(r#"{"a": ["float32", [17, 2]], "b": ["int16", [17]]}"#, 51).expect_err("per field");
+    assert!(
+        err.to_string().contains("51 values for per-field elements"),
+        "{err}"
+    );
+    // An integer field under an affine is delivered as float32.
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"f": {"kind": "unitree/foot_force", "at": "feet/force",
+            "fields": {"force": ["int16", [4]]}, "scale": [0.5]}}}"#,
+        "go2",
+    )
+    .expect("scaled");
+    assert_eq!(delivers(&b, "f"), "f32 [4]");
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
+            "names": ["elbow_joint", "shoulder_pan_joint"]}}, "allow": ["select"]}"#,
+        "ur10e",
+    )
+    .expect("select");
+    assert_eq!(delivers(&b, "q"), "f32 [2]");
+    // A window trained within 1% of the source rate binds.
+    inline(
+        r#"{"hz": 50, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft", "history": 50,
+            "history_hz": 505}}}"#,
+        "ur10e",
+    )
+    .expect("within 1%");
+}
+
+#[test]
+fn an_absent_optional_input_blanks_to_its_declared_shape_and_preprocessing() {
+    use rlmesh_session_core::spec::plan::Step;
+    let blank = |entry: &str| {
+        let policy = format!(r#"{{"hz": 10, "inputs": {{"x": {entry}}}, "allow": ["blank"]}}"#);
+        let b = inline(&policy, "ur10e").unwrap_or_else(|e| panic!("{entry}: {e}"));
+        let fill = match b.input("x").expect("x").plan.steps.as_slice() {
+            [Step::Blank { fill, .. }] => fill.clone(),
+            other => panic!("{other:?}"),
+        };
+        (delivers(&b, "x"), fill)
+    };
+    let absent = r#""at": "nothing", "optional": true"#;
+    for (entry, want, fill) in [
+        (format!(r#"{{"kind": "text", {absent}}}"#), "str", vec![0.0]),
+        (
+            format!(
+                r#"{{"kind": "joints", {absent}, "names": ["a", "b"], "fields": ["pos"],
+                "history": 4, "offset": [1]}}"#
+            ),
+            "f32 [4, 2]",
+            vec![0.0],
+        ),
+        // Black (the range's low end) through the per-channel scale.
+        (
+            format!(
+                r#"{{"kind": "camera", {absent}, "size": [2, 2], "range": [-1, 1],
+                "scale": [2, 3, 4]}}"#
+            ),
+            "f32 [2, 2, 3]",
+            vec![-2.0, -3.0, -4.0],
+        ),
+        (
+            format!(
+                r#"{{"kind": "acme/thing", {absent},
+                "fields": {{"a": ["int16", [3]], "b": ["float32", []]}}}}"#
+            ),
+            "{a: i16 [3], b: f32 []}",
+            vec![0.0],
+        ),
+        (
+            format!(
+                r#"{{"kind": "acme/thing", {absent}, "fields": {{"a": ["int16", [3]]}},
+                "shape": [5], "dtype": "float32"}}"#
+            ),
+            "f32 [5]",
+            vec![0.0],
+        ),
+    ] {
+        assert_eq!(blank(&entry), (want.to_string(), fill), "{entry}");
+    }
+    let text = refusal_text(
+        &format!(
+            r#"{{"hz": 10, "inputs": {{"x": {{"kind": "acme/thing", {absent},
+                "fields": {{"a": ["int16", [3]]}}, "shape": [5]}}}}, "allow": ["blank"]}}"#
+        ),
+        "ur10e",
+    );
+    assert!(
+        text.contains("cannot blank it without a shape and a dtype"),
+        "{text}"
+    );
+}
