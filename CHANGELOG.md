@@ -98,7 +98,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `Host.health()` gives each participant's link: round trip, heartbeats, the path a robot's realtime parts take (`data_path`), its chunk timing, both ends' datagram counters, the seconds on each path and the moves between them (`path_time`), and how long the host took to relay its chunks (`datagram_relay`).
 - `Robot.health()` and `Policy.health()` read the session's live link health from any participant.
 - `SessionRecorder` records a session as MCAP, `read_recording` reads one back, and `python -m rlmesh.realtime.lerobot` exports recordings as a LeRobot dataset.
-- `Robot.serve_lockstep` lets a lockstep driver step a robot one `step(commands)` at a time, and `drive` binds and runs a policy in one call.
+- `Robot(clock=Clock.LOCKSTEP)` and `Robot.serve` let a lockstep driver step a robot one `step(commands)` at a time (`serve_lockstep` is the same call), and `drive` binds and runs a policy in one call. See [choosing a clock](docs/clocks.md).
+- `rlmesh.realtime.inputs` and `rlmesh.realtime.actions` build a policy's entries, one function per kind (`inputs.camera("webcam:cam")`, `actions.joints("eye-1:eyes", command="position", chunk=4)`); each returns the plain dict it stands for, checks its arguments on the call, and a hand-written dict is still accepted.
+- `inputs.of(part, at=...)` reads a part declared with `rlmesh.realtime.parts`, its kind and fields copied from the declaration.
+- `parts.array(dtype, shape)` spells a field's `["float32", [17, 3]]` from a NumPy dtype, a Python type or a dtype's name.
+- `Policy(hz=..., inputs=..., actions=..., allow=...)` takes the policy map by keyword, beside the one-dict form.
+- `Policy(timeout=None)` waits for the robots for as long as it takes, and `bind(timeout=...)` overrides the policy's timeout for that call.
+- `Policy.run` passes the policy as a second argument to a `predict(obs, policy)`.
+- `obs.age_ms(name)` gives an input's age at the snapshot in milliseconds.
+- `robot.part(path)` gives a handle on one part, with its own `publish`, `publish_jpeg`, `due` and `edge_stats`.
+- `rlmesh.realtime.results` types what `health()`, `stats()`, `run()`, `events()`, `held`, `edge_stats()` and `release(to=...)` return as `TypedDict`s; they stay plain dicts.
 - A robot the host dropped joins again on its own.
 
 #### Sessions, hosts and devices
