@@ -52,7 +52,7 @@ async fn handshake(
     keys: &SessionKeys,
     config: &ParticipantConfig,
 ) -> Result<auth::Attached, SessionError> {
-    let deadline = tokio::time::Instant::now() + config.host_timeout;
+    let deadline = crate::clock::deadline_after(config.host_timeout);
     loop {
         match handshake_once(control, keys, config).await {
             Err(SessionError::NoReply(waited)) if tokio::time::Instant::now() < deadline => {
@@ -174,7 +174,7 @@ async fn linked(transport: &Transport, timeout: Duration) -> bool {
     if transport.is_shared() || transport.is_in_process() {
         return true;
     }
-    let deadline = tokio::time::Instant::now() + timeout;
+    let deadline = crate::clock::deadline_after(timeout);
     loop {
         // Zenoh answers these in a nested `block_on`: off this thread.
         let session = control.clone();

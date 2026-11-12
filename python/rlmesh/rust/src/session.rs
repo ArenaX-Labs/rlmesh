@@ -362,6 +362,11 @@ pub(crate) fn timeout(seconds: f64) -> PyResult<Duration> {
         .map_err(|_| PyValueError::new_err(format!("timeout {seconds} is not a duration")))
 }
 
+/// A timeout that may have no limit: `None` waits for as long as it takes.
+fn limit(seconds: Option<f64>) -> PyResult<Duration> {
+    seconds.map_or(Ok(Duration::MAX), timeout)
+}
+
 fn priority(name: &str) -> PyResult<PriorityClass> {
     sdk::priority(name).map_err(PyValueError::new_err)
 }
@@ -372,9 +377,9 @@ fn health_dict<'py>(
     py: Python<'py>,
     participant: &rlmesh_session::Participant,
     wait: bool,
-    timeout_s: f64,
+    timeout_s: Option<f64>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let wait_for = timeout(timeout_s)?;
+    let wait_for = limit(timeout_s)?;
     let health = block_on(py, async {
         let health = if wait {
             participant.next_health(wait_for).await
@@ -1015,13 +1020,13 @@ impl PyRobot {
     /// The session's live link health as the host last published it (once
     /// a second); with `wait`, the next publication. The first call
     /// subscribes and waits for one. See `Robot.health` for the fields.
-    #[pyo3(signature = (wait=false, timeout_s=10.0))]
+    #[pyo3(signature = (wait=false, timeout_s=Some(10.0)))]
     #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
     fn health<'py>(
         &self,
         py: Python<'py>,
         wait: bool,
-        timeout_s: f64,
+        timeout_s: Option<f64>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let robot = self.robot()?;
         health_dict(py, robot.participant(), wait, timeout_s)
@@ -1560,12 +1565,13 @@ impl PyController {
     /// parts, none commandable) it also declares those parts under its own
     /// name, to publish annotations. Raises `BindingRefused` with the
     /// binder's refuse-and-explain text. `timeout_s` bounds the join and the
-    /// bind; `wait_timeout_s` the later `acquire` and hand-back waits.
+    /// bind; `wait_timeout_s` the later `acquire` and hand-back waits
+    /// (`None`: no limit).
     #[new]
     #[pyo3(signature = (
         address, name, policy_json, robot, *, priority="model", under=None,
         at=BTreeMap::new(), positional=Vec::new(), allow=Vec::new(),
-        captures=BTreeMap::new(), timeout_s=10.0, wait_timeout_s=10.0, publishes_json=None
+        captures=BTreeMap::new(), timeout_s=Some(10.0), wait_timeout_s=Some(10.0), publishes_json=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1580,14 +1586,14 @@ impl PyController {
         positional: Vec<String>,
         allow: Vec<String>,
         captures: BTreeMap<String, String>,
-        timeout_s: f64,
-        wait_timeout_s: f64,
+        timeout_s: Option<f64>,
+        wait_timeout_s: Option<f64>,
         publishes_json: Option<&str>,
     ) -> PyResult<Self> {
         let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
-        let wait = timeout(timeout_s)?;
-        let later = timeout(wait_timeout_s)?;
+        let wait = limit(timeout_s)?;
+        let later = limit(wait_timeout_s)?;
         let class = self::priority(priority)?;
         let options = BindOptions {
             name,
@@ -1910,13 +1916,13 @@ impl PyController {
     /// The session's live link health as the host last published it (once
     /// a second); with `wait`, the next publication. The first call
     /// subscribes and waits for one. See `Policy.health` for the fields.
-    #[pyo3(signature = (wait=false, timeout_s=10.0))]
+    #[pyo3(signature = (wait=false, timeout_s=Some(10.0)))]
     #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
     fn health<'py>(
         &self,
         py: Python<'py>,
         wait: bool,
-        timeout_s: f64,
+        timeout_s: Option<f64>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let controller = self.controller()?;
         health_dict(py, controller.participant(), wait, timeout_s)

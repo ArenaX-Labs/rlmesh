@@ -725,7 +725,7 @@ impl SessionAddress {
         // peer routing then lost declarations and replies, and runs of many
         // routes slowed and hung. The price: two participants that both join
         // one host reach each other through it rather than directly.
-        let deadline = tokio::time::Instant::now() + host_timeout;
+        let deadline = crate::clock::deadline_after(host_timeout);
         // A host on this machine not up yet brings its key when it is (one
         // this process runs, or rlmeshd's). rlmeshd's key is on disk whether
         // or not rlmeshd is the host at this address, so holding it alone

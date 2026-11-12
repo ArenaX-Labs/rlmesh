@@ -1217,6 +1217,35 @@ async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
     assert_eq!(robot.edge_stats("arm").expect("stats").rejected_total(), 0);
 }
 
+/// `Duration::MAX` is a wait with no limit, for the bind and its later
+/// waits alike, not an overflow.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bind_and_acquire_without_a_limit_complete() {
+    let world = World::start().await;
+    let _robot = world.robot().await;
+    let p = world
+        .join("unhurried", Role::Controller, PriorityClass::Operator)
+        .await;
+    let mut controller = Controller::bind(
+        Arc::new(p),
+        &Policy::parse(COMMAND_ONLY).expect("policy"),
+        &RunOptions::named("unhurried")
+            .robot("ur10e")
+            .expect("robot"),
+        ControllerConfig {
+            bind_timeout: Duration::MAX,
+            ..ControllerConfig::default()
+        },
+    )
+    .await
+    .expect("bind");
+    controller.set_wait_timeout(Duration::MAX);
+    tokio::time::timeout(Duration::from_secs(60), controller.acquire())
+        .await
+        .expect("acquired once the clocks are mapped")
+        .expect("acquire");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refusal_for_a_present_robot_comes_at_once() {
     let world = World::start().await;

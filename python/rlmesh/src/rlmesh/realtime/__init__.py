@@ -137,10 +137,6 @@ Predict = (
     | Callable[["Observation", "Policy"], Mapping[str, Any]]
 )
 
-#: How long a wait with no limit waits: a year, past any run (Ctrl-C still
-#: interrupts it).
-_FOREVER_S = 365 * 24 * 3600.0
-
 _log = logging.getLogger(__name__)
 
 
@@ -1014,11 +1010,6 @@ class BindingTable:
         return f"BindingTable({self.json['policy']!r} on {self.json['robot']!r}, {self.fingerprint})"
 
 
-def _limit(timeout: float | None) -> float:
-    """A timeout for the native layer: ``None`` waits without limit."""
-    return _FOREVER_S if timeout is None else timeout
-
-
 def _arity(predict: Callable[..., Any]) -> int:
     """2 for ``predict(obs, policy)``: two required positional parameters; else 1."""
     try:
@@ -1178,8 +1169,8 @@ class Policy:
             positional=positional,
             allow=list(allow or ()),
             captures=dict(captures),
-            timeout_s=_limit(self._timeout if timeout == "policy" else timeout),
-            wait_timeout_s=_limit(self._timeout),
+            timeout_s=self._timeout if timeout == "policy" else timeout,
+            wait_timeout_s=self._timeout,
             publishes_json=self._publishes_json,
         )
         self._fields = {
@@ -1410,7 +1401,7 @@ class Policy:
           ``chunks_sent``, ``pending_ms``, ``latency_p50_ms``,
           ``latency_p99_ms``, ``drifting``), else ``None``.
         """
-        limit = _limit(self._timeout) if timeout is None else timeout
+        limit = self._timeout if timeout is None else timeout
         return cast("Health", self._bound().health(wait, limit))
 
     def resume(self) -> list[str]:

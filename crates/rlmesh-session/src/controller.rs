@@ -123,7 +123,8 @@ const REQUEST_GAP: Duration = Duration::from_millis(50);
 pub struct ControllerConfig {
     /// The lease ttl (`None`: the session's lease grace).
     pub lease_ttl: Option<Duration>,
-    /// How long [`Controller::bind`] waits for the robot's parts, and (until
+    /// How long [`Controller::bind`] waits for the robot's parts
+    /// ([`Duration::MAX`]: for as long as it takes), and (until
     /// [`Controller::set_wait_timeout`]) [`Controller::acquire`] for the
     /// clocks to be mapped and [`Controller::release_to`] for the hand-back.
     pub bind_timeout: Duration,
@@ -1703,7 +1704,7 @@ impl Controller {
     ) -> Result<Self, ControllerError> {
         let robot: Option<ParticipantId> = options.robot.clone();
         let me = participant.id().clone();
-        let deadline = tokio::time::Instant::now() + config.bind_timeout;
+        let deadline = crate::clock::deadline_after(config.bind_timeout);
         let first = robot.as_ref().map_or_else(
             || "a robot to declare its parts".to_string(),
             |r| format!("robot {r} to declare its parts"),
