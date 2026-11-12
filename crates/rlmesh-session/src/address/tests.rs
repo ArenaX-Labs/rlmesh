@@ -257,6 +257,36 @@ fn a_keyed_address_carries_its_key_through_a_participant_name() {
     assert!(!err.to_string().contains(secret), "{err}");
 }
 
+/// A host reached on its base port but not on its other classes' (a
+/// container that publishes one port) times out naming the silent ports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_join_reaching_only_the_base_port_names_the_others() {
+    let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("ports");
+    let listener = tokio::net::TcpListener::bind(base).await.expect("base");
+    // Accepts and says nothing, as a forwarded port whose host never answers.
+    let accepting = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    let timeout = Duration::from_secs(3);
+    let Err(err) = hosting::connect(base, timeout).await else {
+        panic!("linked to a host that never answers");
+    };
+    accepting.abort();
+    let SessionError::Timeout(waited, what) = &err else {
+        panic!("not a timeout: {err}");
+    };
+    assert_eq!(*waited, timeout);
+    let p = base.port();
+    let named = format!("ports {}, {}, {} did not answer", p + 1, p + 2, p + 3);
+    assert!(what.contains(&named), "{err}");
+    assert!(
+        what.contains(&format!("all four of its ports, {p} to {}", p + 3)),
+        "{err}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_embedded_host_stays_on_loopback_and_links_only_with_its_key() {
     let grace = Duration::from_millis(250);

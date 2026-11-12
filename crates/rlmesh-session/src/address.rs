@@ -794,12 +794,18 @@ impl SessionAddress {
                 // registering: look again. A refusal at the deadline is
                 // final ([`hosting::refused_link`]); running out of time
                 // isn't, a slow or starting host may answer the next try.
-                Err(SessionError::Zenoh(_) | SessionError::Rejected(_)) if until < deadline => {}
+                Err(
+                    SessionError::Zenoh(_) | SessionError::Rejected(_) | SessionError::Timeout(..),
+                ) if until < deadline => {}
                 Err(SessionError::Zenoh(_)) => {
                     return Err(SessionError::Timeout(
                         waited,
                         format!("the session host at {}", self.base),
                     ));
+                }
+                // Its class ports unanswered ([`hosting::unanswered_ports`]).
+                Err(SessionError::Timeout(_, what)) => {
+                    return Err(SessionError::Timeout(waited, what));
                 }
                 other => return other,
             }

@@ -122,6 +122,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `rlmesh cockpit ADDRESS` (or `--replay FILE`) watches a session or a recording: every part's rate, the lease and mode timeline, why each robot is or is not moving, and Arm, Disarm, E-stop and Keep. It is in every wheel except Linux on ARM.
 - `rlmesh host-identity new | key` makes a host identity and the keyed address to dial, for a launcher that starts a session host in another process; Python has the same in `rlmesh.launch`. A wrong key is refused at once.
 - `RLMESH_RUNTIME_DIR` names where a session host writes its short-lived link-password file, so a host starts in a container with no home and a read-only root.
+- A join that reaches a session's base port but not its other three (a container that publishes one port) times out with an error naming the ports that did not answer.
 
 #### Python
 

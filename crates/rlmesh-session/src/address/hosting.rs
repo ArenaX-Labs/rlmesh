@@ -180,6 +180,7 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
         .await
         .map_err(|err| match err {
             SessionError::Zenoh(_) => SessionError::Timeout(timeout, format!("a host at {base}")),
+            SessionError::Timeout(_, what) => SessionError::Timeout(timeout, what),
             other => other,
         })
 }
@@ -200,7 +201,8 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
 /// its bound was refused. A host listening on every class's port that
 /// refuses every attempt, round after round, gates its links with another
 /// key: [`refused_link`], final. Running out of time is a timeout (a Zenoh
-/// error), which a retry may get past.
+/// error), which a retry may get past, or, when the base port answered and
+/// some class's port did not, [`unanswered_ports`].
 pub(super) async fn open_client(
     base: SocketAddr,
     link: Option<LinkAuth>,
@@ -230,10 +232,26 @@ pub(super) async fn open_client(
     } else {
         &attempts[1..]
     };
+    // A base port that leaves no room for the classes never links.
+    TransportConfig::per_class_tcp(None, Some(base))?;
+    let started = tokio::time::Instant::now();
     let mut refused = 0;
+    // The class ports that did not answer, as last probed once the base did:
+    // kept when the deadline cuts a round's probe short.
+    let mut silent = Vec::new();
     loop {
-        while !listening(base).await && tokio::time::Instant::now() < deadline {
+        let mut base_answered = false;
+        while tokio::time::Instant::now() < deadline {
+            if listening(base).await {
+                base_answered = true;
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if base_answered
+            && let Ok(probed) = tokio::time::timeout_at(deadline, silent_class_ports(base)).await
+        {
+            silent = probed;
         }
         let mut last = None;
         // Whether every attempt failed before its bound: refused, not slow.
@@ -252,9 +270,12 @@ pub(super) async fn open_client(
             }
         }
         if tokio::time::Instant::now() >= deadline {
+            if !silent.is_empty() {
+                return Err(unanswered_ports(base, &silent, started.elapsed()));
+            }
             return Err(last.unwrap_or_else(|| SessionError::Zenoh("no answer in time".into())));
         }
-        refused = if answered && every_class_listening(base).await {
+        refused = if answered && silent.is_empty() {
             refused + 1
         } else {
             0
@@ -266,19 +287,39 @@ pub(super) async fn open_client(
     }
 }
 
-/// Whether the host at `base` listens on every class's port, so a link it
-/// refuses was refused by the host, not by a port not yet (or never) open.
-async fn every_class_listening(base: SocketAddr) -> bool {
+/// The class ports of the host at `base` that accept no TCP connect, probed
+/// at once: empty when it listens on every one, so a link it refuses was
+/// refused by the host, not by a port not yet (or never) open.
+async fn silent_class_ports(base: SocketAddr) -> Vec<u16> {
     let base = joinable(base);
-    for class in TrafficClass::ALL {
-        let Ok(port) = class_port(base.port(), class) else {
-            return false;
-        };
-        if !accepts(SocketAddr::new(base.ip(), port)).await {
-            return false;
-        }
-    }
-    true
+    let probe = |class| async move {
+        let port = class_port(base.port(), class).ok()?;
+        (!accepts(SocketAddr::new(base.ip(), port)).await).then_some(port)
+    };
+    let [a, b, c, d] = TrafficClass::ALL.map(probe);
+    let (a, b, c, d) = tokio::join!(a, b, c, d);
+    [a, b, c, d].into_iter().flatten().collect()
+}
+
+/// A join that ran out of time while the host at `base` answered on its base
+/// port but not on `silent`: typically a container that publishes one port.
+fn unanswered_ports(base: SocketAddr, silent: &[u16], waited: Duration) -> SessionError {
+    let ports = silent
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let noun = if silent.len() == 1 { "port" } else { "ports" };
+    let first = base.port();
+    let last = first.saturating_add(TrafficClass::ALL.len() as u16 - 1);
+    SessionError::Timeout(
+        waited,
+        format!(
+            "the session host at {base}: {noun} {ports} did not answer; a participant must reach \
+             all four of its ports, {first} to {last}, one per traffic class (a container must \
+             publish each)"
+        ),
+    )
 }
 
 /// Hosts session `name` in this process on `base` (port 0: OS-assigned),
