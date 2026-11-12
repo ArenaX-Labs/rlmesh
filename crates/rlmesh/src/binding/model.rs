@@ -11,7 +11,7 @@ pub use crate::model::handler::{
     HeldState, HistoryNeeds, ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames,
     ResolveOptions, RouteNeeds,
 };
-pub use crate::model::local::LockstepEnv;
+pub use crate::model::local::{ConnectedEnv, LockstepEnv};
 pub use crate::model::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use crate::model::random::RandomSampleHandler;
 pub use crate::model::types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};

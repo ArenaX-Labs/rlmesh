@@ -14,7 +14,7 @@ use rlmesh_spaces::leaves::{decode_leaf_slab, encode_leaf_slab};
 use rlmesh_spaces::{EnvContract, MetaMap, SpaceValue};
 
 use super::handler::{ModelHandler, ModelResetOptions, ModelRouteSetup, ResolveOptions};
-use super::local::{DrivenEnv, LockstepEnv};
+use super::local::LockstepEnv;
 use super::types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
 use crate::env::client::lockstep_error;
 use crate::lockstep::LockstepClient;
@@ -87,7 +87,12 @@ impl Binding {
                  env object itself"
             )));
         }
-        let connected = LockstepEnv::connect(address, workflow_edition).await?;
+        let connected = LockstepEnv::connect(
+            address,
+            crate::lockstep::ConnectOptions::default(),
+            workflow_edition,
+        )
+        .await?;
         if connected.num_envs != 1 {
             return Err(Error::invalid_argument(format!(
                 "Model.bind drives one env lane and this env serves {}: run it with \
@@ -95,14 +100,12 @@ impl Binding {
                 connected.num_envs
             )));
         }
-        let DrivenEnv::Lockstep(env) = connected.env;
-        let client = env.client().clone();
+        let client = connected.env.client().clone();
         if let Some(session) = invite_at.or(connected.session.as_deref()) {
             handler.join(session).await?;
         }
         let workflow_edition = connected
-            .edition
-            .with_model(handler.as_mut(), workflow_edition)
+            .workflow_edition(handler.as_mut(), workflow_edition)
             .await?;
         let env_id = crate::mint_id();
         let setup = handler.route_setup();

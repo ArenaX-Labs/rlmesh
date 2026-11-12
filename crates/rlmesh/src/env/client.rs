@@ -197,7 +197,7 @@ mod vector;
 pub use client_core::{CoreConnect, EnvClientCore};
 pub(crate) use client_core::{decode_render_frame, decode_render_png};
 pub use link::EditionCell;
-pub(crate) use link::{ENV_HELD, env_held, lockstep_error};
+pub(crate) use link::{ENV_HELD, lockstep_error};
 pub use single::RemoteEnv;
 pub use vector::RemoteVectorEnv;
 pub(crate) use vector::reset_lanes_in;

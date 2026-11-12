@@ -92,7 +92,7 @@ where
     // be coming up) and holds at the start barrier once it is ready; leaving
     // early, on any error below, counts it as arrived.
     let start = options.start.take();
-    let Connected {
+    let ConnectedEnv {
         env,
         contract: env_contract,
         num_envs,
@@ -191,7 +191,7 @@ where
     if let Some(start) = start {
         start.arrival.arrive(&cancellation).await;
     }
-    RuntimeDriver::new(spec, env, handler, env_contract, hooks)
+    RuntimeDriver::new(spec, DrivenEnv::Lockstep(env), handler, env_contract, hooks)
         .with_history(wants_history)
         .with_prefetch(options.prefetch_lead)
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
@@ -203,21 +203,46 @@ where
         .map_err(run_error)
 }
 
-/// A connected env: what the driver steps, and what the connection learned.
-pub(crate) struct Connected {
-    pub(crate) env: DrivenEnv,
-    pub(crate) contract: spaces::EnvContract,
-    pub(crate) num_envs: usize,
-    /// Lanes reset and step individually.
-    subset_step: bool,
+/// A lockstep env connected for the runtime driver
+/// ([`LockstepEnv::connect`]): the env, and what the connection learned.
+pub struct ConnectedEnv {
+    /// The env, for [`RuntimeDriver::new`].
+    pub env: LockstepEnv,
+    /// Its contract, for [`RuntimeDriver::new`] and (through
+    /// `env_contract_to_proto`) [`RuntimeSessionSpec::env_contract`].
+    pub contract: spaces::EnvContract,
+    /// Its lanes (at least 1): [`RuntimeSessionSpec::num_envs`].
+    pub num_envs: usize,
+    /// Its lanes reset and step individually:
+    /// [`RuntimeSessionSpec::subset_step`].
+    pub subset_step: bool,
+    /// The session the env is in, with its key (a credential): where a
+    /// model served elsewhere is invited ([`ModelHandler::join`]).
+    pub session: Option<String>,
     /// The edition negotiated with the env.
-    pub(crate) edition: RunEdition,
-    /// The session the env is in (its address), on the v2 path.
-    pub(crate) session: Option<String>,
+    edition: RunEdition,
+}
+
+impl ConnectedEnv {
+    /// The edition a run with `handler` executes at, for
+    /// [`RuntimeSessionSpec::workflow_edition`]: the one negotiated with the
+    /// env, or with a model served elsewhere that declared its editions
+    /// (after [`ModelHandler::join`]), the floor across the env, the model
+    /// and `declared`, as `Model.run` settles it.
+    ///
+    /// # Errors
+    /// The model and the env share no edition.
+    pub async fn workflow_edition<H: ModelHandler + ?Sized>(
+        &self,
+        handler: &mut H,
+        declared: Option<&str>,
+    ) -> Result<rlmesh_proto::Edition> {
+        self.edition.with_model(handler, declared).await
+    }
 }
 
 /// Connect to a session env and negotiate its declared edition.
-async fn connect_env(options: &LocalRun) -> Result<Connected> {
+async fn connect_env(options: &LocalRun) -> Result<ConnectedEnv> {
     {
         if !crate::address::is_v2(&options.address) {
             return Err(Error::invalid_argument(format!(
@@ -233,7 +258,12 @@ async fn connect_env(options: &LocalRun) -> Result<Connected> {
                  to its serving process; an owner shutdown is server.shutdown() there",
             ));
         }
-        LockstepEnv::connect(&options.address, options.workflow_edition.as_deref()).await
+        LockstepEnv::connect(
+            &options.address,
+            crate::lockstep::ConnectOptions::default(),
+            options.workflow_edition.as_deref(),
+        )
+        .await
     }
 }
 
@@ -250,7 +280,7 @@ impl RunEdition {
     /// elsewhere that declared its editions, the floor across the env, the
     /// model and the driver's `declared` WANT (pinned on the model's route).
     pub(crate) async fn with_model<H: ModelHandler + ?Sized>(
-        self,
+        &self,
         handler: &mut H,
         declared: Option<&str>,
     ) -> Result<rlmesh_proto::Edition> {
@@ -262,7 +292,7 @@ impl RunEdition {
             (Some(env), Some(model)) => {
                 crate::floor::env_floor(env, &model, declared)?.selected_workflow_edition
             }
-            _ => self.selected,
+            _ => self.selected.clone(),
         };
         rlmesh_proto::parse_retained_edition(&selected).map_err(Error::Protocol)
     }
@@ -319,20 +349,33 @@ impl LockstepEnv {
         &self.client
     }
 
-    /// Connects to the lockstep env at `address`, negotiating the edition
-    /// with `declared` (the runtime's WANT) from its declaration.
-    pub(crate) async fn connect(address: &str, declared: Option<&str>) -> Result<Connected> {
-        let client = crate::lockstep::connect(address, Default::default())
+    /// Connects to the lockstep env at the participant address `address`
+    /// for the runtime driver, checking what `Model.run` checks before it
+    /// drives one: an autoreset mode and spaces the driver represents, and a
+    /// workflow edition the env and this build share, negotiated against
+    /// `declared` (the runner's own declaration; `None`: this build's
+    /// current). The path for a runner that builds its own
+    /// [`RuntimeDriver`]; [`LockstepEnv::new`] over a bare
+    /// [`crate::lockstep::connect`] skips these checks.
+    ///
+    /// # Errors
+    /// [`Error::is_transient`] says whether retrying can succeed: a host not
+    /// listening yet or an env not joined yet is transient; a key the host
+    /// refuses, an edition the env does not run, or a contract the driver
+    /// cannot represent is final.
+    pub async fn connect(
+        address: &str,
+        options: crate::lockstep::ConnectOptions,
+        declared: Option<&str>,
+    ) -> Result<ConnectedEnv> {
+        let client = crate::lockstep::connect(address, options)
             .await
-            .map_err(|err| match crate::env::client::env_held(&err) {
-                true => Error::Connection(crate::env::client::ENV_HELD.into()),
-                false => Error::Connection(err.to_string()),
-            })?;
+            .map_err(crate::env::client::lockstep_error)?;
         let info = client.info();
         if info.contract.autoreset_mode == spaces::types::AutoresetMode::SameStep {
             return Err(Error::invalid_argument(
-                "Model.run does not drive a SAME_STEP autoreset env; serve it with NEXT_STEP or \
-                 DISABLED autoreset, or drive it with RemoteVectorEnv",
+                "the runtime driver (Model.run) does not drive a SAME_STEP autoreset env; serve \
+                 it with NEXT_STEP or DISABLED autoreset, or drive it with RemoteVectorEnv",
             ));
         }
         // The driver checks the env's contract as a v1 handshake did.
@@ -340,7 +383,7 @@ impl LockstepEnv {
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
         let (env, selected, _) =
             crate::editions::negotiate_env(info, declared).map_err(Error::Protocol)?;
-        Ok(Connected {
+        Ok(ConnectedEnv {
             contract: info.contract.clone(),
             num_envs: (info.contract.num_envs as usize).max(1),
             subset_step: info.subset_step(),
@@ -349,7 +392,7 @@ impl LockstepEnv {
                 env: Some(env),
             },
             session: client.session().map(str::to_string),
-            env: DrivenEnv::Lockstep(Self::new(client)),
+            env: Self::new(client),
         })
     }
 
