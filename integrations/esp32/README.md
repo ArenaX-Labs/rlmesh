@@ -54,7 +54,7 @@ The spare app slot is retained; this library adds no OTA updater. Select
 Keep `partitions.csv` when copying an example into another sketch folder.
 `build:esp32` prints measured sizes and explains a partition overflow.
 
-## C++ loop
+## The sketch
 
 After Wi-Fi starts, call `provisioning.begin()` and then
 `robot.begin(provisioning, kMap)`. The stored record supplies the robot name;
@@ -85,9 +85,8 @@ void controlTick(int eyes) {
 `publish()` returns `RLMESH_DEVICE_ERR_NOT_READY` until the robot runs and its
 stream key arrives. `robot.status()` reports the phase, fault, mode, accepted
 and refused chunks, and heartbeat echoes; `robot.lastRefusal()` says why the
-last chunk was refused, and `robot.printRefusals(Serial)` counts them by
-reason. `examples/Timing` measures the crypto costs
-on the board; build sizes and a host test do not establish real-board timing.
+last chunk was refused. `examples/Timing` measures the crypto costs on the
+board; build sizes and a host test do not establish real-board timing.
 
 The library runs on Arduino's loop task and sets that task's stack to 12 KB
 in place of the default 8 KB, because checking one host signature alone needs
@@ -103,97 +102,133 @@ A controller's e-stop also reaches the board through the session transport.
 
 The board tries its stored home addresses in order, authenticating the host
 by the key it was provisioned with. Four consecutive TCP ports from the
-host's base port must be reachable.
+host's base port must be reachable. When replies stop for five seconds the
+board closes its links and joins again, backing off to one attempt every 30
+seconds for as long as it runs: a host restart or a Wi-Fi drop never needs a
+reset.
 
-### Printing from the loop
+## Keep the loop on time
 
-Arduino-ESP32 gives `Serial` no transmit buffer by default: a print waits
-for the port, 87 microseconds a character at 115200 baud, and the loop waits
-with it. A status report of 900 characters every 5 s holds the loop for
-about 75 ms, longer than a chunk lives at 30 Hz with four actions: chunks
-that arrive meanwhile are replaced by the newest of their part (lost) and
-the robot runs its safe behaviour once the last runs out. Give the port a
-buffer before `Serial.begin()`, as the `Robot` example does:
+Commands that arrive while the loop is away from `robot.poll()` wait, and a
+chunk that waits past its life is lost. Three settings decide how long the
+loop is away.
+
+**Give `Serial` a transmit buffer.** Arduino-ESP32 gives `Serial` none by
+default: a print waits for the port, 87 microseconds a character at 115200
+baud, and the loop waits with it. A status report of 900 characters holds the
+loop for about 75 ms, longer than a chunk lives at 30 Hz with four actions.
+Set a buffer before `Serial.begin()`, as the `Robot` example does:
 
 ```cpp
 Serial.setTxBufferSize(2048);
 Serial.begin(115200);
 ```
 
-`robot.printDatagram(Serial)` prints the longest time between two calls to
-`poll()` since its last print, and how many were over 50 ms.
-
-### Wi-Fi power save and the beacon
-
-In power save (ESP-IDF's modem sleep) a board's frames wait for the access
-point's next beacon, about 100 ms, whichever path they take: longer than a
-chunk lives, and its state reaches readers in bunches. Turn it off before
-joining (`WiFi.setSleep(false)` after `WiFi.mode(WIFI_STA)`). Arduino-ESP32
-3.x keeps the setting and applies it again each time the station starts,
-before or after `WiFi.begin()`; it is on by default when nothing sets it,
-ESP-IDF needs it on while Bluetooth runs beside Wi-Fi (the core releases
-Bluetooth unless the sketch uses it), and anything else that calls
+**Turn Wi-Fi power save off.** In power save (ESP-IDF's modem sleep) a
+board's frames wait for the access point's next beacon, about 100 ms. Call
+`WiFi.setSleep(false)` after `WiFi.mode(WIFI_STA)`, before joining.
+Arduino-ESP32 3.x keeps the setting and applies it again each time the
+station starts. It is on by default when nothing sets it, ESP-IDF needs it on
+while Bluetooth runs beside Wi-Fi, and anything else that calls
 `esp_wifi_set_ps` turns it back on. The library changes no radio setting.
 
-`robot.printDatagram(Serial)` starts with a line on the radio: power save on
-or off, the access point's channel and width, the signal, the station's
-listen interval, and how closely the board's sends (as each left its network
-task) and the messages it received lined up with the 102.4 ms beacon period
-since the last print (0 not at all, 1 every one; a few hundred unrelated
-times give about 0.05). Received messages that line up, with power save off,
-mean the access point holds frames for the station as if it slept; sends
-that line up mean the board's own send path waits on the radio.
+**Choose the network tasks' core, if you need to.** The transport's tasks
+(signature checks, sends, the datagram socket's reads) and zenoh-pico's run
+on whichever core the scheduler picks. That is the default, `-1`. Build the
+library with `RLMESH_TASK_CORE=0 mise run build:esp32` (or `1`) to pin them
+all to one core instead; any other value is refused. Core 0 is where Wi-Fi
+and lwIP run, and every send runs lwIP inline in the sending task.
 
-The transport's tasks (signature checks, sends, the datagram socket's reads)
-and zenoh-pico's run on whichever core the scheduler picks. A library built
-with `RLMESH_TASK_CORE=0 mise run build:esp32` (or `1`) pins them all to that
-core instead; core 0 is where Wi-Fi and lwIP run, and every send runs lwIP
-inline in the sending task.
-
-### UDP for the realtime parts
+## UDP for the realtime parts
 
 A host started with `rlmesh host --board-data udp` offers its datagram path
-in the handshake: the board then takes its parts' action chunks and sends
-their states and `_applied` entries over UDP, from one socket opened after
-it attaches, to the host's base port plus one (UDP 7448 by default: open it
-in the host's firewall). Everything else stays on TCP. A lost Wi-Fi frame
-then costs that one message instead of stalling the stream behind it until
-TCP sends it again. Datagrams are sealed and replay-checked as the session's
-messages are; the board probes the host about once a second, under its own
-key, so the host follows it to a new address.
+in the handshake. The board then takes its parts' action chunks, and sends
+their states and `_applied` entries, over UDP to the host's base port plus
+one (UDP 7448 by default: open it in the host's firewall). Everything else
+stays on TCP. A lost Wi-Fi frame then costs that one message instead of
+stalling the stream behind it. Datagrams are sealed and replay-checked as the
+session's messages are, and the board probes the host about once a second so
+the host follows it to a new address.
+
+The host decides when the path is broken: with the board's heartbeats
+arriving, one end sent datagrams for two seconds (at least three) and the
+other opened none. It then moves the board's realtime parts back to TCP, and
+onto UDP again, without a new attach, once the board's probes arrive and its
+retry time has come (5 s, doubling up to 2 minutes while the path keeps
+breaking). `rlmesh host --board-data udp-only` never moves a board back: a
+setting for measuring the path, where loss is simply loss.
 
 `robot.useDatagram(false)`, after `begin()` and before the first `poll()`,
 keeps a board on TCP whatever the host offers; the default follows the host.
-Restart the host with `--board-data tcp` (the default) to switch every board
-back: they switch as they re-attach, with no reflash. The host, not the
-board, decides when the path is broken: with the board's heartbeats
-arriving, one end sent datagrams for two seconds (at least three) and the
-other opened none of them. Then it moves the board's realtime parts back to
-TCP, and onto UDP again, without a new attach, once the board's probes
-arrive and its retry time has come (5 s, doubling up to 2 minutes while the
-path keeps breaking). A policy that sends nothing for a while, or loss that
-lets some datagrams through, moves nothing. `rlmesh host --board-data
-udp-only` never moves a board back: a setting for measuring the path, where
-loss is simply loss.
+Restart the host with `--board-data tcp` (the default) to put every board
+back on TCP: they switch as they re-attach, with no reflash.
 
-To compare the paths, the same counters run on both: `robot.printChunkTiming
-(Serial, part)` (chunks received, accepted, lost, lateness against their slot
-in log2 buckets of milliseconds and its maximum, the longest gap between
-accepted chunks), `robot.printDatagram(Serial)` (the path in use, datagrams
-sent, received, lost, reordered and unopened, the moves back to TCP and onto
-UDP again, and the seconds on each), and the C getters
-`rlmesh_device_robot_chunk_timing` and `rlmesh_device_robot_datagram_stats`.
-The `Robot` example prints both every 5 s. The host's `host/health` (the
-cockpit, recordings) carries the board's figures and its own end's, and
-`rlmesh host`'s health log and `Host.health()` the seconds on each path and
-the moves. `robot.printDropped(Serial)` adds what the board did not send:
-samples it had no heap room for (`unsent`), those a newer one replaced
-while the link was slower than the board published, and each part's
-samples offered and sent at its delivery plan's rate.
+## Reading the board's reports
 
-When replies stop for five seconds the board closes its links and joins again,
-backing off to one attempt every 30 seconds for as long as it runs: a host
-restart or a Wi-Fi drop never needs a reset.
+The `Robot` example prints these every 5 s while the robot runs, and
+`printRefusals` and `printDropped` when their counts change. Each takes any
+`Print` (`Serial`). The numbers below are an example.
+
+`robot.printChunkTiming(Serial, part)`, for one commanded part this attach:
+
+```text
+  chunks received 1500 accepted 1497 lost 3 late max 41.2 ms gap max 118.0 ms, by ms: <1 1210 1-2 230 2-4 40 32-64 17
+```
+
+`lost` counts gaps in the chunks' sequence numbers. The buckets count
+accepted chunks by how late they arrived against their first slot, in
+milliseconds, and `late max` is the latest. `gap max` is the longest time
+between two accepted chunks.
+
+`robot.printDatagram(Serial)` prints three lines:
+
+```text
+  wifi power save off, channel 6 HT20, rssi -58, listen interval 3; on the beacon: sends 0.04 of 250, receives 0.06 of 250
+  loop: longest between polls 12.4 ms, 0 over 50 ms
+  realtime parts over udp: sent 3000, received 1500, lost 2, reordered 0, unopened 0, fallbacks 0, returns 0, on udp 300 s, on tcp 0 s
+```
+
+The first line is the radio. The two "on the beacon" figures say how closely
+the board's sends, and the messages it received, lined up with the access
+point's 102.4 ms beacon since the last print: 0 not at all, 1 every one, and
+about 0.05 for unrelated timing. Received messages that line up, with power
+save off, mean the access point holds frames for the board as if it slept;
+sends that line up mean the board's own send path waits on the radio.
+
+The second line is the loop since the last print: the longest time between
+two calls to `poll()`, and how many were over 50 ms. Anything near a chunk's
+life here is the sketch's own work, usually unbuffered prints.
+
+The third line is the datagram path this attach: datagrams sent and received,
+received ones lost or out of order, ones that did not open, the host's moves
+back to TCP (`fallbacks`) and onto UDP again (`returns`), and the seconds on
+each. It reads `realtime parts over tcp` when the host offered no path.
+
+`robot.printDropped(Serial)` says what the board did not take or send, over
+every attach:
+
+```text
+  dropped: views too_large 1; unsent 0, send queue replaced 12 dropped 0
+  part 0 published: state 1500 of 1500 at every sample, applied 1500 of 1500 at every sample
+```
+
+The first line counts what it received and dropped, by what (`views`,
+`replies`, `chunks`, `other`) and why (`unopened`, `replayed`, `malformed`,
+`too_large`, `no_memory`, `stale`), or `none`. `unsent` counts heartbeats and
+samples it skipped because the heap had no room. `send queue replaced` counts
+samples a newer one on the same key replaced while the link was slower than
+the board publishes, and `dropped` publications dropped from a full send
+queue. Each part's line gives the state and `_applied` samples sent of those
+offered, and the rate its delivery plan allows.
+
+`robot.printRefusals(Serial)` counts refused chunks by reason, this attach
+and then over every attach, as
+`  refused 4 chunks, last stale_token: stale_token 4; 9 over 3 attaches: stale_token 7 expired 2`.
+
+The host sees the same figures from its side: `host/health` (the cockpit,
+recordings) carries the board's counters and its own end's, and `rlmesh
+host`'s health log and Python's `Host.health()` the seconds on each path and
+the moves.
 
 ## Building and verifying from source
 
@@ -204,7 +239,9 @@ mise run dev:heavy -- mise run test:esp32:host
 ```
 
 `setup:esp32` installs pinned Arduino CLI, the Arduino core, Espressif's Rust
-fork, and nightly Cargo. The C6 uses upstream Rust; classic ESP32 and S3 use
+fork, and nightly Cargo. `build:zenoh-pico` fetches zenoh-pico 1.10.1, the
+version of the host's Zenoh, into `target/zenoh-pico`; the build patches it
+(`transport/patch_zenoh_pico.py`) and stops on any other version. The C6 uses upstream Rust; classic ESP32 and S3 use
 Espressif's Xtensa targets. Without the fork, local builds explicitly skip
 Xtensa; CI and releases set `RLMESH_ESP32_REQUIRE_XTENSA=1` to fail instead.
 Other chips are unsupported; the C3 lacks the atomics the runtime needs.
