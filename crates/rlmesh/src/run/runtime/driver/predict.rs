@@ -22,10 +22,15 @@ where
     E: RuntimeEnv + Clone + 'static,
     M: ModelHandler,
 {
-    /// Put the groups waiting for a prediction in flight, per the scheduler:
-    /// a model that fuses predicts takes the plan as one grouped predict and
-    /// the next forms behind it; any other takes one predict per group, in
-    /// flight together, each landing on its own.
+    /// Put the groups waiting for a prediction in flight, per the scheduler,
+    /// as one grouped predict ([`ModelHandler::predict_grouped`]) whether or
+    /// not the model fuses them; the groups that become ready behind it form
+    /// the next. A handler takes `&mut self` and is never called
+    /// concurrently, so the driver holds it for each whole call: one predict
+    /// per group would only queue on it, and a lane would still wait for the
+    /// predicts ahead of its own. Concurrency across groups is the handler's
+    /// to give, inside `predict_grouped` (a served model's batcher; a handler
+    /// in front of a pool).
     pub(super) fn dispatch_predict<'m>(
         &mut self,
         groups: &mut [Group<E>],
@@ -35,9 +40,9 @@ where
     ) where
         M: 'm,
     {
-        // A model fuses its waiting groups into one `predict_grouped`: one
-        // grouped predict is in flight at a time, and the groups that become
-        // ready behind it form the next.
+        // One grouped predict is in flight at a time: the handler serves one
+        // call at a time, and the groups that become ready behind it form the
+        // next.
         if !predicts.is_empty() {
             return;
         }

@@ -5,9 +5,10 @@
 //! the whole vector otherwise. Every group is its own `reset -> predict ->
 //! step` episode loop, advanced as its own ops complete, so a slow step or
 //! reset in one group never stalls another. Groups waiting for a prediction
-//! are planned by the [`PredictScheduler`]: a model that fuses predicts gets
-//! the plan as one grouped predict, any other gets one predict per group, and
-//! every result is applied as it lands while later groups go out behind it.
+//! are planned by the [`PredictScheduler`]: the plan goes to the model as one
+//! grouped predict, fused or not (the handler serves one call at a time), its
+//! results are applied when it lands, and the groups ready behind it form the
+//! next. Env steps and resets stay concurrent across groups.
 //!
 //! Records per-op telemetry and fans every state change out to the session's
 //! [`RuntimeHooks`](crate::run::runtime::hooks::RuntimeHooks).
@@ -130,8 +131,8 @@ struct Prediction {
     phases: EndpointPhases,
 }
 
-/// Decides which groups waiting for a prediction go out next (as one grouped
-/// predict for a model that fuses them, one predict each otherwise). Consulted
+/// Decides which groups waiting for a prediction go out next, as one grouped
+/// predict. Consulted
 /// whenever at least one group is waiting and the model can take more; `busy`
 /// is how many groups are still stepping or resetting. An
 /// empty plan waits for the next event (a step or reset completing) — the
