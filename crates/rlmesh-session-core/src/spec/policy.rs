@@ -171,11 +171,6 @@ impl Allows {
                 .ok_or_else(|| format!("{where_}: allow {name:?} is not a conversion"))
         })
     }
-
-    /// The conversions in the set, in [`Allow::ALL`] order.
-    pub fn iter(self) -> impl Iterator<Item = Allow> {
-        Allow::ALL.into_iter().filter(move |a| self.has(*a))
-    }
 }
 
 /// How an entry's joint names are matched.
