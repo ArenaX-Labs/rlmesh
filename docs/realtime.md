@@ -166,7 +166,9 @@ with tracker:
 drives every eye it names. Each call of `predict` gets the newest camera
 frame as an RGB `uint8 [480, 640, 3]` array and returns a chunk of 4
 targets 20 ms apart, more than one replan period at 15 Hz, so an eye
-never runs dry between calls. `run` passes the policy itself as a second
+never runs dry between calls. The eye's edge plays the chunk, clamps it to
+the limits the board declared, and holds the last target when no new
+chunk comes. `run` passes the policy itself as a second
 argument when `predict` has two required parameters, so it can publish
 what it saw; a `predict(obs)` gets the observation alone. `obs.age_ms("cam")`
 says how old the frame was when the policy took it.
@@ -174,13 +176,11 @@ says how old the frame was when the policy took it.
 Another policy, or a viewer, reads what the tracker publishes by pointing
 at the declaration, so its kind and fields are written once:
 
-````python
+```python
 viewer = realtime.Policy(
     hz=15, inputs={"hand": inputs.of(HAND["hand"], at="tracker:hand")}, session=""
 )
-``` The eye's edge plays the chunk, clamps it to
-the limits the board declared, and holds the last target when no new
-chunk comes.
+```
 
 The eyes move only while the session is armed: press **Arm** in the
 cockpit (next section), or call `camera.arm()` from a robot's program.
@@ -225,7 +225,7 @@ thread = threading.Thread(target=policy.run, args=(predict,))
 thread.start()
 ...                       # an operator jumps in, then lets go
 policy.resume()           # ["ur10e:arm"]: the model asks for it again
-````
+```
 
 Or the operator hands them back as it lets go, from its own process:
 
