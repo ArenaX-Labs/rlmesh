@@ -35,6 +35,14 @@ pub struct CoreConnect<'a> {
     pub request_timeout: Option<Duration>,
 }
 
+/// How long a dial bounded by `connect_timeout` waits for the session: the
+/// whole bound, as the caller asked, less a margin, so a join that runs out
+/// says why (ports that did not answer, a host not up) before the bare
+/// bound expires.
+fn join_bound(connect_timeout: Duration) -> Duration {
+    connect_timeout.saturating_sub((connect_timeout / 10).min(Duration::from_millis(250)))
+}
+
 /// The any-arity remote env client both [`RemoteEnv`] and
 /// [`RemoteVectorEnv`] wrap, and the Python extension drives directly
 /// (binding plumbing, exempt from semver).
@@ -79,12 +87,14 @@ impl EnvClientCore {
     }
 
     /// Dial `address` and handshake. A dial failure is the ConnectionError
-    /// class, a refused handshake the ProtocolException class, an expired
+    /// class (a join that ran out of time too, saying why, as with no
+    /// bound), a refused handshake the ProtocolException class, an expired
     /// `connect_timeout` the TimeoutError class.
     pub async fn connect_with(address: &str, options: CoreConnect<'_>) -> Result<Self> {
         let parsed = ConnectAddress::parse(address)?;
-        let dial = Self::dial(parsed, options.declared);
-        let mut core = match normalize_timeout(options.connect_timeout) {
+        let connect_timeout = normalize_timeout(options.connect_timeout);
+        let dial = Self::dial(parsed, options.declared, connect_timeout.map(join_bound));
+        let mut core = match connect_timeout {
             Some(timeout) => tokio::time::timeout(timeout, dial)
                 .await
                 .map_err(|_| Error::Timeout(timeout))?,
@@ -97,10 +107,18 @@ impl EnvClientCore {
         Ok(core)
     }
 
-    async fn dial(address: ConnectAddress, declared: Option<&str>) -> Result<Self> {
+    async fn dial(
+        address: ConnectAddress,
+        declared: Option<&str>,
+        join_within: Option<Duration>,
+    ) -> Result<Self> {
         let (inner, env_contract, spaces, num_envs, session_offer, selected) = match address {
             ConnectAddress::Lockstep(address) => {
-                let client = match crate::lockstep::connect_driver(&address, Default::default())
+                let mut options = crate::lockstep::ConnectOptions::default();
+                if let Some(within) = join_within {
+                    options.timeout = within;
+                }
+                let client = match crate::lockstep::connect_driver(&address, options)
                     .await
                     .map_err(lockstep_error)?
                 {
