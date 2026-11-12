@@ -867,7 +867,10 @@ pub unsafe extern "C" fn rlmesh_device_checker_check(
         return core::ptr::null_mut();
     };
     let mut copy = Vec::new();
-    if data.len() > MAX_RECEIVED || copy.try_reserve_exact(data.len()).is_err() {
+    if data.len() > MAX_RECEIVED
+        || !crate::heap::room()
+        || copy.try_reserve_exact(data.len()).is_err()
+    {
         return core::ptr::null_mut();
     }
     copy.extend_from_slice(data);

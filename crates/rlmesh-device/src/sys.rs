@@ -5,6 +5,7 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::{c_char, c_int, c_void};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
@@ -25,11 +26,11 @@ struct CAlloc;
 // these alignments; null means out of memory.
 unsafe impl GlobalAlloc for CAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if layout.align() <= MALLOC_ALIGN {
-            unsafe { malloc(layout.size()).cast() }
-        } else {
-            unsafe { memalign(layout.align(), layout.size()).cast() }
+        let block = unsafe { raw_alloc(layout) };
+        if block.is_null() && released() {
+            return unsafe { raw_alloc(layout) };
         }
+        block
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
@@ -38,7 +39,11 @@ unsafe impl GlobalAlloc for CAlloc {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if layout.align() <= MALLOC_ALIGN {
-            unsafe { realloc(ptr.cast(), new_size).cast() }
+            let block = unsafe { realloc(ptr.cast(), new_size) };
+            if block.is_null() && released() {
+                return unsafe { realloc(ptr.cast(), new_size).cast() };
+            }
+            block.cast()
         } else {
             // Copies into a new `memalign` block.
             let Ok(new) = Layout::from_size_align(new_size, layout.align()) else {
@@ -58,6 +63,52 @@ unsafe impl GlobalAlloc for CAlloc {
 
 #[global_allocator]
 static ALLOC: CAlloc = CAlloc;
+
+unsafe fn raw_alloc(layout: Layout) -> *mut u8 {
+    if layout.align() <= MALLOC_ALIGN {
+        unsafe { malloc(layout.size()).cast() }
+    } else {
+        unsafe { memalign(layout.align(), layout.size()).cast() }
+    }
+}
+
+/// The reserve ([`crate::heap`]): a block held back, freed when an
+/// allocation fails so that it can succeed. Null while it is not held.
+static RESERVE: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Frees the reserve, if held: whether there was one to free.
+fn released() -> bool {
+    let block = RESERVE.swap(core::ptr::null_mut(), Ordering::AcqRel);
+    if block.is_null() {
+        return false;
+    }
+    unsafe { free(block) };
+    true
+}
+
+/// Whether the reserve is held, taking it again if the heap has room.
+pub(crate) fn room() -> bool {
+    if !RESERVE.load(Ordering::Acquire).is_null() {
+        return true;
+    }
+    let block = unsafe { malloc(crate::heap::RESERVE) };
+    if block.is_null() {
+        return false;
+    }
+    if RESERVE
+        .compare_exchange(
+            core::ptr::null_mut(),
+            block,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        // Another task took it again meanwhile.
+        unsafe { free(block) };
+    }
+    true
+}
 
 /// A panic prints where it happened (no message: formatting one would pull
 /// `core::fmt` into flash), then resets the board through the C library's

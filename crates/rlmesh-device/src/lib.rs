@@ -17,6 +17,7 @@ extern crate alloc;
 
 pub mod address;
 pub mod ffi;
+pub mod heap;
 pub mod map;
 pub mod provision;
 pub mod robot;

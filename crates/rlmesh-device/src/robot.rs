@@ -338,7 +338,7 @@ pub enum Dropped {
     Malformed,
     /// More than the robot takes: too long, or too many of something.
     TooLarge,
-    /// The heap had no room for it now.
+    /// The heap had no room for it now ([`crate::heap`]).
     NoMemory,
     /// A view no newer than the one held.
     Stale,
@@ -833,6 +833,8 @@ impl Robot {
         if config.heartbeat_ms == 0 {
             return Err(ConfigError::Heartbeat);
         }
+        // The heap's reserve, while it is fresh.
+        crate::heap::room();
         // The host normalises the map at `DeclareParts`: the board needs
         // only its paths, in authored order.
         let paths = crate::map::paths(&config.robot_json)
@@ -1125,6 +1127,10 @@ impl Robot {
         let Some(link) = self.datagram.as_mut().filter(|d| d.active) else {
             return;
         };
+        if !crate::heap::room() {
+            link.arrivals.refused();
+            return self.drop(Received::Chunk, Dropped::NoMemory);
+        }
         let route = match DatagramHeader::parse(datagram) {
             Ok((header, _)) if header.kind == DatagramKind::Chunk => header,
             _ => return link.arrivals.refused(),
@@ -1486,6 +1492,9 @@ impl Robot {
         if payload.len() > MAX_RECEIVED {
             return self.drop(Received::Reply, Dropped::TooLarge);
         }
+        if !crate::heap::room() {
+            return self.drop(Received::Reply, Dropped::NoMemory);
+        }
         if self.pending.as_ref().is_some_and(|p| p.query.id == id) {
             return self.ctl_reply(payload, now_us);
         }
@@ -1636,6 +1645,9 @@ impl Robot {
         if payload.len() > MAX_RECEIVED {
             return self.drop_received(sub, Dropped::TooLarge);
         }
+        if !crate::heap::room() {
+            return self.drop_received(sub, Dropped::NoMemory);
+        }
         // Each kind out of line: inlined, their temporaries add up in one
         // frame underneath the signature check, a board's deepest call.
         match sub {
@@ -1785,6 +1797,9 @@ impl Robot {
     pub fn sample_checked(&mut self, sub: u8, checked: &Checked, now_us: u64) {
         if sub != SUB_VIEW || self.sealed_seen {
             return;
+        }
+        if !crate::heap::room() {
+            return self.drop(Received::View, Dropped::NoMemory);
         }
         let mut view = self.spare();
         let Some(link) = self.link.as_mut() else {
@@ -2032,6 +2047,7 @@ impl Robot {
             .core
             .accept(chunk, now, self.view.as_ref(), self.observed_ns)
         {
+            Ok(outcome) if outcome.no_memory > 0 => self.drop(Received::Chunk, Dropped::NoMemory),
             Ok(_) => {
                 self.accepted += 1;
                 self.last_accepted = seq;
@@ -3153,6 +3169,37 @@ mod tests {
         }));
         robot.sample(SUB_VIEW_SEALED, &key, &mut next, 7);
         assert_eq!(robot.view().map(|v| v.revision), Some(5));
+    }
+
+    #[test]
+    fn a_message_the_heap_has_no_room_for_is_dropped_and_the_next_taken() {
+        let (mut robot, mut host) = attached();
+        let key = robot.routes.sealed_view.clone();
+        let view = DeviceView {
+            revision: 3,
+            generation: robot.generation,
+            ..DeviceView::empty(robot.config.name.clone())
+        };
+        let sealed = host
+            .down
+            .seal(
+                rlmesh_session_core::crypto::Kind::DeviceView,
+                &key,
+                &codec::encode_view(&view),
+            )
+            .expect("seal");
+        crate::heap::without_room(|| {
+            robot.sample(SUB_VIEW_SEALED, &key, &mut sealed.clone(), 1);
+            robot.reply(1, b"reply", 1, &mut Counter(0));
+            robot.datagram(&[0; 16], 1);
+        });
+        assert_eq!(robot.view().map(|v| v.revision), None);
+        assert_eq!(robot.dropped(Received::View, Dropped::NoMemory), 1);
+        assert_eq!(robot.dropped(Received::Reply, Dropped::NoMemory), 1);
+        // Room again: the same view, unopened before, is taken.
+        robot.sample(SUB_VIEW_SEALED, &key, &mut sealed.clone(), 2);
+        assert_eq!(robot.view().map(|v| v.revision), Some(3));
+        assert_eq!(robot.phase(), Phase::Running);
     }
 
     #[test]

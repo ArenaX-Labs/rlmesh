@@ -570,7 +570,9 @@ impl EdgeCore {
     }
 
     /// Validates `chunk`, received at `receive_ns` (edge clock), against the
-    /// view (observed at `observed_local_ns`) and splices it.
+    /// view (observed at `observed_local_ns`) and splices it. A valid chunk
+    /// the heap has no room for now is dropped whole, its actions counted in
+    /// [`SpliceOutcome::no_memory`].
     pub fn accept<V: AuthorityView + ?Sized>(
         &mut self,
         chunk: ActionChunk,
@@ -587,6 +589,8 @@ impl EdgeCore {
         }
         let result = self.validate_and_splice(chunk, receive_ns, view, observed_local_ns);
         match result {
+            // Dropped for want of memory: neither accepted nor refused.
+            Ok(outcome) if outcome.no_memory > 0 => {}
             Ok(_) => self.accepted += 1,
             Err(reason) => self.rejected[reason.index()] += 1,
         }
@@ -703,6 +707,16 @@ impl EdgeCore {
             return Err(Rejection::StaleSeq);
         }
         let stride = member.check.stride();
+        // Each action a slice of the payload, in room that may fail: a
+        // chunk the heap has no room for changes nothing.
+        let mut actions = Vec::new();
+        if actions.try_reserve_exact(count).is_err() {
+            return Ok(SpliceOutcome {
+                no_memory: count as u64,
+                ..SpliceOutcome::default()
+            });
+        }
+        actions.extend((0..count).map(|i| checked.actions.slice(i * stride..(i + 1) * stride)));
         let t0_ns = chunk.t0_ns.saturating_sub(edge.offset_ns);
         let member = &mut self.members[index];
         member.took(
@@ -720,9 +734,6 @@ impl EdgeCore {
             receive_ns,
             valid_until_ns,
         });
-        let actions = (0..count)
-            .map(|i| checked.actions.slice(i * stride..(i + 1) * stride))
-            .collect();
         Ok(self.queues[index].splice(
             Splice {
                 chunk: meta,
