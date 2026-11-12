@@ -70,13 +70,14 @@ pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credenti
         })
 }
 
-/// What a link to the host at `base` presents: on loopback, the
-/// password `key` derives, else the key of a host this process runs; on
-/// the LAN, and to rlmeshd (a LAN host), nothing.
+/// What a link to the host at `base` presents, on any network: the
+/// password `key` (the address's) derives, else that of a host this process
+/// runs there; without either, nothing (rlmeshd, a paired host). Never
+/// rlmeshd's key, which is this machine's and gates no link. Presenting it
+/// to a host that isn't the key's owner gives that host no password (Zenoh
+/// `usrpwd` answers a nonce with an HMAC), and the handshake that follows
+/// refuses a host without the address's host key.
 pub fn link_auth(base: SocketAddr, key: Option<&AddressKey>) -> Option<LinkAuth> {
-    if !base.ip().is_loopback() {
-        return None;
-    }
     let key = key.cloned().or_else(|| hosted_key(base))?;
     Some(LinkAuth {
         password: key.link_password(),

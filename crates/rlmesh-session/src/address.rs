@@ -736,6 +736,10 @@ impl SessionAddress {
         {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // Without a key there is nothing to link with: say so before
+        // dialing. Taken again once linked, when a host this process runs
+        // may have brought its own.
+        self.credential()?;
         let transport = self.link(deadline, host_timeout).await?;
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
@@ -762,10 +766,11 @@ impl SessionAddress {
 
 impl SessionAddress {
     /// A link to the host by `deadline`, as a Zenoh client (riding its
-    /// transport when this process runs it): through a password gate on
-    /// loopback, and without one to a host that gates no link (rlmeshd,
-    /// an `insecure` host), which the handshake alone admits. `waited` names
-    /// the wait in a timeout.
+    /// transport when this process runs it): through the password gate of a
+    /// loopback or launched host, on any network, with the address's key,
+    /// and without one to a host that gates no link (rlmeshd, an `insecure`
+    /// host), which the handshake alone admits. `waited` names the wait in a
+    /// timeout.
     pub async fn link(
         &self,
         deadline: tokio::time::Instant,
@@ -784,13 +789,11 @@ impl SessionAddress {
                 deadline
             };
             match open_client(self.base, self.link_auth(), until).await {
-                Err(SessionError::Zenoh(_)) if until < deadline => {}
-                // A host that listens all the same gates its links with a
-                // key this participant does not hold: final, unlike one not
-                // up yet.
-                Err(SessionError::Zenoh(_)) if listening(self.base) => {
-                    return Err(hosting::refused_link(self.base));
-                }
+                // Not yet, or refused by a host this process is still
+                // registering: look again. A refusal at the deadline is
+                // final ([`hosting::refused_link`]); running out of time
+                // isn't, a slow or starting host may answer the next try.
+                Err(SessionError::Zenoh(_) | SessionError::Rejected(_)) if until < deadline => {}
                 Err(SessionError::Zenoh(_)) => {
                     return Err(SessionError::Timeout(
                         waited,

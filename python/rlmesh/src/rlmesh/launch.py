@@ -28,8 +28,9 @@ forms::
     # rlmesh.RemoteEnv(address) once it serves.
 
 The identity is a secret: pass it through the environment, never argv, and
-keep it out of logs. The keyed address is a credential too (its holder joins
-the session). ``rlmesh host-identity`` does the same from a shell.
+keep it out of logs. The keyed address is a credential too: its holder joins
+the session, from this machine or any other that reaches the host's ports.
+``rlmesh host-identity`` does the same from a shell.
 """
 
 from __future__ import annotations

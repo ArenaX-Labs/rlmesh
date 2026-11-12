@@ -100,7 +100,7 @@ impl HostIdentity {
         sign.copy_from_slice(&self.sign[..]);
     }
 
-    /// The password of this host's loopback links
+    /// The password of this host's gated links
     /// ([`address::link_password`]).
     pub fn link_password(&self) -> Zeroizing<String> {
         address::link_password(&self.local)

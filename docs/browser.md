@@ -117,8 +117,9 @@ gateway closes every socket with `4410` (reason `host_lost: ...`), the page gets
 serves one session, exits. The gateway takes the session as its host
 prints it, `--address {ip}:{port}[/{session}]`, or as `--connect`
 with `--session`/`--session-file`, and joins the host as a client, as
-every participant does (through the password gate of a loopback host, and
-without one to rlmeshd).
+every participant does (through the password gate of a loopback or
+launched host, with the key its address carries, and without one to
+rlmeshd).
 
 ## Security model
 

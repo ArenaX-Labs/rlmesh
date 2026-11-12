@@ -18,7 +18,8 @@ use crate::error::SessionError;
 use crate::host::HostConfig;
 use crate::server::SessionServer;
 use crate::transport::{
-    LINK_USER, LinkAuth, Transport, TransportConfig, TransportTuning, free_local_base,
+    LINK_USER, LinkAuth, TrafficClass, Transport, TransportConfig, TransportTuning, class_port,
+    free_local_base,
 };
 use crate::wire::TenantId;
 
@@ -127,18 +128,19 @@ fn forget_local_host(address: &SessionAddress) {
 }
 
 /// Whether a session host answers on `base` (its control listener accepts).
+/// Generous for a slow link, where a TCP connect takes a round trip; a port
+/// nothing listens on refuses at once.
 pub(super) fn listening(base: SocketAddr) -> bool {
-    TcpStream::connect_timeout(&joinable(base), Duration::from_millis(200)).is_ok()
+    TcpStream::connect_timeout(&joinable(base), LISTEN_PROBE).is_ok()
 }
 
-/// How long a link presenting the password gets, once the host listens,
-/// before [`open_client`] tries one without.
-const GATED_TRY: Duration = Duration::from_secs(1);
+/// How long [`listening`] waits for a TCP connect.
+const LISTEN_PROBE: Duration = Duration::from_secs(2);
 
-/// How long [`open_client`]'s link without the password gets after the
-/// gated one failed. A loopback link opens in milliseconds; a host that
-/// still listens after both failed refused them ([`refused_link`]).
-const UNGATED_TRY: Duration = Duration::from_secs(2);
+/// How many rounds a host listening on every class's port may refuse every
+/// link before [`open_client`] calls it [`refused_link`]: a second round
+/// rules out a host still opening its listeners.
+const REFUSED_ROUNDS: u32 = 2;
 
 /// A host that listens at `base` but refused every link offered it: the
 /// key this participant joins with is not that host's (a wrong or stale
@@ -167,54 +169,89 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
 }
 
 /// Joins the host at `base` as a Zenoh client by `deadline`, presenting
-/// `link`. A host bound beyond loopback (`insecure`, rlmeshd's LAN listener)
-/// gates no link, since Zenoh can't gate one listener and not another, and refuses a
-/// password it never asked for: when a gated
-/// link to a listening host fails, the join links without one, and the
-/// handshake alone admits it, as on any LAN link.
+/// `link` on any network. Whether a host gates its links isn't known from
+/// its address: a launched or loopback host gates every link, and one bound
+/// beyond loopback otherwise (`insecure`, rlmeshd's LAN listener) gates
+/// none, since Zenoh can't gate one listener and not another, and refuses a
+/// password it never asked for. The handshake that follows authenticates
+/// the host either way.
+///
+/// Once the host listens, each round makes one attempt with the password and
+/// one without (only the latter with no `link`), each allowed until
+/// `deadline`, so a slow host is never cut short. A refusal comes back within
+/// a round trip, a slow link only later: an attempt that fails before the
+/// deadline was refused. A host listening on every class's port that refuses
+/// every attempt, round after round, gates its links with another key:
+/// [`refused_link`], final. Running out of time is a timeout (a Zenoh error),
+/// which a retry may get past.
 pub(super) async fn open_client(
     base: SocketAddr,
     link: Option<LinkAuth>,
     deadline: tokio::time::Instant,
 ) -> Result<Transport, SessionError> {
-    let open = |link, until: tokio::time::Instant| {
+    // One attempt, as Zenoh clients make, bounded by the deadline alone:
+    // Zenoh's own handshake timeout is lifted to it, so it never ends a slow
+    // open early, which would read as a refusal.
+    let open = |link| {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         let tuning = TransportTuning {
             client: true,
-            connect_timeout: Some(until.saturating_duration_since(tokio::time::Instant::now())),
+            open_timeout: Some(left.max(Duration::from_millis(1))),
             link,
             ..TransportTuning::default()
         };
         async move {
-            Transport::open(&TransportConfig::per_class_tcp(None, Some(base))?.with_tuning(tuning))
+            let config = TransportConfig::per_class_tcp(None, Some(base))?.with_tuning(tuning);
+            tokio::time::timeout_at(deadline, Transport::open(&config))
                 .await
+                .unwrap_or_else(|_| Err(SessionError::Zenoh("no answer in time".into())))
         }
     };
-    let Some(link) = link else {
-        return open(None, deadline).await;
+    let attempts = [link, None];
+    let attempts = if attempts[0].is_some() {
+        &attempts[..]
+    } else {
+        &attempts[1..]
     };
-    while !listening(base) && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut refused = 0;
+    loop {
+        while !listening(base) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let mut last = None;
+        for attempt in attempts {
+            match open(attempt.clone()).await {
+                Ok(transport) => return Ok(transport),
+                Err(err) => last = Some(err),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(last.unwrap_or_else(|| SessionError::Zenoh("no answer in time".into())));
+        }
+        refused = if every_class_listening(base) {
+            refused + 1
+        } else {
+            0
+        };
+        if refused >= REFUSED_ROUNDS {
+            return Err(refused_link(base));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let gated = open(
-        Some(link),
-        deadline.min(tokio::time::Instant::now() + GATED_TRY),
-    )
-    .await;
-    if gated.is_ok() || !listening(base) {
-        return gated;
-    }
-    match open(
-        None,
-        deadline.min(tokio::time::Instant::now() + UNGATED_TRY),
-    )
-    .await
-    {
-        // Listening, yet neither link opened: the host gates its links
-        // with another key. Zenoh reports that as a connect timeout, the
-        // same as a host not up yet, so say it here.
-        Err(SessionError::Zenoh(_)) if listening(base) => Err(refused_link(base)),
-        other => other,
-    }
+}
+
+/// Whether the host at `base` listens on every class's port, so a link it
+/// refuses was refused by the host, not by a port not yet (or never) open.
+fn every_class_listening(base: SocketAddr) -> bool {
+    let base = joinable(base);
+    TrafficClass::ALL.into_iter().all(|class| {
+        class_port(base.port(), class).is_ok_and(|port| {
+            TcpStream::connect_timeout(&SocketAddr::new(base.ip(), port), LISTEN_PROBE).is_ok()
+        })
+    })
 }
 
 /// Hosts session `name` in this process on `base` (port 0: OS-assigned),
@@ -224,11 +261,13 @@ pub(super) async fn open_client(
 ///
 /// It listens on loopback only unless `insecure`,
 /// or a launcher passed its keys (a sandbox's container, whose published
-/// ports its launcher dials with them): LAN sessions are rlmeshd's. On
-/// loopback, and in a launched container, every link must present the
-/// password the key derives. Beyond loopback no link does:
-/// Zenoh gates every listener of a router or none, and a board's zenoh-pico
-/// has no `usrpwd`, so there the handshake alone admits, as on any LAN link.
+/// ports its launcher's participants dial with them, from this machine or
+/// another): LAN sessions are rlmeshd's. On loopback, and when launched on
+/// any interface, every link must present the password the key derives, so
+/// only holders of the keyed address link at all. An `insecure` host beyond
+/// loopback gates no link: Zenoh gates every listener of a router or none,
+/// and a board's zenoh-pico has no `usrpwd`, so there the handshake alone
+/// admits, as on any LAN link.
 pub async fn host_at(
     base: SocketAddr,
     name: &str,
@@ -675,7 +714,13 @@ mod tests {
             Some(CtlStatus::Unauthenticated),
             "{refused}"
         );
-        assert!(crate::address::link_auth(remote, Some(&hosted)).is_none());
+        // A key the address carries is presented on any network; without
+        // one, nothing stands in for it there.
+        assert_eq!(
+            crate::address::link_auth(remote, Some(&hosted)).map(|link| link.password),
+            Some(hosted.link_password())
+        );
+        assert!(crate::address::link_auth(remote, None).is_none());
         host.close().await.expect("close");
     }
 

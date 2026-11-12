@@ -244,6 +244,9 @@ pub struct TransportTuning {
     /// yet before it fails; `None` fails at once, as Zenoh clients do.
     /// Peers always keep dialing in the background.
     pub connect_timeout: Option<Duration>,
+    /// How long one link's open (its handshake, once the TCP connection is
+    /// up) may take before Zenoh gives up on it; `None` keeps Zenoh's 10 s.
+    pub open_timeout: Option<Duration>,
     /// The embedded host's link gate (Zenoh `usrpwd`).
     pub link: Option<LinkAuth>,
     /// A listening host's bound on the bytes each accepted TCP link holds
@@ -284,6 +287,7 @@ impl Default for TransportTuning {
             drop_wait: None,
             client: false,
             connect_timeout: None,
+            open_timeout: None,
             link: None,
             notsent_lowat: None,
         }
@@ -301,7 +305,7 @@ pub struct TransportConfig {
 
 /// The port offset of each class from a base port in
 /// [`TransportConfig::per_class_tcp`].
-fn class_port(base: u16, class: TrafficClass) -> Result<u16, SessionError> {
+pub(crate) fn class_port(base: u16, class: TrafficClass) -> Result<u16, SessionError> {
     base.checked_add(class.index() as u16).ok_or_else(|| {
         SessionError::Config(format!("base port {base} leaves no room for 4 classes"))
     })
@@ -403,6 +407,16 @@ pub fn zenoh_config(
             &mut config,
             "connect/retry",
             "{period_init_ms:100,period_max_ms:1000}".into(),
+        )?;
+    }
+    if let Some(timeout) = tuning.open_timeout {
+        let timeout_ms = u64::try_from(timeout.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        set(
+            &mut config,
+            "transport/unicast/open_timeout",
+            timeout_ms.to_string(),
         )?;
     }
     let lease_ms = u64::try_from(tuning.lease.as_millis())
@@ -737,6 +751,7 @@ mod tests {
             drop_wait: Some(Duration::from_micros(50)),
             client: false,
             connect_timeout: None,
+            open_timeout: Some(Duration::from_secs(25)),
             link: None,
             notsent_lowat: None,
         };
@@ -755,6 +770,7 @@ mod tests {
         assert!(get("connect/endpoints").contains("tcp/10.0.0.1:7447"));
         assert_eq!(get("scouting/multicast/enabled"), "false");
         assert_eq!(get("mode"), "\"peer\"");
+        assert_eq!(get("transport/unicast/open_timeout"), "25000");
 
         let client = TransportTuning {
             client: true,
