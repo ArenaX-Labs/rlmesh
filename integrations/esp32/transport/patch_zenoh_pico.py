@@ -12,6 +12,10 @@ every send and batch start take that (recursive) mutex too, and the failure
 path holds it from the close on. A send after the clear finds no transport
 and fails.
 
+A subscription or queryable lookup that fails to allocate its result
+reports success with no result, which the caller then dereferences: it now
+reports the failure, and the sample is dropped.
+
 Exits non-zero when the sources are not the zenoh-pico this patches.
 """
 
@@ -96,5 +100,18 @@ patch(
         ),
     ],
 )
+for relative, drop in (
+    ("src/session/subscription.c", "_z_subscription_rc_svec_rc_drop(sub_infos);"),
+    ("src/session/queryable.c", "_z_session_queryable_rc_svec_rc_drop(qle_infos);"),
+):
+    patch(
+        relative,
+        [
+            (
+                f"        {drop}\n    }}\n    return _Z_RES_OK;\n",
+                f"        {drop}\n    }}\n    return ret;\n",
+            )
+        ],
+    )
 for path, source in patched.items():
     path.write_text(source)
