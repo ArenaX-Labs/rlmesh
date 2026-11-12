@@ -350,6 +350,23 @@ async fn an_explicit_local_port_hosts_and_a_second_placement_joins_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keyed_local_address_joins_its_host_and_never_hosts_in_its_place() {
+    let grace = Duration::from_millis(250);
+    let mut first = place(&Address::session(":0").expect("parse"), grace)
+        .await
+        .expect("host");
+    let port = first.address.base.port();
+    let key = first.address.key.clone().expect("key");
+    first.close().await.expect("close");
+    // Nothing listens there now: a keyed address still only joins, so a
+    // driver dialing before its env is up leaves the port to that env.
+    let keyed = Address::session(&format!("127.0.0.1:{port}#{key}")).expect("parse");
+    let placed = place(&keyed, grace).await.expect("placed");
+    assert!(!placed.hosts());
+    assert!(!listening(placed.address.base));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_participant_of_a_host_in_this_process_rides_its_sessions() {
     // No loopback link between a process and itself: no lease a starved
     // process could let lapse, losing the host it runs.
