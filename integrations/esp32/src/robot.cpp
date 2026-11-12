@@ -304,13 +304,30 @@ bool Robot::datagramStats(rlmesh_device_datagram_stats_t& out) const {
 }
 
 void Robot::printDatagram(Print& out) const {
-  // The radio's power save: in it, a board's frames wait for the access
-  // point's next beacon (about 100 ms) whichever path they take.
+  // The radio, and whether the board's traffic waits on the access point's
+  // beacons (102.4 ms): in power save the board's frames do, whichever path
+  // they take; an access point that buffers for a station it takes to be
+  // asleep lines up what the board receives; a send path held up by the
+  // radio lines up the sends themselves (0: not at all, 1: every one).
   wifi_ps_type_t ps = WIFI_PS_NONE;
   if (esp_wifi_get_ps(&ps) == ESP_OK) {
-    out.printf("  wifi power save %s\n", ps == WIFI_PS_NONE        ? "off"
-                                         : ps == WIFI_PS_MIN_MODEM ? "on (min modem)"
-                                                                   : "on (max modem)");
+    out.printf("  wifi power save %s", ps == WIFI_PS_NONE        ? "off"
+                                       : ps == WIFI_PS_MIN_MODEM ? "on (min modem)"
+                                                                 : "on (max modem)");
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+      out.printf(", channel %u %s, rssi %d", ap.primary,
+                 ap.second == WIFI_SECOND_CHAN_NONE ? "HT20" : "HT40", ap.rssi);
+    }
+    wifi_config_t config;
+    if (esp_wifi_get_config(WIFI_IF_STA, &config) == ESP_OK) {
+      out.printf(", listen interval %u", config.sta.listen_interval);
+    }
+    float sends = 0, receives = 0;
+    uint32_t sent = 0, received = 0;
+    if (zenoh_ != nullptr) rlmesh_zenoh_beacon_lock(zenoh_, &sends, &sent, &receives, &received);
+    out.printf("; on the beacon: sends %.2f of %lu, receives %.2f of %lu\n", sends,
+               (unsigned long)sent, receives, (unsigned long)received);
   }
   rlmesh_device_datagram_stats_t d;
   if (!datagramStats(d)) {

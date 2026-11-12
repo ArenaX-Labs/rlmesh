@@ -105,7 +105,7 @@ The board tries its stored home addresses in order, authenticating the host
 by the key it was provisioned with. Four consecutive TCP ports from the
 host's base port must be reachable.
 
-### Wi-Fi power save and the tasks' core
+### Wi-Fi power save and the beacon
 
 In power save (ESP-IDF's modem sleep) a board's frames wait for the access
 point's next beacon, about 100 ms, whichever path they take: longer than a
@@ -117,7 +117,14 @@ ESP-IDF needs it on while Bluetooth runs beside Wi-Fi (the core releases
 Bluetooth unless the sketch uses it), and anything else that calls
 `esp_wifi_set_ps` turns it back on. The library changes no radio setting.
 
-`robot.printDatagram(Serial)` prints whether it is on.
+`robot.printDatagram(Serial)` starts with a line on the radio: power save on
+or off, the access point's channel and width, the signal, the station's
+listen interval, and how closely the board's sends (as each left its network
+task) and the messages it received lined up with the 102.4 ms beacon period
+since the last print (0 not at all, 1 every one; a few hundred unrelated
+times give about 0.05). Received messages that line up, with power save off,
+mean the access point holds frames for the station as if it slept; sends
+that line up mean the board's own send path waits on the radio.
 
 The transport's tasks (signature checks, sends, the datagram socket's reads)
 and zenoh-pico's run on whichever core the scheduler picks. A library built

@@ -1,6 +1,7 @@
 #include "rlmesh_zenoh.h"
 
 #include <errno.h>
+#include <math.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +64,33 @@ typedef struct {
   rlmesh_zenoh_t* z;
   uint32_t id;
 } query_t;
+
+/* The usual Wi-Fi beacon interval, 100 TU, in microseconds. */
+#define RLMESH_ZENOH_BEACON_US 102400u
+
+/* Adds a time to `p`. */
+static void phase_add(rlmesh_zenoh_phase_t* p, uint64_t at_us) {
+  float angle = (float)(at_us % RLMESH_ZENOH_BEACON_US) * (6.2831853f / RLMESH_ZENOH_BEACON_US);
+  p->c += cosf(angle);
+  p->s += sinf(angle);
+  p->n++;
+}
+
+/* How closely `p`'s times line up (0 to 1), and starts it anew. */
+static float phase_take(rlmesh_zenoh_phase_t* p, uint32_t* n) {
+  *n = p->n;
+  float lock = p->n > 0 ? sqrtf(p->c * p->c + p->s * p->s) / (float)p->n : 0.0f;
+  memset(p, 0, sizeof *p);
+  return lock;
+}
+
+void rlmesh_zenoh_beacon_lock(rlmesh_zenoh_t* z, float* sends, uint32_t* sent, float* receives,
+                              uint32_t* received) {
+  z_mutex_lock(z_loan_mut(z->lock));
+  *sends = phase_take(&z->sends, sent);
+  *receives = phase_take(&z->receives, received);
+  z_mutex_unlock(z_loan_mut(z->lock));
+}
 
 static void count_failed(rlmesh_zenoh_t* z) {
   z_mutex_lock(z_loan_mut(z->lock));
@@ -152,7 +180,10 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
   if (e == NULL) {
     z->failed++;
   } else {
-    if (kind == EV_SAMPLE) z->queued += size;
+    if (kind == EV_SAMPLE) {
+      z->queued += size;
+      phase_add(&z->receives, e->arrived_us);
+    }
     if (z->tail == NULL) {
       z->head = z->tail = e;
       if (z->wake != NULL) z->wake(z->wake_arg);
@@ -186,6 +217,7 @@ static void push_datagram(rlmesh_zenoh_t* z, const uint8_t* data, size_t len) {
   } else {
     z->views.dgram_received++;
     z->queued += size;
+    phase_add(&z->receives, e->arrived_us);
     if (z->tail == NULL) {
       z->head = z->tail = e;
       if (z->wake != NULL) z->wake(z->wake_arg);
@@ -519,7 +551,8 @@ static int send_one(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* t, bool express)
 /* Sends what waited, in order within each class. Several waiting on one
  * session go out as one batch, one write instead of a segment each: on a
  * slow link that is what lets the queue drain. */
-static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list, const char* host, uint16_t port) {
+static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list, const char* host, uint16_t port,
+                     rlmesh_zenoh_phase_t* sent) {
   for (uint8_t c = 0; c < RLMESH_DEVICE_CLASSES; ++c) {
     size_t n = 0;
     for (rlmesh_txq_item_t* t = list; t != NULL; t = t->next) n += t->class_ == c;
@@ -532,7 +565,12 @@ static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list, const char* hos
     }
     bool batch = n > 1 && zp_batch_start(s) == Z_OK;
     for (rlmesh_txq_item_t* t = list; t != NULL; t = t->next) {
-      if (t->class_ == c && send_one(z, t, !batch) != 0) count_failed(z);
+      if (t->class_ != c) continue;
+      if (send_one(z, t, !batch) != 0) {
+        count_failed(z);
+      } else {
+        phase_add(sent, z->now_us());
+      }
     }
     if (batch) zp_batch_stop(s);
   }
@@ -541,7 +579,8 @@ static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list, const char* hos
 /* Sends the datagrams that waited, without waiting on the socket: one it
  * can't take now is dropped. Refusals in a row tell the robot the path
  * failed. */
-static void send_datagrams(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* list) {
+static void send_datagrams(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* list,
+                           rlmesh_zenoh_phase_t* phases) {
   uint32_t sent = 0, unsent = 0;
   bool failed = false;
   z_mutex_lock(z_loan_mut(z->dgram_lock));
@@ -553,6 +592,7 @@ static void send_datagrams(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* list) {
     }
     ssize_t n = send(z->dgram_fd, t->data + t->key_len, t->len, MSG_DONTWAIT);
     if (n >= 0 && (size_t)n == t->len) {
+      phase_add(phases, z->now_us());
       sent++;
       z->dgram_refused = 0;
       continue;
@@ -626,6 +666,7 @@ static void* tx_task(void* arg) {
     }
     if (z->stopping) break;
     /* Everything waiting, at once. */
+    rlmesh_zenoh_phase_t sent = {0.0f, 0.0f, 0};
     op_t* ops = z->ops;
     z->ops = z->ops_tail = NULL;
     rlmesh_txq_item_t* list = rlmesh_txq_take(&z->txq);
@@ -639,9 +680,9 @@ static void* tx_task(void* arg) {
         if (t->class_ != RLMESH_ZENOH_DATAGRAM_CLASS) count_failed(z);
       }
     } else {
-      send_all(z, list, host, port);
+      send_all(z, list, host, port, &sent);
     }
-    send_datagrams(z, list);
+    send_datagrams(z, list, &sent);
     while (list != NULL) {
       rlmesh_txq_item_t* next = list->next;
       free(list);
@@ -649,6 +690,9 @@ static void* tx_task(void* arg) {
     }
     z_mutex_lock(z_loan_mut(z->lock));
     rlmesh_txq_sent(&z->txq);
+    z->sends.c += sent.c;
+    z->sends.s += sent.s;
+    z->sends.n += sent.n;
   }
   z_mutex_unlock(z_loan_mut(z->lock));
   return NULL;

@@ -140,6 +140,14 @@ typedef struct rlmesh_zenoh_view_stats_t {
   uint32_t superseded;
 } rlmesh_zenoh_view_stats_t;
 
+/* Times against the usual Wi-Fi beacon interval (102.4 ms): the sum of each
+ * one's phase on that period, and how many. */
+typedef struct rlmesh_zenoh_phase_t {
+  float c;
+  float s;
+  uint32_t n;
+} rlmesh_zenoh_phase_t;
+
 /* A subscription's callback context. */
 typedef struct rlmesh_zenoh_sub_t {
   struct rlmesh_zenoh_t* z;
@@ -180,6 +188,11 @@ typedef struct rlmesh_zenoh_t {
   rlmesh_device_checker_t* next_checker;
   bool stopping;
   rlmesh_zenoh_view_stats_t views;
+  /* When publications left the network task, and when messages arrived from
+   * the host (samples and datagrams), since rlmesh_zenoh_beacon_lock read
+   * them, under `lock`. */
+  rlmesh_zenoh_phase_t sends;
+  rlmesh_zenoh_phase_t receives;
   /* The robot takes sealed views: signed ones need no check. */
   bool skip_signed;
   /* Called (under `lock`) when an event is queued for the robot. */
@@ -237,6 +250,15 @@ void rlmesh_zenoh_view_stats(rlmesh_zenoh_t* z, rlmesh_zenoh_view_stats_t* out);
  * publications dropped from a full send queue, since the transport opened:
  * on a link slower than the robot publishes, a stream's rate drops here. */
 void rlmesh_zenoh_send_counts(rlmesh_zenoh_t* z, uint32_t* replaced, uint32_t* dropped);
+
+/* How closely this board's sends (as each left the network task) and the
+ * messages it received lined up with a 102.4 ms period, the usual Wi-Fi beacon
+ * interval, since the last call: 0 not at all, 1 every one at the same phase;
+ * and how many of each. The board's radio in power save, or an access point
+ * holding frames for a station it takes to be asleep, lines up what arrives;
+ * a send path that waits on the radio lines up the sends. */
+void rlmesh_zenoh_beacon_lock(rlmesh_zenoh_t* z, float* sends, uint32_t* sent, float* receives,
+                              uint32_t* received);
 
 /* Tasks zenoh-pico started and has not ended (each holds its stack until it
  * has): the transport's own and one per open session. */
