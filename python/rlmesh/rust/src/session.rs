@@ -1768,12 +1768,38 @@ impl PyController {
     }
 
     /// Gives the leases back; they are not re-requested until `acquire` or
-    /// `run`.
-    fn release(&self, py: Python<'_>) -> PyResult<()> {
+    /// `run`. With `to` (a class: `model`), hands them back to the policy
+    /// of that class they took the parts from, which resumes them, and
+    /// waits for it to hold them again: returns one dict per policy, with
+    /// `to`, `parts` (`robot:path`) and `taken`. Raises `SessionRefused`
+    /// when they cannot be handed back, with nothing released.
+    #[pyo3(signature = (to=None))]
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]] | None", imports = ("builtins", "typing")))]
+    fn release<'py>(
+        &self,
+        py: Python<'py>,
+        to: Option<&str>,
+    ) -> PyResult<Option<Bound<'py, PyList>>> {
         let controller = self.controller()?;
-        block_on(py, async move {
-            controller.release().await.map_err(session_err)
-        })
+        let Some(to) = to else {
+            block_on(py, async move {
+                controller.release().await.map_err(session_err)
+            })?;
+            return Ok(None);
+        };
+        let class = self::priority(to)?;
+        let backs = block_on(py, async move {
+            controller.release_to(class).await.map_err(session_err)
+        })?;
+        let list = PyList::empty(py);
+        for back in backs {
+            let d = PyDict::new(py);
+            d.set_item("to", back.to.as_str())?;
+            d.set_item("parts", back.parts)?;
+            d.set_item("taken", back.taken)?;
+            list.append(d)?;
+        }
+        Ok(Some(list))
     }
 
     /// Every robot held until re-armed by name, as dicts with `robot`,
@@ -1960,6 +1986,11 @@ impl PyController {
                 }
                 RunEvent::Parked { part, by, .. } => {
                     d.set_item("kind", "parked")?;
+                    d.set_item("part", part)?;
+                    d.set_item("by", by)?;
+                }
+                RunEvent::HandedBack { part, by, .. } => {
+                    d.set_item("kind", "handed_back")?;
                     d.set_item("part", part)?;
                     d.set_item("by", by)?;
                 }

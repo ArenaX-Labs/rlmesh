@@ -491,6 +491,49 @@ def test_a_model_set_to_resume_on_its_own_takes_the_arm_back_when_the_operator_l
         assert isinstance(result[0], dict)
 
 
+def test_an_operator_hands_the_arm_back_and_the_parked_model_resumes_it(
+    host: rlmesh.Host,
+) -> None:
+    def hold(target: float) -> Callable[[rlmesh.Observation], dict[str, Any]]:
+        return lambda obs: {"arm": np.full((10, 6), target, dtype=np.float32)}
+
+    with (
+        FakeUR10e(host) as ur,
+        rlmesh.Policy(HOLD, session=host, name="model") as model,
+        rlmesh.Policy(
+            HOLD, session=host, name="teleop", priority="operator"
+        ) as operator,
+    ):
+        model.bind("ur10e")
+        operator.bind("ur10e")
+        thread, result = in_thread(lambda: model.run(hold(0.25), duration=30.0))
+
+        def driving() -> bool:
+            return raised(result) or ur.driven(
+                lambda d: float(np.asarray(d.value)[0]) == 0.25
+            )
+
+        wait_until("the model driving", driving)
+        operator.acquire()
+        wait_until("the model parked", lambda: model.stats()["parked"] == ["ur10e:arm"])
+
+        assert operator.release(to="model") == [
+            {"to": "model", "parts": ["ur10e:arm"], "taken": True}
+        ]
+        wait_until("the model driving again, handed back", driving)
+        assert model.stats()["parked"] == []
+        events = [e for e in model.events() if e["kind"] == "handed_back"]
+        assert [(e["part"], e["by"]) for e in events] == [("ur10e:arm", "teleop")]
+        # Nothing held, nothing to hand back.
+        with pytest.raises(rlmesh.SessionRefused, match="holds no lease"):
+            operator.release(to="model")
+        with pytest.raises(ValueError, match="priority"):
+            operator.release(to="robot")
+        model.stop()
+        thread.join(WAIT)
+        assert isinstance(result[0], dict)
+
+
 def test_a_policy_whose_only_robot_closes_binds_again_when_it_returns(
     host: rlmesh.Host,
 ) -> None:

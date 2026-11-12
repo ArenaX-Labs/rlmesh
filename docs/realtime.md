@@ -197,13 +197,43 @@ thread.start()
 policy.resume()           # ["ur10e:arm"]: the model asks for it again
 ```
 
+Or the operator hands them back as it lets go, from its own process:
+
+```python
+operator.release(to="model")
+# [{"to": "model-1", "parts": ["ur10e:arm"], "taken": True}]
+```
+
+The model it took those parts from resumes them, and only them, as if its
+own `resume()` had been called; its `events()` say `handed_back` (with
+`part` and `by`), and `stats()["parked"]` drops them. A plain `release()`
+still leaves it parked, and so does an operator whose process dies. The call
+waits, up to the policy's `timeout`, for the model to hold the parts again
+(`taken`). Between the release and the model's first chunk the robot does
+what it does after any release, then after any new holder: a position part
+holds its last target and any other runs its safe behaviour, for at most the
+part's `hold_max` from when the operator's last action ran out, until the
+model's lease lands (the model asks for it as soon as it sees the release:
+one notice and one grant); from then the robot holds, untimed, until the
+model's first chunk. Past `hold_max` the part goes to its safe behaviour,
+unlatched, and the model's lease resumes it.
+
+A hand-back is refused (`SessionRefused`), and nothing is released, when a
+part was taken from nobody (no model is parked on it), when the robot is
+held (a hand-back never clears a hold), or when the model's process or the
+session host predates hand-backs (`INCOMPATIBLE`: they would read it as a
+plain release). It goes only to the policy the operator's lease preempted,
+never to another participant.
+
 Only a preemption parks: a lapsed heartbeat, a disarm and arm, a robot
 held and re-armed or restarting, or another policy of the same class
 holding the part first leave the model asking for it again on its own.
-For an unattended demo that should take the robot back the moment it is
-free, run with `resume=realtime.Resume.AUTO`. In Rust it is
-`controller.resume()` and `RunConfig::default().resume(Resume::Auto)`; in
-Node, `policy.resume()` and `{ resume: 'auto' }`.
+`resume=realtime.Resume.AUTO` takes the robot back the moment it is free,
+however the operator let go, its process dying too; prefer the default and
+a hand-back. In Rust it is `controller.resume()`,
+`controller.release_to(PriorityClass::Model)` and
+`RunConfig::default().resume(Resume::Auto)`; in Node, `policy.resume()` and
+`{ resume: 'auto' }`.
 
 ## 6. Watch it: the cockpit
 

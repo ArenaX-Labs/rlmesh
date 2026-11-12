@@ -6,10 +6,22 @@ use alloc::collections::BTreeSet;
 use super::{Authority, AuthorityEvent, ENDED, Grant};
 use crate::prelude::*;
 use crate::wire::authority::held_refusal;
+use crate::wire::version::LEASE_HANDBACK;
 use crate::wire::{
     ChannelId, CtlError, CtlStatus, Epoch, Lease, LeaseEnd, LeaseToken, Mode, ParticipantId,
     Reason, ReasonCode, Role,
 };
+
+/// What a lease took from a lower class: the holder whose lease (on
+/// `channel`, the part itself or a member of its command group) it
+/// preempted.
+#[derive(Clone, Debug)]
+pub(super) struct Taken {
+    /// The preempting lease's token.
+    pub(super) token: LeaseToken,
+    pub(super) holder: ParticipantId,
+    pub(super) channel: ChannelId,
+}
 
 impl Authority {
     pub(super) fn next_token(&mut self) -> LeaseToken {
@@ -218,6 +230,7 @@ impl Authority {
         }
 
         // Validated: mutate.
+        self.forget_taken();
         let ttl_ns = grant
             .ttl_ns
             .filter(|ttl| *ttl > 0)
@@ -259,6 +272,14 @@ impl Authority {
             let part = self.part_name(*channel);
             events.push(match self.leases.insert(*channel, lease.clone()) {
                 Some(previous) => {
+                    self.taken.insert(
+                        *channel,
+                        Taken {
+                            token: lease.token,
+                            holder: previous.holder.clone(),
+                            channel: previous.channel,
+                        },
+                    );
                     let why = self.reason(ReasonCode::Preempted, from, "");
                     self.record_end(&previous, why, Some(&lease));
                     AuthorityEvent::LeasePreempted {
@@ -279,6 +300,14 @@ impl Authority {
             if let (Some(previous), Some(by)) =
                 (self.leases.remove(&peer), self.leases.get(&by).cloned())
             {
+                self.taken.insert(
+                    by.channel,
+                    Taken {
+                        token: by.token,
+                        holder: previous.holder.clone(),
+                        channel: peer,
+                    },
+                );
                 let why = self.reason(ReasonCode::Preempted, from, "");
                 self.record_end(&previous, why, Some(&by));
                 let (part, by_part) = (self.part_name(peer), self.part_name(by.channel));
@@ -302,6 +331,7 @@ impl Authority {
         from: &ParticipantId,
         channels: &[ChannelId],
         token: LeaseToken,
+        to: Option<&ParticipantId>,
         events: &mut Vec<AuthorityEvent>,
     ) -> Result<(), CtlError> {
         if channels.is_empty() {
@@ -339,18 +369,136 @@ impl Authority {
                 }
             }
         }
+        if let Some(to) = to {
+            self.check_hand_back(channels, token, to)?;
+        }
+        let detail = to
+            .map(|to| format!("handed back to {to}"))
+            .unwrap_or_default();
         for channel in channels {
             if let Some(lease) = self.leases.remove(channel) {
-                let why = self.reason(ReasonCode::Released, from, "");
-                self.end(lease, why, events);
+                let why = self.reason(ReasonCode::Released, from, &detail);
+                self.record_end_to(&lease, why.clone(), None, to.cloned());
+                let part = self.part_name(lease.channel);
+                events.push(AuthorityEvent::LeaseEnded {
+                    lease,
+                    part,
+                    reason: why,
+                });
             }
         }
+        self.forget_taken();
         self.settle_after_release(from, "last lease released", events);
         Ok(())
     }
 
+    /// Whether the leases on `channels`, under `token` (the caller's, already
+    /// checked), may be handed back to `to`: each took its part from `to`,
+    /// which still binds what it lost and resumes a part handed back to it,
+    /// and no robot of theirs is held (a hand-back never clears a hold).
+    fn check_hand_back(
+        &self,
+        channels: &[ChannelId],
+        token: LeaseToken,
+        to: &ParticipantId,
+    ) -> Result<(), CtlError> {
+        let refuse = |status, why: String| {
+            let parts: Vec<String> = channels.iter().map(|c| self.part_name(*c)).collect();
+            Err(CtlError::new(
+                status,
+                format!("cannot hand {} back to {to}: {why}", parts.join(", ")),
+            ))
+        };
+        let mut lost = Vec::with_capacity(channels.len());
+        for channel in channels {
+            match self.taken.get(channel).filter(|t| t.token == token) {
+                Some(taken) if &taken.holder == to => lost.push(taken.channel),
+                Some(taken) => {
+                    return refuse(
+                        CtlStatus::InvalidRequest,
+                        format!(
+                            "this lease took it from {}, and only that policy is parked on it",
+                            taken.holder
+                        ),
+                    );
+                }
+                None => {
+                    return refuse(
+                        CtlStatus::InvalidRequest,
+                        "this lease took it from nobody, so no policy is parked on it to hand \
+                         back to"
+                            .into(),
+                    );
+                }
+            }
+        }
+        let Some(target) = self.roster.get(to).filter(|p| p.present) else {
+            return refuse(CtlStatus::NotPresent, "it is not attached".into());
+        };
+        if !target.supports.iter().any(|f| f == LEASE_HANDBACK) {
+            return refuse(
+                CtlStatus::Incompatible,
+                format!(
+                    "it does not support {LEASE_HANDBACK} and would stay parked; release \
+                     plainly and call resume() in its process"
+                ),
+            );
+        }
+        if let Some(gone) = lost.iter().find(|c| {
+            self.bindings
+                .get(to)
+                .is_none_or(|b| !b.channels.contains(c))
+        }) {
+            return refuse(
+                CtlStatus::InvalidRequest,
+                format!("it no longer binds {}", self.part_name(*gone)),
+            );
+        }
+        for channel in channels {
+            if let Some(robot) = self.parts.get(channel).map(|p| &p.owner)
+                && let Some(why) = self.held.get(robot)
+            {
+                return refuse(
+                    CtlStatus::NotReady,
+                    format!(
+                        "{}; a hand-back never clears that",
+                        held_refusal(robot, why, self.scene_run())
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops what the leases no longer held under the same token took.
+    fn forget_taken(&mut self) {
+        let leases = &self.leases;
+        self.taken
+            .retain(|channel, t| leases.get(channel).is_some_and(|l| l.token == t.token));
+    }
+
+    /// A lease's rebinding re-issued it under `token`: it keeps what it took.
+    pub(super) fn retoken_taken(&mut self, channel: ChannelId, from: LeaseToken, to: LeaseToken) {
+        if let Some(taken) = self.taken.get_mut(&channel)
+            && taken.token == from
+        {
+            taken.token = to;
+        }
+    }
+
     /// Keeps a lease ending in the snapshot's ring.
     pub(super) fn record_end(&mut self, lease: &Lease, reason: Reason, by: Option<&Lease>) {
+        self.record_end_to(lease, reason, by, None);
+    }
+
+    /// Keeps a lease ending, handed back `to` a participant when it was.
+    fn record_end_to(
+        &mut self,
+        lease: &Lease,
+        reason: Reason,
+        by: Option<&Lease>,
+        to: Option<ParticipantId>,
+    ) {
         if self.ended.len() == ENDED {
             self.ended.pop_front();
         }
@@ -358,6 +506,7 @@ impl Authority {
             lease: lease.clone(),
             reason,
             by: by.cloned(),
+            to,
         });
     }
 

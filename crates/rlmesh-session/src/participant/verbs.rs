@@ -387,7 +387,11 @@ impl Participant {
     ) -> Result<AuthoritySnapshot, SessionError> {
         Ok(self
             .shared
-            .ctl(Command::ReleaseLease { channels, token })
+            .ctl(Command::ReleaseLease {
+                channels,
+                token,
+                to: None,
+            })
             .await?
             .0)
     }

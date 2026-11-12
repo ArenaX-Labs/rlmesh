@@ -4325,7 +4325,7 @@
           },
           "release": {
             "kind": "function",
-            "signature": "release() -> None"
+            "signature": "release(*, to: str | None = None) -> list[dict[str, Any]] | None"
           },
           "resume": {
             "kind": "function",

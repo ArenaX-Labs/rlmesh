@@ -759,11 +759,13 @@ class Resume(enum.Enum):
     """
 
     #: The part stays parked: the policy does not take it back when the
-    #: holder releases it, detaches or dies, until :meth:`Policy.resume`.
-    #: The robot's part goes to its safe behaviour meanwhile. The default.
+    #: holder releases it, detaches or dies, until :meth:`Policy.resume`,
+    #: or until the holder hands it back (``release(to="model")``). The
+    #: robot's part goes to its safe behaviour meanwhile. The default.
     MANUAL = "manual"
-    #: The part is asked for again as soon as it is free (an unattended
-    #: demo): the robot moves again the moment its holder lets go.
+    #: The part is asked for again as soon as it is free: the robot moves
+    #: again the moment its holder lets go, however it lets go (its
+    #: process dying too). Prefer the default and an explicit hand-back.
     AUTO = "auto"
 
 
@@ -972,9 +974,35 @@ class Policy:
         """
         return dict(self._bound().acquire())
 
-    def release(self) -> None:
-        """Give the leases back; they are not re-requested until acquire() or run()."""
-        self._bound().release()
+    def release(self, *, to: str | None = None) -> list[dict[str, Any]] | None:
+        """Give the leases back; they are not re-requested until acquire() or run().
+
+        ``to="model"`` hands them back to the model this policy took the
+        parts from (an operator letting go of a robot it took over by
+        :meth:`acquire`): that policy resumes those parts, and only those,
+        as if its own :meth:`resume` had been called, and reports a
+        ``handed_back`` event. A plain release leaves it parked. The hand-back
+        waits, up to the policy's ``timeout``, for the model to hold the parts
+        again, and returns one dict per policy handed back to: ``to`` (its
+        name), ``parts`` (``robot:path``) and ``taken`` (whether it held them
+        again in time).
+
+        Between the release and the model's first chunk the robot does what it
+        does after any release: a position part holds its last target, any
+        other runs its safe behaviour, for at most the part's ``hold_max``;
+        the model's new lease then holds it, untimed, until its first chunk.
+
+        Raises :class:`SessionRefused`, releasing nothing, when a part was taken
+        from nobody (no model is parked on it) or from another class, when
+        its robot is held (a hand-back never clears a hold), when the model's
+        process or the session host is too old to resume on a hand-back
+        (``status`` ``INCOMPATIBLE``), or when this policy holds nothing.
+        """
+        native = self._bound()
+        if to is None:
+            native.release()
+            return None
+        return native.release(to)
 
     @property
     def holds(self) -> bool:
@@ -1003,7 +1031,8 @@ class Policy:
         it or their process dies; the robot's part goes to its safe
         behaviour. A ``parked`` event names the part and who took it, starts
         are skipped as ``parked``, and :meth:`stats` lists it under
-        ``parked``, until :meth:`resume` (from any thread) hands it back.
+        ``parked``, until :meth:`resume` (from any thread) or the operator's
+        ``release(to="model")`` hands it back (a ``handed_back`` event).
         ``resume=Resume.AUTO`` takes it back as soon as it is free. If
         ``predict`` raises, the policy stops sending, releases its leases
         (the robot holds, then goes safe) and the exception propagates.
@@ -1117,7 +1146,8 @@ class Policy:
         (the session not armed), or is ``None``. ``shadow_predictions``
         counts the starts a shadow run predicted without a lease; they are
         not ``no_lease`` skips. ``parked`` lists the parts a higher class
-        took, ``robot:path``, kept from the policy until :meth:`resume`.
+        took, ``robot:path``, kept from the policy until :meth:`resume` or a
+        hand-back.
         """
         return self._bound().stats()
 
@@ -1127,7 +1157,7 @@ class Policy:
         return self._bound().held
 
     def events(self) -> list[dict[str, Any]]:
-        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``, ``shadowing``, ``commanding``, ``input_lost`` (with ``part``), ``rebound`` (with ``parts``), ``parked`` (with ``part`` and ``by``)."""
+        """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``, ``shadowing``, ``commanding``, ``input_lost`` (with ``part``), ``rebound`` (with ``parts``), ``parked`` and ``handed_back`` (with ``part`` and ``by``)."""
         return self._bound().events()
 
     def close(self) -> None:

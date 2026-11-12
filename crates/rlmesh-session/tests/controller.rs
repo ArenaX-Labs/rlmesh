@@ -11,13 +11,14 @@ use rlmesh_session::edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::wire::version::LEASE_HANDBACK;
 use rlmesh_session::wire::{
-    DType, LeaseToken, Mode, PriorityClass, ReasonCode, Role, SessionId, TenantId,
+    CtlStatus, DType, LeaseToken, Mode, PriorityClass, ReasonCode, Role, SessionId, TenantId,
 };
 use rlmesh_session::{
-    AuthorityEvent, Controller, ControllerConfig, HostConfig, Observation, Parked, Participant,
-    ParticipantConfig, Predictor, RunConfig, RunError, RunEvent, SessionHost, SkipReason,
-    SystemMonotonicClock, Transport, TransportConfig,
+    AuthorityEvent, Controller, ControllerConfig, HandBack, HostConfig, Observation, Parked,
+    Participant, ParticipantConfig, Predictor, RunConfig, RunError, RunEvent, SessionError,
+    SessionHost, SkipReason, SystemMonotonicClock, Transport, TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -80,6 +81,16 @@ impl World {
     }
 
     async fn join(&self, id: &str, role: Role, priority: PriorityClass) -> Participant {
+        self.join_with(id, role, priority, |_| {}).await
+    }
+
+    async fn join_with(
+        &self,
+        id: &str,
+        role: Role,
+        priority: PriorityClass,
+        configure: impl FnOnce(&mut ParticipantConfig),
+    ) -> Participant {
         let transport = Transport::open(
             &TransportConfig::per_class_tcp(
                 Some("127.0.0.1:0".parse().expect("addr")),
@@ -99,6 +110,7 @@ impl World {
         config.clock = SystemMonotonicClock.shared();
         config.heartbeat_period = Duration::from_millis(20);
         config.credential = Some(self.host.credential());
+        configure(&mut config);
         Participant::attach(transport, config)
             .await
             .expect("attach")
@@ -116,7 +128,18 @@ impl World {
     }
 
     async fn controller(&self, id: &str, priority: PriorityClass) -> Arc<Controller> {
-        let p = self.join(id, Role::Controller, priority).await;
+        self.controller_with(id, priority, |_| {}).await
+    }
+
+    async fn controller_with(
+        &self,
+        id: &str,
+        priority: PriorityClass,
+        configure: impl FnOnce(&mut ParticipantConfig),
+    ) -> Arc<Controller> {
+        let p = self
+            .join_with(id, Role::Controller, priority, configure)
+            .await;
         let options = RunOptions::named(id).robot("ur10e").expect("robot");
         let controller = Controller::bind(
             Arc::new(p),
@@ -1461,4 +1484,287 @@ async fn a_policy_reading_its_own_part_is_refused_at_once() {
         text.contains(r#"input "aim" (at "tracker:aim") names tracker, this policy itself"#),
         "{text}"
     );
+}
+
+/// An eye whose hold outlasts a hand-back on a loaded machine.
+const EYE_HOLDING: &str = r#"{
+    "eyes": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"], "hz": 500,
+             "command": "position", "safe": "hold", "hold_max_ms": 500}
+}"#;
+
+/// Eye 2 alone, for a second operator.
+const EYE_TWO: &str = r#"{
+    "hz": 50,
+    "actions": {
+        "two": {"kind": "joints", "at": "eye-2:eyes", "command": "position", "hz": 100,
+                "chunk": 5}
+    }
+}"#;
+
+/// Streams `target` to action `entry` from `controller` until the flag
+/// drops.
+fn stream(
+    controller: &Arc<Controller>,
+    entry: &'static str,
+    target: f64,
+) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let (controller, on) = (controller.clone(), Arc::new(AtomicBool::new(true)));
+    let flag = on.clone();
+    let handle = std::thread::spawn(move || {
+        while flag.load(Ordering::Relaxed) {
+            if let Ok((observation, at)) = controller.observe() {
+                let value = Value::Tensor(Tensor::from_f64(DType::F32, vec![5, 2], &[target; 10]));
+                controller
+                    .send(&[(entry.into(), value)], &observation.meta.based_on, at)
+                    .expect("send");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    (on, handle)
+}
+
+/// Two operators take one eye each from the policy driving both. The first
+/// hands its eye back: the policy resumes that eye alone (a `HandedBack`
+/// event), and between the release and its first chunk the eye only holds
+/// the operator's last target, as on any change of holder, never going
+/// safe. The second lets go plainly: its eye stays parked.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operator_hands_back_the_eye_it_took_and_only_that_eye_resumes() {
+    let world = World::start_with(|config| config.rearm_robots = true).await;
+    let eye = |name: &'static str| {
+        let world = &world;
+        async move {
+            let p = world
+                .join(name, Role::Embodiment, PriorityClass::Scripted)
+                .await;
+            Arc::new(
+                Robot::declare(p, EYE_HOLDING, EdgeConfig::default())
+                    .await
+                    .expect("declare"),
+            )
+        }
+    };
+    let (one, two) = (eye("eye-1").await, eye("eye-2").await);
+    one.participant().arm().await.expect("arm");
+    let bind = |name: &'static str, policy: &'static str, priority| {
+        let world = &world;
+        async move {
+            let p = world.join(name, Role::Controller, priority).await;
+            Arc::new(
+                Controller::bind(
+                    Arc::new(p),
+                    &Policy::parse(policy).expect("policy"),
+                    &RunOptions::named(name),
+                    ControllerConfig::default(),
+                )
+                .await
+                .expect("bind"),
+            )
+        }
+    };
+    let tracker = bind("tracker", EYES, PriorityClass::Model).await;
+    let first = bind("operator-1", EYE_ONE, PriorityClass::Operator).await;
+    let second = bind("operator-2", EYE_TWO, PriorityClass::Operator).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let (log_one, log_two): (Log, Log) = (Arc::default(), Arc::default());
+    let loops = [
+        spin_eye(one.clone(), stop.clone(), log_one.clone()),
+        spin_eye(two.clone(), stop.clone(), log_two.clone()),
+    ];
+    let run = {
+        let tracker = tracker.clone();
+        std::thread::spawn(move || {
+            tracker.run(
+                &mut Gaze { target: 0.25 },
+                RunConfig::default().duration(Duration::from_secs(60)),
+            )
+        })
+    };
+    let started = Instant::now();
+    wait_until("both eyes driven", || {
+        driven_since(&log_one, 0.25, started) && driven_since(&log_two, 0.25, started)
+    })
+    .await;
+
+    first.acquire().await.expect("operator 1 takes eye 1");
+    second.acquire().await.expect("operator 2 takes eye 2");
+    let (streaming, streamer) = stream(&first, "one", 0.75);
+    let taken = Instant::now();
+    wait_until("operator 1 driving eye 1", || {
+        driven_since(&log_one, 0.75, taken)
+    })
+    .await;
+    wait_until("both eyes parked", || tracker.parked().len() == 2).await;
+
+    streaming.store(false, Ordering::Relaxed);
+    streamer.join().expect("operator 1 thread");
+    let released = Instant::now();
+    let backs = first
+        .release_to(PriorityClass::Model)
+        .await
+        .expect("handed back");
+    assert_eq!(
+        backs,
+        [HandBack {
+            to: tracker.participant().id().clone(),
+            parts: vec!["eye-1:eyes".into()],
+            taken: true,
+        }]
+    );
+    wait_until("the tracker driving eye 1 again", || {
+        driven_since(&log_one, 0.25, released)
+    })
+    .await;
+    // From the release to the tracker's first action, eye 1 only held
+    // operator 1's last target (its queue's tail until the edge saw the
+    // release): no safe behaviour, no gap in dispatch.
+    let since: Vec<_> = log_one
+        .lock()
+        .expect("log")
+        .iter()
+        .filter(|(at, ..)| *at >= released)
+        .cloned()
+        .collect();
+    let first_action = since
+        .iter()
+        .position(|(_, mode, value, _)| *mode == EdgeMode::Driving && *value == Some(0.25))
+        .expect("the tracker's first action");
+    let gap = since[first_action].0 - released;
+    assert!(
+        since[..first_action]
+            .iter()
+            .all(
+                |(_, mode, value, _)| matches!(mode, EdgeMode::Driving | EdgeMode::Hold)
+                    && *value == Some(0.75)
+            ),
+        "eye 1 between the release and the tracker's first action ({gap:?}): {:?}",
+        since[..first_action]
+            .iter()
+            .map(|(_, mode, value, _)| (*mode, *value))
+            .collect::<Vec<_>>()
+    );
+    assert!(gap < Duration::from_millis(500), "within hold_max: {gap:?}");
+    let tracker_lease = tracker
+        .leases()
+        .into_iter()
+        .find(|l| world.host.snapshot().part_name(l.channel) == "eye-1:eyes")
+        .expect("the tracker holds eye 1");
+    assert_eq!(since[first_action].3, Some(tracker_lease.token));
+
+    let parked: Vec<(String, String)> = tracker
+        .parked()
+        .into_iter()
+        .map(|p| (p.part, p.by.to_string()))
+        .collect();
+    assert_eq!(parked, [("eye-2:eyes".into(), "operator-2".into())]);
+    let handed: Vec<(String, String)> = tracker
+        .drain_events()
+        .into_iter()
+        .filter_map(|e| match e {
+            RunEvent::HandedBack { part, by, .. } => Some((part, by)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(handed, [("eye-1:eyes".into(), "operator-1".into())]);
+
+    // A plain release leaves eye 2 parked: it goes safe, unleased.
+    second.release().await.expect("plain release");
+    wait_until("eye 2 safe", || edge_mode(&log_two) == Some(EdgeMode::Safe)).await;
+    let sent = tracker.stats().chunks_sent;
+    wait_until("eye 1 still commanded", || {
+        tracker.stats().chunks_sent >= sent + 10
+    })
+    .await;
+    assert_eq!(tracker.parked().len(), 1, "eye 2 stays parked");
+    assert_eq!(edge_mode(&log_two), Some(EdgeMode::Safe));
+    assert_eq!(tracker.leases().len(), 1, "only eye 1 is the tracker's");
+
+    tracker.stop();
+    run.join().expect("run thread").expect("a clean stop");
+    stop.store(true, Ordering::Relaxed);
+    for spin in loops {
+        spin.join().expect("eye loop");
+    }
+}
+
+/// A hand-back that cannot take is refused before anything is released,
+/// and the operator keeps the arm: a model process too old to resume on
+/// one, a part taken from nobody, nothing held, and a host too old to read
+/// one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hand_back_that_cannot_take_is_refused_and_the_operator_keeps_the_arm() {
+    let refusal = |result: Result<Vec<HandBack>, SessionError>| match result {
+        Err(SessionError::Rejected(err)) => (err.status, err.message),
+        other => panic!("not refused: {other:?}"),
+    };
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let (stop, log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
+    // A model built before hand-backs: it would stay parked.
+    let model = world
+        .controller_with("model", PriorityClass::Model, |c| c.supports.clear())
+        .await;
+    let operator = world.controller("operator", PriorityClass::Operator).await;
+    let run = run_in_thread(&model, 1.0);
+    wait_until("the model driving", || driven_to(&log, 1.0)).await;
+    operator.acquire().await.expect("operator preempts");
+    wait_until("the model parked", || !model.parked().is_empty()).await;
+    assert_eq!(
+        refusal(operator.release_to(PriorityClass::Model).await),
+        (
+            CtlStatus::Incompatible,
+            "cannot hand ur10e:arm back to model: it does not support lease.handback and would \
+             stay parked; release plainly and call resume() in its process"
+                .into()
+        )
+    );
+    assert!(operator.holds(), "nothing released");
+    assert_eq!(model.parked().len(), 1);
+
+    // Taken again while nobody held it: nothing is parked on it by this one.
+    operator.release().await.expect("release");
+    operator.acquire().await.expect("free part");
+    let (status, message) = refusal(operator.release_to(PriorityClass::Model).await);
+    assert_eq!(status, CtlStatus::InvalidRequest);
+    assert!(
+        message.ends_with("took it from nobody, so none is parked on it"),
+        "{message}"
+    );
+    assert!(operator.holds());
+    operator.release().await.expect("release");
+    assert_eq!(
+        refusal(operator.release_to(PriorityClass::Model).await).1,
+        "operator holds no lease to hand back"
+    );
+    model.stop();
+    run.join().expect("run thread").0.expect("clean stop");
+
+    // A host that would read a hand-back as a plain release is not sent one.
+    let old = World::start_with(|config| {
+        config.supports.retain(|f| f != LEASE_HANDBACK);
+    })
+    .await;
+    let robot = old.robot().await;
+    let (old_stop, old_log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let old_loop = spin(robot.clone(), old_stop.clone(), old_log.clone());
+    let model = old.controller("model", PriorityClass::Model).await;
+    let operator = old.controller("operator", PriorityClass::Operator).await;
+    let run = run_in_thread(&model, 1.0);
+    wait_until("the model driving", || driven_to(&old_log, 1.0)).await;
+    operator.acquire().await.expect("operator preempts");
+    let (status, message) = refusal(operator.release_to(PriorityClass::Model).await);
+    assert_eq!(status, CtlStatus::Incompatible);
+    assert!(
+        message.starts_with("the session host does not support lease.handback"),
+        "{message}"
+    );
+    assert!(operator.holds());
+    model.stop();
+    run.join().expect("run thread").0.expect("clean stop");
+    for (stop, robot_loop) in [(stop, robot_loop), (old_stop, old_loop)] {
+        stop.store(true, Ordering::Relaxed);
+        robot_loop.join().expect("robot loop");
+    }
 }

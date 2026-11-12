@@ -2,6 +2,7 @@
 
 mod barrier;
 mod demand;
+mod handback;
 mod leases;
 mod mode;
 mod parts;
@@ -159,6 +160,7 @@ impl Fixture {
             Command::ReleaseLease {
                 channels: vec![lease.channel],
                 token: lease.token,
+                to: None,
             },
             now,
         )

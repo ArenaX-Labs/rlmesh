@@ -862,10 +862,14 @@ class V2Controller:
         `SessionRefused` (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) when
         they cannot be granted.
         """
-    def release(self) -> None:
+    def release(self, to: typing.Optional[builtins.str] = None) -> builtins.list[builtins.dict[builtins.str, typing.Any]] | None:
         r"""
         Gives the leases back; they are not re-requested until `acquire` or
-        `run`.
+        `run`. With `to` (a class: `model`), hands them back to the policy
+        of that class they took the parts from, which resumes them, and
+        waits for it to hold them again: returns one dict per policy, with
+        `to`, `parts` (`robot:path`) and `taken`. Raises `SessionRefused`
+        when they cannot be handed back, with nothing released.
         """
     def holds(self) -> builtins.bool:
         r"""

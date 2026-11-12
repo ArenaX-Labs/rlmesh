@@ -412,9 +412,11 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
         Command::ReleaseLease {
             channels: release,
             token,
+            to,
         } => Verb::ReleaseLease(pb::ReleaseLease {
             channels: channels(release),
             token: token.0,
+            to: to.as_ref().map(ToString::to_string).unwrap_or_default(),
         }),
         Command::Estop {
             reason,
@@ -531,6 +533,9 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
         Verb::ReleaseLease(rl) => Command::ReleaseLease {
             channels: ids(rl.channels),
             token: LeaseToken(rl.token),
+            to: (!rl.to.is_empty())
+                .then(|| ParticipantId::new(rl.to))
+                .transpose()?,
         },
         Verb::Estop(e) => Command::Estop {
             reason: e.reason,

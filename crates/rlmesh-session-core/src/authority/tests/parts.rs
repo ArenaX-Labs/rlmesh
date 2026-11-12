@@ -84,6 +84,7 @@ fn the_host_assigns_part_ids_and_never_reuses_them() {
         Command::ReleaseLease {
             channels: vec![lease.channel],
             token: lease.token,
+            to: None,
         },
         4,
     )

@@ -53,16 +53,27 @@ pub const LINK_DATAGRAM: &str = "link.datagram";
 /// by robot there would read the wrong paths.
 pub const SCENE_PLACES: &str = "scene.places";
 
+/// A hand-back: a release that names the participant its lease preempted
+/// (`ReleaseLease.to`), which takes the parts again
+/// (`LeaseEnd.to`). A host listing it checks the hand-back and records
+/// it on the lease's end; one that does not would read a plain release, so
+/// a holder asks only a host that lists it. A participant's
+/// `Attach.supports` says it resumes a part handed back to it; the host
+/// refuses a hand-back to one that does not list it, which would stay
+/// parked.
+pub const LEASE_HANDBACK: &str = "lease.handback";
+
 /// Features this build implements as a host: behaviour added in later
 /// minors. `auth.sealed`: participants attach through the handshake and
 /// seal their control traffic; [`VIEW_DEVICE`]; [`VIEW_DEVICE_SEALED`];
-/// [`VIEW_DEVICE_LEAN`]; [`SCENE_PLACES`].
+/// [`VIEW_DEVICE_LEAN`]; [`SCENE_PLACES`]; [`LEASE_HANDBACK`].
 pub const FEATURES: &[&str] = &[
     "auth.sealed",
     VIEW_DEVICE,
     VIEW_DEVICE_SEALED,
     VIEW_DEVICE_LEAN,
     SCENE_PLACES,
+    LEASE_HANDBACK,
 ];
 
 /// The features in `required` that `supported` lacks (empty: compatible).
@@ -93,7 +104,8 @@ mod tests {
                 "view.device",
                 "view.device.sealed",
                 "view.device.lean",
-                "scene.places"
+                "scene.places",
+                "lease.handback"
             ]
         );
     }

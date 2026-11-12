@@ -23,6 +23,12 @@ security fixes) until you can move both sides. Names that 0.1 exported and
   plays the commands its edge says are due; a `Policy` declares what it
   needs by kind and path, binds to the robots that have it and sends short
   timed action chunks. See [real-time sessions](docs/realtime.md).
+- A model an operator preempts stays parked when the operator lets go,
+  until `policy.resume()`; the operator can hand the parts back explicitly
+  with `policy.release(to="model")` (Rust `Controller::release_to`), which
+  resumes that model on those parts only (a `handed_back` event). A
+  hand-back to a model process, or through a host, without the
+  `lease.handback` feature is refused, never taken as a plain release.
 - `rlmesh host` runs a session: it admits devices by key, grants leases,
   holds the arm/disarm/e-stop state and records every session as MCAP
   (a rolling window, plus kept incidents), which

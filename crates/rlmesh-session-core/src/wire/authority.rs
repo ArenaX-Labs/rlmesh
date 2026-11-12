@@ -247,6 +247,10 @@ pub struct LeaseEnd {
     pub reason: Reason,
     /// The lease that preempted or re-issued it.
     pub by: Option<Lease>,
+    /// A release that handed the parts back
+    /// ([`LEASE_HANDBACK`](crate::wire::version::LEASE_HANDBACK)): the
+    /// participant the lease had preempted, who takes them again.
+    pub to: Option<ParticipantId>,
 }
 
 /// The host's last entry into SAFE, DISARMED or ESTOP. Never lowered: a
@@ -762,6 +766,10 @@ pub enum Command {
         channels: Vec<ChannelId>,
         /// The token held on each.
         token: LeaseToken,
+        /// Hands them back to the participant this lease preempted
+        /// ([`LEASE_HANDBACK`](crate::wire::version::LEASE_HANDBACK));
+        /// `None`: a plain release.
+        to: Option<ParticipantId>,
     },
     /// Emergency stop: accepted from anyone.
     Estop {

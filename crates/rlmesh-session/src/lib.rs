@@ -118,8 +118,8 @@ pub use cache::{
 pub use chunk::{ChunkDraft, ChunkPublisher};
 pub use clock::{Clock, MonotonicClock, OffsetEstimate, SystemMonotonicClock};
 pub use controller::{
-    Controller, ControllerConfig, ControllerError, Parked, Predictor, Resume, RunConfig, RunError,
-    RunMode, SendError, Sent, Step, StepAction,
+    Controller, ControllerConfig, ControllerError, HandBack, Parked, Predictor, Resume, RunConfig,
+    RunError, RunMode, SendError, Sent, Step, StepAction,
 };
 pub use error::SessionError;
 pub use host::{HistoryConfig, HostConfig, KeepRecording, SessionHost};

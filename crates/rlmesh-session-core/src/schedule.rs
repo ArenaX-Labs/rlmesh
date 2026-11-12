@@ -190,6 +190,16 @@ pub enum RunEvent {
         /// What happened, and the call that resumes it.
         message: String,
     },
+    /// The holder that took a parked part released it back to the controller
+    /// (a hand-back): it is asked for again, as after a resume.
+    HandedBack {
+        /// The part, `robot:path`.
+        part: String,
+        /// Who handed it back.
+        by: String,
+        /// What happened.
+        message: String,
+    },
     /// The controller bound again against the session's current parts: an
     /// input's publisher came back or restarted, or a blank input's
     /// publisher appeared.
@@ -231,6 +241,7 @@ impl fmt::Display for RunEvent {
             | Self::Commanding { message }
             | Self::InputLost { message, .. }
             | Self::Parked { message, .. }
+            | Self::HandedBack { message, .. }
             | Self::Rebound { message, .. } => f.write_str(message),
         }
     }
@@ -731,6 +742,7 @@ mod tests {
                 | RunEvent::Commanding { .. }
                 | RunEvent::InputLost { .. }
                 | RunEvent::Parked { .. }
+                | RunEvent::HandedBack { .. }
                 | RunEvent::Rebound { .. } => (false, "other"),
             })
             .collect();

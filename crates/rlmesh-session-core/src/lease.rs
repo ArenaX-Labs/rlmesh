@@ -471,6 +471,7 @@ impl LeaseClient {
         Some(Command::ReleaseLease {
             channels: vec![self.channel],
             token,
+            to: None,
         })
     }
 
@@ -651,7 +652,10 @@ impl LeaseGroup {
     pub fn release(&mut self) -> Vec<Command> {
         let mut by_token: Vec<(LeaseToken, Vec<ChannelId>)> = Vec::new();
         for client in &mut self.clients {
-            let Some(Command::ReleaseLease { channels, token }) = client.release() else {
+            let Some(Command::ReleaseLease {
+                channels, token, ..
+            }) = client.release()
+            else {
                 continue;
             };
             match by_token.iter_mut().find(|(t, _)| *t == token) {
@@ -661,8 +665,24 @@ impl LeaseGroup {
         }
         by_token
             .into_iter()
-            .map(|(token, channels)| Command::ReleaseLease { channels, token })
+            .map(|(token, channels)| Command::ReleaseLease {
+                channels,
+                token,
+                to: None,
+            })
             .collect()
+    }
+
+    /// Marks the leases on `channels` given back, with no verb: the caller
+    /// sent its own release (a hand-back) and the host took it.
+    pub fn released(&mut self, channels: &[ChannelId]) {
+        for client in self
+            .clients
+            .iter_mut()
+            .filter(|c| channels.contains(&c.channel()))
+        {
+            let _ = client.release();
+        }
     }
 }
 
@@ -802,7 +822,8 @@ mod tests {
             client.release(),
             Some(Command::ReleaseLease {
                 channels: vec![ChannelId(3)],
-                token: LeaseToken(9)
+                token: LeaseToken(9),
+                to: None,
             })
         );
     }
@@ -864,6 +885,7 @@ mod tests {
                 ..Reason::default()
             },
             by: None,
+            to: None,
         });
         assert_eq!(
             told.on_snapshot(&ended, None, 10 * MS),
@@ -966,7 +988,8 @@ mod tests {
             group.release(),
             vec![Command::ReleaseLease {
                 channels: vec![ChannelId(4)],
-                token: LeaseToken(9)
+                token: LeaseToken(9),
+                to: None,
             }]
         );
     }
@@ -1035,6 +1058,7 @@ mod tests {
                 ..Reason::default()
             },
             by: None,
+            to: None,
         };
         let mut gone = snapshot(6, 1, Mode::Active, Vec::new());
         gone.ended.push(end(Lease {
@@ -1074,6 +1098,7 @@ mod tests {
                 ..Reason::default()
             },
             by,
+            to: None,
         };
         // The host's own account.
         let mut taken = snapshot(6, 1, Mode::Active, vec![supervisor.clone()]);
@@ -1151,11 +1176,13 @@ mod tests {
             vec![
                 Command::ReleaseLease {
                     channels: vec![ChannelId(3), ChannelId(4)],
-                    token: LeaseToken(9)
+                    token: LeaseToken(9),
+                    to: None,
                 },
                 Command::ReleaseLease {
                     channels: vec![ChannelId(5)],
-                    token: LeaseToken(10)
+                    token: LeaseToken(10),
+                    to: None,
                 }
             ]
         );

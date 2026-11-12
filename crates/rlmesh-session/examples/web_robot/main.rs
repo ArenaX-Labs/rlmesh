@@ -241,8 +241,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let controller = Arc::new(controller);
         let runner = controller.clone();
         std::thread::spawn(move || {
-            // Unattended: the browser's Release hands the arm back with no
-            // one at this process to resume it.
+            // Unattended: the browser binding releases plainly (it sends
+            // no hand-back), and no one is at this process to resume it.
             let config = RunConfig::default().resume(Resume::Auto);
             if let Err(err) = runner.run(&mut Sway, config) {
                 eprintln!("policy stopped: {err}");

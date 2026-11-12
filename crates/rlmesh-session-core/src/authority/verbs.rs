@@ -123,8 +123,12 @@ impl Authority {
                     &mut applied.events,
                 )?;
             }
-            Command::ReleaseLease { channels, token } => {
-                self.release(&from, &channels, token, &mut applied.events)?;
+            Command::ReleaseLease {
+                channels,
+                token,
+                to,
+            } => {
+                self.release(&from, &channels, token, to.as_ref(), &mut applied.events)?;
             }
             // `at_ns` is on the edge's clock; the reason takes the host's.
             Command::Estop {

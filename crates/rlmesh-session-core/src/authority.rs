@@ -227,6 +227,9 @@ pub struct Authority {
     /// liveliness hint.
     seen: BTreeMap<ParticipantId, Seen>,
     leases: BTreeMap<ChannelId, Lease>,
+    /// Per leased part, the holder its lease preempted: who a release may
+    /// hand the part back to.
+    taken: BTreeMap<ChannelId, leases::Taken>,
     /// Declared parts by stream id.
     parts: BTreeMap<ChannelId, PartSpec>,
     /// The last channel id assigned; ids only grow.
@@ -285,6 +288,7 @@ impl Authority {
             roster: BTreeMap::new(),
             seen: BTreeMap::new(),
             leases: BTreeMap::new(),
+            taken: BTreeMap::new(),
             parts: BTreeMap::new(),
             last_channel: 0,
             bindings: BTreeMap::new(),

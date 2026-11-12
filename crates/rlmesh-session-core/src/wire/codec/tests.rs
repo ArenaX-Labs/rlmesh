@@ -226,6 +226,7 @@ fn snapshot() -> AuthoritySnapshot {
                 ..Reason::default()
             },
             by: None,
+            to: None,
         }],
         last_stop: LastStop {
             epoch: Epoch(2),

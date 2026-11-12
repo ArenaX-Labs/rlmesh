@@ -86,6 +86,7 @@ impl Authority {
                         ..previous.clone()
                     };
                     self.leases.insert(channel, lease.clone());
+                    self.retoken_taken(channel, previous.token, token);
                     let why = self.reason(ReasonCode::Rebound, &from, "");
                     self.record_end(&previous, why, Some(&lease));
                     let part = self.part_name(channel);

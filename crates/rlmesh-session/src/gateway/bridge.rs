@@ -662,7 +662,17 @@ impl BrowserLink {
                     .grant_leases(channels, release, ttl_ns.map(Duration::from_nanos))
                     .await
                     .map_err(|e| refusal(&e)),
-                Command::ReleaseLease { channels, token } => p
+                // Not forwarded as a plain release: the browser would think
+                // the parts went back to the model.
+                Command::ReleaseLease { to: Some(_), .. } => Err(CtlError::new(
+                    CtlStatus::Unsupported,
+                    "the gateway does not forward a hand-back (lease.handback)",
+                )),
+                Command::ReleaseLease {
+                    channels,
+                    token,
+                    to: None,
+                } => p
                     .release_leases(channels, token)
                     .await
                     .map(|_| Vec::new())

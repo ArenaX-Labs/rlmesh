@@ -181,6 +181,7 @@ fn control_messages_round_trip() {
         Command::ReleaseLease {
             channels: vec![ChannelId(4)],
             token: LeaseToken(2),
+            to: None,
         },
         Command::Estop {
             reason: "red button".into(),
@@ -239,6 +240,12 @@ fn control_messages_round_trip() {
         Command::Rearm {
             robot: pid("eye-1"),
         },
+        // A hand-back: field 3, absent from a plain release.
+        Command::ReleaseLease {
+            channels: vec![ChannelId(4)],
+            token: LeaseToken(2),
+            to: Some(pid("model")),
+        },
     ];
     for command in requests {
         let request = Request {
@@ -257,6 +264,15 @@ fn control_messages_round_trip() {
     assert_eq!(
         decode_state(g.add("state", &encode_state(&state))).expect("decode"),
         state
+    );
+    // A lease end that handed the part back: LeaseEnd field 4.
+    let mut handed = snapshot();
+    handed.ended[0].reason.code = ReasonCode::Released;
+    handed.ended[0].by = None;
+    handed.ended[0].to = Some(pid("model"));
+    assert_eq!(
+        decode_state(g.add("state", &encode_state(&handed))).expect("decode"),
+        handed
     );
     for result in [
         Ok(()),

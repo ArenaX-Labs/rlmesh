@@ -454,6 +454,7 @@ fn a_latched_part_goes_safe_when_its_lease_is_released() {
         Command::ReleaseLease {
             channels: vec![channel],
             token: lease.token,
+            to: None,
         },
     );
     f.publish(2_001 * MS);

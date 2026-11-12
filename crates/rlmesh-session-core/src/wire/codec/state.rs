@@ -120,6 +120,7 @@ fn lease_end_to_pb(e: &LeaseEnd) -> pb::LeaseEnd {
         lease: Some(lease_to_pb(&e.lease)),
         reason: Some(reason_to_pb(&e.reason)),
         by: e.by.as_ref().map(lease_to_pb),
+        to: e.to.as_ref().map(ToString::to_string).unwrap_or_default(),
     }
 }
 
@@ -131,6 +132,9 @@ fn lease_end_from_pb(e: pb::LeaseEnd) -> Result<LeaseEnd, WireError> {
         )?,
         reason: e.reason.map(reason_from_pb).unwrap_or_default(),
         by: e.by.map(lease_from_pb).transpose()?,
+        to: (!e.to.is_empty())
+            .then(|| ParticipantId::new(e.to))
+            .transpose()?,
     })
 }
 

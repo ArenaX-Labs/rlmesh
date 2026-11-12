@@ -1990,6 +1990,11 @@ impl NativePolicy {
                         info.part = Some(part);
                         info.by = Some(by);
                     }
+                    RunEvent::HandedBack { part, by, .. } => {
+                        info.kind = "handed_back".into();
+                        info.part = Some(part);
+                        info.by = Some(by);
+                    }
                 }
                 info
             })

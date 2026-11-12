@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::wire::version::LEASE_HANDBACK;
 use crate::wire::{ParticipantId, PriorityClass, Reason, Role, SessionId, TenantId};
 use rlmesh_session_core::auth::Credential;
 
@@ -34,7 +35,9 @@ pub struct ParticipantConfig {
     pub ctl_timeout: Duration,
     /// How long to wait for the host to appear.
     pub host_timeout: Duration,
-    /// Features this participant implements.
+    /// Features this participant implements. A controller lists
+    /// `lease.handback`: its [`Controller`](crate::Controller) resumes a
+    /// part handed back to it.
     pub supports: Vec<String>,
     /// Features it cannot run without (the attach is refused when the
     /// session lacks one).
@@ -59,7 +62,8 @@ pub struct ParticipantConfig {
 
 impl ParticipantConfig {
     /// Defaults: a 50 ms heartbeat, a 2 s `ctl` timeout, a 10 s wait for the
-    /// host, this process's monotonic clock.
+    /// host, this process's monotonic clock; a controller supports
+    /// `lease.handback`.
     pub fn new(
         tenant: TenantId,
         session: SessionId,
@@ -67,6 +71,11 @@ impl ParticipantConfig {
         roles: Vec<Role>,
         priority: PriorityClass,
     ) -> Self {
+        let supports = if roles.contains(&Role::Controller) {
+            vec![LEASE_HANDBACK.to_string()]
+        } else {
+            Vec::new()
+        };
         Self {
             tenant,
             session,
@@ -78,7 +87,7 @@ impl ParticipantConfig {
             heartbeat_period: Duration::from_millis(50),
             ctl_timeout: Duration::from_secs(2),
             host_timeout: Duration::from_secs(10),
-            supports: Vec::new(),
+            supports,
             requires: Vec::new(),
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),

@@ -442,7 +442,8 @@ fn clock_lease_chunks_and_fencing() {
         request.command,
         Command::ReleaseLease {
             channels: vec![ChannelId(10)],
-            token: LeaseToken(42)
+            token: LeaseToken(42),
+            to: None,
         }
     );
     assert_eq!(c.lease_state("arm7/arm", T0 + 1_002.0), "idle");

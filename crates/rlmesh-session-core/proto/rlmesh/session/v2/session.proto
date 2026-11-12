@@ -253,6 +253,9 @@ message LeaseEnd {
   Reason reason = 2;
   // The preempting or rebound lease.
   Lease by = 3;
+  // A release that handed the parts back (lease.handback): the participant
+  // the released lease had preempted, who takes them again. Empty: none.
+  string to = 4;
 }
 
 // The host's last entry into SAFE, DISARMED or ESTOP; never lowered.
@@ -817,6 +820,11 @@ message GrantLease {
 message ReleaseLease {
   repeated uint32 channels = 1;
   uint64 token = 2;
+  // Hands the parts back to this participant: the one the released lease
+  // preempted, which resumes them (lease.handback). Refused when it is not
+  // that participant, lacks the feature, or the robot is held. Empty: a
+  // plain release.
+  string to = 3;
 }
 
 message Estop {

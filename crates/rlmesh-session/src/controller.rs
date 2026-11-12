@@ -18,7 +18,15 @@
 //!   process died. The edge takes the part through its released-part path
 //!   meanwhile. A run reports it once ([`RunEvent::Parked`]) and skips its
 //!   starts as `parked`. [`Resume::Auto`] keeps the old behaviour: the part
-//!   is asked for again as soon as it is free. On the wall clock it waits until the
+//!   is asked for again as soon as it is free.
+//! - **Hand-back.** The holder that took it may give it back explicitly
+//!   ([`Controller::release_to`]): its release names this controller
+//!   (`lease.handback`), and the parts that release names (with their
+//!   command group) are resumed as by [`Controller::resume`], those parts
+//!   only, reported as [`RunEvent::HandedBack`]. The keeper asks for them in
+//!   the same pass that sees the release, so they are unheld for one
+//!   notice and one grant, as when a resumed controller asks for a free
+//!   part; the edge runs its release ladder meanwhile. On the wall clock it waits until the
 //!   host has mapped this controller's clock and its robots' (an edge
 //!   rejects chunks until then). [`Controller::acquire`] takes them at
 //!   once (an operator taking over), once those clocks are mapped;
@@ -82,9 +90,11 @@ use crate::spec::apply::{ApplyError, Value, unpack_actions};
 use crate::spec::policy::ChunkStart;
 use crate::spec::selector::Selector;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
+use crate::wire::version::LEASE_HANDBACK;
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, ClockMode, CtlReply, FieldSpec, HostHealth, InputRange, Lease,
-    Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, RunCounters,
+    AuthoritySnapshot, ChannelId, ClockMode, Command, CtlError, CtlReply, CtlStatus, FieldSpec,
+    HostHealth, InputRange, Lease, LeaseToken, Mode, PartSpec, ParticipantId, PriorityClass,
+    Reason, ReasonCode, RunCounters,
 };
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -304,6 +314,26 @@ impl Parked {
     }
 }
 
+/// Parts [`Controller::release_to`] handed back to the policy its leases
+/// took them from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandBack {
+    /// That policy.
+    pub to: ParticipantId,
+    /// The parts, `robot:path`.
+    pub parts: Vec<String>,
+    /// Whether it held every one of them again within the wait.
+    pub taken: bool,
+}
+
+/// Who a held lease took its part from: the holder it preempted.
+#[derive(Clone, Debug)]
+struct Taken {
+    token: LeaseToken,
+    holder: ParticipantId,
+    priority: PriorityClass,
+}
+
 /// One action entry of a completed start, packed by the binding.
 #[derive(Clone, Debug)]
 pub struct StepAction {
@@ -418,6 +448,12 @@ struct Leases {
     auto_resume: AtomicBool,
     /// The parts a higher class took, not asked for until resumed.
     parked: Mutex<Vec<Parked>>,
+    /// Per held part, who its lease preempted: who it may be handed back to.
+    taken: Mutex<BTreeMap<ChannelId, Taken>>,
+    /// The revision of the newest lease end looked at for a hand-back.
+    ends_seen: AtomicU64,
+    /// The controller's events, for [`RunEvent::HandedBack`].
+    events: Arc<Mutex<VecDeque<RunEvent>>>,
 }
 
 impl Leases {
@@ -439,6 +475,12 @@ impl Leases {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn taken(&self) -> MutexGuard<'_, BTreeMap<ChannelId, Taken>> {
+        self.taken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Whether `part` (`robot:path`) is parked.
     fn is_parked(&self, part: &str) -> bool {
         self.parked().iter().any(|p| p.part == part)
@@ -447,18 +489,9 @@ impl Leases {
     /// Parks `channel`, taken by `by`, and the binding's parts in its
     /// command group (only one member of a group is ever leased).
     fn park(&self, snapshot: &AuthoritySnapshot, channel: ChannelId, by: &Lease) {
-        let group = |c: ChannelId| {
-            let part = snapshot.part(c)?;
-            Some((part.owner.clone(), part.command.as_ref()?.group.clone()?))
-        };
-        let taken = group(channel);
-        let channels = self.group().channels();
+        let parts = self.with_group(snapshot, channel);
         let mut parked = self.parked();
-        for c in channels {
-            if c != channel && (taken.is_none() || group(c) != taken) {
-                continue;
-            }
-            let part = snapshot.part_name(c);
+        for part in parts {
             if parked.iter().any(|p| p.part == part) {
                 continue;
             }
@@ -468,6 +501,67 @@ impl Leases {
                 priority: by.priority,
             });
         }
+    }
+
+    /// The binding's parts that are `channel` or in its command group,
+    /// `robot:path`.
+    fn with_group(&self, snapshot: &AuthoritySnapshot, channel: ChannelId) -> Vec<String> {
+        let group = |c: ChannelId| {
+            let part = snapshot.part(c)?;
+            Some((part.owner.clone(), part.command.as_ref()?.group.clone()?))
+        };
+        let taken = group(channel);
+        self.group()
+            .channels()
+            .into_iter()
+            .filter(|c| *c == channel || (taken.is_some() && group(*c) == taken))
+            .map(|c| snapshot.part_name(c))
+            .collect()
+    }
+
+    /// Resumes the parked parts a release in `snapshot` handed back to
+    /// `me` (`LeaseEnd.to`), as [`Controller::resume`] would, those parts
+    /// only. Each end is looked at once.
+    fn take_hand_backs(&self, snapshot: &AuthoritySnapshot, me: &ParticipantId) {
+        let seen = self.ends_seen.load(Ordering::Relaxed);
+        let newest = snapshot.ended.iter().map(|e| e.reason.revision).max();
+        if let Some(newest) = newest {
+            self.ends_seen.fetch_max(newest, Ordering::Relaxed);
+        }
+        let mut resumed = Vec::new();
+        for end in snapshot.ended.iter().filter(|e| {
+            e.reason.revision > seen
+                && e.reason.code == ReasonCode::Released
+                && e.to.as_ref() == Some(me)
+        }) {
+            let parts = self.with_group(snapshot, end.lease.channel);
+            let by = &end.lease.holder;
+            self.parked().retain(|p| {
+                let back = &p.by == by && parts.contains(&p.part);
+                if back {
+                    resumed.push(p.clone());
+                }
+                !back
+            });
+        }
+        if resumed.is_empty() {
+            return;
+        }
+        for parked in &resumed {
+            info!(participant = %me, part = %parked.part, by = %parked.by, "handed back");
+            push_event(
+                &self.events,
+                RunEvent::HandedBack {
+                    part: parked.part.clone(),
+                    by: parked.by.to_string(),
+                    message: format!(
+                        "{} was handed back by {}; this policy takes it again",
+                        parked.part, parked.by
+                    ),
+                },
+            );
+        }
+        self.wake.notify_one();
     }
 
     /// Applies the current authority view: renews the held leases, and
@@ -486,6 +580,7 @@ impl Leases {
             if let LeaseChange::Revoked(reason) = change {
                 let part = snapshot.part_name(channel);
                 info!(participant = %participant.id(), %part, %reason, "lease lost");
+                self.taken().remove(&channel);
                 let by = self.group().preempted_by(channel).cloned();
                 if let Some(by) = by
                     && !self.auto_resume.load(Ordering::Relaxed)
@@ -504,6 +599,9 @@ impl Leases {
                 }
             }
         }
+        // After parking: one snapshot may show both the preemption and the
+        // hand-back.
+        self.take_hand_backs(&snapshot, participant.id());
     }
 
     /// Takes over the leases the host re-issued for `binding` when it was
@@ -542,6 +640,12 @@ impl Leases {
         }
         let held = group.held(now);
         *self.group() = group;
+        // The host re-issued them under a fresh token: what they took stays.
+        for lease in &held {
+            if let Some(taken) = self.taken().get_mut(&lease.channel) {
+                taken.token = lease.token;
+            }
+        }
         self.publishers().retain(|channel, p| {
             held.iter()
                 .any(|l| l.channel == *channel && l.token == p.token())
@@ -636,8 +740,17 @@ impl Leases {
     /// gone or stopped on its own never keeps the others from moving, and
     /// declares a sender per new token. Fails only when no robot granted
     /// any.
-    async fn grant(&self, participant: &Participant) -> Result<Vec<Lease>, SessionError> {
+    async fn grant(
+        &self,
+        participant: &Participant,
+        keeper: bool,
+    ) -> Result<Vec<Lease>, SessionError> {
         let _request = self.request.lock().await;
+        // A release (or hand-back) that ran while the keeper waited for the
+        // lock: nothing is wanted any more.
+        if keeper && !self.want.load(Ordering::Relaxed) {
+            return Ok(Vec::new());
+        }
         let ttl_ns = self
             .ttl
             .map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
@@ -684,7 +797,10 @@ impl Leases {
                 participant.clock().now_ns(),
             );
             match &reply.result {
-                Ok(()) => granted.extend(reply.leases.iter().cloned()),
+                Ok(()) => {
+                    self.note_taken(participant.id(), &reply);
+                    granted.extend(reply.leases.iter().cloned());
+                }
                 Err(err) => refused = Some(SessionError::Rejected(err.clone())),
             }
         }
@@ -711,6 +827,154 @@ impl Leases {
         Ok(granted)
     }
 
+    /// Records whom each lease a grant's `reply` issued took its part from:
+    /// the preemptions its state's ring shows (the grant's own are the
+    /// newest).
+    fn note_taken(&self, me: &ParticipantId, reply: &CtlReply) {
+        let mut taken = self.taken();
+        for lease in reply.leases.iter().filter(|l| &l.holder == me) {
+            if taken
+                .get(&lease.channel)
+                .is_some_and(|t| t.token == lease.token)
+            {
+                continue;
+            }
+            taken.remove(&lease.channel);
+            let preempted = reply.state.ended.iter().rev().find(|e| {
+                e.reason.code == ReasonCode::Preempted
+                    && e.by
+                        .as_ref()
+                        .is_some_and(|by| by.channel == lease.channel && by.token == lease.token)
+            });
+            if let Some(end) = preempted {
+                taken.insert(
+                    lease.channel,
+                    Taken {
+                        token: lease.token,
+                        holder: end.lease.holder.clone(),
+                        priority: end.lease.priority,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Hands every held lease back to the `to`-class policy it took its part
+    /// from (`ReleaseLease.to`): one release per lease token and policy.
+    /// Checked here first, all of them before any is sent (the host checks
+    /// again): a part taken from nobody or from another class, a held robot,
+    /// a host without the feature.
+    async fn hand_back(
+        &self,
+        participant: &Participant,
+        to: PriorityClass,
+    ) -> Result<Vec<(ParticipantId, Vec<ChannelId>)>, SessionError> {
+        let _request = self.request.lock().await;
+        let refuse =
+            |status, message: String| Err(SessionError::Rejected(CtlError::new(status, message)));
+        let view = participant.authority().ok_or(SessionError::Closed)?;
+        let class = class_name(to);
+        if !view.supports.iter().any(|f| f == LEASE_HANDBACK) {
+            return refuse(
+                CtlStatus::Incompatible,
+                format!(
+                    "the session host does not support {LEASE_HANDBACK}: it would take a \
+                     hand-back as a plain release, so none was sent; release plainly and call \
+                     resume() in the {class} policy's process"
+                ),
+            );
+        }
+        let held = self.group().held(participant.clock().now_ns());
+        if held.is_empty() {
+            return refuse(
+                CtlStatus::StaleToken,
+                format!("{} holds no lease to hand back", participant.id()),
+            );
+        }
+        let mut sends: Vec<(LeaseToken, ParticipantId, Vec<ChannelId>)> = Vec::new();
+        {
+            let taken = self.taken();
+            for lease in &held {
+                let part = view.part_name(lease.channel);
+                let holder = match taken.get(&lease.channel).filter(|t| t.token == lease.token) {
+                    Some(t) if t.priority == to => &t.holder,
+                    Some(t) => {
+                        return refuse(
+                            CtlStatus::InvalidRequest,
+                            format!(
+                                "cannot hand {part} back to a {class} policy: this policy took it \
+                                 from {}, a {} policy",
+                                t.holder,
+                                class_name(t.priority)
+                            ),
+                        );
+                    }
+                    None => {
+                        return refuse(
+                            CtlStatus::InvalidRequest,
+                            format!(
+                                "cannot hand {part} back to a {class} policy: this policy took it \
+                                 from nobody, so none is parked on it"
+                            ),
+                        );
+                    }
+                };
+                if let Some(robot) = view.part(lease.channel).map(|p| &p.owner)
+                    && let Some(why) = view.held_refusal(robot)
+                {
+                    return refuse(
+                        CtlStatus::NotReady,
+                        format!("cannot hand {part} back: {why}; a hand-back never clears that"),
+                    );
+                }
+                match sends
+                    .iter_mut()
+                    .find(|(t, h, _)| *t == lease.token && h == holder)
+                {
+                    Some((_, _, channels)) => channels.push(lease.channel),
+                    None => sends.push((lease.token, holder.clone(), vec![lease.channel])),
+                }
+            }
+        }
+        // From here the keeper asks for nothing: the parts go to the model.
+        let wanted = self.want.swap(false, Ordering::Relaxed);
+        let mut handed: Vec<(ParticipantId, Vec<ChannelId>)> = Vec::new();
+        for (token, holder, channels) in sends {
+            let command = Command::ReleaseLease {
+                channels: channels.clone(),
+                token,
+                to: Some(holder.clone()),
+            };
+            let refused = match participant.command(command).await {
+                Ok(reply) => reply.result.err().map(SessionError::Rejected),
+                Err(err) => Some(err),
+            };
+            if let Some(err) = refused {
+                if handed.is_empty() {
+                    // Nothing went: the keeper keeps them as before.
+                    self.want.store(wanted, Ordering::Relaxed);
+                    return Err(err);
+                }
+                let parts: Vec<String> = handed
+                    .iter()
+                    .flat_map(|(_, c)| c.iter().map(|c| view.part_name(*c)))
+                    .collect();
+                return Err(SessionError::Rejected(CtlError::new(
+                    CtlStatus::InvalidRequest,
+                    format!(
+                        "{err}; {} went back already, and this policy still holds the rest",
+                        parts.join(", ")
+                    ),
+                )));
+            }
+            self.group().released(&channels);
+            self.publishers().retain(|c, _| !channels.contains(c));
+            self.taken().retain(|c, _| !channels.contains(c));
+            handed.push((holder, channels));
+        }
+        Ok(handed)
+    }
+
     /// Gives every held lease back.
     async fn release(&self, participant: &Participant) -> Result<(), SessionError> {
         let _request = self.request.lock().await;
@@ -722,6 +986,16 @@ impl Leases {
             participant.command(command).await?;
         }
         Ok(())
+    }
+}
+
+/// A priority class as the SDKs name it (`model`).
+fn class_name(class: PriorityClass) -> &'static str {
+    match class {
+        PriorityClass::Safety => "safety",
+        PriorityClass::Operator => "operator",
+        PriorityClass::Model => "model",
+        PriorityClass::Scripted => "scripted",
     }
 }
 
@@ -770,7 +1044,7 @@ async fn keep_leases(
             && matches!(mode, Some(Mode::Armed | Mode::Active))
             && leases.clocks_mapped(&participant)
         {
-            match leases.grant(&participant).await {
+            match leases.grant(&participant, true).await {
                 Ok(_) => {}
                 Err(err) => {
                     debug!(participant = %participant.id(), %err, "lease request refused");
@@ -1442,6 +1716,7 @@ impl Controller {
             sources: Mutex::new(Sources::default()),
         });
         rebinder.settle(&participant);
+        let events = Arc::new(Mutex::new(VecDeque::new()));
         let leases = Arc::new(Leases {
             group: Mutex::new(LeaseGroup::new(participant.id(), &binding.channels(), 0)),
             publishers: Mutex::new(BTreeMap::new()),
@@ -1451,6 +1726,9 @@ impl Controller {
             ttl: config.lease_ttl,
             auto_resume: AtomicBool::new(false),
             parked: Mutex::new(Vec::new()),
+            taken: Mutex::new(BTreeMap::new()),
+            ends_seen: AtomicU64::new(0),
+            events: events.clone(),
         });
         let schedule = Arc::new(Mutex::new(StartSchedule::new(binding.replan_hz)));
         participant.set_run_source(Some({
@@ -1462,7 +1740,6 @@ impl Controller {
                 )
             })
         }));
-        let events = Arc::new(Mutex::new(VecDeque::new()));
         let cancel = CancellationToken::new();
         let tasks = vec![
             tokio::spawn(keep_leases(
@@ -1733,7 +2010,7 @@ impl Controller {
             .wait_for_clocks(&self.participant, self.clock_timeout)
             .await?;
         let parked = std::mem::take(&mut *self.leases.parked());
-        let leases = match self.leases.grant(&self.participant).await {
+        let leases = match self.leases.grant(&self.participant, false).await {
             Ok(leases) => leases,
             Err(err) => {
                 self.leases.parked().extend(parked);
@@ -1748,6 +2025,42 @@ impl Controller {
     pub async fn release(&self) -> Result<(), SessionError> {
         self.leases.want.store(false, Ordering::Relaxed);
         self.leases.release(&self.participant).await
+    }
+
+    /// Gives the leases back to the `to`-class policy they took the parts
+    /// from (an operator handing the robot back to the model it preempted),
+    /// and stops the keeper from re-requesting them. That policy resumes
+    /// those parts as by its own [`Self::resume`], with a
+    /// [`RunEvent::HandedBack`]; a plain [`Self::release`] leaves it parked.
+    /// Waits, up to the bind timeout, for it to hold them again
+    /// ([`HandBack::taken`]). Refused, with nothing released, when a lease
+    /// took its part from nobody or from another class, when the robot is
+    /// held (a hand-back never clears a hold), when that policy does not
+    /// support `lease.handback`, or when the host does not.
+    pub async fn release_to(&self, to: PriorityClass) -> Result<Vec<HandBack>, SessionError> {
+        let handed = self.leases.hand_back(&self.participant, to).await?;
+        let view = self.participant.authority().ok_or(SessionError::Closed)?;
+        let waited = self
+            .participant
+            .wait_for("the parts to be taken back", self.clock_timeout, |view| {
+                handed.iter().all(|(holder, channels)| {
+                    channels
+                        .iter()
+                        .all(|c| view.lease(*c).is_some_and(|l| &l.holder == holder))
+                })
+            })
+            .await;
+        let taken = waited.is_ok();
+        let backs = handed
+            .into_iter()
+            .map(|(to, channels)| HandBack {
+                parts: channels.iter().map(|c| view.part_name(*c)).collect(),
+                to,
+                taken,
+            })
+            .collect();
+        info!(participant = %self.participant.id(), handed = ?backs, "handed back");
+        Ok(backs)
     }
 
     /// Lets the keeper request the leases (once warm) and keep them.
