@@ -164,6 +164,19 @@ fn the_fingerprint_is_of_the_normalised_form() {
     assert_ne!(fingerprint(&a), fingerprint(&c));
     let text = canonical::to_string(&canonical(&a));
     assert!(text.starts_with(r#"[{"attrs":{},"command":null,"control_hz":0,"encoding":"raw","event":false,"fields":[{"dtype":"float32","name":"pos""#), "{text}");
+    // Command durations are carried in milliseconds.
+    let commanded = parts(
+        r#"{"arm": {"kind": "joints", "count": 1, "hz": 50, "command": "position", "safe": "hold",
+                "hold_max_ms": 250, "max_action_age_ms": 400, "max_clock_error_ms": 12.5}}"#,
+    );
+    let text = canonical::to_string(&canonical(&commanded));
+    for ms in [
+        r#""hold_max_ms":250,"#,
+        r#""max_action_age_ms":400,"#,
+        r#""max_clock_error_ms":12.5,"#,
+    ] {
+        assert!(text.contains(ms), "{ms} in {text}");
+    }
 }
 
 #[test]
@@ -331,6 +344,12 @@ fn declarations_failing_the_rules_are_refused_naming_the_path_and_key() {
         refused(&format!("{{{}}}", many.join(",")))
             .message
             .contains("at most 256")
+    );
+    let full = format!("{{{}}}", many[..MAX_PARTS].join(","));
+    assert_eq!(
+        parts(&full).len(),
+        MAX_PARTS,
+        "exactly the limit is accepted"
     );
 }
 

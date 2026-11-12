@@ -489,12 +489,36 @@ mod tests {
 
     #[test]
     fn every_encoding_round_trips_through_quat_xyzw() {
-        let q = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)];
-        for to in Rotation::ALL.into_iter().filter(|r| r.is_source()) {
-            let encoded = one(&q, Rotation::QuatXyzw, to);
-            assert_eq!(encoded.len(), to.width() as usize);
-            let back = one(&encoded, to, Rotation::QuatXyzw);
-            assert!(close(&back, &q), "{to}: {back:?}");
+        let quarter_z = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)];
+        // 0.7 rad about an axis off every coordinate plane.
+        let axis = [1.0, 2.0, 3.0].map(|c: f64| c / 14_f64.sqrt());
+        let (s, c) = math::sin_cos(0.35);
+        let general = [axis[0] * s, axis[1] * s, axis[2] * s, c];
+        for q in [quarter_z, general] {
+            for to in Rotation::ALL.into_iter().filter(|r| r.is_source()) {
+                let encoded = one(&q, Rotation::QuatXyzw, to);
+                assert_eq!(encoded.len(), to.width() as usize);
+                let back = one(&encoded, to, Rotation::QuatXyzw);
+                assert!(close(&back, &q), "{to}: {back:?}");
+            }
+        }
+        let rotvec = one(&general, Rotation::QuatXyzw, Rotation::AxisAngle);
+        assert!(close(&rotvec, &axis.map(|c| c * 0.7)), "{rotvec:?}");
+    }
+
+    #[test]
+    fn a_zero_rotation_vector_and_degenerate_inputs_read_as_the_identity() {
+        use Rotation::{AxisAngle, Matrix, QuatXyzw, Rot6d};
+        for (value, from) in [
+            (&[0.0; 3][..], AxisAngle),
+            (&[0.0; 4], QuatXyzw),
+            (&[0.0; 6], Rot6d),
+        ] {
+            let m = one(value, from, Matrix);
+            assert!(
+                close(&m, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
+                "{from}: {m:?}"
+            );
         }
     }
 

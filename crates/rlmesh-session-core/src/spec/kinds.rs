@@ -306,10 +306,63 @@ mod tests {
     }
 
     #[test]
+    fn each_commandable_kind_takes_its_modes() {
+        for (kind, modes) in [
+            (Kind::Joints, &["position", "velocity", "torque"][..]),
+            (Kind::Hand, &["position", "velocity", "torque"]),
+            (Kind::Wrench, &["wrench"]),
+            (Kind::Pose, &["absolute", "delta"]),
+            (Kind::Gripper, &["position"]),
+            (Kind::Velocity, &["velocity"]),
+            (Kind::Camera, &[]),
+            (Kind::Imu, &[]),
+            (Kind::Text, &[]),
+        ] {
+            assert_eq!(kind.command_modes(), modes, "{kind:?}");
+        }
+    }
+
+    #[test]
     fn joint_quantities_follow_the_unit() {
         assert_eq!(quantity(Kind::Joints, "pos", "deg"), Quantity::Angle);
         assert_eq!(quantity(Kind::Joints, "pos", "mm"), Quantity::Length);
         assert_eq!(quantity(Kind::Hand, "effort", "N"), Quantity::Force);
         assert_eq!(quantity(Kind::Imu, "orientation", ""), Quantity::None);
+        for (field, unit, q) in [
+            ("vel", "rad/s", Quantity::AngularVelocity),
+            ("vel", "mm/s", Quantity::LinearVelocity),
+            ("effort", "Nm", Quantity::Torque),
+        ] {
+            assert_eq!(quantity(Kind::Joints, field, unit), q, "{field} in {unit}");
+        }
+        // A prismatic set's fields are linear whatever unit they arrive in.
+        for (field, prismatic, q) in [
+            ("vel", true, Quantity::LinearVelocity),
+            ("effort", true, Quantity::Force),
+            ("effort", false, Quantity::Torque),
+        ] {
+            assert_eq!(joint_quantity(field, prismatic), q, "{field}");
+        }
+    }
+
+    #[test]
+    fn each_core_field_has_its_quantity() {
+        for (kind, field, q) in [
+            (Kind::Wrench, "force", Quantity::Force),
+            (Kind::Wrench, "torque", Quantity::Torque),
+            (Kind::Imu, "ang_vel", Quantity::AngularVelocity),
+            (Kind::Imu, "lin_acc", Quantity::Acceleration),
+            (Kind::Velocity, "angular", Quantity::AngularVelocity),
+            (Kind::Velocity, "linear", Quantity::LinearVelocity),
+            (Kind::Pose, "pos", Quantity::Length),
+            (Kind::Gripper, "pos", Quantity::Gripper),
+            (Kind::Value, "value", Quantity::Custom),
+            (Kind::Depth, "depth", Quantity::Length),
+            (Kind::Tactile, "values", Quantity::Tactile),
+            (Kind::Custom, "anything", Quantity::Custom),
+            (Kind::Wrench, "pos", Quantity::None),
+        ] {
+            assert_eq!(quantity(kind, field, ""), q, "{kind:?}.{field}");
+        }
     }
 }

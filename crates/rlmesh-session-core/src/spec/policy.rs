@@ -1057,7 +1057,8 @@ mod tests {
             r#"{"hz": 15,
                 "inputs": {"prompt": "text",
                            "image": {"kind": "camera", "at": "/scene/cam", "size": [224, 224],
-                                     "allow": ["crop"]}},
+                                     "resample": "bicubic_aa", "crop": 0.5,
+                                     "allow": ["crop", "resize", "crop"]}},
                 "actions": {"arm": {"kind": "joints", "at": "arm", "count": 6, "chunk": 10}},
                 "allow": ["resize"]}"#,
         )
@@ -1065,9 +1066,15 @@ mod tests {
         let prompt = &policy.inputs[0];
         assert_eq!((prompt.entry.kind, prompt.history), (Kind::Text, 1));
         assert!(prompt.entry.at.is_none());
+        // Repeating a conversion, in the entry or with the policy's, keeps it.
         let image = &policy.inputs[1].entry;
         assert!(image.allow.has(Allow::Crop) && image.allow.has(Allow::Resize));
-        assert_eq!(policy.inputs[1].size, Some((224, 224)));
+        let image = &policy.inputs[1];
+        assert_eq!(image.size, Some((224, 224)));
+        assert_eq!(
+            (image.resample, image.crop),
+            (Resample::BicubicAa, Some(0.5))
+        );
         let arm = &policy.actions[0];
         assert_eq!(
             (arm.chunk, arm.hz, arm.t0),
@@ -1136,9 +1143,62 @@ mod tests {
                     "history": 3}}}"#,
                 "history is an input key",
             ),
+            (r#"{"hz": 1, "inputs": {"": "text"}}"#, "1-128 characters"),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "names": "all", "count": 2}}}"#,
+                "a list of names",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "names": [""]}}}"#,
+                "is empty",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "names": ["x", "y"], "count": 3}}}"#,
+                "count differs",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "count": 0}}}"#,
+                "count is 1 to 1024",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "range": [1, 1]}}}"#,
+                "range is two finite, different numbers",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "scale": []}}}"#,
+                "scale must be finite numbers",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "max_age_ms": 0}}}"#,
+                "max_age_ms 0 is out of range",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "size": [0, 10]}}}"#,
+                "image sides",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "crop": 0}}}"#,
+                "crop is a side fraction",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "resample": "nearest"}}}"#,
+                "resample \"nearest\"",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "text", "history": 2}}}"#,
+                "events take no history",
+            ),
             (
                 r#"{"hz": 1, "actions": {"a": {"kind": "joints", "chunk": 0}}}"#,
                 "chunk",
+            ),
+            (
+                r#"{"hz": 1, "actions": {"a": {"kind": "joints", "chunk": 1025}}}"#,
+                "chunk is 1 to 1024",
+            ),
+            (
+                r#"{"hz": 1, "actions": {"a": {"kind": "joints", "reference": "base"}}}"#,
+                "current or target",
             ),
             (
                 r#"{"hz": 1, "actions": {"a": {"kind": "gripper", "open": 1, "closed": 1}}}"#,
@@ -1151,6 +1211,39 @@ mod tests {
         ] {
             let err = Policy::parse(json).expect_err(json);
             assert!(err.contains(needle), "{json}: {err}");
+        }
+        let long = "a".repeat(MAX_ENTRY_NAME + 1);
+        for json in [
+            format!(r#"{{"hz": 1, "inputs": {{"{long}": "text"}}}}"#),
+            format!(r#"{{"hz": 1, "inputs": {{"a": {{"kind": "joints", "names": ["{long}"]}}}}}}"#),
+        ] {
+            let err = Policy::parse(&json).expect_err(&json);
+            assert!(err.contains("128"), "{err}");
+        }
+    }
+
+    #[test]
+    fn entries_at_the_limits_are_accepted() {
+        let long = "a".repeat(MAX_ENTRY_NAME);
+        let policy = Policy::parse(&format!(
+            r#"{{"hz": 1,
+                "inputs": {{"{long}": {{"kind": "joints", "names": ["{long}"]}}}},
+                "actions": {{"arm": {{"kind": "joints", "count": 1024, "chunk": {MAX_CHUNK_ACTIONS}}}}}}}"#
+        ))
+        .expect("at the limits");
+        assert_eq!(policy.inputs[0].entry.name, long);
+        assert_eq!(
+            (policy.actions[0].entry.count, policy.actions[0].chunk),
+            (Some(1024), MAX_CHUNK_ACTIONS as u32)
+        );
+    }
+
+    #[test]
+    fn a_capture_is_one_segment_under_a_name_no_option_takes() {
+        assert!(RunOptions::named("p").capture("side", "left").is_ok());
+        for (name, value) in [("under", "left"), ("Side", "left"), ("side", "a/b")] {
+            let err = RunOptions::named("p").capture(name, value);
+            assert!(err.is_err(), "{name}={value}");
         }
     }
 }
