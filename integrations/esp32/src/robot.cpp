@@ -4,6 +4,7 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <ctype.h>
+#include <esp_wifi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -303,6 +304,14 @@ bool Robot::datagramStats(rlmesh_device_datagram_stats_t& out) const {
 }
 
 void Robot::printDatagram(Print& out) const {
+  // The radio's power save: in it, a board's frames wait for the access
+  // point's next beacon (about 100 ms) whichever path they take.
+  wifi_ps_type_t ps = WIFI_PS_NONE;
+  if (esp_wifi_get_ps(&ps) == ESP_OK) {
+    out.printf("  wifi power save %s\n", ps == WIFI_PS_NONE        ? "off"
+                                         : ps == WIFI_PS_MIN_MODEM ? "on (min modem)"
+                                                                   : "on (max modem)");
+  }
   rlmesh_device_datagram_stats_t d;
   if (!datagramStats(d)) {
     out.println("  realtime parts over tcp");
