@@ -287,6 +287,34 @@ async fn a_join_reaching_only_the_base_port_names_the_others() {
     );
 }
 
+/// Ports that accept and close at once (a container runtime's proxy in front
+/// of a host still starting) are a host not up yet, never a refused key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forwarder_that_drops_every_link_is_no_refusal() {
+    let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("ports");
+    let mut forwarding = Vec::new();
+    for class in 0..4 {
+        let addr = SocketAddr::new(base.ip(), base.port() + class);
+        let listener = tokio::net::TcpListener::bind(addr).await.expect("port");
+        forwarding.push(tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        }));
+    }
+    let timeout = Duration::from_secs(3);
+    let Err(err) = hosting::connect(base, timeout).await else {
+        panic!("linked to a forwarder");
+    };
+    for task in forwarding {
+        task.abort();
+    }
+    assert!(
+        matches!(err, SessionError::Timeout(waited, _) if waited == timeout),
+        "not a timeout a retry may get past: {err}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_embedded_host_stays_on_loopback_and_links_only_with_its_key() {
     let grace = Duration::from_millis(250);

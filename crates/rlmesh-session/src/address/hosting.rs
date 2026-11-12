@@ -146,6 +146,42 @@ async fn accepts(addr: SocketAddr) -> bool {
 /// How long [`listening`] waits for a TCP connect.
 const LISTEN_PROBE: Duration = Duration::from_secs(2);
 
+/// How long a port must keep a probe's connection open to be a session
+/// host's listener ([`holds`]).
+const HOLD_PROBE: Duration = Duration::from_millis(250);
+
+/// Whether `addr` accepts a TCP connect and keeps it open for
+/// [`HOLD_PROBE`]. A session host's listener waits for the client to speak;
+/// a port forwarder whose target does not listen yet (a container runtime's
+/// proxy in front of a container still starting) accepts and closes at once,
+/// which fails every link as fast as a refusal does.
+async fn holds(addr: SocketAddr) -> bool {
+    use tokio::io::AsyncReadExt as _;
+    let connect = tokio::time::timeout(LISTEN_PROBE, tokio::net::TcpStream::connect(addr));
+    let Ok(Ok(mut stream)) = connect.await else {
+        return false;
+    };
+    let mut byte = [0; 1];
+    !matches!(
+        tokio::time::timeout(HOLD_PROBE, stream.read(&mut byte)).await,
+        Ok(Ok(0) | Err(_))
+    )
+}
+
+/// Whether the host at `base` [`holds`] a connection on every class's port.
+async fn every_class_holds(base: SocketAddr) -> bool {
+    let base = joinable(base);
+    let probe = |class| async move {
+        match class_port(base.port(), class) {
+            Ok(port) => holds(SocketAddr::new(base.ip(), port)).await,
+            Err(_) => false,
+        }
+    };
+    let [a, b, c, d] = TrafficClass::ALL.map(probe);
+    let (a, b, c, d) = tokio::join!(a, b, c, d);
+    a && b && c && d
+}
+
 /// How many rounds a host listening on every class's port may refuse every
 /// link before [`open_client`] calls it [`refused_link`]: a second round
 /// rules out a host still opening its listeners.
@@ -200,7 +236,8 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
 /// within a round trip, a slow link only later: an attempt that fails before
 /// its bound was refused. A host listening on every class's port that
 /// refuses every attempt, round after round, gates its links with another
-/// key: [`refused_link`], final. Running out of time is a timeout (a Zenoh
+/// key: [`refused_link`], final. A port that drops a connection as soon as
+/// it accepts it is no such host ([`holds`]): the join keeps trying. Running out of time is a timeout (a Zenoh
 /// error), which a retry may get past, or, when the base port answered and
 /// some class's port did not, [`unanswered_ports`].
 pub(super) async fn open_client(
@@ -275,11 +312,14 @@ pub(super) async fn open_client(
             }
             return Err(last.unwrap_or_else(|| SessionError::Zenoh("no answer in time".into())));
         }
-        refused = if answered && silent.is_empty() {
-            refused + 1
-        } else {
-            0
-        };
+        // Only a listener that holds a connection open refused the link: a
+        // forwarder in front of a host still starting drops it as quickly.
+        let by_host = answered
+            && silent.is_empty()
+            && tokio::time::timeout_at(deadline, every_class_holds(base))
+                .await
+                .unwrap_or(false);
+        refused = if by_host { refused + 1 } else { 0 };
         if refused >= REFUSED_ROUNDS {
             return Err(refused_link(base));
         }
