@@ -1149,7 +1149,8 @@ class Policy:
         fill ``{name}`` segments. Raises :class:`BindingRefused` with the
         binder's explanation, at once; a robot that has not appeared yet is
         waited for, up to ``timeout`` (then ``TimeoutError``, naming it):
-        ``"policy"`` (default) is the policy's, a number overrides it,
+        ``"policy"`` (default) is the policy's, a number overrides it for
+        this bind alone (:meth:`acquire` and a hand-back keep the policy's),
         ``None`` waits for as long as it takes.
         """
         if self._native is not None:
@@ -1178,6 +1179,7 @@ class Policy:
             allow=list(allow or ()),
             captures=dict(captures),
             timeout_s=_limit(self._timeout if timeout == "policy" else timeout),
+            wait_timeout_s=_limit(self._timeout),
             publishes_json=self._publishes_json,
         )
         self._fields = {

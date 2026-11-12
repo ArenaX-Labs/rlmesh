@@ -123,8 +123,9 @@ const REQUEST_GAP: Duration = Duration::from_millis(50);
 pub struct ControllerConfig {
     /// The lease ttl (`None`: the session's lease grace).
     pub lease_ttl: Option<Duration>,
-    /// How long [`Controller::bind`] waits for the robot's parts, and
-    /// [`Controller::acquire`] for the clocks to be mapped.
+    /// How long [`Controller::bind`] waits for the robot's parts, and (until
+    /// [`Controller::set_wait_timeout`]) [`Controller::acquire`] for the
+    /// clocks to be mapped and [`Controller::release_to`] for the hand-back.
     pub bind_timeout: Duration,
     /// How often a wanted lease is re-requested while it is refused (it is
     /// also re-requested on every authority change).
@@ -1675,8 +1676,9 @@ pub struct Controller {
     schedule: Arc<Mutex<StartSchedule>>,
     events: Arc<Mutex<VecDeque<RunEvent>>>,
     runtime: tokio::runtime::Handle,
-    /// How long [`Self::acquire`] waits for the clocks to be mapped.
-    clock_timeout: Duration,
+    /// How long [`Self::acquire`] waits for the clocks to be mapped, and
+    /// [`Self::release_to`] for the hand-back.
+    wait_timeout: Duration,
     stop: AtomicBool,
     /// The run loop's current phase offset (ns after the replan grid).
     phase_offset_ns: AtomicI64,
@@ -1815,7 +1817,7 @@ impl Controller {
             schedule,
             events,
             runtime: tokio::runtime::Handle::current(),
-            clock_timeout: config.bind_timeout,
+            wait_timeout: config.bind_timeout,
             stop: AtomicBool::new(false),
             phase_offset_ns: AtomicI64::new(0),
             runs: AtomicU64::new(0),
@@ -1847,6 +1849,13 @@ impl Controller {
     /// The participant.
     pub fn participant(&self) -> &Arc<Participant> {
         &self.participant
+    }
+
+    /// Sets how long [`Self::acquire`] and [`Self::release_to`] wait from now
+    /// on (bound, it is the bind timeout): a bind given a timeout of its own
+    /// leaves the later waits on the caller's usual one.
+    pub fn set_wait_timeout(&mut self, timeout: Duration) {
+        self.wait_timeout = timeout;
     }
 
     /// The session's live link health ([`Participant::health`]).
@@ -2046,13 +2055,13 @@ impl Controller {
     /// Takes the binding's leases now (all or none), preempting a lower
     /// class; from then on the keeper holds them, parked or not. First
     /// waits for the host to map the clocks an edge needs (a
-    /// [`SessionError::Timeout`] naming whose is missing, past the bind
+    /// [`SessionError::Timeout`] naming whose is missing, past the wait
     /// timeout), so a chunk sent right after is not rejected. A refusal
     /// (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) leaves the keeper as
     /// it was, parked parts too.
     pub async fn acquire(&self) -> Result<Vec<Lease>, SessionError> {
         self.leases
-            .wait_for_clocks(&self.participant, self.clock_timeout)
+            .wait_for_clocks(&self.participant, self.wait_timeout)
             .await?;
         let parked = std::mem::take(&mut *self.leases.parked());
         let leases = match self.leases.grant(&self.participant, false).await {
@@ -2077,7 +2086,7 @@ impl Controller {
     /// and stops the keeper from re-requesting them. That policy resumes
     /// those parts as by its own [`Self::resume`], with a
     /// [`RunEvent::HandedBack`]; a plain [`Self::release`] leaves it parked.
-    /// Waits, up to the bind timeout, for it to hold them again
+    /// Waits, up to the wait timeout, for it to hold them again
     /// ([`HandBack::taken`]). Refused, with nothing released, when a lease
     /// took its part from nobody or from another class, when the robot is
     /// held (a hand-back never clears a hold), when that policy does not
@@ -2087,7 +2096,7 @@ impl Controller {
         let view = self.participant.authority().ok_or(SessionError::Closed)?;
         let waited = self
             .participant
-            .wait_for("the parts to be taken back", self.clock_timeout, |view| {
+            .wait_for("the parts to be taken back", self.wait_timeout, |view| {
                 handed.iter().all(|(holder, channels)| {
                     channels
                         .iter()

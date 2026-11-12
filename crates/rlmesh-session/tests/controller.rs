@@ -1169,6 +1169,8 @@ async fn the_first_chunk_after_an_explicit_acquire_is_accepted() {
 }
 
 /// A controller whose clock the host never maps: no heartbeat after attach.
+/// Its acquire gives up after the wait timeout set after binding, not the
+/// (long) bind timeout.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
     let world = World::start().await;
@@ -1195,18 +1197,22 @@ async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
     let p = Participant::attach(transport, config)
         .await
         .expect("attach");
-    let controller = Controller::bind(
+    let mut controller = Controller::bind(
         Arc::new(p),
         &Policy::parse(COMMAND_ONLY).expect("policy"),
         &RunOptions::named("mute").robot("ur10e").expect("robot"),
         ControllerConfig {
-            bind_timeout: Duration::from_millis(500),
+            bind_timeout: Duration::from_secs(3600),
             ..ControllerConfig::default()
         },
     )
     .await
     .expect("bind");
-    let err = controller.acquire().await.expect_err("never mapped");
+    controller.set_wait_timeout(Duration::from_millis(500));
+    let err = tokio::time::timeout(Duration::from_secs(60), controller.acquire())
+        .await
+        .expect("waits the wait timeout, not the bind timeout")
+        .expect_err("never mapped");
     assert!(err.to_string().contains("the clock of mute:"), "{err}");
     assert_eq!(robot.edge_stats("arm").expect("stats").rejected_total(), 0);
 }

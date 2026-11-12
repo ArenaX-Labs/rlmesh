@@ -818,14 +818,15 @@ class V2Controller:
         Every robot held until re-armed by name, as dicts with `robot`,
         `reason`, `detail`, `at_ns` (session time) and `message`.
         """
-    def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: typing.Optional[builtins.str], *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ..., publishes_json: typing.Optional[builtins.str] = None) -> V2Controller:
+    def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: typing.Optional[builtins.str], *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ..., wait_timeout_s: builtins.float = ..., publishes_json: typing.Optional[builtins.str] = None) -> V2Controller:
         r"""
         Attaches as `name` at `priority`, waits for `robot`'s parts, binds
         `policy_json` (the policy map) with the run-time options, and
         declares the binding. With `publishes_json` (an authored map of
         parts, none commandable) it also declares those parts under its own
         name, to publish annotations. Raises `BindingRefused` with the
-        binder's refuse-and-explain text.
+        binder's refuse-and-explain text. `timeout_s` bounds the join and the
+        bind; `wait_timeout_s` the later `acquire` and hand-back waits.
         """
     def published_parts(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
         r"""

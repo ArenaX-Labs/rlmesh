@@ -1559,12 +1559,13 @@ impl PyController {
     /// declares the binding. With `publishes_json` (an authored map of
     /// parts, none commandable) it also declares those parts under its own
     /// name, to publish annotations. Raises `BindingRefused` with the
-    /// binder's refuse-and-explain text.
+    /// binder's refuse-and-explain text. `timeout_s` bounds the join and the
+    /// bind; `wait_timeout_s` the later `acquire` and hand-back waits.
     #[new]
     #[pyo3(signature = (
         address, name, policy_json, robot, *, priority="model", under=None,
         at=BTreeMap::new(), positional=Vec::new(), allow=Vec::new(),
-        captures=BTreeMap::new(), timeout_s=10.0, publishes_json=None
+        captures=BTreeMap::new(), timeout_s=10.0, wait_timeout_s=10.0, publishes_json=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1580,11 +1581,13 @@ impl PyController {
         allow: Vec<String>,
         captures: BTreeMap<String, String>,
         timeout_s: f64,
+        wait_timeout_s: f64,
         publishes_json: Option<&str>,
     ) -> PyResult<Self> {
         let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
         let wait = timeout(timeout_s)?;
+        let later = timeout(wait_timeout_s)?;
         let class = self::priority(priority)?;
         let options = BindOptions {
             name,
@@ -1597,7 +1600,7 @@ impl PyController {
         }
         .run_options()
         .map_err(|why| BindingRefused::new_err(format!("binding refused: {why}")))?;
-        let (controller, published) = block_on(py, async move {
+        let (mut controller, published) = block_on(py, async move {
             match publishes_json {
                 Some(publishes) => sdk::bind_policy_publishing(
                     &address,
@@ -1616,6 +1619,7 @@ impl PyController {
             }
             .map_err(bind_policy_err)
         })?;
+        controller.set_wait_timeout(later);
         Ok(Self {
             name: name.to_string(),
             controller: Mutex::new(Some(Arc::new(controller))),
