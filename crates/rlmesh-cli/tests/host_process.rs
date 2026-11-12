@@ -347,36 +347,59 @@ async fn a_host_process_warns_once_of_a_participant_it_dropped() {
         PriorityClass::Model,
     )
     .await;
-    let dropped = |log: &str| {
+    let robot = join(
+        &host,
+        "robot",
+        vec![Role::Embodiment],
+        PriorityClass::Scripted,
+    )
+    .await;
+    let view = robot.declare_parts(ROBOT).await.expect("declare");
+    let cmd = view.part_at(robot.id(), "cmd").expect("cmd").channel;
+    let dropped = |log: &str, who: &str| {
         log.lines()
-            .filter(|l| l.contains("participant dropped from the session") && l.contains("robot"))
+            .filter(|l| l.contains("participant dropped from the session") && l.contains(who))
             .count()
     };
-    for _ in 0..2 {
-        let robot = join(
+    let gone = |id: &'static str| {
+        observer.wait_for("the participant dropped", WAIT, move |s| {
+            !s.roster.iter().any(|p| p.id.as_str() == id)
+        })
+    };
+    // A lockstep driver's ending: no lease bound it, so no warning.
+    let driver = join(
+        &host,
+        "driver",
+        vec![Role::Controller],
+        PriorityClass::Model,
+    )
+    .await;
+    driver.close().await;
+    gone("driver").await.expect("dropped");
+    for fingerprint in 1..=2 {
+        let policy = join(
             &host,
-            "robot",
-            vec![Role::Embodiment],
-            PriorityClass::Scripted,
+            "policy",
+            vec![Role::Controller],
+            PriorityClass::Model,
         )
         .await;
-        observer
-            .wait_for("the robot", WAIT, |s| {
-                s.roster.iter().any(|p| p.id == *robot.id())
-            })
+        policy
+            .wait_for("the robot's parts", WAIT, |s| s.part(cmd).is_some())
             .await
-            .expect("attached");
-        // Gone without a word: its heartbeats stop.
-        robot.close().await;
-        observer
-            .wait_for("the robot dropped", WAIT, |s| {
-                !s.roster.iter().any(|p| p.id.as_str() == "robot")
-            })
+            .expect("parts");
+        policy
+            .declare_binding(Fingerprint::from(fingerprint), "{}", vec![cmd], 0.0)
             .await
-            .expect("dropped");
+            .expect("bind");
+        policy.arm().await.expect("arm");
+        policy.grant_lease(cmd, None).await.expect("lease");
+        // Gone without a word while it holds the robot: its heartbeats stop.
+        policy.close().await;
+        gone("policy").await.expect("dropped");
     }
     let started = Instant::now();
-    while dropped(&host.log.lock().expect("log")) == 0 {
+    while dropped(&host.log.lock().expect("log"), "policy") == 0 {
         assert!(
             started.elapsed() < WAIT,
             "no warning: {}",
@@ -385,7 +408,8 @@ async fn a_host_process_warns_once_of_a_participant_it_dropped() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let log = host.log.lock().expect("log").clone();
-    assert_eq!(dropped(&log), 1, "{log}");
+    assert_eq!(dropped(&log, "policy"), 1, "{log}");
+    assert_eq!(dropped(&log, "driver"), 0, "{log}");
     assert!(log.contains("Lost"), "{log}");
 }
 

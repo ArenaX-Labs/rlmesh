@@ -110,6 +110,11 @@ pub use rlmesh_session_core::spec;
 pub mod transport;
 pub use rlmesh_session_core::virtual_clock;
 
+/// The log filter a binary or binding starts with when `RUST_LOG` is unset:
+/// warnings, none of Zenoh's. Its messages name its own source files, and
+/// whatever of it matters reaches the caller as a session error.
+pub const DEFAULT_LOG_FILTER: &str = "warn,zenoh=off";
+
 pub use address::SessionAddress;
 pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason};
 pub use cache::{

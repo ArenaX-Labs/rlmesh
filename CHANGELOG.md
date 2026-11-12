@@ -203,6 +203,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `python -m rlmesh.serve`'s serving line leaves the address's key out (`#…`).
 - Running or serving an env or model that declares no workflow edition no longer warns; `rlmesh check`, `rlmesh check-image` and `rlmesh doctor` say where to pin it, and a session refused for want of a shared edition says to pin each side.
 - `[tool.rlmesh] workflow_edition` is read from the project that holds the env or model class, then from the working directory.
+- A lockstep env, model or driver leaving a session is no longer logged as a warning; losing a leased robot or policy still is.
+- A run, a served env or model, and a driver's Ctrl-C end without warn or error lines: Zenoh's own logs (which named its source files) are off unless `RUST_LOG` asks for them, and a reply to a driver that already left is no longer a warning.
 - Internal and server-side failures raise `RLMeshException`, and protocol failures raise `ProtocolException`, both subclasses of `RuntimeError`.
 - An env error code `UNSUPPORTED` reaches Python as `"UNSUPPORTED"` (it read `"INTERNAL"`).
 - An env server treats a raised exception as recoverable only when it is an `EnvironmentException` with `is_recoverable` set.

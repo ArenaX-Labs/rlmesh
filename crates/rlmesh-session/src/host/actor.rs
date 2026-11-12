@@ -377,17 +377,37 @@ impl HostActor {
 }
 
 impl HostActor {
-    /// Warns of a participant the session dropped, or a robot held: each
-    /// subject at most once per [`crate::quiet::QUIET`].
+    /// Warns of a leased participant the session dropped, or a robot held:
+    /// each subject at most once per [`crate::quiet::QUIET`]. A participant no
+    /// lease bound (a lockstep env, model or driver) leaving is its normal end.
     fn warn_of(&mut self, event: &AuthorityEvent) {
         let session = &self.config.session;
         let now = std::time::Instant::now();
         match event {
+            AuthorityEvent::LeaseGranted { lease, part }
+            | AuthorityEvent::LeaseRebound { lease, part, .. }
+            | AuthorityEvent::LeasePreempted {
+                by: lease,
+                by_part: part,
+                ..
+            } => {
+                self.leased.insert(lease.holder.clone());
+                if let Some(robot) = part
+                    .split_once(':')
+                    .and_then(|(robot, _)| ParticipantId::new(robot).ok())
+                {
+                    self.leased.insert(robot);
+                }
+            }
             AuthorityEvent::Detached {
                 participant,
                 reason,
-            } if *reason != DetachReason::Requested => {
-                if let Some(held_back) = self.quiet.admit("dropped", participant.as_str(), now) {
+            } => {
+                let leased = self.leased.remove(participant);
+                if *reason != DetachReason::Requested
+                    && leased
+                    && let Some(held_back) = self.quiet.admit("dropped", participant.as_str(), now)
+                {
                     warn!(%session, %participant, ?reason, held_back, "participant dropped from the session");
                 }
             }

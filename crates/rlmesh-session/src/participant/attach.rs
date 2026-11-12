@@ -402,18 +402,26 @@ impl Participant {
                 }
             })
             .await?;
+        let cancel = CancellationToken::new();
         let host = control
             .liveliness()
             .declare_subscriber(keys.host_liveliness())
             .history(true)
             .callback({
                 let shared = shared.clone();
+                let closing = cancel.clone();
                 move |sample| {
                     let present = sample.kind() == SampleKind::Put;
                     let lost_ns = if present {
                         i64::MIN
                     } else {
-                        warn!(participant = %shared.id, "session host liveliness lost");
+                        // A participant that closed first sees its own
+                        // process's host stop: a normal end.
+                        if closing.is_cancelled() {
+                            debug!(participant = %shared.id, "session host liveliness lost");
+                        } else {
+                            warn!(participant = %shared.id, "session host liveliness lost");
+                        }
                         shared.clock.now_ns()
                     };
                     shared.host_lost_ns.store(lost_ns, Ordering::Relaxed);
@@ -456,7 +464,6 @@ impl Participant {
             .host_heard_ns
             .store(config.clock.now_ns(), Ordering::Relaxed);
 
-        let cancel = CancellationToken::new();
         let mut participant = Self {
             shared: shared.clone(),
             tasks: vec![

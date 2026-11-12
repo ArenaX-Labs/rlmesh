@@ -20,8 +20,9 @@ struct Cli {
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn,rlmesh_cockpit=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                format!("{},rlmesh_cockpit=info", rlmesh_session::DEFAULT_LOG_FILTER).into()
+            }),
         )
         .init();
     let args = Cli::parse().args;

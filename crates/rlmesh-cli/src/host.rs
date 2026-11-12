@@ -64,12 +64,12 @@ pub const HOST_KEY: &str = "host.key";
 /// How often `devices.toml` is read again.
 const RELOAD: Duration = Duration::from_millis(500);
 
-/// The host's own warnings, on stderr: `RUST_LOG` filters them, `warn` when
-/// unset. A process that already has a logger (the Python package's) keeps
-/// it.
+/// The host's own warnings, on stderr: `RUST_LOG` filters them,
+/// [`rlmesh_session::DEFAULT_LOG_FILTER`] when unset. A process that already
+/// has a logger (the Python package's) keeps it.
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(rlmesh_session::DEFAULT_LOG_FILTER));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

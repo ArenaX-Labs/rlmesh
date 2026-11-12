@@ -338,6 +338,7 @@ impl SessionHost {
             #[cfg(feature = "fleet")]
             lobby_answers,
             quiet: crate::quiet::Quiet::default(),
+            leased: std::collections::HashSet::new(),
             datagram: datagram.map(actor::DatagramSession::new),
         };
         actor.publish().await;
@@ -557,6 +558,10 @@ struct HostActor {
     lobby_answers: mpsc::UnboundedReceiver<LobbyDone>,
     /// Warnings held back while their subject's last one is recent.
     quiet: crate::quiet::Quiet,
+    /// Participants a lease has bound (holders and their robots): losing one
+    /// stops motion, so it warns; any other leaving is a lockstep peer's
+    /// normal end.
+    leased: std::collections::HashSet<ParticipantId>,
     /// Its robots on the host's datagram path, when it offers one.
     datagram: Option<actor::DatagramSession>,
 }

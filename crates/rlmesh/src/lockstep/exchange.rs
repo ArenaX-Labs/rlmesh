@@ -43,7 +43,7 @@ use rlmesh_session::wire::{
     LockstepReset, LockstepResponse, LockstepResult, LockstepStep, Mode, PartSpec, ParticipantId,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::query::ConsolidationMode;
 
@@ -575,13 +575,15 @@ async fn answer(
         sealer.seal_lockstep_response(key, token, &LockstepResponse { request_id, result });
     let sent = match sealed {
         Ok(sealed) => query.reply(key, sealed).express(true).await,
+        // The driver left while its request ran (finished, or Ctrl-C): its
+        // lease, and the key to answer under, went with it.
         Err(err) => {
-            warn!(%err, "lockstep reply not sealed");
+            debug!(%err, "lockstep reply not sealed");
             return;
         }
     };
     if let Err(err) = sent {
-        warn!(%err, "lockstep reply not sent");
+        debug!(%err, "lockstep reply not sent");
     }
 }
 
