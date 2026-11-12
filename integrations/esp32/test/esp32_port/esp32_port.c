@@ -10,7 +10,13 @@
  *   never does, so such a task's stack stays held, and is counted.
  * - Setting an event group's bits from a task lets the waiter run at once,
  *   while the task goes on for a moment (as on the other core): the join's
- *   race with the task's suspension is taken every time. */
+ *   race with the task's suspension is taken every time.
+ * - A task pinned to a core runs on that CPU of the machine (core 0 on CPU 0):
+ *   every task the transport makes on one core. */
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE /* pthread_attr_setaffinity_np */
+#endif
 
 #include "esp32_port.h"
 
@@ -73,7 +79,6 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char* name, uint32_t
                                    BaseType_t core) {
   (void)name;
   (void)priority;
-  (void)core;
   struct esp32_port_task* t = calloc(1, sizeof *t);
   if (t == NULL) return 0;
   t->fn = fn;
@@ -85,7 +90,17 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char* name, uint32_t
   if (out != NULL) *out = t;
   atomic_fetch_add(&created, 1);
   atomic_fetch_add(&stacks, stack_depth);
-  if (pthread_create(&t->thread, NULL, run, t) != 0) {
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  if (core != tskNO_AFFINITY) {
+    cpu_set_t cpus;
+    CPU_ZERO(&cpus);
+    CPU_SET(core, &cpus);
+    pthread_attr_setaffinity_np(&attr, sizeof cpus, &cpus);
+  }
+  int created = pthread_create(&t->thread, &attr, run, t);
+  pthread_attr_destroy(&attr);
+  if (created != 0) {
     release(t);
     free(t);
     return 0;

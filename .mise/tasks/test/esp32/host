@@ -109,12 +109,21 @@ if [ ! -f "$port/libzenohpico.a" ]; then
     -o "$port/obj/esp32_port.o"
   ar rcs "$port/libzenohpico.a" "${objects[@]}" "$port/obj/esp32_port.o"
 fi
-cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -D_GNU_SOURCE -DESP32_PORT -DZENOH_ARDUINO_ESP32 \
-  -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11 -I"$shim" -I"$zp_build/include" \
-  -I"$zp_build/src/include" -Iintegrations/esp32/src -Iintegrations/esp32/transport \
-  -include sys/socket.h integrations/esp32/test/soak_robot.c \
-  integrations/esp32/transport/rlmesh_zenoh.c "$target_dir/debug/librlmesh_device.a" \
-  "$port/libzenohpico.a" -lpthread -ldl -lm -o "$out/soak_robot_esp32"
+# Its tasks with no affinity (RLMESH_TASK_CORE -1, the default), and all
+# pinned to core 0 (CPU 0 here), with the port's task code built for each.
+for core in -1 0; do
+  cc -std=gnu11 -O1 -g -DZENOH_ARDUINO_ESP32 -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11 \
+    -DRLMESH_TASK_CORE="$core" -I"$shim" -I"$zp_build/include" -I"$zp_build/src/include" \
+    -include sys/socket.h -include netinet/in.h -include netinet/tcp.h \
+    -c "$zp_build/src/src/system/arduino/esp32/system.c" -o "$port/system-core$core.o"
+  cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -D_GNU_SOURCE -DESP32_PORT -DZENOH_ARDUINO_ESP32 \
+    -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11 -I"$shim" -I"$zp_build/include" \
+    -I"$zp_build/src/include" -Iintegrations/esp32/src -Iintegrations/esp32/transport \
+    -include sys/socket.h integrations/esp32/test/soak_robot.c \
+    integrations/esp32/transport/rlmesh_zenoh.c "$port/system-core$core.o" \
+    "$target_dir/debug/librlmesh_device.a" "$port/libzenohpico.a" -lpthread -ldl -lm \
+    -o "$out/soak_robot_esp32_core$core"
+done
 
 
 # Over the session's links, then over the host's datagram path.
@@ -167,13 +176,15 @@ if unshare -rn true 2>/dev/null && command -v nft >/dev/null; then
 else
   echo "==> (no user namespace or nft here: the vanishing peer is not tried)"
 fi
-echo "==> zenoh-pico's ESP32 port: its tasks across re-attaches and a stalled link"
-start_host tcp soak
-"$out/soak_robot_esp32" "$address" 6 cut 2048
-stop_host
-start_host tcp soak
-"$out/soak_robot_esp32" "$address" 1 stall
-stop_host
+for core in -1 0; do
+  echo "==> zenoh-pico's ESP32 port, tasks on core $core: across re-attaches and a stalled link"
+  start_host tcp soak
+  "$out/soak_robot_esp32_core$core" "$address" 6 cut 2048
+  stop_host
+  start_host tcp soak
+  "$out/soak_robot_esp32_core$core" "$address" 1 stall
+  stop_host
+done
 # Read as a policy's input is: the newest sample at each of its ticks.
 echo "==> state read at 30 Hz from a board publishing at 50 Hz and taking 30 chunks a second"
 export SOAK_HZ=30

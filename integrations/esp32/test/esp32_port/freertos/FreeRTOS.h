@@ -19,5 +19,6 @@ typedef struct StaticTask_t StaticTask_t;
 #define configMAX_PRIORITIES 25
 #define configSUPPORT_STATIC_ALLOCATION 0
 #define tskNO_AFFINITY 0x7fffffff
+#define portNUM_PROCESSORS 2
 
 #endif

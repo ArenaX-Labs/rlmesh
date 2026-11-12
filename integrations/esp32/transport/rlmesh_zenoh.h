@@ -15,8 +15,10 @@
  * Every call into zenoh-pico (opening, declaring, querying, publishing,
  * closing) is made on another, the network task, in the order the robot asked:
  * any of them can wait for the socket and the radio, and with them the locks
- * zenoh-pico holds while it writes. Both tasks, like zenoh-pico's, stay off the
- * core of a board's control loop. */
+ * zenoh-pico holds while it writes. Both tasks, like zenoh-pico's, run on the
+ * core the build sets (RLMESH_TASK_CORE, patch_zenoh_pico.py): by default on
+ * either, as the scheduler places them; pinned to core 0 they share it with
+ * the radio's driver and lwIP, which a send runs inline. */
 
 #ifndef RLMESH_ZENOH_H_
 #define RLMESH_ZENOH_H_

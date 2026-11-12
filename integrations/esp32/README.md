@@ -105,6 +105,26 @@ The board tries its stored home addresses in order, authenticating the host
 by the key it was provisioned with. Four consecutive TCP ports from the
 host's base port must be reachable.
 
+### Wi-Fi power save and the tasks' core
+
+In power save (ESP-IDF's modem sleep) a board's frames wait for the access
+point's next beacon, about 100 ms, whichever path they take: longer than a
+chunk lives, and its state reaches readers in bunches. Turn it off before
+joining (`WiFi.setSleep(false)` after `WiFi.mode(WIFI_STA)`). Arduino-ESP32
+3.x keeps the setting and applies it again each time the station starts,
+before or after `WiFi.begin()`; it is on by default when nothing sets it,
+ESP-IDF needs it on while Bluetooth runs beside Wi-Fi (the core releases
+Bluetooth unless the sketch uses it), and anything else that calls
+`esp_wifi_set_ps` turns it back on. The library changes no radio setting.
+
+`robot.printDatagram(Serial)` prints whether it is on.
+
+The transport's tasks (signature checks, sends, the datagram socket's reads)
+and zenoh-pico's run on whichever core the scheduler picks. A library built
+with `RLMESH_TASK_CORE=0 mise run build:esp32` (or `1`) pins them all to that
+core instead; core 0 is where Wi-Fi and lwIP run, and every send runs lwIP
+inline in the sending task.
+
 ### UDP for the realtime parts
 
 A host started with `rlmesh host --board-data udp` offers its datagram path

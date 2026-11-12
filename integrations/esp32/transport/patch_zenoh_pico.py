@@ -25,11 +25,13 @@ POSIX's (the Linux build).
 
 The ESP32 port's TCP link gets the receive timeout its other ports have (one
 task per session reads, so a silent peer would otherwise block its lease
-checks, query timeouts and closing for ever); its tasks named `rlmesh-*` are
-pinned to core 0, beside the radio, away from a loop on core 1; and a joined
-task is deleted only once it has suspended itself, with its event group (one
-leaked per closed session). A task tells its joiner it is done just before it
-suspends: deleted in between, while it still runs (on the other core),
+checks, query timeouts and closing for ever); every task it creates (its
+sessions' and the transport's) runs on the core the build sets with
+`-DRLMESH_TASK_CORE` (-1, the default, no affinity, as FreeRTOS's own
+`xTaskCreate`; 0 or 1 pins them); and a joined task is deleted only once it
+has suspended itself, with its event group (one leaked per closed session),
+whichever cores the two run on. A task tells its joiner it is done just
+before it suspends: deleted in between, while it still runs (on another core),
 FreeRTOS leaves its stack (5 KB for a session's) for that core's idle task
 to free, which under load may not run for a long time; deleted suspended, it
 is freed at once.
@@ -158,6 +160,17 @@ patch(
         ),
     ],
 )
+CORE = """
+/* rlmesh: the core every task runs on (patch_zenoh_pico.py): -1, the default,
+ * no affinity; 0 or 1 pins them there. */
+#ifndef RLMESH_TASK_CORE
+#define RLMESH_TASK_CORE -1
+#endif
+#if RLMESH_TASK_CORE < -1 || RLMESH_TASK_CORE >= portNUM_PROCESSORS
+#error "RLMESH_TASK_CORE is -1 (no affinity) or a core of this chip"
+#endif
+#define Z_RLMESH_TASK_CORE (RLMESH_TASK_CORE < 0 ? tskNO_AFFINITY : RLMESH_TASK_CORE)
+"""
 COUNTERS = """
 /* rlmesh: tasks started and ended, for zp_rlmesh_tasks (patch_zenoh_pico.py). */
 static uint32_t _z_rlmesh_started;
@@ -171,16 +184,22 @@ void zp_rlmesh_tasks(uint32_t *started, uint32_t *ended) {
 patch(
     "src/system/arduino/esp32/system.c",
     [
-        ("#include <unistd.h>\n", "#include <string.h>\n#include <unistd.h>\n"),
         (
             "/*------------------ Task ------------------*/\n",
-            COUNTERS + "/*------------------ Task ------------------*/\n",
+            COUNTERS + CORE + "/*------------------ Task ------------------*/\n",
+        ),
+        (
+            "xTaskCreateStatic((void *)z_task_wrapper, attr->name, attr->stack_depth, z_arg, attr->priority,\n"
+            "                                         attr->stack_buffer, attr->task_buffer);\n",
+            "xTaskCreateStaticPinnedToCore((void *)z_task_wrapper, attr->name, attr->stack_depth, z_arg,\n"
+            "                                         attr->priority, attr->stack_buffer, attr->task_buffer,\n"
+            "                                         Z_RLMESH_TASK_CORE);\n",
         ),
         (
             "xTaskCreate((void *)z_task_wrapper, attr->name, attr->stack_depth, z_arg, attr->priority, "
             "&task->handle) !=\n            pdPASS) {\n            z_free(z_arg);\n",
             "xTaskCreatePinnedToCore((void *)z_task_wrapper, attr->name, attr->stack_depth, z_arg, "
-            'attr->priority, &task->handle, strncmp(attr->name, "rlmesh-", 7) == 0 ? 0 : tskNO_AFFINITY) !=\n'
+            "attr->priority, &task->handle, Z_RLMESH_TASK_CORE) !=\n"
             "            pdPASS) {\n            vEventGroupDelete(task->join_event);\n            z_free(z_arg);\n",
         ),
         (

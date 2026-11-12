@@ -64,7 +64,14 @@ cp crates/rlmesh-device/include/rlmesh_device.h "$zp_lib/src/"
 touch "$zp_lib/src/RLMeshTransportBuild.h"
 mkdir -p "$zp/TransportBuild"
 printf '#include <RLMeshTransportBuild.h>\nvoid setup() {}\nvoid loop() {}\n' >"$zp/TransportBuild/TransportBuild.ino"
-zp_flags="-DZENOH_ARDUINO_ESP32 -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11"
+# RLMESH_TASK_CORE: the core of every task the transport and zenoh-pico
+# make: -1 (the default) no affinity, 0 or 1 pins them (patch_zenoh_pico.py).
+task_core="${RLMESH_TASK_CORE:--1}"
+case "$task_core" in
+  -1 | 0 | 1) ;;
+  *) echo "RLMESH_TASK_CORE is -1 (no affinity), 0 or 1, not $task_core" >&2; exit 1 ;;
+esac
+zp_flags="-DZENOH_ARDUINO_ESP32 -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11 -DRLMESH_TASK_CORE=$task_core"
 
 # One chip: build the archive, keep only the ABI's C names global, stage it
 # under the chip's `build.mcu`, and compile the examples.
