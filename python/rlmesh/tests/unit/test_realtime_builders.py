@@ -4,13 +4,19 @@ Each builder against the dict it must produce, the refusals naming the
 argument, ``parts.array``, ``inputs.of``, the keyword ``Policy`` and how
 ``run`` reads a ``predict``'s signature. That the host takes every
 builder's output is ``integration/test_v2_builders.py``.
+
+The shared fixture ``builders.json`` holds a case for every builder and
+argument; the Rust builders are checked against the same cases, which keeps
+the two in step.
 """
 
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -26,6 +32,63 @@ from rlmesh.realtime import (  # noqa: E402  # pyright: ignore[reportPrivateUsag
 )
 
 AT = "bench:arm"
+SHARED = (
+    Path(__file__).resolve().parents[4]
+    / "crates"
+    / "rlmesh-session-core"
+    / "tests"
+    / "fixtures"
+    / "builders.json"
+)
+CASES: list[dict[str, Any]] = json.loads(SHARED.read_text())["cases"]
+MODULES = {"inputs": inputs, "actions": actions, "parts": parts}
+
+
+def build_case(case: dict[str, Any]) -> object:
+    """``case``'s builder called with its arguments, as a user writes them."""
+    module, name = case["builder"].split(".")
+    builder = getattr(MODULES[module], name)
+    args = dict(case["args"])
+    if name == "array":
+        return builder(**args)
+    if isinstance(args.get("fields"), dict):
+        args["fields"] = {k: parts.array(*v) for k, v in args["fields"].items()}
+    at = args.pop("at", None)
+    if name == "of":
+        return builder(case["part"], at, **args)
+    return builder(at, **args)
+
+
+@pytest.mark.parametrize(
+    "case", CASES, ids=[f"{c['builder']}-{i}" for i, c in enumerate(CASES)]
+)
+def test_each_shared_case_gives_its_entry(case: dict[str, Any]) -> None:
+    assert build_case(case) == case["entry"]
+
+
+@pytest.mark.parametrize(
+    ("module", "name"),
+    [("inputs", name) for name in inputs.__all__]
+    + [("actions", name) for name in actions.__all__]
+    + [("parts", "array")],
+)
+def test_the_shared_cases_cover_every_builder_and_argument(
+    module: str, name: str
+) -> None:
+    builder = f"{module}.{name}"
+    covered = {
+        key
+        for case in CASES
+        if case["builder"] == builder
+        for key in (*case["args"], *(["part"] if "part" in case else []))
+    }
+    parameters = inspect.signature(getattr(MODULES[module], name)).parameters
+    wanted = {
+        p
+        for p, spec in parameters.items()
+        if spec.kind is not inspect.Parameter.VAR_KEYWORD
+    }
+    assert wanted <= covered, f"{builder}: no case sets {sorted(wanted - covered)}"
 
 
 @pytest.mark.parametrize(
