@@ -30,22 +30,27 @@ impl HostActor {
     /// default) keeps the state's timestamp over none, and a header alone
     /// fails to decode as a state.
     pub(super) async fn on_state_query(&mut self, query: Query) {
-        let Some(signed) = self.sign_state(&self.snapshot()) else {
+        let snapshot = self.snapshot();
+        let Some(signed) = self.sign_state(&snapshot) else {
             return Self::discard(query);
         };
         if signed.len() + REPLY_ENVELOPE <= BOARD_MESSAGE {
             return Self::reply(query, signed);
         }
-        if let Some(held_back) = self
-            .quiet
-            .admit("state too large", "", std::time::Instant::now())
+        // Worth a warning only where a board reads states: a session of
+        // processes alone reads the state and never misses the header.
+        if has_board(&snapshot.roster)
+            && let Some(held_back) =
+                self.quiet
+                    .admit("state too large", "", std::time::Instant::now())
         {
             warn!(
                 session = %self.config.session,
                 bytes = signed.len(),
-                board_limit = BOARD_MESSAGE,
+                board_limit = BOARD_MESSAGE - REPLY_ENVELOPE,
                 held_back,
-                "host_state answered with a header-only follow-up: the state is too large for a board"
+                "host_state answered with a header-only follow-up: the signed state is larger than \
+                 a board takes in one reply"
             );
         }
         let header = self
@@ -389,6 +394,13 @@ pub(super) fn asks_for_sealed_view(snapshot: &AuthoritySnapshot, robot: &Partici
             .is_some_and(|p| p.supports.iter().any(|f| f == VIEW_DEVICE_SEALED))
 }
 
+/// Whether a board is in `roster`: a robot that reads its device view.
+fn has_board(roster: &[crate::wire::ParticipantInfo]) -> bool {
+    roster
+        .iter()
+        .any(|p| p.has_role(Role::Embodiment) && p.supports.iter().any(|f| f == VIEW_DEVICE))
+}
+
 /// Whether `robot` is an embodiment in `snapshot`'s roster that asked for its
 /// device view (`Attach.supports`).
 pub(super) fn asks_for_view(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> bool {
@@ -437,6 +449,33 @@ mod tests {
             }],
             ..DeviceView::empty(pid("eye-1"))
         }
+    }
+
+    #[test]
+    fn a_state_too_large_for_a_board_is_worth_a_warning_only_with_a_board_in_the_session() {
+        let member = |id: &str, roles: Vec<Role>, supports: &[&str]| crate::wire::ParticipantInfo {
+            id: pid(id),
+            name: id.into(),
+            roles,
+            priority: PriorityClass::Model,
+            attached_ns: 0,
+            protocol_minor: 0,
+            supports: supports.iter().map(ToString::to_string).collect(),
+            requires: Vec::new(),
+            workflow_edition: String::new(),
+            workflow_editions: Vec::new(),
+            present: true,
+            left: None,
+            device: String::new(),
+            generation: 1,
+        };
+        let mut roster = vec![
+            member("env", vec![Role::Embodiment], &[]),
+            member("driver", vec![Role::Controller], &[VIEW_DEVICE]),
+        ];
+        assert!(!has_board(&roster), "no robot here reads device views");
+        roster.push(member("eye-1", vec![Role::Embodiment], &[VIEW_DEVICE]));
+        assert!(has_board(&roster));
     }
 
     #[test]
