@@ -16,8 +16,8 @@ The v0.2 milestone demo (protocol v2), three processes over one session:
   ``arm`` lease (pre-empting the policy: the edge fences the policy's
   chunks and holds its last target until the operator's first chunk), the
   digits ``1``-``6`` pick a joint, ``+``/``-`` jog it, ``t`` again hands
-  back (the policy re-requests and resumes under a fresh lease token), ``q``
-  quits. Keys come from the terminal (``--keys interactive``) or from a
+  back (``release(to="model")``: the policy, parked since the takeover,
+  resumes under a fresh lease token), ``q`` quits. Keys come from the terminal (``--keys interactive``) or from a
   script of ``seconds:key`` events (the default). ``--operator haptic``
   makes it 1 kHz, reading the wrench every sample,
   one-action chunks with a 5 ms life.
@@ -771,11 +771,9 @@ def run_policy(args: argparse.Namespace) -> int:
         print(binding, file=sys.stderr, flush=True)
         cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
         try:
-            # The operator is another process: handing back cannot call
-            # policy.resume() here, so the policy takes the arm back itself.
-            stats = policy.run(
-                predict, duration=args.seconds, resume=realtime.Resume.AUTO
-            )
+            # Parked while the operator holds the arm (and after it lets go
+            # plainly or its process dies); the operator's hand-back resumes it.
+            stats = policy.run(predict, duration=args.seconds)
         except KeyboardInterrupt:
             stats = policy.stats()
         cpu = cpu_share(cpu0, wall0)
@@ -895,9 +893,12 @@ def run_operator(args: argparse.Namespace) -> int:
                     active, fresh = True, True
                     events.append((stamp, "take"))
                 elif key == "t":
-                    op.release()
+                    backs = op.release(to="model")
                     active = False
-                    events.append((stamp, "hand back"))
+                    taken = all(back["taken"] for back in backs or [])
+                    events.append(
+                        (stamp, "hand back" if taken else "hand back, not taken")
+                    )
                 elif key in "123456" and len(key) == 1:
                     joint = int(key) - 1
                 elif key in ("+", "=", "k") and active and not fresh:
