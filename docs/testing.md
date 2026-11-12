@@ -153,6 +153,48 @@ Clean system-test environments, logs, and reports:
 mise run test:system:clean
 ```
 
+## Sandbox Docker Gate
+
+`SandboxEnv` and `SandboxModel` must work on a stock Docker host every time.
+The unit tests stub Docker out, so a gate runs them against real containers:
+
+```bash
+mise run test:sandbox:docker                # skips, saying so, when no Docker daemon answers
+mise run test:sandbox:docker --require      # fails instead (release machines)
+mise run test:sandbox:docker --starts 30 --runs 10
+```
+
+Both sides of every session must be the same build, so it builds this tree
+as the release cohort (`RLMESH_RELEASE_BUILD=1`, see
+[local development](local-dev.md)): the in-tree extension
+(`build:python:develop`, which your editable install then keeps) and the
+manylinux wheel (`build:python:docker`, rebuilt unless it was made from this
+tree state; `--rebuild` forces it). It builds env, model and failing-env
+images from the wheel and the
+[bring-your-own examples](../examples/python/byo_container), then runs
+`python/rlmesh/tests/docker` (pytest marker `docker`, which other runs leave
+out):
+
+- `--starts` sequential starts of each of `SandboxEnv` and `SandboxModel`
+  (default 10), and `--runs` evaluations of the model image against the env
+  image (default 3), with no failure allowed;
+- a wrong key against a running container is a final `Unauthenticated`
+  refusal within 2 s, and one dialled while the container starts is refused
+  only once its host listens;
+- a container that exits while starting fails with its own error and logs,
+  not a join timeout;
+- a container that publishes only its base port is named with the three
+  ports that did not answer;
+- two sandboxes start at once;
+- Docker's userland port proxy, with nothing listening behind a published
+  port, closes a link well within the 250 ms a join waits to tell it from a
+  session host.
+
+It prints the join times it measured. Every container and image it creates
+carries the label `rlmesh.test.run=<run>`, and only those are removed at the
+end; base images and build cache are kept. It uses a scratch
+`RLMESH_STATE_DIR`, and Docker picks every published port.
+
 ## Release Check
 
 The local release gate combines static checks, tests, package verification, wheel builds, and installed-artifact validation:
@@ -160,6 +202,9 @@ The local release gate combines static checks, tests, package verification, whee
 ```bash
 mise run release:check
 ```
+
+It includes the sandbox Docker gate with `--require`, so the release machine
+needs a Docker daemon.
 
 ## When parity:check or parity:fixtures fails
 

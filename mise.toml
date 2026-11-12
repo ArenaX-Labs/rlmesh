@@ -622,6 +622,7 @@ run = [
   "mise run release:artifacts:licenses",
   "mise run test:system:heavy",
   "mise run test:python:floors",
+  "mise run test:sandbox:docker --require",
 ]
 
 # ──────────────────────────────────────────────

@@ -13,6 +13,8 @@ python scripts/release.py X.Y.Z             # also commit and tag vX.Y.Z (does N
 git push origin HEAD --tags                 # you push; CI does the rest
 ```
 
+The gate is `mise run release:check`. Among its steps, `test:sandbox:docker --require` runs `SandboxEnv` and `SandboxModel` against real containers built from the release's wheel (see [testing](testing.md#sandbox-docker-gate)); it is required, so run the release from a machine with a Docker daemon. A failure there blocks the release like any other.
+
 `release.py` refuses to proceed if the working tree is dirty, the `vX.Y.Z` tag already exists, the changelog still has `<!-- DRAFT -->` markers, or there is no `## [X.Y.Z]` changelog section.
 
 The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and publishes to crates.io and PyPI through trusted publishing, then creates the GitHub Release with the curated release notes. Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions. In 0.2 the GitHub Release has no native distribution assets.
