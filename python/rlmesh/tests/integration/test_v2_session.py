@@ -27,6 +27,8 @@ import numpy as np
 import pytest
 import rlmesh.realtime as rlmesh
 from rlmesh import _rlmesh
+from rlmesh.realtime import results
+from typed_results import check
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SPEC = REPO_ROOT / "crates" / "rlmesh-session-core" / "tests"
@@ -517,12 +519,14 @@ def test_an_operator_hands_the_arm_back_and_the_parked_model_resumes_it(
         operator.acquire()
         wait_until("the model parked", lambda: model.stats()["parked"] == ["ur10e:arm"])
 
-        assert operator.release(to="model") == [
-            {"to": "model", "parts": ["ur10e:arm"], "taken": True}
-        ]
+        handed = operator.release(to="model")
+        assert handed == [{"to": "model", "parts": ["ur10e:arm"], "taken": True}]
+        check(handed, list[results.HandBack], "release(to=)")
         wait_until("the model driving again, handed back", driving)
         assert model.stats()["parked"] == []
-        events = [e for e in model.events() if e["kind"] == "handed_back"]
+        taken = model.events()
+        check(taken, list[results.Event], "events()")
+        events = [e for e in taken if e["kind"] == "handed_back"]
         assert [(e["part"], e["by"]) for e in events] == [("ur10e:arm", "teleop")]
         # Nothing held, nothing to hand back.
         with pytest.raises(rlmesh.SessionRefused, match="holds no lease"):
@@ -1031,10 +1035,14 @@ def test_a_run_on_a_disarmed_session_says_it_waits_to_be_armed(
                     lambda obs: {"arm": np.zeros((1, 2), np.float32)}, duration=30.0
                 )
             )
-            wait_until(
-                "the run says it waits",
-                lambda: any(e["kind"] == "waiting_to_arm" for e in policy.events()),
-            )
+            said: list[Any] = []
+
+            def says_it_waits() -> bool:
+                said.extend(policy.events())
+                return any(e["kind"] == "waiting_to_arm" for e in said)
+
+            wait_until("the run says it waits", says_it_waits)
+            check(said, list[results.Event], "events()")
             waiting = policy.stats()["waiting"]
             assert waiting.startswith("the session is DISARMED"), waiting
             assert "robot.arm()" in waiting
@@ -1412,6 +1420,8 @@ def test_a_robot_held_in_an_armed_session_needs_a_rearm_by_name(
             policy.bind()
             wait_until("the policy sees eye-2 held", lambda: bool(policy.held))
             [entry] = policy.held
+            check(policy.held, list[results.Held], "Policy.held")
+            check(first.held, list[results.Held], "Robot.held")
             assert (entry["robot"], entry["reason"]) == ("eye-2", "unspecified")
             assert entry["detail"] == "declared commandable parts while armed"
             assert entry["at_ns"] > 0
