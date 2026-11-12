@@ -92,6 +92,8 @@ void setup() {
   pinMode(kBootPin, INPUT_PULLUP);
 
   WiFi.mode(WIFI_STA);
+  // Power save holds each frame for the access point's next beacon (~100 ms).
+  WiFi.setSleep(false);
   WiFi.begin(kSsid, kPassword);
   Serial.printf("Wi-Fi: joining %s", kSsid);
   while (WiFi.status() != WL_CONNECTED) {
