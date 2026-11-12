@@ -333,7 +333,7 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
         };
         EnvServer::lanes_resolved(lanes, server_options, publish)?
     };
-    print_serving(server.address(), started);
+    server.print_when_ready(started);
     Ok(server)
 }
 
@@ -358,14 +358,6 @@ pub(crate) fn catalog_entries(variants: &[Variant]) -> Result<serde_json::Value>
         entries.push(variant_json(variant)?);
     }
     Ok(serde_json::Value::Array(entries))
-}
-
-#[allow(clippy::print_stdout)]
-fn print_serving(address: &str, started: Instant) {
-    println!(
-        "RLMesh serving env on {address} (startup: listen {:.1}s)",
-        started.elapsed().as_secs_f64()
-    );
 }
 
 fn variant_json(variant: &Variant) -> Result<serde_json::Value> {

@@ -39,6 +39,12 @@ def test_serving_a_model_stamps_the_handshake_and_prints_the_phases(
     )
 
     class Served:
+        def _class_workflow_edition(self) -> None:
+            return None
+
+        def _edition_origin(self) -> object:
+            return type(self)
+
         def serve(
             self,
             address: str,
@@ -49,6 +55,12 @@ def test_serving_a_model_stamps_the_handshake_and_prints_the_phases(
         ) -> None:
             self.address = address
             self.options = options
+            # Nothing is printed before the model answers...
+            assert "RLMesh serving" not in capsys.readouterr().out
+            # ...which the native serve says through the ready hook.
+            serve._print_serving_line(  # pyright: ignore[reportPrivateUsage]
+                {"kind": "model", "address": "lab:7447#…/model"}
+            )
 
     served = Served()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)
@@ -58,8 +70,8 @@ def test_serving_a_model_stamps_the_handshake_and_prints_the_phases(
     assert served.address == "127.0.0.1:0"
     assert {"rlmesh.startup.model_ms", "rlmesh.startup.listen_ms"} <= stamped.keys()
     line = capsys.readouterr().out
-    assert line.startswith("RLMesh serving model on 127.0.0.1:0/model (startup: ")
-    assert "listen " in line
+    assert line.startswith("RLMesh serving model on lab:7447#…/model (startup: ")
+    assert "listen " in line and "ready " in line
 
 
 def test_serving_a_model_puts_its_describe_envelope_on_the_handshake(
@@ -156,7 +168,11 @@ def test_an_undescribable_target_still_serves(
     served = type(
         "Served",
         (),
-        {"serve": lambda self, address, *, name, options=None, batching=None: None},
+        {
+            "serve": lambda self, address, *, name, options=None, batching=None: None,
+            "_class_workflow_edition": lambda self: None,
+            "_edition_origin": lambda self: type(self),
+        },
     )()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)
 
@@ -235,11 +251,11 @@ def test_envelope_preferred_edition_is_what_the_serve_options_declare(
     )
 
 
-def test_the_serving_line_never_shows_the_key(
+def test_an_env_prints_no_serving_line_before_it_answers(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # An env's bound address is its invite, key included; stdout is a
-    # container's log, so the line shows it without the key, as a model's.
+    # The line comes from the native ready hook (redacted there), never from
+    # the bound address, which is the invite with its key.
     import rlmesh._peer_info as peer_info
 
     monkeypatch.setattr(serve, "_marks", {})
@@ -256,7 +272,7 @@ def test_the_serving_line_never_shows_the_key(
     serve.serve_env(lambda: object(), "0.0.0.0:7610/env")
 
     out = capsys.readouterr().out
-    assert out.startswith("RLMesh serving env on 127.0.0.1:7610#…/env (startup: ")
+    assert "RLMesh serving" not in out
     assert "SECRET" not in out
 
 

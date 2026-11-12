@@ -99,6 +99,15 @@ impl EnvServer {
         Ok(())
     }
 
+    /// Print the serving line once the env answers, timed from `started`.
+    pub(crate) fn print_when_ready(&self, started: std::time::Instant) {
+        if let State::Ready(resources) = &mut *lock(&self.shared.state)
+            && let Some(announce) = resources.announce.as_mut()
+        {
+            announce.banner = Some(started);
+        }
+    }
+
     pub(crate) fn binding_description(&self) -> Result<String> {
         lock(&self.shared.binding_description)
             .clone()

@@ -201,7 +201,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 #### Python
 
 - `python -m rlmesh.serve`, a foreground `EnvServer.serve()` and `Model.serve()` drain and exit 0 on SIGTERM and 130 on Ctrl-C, and end at once on a second signal; a driver in a call to a server that went away gets a `ConnectionError` saying so.
-- `python -m rlmesh.serve`'s serving line leaves the address's key out (`#…`).
+- `python -m rlmesh.serve`'s serving line leaves the address's key out (`#…`), comes once the env or model answers, and shows an address a peer can dial (this machine's when it serves on every interface).
 - Running or serving an env or model that declares no workflow edition no longer warns; `rlmesh check`, `rlmesh check-image` and `rlmesh doctor` say where to pin it, and a session refused for want of a shared edition says to pin each side.
 - `[tool.rlmesh] workflow_edition` is read from the project that holds the env or model class, then from the working directory.
 - A lockstep env, model or driver leaving a session is no longer logged as a warning; losing a leased robot or policy still is.
@@ -229,6 +229,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 #### Python
 
 - A process that exits while a model is still serving no longer crashes during interpreter shutdown.
+- A native env factory's serving line no longer prints the session's key.
 - Run and session warnings point at the caller's line, so warning filters apply to your code.
 - `describe(rlmesh.Model(policy))` describes the wrapped policy, and `describe` reads `native_chunk` from the class.
 - `describe_json(..., served_env=[])` raises `ValueError` (it raised `IndexError`).

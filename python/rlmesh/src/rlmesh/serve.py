@@ -14,7 +14,9 @@ dials the keyed address its key forms. ``rlmesh host-identity new --address
 HOST:PORT --participant NAME`` makes both (``rlmesh.launch`` in Python); a
 sandbox does it for you. Without one, the process refuses to start and says
 so before it loads anything; ``RLMESH_ADDRESS=127.0.0.1:7447`` serves this
-machine only, with no identity. The serving line never shows the key.
+machine only, with no identity. The serving line, printed once the env or
+model answers, never shows the key; ``RLMESH_READY_FILE`` names a file
+written at the same moment, for a launcher to wait on.
 
 Every option has a command-line flag and an ``RLMESH_*`` environment variable,
 so a container is configured through its environment alone; a flag wins over
@@ -38,11 +40,12 @@ SIGTERM, 130 for SIGINT), without closing the env.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ._authoring import render_binding
@@ -97,19 +100,17 @@ def startup_marks() -> dict[str, str]:
 
 def _stamp_startup(
     kind: str,
-    address: str,
     target: object,
     served_env: object | None = None,
     *,
     options: ServeOptions | None = None,
 ) -> None:
-    """Mark the listen point, put the marks and the describe on the handshake, print them.
+    """Mark the listen point and put the marks and the describe on the handshake.
 
     ``options`` is what the server will serve with: its resolved
     ``workflow_edition`` is what the handshake declares, so the envelope is
     told the same value rather than re-resolving the class on its own.
     """
-    from ._client._endpoint import redact_address
     from ._peer_info import register_python_peer_info
     from ._rlmesh import DESCRIBE_METADATA_KEY
 
@@ -119,6 +120,15 @@ def _stamp_startup(
     if describe := _handshake_describe(target, kind, served_env, resolved):
         extra[DESCRIBE_METADATA_KEY] = describe
     register_python_peer_info(extra=extra)
+
+
+def _print_serving_line(ready: Mapping[str, object]) -> None:
+    """The serving line, once the participant answers, at an address a peer can dial.
+
+    Stdout is a container's log, and the key a credential: the address
+    comes redacted.
+    """
+    _mark("ready")
     phases = ", ".join(
         f"{phase} {ms / 1000:.1f}s"
         for phase, ms in (
@@ -126,13 +136,23 @@ def _stamp_startup(
         )
         + list(_marks.items())
     )
-    # Stdout is a container's log, and the key a credential: the line shows
-    # the address without it, for an env (whose bound address carries it)
-    # as for a model.
     print(
-        f"RLMesh serving {kind} on {redact_address(address)} (startup: {phases})",
+        f"RLMesh serving {ready['kind']} on {ready['address']} (startup: {phases})",
         flush=True,
     )
+
+
+@contextlib.contextmanager
+def _serving_line() -> Iterator[None]:
+    """Print the serving line when the served participant becomes ready."""
+    from ._load_native import load_native
+
+    set_ready_hook = load_native("set_ready_hook")
+    set_ready_hook(_print_serving_line)
+    try:
+        yield
+    finally:
+        set_ready_hook(None)
 
 
 def _handshake_describe(
@@ -212,7 +232,8 @@ def _refuse_unlaunched_wide_bind(address: str) -> None:
         f"{_HOST_IDENTITY_VAR}, through the environment, to the identity "
         "`rlmesh host-identity new --address HOST:PORT --participant NAME` makes "
         "(rlmesh.launch in Python), and dial the keyed address it prints; or set "
-        f"RLMESH_ADDRESS=127.0.0.1:{port} to serve this machine only"
+        f"RLMESH_ADDRESS=127.0.0.1:{port} to serve this machine only (in a "
+        "container, only that container: nothing outside it can reach it)"
     )
 
 
@@ -597,8 +618,8 @@ def serve_model(
     model's declared ``params`` and is applied to ``load(**binding)`` on the
     bootstrap-authoritative path. Heavy imports stay inside this call so importing
     the authoring base stays cheap. A one-line serving status is printed once the
-    model is resolved and loaded, before the blocking serve, with the startup
-    phase marks (see :func:`startup_marks`), which also ride the handshake.
+    model answers, with the address a peer dials and the startup phase marks
+    (see :func:`startup_marks`), which also ride the handshake.
     ``batching`` coalesces its predicts (:class:`rlmesh.BatchOptions`' defaults
     when ``None``).
     """
@@ -617,8 +638,9 @@ def serve_model(
         declared=model._class_workflow_edition(),  # pyright: ignore[reportPrivateUsage]
         origin=model._edition_origin(),  # pyright: ignore[reportPrivateUsage]
     )
-    _stamp_startup("model", f"{address.rstrip('/')}/{name}", model, options=options)
-    model.serve(address, name=name, options=options, batching=batching)
+    _stamp_startup("model", model, options=options)
+    with _serving_line():
+        model.serve(address, name=name, options=options, batching=batching)
 
 
 def _warn_without_spec(model: object) -> None:
@@ -707,7 +729,7 @@ def serve_env(
     :attr:`EnvFactory.workflow_edition <rlmesh.EnvFactory.workflow_edition>` and
     below ``RLMESH_WORKFLOW_EDITION``. Heavy imports stay inside this call so
     importing the authoring base stays cheap. A one-line serving status is
-    printed once the server has bound its address, before the blocking serve.
+    printed once the env answers, with the address a peer dials.
     """
     from rlmesh import EnvServer
 
@@ -788,8 +810,9 @@ def serve_env(
         options=options,
     )
     _mark("env")
-    _stamp_startup("env", server.address, env_source, env, options=options)
-    server.serve()
+    _stamp_startup("env", env_source, env, options=options)
+    with _serving_line():
+        server.serve()
 
 
 if __name__ == "__main__":
