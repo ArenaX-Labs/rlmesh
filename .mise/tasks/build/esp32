@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 #MISE description="Build the device runtime (crates/rlmesh-device) for each ESP32 the Arduino library supports (the C6 on stable Rust; the classic ESP32 with Espressif's Rust fork, when installed), stage it into integrations/esp32, merge a private zenoh-pico transport into each archive, package one RLMesh zip per chip, and compile the library's examples with arduino-cli"
 #MISE dir="{{ config_root }}"
-set -euo pipefail
+set -Eeuo pipefail
+
+# One build at a time on this machine: two at once share this checkout's
+# zenoh-pico tree (deleted, copied and patched each run), its cmake and
+# transport build directories, and arduino-cli's core cache (~/.cache/arduino),
+# which every checkout uses. A second one waits for the first, and says so.
+if [ -z "${RLMESH_MACHINE_LOCK_ESP32_FD:-}" ]; then
+  exec python3 scripts/dev/machine_lock.py esp32 "$0" "$@"
+fi
+# A step that fails says which: mise reports only "task failed".
+trap 'echo "build:esp32: failed (exit $?) at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 lib=integrations/esp32
 target_dir="${CARGO_TARGET_DIR:-target}"
