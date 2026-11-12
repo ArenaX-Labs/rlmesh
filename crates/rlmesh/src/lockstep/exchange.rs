@@ -32,7 +32,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use rlmesh_session::Sealer;
-use rlmesh_session::transport::payload_bytes;
+use rlmesh_session::transport::{Transport, payload_bytes};
 use rlmesh_session::wire::timing::ns;
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, LeaseToken, LockstepOp, LockstepReply, LockstepRequest,
@@ -319,7 +319,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// A query on `l/{robot}` over the lockstep class session, sealed under
 /// the lease's keys.
 pub struct ZenohLink {
-    session: zenoh::Session,
+    /// Held as a transport so that dropping the last handle closes it off
+    /// the dropping thread.
+    session: Transport,
     key: String,
     sealer: Sealer,
     robot: ParticipantId,
@@ -338,7 +340,7 @@ impl ZenohLink {
         token: LeaseToken,
     ) -> Self {
         Self {
-            session,
+            session: Transport::from_session(session),
             key,
             sealer,
             robot,
@@ -384,6 +386,7 @@ impl ZenohLink {
         )?;
         let replies = self
             .session
+            .control()
             .get(&self.key)
             .payload(sealed)
             .consolidation(ConsolidationMode::None)
@@ -542,7 +545,11 @@ pub async fn serve_zenoh(
     cancel: CancellationToken,
     sealer: Sealer,
 ) -> Result<(), GymError> {
+    // Held as a transport: a serve cancelled with the last handle closes it
+    // off the dropping thread.
+    let session = Transport::from_session(session);
     let queryable = session
+        .control()
         .declare_queryable(&key)
         .complete(true)
         .await
@@ -662,5 +669,36 @@ mod tests {
         );
         let late = unanswered(&robot, started, Duration::from_millis(50));
         assert!(matches!(late, GymError::Timeout(_)), "{late:?}");
+    }
+
+    #[test]
+    fn dropping_a_zenoh_link_takes_no_wakeup_of_another_future() {
+        use crate::lockstep::linked_host::{LinkedHost, timer_survives};
+        use rlmesh_session::wire::{PriorityClass, Role};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (host, driver, link) = runtime.block_on(async {
+            let host = LinkedHost::start().await;
+            let driver = host
+                .attach("driver", Role::Controller, PriorityClass::Model)
+                .await;
+            let session =
+                crate::lockstep::session::lockstep_session(driver.transport(), &host.address)
+                    .await
+                    .unwrap();
+            let robot = ParticipantId::new("robot").unwrap();
+            let link = ZenohLink::new(
+                session,
+                host.keys().lockstep(&robot),
+                driver.sealer(),
+                robot,
+                LeaseToken(0),
+            );
+            (host, driver, link)
+        });
+        // The link holds the only handle on its session.
+        let dropped = timer_survives(async move { drop(link) });
+        assert!(dropped, "a dropped link's session took a pending wakeup");
+        drop((driver, host));
     }
 }

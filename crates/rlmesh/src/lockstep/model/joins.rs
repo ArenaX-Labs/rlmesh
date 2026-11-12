@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rlmesh_session::address::SessionAddress;
-use rlmesh_session::transport::payload_bytes;
+use rlmesh_session::transport::{Transport, payload_bytes};
 use rlmesh_session::wire::codec::{decode_model_request, encode_model_reply};
 use rlmesh_session::wire::timing::ns;
 use rlmesh_session::wire::{
@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use super::{ModelService, PROBE, fault};
 use crate::lockstep::error::GymError;
-use crate::lockstep::session::lockstep_session;
+use crate::lockstep::session::lockstep_transport;
 use crate::model::handler::ModelHandler;
 
 /// The sessions a served model joined at its drivers' invitation, each
@@ -253,7 +253,7 @@ pub(super) fn answer_in<H: ModelHandler + 'static>(
     cancel: CancellationToken,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GymError>> + Send>> {
     Box::pin(async move {
-        let lockstep = lockstep_session(participant.transport(), &session).await?;
+        let lockstep = lockstep_transport(participant.transport(), &session).await?;
         let key = participant.keys().model(&joins.name);
         info!(model = %joins.name, %key, "model serving");
         let served = serve_zenoh(lockstep.clone(), key, joins, cancel).await;
@@ -268,12 +268,13 @@ pub(super) fn answer_in<H: ModelHandler + 'static>(
 /// Answers the model's requests on `key` until `cancel` fires. Requests run
 /// side by side; the handler's lock orders forwards.
 async fn serve_zenoh<H: ModelHandler + 'static>(
-    session: zenoh::Session,
+    session: Transport,
     key: String,
     joins: Arc<Joins<H>>,
     cancel: CancellationToken,
 ) -> Result<(), GymError> {
     let queryable = session
+        .control()
         .declare_queryable(&key)
         .complete(true)
         .await
@@ -423,5 +424,56 @@ mod rejoin_tests {
         cancel.cancel();
         served.await.unwrap().unwrap();
         target.close().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod blocking_tests {
+    use super::*;
+    use crate::lockstep::linked_host::{LinkedHost, timer_survives};
+
+    #[test]
+    fn dropping_a_model_answering_in_a_session_takes_no_wakeup_of_another_future() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (host, answering) = runtime.block_on(async {
+            let host = LinkedHost::start().await;
+            let participant = host
+                .attach("model", Role::Controller, PriorityClass::Model)
+                .await;
+            assert!(crate::lockstep::session::owns_links(
+                participant.transport()
+            ));
+            let name = ParticipantId::new("model").unwrap();
+            let key = host.keys().model(&name);
+            let joins = Arc::new(Joins {
+                name,
+                service: Arc::new(ModelService::new(
+                    crate::model::random::RandomSampleHandler::default(),
+                    String::new(),
+                )),
+                timeout: Duration::from_secs(5),
+                shutdown: CancellationToken::new(),
+                sessions: std::sync::Mutex::default(),
+            });
+            let mut answering = answer_in(
+                joins,
+                participant,
+                host.address.clone(),
+                CancellationToken::new(),
+            );
+            // Answering over its own lockstep session once that answers.
+            tokio::select! {
+                ended = &mut answering => panic!("the model stopped answering: {ended:?}"),
+                () = host.answered(&key) => {}
+            }
+            (host, answering)
+        });
+        // The answer is cancelled: its lockstep session goes unclosed.
+        let dropped = timer_survives(async move { drop(answering) });
+        assert!(
+            dropped,
+            "a cancelled model's lockstep session took a pending wakeup"
+        );
+        drop(host);
     }
 }

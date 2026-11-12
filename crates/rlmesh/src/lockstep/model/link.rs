@@ -18,7 +18,7 @@ use zenoh::query::ConsolidationMode;
 use super::joins::{Joins, answer_in};
 use super::{ModelService, PROBE};
 use crate::lockstep::error::GymError;
-use crate::lockstep::session::lockstep_session;
+use crate::lockstep::session::lockstep_transport;
 use crate::model::handler::ModelHandler;
 
 /// How long a model query waits when the request sets no deadline.
@@ -270,8 +270,10 @@ impl ModelConnection {
         let participant = session
             .join(id, vec![Role::Controller], PriorityClass::Model, timeout)
             .await?;
-        let lockstep_session = lockstep_session(participant.transport(), session).await?;
-        let link = ModelLink::new(lockstep_session.clone(), participant.keys().model(model));
+        let link = ModelLink {
+            session: lockstep_transport(participant.transport(), session).await?,
+            key: participant.keys().model(model),
+        };
         link.wait_ready(timeout).await.map_err(|err| match err {
             GymError::Timeout(_) => GymError::Session(SessionError::Config(format!(
                 "no model {model} answered at {session}/{model} within {timeout:?}"

@@ -29,6 +29,8 @@ pub mod client;
 pub mod error;
 pub mod escape;
 pub mod exchange;
+#[cfg(test)]
+pub(crate) mod linked_host;
 pub mod map;
 pub mod meta_json;
 pub mod model;

@@ -224,7 +224,10 @@ pub(crate) fn owns_links(transport: &Transport) -> bool {
 /// The lockstep class session of a participant of the session at
 /// `address`: the transport's own when it opens no links of its own
 /// (close it only when it does), else a link of its own to the host,
-/// presenting what the participant's links did.
+/// presenting what the participant's links did. Zenoh closes a session
+/// whose last handle drops on the dropping thread, in a nested `block_on`:
+/// hold it with [`Transport::from_session`] to have that happen on a thread
+/// of its own.
 pub async fn lockstep_session(
     transport: &Transport,
     address: &SessionAddress,
@@ -253,6 +256,18 @@ pub async fn lockstep_session(
     rlmesh_session::transport::open_session(config)
         .await
         .map_err(|e| GymError::Closed(e.to_string()))
+}
+
+/// [`lockstep_session`], held as a transport: Zenoh closes a session whose
+/// last handle drops in a nested `block_on` on the dropping thread, and a
+/// transport's last handle closes it on a thread of its own instead.
+pub(crate) async fn lockstep_transport(
+    transport: &Transport,
+    address: &SessionAddress,
+) -> Result<Transport, GymError> {
+    lockstep_session(transport, address)
+        .await
+        .map(Transport::from_session)
 }
 
 /// Env-side options.
@@ -492,7 +507,7 @@ async fn serve_robot(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(local_key.clone(), Arc::downgrade(&handler));
-        let lockstep = lockstep_session(participant.transport(), &address.session).await?;
+        let lockstep = lockstep_transport(participant.transport(), &address.session).await?;
         Ok((handler, lockstep))
     }
     .await;
@@ -519,7 +534,7 @@ async fn serve_robot(
     let key = participant.keys().lockstep(&address.robot);
     info!(robot = %address.robot, %key, "lockstep robot serving");
     let served = serve_zenoh(
-        lockstep.clone(),
+        lockstep.control().clone(),
         key,
         handler.clone(),
         shutdown,
@@ -576,7 +591,7 @@ fn own_parts(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> Vec<PartSpe
 /// session, and the session's host when the driver hosts it.
 struct Held {
     participant: Participant,
-    lockstep: Option<zenoh::Session>,
+    lockstep: Option<Transport>,
     placed: Placed,
 }
 
@@ -787,10 +802,10 @@ impl Attached {
             Some(handler) => (Arc::new(DirectLink(handler)), None),
             None => {
                 let session =
-                    lockstep_session(participant.transport(), &self.address.session).await?;
+                    lockstep_transport(participant.transport(), &self.address.session).await?;
                 let keys: &SessionKeys = participant.keys();
                 let link = ZenohLink::new(
-                    session.clone(),
+                    session.control().clone(),
                     keys.lockstep(&self.address.robot),
                     participant.sealer(),
                     self.address.robot.clone(),
@@ -993,4 +1008,68 @@ pub(crate) fn uuid_suffix() -> String {
         .rev()
         .take(12)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lockstep::exchange::Request;
+    use crate::lockstep::linked_host::{LinkedHost, timer_survives};
+    use rlmesh_session::wire::LockstepReply;
+
+    const ROBOT: &str = r#"{
+        "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 1000,
+                "command": "position", "safe": "stop", "max_action_age_ms": 1000}
+    }"#;
+
+    /// Answers nothing: what is served does not matter here.
+    struct Idle;
+
+    #[async_trait::async_trait]
+    impl LockstepHandler for Idle {
+        async fn handle(&self, _: Request) -> Result<LockstepReply, GymError> {
+            Err(GymError::Closed("idle".into()))
+        }
+    }
+
+    #[test]
+    fn dropping_a_serving_robot_takes_no_wakeup_of_another_future() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (host, serving) = runtime.block_on(async {
+            let host = LinkedHost::start().await;
+            let participant = host
+                .attach("robot", Role::Embodiment, PriorityClass::Scripted)
+                .await;
+            assert!(owns_links(participant.transport()));
+            let robot = ParticipantId::new("robot").unwrap();
+            let key = host.keys().lockstep(&robot);
+            let binding = LockstepBinding {
+                address: LockstepAddress {
+                    session: host.address.clone(),
+                    robot,
+                },
+                placed: Placed::joined(host.address.clone()),
+                participant,
+            };
+            let mut serving = Box::pin(binding.serve_robot(
+                ROBOT,
+                ServeOptions::default(),
+                CancellationToken::new(),
+                |_| Ok(Arc::new(Idle) as Arc<dyn LockstepHandler>),
+            ));
+            // Served over its own lockstep session once that answers.
+            tokio::select! {
+                ended = &mut serving => panic!("the robot stopped serving: {ended:?}"),
+                () = host.answered(&key) => {}
+            }
+            (host, serving)
+        });
+        // The serve is cancelled: its lockstep session goes unclosed.
+        let dropped = timer_survives(async move { drop(serving) });
+        assert!(
+            dropped,
+            "a cancelled robot's lockstep session took a pending wakeup"
+        );
+        drop(host);
+    }
 }
