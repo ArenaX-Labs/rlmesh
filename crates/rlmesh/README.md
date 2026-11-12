@@ -300,7 +300,7 @@ When a model and an env describe their observations and actions differently (cam
 **`rlmesh::ext`** holds Rust-only extras that sit beside the shared surface:
 
 - `ext::CancelToken`: a cloneable cancellation handle. Pass it in `RunOptions::cancel` (or the serve and factory options) and call `cancel()` from anywhere; the call in flight fails with `Error::Cancelled`. `RemoteEnv::cancel_handle` returns the token a handle already uses.
-- `ext::TensorExt` (zero-copy `from_vec`, `zeros`, `stack`, `unstack`, storage and stride access) and `ext::SpaceExt::contains_detail` (why a value is not in a space).
+- `ext::TensorExt` (zero-copy `from_vec`, `zeros`, `stack`, `unstack`, storage and stride access), `ext::SpaceExt::contains_detail` (why a value is not in a space) and `ext::ErrorExt::is_transient` (whether retrying a failed call can succeed).
 - Raw DLPack types in `ext::dlpack`, and `ext::register_entrypoint` for custom adapter transforms.
 
 ## Errors

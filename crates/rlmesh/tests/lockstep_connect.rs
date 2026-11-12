@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::CatalogEnv;
+use rlmesh::ext::ErrorExt;
 use rlmesh::lockstep::ConnectOptions;
 use rlmesh_spaces::AutoresetMode;
 

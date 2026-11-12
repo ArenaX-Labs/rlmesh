@@ -85,7 +85,7 @@ impl GymError {
     }
 
     /// Whether retrying the same call can succeed, as
-    /// [`crate::Error::is_transient`] answers it: a peer not reachable or not
+    /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient) answers it: a peer not reachable or not
     /// there yet (no host listening, no reply in time, the robot not joined,
     /// its lease held by another driver), or the env's recoverable failure.
     /// A refusal that the same call meets again is not: a key the host does

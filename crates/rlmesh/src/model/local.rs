@@ -359,7 +359,8 @@ impl LockstepEnv {
     /// [`crate::lockstep::connect`] skips these checks.
     ///
     /// # Errors
-    /// [`Error::is_transient`] says whether retrying can succeed: a host not
+    /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient) says
+    /// whether retrying can succeed: a host not
     /// listening yet or an env not joined yet is transient; a key the host
     /// refuses, an edition the env does not run, or a contract the driver
     /// cannot represent is final.
