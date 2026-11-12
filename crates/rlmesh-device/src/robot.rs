@@ -384,6 +384,17 @@ fn copied(payload: &[u8]) -> Option<Vec<u8>> {
     Some(copy)
 }
 
+/// `v` holding `items` instead, in room that may fail (then `false`, and `v`
+/// empty): a list kept between messages allocates only to grow.
+fn refill<T, I: Iterator<Item = T>>(v: &mut Vec<T>, items: impl Fn() -> I) -> bool {
+    v.clear();
+    if v.try_reserve(items().count()).is_err() {
+        return false;
+    }
+    v.extend(items());
+    true
+}
+
 /// Why [`Robot::publish`] sent nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishError {
@@ -393,6 +404,9 @@ pub enum PublishError {
     UnknownPart,
     /// Not the part's dense layout.
     Invalid,
+    /// The heap has no room to seal it now ([`crate::heap`]): skipped, and
+    /// counted in [`Robot::unsent`].
+    NoMemory,
 }
 
 /// A query the robot waits on: over at `deadline`, whatever the transport
@@ -797,6 +811,11 @@ pub struct Robot {
     datagram: Option<DatagramLink>,
     /// Times it gave the datagram path up, over every attach.
     datagram_fallbacks: u32,
+    /// The heartbeat, kept between beats so that its lists keep their room:
+    /// a beat allocates nothing for them once they are as long as before.
+    beat: Heartbeat,
+    /// Heartbeats and samples it skipped sending for want of memory.
+    unsent: u64,
 }
 
 impl core::fmt::Debug for Robot {
@@ -854,6 +873,7 @@ impl Robot {
         let target = config.homes.first().cloned().ok_or(ConfigError::NoHome)?;
         let credential = config.credential.clone();
         let stored = config.homes.len();
+        let name = config.name.clone();
         let robot = Box::<Self>::new_uninit();
         Ok(Box::write(
             robot,
@@ -881,7 +901,9 @@ impl Robot {
                 refused_ms: RETRY_MS,
                 left: None,
                 phase: Phase::Host,
-                out: Vec::new(),
+                // A poll's actions: more than a join's subscriptions, so a
+                // running robot's never grow.
+                out: Vec::with_capacity(16),
                 started: false,
                 next_query: 0,
                 waiting: None,
@@ -926,6 +948,25 @@ impl Robot {
                 datagram_wanted: true,
                 datagram: None,
                 datagram_fallbacks: 0,
+                beat: Heartbeat {
+                    participant: name,
+                    epoch: Epoch(0),
+                    mode: Mode::Disarmed,
+                    seq: 0,
+                    t1_ns: 0,
+                    previous: None,
+                    last_seq_seen: Vec::new(),
+                    last_chunk_accepted: 0,
+                    last_chunk_applied: 0,
+                    queue_depth: 0,
+                    health: Health::Ok,
+                    rejected: Vec::new(),
+                    clock_refused: Vec::new(),
+                    chunk_timing: Vec::new(),
+                    chunks_accepted: 0,
+                    datagram: None,
+                },
+                unsent: 0,
             },
         ))
     }
@@ -1101,6 +1142,12 @@ impl Robot {
         self.attaches
     }
 
+    /// Heartbeats and samples it skipped sending because the heap had no
+    /// room for them ([`crate::heap`]), over every attach.
+    pub fn unsent(&self) -> u64 {
+        self.unsent
+    }
+
     /// Whether it takes the host's datagram path when the host offers it
     /// (the default): `false` keeps every part on the session's links. Takes
     /// effect from its next attach.
@@ -1238,8 +1285,23 @@ impl Robot {
     /// Runs the timers and returns what the transport should do next, in
     /// order.
     pub fn poll(&mut self, now_us: u64) -> Vec<Action> {
+        self.run(now_us);
+        core::mem::take(&mut self.out)
+    }
+
+    /// [`Self::poll`] into `out`, appended: neither list allocates once it
+    /// has held as many actions before, and without room to take them all
+    /// they wait for the next call.
+    pub fn poll_into(&mut self, now_us: u64, out: &mut VecDeque<Action>) {
+        self.run(now_us);
+        if out.try_reserve(self.out.len()).is_ok() {
+            out.extend(self.out.drain(..));
+        }
+    }
+
+    fn run(&mut self, now_us: u64) {
         if self.phase == Phase::Stopped {
-            return core::mem::take(&mut self.out);
+            return;
         }
         self.expire_queries(now_us);
         if !self.started {
@@ -1308,7 +1370,6 @@ impl Robot {
             self.tend_datagram(now_us);
         }
         self.next_ctl(now_us);
-        core::mem::take(&mut self.out)
     }
 
     /// The datagram path on each poll: a probe when one is due, and the
@@ -1896,6 +1957,10 @@ impl Robot {
             if !outlet.admit(now_us) {
                 continue;
             }
+            if !crate::heap::room() {
+                self.unsent = self.unsent.saturating_add(1);
+                continue;
+            }
             let sealed = Sample {
                 channel: stream.spec.channel,
                 epoch,
@@ -1968,6 +2033,10 @@ impl Robot {
         let outlet = self.seqs.entry(stream.spec.channel).or_default();
         if !outlet.admit(now_us) {
             return Ok(());
+        }
+        if !crate::heap::room() {
+            self.unsent = self.unsent.saturating_add(1);
+            return Err(PublishError::NoMemory);
         }
         let sample = Sample {
             channel: stream.spec.channel,
@@ -2108,19 +2177,6 @@ impl Robot {
     /// (in order: before any `Clear` queued after it). Already latched, it
     /// keeps the first reason and queues nothing: a held button or a stream
     /// of e-stop signals never floods the control queue.
-    /// Chunks its edges refused, by reason (nonzero only): a compact report
-    /// riding each heartbeat.
-    fn rejected(&self) -> Vec<(Rejection, u64)> {
-        Rejection::ALL
-            .iter()
-            .map(|r| {
-                let n = self.edges.iter().map(|e| e.core.rejected(*r)).sum::<u64>();
-                (*r, n)
-            })
-            .filter(|(_, n)| *n > 0)
-            .collect()
-    }
-
     fn latch(&mut self, reason: Reason) {
         if self.estop.is_some() {
             return;
@@ -2599,46 +2655,51 @@ impl Robot {
 
     fn heartbeat(&mut self, now_us: u64) {
         self.next_heartbeat = now_us + u64::from(self.config.heartbeat_ms) * 1000;
+        if !crate::heap::room() {
+            self.unsent = self.unsent.saturating_add(1);
+            return;
+        }
         self.heartbeat_seq += 1;
         let (epoch, mode) = self
             .view
             .as_ref()
             .map_or((Epoch(0), Mode::Disarmed), |s| (s.epoch, s.mode));
-        let queue_depth = self
-            .edges
+        let edges = &self.edges;
+        let beat = &mut self.beat;
+        beat.epoch = epoch;
+        beat.mode = mode;
+        beat.seq = self.heartbeat_seq;
+        beat.t1_ns = ns(now_us);
+        beat.previous = self.previous.take();
+        beat.last_chunk_accepted = self.last_accepted;
+        beat.last_chunk_applied = self.applied;
+        beat.queue_depth = edges
             .iter()
             .map(|e| u32::try_from(e.core.queue_depth()).unwrap_or(u32::MAX))
             .sum();
-        let heartbeat = Heartbeat {
-            participant: self.config.name.clone(),
-            epoch,
-            mode,
-            seq: self.heartbeat_seq,
-            t1_ns: ns(now_us),
-            previous: self.previous.take(),
-            last_seq_seen: Vec::new(),
-            last_chunk_accepted: self.last_accepted,
-            last_chunk_applied: self.applied,
-            queue_depth,
-            health: Health::Ok,
-            rejected: self.rejected(),
-            clock_refused: self
-                .edges
-                .iter()
-                .filter_map(|e| e.core.clock_refused().cloned())
-                .collect(),
-            chunk_timing: self
-                .edges
-                .iter()
-                .flat_map(|e| e.core.timing().copied())
-                .collect(),
-            chunks_accepted: self.accepted,
-            datagram: self.datagram_stats(),
+        beat.chunks_accepted = self.accepted;
+        beat.datagram = self.datagram.as_ref().map(DatagramLink::stats);
+        // Chunks its edges refused, by reason (nonzero only), what kept
+        // their clocks from mapping, and how each part's chunks arrived.
+        let rejected = || {
+            Rejection::ALL.iter().filter_map(|r| {
+                let n = edges.iter().map(|e| e.core.rejected(*r)).sum::<u64>();
+                (n > 0).then_some((*r, n))
+            })
         };
+        let refused = || edges.iter().filter_map(|e| e.core.clock_refused().cloned());
+        let timing = || edges.iter().flat_map(|e| e.core.timing().copied());
+        if !refill(&mut beat.rejected, rejected)
+            || !refill(&mut beat.clock_refused, refused)
+            || !refill(&mut beat.chunk_timing, timing)
+        {
+            self.unsent = self.unsent.saturating_add(1);
+            return;
+        }
         let Some(link) = self.link.as_mut() else {
             return;
         };
-        if let Ok(sealed) = link.heartbeat(&self.routes.heartbeat, &heartbeat) {
+        if let Ok(sealed) = link.heartbeat(&self.routes.heartbeat, &self.beat) {
             self.out.push(Action::Publish {
                 class: CLASS_CONTROL,
                 key: self.routes.heartbeat.clone(),

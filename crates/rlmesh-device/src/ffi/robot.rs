@@ -12,7 +12,7 @@ use rlmesh_session_core::wire::{
 
 use super::{
     CRng, RLMESH_DEVICE_ERR_ARG, RLMESH_DEVICE_ERR_CONFIG, RLMESH_DEVICE_ERR_INVALID,
-    RLMESH_DEVICE_ERR_NOT_READY, RLMESH_DEVICE_OK, Random,
+    RLMESH_DEVICE_ERR_NO_MEMORY, RLMESH_DEVICE_ERR_NOT_READY, RLMESH_DEVICE_OK, Random,
 };
 use rlmesh_session_core::auth::Credential;
 use rlmesh_session_core::crypto::{Checked, SignedChecker, StaticKeypair};
@@ -354,7 +354,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
     let robot = Box::new(DeviceRobot {
         robot,
         rng: CRng(random),
-        queue: VecDeque::new(),
+        // Room for a poll's actions, kept: see `Robot::poll_into`.
+        queue: VecDeque::with_capacity(16),
         host,
         home_id,
         key: Vec::new(),
@@ -448,7 +449,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
         return RLMESH_DEVICE_ERR_ARG;
     }
     if r.queue.is_empty() {
-        r.queue.extend(r.robot.poll(now_us));
+        r.robot.poll_into(now_us, &mut r.queue);
         // A new host (a run elsewhere, another home address) comes with a
         // reset: the transport reads it then.
         if r.host.split_last().map(|(_, h)| h) != Some(r.robot.host().0.as_bytes()) {
@@ -499,7 +500,14 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             None,
         ),
     };
-    r.key = key.into_bytes();
+    // NUL-terminated into the buffer kept for it: no allocation once it has
+    // held a key this long (one that can't grow keeps the action's own).
+    r.key.clear();
+    if r.key.try_reserve(key.len() + 1).is_ok() {
+        r.key.extend_from_slice(key.as_bytes());
+    } else {
+        r.key = key.into_bytes();
+    }
     r.key.push(0);
     let has_payload = payload.is_some();
     r.payload = payload.unwrap_or_default();
@@ -1092,6 +1100,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_publish(
         Err(PublishError::UnknownPart) => RLMESH_DEVICE_ERR_ARG,
         Err(PublishError::NotReady) => RLMESH_DEVICE_ERR_NOT_READY,
         Err(PublishError::Invalid) => RLMESH_DEVICE_ERR_INVALID,
+        Err(PublishError::NoMemory) => RLMESH_DEVICE_ERR_NO_MEMORY,
     }
 }
 
@@ -1295,6 +1304,16 @@ pub unsafe extern "C" fn rlmesh_device_robot_refusals_total(
 pub unsafe extern "C" fn rlmesh_device_robot_attaches(robot: *const DeviceRobot) -> u32 {
     // SAFETY: per the contract.
     unsafe { robot.as_ref() }.map_or(0, |r| r.robot.attaches())
+}
+
+/// Heartbeats and samples the robot skipped sending for want of memory.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_unsent(robot: *const DeviceRobot) -> u64 {
+    // SAFETY: per the contract.
+    unsafe { robot.as_ref() }.map_or(0, |r| r.robot.unsent())
 }
 
 /// How part `part`'s chunks arrived this attach, into `*out`.

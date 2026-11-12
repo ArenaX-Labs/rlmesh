@@ -28,6 +28,8 @@ pub const RLMESH_DEVICE_ERR_CONFIG: c_int = -4;
 pub const RLMESH_DEVICE_ERR_NOT_READY: c_int = -5;
 /// A value not in its part's dense layout.
 pub const RLMESH_DEVICE_ERR_INVALID: c_int = -6;
+/// `RLMESH_DEVICE_ERR_NO_MEMORY`.
+pub const RLMESH_DEVICE_ERR_NO_MEMORY: c_int = -7;
 
 /// The platform's microsecond clock.
 pub type NowUs = unsafe extern "C" fn() -> u64;

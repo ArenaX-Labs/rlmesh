@@ -57,6 +57,9 @@ int rlmesh_device_timing(rlmesh_device_now_us_fn now_us, rlmesh_device_random_fn
 #define RLMESH_DEVICE_ERR_NOT_READY (-5)
 /* A value not in its part's dense layout. */
 #define RLMESH_DEVICE_ERR_INVALID (-6)
+/* The heap had no room for it now: nothing was sent (counted in
+ * rlmesh_device_robot_unsent). */
+#define RLMESH_DEVICE_ERR_NO_MEMORY (-7)
 
 /* The board as a robot in a session. It holds no network: the platform's
  * transport (zenoh-pico) carries out the actions rlmesh_device_robot_next hands
@@ -328,6 +331,9 @@ uint64_t rlmesh_device_robot_refusals_total(const rlmesh_device_robot_t* robot, 
 /* Attaches the host accepted, in any session: one more each time the robot
  * joined again. */
 uint32_t rlmesh_device_robot_attaches(const rlmesh_device_robot_t* robot);
+/* Heartbeats and samples the robot skipped sending because the heap had no
+ * room for them, over every attach. */
+uint64_t rlmesh_device_robot_unsent(const rlmesh_device_robot_t* robot);
 
 /* Lateness buckets of rlmesh_device_chunk_timing_t. */
 #define RLMESH_DEVICE_LATE_BUCKETS 8
