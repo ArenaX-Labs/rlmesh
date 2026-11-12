@@ -76,12 +76,17 @@ impl OffsetEstimate {
 /// The error bound is ε = ⌈δ/2⌉ + 1 + ⌈drift × (age + δ)⌉: half the round trip
 /// (delay asymmetry), one nanosecond of flooring, and the drift accumulated
 /// since the sample. The best sample is the one with the smallest bound now,
-/// so a low-δ sample is kept until its age makes a fresher one better.
+/// so a low-δ sample is kept until its age makes a fresher one better: also
+/// past the window, which a burst of slow exchanges (a link that stalled,
+/// then delivered its queued heartbeats at once) would otherwise empty of
+/// every good one. Its bound grows with its age, so it holds as it did.
 // TODO: a participant declaring `ptp_synced` should take ε from PTP instead.
 #[derive(Clone, Debug)]
 pub struct OffsetEstimator {
     config: OffsetEstimatorConfig,
     window: VecDeque<TimingSample>,
+    /// The best sample the window let go of, while none in it is better.
+    held: Option<TimingSample>,
 }
 
 impl OffsetEstimator {
@@ -90,6 +95,7 @@ impl OffsetEstimator {
         Self {
             config,
             window: VecDeque::with_capacity(config.window.max(1)),
+            held: None,
         }
     }
 
@@ -109,8 +115,20 @@ impl OffsetEstimator {
         {
             return false;
         }
-        if self.window.len() == self.config.window.max(1) {
-            self.window.pop_front();
+        if self.window.len() == self.config.window.max(1)
+            && let Some(out) = self.window.pop_front()
+        {
+            // Kept while it is the best there is, by its bound now.
+            let now = sample.t3_ns;
+            let bound = |s: &TimingSample| self.bound_ns(s, now);
+            let best_left = self.window.iter().chain([&sample]).map(bound).min();
+            let candidate = match self.held {
+                Some(held) if bound(&held) <= bound(&out) => held,
+                _ => out,
+            };
+            self.held = best_left
+                .is_none_or(|b| bound(&candidate) < b)
+                .then_some(candidate);
         }
         self.window.push_back(sample);
         true
@@ -141,6 +159,7 @@ impl OffsetEstimator {
         let best = self
             .window
             .iter()
+            .chain(&self.held)
             .min_by_key(|sample| self.bound_ns(sample, now_ns))?;
         Some(OffsetEstimate {
             offset_ns: best.offset_ns(),
@@ -270,6 +289,44 @@ mod tests {
         let e = est.estimate(10_000_200_000).expect("estimate");
         // Aged: 10_000 + 1 + 1 ms of drift; fresh: 100_000 + 1 + ~20 ns.
         assert_eq!(e.rtt_ns, 200_000);
+    }
+
+    /// A link that stalled delivers its queued heartbeats at once, each
+    /// with the stall in its round trip: more of them than the window holds.
+    /// The clean exchange before the stall still bounds the offset, by its
+    /// round trip and the drift since; the stalled ones never could.
+    #[test]
+    fn a_burst_of_slow_exchanges_keeps_the_best_one_before_it() {
+        let true_offset = 42_000_000_i64;
+        let mut est = OffsetEstimator::new(OffsetEstimatorConfig {
+            window: 8,
+            drift_bound_ppm: 500.0,
+        });
+        // 40 ms round trip, then 20 that each waited out a 1.5 s stall.
+        assert!(est.add(exchange(1, 0, true_offset, 20_000_000, 0, 20_000_000)));
+        for seq in 2..22 {
+            let at = 100_000_000 + seq * 1_000_000;
+            assert!(est.add(exchange(
+                seq as u64,
+                at,
+                true_offset,
+                1_500_000_000,
+                0,
+                1_000_000
+            )));
+        }
+        let now = 2_000_000_000;
+        let e = est.estimate(now).expect("estimate");
+        // 20 ms of half the round trip and 1 ms of 2 s of drift, not 750.
+        assert_eq!(e.rtt_ns, 40_000_000);
+        assert!(e.error_ns < 22_000_000, "{e:?}");
+        assert!((e.offset_ns - true_offset).unsigned_abs() <= e.error_ns);
+        // A fresher clean one takes over from it.
+        assert!(est.add(exchange(30, now, true_offset, 5_000_000, 0, 5_000_000)));
+        assert_eq!(
+            est.estimate(now + 10_000_000).expect("estimate").rtt_ns,
+            10_000_000
+        );
     }
 
     #[test]
