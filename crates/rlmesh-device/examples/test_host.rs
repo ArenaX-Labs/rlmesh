@@ -16,6 +16,7 @@
 #![allow(clippy::disallowed_methods, clippy::print_stdout)]
 
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -145,6 +146,29 @@ async fn main() {
 /// board attached anew), never giving up.
 async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
     let mut revision = 1000;
+    // The rate each part's state is read at: 200 Hz, or SOAK_HZ.
+    let read_hz = std::env::var("SOAK_HZ")
+        .ok()
+        .and_then(|hz| hz.parse::<f64>().ok())
+        .unwrap_or(200.0);
+    // Each part's state as it arrives, counted, and the rate printed every
+    // 5 s as `state <part> <samples>/s`.
+    let mut readers = std::collections::BTreeMap::new();
+    let counts: Arc<Mutex<std::collections::BTreeMap<String, u64>>> = Arc::default();
+    tokio::spawn({
+        let counts = counts.clone();
+        async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let mut counts = counts.lock().expect("counts");
+                for (part, n) in counts.iter_mut() {
+                    println!("state {part} {:.1}/s", *n as f64 / 5.0);
+                    *n = 0;
+                }
+                std::io::stdout().flush().expect("stdout");
+            }
+        }
+    });
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
         let Some(snapshot) = policy.authority() else {
@@ -158,6 +182,27 @@ async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
             .collect();
         if parts.is_empty() || snapshot.clock(owner).is_none() {
             continue;
+        }
+        for part in &parts {
+            let path = part.path.as_str().to_owned();
+            if readers.contains_key(&path) {
+                continue;
+            }
+            let counted = counts.clone();
+            let name = path.clone();
+            let options = SubscribeOptions {
+                on_sample: Some(Arc::new(move |_| {
+                    *counted
+                        .lock()
+                        .expect("counts")
+                        .entry(name.clone())
+                        .or_default() += 1;
+                })),
+                ..SubscribeOptions::default()
+            };
+            if let Ok(reader) = policy.subscribe(owner, &path, options).await {
+                readers.insert(path, reader);
+            }
         }
         let channels: Vec<ChannelId> = parts.iter().map(|p| p.channel).collect();
         // Each part's state read at 200 Hz: the board publishes at its full
@@ -175,7 +220,7 @@ async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
                     .map(|&channel| StreamContract {
                         channel,
                         mode: ContractMode::Latest,
-                        delivery_hz: 200.0,
+                        delivery_hz: read_hz,
                         history: 1,
                         max_age: None,
                         max_age_explicit: false,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run the ESP32 library's transport (integrations/esp32/transport/rlmesh_zenoh.c, over zenoh-pico) and the device robot on Linux against a real session host (rlmesh-device's examples/test_host, ungated: zenoh-pico can't present an embedded host's usrpwd link gate): the board's loop with Linux's clock and randomness, its links reset under it, and its heap across re-attaches"
+#MISE description="Run the ESP32 library's transport (integrations/esp32/transport/rlmesh_zenoh.c, over zenoh-pico) and the device robot on Linux against a real session host (rlmesh-device's examples/test_host, ungated: zenoh-pico can't present an embedded host's usrpwd link gate): the board's loop with Linux's clock and randomness, its links reset, stalled and gone under it, its heap across re-attaches and under load, zenoh-pico's ESP32 port's tasks, and the rate its state reaches a reader"
 #MISE dir="{{ config_root }}"
 # Local only: it fetches and builds zenoh-pico.
 set -euo pipefail
@@ -7,13 +7,47 @@ set -euo pipefail
 target_dir="${CARGO_TARGET_DIR:-target}"
 out="$target_dir/esp32-host"
 zp_src="$(.mise/tasks/build/zenoh-pico)"
-# zenoh-pico as the boards build it: their flags and patches. A new flag or
-# patch builds it anew.
+# zenoh-pico as the boards build it: their flags and patches, and with its
+# ESP32 port over the FreeRTOS stand-in. A change to any builds it anew.
 flags=integrations/esp32/transport/zenoh-pico.flags
 patcher=integrations/esp32/transport/patch_zenoh_pico.py
-stamp="$(cat "$flags" "$patcher" | sha256sum | cut -c1-12)"
+shim=integrations/esp32/test/esp32_port
+stamp="$(cat "$flags" "$patcher" "$shim"/*.[ch] "$shim"/freertos/*.h | sha256sum | cut -c1-12)"
 zp_build="$target_dir/zenoh-pico/linux-$stamp"
 mkdir -p "$out"
+
+host=
+trap '[ -n "$host" ] && kill "$host" 2>/dev/null || true' EXIT
+# Starts the test host (`$@`: its arguments), logging to $log, and sets
+# $address to what it prints.
+start_host() {
+  "$target_dir/debug/examples/test_host" "$@" >"$log" 2>&1 &
+  host=$!
+  for _ in $(seq 100); do
+    [ -s "$log" ] && break
+    sleep 0.1
+  done
+  address="$(head -1 "$log")"
+  case "$address" in
+    *#*) ;;
+    *) echo "the test host printed no address:" >&2; cat "$log" >&2; exit 1 ;;
+  esac
+}
+stop_host() {
+  kill "$host" 2>/dev/null || true
+  wait "$host" 2>/dev/null || true
+  host=
+}
+
+# Run again by itself in a network namespace of its own: the vanishing peer.
+if [ "${1:-}" = vanish ]; then
+  ip link set lo up
+  log="$out/host-vanish.log"
+  start_host tcp soak
+  "$out/soak_robot" "$address" 1 vanish
+  stop_host
+  exit 0
+fi
 
 if [ ! -f "$zp_build/lib/libzenohpico.a" ]; then
   echo "==> zenoh-pico for Linux"
@@ -45,29 +79,43 @@ for test in host_robot soak_robot; do
     integrations/esp32/transport/rlmesh_zenoh.c "$target_dir/debug/librlmesh_device.a" \
     "$zp_build/lib/libzenohpico.a" -lpthread -ldl -lm -o "$out/$test"
 done
+# The same, over zenoh-pico's ESP32 port (the board's system layer: its tasks,
+# with FreeRTOS's semantics from test/esp32_port, and its lwIP links, which
+# take POSIX sockets as they are).
+port="$zp_build/esp32-port"
+if [ ! -f "$port/libzenohpico.a" ]; then
+  echo "==> zenoh-pico's ESP32 port for Linux"
+  mkdir -p "$port/obj"
+  objects=()
+  while read -r file; do
+    object="$port/obj/$(echo "$file" | tr / _).o"
+    cc -std=gnu11 -O1 -g -DZENOH_ARDUINO_ESP32 -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11 \
+      -I"$shim" -I"$zp_build/include" -I"$zp_build/src/include" -include sys/socket.h \
+      -include netinet/in.h -include netinet/tcp.h -c "$zp_build/src/$file" -o "$object"
+    objects+=("$object")
+  done < <(
+    cd "$zp_build/src"
+    find src/api src/collections src/net src/protocol src/runtime src/session src/transport \
+      src/utils src/system/common -name '*.c'
+    find src/link/config src/link/multicast src/link/unicast src/link/transport/common \
+      -maxdepth 1 -name '*.c'
+    printf '%s\n' src/link/link.c src/link/endpoint.c src/link/transport/tcp/address.c \
+      src/link/transport/udp/address.c src/link/transport/upper/serial_protocol.c \
+      src/link/transport/upper/tls_stream.c src/system/arduino/esp32/system.c \
+      src/system/socket/esp32.c src/link/transport/tcp/tcp_esp32.c \
+      src/link/transport/udp/udp_esp32.c
+  )
+  cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -I"$shim" -c "$shim/esp32_port.c" \
+    -o "$port/obj/esp32_port.o"
+  ar rcs "$port/libzenohpico.a" "${objects[@]}" "$port/obj/esp32_port.o"
+fi
+cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -D_GNU_SOURCE -DESP32_PORT -DZENOH_ARDUINO_ESP32 \
+  -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11 -I"$shim" -I"$zp_build/include" \
+  -I"$zp_build/src/include" -Iintegrations/esp32/src -Iintegrations/esp32/transport \
+  -include sys/socket.h integrations/esp32/test/soak_robot.c \
+  integrations/esp32/transport/rlmesh_zenoh.c "$target_dir/debug/librlmesh_device.a" \
+  "$port/libzenohpico.a" -lpthread -ldl -lm -o "$out/soak_robot_esp32"
 
-host=
-trap '[ -n "$host" ] && kill "$host" 2>/dev/null || true' EXIT
-# Starts the test host (`$@`: its arguments), logging to $log, and sets
-# $address to what it prints.
-start_host() {
-  "$target_dir/debug/examples/test_host" "$@" >"$log" 2>&1 &
-  host=$!
-  for _ in $(seq 100); do
-    [ -s "$log" ] && break
-    sleep 0.1
-  done
-  address="$(head -1 "$log")"
-  case "$address" in
-    *#*) ;;
-    *) echo "the test host printed no address:" >&2; cat "$log" >&2; exit 1 ;;
-  esac
-}
-stop_host() {
-  kill "$host" 2>/dev/null || true
-  wait "$host" 2>/dev/null || true
-  host=
-}
 
 # Over the session's links, then over the host's datagram path.
 for path in tcp udp; do
@@ -107,3 +155,36 @@ echo "==> the board's heap under a policy's load on a link that stalls, within $
 start_host tcp soak
 SOAK_CAP=$budget "$out/soak_robot" "$address" 40 load "$budget"
 stop_host
+echo "==> the board's loop while every link stalls, read by nobody, then comes back"
+start_host tcp soak
+"$out/soak_robot" "$address" 1 stall
+stop_host
+# A peer that vanishes (no reset, no acknowledgement) takes dropping its
+# packets: nftables, in a network namespace of this test's own.
+if unshare -rn true 2>/dev/null && command -v nft >/dev/null; then
+  echo "==> the board's loop while every link's peer vanishes, then comes back"
+  unshare -rn "$0" vanish
+else
+  echo "==> (no user namespace or nft here: the vanishing peer is not tried)"
+fi
+echo "==> zenoh-pico's ESP32 port: its tasks across re-attaches and a stalled link"
+start_host tcp soak
+"$out/soak_robot_esp32" "$address" 6 cut 2048
+stop_host
+start_host tcp soak
+"$out/soak_robot_esp32" "$address" 1 stall
+stop_host
+echo "==> state read at 30 Hz from a board publishing at 50 Hz and taking 30 chunks a second"
+export SOAK_HZ=30
+start_host tcp soak
+"$out/soak_robot" "$address" 20 steady
+stop_host
+unset SOAK_HZ
+# The host's last two reports, each part's samples a second.
+rates="$(grep '^state ' "$log" | tail -4)"
+echo "$rates"
+if ! awk '{ split($3, r, "/"); if (r[1] + 0 < 29) bad = 1 } END { exit bad || NR == 0 }' \
+  <<<"$rates"; then
+  echo 'state reached its reader below 29 samples a second' >&2
+  exit 1
+fi
