@@ -119,6 +119,12 @@ pub struct HostConfig {
     /// parts over UDP. `None` by default: every part rides the session's
     /// links, and the handshake offers nothing. Wall-clock sessions only.
     pub datagram: Option<Arc<crate::host::DatagramRelay>>,
+    /// Keep every robot on the datagram path whatever it loses: a setting
+    /// for measuring the path (`rlmesh host --board-data udp-only`), where
+    /// loss is loss. Off by default: the host moves a robot's realtime parts
+    /// back to the session's links when the path is shown broken, and onto
+    /// it again once its probes arrive.
+    pub datagram_strict: bool,
 }
 
 /// Keeps `session`'s recent recording as an incident named `label`: where
@@ -164,6 +170,7 @@ impl HostConfig {
             lobby: None,
             keep: None,
             datagram: None,
+            datagram_strict: false,
         }
     }
 

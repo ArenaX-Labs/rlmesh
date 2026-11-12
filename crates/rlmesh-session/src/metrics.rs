@@ -109,6 +109,7 @@ impl LinkStats {
             data_path: DataPath::Unknown,
             datagram_board: None,
             datagram_host: None,
+            path_time: None,
         }
     }
 }
@@ -146,6 +147,24 @@ pub struct ParticipantHealth {
     pub datagram_board: Option<DatagramStats>,
     /// The host's counters for it.
     pub datagram_host: Option<DatagramStats>,
+    /// Robots offered the datagram path: where their realtime parts rode
+    /// since they attached.
+    pub path_time: Option<PathTime>,
+}
+
+/// Where a robot's realtime parts rode since it attached: time on the
+/// host's datagram path and on the session's links, and the moves the host
+/// made between them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PathTime {
+    /// On the datagram path.
+    pub datagram: std::time::Duration,
+    /// On the session's links.
+    pub session: std::time::Duration,
+    /// Moves back to the session's links.
+    pub fallbacks: u32,
+    /// Moves onto the path again.
+    pub returns: u32,
 }
 
 fn ms(ns: u64) -> f64 {
@@ -206,6 +225,16 @@ impl fmt::Display for ParticipantHealth {
                 host.received,
                 host.lost,
                 host.unopened
+            )?;
+        }
+        if let Some(t) = self.path_time {
+            write!(
+                f,
+                " on udp={:.1}s tcp={:.1}s fallbacks={} returns={}",
+                t.datagram.as_secs_f64(),
+                t.session.as_secs_f64(),
+                t.fallbacks,
+                t.returns
             )?;
         }
         Ok(())

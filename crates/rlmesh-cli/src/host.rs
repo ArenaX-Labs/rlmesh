@@ -205,18 +205,25 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     let (transport, base) = address::open_listeners_with(base, None, tuning)
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
-    if args.board_data == BoardData::Udp {
+    if matches!(args.board_data, BoardData::Udp | BoardData::UdpOnly) {
         // The realtime class's port number, on UDP.
         let at = SocketAddr::new(base.ip(), base.port().saturating_add(1));
         let relay = DatagramRelay::bind(at)
             .await
             .with_context(|| format!("could not listen on udp/{at} for --board-data udp"))?;
+        let strict = args.board_data == BoardData::UdpOnly;
         writeln!(
             stdout,
-            "boards' realtime parts over UDP port {} (open it in the firewall)",
-            relay.port()
+            "boards' realtime parts over UDP port {} (open it in the firewall){}",
+            relay.port(),
+            if strict {
+                ", never back to TCP: a measurement setting"
+            } else {
+                ""
+            }
         )?;
         config.datagram = Some(relay);
+        config.datagram_strict = strict;
     }
     let recordings = recordings(args)?;
     let server = Arc::new(match &recordings {

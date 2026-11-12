@@ -38,9 +38,9 @@ use rlmesh_session_core::wire::version::{
 };
 use rlmesh_session_core::wire::{
     AuthorityView, ChannelId, ChannelPriority, ChunkTiming, ClockMode, Command, CtlError,
-    CtlStatus, DatagramStats, DeviceView, Epoch, Health, Heartbeat, Join, Mode, PartSpec,
-    ParticipantId, Plan, PriorityClass, Reason, ReasonCode, Role, Sample, SessionId, SessionKeys,
-    StreamSpec, TenantId, TimingSample, Unread,
+    CtlStatus, DatagramRoutes, DatagramStats, DeviceView, Epoch, Health, Heartbeat, Join, Mode,
+    PartSpec, ParticipantId, Plan, PriorityClass, Reason, ReasonCode, Role, Sample, SessionId,
+    SessionKeys, StreamSpec, TenantId, TimingSample, Unread,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -81,9 +81,6 @@ pub const PROBE_MS: u32 = 1000;
 pub const PROBE_FIRST_MS: u32 = 100;
 /// The datagram lane its probes take: a newer probe replaces one not sent.
 pub const PROBE_LANE: &str = "probe";
-/// How long a robot on the path waits for its first chunk datagram while a
-/// part is leased: the host sends nothing before one of its probes arrived.
-pub const FIRST_CHUNK_MS: u32 = 1000;
 
 /// Subscription ids, for [`Robot::sample`]: `host/view/{id}`, this robot's
 /// signed device view.
@@ -201,6 +198,12 @@ pub enum Action {
         sub: u8,
         /// The key expression.
         key: String,
+    },
+    /// Drop the subscription [`Robot::sample`] calls `sub`: a part whose
+    /// commands come over the datagram path again.
+    Unsubscribe {
+        /// The subscription's id.
+        sub: u8,
     },
     /// Declare a liveliness token on `key`, held while the robot runs.
     Token {
@@ -585,12 +588,6 @@ impl Edge {
 struct DownRoute {
     route: u16,
     part: usize,
-    /// When its newest chunk datagram that opened arrived, and the smoothed
-    /// time between them.
-    last_us: Option<u64>,
-    period_us: u64,
-    /// Since when its part has had a lease (none: no chunks are due).
-    leased_since: Option<u64>,
 }
 
 /// This attach on the host's datagram path: offered in the handshake, its
@@ -605,20 +602,18 @@ struct DatagramLink {
     up: Vec<(ChannelId, u16)>,
     /// It carries routes now.
     active: bool,
-    /// This attach gave it up.
-    fell_back: bool,
+    /// The socket is open (asked of the transport): from the first routes
+    /// until the attach ends, through any time the host moves the parts
+    /// back to the session's links, so that its probes go on.
+    open: bool,
     seq: u32,
     sent: u64,
     arrivals: Arrivals,
     next_probe: u64,
+    /// When the socket may be opened again after a send failed.
+    reopen_at: u64,
     /// A chunk datagram opened since it went active.
     heard: bool,
-    /// When it went active.
-    since: Option<u64>,
-    /// When the control link delivered again after a gap, and the newest
-    /// message from it seen so far.
-    healthy_since: u64,
-    heard_seen: u64,
 }
 
 impl DatagramLink {
@@ -630,15 +625,13 @@ impl DatagramLink {
             down: Vec::new(),
             up: Vec::new(),
             active: false,
-            fell_back: false,
+            open: false,
             seq: 0,
             sent: 0,
             arrivals: Arrivals::default(),
             next_probe: 0,
+            reopen_at: 0,
             heard: false,
-            since: None,
-            healthy_since: 0,
-            heard_seen: 0,
         }
     }
 
@@ -671,7 +664,8 @@ impl DatagramLink {
             lost: self.arrivals.lost,
             reordered: self.arrivals.reordered,
             unopened: self.arrivals.unopened,
-            fallbacks: u32::from(self.fell_back),
+            // The board never gives the path up itself: the host does.
+            fallbacks: 0,
         }
     }
 }
@@ -809,8 +803,8 @@ pub struct Robot {
     datagram_wanted: bool,
     /// The datagram path this attach, when the host offered it.
     datagram: Option<DatagramLink>,
-    /// Times it gave the datagram path up, over every attach.
-    datagram_fallbacks: u32,
+    /// Its realtime parts' time on each path, over every attach.
+    path_time: PathTime,
     /// The heartbeat, kept between beats so that its lists keep their room:
     /// a beat allocates nothing for them once they are as long as before.
     beat: Heartbeat,
@@ -819,6 +813,23 @@ pub struct Robot {
     /// Each part's samples over every attach (by part index): its state's,
     /// then what it applied.
     streamed: Vec<[Streamed; 2]>,
+}
+
+/// Where a robot's realtime parts rode while it ran, over every attach:
+/// time on the host's datagram path and on the session's links, and the
+/// moves between them the host made.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PathTime {
+    /// Microseconds running with its parts on the datagram path.
+    pub datagram_us: u64,
+    /// Microseconds running with them on the session's links.
+    pub session_us: u64,
+    /// Times they went back to the session's links from the datagram path.
+    pub fallbacks: u32,
+    /// Times they came back to the datagram path in the same attach.
+    pub returns: u32,
+    /// When the time was last added up (`None`: not running then).
+    at: Option<u64>,
 }
 
 /// One stream's samples over every attach.
@@ -972,7 +983,7 @@ impl Robot {
                 last_code: ReasonCode::EstopLocal,
                 datagram_wanted: true,
                 datagram: None,
-                datagram_fallbacks: 0,
+                path_time: PathTime::default(),
                 beat: Heartbeat {
                     participant: name,
                     epoch: Epoch(0),
@@ -1204,9 +1215,15 @@ impl Robot {
         self.datagram.as_ref().map(DatagramLink::stats)
     }
 
-    /// Times it gave the datagram path up, over every attach.
+    /// Times its parts went back to the session's links from the datagram
+    /// path, over every attach.
     pub fn datagram_fallbacks(&self) -> u32 {
-        self.datagram_fallbacks
+        self.path_time.fallbacks
+    }
+
+    /// Its realtime parts' time on each path, over every attach.
+    pub fn path_time(&self) -> PathTime {
+        self.path_time
     }
 
     /// A datagram from the host on the socket of [`Action::DatagramOpen`]:
@@ -1242,25 +1259,21 @@ impl Robot {
         }
         link.arrivals.opened(route.seq);
         link.heard = true;
-        if let Some(down) = link.down.get_mut(at) {
-            if let Some(last) = down.last_us {
-                let gap = now_us.saturating_sub(last);
-                down.period_us = if down.period_us == 0 {
-                    gap
-                } else {
-                    (down.period_us * 7 + gap) / 8
-                };
-            }
-            down.last_us = Some(now_us);
-        }
     }
 
     /// A datagram it asked to send failed (the socket refused it, or could
-    /// not open): back to the session's links for this attach.
+    /// not open): the socket is opened again, at most every [`PROBE_MS`].
+    /// Whether the path works is the host's to judge, from what each end
+    /// counts; the parts stay where they are.
     pub fn datagram_failed(&mut self, now_us: u64) {
-        if self.datagram.as_ref().is_some_and(|d| d.active) {
-            self.datagram_fall_back(now_us);
+        let Some(link) = self.datagram.as_mut().filter(|d| d.open) else {
+            return;
+        };
+        if now_us < link.reopen_at {
+            return;
         }
+        link.reopen_at = now_us + u64::from(PROBE_MS) * 1000;
+        self.out.push(Action::DatagramOpen { port: link.port });
     }
 
     /// Keeps the refusals of the edges it is about to drop.
@@ -1415,88 +1428,24 @@ impl Robot {
         self.next_ctl(now_us);
     }
 
-    /// The datagram path on each poll: a probe when one is due, and the
-    /// fallback to the session's links when a part with a lease has had no
-    /// chunk datagram for longer than it holds (and three of its chunk
-    /// periods, and [`FIRST_CHUNK_MS`] before the first) while the control
-    /// link is healthy.
+    /// The datagram path on each poll: its time added up, and a probe when
+    /// one is due. The board never leaves the path on its own: silence
+    /// can't tell a broken path from a policy that sent nothing, or from a
+    /// burst of loss. The host judges it, from what each end counts (see
+    /// `rlmesh_session`'s host), and moves the parts by the routes it lists.
     fn tend_datagram(&mut self, now_us: u64) {
-        // A gap in the control link longer than two heartbeats: the link
-        // was down, and is healthy again only from the next message.
-        let gap_us = u64::from(self.config.heartbeat_ms)
-            .saturating_mul(2)
-            .saturating_mul(1000);
-        let heard = self.last_heard;
-        let leases: Vec<(usize, Option<u64>)> = {
-            let Some(link) = self.datagram.as_ref().filter(|d| d.active) else {
-                return;
-            };
-            link.down
-                .iter()
-                .map(|d| {
-                    let channel = self.parts.get(d.part).map(|p| p.channel);
-                    // Leased by this board's own clock: a lease the host
-                    // ended while the view saying so was lost has expired.
-                    let leased = channel
-                        .and_then(|c| {
-                            let view = self.view.as_ref()?;
-                            let lease = view.lease(c)?;
-                            let offset = view
-                                .clock(&self.config.name)
-                                .map_or(0, |m| m.offset_ns.saturating_add_unsigned(m.error_ns));
-                            (lease.expires_ns > ns(now_us).saturating_add(offset)).then_some(())
-                        })
-                        .is_some();
-                    let hold_us = self
-                        .parts
-                        .get(d.part)
-                        .and_then(|p| p.command.as_ref())
-                        .map_or(0, |c| {
-                            u64::try_from(c.hold_max.as_micros()).unwrap_or(u64::MAX)
-                        });
-                    (d.part, leased.then_some(hold_us))
-                })
-                .collect()
-        };
-        let mut silent = false;
-        if let Some(link) = self.datagram.as_mut() {
-            let since = *link.since.get_or_insert(now_us);
-            if heard.saturating_sub(link.heard_seen) > gap_us {
-                link.healthy_since = heard;
-            }
-            link.heard_seen = heard;
-            let first_us = if link.heard {
-                0
+        let on = self.datagram.as_ref().is_some_and(|d| d.active);
+        let paths = &mut self.path_time;
+        if let Some(at) = paths.at {
+            let spent = now_us.saturating_sub(at);
+            if on {
+                paths.datagram_us = paths.datagram_us.saturating_add(spent);
             } else {
-                u64::from(FIRST_CHUNK_MS) * 1000
-            };
-            for (down, (_, hold_us)) in link.down.iter_mut().zip(&leases) {
-                let Some(hold_us) = hold_us else {
-                    down.leased_since = None;
-                    continue;
-                };
-                let leased_since = *down.leased_since.get_or_insert(now_us);
-                let from = [
-                    down.last_us.unwrap_or(0),
-                    leased_since,
-                    link.healthy_since,
-                    since,
-                ]
-                .into_iter()
-                .max()
-                .unwrap_or(now_us);
-                let window = (*hold_us)
-                    .max(down.period_us.saturating_mul(3))
-                    .max(first_us);
-                // Silent for the window, by what the control link went on
-                // delivering: a link that is down altogether proves nothing.
-                silent |= heard.saturating_sub(from) > window;
+                paths.session_us = paths.session_us.saturating_add(spent);
             }
         }
-        if silent {
-            return self.datagram_fall_back(now_us);
-        }
-        let Some(link) = self.datagram.as_mut() else {
+        paths.at = Some(now_us);
+        let Some(link) = self.datagram.as_mut().filter(|d| d.open) else {
             return;
         };
         if now_us < link.next_probe {
@@ -1520,20 +1469,9 @@ impl Robot {
         }
     }
 
-    /// Gives the datagram path up for this attach: every routed part back
-    /// to the session's links, counted, and the host told in the next
-    /// heartbeat. It is tried again at the next attach.
-    fn datagram_fall_back(&mut self, _now_us: u64) {
-        let Some(link) = self.datagram.as_mut().filter(|d| d.active) else {
-            return;
-        };
-        link.fell_back = true;
-        self.datagram_fallbacks = self.datagram_fallbacks.saturating_add(1);
-        self.leave_datagram();
-    }
-
     /// Every routed part back to the session's links: subscribed to its
-    /// commands, its samples published on their keys.
+    /// commands, its samples published on their keys. The socket stays
+    /// open and the probes go on, so the host can move them back.
     fn leave_datagram(&mut self) {
         let Some(link) = self.datagram.as_mut().filter(|d| d.active) else {
             return;
@@ -1541,21 +1479,38 @@ impl Robot {
         link.active = false;
         link.up.clear();
         let parts: Vec<usize> = link.down.drain(..).map(|d| d.part).collect();
+        self.path_time.fallbacks = self.path_time.fallbacks.saturating_add(1);
         for part in parts {
             self.subscribe_commands(part);
         }
-        self.out.push(Action::DatagramClose);
     }
 
     /// Takes the routes the host lists now: a part whose route went is
-    /// back on the session's links (the host never adds one after the
-    /// declaration).
+    /// back on the session's links, and routes listed again after the host
+    /// moved the parts back take them over the path once more.
     fn follow_routes(&mut self) {
-        let Some(link) = self.datagram.as_mut().filter(|d| d.active) else {
+        let Some(link) = self.datagram.as_ref() else {
             return;
         };
-        let Some(routes) = self.view.as_ref().and_then(|v| v.datagram.as_ref()) else {
+        let routes = self
+            .view
+            .as_ref()
+            .and_then(|v| v.datagram.as_ref())
+            .filter(|r| !r.routes.is_empty());
+        if !link.active {
+            // Its declaration's answer takes the first routes.
+            if self.phase == Phase::Running
+                && let Some(routes) = routes.cloned()
+            {
+                self.return_to_datagram(&routes);
+            }
+            return;
+        }
+        let Some(routes) = routes else {
             return self.leave_datagram();
+        };
+        let Some(link) = self.datagram.as_mut() else {
+            return;
         };
         link.up
             .retain(|(channel, route)| routes.up(*channel) == Some(*route));
@@ -1573,6 +1528,58 @@ impl Robot {
         for part in gone {
             self.subscribe_commands(part);
         }
+    }
+
+    /// Back on the datagram path in the same attach, by the host's new
+    /// routes: each routed part's commands stop coming over the session.
+    fn return_to_datagram(&mut self, routes: &DatagramRoutes) {
+        let mut down = Vec::new();
+        for (part, spec) in self.parts.iter().enumerate() {
+            if spec.command.is_none() {
+                continue;
+            }
+            if let Some(route) = routes.down(spec.channel) {
+                down.push(DownRoute { route, part });
+            }
+        }
+        let up: Vec<(ChannelId, u16)> = self
+            .samples
+            .iter()
+            .chain(&self.applied_streams)
+            .flatten()
+            .filter_map(|s| Some((s.spec.channel, routes.up(s.spec.channel)?)))
+            .collect();
+        if down.is_empty() && up.is_empty() {
+            return;
+        }
+        for d in &down {
+            self.unsubscribe_commands(d.part);
+        }
+        let Some(link) = self.datagram.as_mut() else {
+            return;
+        };
+        link.probe = routes.probe;
+        link.down = down;
+        link.up = up;
+        link.active = true;
+        link.next_probe = 0;
+        if !link.open {
+            link.open = true;
+            self.out.push(Action::DatagramOpen { port: link.port });
+        }
+        self.path_time.returns = self.path_time.returns.saturating_add(1);
+    }
+
+    /// Stops part `part`'s commands coming over the session, if they do.
+    fn unsubscribe_commands(&mut self, part: usize) {
+        if self.subscribed.get(part) != Some(&true) {
+            return;
+        }
+        let Ok(sub) = u8::try_from(usize::from(SUB_COMMANDS) + part) else {
+            return;
+        };
+        self.subscribed[part] = false;
+        self.out.push(Action::Unsubscribe { sub });
     }
 
     /// Subscribes to part `part`'s commands, once.
@@ -2648,13 +2655,7 @@ impl Robot {
                 continue;
             }
             if let Some(route) = routes.down(part.channel) {
-                down.push(DownRoute {
-                    route,
-                    part: i,
-                    last_us: None,
-                    period_us: 0,
-                    leased_since: None,
-                });
+                down.push(DownRoute { route, part: i });
                 continue;
             }
             let Ok(sub) = u8::try_from(usize::from(SUB_COMMANDS) + i) else {
@@ -2693,6 +2694,7 @@ impl Robot {
             link.down = down;
             link.up = up;
             link.active = true;
+            link.open = true;
             link.next_probe = 0;
             self.out.push(Action::DatagramOpen { port: link.port });
         }
@@ -2863,9 +2865,11 @@ impl Robot {
     /// Forgets everything of the session it was in; the e-stop latch and
     /// the lobby's report stay.
     fn reset_session(&mut self) {
-        if self.datagram.take().is_some_and(|d| d.active) {
+        if self.datagram.take().is_some_and(|d| d.open) {
             self.out.push(Action::DatagramClose);
         }
+        // Not running until it attaches again.
+        self.path_time.at = None;
         self.sealed_seen = false;
         self.waiting = None;
         self.initiator = None;

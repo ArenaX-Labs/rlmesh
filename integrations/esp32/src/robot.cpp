@@ -310,10 +310,11 @@ void Robot::printDatagram(Print& out) const {
   }
   out.printf(
       "  realtime parts over %s: sent %llu, received %llu, lost %llu, reordered %llu, "
-      "unopened %llu, fallbacks %lu\n",
+      "unopened %llu, fallbacks %lu, returns %lu, on udp %llu s, on tcp %llu s\n",
       d.active ? "udp" : "tcp", (unsigned long long)d.sent, (unsigned long long)d.received,
       (unsigned long long)d.lost, (unsigned long long)d.reordered, (unsigned long long)d.unopened,
-      (unsigned long)d.fallbacks);
+      (unsigned long)d.fallbacks, (unsigned long)d.returns,
+      (unsigned long long)(d.datagram_ms / 1000), (unsigned long long)(d.session_ms / 1000));
 }
 
 void Robot::viewCounts(uint64_t& sealed, uint64_t& signedViews, uint64_t& droppedViews) const {

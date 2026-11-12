@@ -592,9 +592,13 @@ pub struct HostArgs {
     /// How boards carry their realtime parts (action chunks down, states
     /// and `_applied` up): `tcp` over the session's links, or `udp` over the
     /// host's datagram path on UDP port `RLMESH_PORT + 1` (open it in the
-    /// firewall), where a lost packet holds nothing up. A board that can't
-    /// take the datagram path, a virtual-clock session and every
-    /// non-board participant keep TCP. Boards re-attach to switch.
+    /// firewall), where a lost packet holds nothing up. With `udp` the host
+    /// moves a board's parts back to TCP while the path is broken (one end
+    /// sends and the other opens nothing) and onto UDP again once its probes
+    /// arrive. `udp-only` is a measurement setting: the parts stay on UDP
+    /// whatever it loses, and loss is simply loss. A board that can't take
+    /// the datagram path, a virtual-clock session and every non-board
+    /// participant keep TCP. Boards re-attach to switch.
     #[arg(long, value_enum, env = "RLMESH_BOARD_DATA", default_value_t = BoardData::Tcp)]
     pub board_data: BoardData,
     /// Bound the bytes each accepted TCP link may hold unsent
@@ -620,8 +624,11 @@ pub enum BoardData {
     /// Over the session's TCP links.
     #[default]
     Tcp,
-    /// Over the host's datagram path (UDP).
+    /// Over the host's datagram path (UDP), back to TCP while it is broken.
     Udp,
+    /// Over the host's datagram path only, for measuring it: never back to
+    /// TCP.
+    UdpOnly,
 }
 
 /// A duration flag: a number with `ms` or `s` (`250ms`, `1.5s`).
@@ -947,6 +954,10 @@ mod tests {
                 "4096"
             ]),
             Ok((BoardData::Udp, Some(4096)))
+        );
+        assert_eq!(
+            host(&["rlmesh", "host", "--board-data", "udp-only"]),
+            Ok((BoardData::UdpOnly, None))
         );
         assert!(host(&["rlmesh", "host", "--board-data", "quic"]).is_err());
         assert!(host(&["rlmesh", "host", "--tcp-notsent-lowat", "0"]).is_err());

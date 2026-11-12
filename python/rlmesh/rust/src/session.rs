@@ -496,8 +496,11 @@ impl PyHost {
     /// `heartbeats`, `rtt_ms`, `last_heartbeat_ms`, `data_path` (a robot's
     /// realtime parts: `"tcp"` or `"udp"`), `chunks_accepted`,
     /// `chunk_timing` (per commanded part: `received`, `accepted`, `lost`,
-    /// `late_ms`, `late_max_ms`, `gap_max_ms`) and `datagram_board`,
-    /// `datagram_host` (each end of a robot's datagram path, or `None`).
+    /// `late_ms`, `late_max_ms`, `gap_max_ms`), `datagram_board`,
+    /// `datagram_host` (each end of a robot's datagram path, or `None`) and
+    /// `path_time` (a robot offered the path: `udp_s`, `tcp_s` since it
+    /// attached, and the host's `fallbacks` and `returns` between them, or
+    /// `None`).
     #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
     fn health<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let rows = block_on(py, async { Ok(self.host.health().await) })?;
@@ -547,6 +550,18 @@ impl PyHost {
                     .transpose()?;
                 d.set_item(key, value)?;
             }
+            let time = row
+                .path_time
+                .map(|t| {
+                    let e = PyDict::new(py);
+                    e.set_item("udp_s", t.datagram.as_secs_f64())?;
+                    e.set_item("tcp_s", t.session.as_secs_f64())?;
+                    e.set_item("fallbacks", t.fallbacks)?;
+                    e.set_item("returns", t.returns)?;
+                    PyResult::Ok(e)
+                })
+                .transpose()?;
+            d.set_item("path_time", time)?;
             list.append(d)?;
         }
         Ok(list)

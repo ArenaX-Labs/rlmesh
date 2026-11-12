@@ -141,7 +141,7 @@ impl HostActor {
                     .collect();
                 row.chunk_timing = link.chunk_timing.clone();
                 row.chunks_accepted = link.chunks_accepted;
-                (row.data_path, row.datagram_host) = self.data_path(id);
+                (row.data_path, row.datagram_host, row.path_time) = self.data_path_time(id);
                 row.datagram_board = link.datagram;
                 row
             })

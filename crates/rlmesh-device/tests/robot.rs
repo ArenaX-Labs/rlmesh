@@ -238,12 +238,26 @@ impl World {
 
     /// A host that relays boards' realtime parts over UDP on loopback.
     async fn start_datagram() -> Self {
+        Self::start_datagram_strict(false).await
+    }
+
+    /// [`Self::start_datagram`], never moving a board off the path when
+    /// `strict` (`--board-data udp-only`).
+    async fn start_datagram_strict(strict: bool) -> Self {
+        Self::start_datagram_with(move |config| config.datagram_strict = strict).await
+    }
+
+    /// [`Self::start_datagram`], configured further.
+    async fn start_datagram_with(configure: impl FnOnce(&mut HostConfig)) -> Self {
         let relay = DatagramRelay::bind("127.0.0.1:0".parse().expect("addr"))
             .await
             .expect("udp");
         let mut world = Self::start_configured({
             let relay = relay.clone();
-            move |config| config.datagram = Some(relay)
+            move |config| {
+                config.datagram = Some(relay);
+                configure(config);
+            }
         })
         .await;
         world.relay = Some(relay);
@@ -356,7 +370,8 @@ struct Board {
     base: std::net::SocketAddr,
     tx: mpsc::UnboundedSender<Event>,
     rx: mpsc::UnboundedReceiver<Event>,
-    subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+    /// Each with the id the robot gave it.
+    subscribers: Vec<(u8, zenoh::pubsub::Subscriber<()>)>,
     tokens: Vec<zenoh::liveliness::LivelinessToken>,
     queries: BTreeMap<u32, tokio::task::JoinHandle<()>>,
     rng: Mix,
@@ -422,6 +437,8 @@ struct Board {
     sent_up: Arc<Mutex<BTreeMap<String, u32>>>,
     /// Commands subscriptions declared on the session's links.
     command_subscriptions: u32,
+    /// Command subscriptions dropped (a part back on the datagram path).
+    command_unsubscriptions: u32,
     /// The last probe the robot sent.
     last_probe: Option<Vec<u8>>,
 }
@@ -468,6 +485,7 @@ impl Board {
             datagrams: Arc::default(),
             sent_up: Arc::default(),
             command_subscriptions: 0,
+            command_unsubscriptions: 0,
             last_probe: None,
         }
     }
@@ -691,7 +709,13 @@ impl Board {
                     })
                     .await
                     .expect("subscribe");
-                self.subscribers.push(subscriber);
+                self.subscribers.push((sub, subscriber));
+            }
+            Action::Unsubscribe { sub } => {
+                self.subscribers.retain(|(s, _)| *s != sub);
+                if sub >= SUB_COMMANDS && sub != SUB_VIEW_SEALED {
+                    self.command_unsubscriptions += 1;
+                }
             }
             Action::Token { class: c, key } => {
                 let Some(transport) = &self.transport else {
@@ -2463,6 +2487,22 @@ async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
 async fn drive_board(
     world: &World,
     seen: &Arc<Mutex<Seen>>,
+    done: impl FnMut(&Seen, bool) -> bool,
+) -> (bool, Option<Vec<u8>>) {
+    drive_board_quieting(
+        world,
+        seen,
+        &std::sync::atomic::AtomicBool::new(false),
+        done,
+    )
+    .await
+}
+
+/// [`drive_board`], sending nothing while `quiet` is set: the lease held.
+async fn drive_board_quieting(
+    world: &World,
+    seen: &Arc<Mutex<Seen>>,
+    quiet: &std::sync::atomic::AtomicBool,
     mut done: impl FnMut(&Seen, bool) -> bool,
 ) -> (bool, Option<Vec<u8>>) {
     let id = ParticipantId::new("eyes").expect("id");
@@ -2495,14 +2535,17 @@ async fn drive_board(
     let mut held = false;
     while Instant::now() < deadline {
         let now = policy.session_now_ns();
-        let _ = tx.send(ChunkDraft {
-            based_on: vec![InputRange::one(ChannelId(99), 1)],
-            t0_ns: now,
-            dt_ns: 20_000_000,
-            replace_from_ns: now,
-            valid_until_ns: now + 200_000_000,
-            actions: Bytes::from([target; 4].concat()),
-            tick: 0,
+        let quiet = quiet.load(std::sync::atomic::Ordering::Relaxed);
+        let _ = (!quiet).then(|| {
+            tx.send(ChunkDraft {
+                based_on: vec![InputRange::one(ChannelId(99), 1)],
+                t0_ns: now,
+                dt_ns: 20_000_000,
+                replace_from_ns: now,
+                valid_until_ns: now + 200_000_000,
+                actions: Bytes::from([target; 4].concat()),
+                tick: 0,
+            })
         });
         tokio::time::sleep(Duration::from_millis(33)).await;
         if done(&seen.lock().expect("seen"), samples.latest().is_some()) {
@@ -2511,8 +2554,6 @@ async fn drive_board(
         }
     }
     let latest = samples.latest().map(|s| s.received.sample.payload.to_vec());
-    // Done driving: a lease that just stops sending looks like a lost path
-    // to a board on the datagram path.
     let _ = policy.release_lease(&lease).await;
     (held, latest)
 }
@@ -2839,51 +2880,158 @@ async fn a_hostile_datagram_changes_nothing_but_a_counter() {
     assert!(relay.unrouted() >= 2, "{} unrouted", relay.unrouted());
 }
 
+/// Every chunk datagram lost while the control link stays healthy: the host,
+/// which counts what it sent against what the board's heartbeats say opened,
+/// moves the board's parts to TCP, where it is driven. Once the datagrams
+/// get through again, it moves them back onto the path, in the same attach.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_board_whose_chunk_datagrams_stop_falls_back_to_tcp_and_tells_the_host() {
+async fn a_host_moves_a_board_whose_chunks_stop_arriving_to_tcp_and_back_once_they_arrive() {
     use rlmesh_session::wire::DataPath;
     use std::sync::atomic::Ordering;
-    let world = World::start_datagram().await;
+    // Starved of chunks, the board goes safe; re-armed at once, as the
+    // bench's host does it.
+    let world = World::start_datagram_with(|config| config.rearm_robots = true).await;
     let seen = Arc::new(Mutex::new(Seen::default()));
     let mut robot = world.robot(AddressKey::of(&world.identity));
     let mut board = Board::open(&world).await;
     let lose_down = board.lose_down.clone();
-    let accepted_on_tcp = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    // Driven over UDP; then every datagram from the host is lost while the
-    // control link stays healthy: the board goes back to TCP, and is driven
-    // there.
-    let (held, _) = tokio::select! {
+    let (moved, _) = tokio::select! {
         driven = drive_board(&world, &seen, |seen, _| {
             let Some(d) = seen.datagram else { return false };
             if d.received >= 10 {
                 lose_down.store(true, Ordering::Relaxed);
             }
-            if d.active || d.fallbacks == 0 {
-                accepted_on_tcp.store(seen.accepted, Ordering::Relaxed);
-                return false;
-            }
-            seen.accepted > accepted_on_tcp.load(Ordering::Relaxed) + 10
+            !d.active
         }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(moved, "never moved: {:?}", robot.datagram_stats());
+    let accepted = robot.chunks_accepted();
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, _| seen.accepted > accepted + 10) => driven,
         () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
     };
     assert!(
         held,
-        "not driven over TCP after the fallback: {:?}",
+        "not driven over TCP after the move: {:?}",
         robot.datagram_stats()
     );
     assert_eq!(robot.datagram_fallbacks(), 1);
     let stats = robot.datagram_stats().expect("stats");
-    assert!(!stats.active && stats.fallbacks == 1, "{stats:?}");
+    assert!(
+        !stats.active && stats.fallbacks == 0,
+        "the host's move, not the board's: {stats:?}"
+    );
     assert_eq!(board.command_subscriptions, 1, "subscribed over TCP once");
-    assert!(board.udp.is_none(), "the socket closed");
-    // The host heard it in the heartbeats, and stopped relaying.
-    let row = tokio::select! {
-        row = wait_health(&world, "the board's fallback", |r| {
-            r.data_path == DataPath::Session && r.datagram_board.is_some_and(|b| b.fallbacks == 1)
+    assert!(board.udp.is_some(), "the socket stays open for its probes");
+    tokio::select! {
+        row = wait_health(&world, "the host's move", |r| {
+            r.data_path == DataPath::Session && r.path_time.is_some_and(|t| t.fallbacks == 1)
         }) => row,
         () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
     };
-    assert!(!row.datagram_host.expect("host").active || row.data_path == DataPath::Session);
+
+    // The path works again: back on it at the host's next try.
+    lose_down.store(false, Ordering::Relaxed);
+    let received = robot.datagram_stats().expect("stats").received;
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, _| {
+            seen.datagram.is_some_and(|d| d.active && d.received > received + 10)
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    assert!(held, "not back on the path: {:?}", robot.datagram_stats());
+    assert_eq!(robot.attaches(), 1, "in the same attach");
+    assert_eq!(robot.path_time().returns, 1);
+    assert_eq!(
+        board.command_unsubscriptions, 1,
+        "its commands come over TCP no more"
+    );
+    tokio::select! {
+        row = wait_health(&world, "the host's return", |r| {
+            r.data_path == DataPath::Datagram
+                && r.path_time.is_some_and(|t| t.fallbacks == 1 && t.returns == 1)
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+}
+
+/// A policy that holds its lease and sends nothing for seconds: nothing was
+/// sent, so nothing is broken, and the board stays on the path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_policy_that_stops_sending_leaves_a_board_on_the_datagram_path() {
+    use rlmesh_session::wire::DataPath;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let world = World::start_datagram().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    let quiet = AtomicBool::new(false);
+    let start = board.start;
+    let mut quiet_at: Option<Duration> = None;
+    let (held, _) = tokio::select! {
+        driven = drive_board_quieting(&world, &seen, &quiet, |seen, _| {
+            let Some(d) = seen.datagram else { return false };
+            let into = start.elapsed();
+            if quiet_at.is_none() && d.received >= 10 {
+                quiet_at = Some(into);
+            }
+            // Quiet for 3 s, then driven for a second more.
+            let quiet_for = quiet_at.map(|at| into.saturating_sub(at));
+            quiet.store(
+                quiet_for.is_some_and(|t| t < Duration::from_secs(3)),
+                Ordering::Relaxed,
+            );
+            !d.active || quiet_for.is_some_and(|t| t > Duration::from_secs(4))
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    let stats = robot.datagram_stats().expect("stats");
+    assert!(held && stats.active, "{stats:?}");
+    assert_eq!(robot.datagram_fallbacks(), 0);
+    assert_eq!(board.command_subscriptions, 0);
+    tokio::select! {
+        row = wait_health(&world, "the path still in use", |r| {
+            r.data_path == DataPath::Datagram && r.path_time.is_some_and(|t| t.fallbacks == 0)
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+}
+
+/// A strict host (`--board-data udp-only`) keeps a board on the path though
+/// every chunk datagram is lost: loss is loss.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_strict_host_keeps_a_board_on_the_datagram_path_whatever_it_loses() {
+    use rlmesh_session::wire::DataPath;
+    use std::sync::atomic::Ordering;
+    let world = World::start_datagram_strict(true).await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    let mut board = Board::open(&world).await;
+    let lose_down = board.lose_down.clone();
+    let start = board.start;
+    let mut lost_at: Option<Duration> = None;
+    let (held, _) = tokio::select! {
+        driven = drive_board(&world, &seen, |seen, _| {
+            let Some(d) = seen.datagram else { return false };
+            let into = start.elapsed();
+            if lost_at.is_none() && d.received >= 10 {
+                lose_down.store(true, Ordering::Relaxed);
+                lost_at = Some(into);
+            }
+            !d.active || lost_at.is_some_and(|at| into > at + Duration::from_secs(4))
+        }) => driven,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
+    let stats = robot.datagram_stats().expect("stats");
+    assert!(held && stats.active, "{stats:?}");
+    assert_eq!(robot.datagram_fallbacks(), 0);
+    tokio::select! {
+        row = wait_health(&world, "the path kept", |r| {
+            r.data_path == DataPath::Datagram && r.path_time.is_some_and(|t| t.fallbacks == 0)
+        }) => row,
+        () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
+    };
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2905,8 +3053,11 @@ async fn a_host_that_hears_no_samples_over_the_path_moves_the_board_back_to_tcp(
         })
         .await;
     let stats = robot.datagram_stats().expect("stats");
-    assert!(!stats.active, "{stats:?}");
-    assert_eq!(robot.datagram_fallbacks(), 0, "the host's, not the board's");
+    assert!(
+        !stats.active && stats.fallbacks == 0,
+        "the host's, not the board's: {stats:?}"
+    );
+    assert_eq!(robot.datagram_fallbacks(), 1);
     let row = tokio::select! {
         row = wait_health(&world, "the host's fallback", |r| {
             r.data_path == DataPath::Session && r.datagram_host.is_some_and(|h| h.fallbacks == 1)

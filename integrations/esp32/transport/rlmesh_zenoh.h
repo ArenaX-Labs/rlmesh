@@ -142,6 +142,8 @@ typedef struct rlmesh_zenoh_view_stats_t {
 typedef struct rlmesh_zenoh_sub_t {
   struct rlmesh_zenoh_t* z;
   uint8_t sub;
+  /* Its subscription was dropped: the slot is free for the next. */
+  bool dropped;
 } rlmesh_zenoh_sub_t;
 
 typedef struct rlmesh_zenoh_t {
@@ -196,7 +198,6 @@ typedef struct rlmesh_zenoh_t {
    * `lock`. The socket itself (`dgram_fd`, -1 none) is opened and closed only
    * by its task, under `dgram_lock`, which the network task holds to use it. */
   z_owned_task_t rx_task;
-  z_owned_condvar_t rx_wake;
   uint32_t dgram_want;
   char dgram_host[64];
   uint16_t dgram_port;
@@ -206,6 +207,8 @@ typedef struct rlmesh_zenoh_t {
   z_owned_mutex_t dgram_lock;
   /* The datagram task runs, reading into `dgram_buf` (its own). */
   bool rx_started;
+  /* The datagram task returned (the path closed): joined at the next open. */
+  bool rx_ended;
   uint8_t* dgram_buf;
 } rlmesh_zenoh_t;
 

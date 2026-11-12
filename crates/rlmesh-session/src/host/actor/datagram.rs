@@ -9,7 +9,8 @@ use rlmesh_session_core::datagram::{self, HEADER_LEN, MAX_DATAGRAM};
 use tracing::{info, warn};
 
 use crate::host::HostActor;
-use crate::host::datagram::{DatagramRelay, Down, RobotPath, Up};
+use crate::host::datagram::{DatagramRelay, Down, PathCounts, RobotPath, Up};
+use crate::metrics::PathTime;
 use crate::transport::{TrafficClass, declare_publisher, stream_qos};
 use crate::wire::version::LINK_DATAGRAM;
 use crate::wire::{
@@ -20,12 +21,26 @@ use crate::wire::{
 /// The control link counts as healthy while the robot's heartbeats arrive
 /// at least this often.
 const HEALTHY: Duration = Duration::from_millis(300);
-/// The least time the host waits for a robot's samples over the path,
-/// while its control link is healthy, before it gives the path up.
-const UP_SILENCE: Duration = Duration::from_secs(1);
-/// What a board publishes a stream nobody demands at, at most
-/// (`rlmesh_device::robot::UNDEMANDED_HZ`).
-const UNDEMANDED_HZ: f64 = 10.0;
+/// The path is broken one way when, with the control link healthy, the
+/// sending end sent at least [`BROKEN_SENT`] datagrams and for at least this
+/// long the other end opened none of them. Long enough that a stall of the
+/// whole link (a second or two on a weak Wi-Fi) is not mistaken for it.
+const BROKEN_AFTER: Duration = Duration::from_secs(2);
+/// See [`BROKEN_AFTER`]. Few: a robot whose chunks stop arriving goes safe
+/// within its hold, and its policy sends no more after that.
+const BROKEN_SENT: u64 = 3;
+/// After moving a robot's parts back to the session's links, the host
+/// tries the path again this long after (doubling each time it is broken
+/// again, up to [`RETRY_MAX`]), once the robot's probes arrive.
+const RETRY_FIRST: Duration = Duration::from_secs(5);
+/// See [`RETRY_FIRST`].
+const RETRY_MAX: Duration = Duration::from_secs(120);
+/// A path that has carried the parts this long starts its retries over
+/// from [`RETRY_FIRST`].
+const STABLE: Duration = Duration::from_secs(60);
+/// A robot's probes count as arriving while the newest is at most this old
+/// (it sends one a second).
+const PROBING: Duration = Duration::from_secs(3);
 
 /// The datagram path of one session's robots.
 pub(in crate::host) struct DatagramSession {
@@ -40,13 +55,143 @@ struct Entry {
     ups: Vec<Arc<Up>>,
     /// The realtime parts the routes were made for, by channel.
     parts: Vec<ChannelId>,
-    /// The board's own fallbacks, as its heartbeats last said.
+    /// The board's own fallbacks, as its heartbeats last said (a board
+    /// built before the host judged the path gives it up itself).
     board_fallbacks: u32,
-    /// The up path's silence counts from here: reset while the control
-    /// link is not healthy.
-    up_clock: Instant,
-    /// The longest a healthy board's samples may stop.
-    up_window: Duration,
+    /// Each way's judgment: the counts when the receiving end last opened
+    /// one, and since when.
+    down: Mark,
+    up: Mark,
+    /// Its parts' time on each path and the moves between them.
+    time: Times,
+    /// When the path is tried again, after the parts were moved back.
+    retry_at: Option<Instant>,
+    retry_after: Duration,
+}
+
+impl Entry {
+    /// Both ways judged from now on.
+    fn remark(&mut self, now: Instant, board: Option<DatagramStats>) {
+        let host = self.path.counts();
+        let board = board.unwrap_or_default();
+        self.down = Mark::new(now, host.sent, board.received, 0);
+        self.up = Mark::new(now, board.sent, host.samples, host.probes);
+    }
+
+    /// The way that is broken now, if one is.
+    fn broken(
+        &mut self,
+        now: Instant,
+        host: PathCounts,
+        board: DatagramStats,
+    ) -> Option<&'static str> {
+        let down = self.down.broken(now, host.sent, board.received, 0);
+        let up = self.up.broken(now, board.sent, host.samples, host.probes);
+        if down {
+            Some("its chunks sent over UDP reach the board no more")
+        } else if up {
+            Some("its samples sent over UDP reach the host no more")
+        } else {
+            None
+        }
+    }
+}
+
+/// One way of the path, since the receiving end last opened a datagram:
+/// what the sending end had sent then, and what the receiving end had
+/// opened.
+#[derive(Clone, Copy)]
+struct Mark {
+    at: Instant,
+    sent: u64,
+    opened: u64,
+    /// Probes that opened then (up: the board's sends count its probes).
+    probes: u64,
+}
+
+impl Mark {
+    fn new(at: Instant, sent: u64, opened: u64, probes: u64) -> Self {
+        Self {
+            at,
+            sent,
+            opened,
+            probes,
+        }
+    }
+
+    /// Whether this way is broken: nothing it sent opened at the other end,
+    /// though it sent enough over long enough to tell. A new count opened
+    /// moves the mark: ordinary loss never adds up to broken, and a way that
+    /// sends nothing (a policy that stopped) never is.
+    fn broken(&mut self, now: Instant, sent: u64, opened: u64, probes: u64) -> bool {
+        if opened > self.opened || sent < self.sent {
+            *self = Self::new(now, sent, opened, probes);
+            return false;
+        }
+        // Up, the board's count holds its probes too: those that opened
+        // are no sample.
+        let unanswered = (sent - self.sent).saturating_sub(probes.saturating_sub(self.probes));
+        unanswered >= BROKEN_SENT && now.saturating_duration_since(self.at) >= BROKEN_AFTER
+    }
+}
+
+/// Where a robot's realtime parts rode, from when it attached asking for
+/// the path: on the session's links until its first routes.
+struct Times {
+    on_datagram: bool,
+    since: Instant,
+    datagram: Duration,
+    session: Duration,
+    fallbacks: u32,
+    returns: u32,
+}
+
+impl Times {
+    fn new(now: Instant) -> Self {
+        Self {
+            on_datagram: false,
+            since: now,
+            datagram: Duration::ZERO,
+            session: Duration::ZERO,
+            fallbacks: 0,
+            returns: 0,
+        }
+    }
+
+    /// A move: counted as a fallback or a return when `counted`.
+    fn switch(&mut self, now: Instant, on_datagram: bool, counted: bool) {
+        if on_datagram == self.on_datagram {
+            return;
+        }
+        let spent = now.saturating_duration_since(self.since);
+        if self.on_datagram {
+            self.datagram += spent;
+        } else {
+            self.session += spent;
+        }
+        self.since = now;
+        self.on_datagram = on_datagram;
+        if counted && on_datagram {
+            self.returns += 1;
+        } else if counted {
+            self.fallbacks += 1;
+        }
+    }
+
+    fn at(&self, now: Instant) -> PathTime {
+        let spent = now.saturating_duration_since(self.since);
+        let (datagram, session) = if self.on_datagram {
+            (self.datagram + spent, self.session)
+        } else {
+            (self.datagram, self.session + spent)
+        };
+        PathTime {
+            datagram,
+            session,
+            fallbacks: self.fallbacks,
+            returns: self.returns,
+        }
+    }
 }
 
 impl DatagramSession {
@@ -161,6 +306,7 @@ impl HostActor {
                     warn!(%robot, "no free datagram route: its realtime parts ride TCP");
                     continue;
                 };
+                let now = Instant::now();
                 session.robots.insert(
                     robot.clone(),
                     Entry {
@@ -169,8 +315,11 @@ impl HostActor {
                         ups: Vec::new(),
                         parts: Vec::new(),
                         board_fallbacks: 0,
-                        up_clock: Instant::now(),
-                        up_window: UP_SILENCE,
+                        down: Mark::new(now, 0, 0, 0),
+                        up: Mark::new(now, 0, 0, 0),
+                        time: Times::new(now),
+                        retry_at: None,
+                        retry_after: RETRY_FIRST,
                     },
                 );
             }
@@ -224,7 +373,6 @@ impl HostActor {
         let clock = state.clock_mode;
         let mut downs = Vec::new();
         let mut ups = Vec::new();
-        let mut slowest = f64::INFINITY;
         for part in &parts {
             if part.command.is_some() {
                 match chunk_too_large(state, part) {
@@ -289,25 +437,19 @@ impl HostActor {
                         .relay
                         .add_up(&path, stream.channel, stream.applied, key, publisher)
                 {
-                    let hz = if part.hz > 0.0 {
-                        part.hz.min(UNDEMANDED_HZ)
-                    } else {
-                        UNDEMANDED_HZ
-                    };
-                    slowest = slowest.min(hz);
                     ups.push(up);
                 }
             }
         }
+        let board = self.links.get(robot).and_then(|l| l.datagram);
         let Some(entry) = session.robots.get_mut(robot) else {
             return;
         };
-        entry.up_window = if slowest.is_finite() {
-            UP_SILENCE.max(Duration::from_secs_f64(3.0 / slowest))
-        } else {
-            UP_SILENCE
-        };
-        entry.up_clock = Instant::now();
+        let now = Instant::now();
+        entry.remark(now, board);
+        if !downs.is_empty() || !ups.is_empty() {
+            entry.time.switch(now, true, false);
+        }
         info!(
             %robot,
             port = session.relay.port(),
@@ -334,16 +476,21 @@ impl HostActor {
         }
     }
 
-    /// Every tick: a chunk that turned out too large, a board that gave the
-    /// path up, and a board whose samples stopped while its control link is
-    /// healthy each move that robot back to TCP for this attach.
+    /// Every tick: a chunk that turned out too large moves that part back to
+    /// TCP; a path shown broken one way (see [`Mark::broken`]) moves the
+    /// robot's realtime parts back, unless the session is strict
+    /// ([`crate::HostConfig::datagram_strict`]); and a robot moved back is
+    /// tried on the path again, without a new attach, once its probes
+    /// arrive and its retry time has come.
     pub(super) async fn check_datagram(&mut self) {
         let Some(mut session) = self.datagram.take() else {
             return;
         };
         let now = Instant::now();
         let now_ns = self.now();
+        let strict = self.config.datagram_strict;
         let mut changed = false;
+        let mut retried = false;
         let robots: Vec<ParticipantId> = session.robots.keys().cloned().collect();
         for robot in robots {
             let healthy = self
@@ -353,22 +500,39 @@ impl HostActor {
                 .is_some_and(|at| {
                     now_ns.saturating_sub(at) < i64::try_from(HEALTHY.as_nanos()).unwrap_or(0)
                 });
-            let board_fallbacks = self
-                .links
-                .get(&robot)
-                .and_then(|l| l.datagram)
-                .map_or(0, |d| d.fallbacks);
+            let board = self.links.get(&robot).and_then(|l| l.datagram);
+            let board_fallbacks = board.map_or(0, |d| d.fallbacks);
             let Some(entry) = session.robots.get_mut(&robot) else {
                 continue;
             };
             if !lock_active(&entry.path) {
+                // Moved back: tried again once its retry time has come, its
+                // control link is healthy and its probes arrive.
+                let probing = entry.path.probe_age(now).is_some_and(|age| age <= PROBING);
+                if healthy && probing && entry.retry_at.is_some_and(|at| now >= at) {
+                    entry.retry_at = None;
+                    entry.path.reactivate();
+                    // Its routes anew, from the next sync.
+                    entry.parts.clear();
+                    entry.time.switch(now, true, true);
+                    let time = entry.time.at(now);
+                    info!(
+                        %robot,
+                        returns = time.returns,
+                        on_udp_s = time.datagram.as_secs(),
+                        on_tcp_s = time.session.as_secs(),
+                        "its probes arrive again: its realtime parts go back on the datagram path"
+                    );
+                    retried = true;
+                }
                 continue;
+            }
+            if now.saturating_duration_since(entry.time.since) >= STABLE {
+                entry.retry_after = RETRY_FIRST;
             }
             if board_fallbacks > entry.board_fallbacks {
                 entry.board_fallbacks = board_fallbacks;
-                entry.path.deactivate();
-                drop_routes(&session.relay, entry);
-                warn!(%robot, "the board gave the datagram path up: its realtime parts ride TCP until it attaches again");
+                Self::move_back(&session.relay, entry, now, &robot, "the board gave it up");
                 changed = true;
                 continue;
             }
@@ -392,32 +556,66 @@ impl HostActor {
                 );
                 changed = true;
             }
-            if entry.ups.is_empty() || !healthy {
-                entry.up_clock = now;
+            // A link that is down altogether proves nothing about the path.
+            let (Some(board), true) = (board, healthy) else {
+                entry.remark(now, board);
+                continue;
+            };
+            let Some(why) = entry.broken(now, entry.path.counts(), board) else {
+                continue;
+            };
+            if strict {
+                if let Some(held_back) = self.quiet.admit("datagram broken", robot.as_str(), now) {
+                    warn!(
+                        %robot,
+                        held_back,
+                        "{why}, but the session is strict (--board-data udp-only): its realtime \
+                         parts stay on the datagram path"
+                    );
+                }
+                entry.remark(now, Some(board));
                 continue;
             }
-            let silent = entry
-                .path
-                .up_silence(now)
-                .min(now.saturating_duration_since(entry.up_clock));
-            if silent > entry.up_window {
-                entry.path.fall_back();
-                drop_routes(&session.relay, entry);
-                warn!(
-                    %robot,
-                    silent_ms = silent.as_millis(),
-                    reachable = entry.path.reachable(),
-                    "no samples over the datagram path while the robot's heartbeats arrive: its \
-                     realtime parts ride TCP until it attaches again (is UDP port {} open?)",
-                    session.relay.port()
-                );
-                changed = true;
-            }
+            Self::move_back(&session.relay, entry, now, &robot, why);
+            changed = true;
         }
         self.datagram = Some(session);
+        if retried {
+            self.sync_datagram().await;
+            changed = true;
+        }
         if changed {
             self.publish().await;
         }
+    }
+
+    /// Moves `robot`'s realtime parts back to the session's links, and sets
+    /// when the path is tried again.
+    fn move_back(
+        relay: &DatagramRelay,
+        entry: &mut Entry,
+        now: Instant,
+        robot: &ParticipantId,
+        why: &str,
+    ) {
+        entry.path.fall_back();
+        drop_routes(relay, entry);
+        entry.time.switch(now, false, true);
+        entry.retry_at = Some(now + entry.retry_after);
+        let retry = entry.retry_after;
+        entry.retry_after = (entry.retry_after * 2).min(RETRY_MAX);
+        let time = entry.time.at(now);
+        warn!(
+            %robot,
+            fallbacks = time.fallbacks,
+            on_udp_s = time.datagram.as_secs(),
+            on_tcp_s = time.session.as_secs(),
+            retry_s = retry.as_secs(),
+            "{why}: its realtime parts ride TCP, and go back on the datagram path when its \
+             probes arrive, from {}s on (is UDP port {} open both ways?)",
+            retry.as_secs(),
+            relay.port()
+        );
     }
 
     /// `robot`'s routes, while it is on the path.
@@ -448,15 +646,25 @@ impl HostActor {
         &self,
         robot: &ParticipantId,
     ) -> (DataPath, Option<DatagramStats>) {
+        let (path, stats, _) = self.data_path_time(robot);
+        (path, stats)
+    }
+
+    /// [`Self::data_path`], with the time its realtime parts spent on each
+    /// path since it attached, and the moves between them.
+    pub(in crate::host) fn data_path_time(
+        &self,
+        robot: &ParticipantId,
+    ) -> (DataPath, Option<DatagramStats>, Option<PathTime>) {
         let is_robot = self
             .authority
             .participant(robot)
             .is_some_and(|p| p.has_role(Role::Embodiment));
         if !is_robot {
-            return (DataPath::Unknown, None);
+            return (DataPath::Unknown, None, None);
         }
         let Some(entry) = self.datagram.as_ref().and_then(|d| d.robots.get(robot)) else {
-            return (DataPath::Session, None);
+            return (DataPath::Session, None, None);
         };
         let stats = entry.path.stats();
         let routed = !entry.downs.is_empty() || !entry.ups.is_empty();
@@ -465,7 +673,7 @@ impl HostActor {
         } else {
             DataPath::Session
         };
-        (path, Some(stats))
+        (path, Some(stats), Some(entry.time.at(Instant::now())))
     }
 
     /// Logs the path a robot that just attached takes.

@@ -112,6 +112,9 @@ typedef struct rlmesh_device_robot_config_t {
 #define RLMESH_DEVICE_DATAGRAM 8
 /* Close the datagram socket, dropping what waits to be sent. */
 #define RLMESH_DEVICE_DATAGRAM_CLOSE 9
+/* Drop the subscription passed as `sub` (a part whose commands come over the
+ * datagram path again). */
+#define RLMESH_DEVICE_UNSUBSCRIBE 10
 /* The most of one datagram a robot reads: anything longer is dropped. */
 #define RLMESH_DEVICE_DATAGRAM_MAX 1472
 
@@ -394,13 +397,19 @@ int rlmesh_device_robot_datagram_failed(rlmesh_device_robot_t* robot, uint64_t n
  * its next attach. */
 int rlmesh_device_robot_use_datagram(rlmesh_device_robot_t* robot, int on);
 
-/* The robot's end of the datagram path this attach. */
+/* The robot's end of the datagram path this attach. The host moves its
+ * realtime parts between the path and the session's links: back to the links
+ * when, with the control link healthy, one end sent datagrams and the other
+ * opened none of them (the host's counts and the board's, which its
+ * heartbeats carry), and onto the path again, without a new attach, once its
+ * probes arrive again. Silence alone (a policy that sends nothing) and
+ * ordinary loss move nothing. */
 typedef struct rlmesh_device_datagram_stats_t {
   /* The path carries its realtime parts now. */
   uint8_t active;
-  /* This attach gave it up for the session's links. */
+  /* They are on the session's links now, though the host offered it. */
   uint8_t fell_back;
-  /* Times it gave it up, over every attach. */
+  /* Times they went back to the session's links, over every attach. */
   uint32_t fallbacks;
   /* Datagrams sent (samples and probes). */
   uint64_t sent;
@@ -412,6 +421,12 @@ typedef struct rlmesh_device_datagram_stats_t {
   uint64_t reordered;
   /* Received but unreadable, or failed to open. */
   uint64_t unopened;
+  /* Times they came back to the path in the same attach, over every attach. */
+  uint32_t returns;
+  /* Milliseconds running with them on the path, and on the session's links,
+   * over every attach. */
+  uint64_t datagram_ms;
+  uint64_t session_ms;
 } rlmesh_device_datagram_stats_t;
 
 /* The datagram path's counters this attach, into *out: RLMESH_DEVICE_OK, or

@@ -71,6 +71,7 @@ pub const RLMESH_DEVICE_DATAGRAM_OPEN: u8 = 7;
 pub const RLMESH_DEVICE_DATAGRAM: u8 = 8;
 /// Close the datagram socket.
 pub const RLMESH_DEVICE_DATAGRAM_CLOSE: u8 = 9;
+pub const RLMESH_DEVICE_UNSUBSCRIBE: u8 = 10;
 
 /// `rlmesh_device_action_t`: borrowed from the robot until the next call
 /// on it.
@@ -464,6 +465,9 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
         Action::Subscribe { class, sub, key } => {
             (RLMESH_DEVICE_SUBSCRIBE, class, sub, 0, 0, key, None)
         }
+        Action::Unsubscribe { sub } => {
+            (RLMESH_DEVICE_UNSUBSCRIBE, 0, sub, 0, 0, String::new(), None)
+        }
         Action::Token { class, key } => (RLMESH_DEVICE_TOKEN, class, 0, 0, 0, key, None),
         Action::Query {
             class,
@@ -595,9 +599,9 @@ pub unsafe extern "C" fn rlmesh_device_robot_use_datagram(
 pub struct RlmeshDeviceDatagramStats {
     /// The path carries realtime parts now.
     pub active: u8,
-    /// This attach gave it up for the session's links.
+    /// They are on the session's links now, though the host offered it.
     pub fell_back: u8,
-    /// Times it gave it up, over every attach.
+    /// Times they went back to the session's links, over every attach.
     pub fallbacks: u32,
     /// Datagrams sent (samples and probes).
     pub sent: u64,
@@ -610,6 +614,13 @@ pub struct RlmeshDeviceDatagramStats {
     pub reordered: u64,
     /// Received but unreadable, or failed to open.
     pub unopened: u64,
+    /// Times they came back to the path in the same attach, over every
+    /// attach.
+    pub returns: u32,
+    /// Milliseconds running with them on the path, and on the session's
+    /// links, over every attach.
+    pub datagram_ms: u64,
+    pub session_ms: u64,
 }
 
 /// The robot's end of the datagram path this attach, into `*out`:
@@ -633,17 +644,21 @@ pub unsafe extern "C" fn rlmesh_device_robot_datagram_stats(
     let Some(s) = r.robot.datagram_stats() else {
         return RLMESH_DEVICE_ERR_NOT_READY;
     };
+    let time = r.robot.path_time();
     // SAFETY: checked non-null; valid for a write per the contract.
     unsafe {
         out.write(RlmeshDeviceDatagramStats {
             active: u8::from(s.active),
-            fell_back: u8::from(s.fallbacks > 0),
-            fallbacks: r.robot.datagram_fallbacks(),
+            fell_back: u8::from(!s.active),
+            fallbacks: time.fallbacks,
             sent: s.sent,
             received: s.received,
             lost: s.lost,
             reordered: s.reordered,
             unopened: s.unopened,
+            returns: time.returns,
+            datagram_ms: time.datagram_us / 1000,
+            session_ms: time.session_us / 1000,
         });
     }
     RLMESH_DEVICE_OK

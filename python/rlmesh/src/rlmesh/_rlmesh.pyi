@@ -1005,8 +1005,11 @@ class V2Host:
         `heartbeats`, `rtt_ms`, `last_heartbeat_ms`, `data_path` (a robot's
         realtime parts: `"tcp"` or `"udp"`), `chunks_accepted`,
         `chunk_timing` (per commanded part: `received`, `accepted`, `lost`,
-        `late_ms`, `late_max_ms`, `gap_max_ms`) and `datagram_board`,
-        `datagram_host` (each end of a robot's datagram path, or `None`).
+        `late_ms`, `late_max_ms`, `gap_max_ms`), `datagram_board`,
+        `datagram_host` (each end of a robot's datagram path, or `None`) and
+        `path_time` (a robot offered the path: `udp_s`, `tcp_s` since it
+        attached, and the host's `fallbacks` and `returns` between them, or
+        `None`).
         """
 
 @typing.final

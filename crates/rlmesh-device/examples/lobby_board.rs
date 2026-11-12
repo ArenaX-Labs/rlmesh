@@ -195,7 +195,7 @@ async fn main() {
                 Action::DatagramOpen { .. } | Action::Datagram { .. } => {
                     robot.datagram_failed(now_us());
                 }
-                Action::DatagramClose => {}
+                Action::DatagramClose | Action::Unsubscribe { .. } => {}
             }
         }
         let event = tokio::time::timeout(Duration::from_millis(2), rx.recv()).await;

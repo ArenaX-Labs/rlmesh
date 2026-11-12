@@ -116,11 +116,21 @@ struct PathState {
     next_seq: u32,
     sent: u64,
     arrivals: Arrivals,
-    /// When it was installed, and the newest sample that opened.
-    since: Instant,
-    last_up: Option<Instant>,
+    /// Sample datagrams that opened (the rest of those received are
+    /// probes), and when the newest probe did.
+    samples: u64,
+    last_probe: Option<Instant>,
     fallbacks: u32,
     active: bool,
+}
+
+/// What one end of a robot's path counted, for judging it: datagrams the
+/// host sent, and the probes and samples from the board that opened.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct PathCounts {
+    pub(super) sent: u64,
+    pub(super) probes: u64,
+    pub(super) samples: u64,
 }
 
 impl RobotPath {
@@ -138,14 +148,23 @@ impl RobotPath {
         }
     }
 
-    /// Since the newest sample datagram that opened, or since it was
-    /// installed.
-    pub(super) fn up_silence(&self, now: Instant) -> std::time::Duration {
+    /// Its counts, for judging the path.
+    pub(super) fn counts(&self) -> PathCounts {
         let state = lock(&self.state);
-        now.saturating_duration_since(state.last_up.unwrap_or(state.since))
+        PathCounts {
+            sent: state.sent,
+            probes: state.arrivals.received.saturating_sub(state.samples),
+            samples: state.samples,
+        }
     }
 
-    /// The host gives the path up for this generation.
+    /// Since the newest probe that opened (`None`: none has).
+    pub(super) fn probe_age(&self, now: Instant) -> Option<std::time::Duration> {
+        let state = lock(&self.state);
+        state.last_probe.map(|at| now.saturating_duration_since(at))
+    }
+
+    /// The host moves the robot's parts back to the session's links.
     pub(super) fn fall_back(&self) {
         let mut state = lock(&self.state);
         if state.active {
@@ -154,14 +173,9 @@ impl RobotPath {
         }
     }
 
-    /// The board gave it up: no count of the host's.
-    pub(super) fn deactivate(&self) {
-        lock(&self.state).active = false;
-    }
-
-    /// Whether the host has an address to send to.
-    pub(super) fn reachable(&self) -> bool {
-        lock(&self.state).to.get().is_some()
+    /// And onto the path again.
+    pub(super) fn reactivate(&self) {
+        lock(&self.state).active = true;
     }
 
     /// A probe that opens under the robot's `k_up`.
@@ -268,8 +282,8 @@ impl DatagramRelay {
                 next_seq: 0,
                 sent: 0,
                 arrivals: Arrivals::default(),
-                since: Instant::now(),
-                last_up: None,
+                samples: 0,
+                last_probe: None,
                 fallbacks: 0,
                 active: true,
             }),
@@ -434,6 +448,7 @@ impl Inner {
                     return;
                 }
                 state.arrivals.opened(header.seq);
+                state.last_probe = Some(Instant::now());
                 let before = state.to.get();
                 if state.to.opened(from) {
                     info!(
@@ -452,7 +467,7 @@ impl Inner {
                 {
                     let mut state = lock(&path.state);
                     state.arrivals.opened(header.seq);
-                    state.last_up = Some(Instant::now());
+                    state.samples += 1;
                     if !state.active {
                         return;
                     }

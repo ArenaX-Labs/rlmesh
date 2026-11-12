@@ -362,21 +362,27 @@ part whose chunks or samples could be larger than one datagram (1400
 bytes) stays on TCP, and the host says so: send fewer actions per chunk to
 move it over.
 
-A board that holds a lease but gets no chunk over UDP for longer than the
-part holds (and three chunk periods) while its control link is fine, or
-whose sends fail, goes back to TCP until it next attaches, and tells the
-host; the host does the same for a board whose samples stop arriving.
+The host decides when the path is broken, from what each end counts: with
+the board's heartbeats arriving, one end sent datagrams for at least two
+seconds (at least three of them) and the other opened none. Silence can't
+tell a broken path from a policy that sent nothing, and loss that lets some
+through is loss, so neither moves anything. When the path is broken the
+host moves the board's realtime parts back to TCP, and tries the path
+again, in the same attach, once the board's probes arrive: 5 s later at
+first, doubling up to 2 minutes while it keeps breaking. To measure the path
+itself, `rlmesh host --board-data udp-only` (or `RLMESH_BOARD_DATA=udp-only`)
+never moves a board back: loss is simply loss, and the host only warns.
 Restart the host with `--board-data tcp` (the default) to put every board
 back on TCP: they switch as they re-attach.
 
 Each attach logs the path the robot takes. The counters to compare the two
 paths with are the same on both:
 
-| Where                                                                                                                                                        | What                                                                                                                                                                                                                                                                                                          |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A sketch: `robot.printChunkTiming(Serial, part)`, `robot.printDatagram(Serial)`; C: `rlmesh_device_robot_chunk_timing`, `rlmesh_device_robot_datagram_stats` | Per commanded part: chunks received and accepted, refusals by reason, losses (gaps in their seqs), lateness against their slot (log2 buckets in ms, and the maximum) and the longest gap between accepted chunks. The board's end of the datagram path: sent, received, lost, reordered, unopened, fallbacks. |
-| Python: `robot.edge_stats(path)`, `Host.health()`                                                                                                            | The same per part for a Python robot: `received`, `lost`, `late_ms`, `late_max_ms`, `gap_max_ms`, beside `accepted` and `rejected_by`; a hosting process's `Host.health()` has every participant's row, as below.                                                                                             |
-| `host/health`, the cockpit and recordings (`/_session/health`); `rlmesh host` logs                                                                           | Each board's chunk timing and accepted count (its heartbeats), the path it rides, and both ends' datagram counters.                                                                                                                                                                                           |
+| Where                                                                                                                                                        | What                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A sketch: `robot.printChunkTiming(Serial, part)`, `robot.printDatagram(Serial)`; C: `rlmesh_device_robot_chunk_timing`, `rlmesh_device_robot_datagram_stats` | Per commanded part: chunks received and accepted, refusals by reason, losses (gaps in their seqs), lateness against their slot (log2 buckets in ms, and the maximum) and the longest gap between accepted chunks. The board's end of the datagram path: sent, received, lost, reordered, unopened, its moves back to TCP and onto UDP again, and the seconds on each. |
+| Python: `robot.edge_stats(path)`, `Host.health()`                                                                                                            | The same per part for a Python robot: `received`, `lost`, `late_ms`, `late_max_ms`, `gap_max_ms`, beside `accepted` and `rejected_by`; a hosting process's `Host.health()` has every participant's row, as below.                                                                                                                                                     |
+| `host/health`, the cockpit and recordings (`/_session/health`); `rlmesh host` logs                                                                           | Each board's chunk timing and accepted count (its heartbeats), the path it rides, both ends' datagram counters, and (`rlmesh host`'s health log, `Host.health()`'s `path_time`) its seconds on each path and the host's moves between them.                                                                                                                           |
 
 ## Safety
 

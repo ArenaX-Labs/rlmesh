@@ -120,21 +120,31 @@ key, so the host follows it to a new address.
 `robot.useDatagram(false)`, after `begin()` and before the first `poll()`,
 keeps a board on TCP whatever the host offers; the default follows the host.
 Restart the host with `--board-data tcp` (the default) to switch every board
-back: they switch as they re-attach, with no reflash. A board that holds a
-lease but gets no chunk over UDP for longer than the part holds (and three
-chunk periods, and a second before the first chunk) while its heartbeats are
-answered, or whose sends fail, goes back to TCP until its next attach and
-tells the host.
+back: they switch as they re-attach, with no reflash. The host, not the
+board, decides when the path is broken: with the board's heartbeats
+arriving, one end sent datagrams for two seconds (at least three) and the
+other opened none of them. Then it moves the board's realtime parts back to
+TCP, and onto UDP again, without a new attach, once the board's probes
+arrive and its retry time has come (5 s, doubling up to 2 minutes while the
+path keeps breaking). A policy that sends nothing for a while, or loss that
+lets some datagrams through, moves nothing. `rlmesh host --board-data
+udp-only` never moves a board back: a setting for measuring the path, where
+loss is simply loss.
 
 To compare the paths, the same counters run on both: `robot.printChunkTiming
 (Serial, part)` (chunks received, accepted, lost, lateness against their slot
 in log2 buckets of milliseconds and its maximum, the longest gap between
 accepted chunks), `robot.printDatagram(Serial)` (the path in use, datagrams
-sent, received, lost, reordered and unopened, and fallbacks), and the C
-getters `rlmesh_device_robot_chunk_timing` and
-`rlmesh_device_robot_datagram_stats`. The `Robot` example prints both every
-5 s. The host's `host/health` (the cockpit, recordings) carries the board's
-figures and its own end's.
+sent, received, lost, reordered and unopened, the moves back to TCP and onto
+UDP again, and the seconds on each), and the C getters
+`rlmesh_device_robot_chunk_timing` and `rlmesh_device_robot_datagram_stats`.
+The `Robot` example prints both every 5 s. The host's `host/health` (the
+cockpit, recordings) carries the board's figures and its own end's, and
+`rlmesh host`'s health log and `Host.health()` the seconds on each path and
+the moves. `robot.printDropped(Serial)` adds what the board did not send:
+samples it had no heap room for (`unsent`), those a newer one replaced
+while the link was slower than the board published, and each part's
+samples offered and sent at its delivery plan's rate.
 
 When replies stop for five seconds the board closes its links and joins again,
 backing off to one attempt every 30 seconds for as long as it runs: a host
