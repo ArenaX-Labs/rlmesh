@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 from rlmesh import realtime
+from rlmesh.realtime import actions, inputs, parts
 
 UR_JOINTS = [
     "shoulder_pan_joint",
@@ -28,25 +29,18 @@ UR_JOINTS = [
 ]
 
 UR10E = {
-    "arm": {
-        "kind": "joints", "names": UR_JOINTS, "fields": ["pos", "vel"], "hz": 500,
-        "command": "position", "safe": "stop", "hold_max_ms": 100, "max_action_age_ms": 1000,
-    },
-    "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 500},
-    "task": {"kind": "text"},
-}  # fmt: skip
-
-SINE = {
-    "hz": 20,
-    "inputs": {
-        "q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
-        "prompt": "text",
-    },
-    "actions": {
-        "arm": {"kind": "joints", "at": "arm", "command": "position", "names": UR_JOINTS,
-                "hz": 100, "chunk": 10},
-    },
-}  # fmt: skip
+    "arm": parts.joints(
+        UR_JOINTS,
+        fields=["pos", "vel"],
+        hz=500,
+        command="position",
+        safe=parts.Safe.STOP,
+        hold_max_ms=100,
+        max_action_age_ms=1000,
+    ),
+    "wrist/ft": parts.wrench(frame="tool0", hz=500),
+    "task": parts.text(),
+}
 
 
 def robot_loop(
@@ -83,7 +77,22 @@ def main() -> None:
             arm[:, 0] = 0.2 * np.sin(2 * np.pi * 0.5 * t)
             return {"arm": arm}
 
-        with realtime.Policy(SINE, session=host, name="sine") as policy:
+        # Each builder returns the plain dict the policy map takes: a dict
+        # written by hand works the same.
+        with realtime.Policy(
+            hz=20,
+            inputs={
+                "q": inputs.joints("arm", fields=["pos"], names=UR_JOINTS),
+                "prompt": inputs.text(),
+            },
+            actions={
+                "arm": actions.joints(
+                    "arm", command="position", names=UR_JOINTS, hz=100, chunk=10
+                )
+            },
+            session=host,
+            name="sine",
+        ) as policy:
             print(policy.bind("ur10e"))
             stats = policy.run(predict, duration=args.seconds)
         stop.set()

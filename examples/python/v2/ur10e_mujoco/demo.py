@@ -64,6 +64,7 @@ os.environ.setdefault("LP_NUM_THREADS", "2")
 
 import numpy as np
 from rlmesh import realtime
+from rlmesh.realtime import actions, inputs, parts
 
 HERE = Path(__file__).resolve().parent
 ROBOT = "ur10e"
@@ -83,74 +84,85 @@ OPERATOR_CHUNK = 40  # 40 x 1 ms: twice the operator's replan period
 FT_WINDOW = 10  # 10 ms of the 1 kHz wrench
 JOG_RAD = 0.1
 MAX_SPEED = 1.0  # rad/s, policy and operator alike
+LOAD = {"v": parts.array(np.float32, 6)}
 
 
 # --- maps: UR10e simulation, policy and operator -----------------------------
 
 
 def robot_map(args: argparse.Namespace) -> dict[str, Any]:
-    parts: dict[str, Any] = {
-        "arm": {"kind": "joints", "names": UR_JOINTS, "fields": ["pos", "vel", "effort"],
-                "hz": CONTROL_HZ, "command": "position", "safe": "stop", "hold_max_ms": 100,
-                "max_action_age_ms": 1000, "limits": {"pos": [-6.283, 6.283]}},
-        "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": CONTROL_HZ},
-        "task": {"kind": "text"},
-    }  # fmt: skip
-    for i in range(args.extra_streams):  # synthetic 1 kHz load
-        parts[f"extra/s{i}"] = {"kind": "x/load", "hz": CONTROL_HZ,
-                                "fields": {"v": ["float32", [6]]}}  # fmt: skip
-    if args.camera != "off":
-        camera: dict[str, Any] = {"kind": "camera", "width": args.width, "height": args.height,
-                                  "hz": args.camera_hz, "frame": "wrist_cam_optical"}  # fmt: skip
-        if args.camera == "jpeg":
-            camera |= {"encoding": "jpeg", "quality": 75, "send": "latest(max_mbps=20)"}
-        parts["wrist/cam"] = camera
-    return parts
-
-
-def policy_map(args: argparse.Namespace) -> dict[str, Any]:
-    inputs: dict[str, Any] = {
-        "q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
+    robot: dict[str, Any] = {
+        "arm": parts.joints(
+            UR_JOINTS,
+            fields=["pos", "vel", "effort"],
+            hz=CONTROL_HZ,
+            command="position",
+            safe=parts.Safe.STOP,
+            hold_max_ms=100,
+            max_action_age_ms=1000,
+            limits={"pos": [-6.283, 6.283]},
+        ),
+        "wrist/ft": parts.wrench(frame="tool0", hz=CONTROL_HZ),
+        "task": parts.text(),
     }
+    for i in range(args.extra_streams):  # synthetic 1 kHz load
+        robot[f"extra/s{i}"] = parts.custom("x/load", hz=CONTROL_HZ, fields=LOAD)
+    if args.camera != "off":
+        jpeg = args.camera == "jpeg"
+        robot["wrist/cam"] = parts.camera(
+            args.width,
+            args.height,
+            hz=args.camera_hz,
+            frame="wrist_cam_optical",
+            encoding="jpeg" if jpeg else None,
+            quality=75 if jpeg else None,
+            send="latest(max_mbps=20)" if jpeg else None,
+        )
+    return robot
+
+
+def policy_inputs(args: argparse.Namespace) -> dict[str, Any]:
+    reads: dict[str, Any] = {"q": inputs.joints("arm", fields=["pos"], names=UR_JOINTS)}
     if args.policy == "force":
         # At 100 Hz: the newest 10 ms of the wrench, every sample.
-        inputs["ft"] = {"kind": "wrench", "at": "wrist/ft", "frame": "tool0",
-                        "history": FT_WINDOW}  # fmt: skip
+        reads["ft"] = inputs.wrench("wrist/ft", frame="tool0", history=FT_WINDOW)
         for i in range(args.extra_streams):
-            inputs[f"x{i}"] = {"kind": "x/load", "at": f"extra/s{i}",
-                               "fields": {"v": ["float32", [6]]}, "history": FT_WINDOW}  # fmt: skip
+            reads[f"x{i}"] = inputs.custom(
+                f"extra/s{i}", kind="x/load", fields=LOAD, history=FT_WINDOW
+            )
     if args.camera != "off":
-        inputs["cam"] = {
-            "kind": "camera",
-            "at": "wrist/cam",
-            "size": [96, 96],
-            "max_age_ms": 150,
-        }
-    return {
-        "hz": args.replan_hz,
-        "inputs": inputs,
-        "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                            "names": UR_JOINTS, "hz": CONTROL_HZ, "chunk": args.chunk}},
-        "allow": ["resize", "pad"],
-    }  # fmt: skip
+        reads["cam"] = inputs.camera("wrist/cam", size=96, max_age_ms=150)
+    return reads
 
 
 def operator_map(args: argparse.Namespace) -> dict[str, Any]:
+    q = inputs.joints("arm", fields=["pos"], names=UR_JOINTS)
     if args.operator == "haptic":
         # 1 kHz, the wrench every sample, one-action chunks, 5 ms life.
         return {
             "hz": CONTROL_HZ,
-            "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
-                       "ft": {"kind": "wrench", "at": "wrist/ft", "frame": "tool0", "max_age_ms": 3}},
-            "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                                "names": UR_JOINTS, "hz": CONTROL_HZ, "chunk": 1, "ttl_ms": 5}},
-        }  # fmt: skip
+            "inputs": {
+                "q": q,
+                "ft": inputs.wrench("wrist/ft", frame="tool0", max_age_ms=3),
+            },
+            "actions": {"arm": arm_action(chunk=1, ttl_ms=5)},
+        }
     return {
         "hz": OPERATOR_HZ,
-        "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS}},
-        "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                            "names": UR_JOINTS, "hz": CONTROL_HZ, "chunk": OPERATOR_CHUNK}},
-    }  # fmt: skip
+        "inputs": {"q": q},
+        "actions": {"arm": arm_action(chunk=OPERATOR_CHUNK)},
+    }
+
+
+def arm_action(*, chunk: int, ttl_ms: float | None = None) -> dict[str, Any]:
+    return actions.joints(
+        "arm",
+        command="position",
+        names=UR_JOINTS,
+        hz=CONTROL_HZ,
+        chunk=chunk,
+        ttl_ms=ttl_ms,
+    )
 
 
 def ramp(start: np.ndarray, target: np.ndarray, n: int, dt: float) -> np.ndarray:
@@ -334,7 +346,7 @@ class Sim:
         finally:
             renderer.close()
 
-    def finish(self) -> dict[str, Any]:
+    def finish(self) -> realtime.results.EdgeStats:
         self.stop.set()
         for t in self.threads:
             t.join()
@@ -364,7 +376,7 @@ def holders(recording: dict[str, Any]) -> tuple[dict[int, str], list[dict[str, A
 def report(
     args: argparse.Namespace,
     sim: Sim,
-    edge: dict[str, Any],
+    edge: realtime.results.EdgeStats,
     recorded: dict[str, Any] | None,
     recording: dict[str, Any],
     children: dict[str, Any],
@@ -765,7 +777,12 @@ def run_policy(args: argparse.Namespace) -> int:
         return {"arm": (q + np.clip(target - q, -step, step)).astype(np.float32)}
 
     with realtime.Policy(
-        policy_map(args), session=args.address, name="policy"
+        hz=args.replan_hz,
+        inputs=policy_inputs(args),
+        actions={"arm": arm_action(chunk=args.chunk)},
+        allow=["resize", "pad"],
+        session=args.address,
+        name="policy",
     ) as policy:
         binding = policy.bind(ROBOT)
         print(binding, file=sys.stderr, flush=True)
