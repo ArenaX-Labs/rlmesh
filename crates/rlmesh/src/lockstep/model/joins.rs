@@ -83,9 +83,15 @@ impl<H: ModelHandler + 'static> Joins<H> {
     /// Joins the session at `text` (once per session), answering there
     /// until its inviters leave or nobody else is left.
     async fn join(self: &Arc<Self>, text: &str) -> Result<(), ModelFault> {
-        let address: SessionAddress = text
-            .parse()
-            .map_err(|e: SessionError| fault("INVALID_REQUEST", e.to_string(), false))?;
+        let address: SessionAddress = text.parse().map_err(|e: SessionError| {
+            // A host name that does not resolve yet is out of reach, not
+            // a malformed request.
+            let code = match e {
+                SessionError::Io(_) => "UNAVAILABLE",
+                _ => "INVALID_REQUEST",
+            };
+            fault(code, e.to_string(), false)
+        })?;
         let key = session_key(&address);
         loop {
             if self.shutdown.is_cancelled() {

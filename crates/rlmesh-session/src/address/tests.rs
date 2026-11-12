@@ -362,6 +362,20 @@ async fn an_explicit_local_port_hosts_and_a_second_placement_joins_it() {
     first.close().await.expect("close");
 }
 
+#[test]
+fn a_host_name_that_does_not_resolve_is_a_lookup_failure_not_a_bad_address() {
+    // A container's peer may not resolve until it starts: that is I/O a
+    // retry may get past, where a malformed address is configuration.
+    let (_, key) = launch_identity().expect("identity");
+    let err = Address::session(&format!("nowhere.invalid:7447#{key}"))
+        .expect("parse")
+        .joining()
+        .expect_err("no such host");
+    assert!(matches!(err, SessionError::Io(_)), "{err:?}");
+    assert!(err.to_string().contains("nowhere.invalid"), "{err}");
+    assert!(!err.to_string().contains(&key.to_string()), "{err}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_keyed_local_address_joins_its_host_and_never_hosts_in_its_place() {
     let grace = Duration::from_millis(250);

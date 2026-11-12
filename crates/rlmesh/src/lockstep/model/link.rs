@@ -233,6 +233,10 @@ impl ModelConnection {
         self.close().await;
         match invited? {
             (ModelReply::Done, _) => {}
+            // The model could not reach the session (yet): a retry may.
+            (ModelReply::Fault(fault), _) if fault.code == "UNAVAILABLE" => {
+                return Err(GymError::Unreachable(fault.message));
+            }
             (ModelReply::Fault(fault), _) => return Err(GymError::Config(fault.message)),
             (other, _) => {
                 return Err(GymError::Malformed(format!(

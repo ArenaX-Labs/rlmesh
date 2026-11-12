@@ -613,11 +613,20 @@ impl SessionAddress {
 }
 
 fn resolve(text: &str, host: &str, port: u16) -> Result<SocketAddr, SessionError> {
+    // A name that does not resolve (yet: a container's peer before it starts)
+    // is the lookup failing, not the address: an I/O error, which a retry may
+    // get past, where a malformed address is a configuration error.
+    let unresolved = |kind, why: String| {
+        SessionError::Io(std::io::Error::new(
+            kind,
+            format!("address {:?}: host {host:?}: {why}", redact(text)),
+        ))
+    };
     (host, port)
         .to_socket_addrs()
-        .map_err(|e| invalid(text, format!("host {host:?}: {e}")))?
+        .map_err(|e| unresolved(e.kind(), e.to_string()))?
         .next()
-        .ok_or_else(|| invalid(text, format!("host {host:?} resolves to nothing")))
+        .ok_or_else(|| unresolved(std::io::ErrorKind::NotFound, "resolves to nothing".into()))
 }
 
 fn joinable(base: SocketAddr) -> SocketAddr {

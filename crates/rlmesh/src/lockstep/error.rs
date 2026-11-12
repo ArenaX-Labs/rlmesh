@@ -39,6 +39,10 @@ pub enum GymError {
     /// A bad address or configuration.
     #[error("{0}")]
     Config(String),
+    /// A peer could not reach a session, which may come up (a model
+    /// invited into a session whose host is not there yet).
+    #[error("{0}")]
+    Unreachable(String),
 }
 
 impl GymError {
@@ -94,7 +98,7 @@ impl GymError {
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Env(error) => error.is_recoverable,
-            Self::Timeout(_) | Self::Closed(_) => true,
+            Self::Timeout(_) | Self::Closed(_) | Self::Unreachable(_) => true,
             Self::Session(error) => session_transient(error),
             Self::Map(_)
             | Self::Malformed(_)
