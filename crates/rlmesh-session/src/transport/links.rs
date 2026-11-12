@@ -14,12 +14,14 @@
 //! So the host fails the socket itself. A [`LinkGuard`] scans the process's
 //! sockets accepted on the transport's listening ports every [`SCAN`], and
 //! a link that had bytes waiting the whole of [`LINK_STALL`] while its peer
-//! acknowledged less than [`STALL_PROGRESS`] of them is shut down at the
-//! socket, with a zero linger so the kernel resets it rather than keep
+//! acknowledged neither what waited at first nor [`STALL_PROGRESS`] bytes is
+//! shut down at the socket, with a zero linger so the kernel resets it rather than keep
 //! offering the peer what it will not read. Zenoh's reads and writes then
 //! fail, which is what ends every wait above. A link that is merely slow
 //! (a Wi-Fi link with hundreds of milliseconds of delay, or a stall of a
-//! second or two) acknowledges far more than that in the window.
+//! second or two) acknowledges far more than that in the window, and an
+//! idle link, whose keep-alives each wait a moment for a delayed
+//! acknowledgement, has each one taken before the next.
 //!
 //! The scan needs the process's descriptors and the kernel's counters for
 //! each: Linux (`/proc/self/fd`, `TCP_INFO`) and macOS (`/dev/fd`,
@@ -47,8 +49,9 @@ pub(crate) const SCAN: Duration = Duration::from_millis(250);
 /// second or two.
 pub(crate) const LINK_STALL: Duration = Duration::from_millis(2500);
 /// What a peer must acknowledge within [`LINK_STALL`], while bytes wait for
-/// it, to count as reading. A kernel that keeps a closed window's probes
-/// answered may still let a few bytes trickle in.
+/// it, to count as reading, unless less than this waited: then taking all
+/// of that counts. A kernel that keeps a closed window's probes answered
+/// may still let a few bytes trickle in.
 pub(crate) const STALL_PROGRESS: u64 = 1024;
 /// How long a host's link may leave what it sent unacknowledged, or keep
 /// its window closed, before the kernel resets it.
@@ -130,11 +133,12 @@ struct Link {
     taken: u64,
 }
 
-/// Since when a link has had bytes waiting, and what its peer had taken
-/// then.
+/// Since when a link has had bytes waiting, how many waited then, and what
+/// its peer had taken then.
 #[derive(Clone, Copy, Debug)]
 struct Stall {
     since: Instant,
+    waiting: u64,
     taken: u64,
 }
 
@@ -145,11 +149,15 @@ fn stalled(stall: &mut Option<Stall>, waiting: u64, taken: u64, now: Instant) ->
         return false;
     }
     match stall {
-        Some(s) if taken.saturating_sub(s.taken) < STALL_PROGRESS => {
+        Some(s) if taken.saturating_sub(s.taken) < s.waiting.min(STALL_PROGRESS) => {
             now.duration_since(s.since) >= LINK_STALL
         }
         _ => {
-            *stall = Some(Stall { since: now, taken });
+            *stall = Some(Stall {
+                since: now,
+                waiting,
+                taken,
+            });
             false
         }
     }
@@ -528,11 +536,11 @@ mod tests {
         assert!(!stalled(&mut stall, 0, 0, at(window * 2)));
         // Bytes waiting from here, and the peer takes a trickle.
         let from = window * 2;
-        assert!(!stalled(&mut stall, 10, 100, at(from)));
-        assert!(!stalled(&mut stall, 10, 600, at(from + window - 1)));
+        assert!(!stalled(&mut stall, 9000, 100, at(from)));
+        assert!(!stalled(&mut stall, 9000, 600, at(from + window - 1)));
         assert!(stalled(
             &mut stall,
-            10,
+            9000,
             100 + STALL_PROGRESS - 1,
             at(from + window)
         ));
@@ -542,8 +550,21 @@ mod tests {
         let mut taken = 0;
         for ms in (0..window * 5).step_by(250) {
             taken += STALL_PROGRESS / 4;
-            assert!(!stalled(&mut stall, 10, taken, at(ms)), "{ms} ms");
+            assert!(!stalled(&mut stall, 9000, taken, at(ms)), "{ms} ms");
         }
+        // An idle link whose every scan finds the latest keep-alive still
+        // waiting for its (delayed) acknowledgement, the one before taken.
+        let mut stall = None;
+        let mut taken = 0;
+        for ms in (0..window * 5).step_by(250) {
+            assert!(!stalled(&mut stall, 3, taken, at(ms)), "{ms} ms");
+            taken += 3;
+        }
+        // The same few bytes never taken: a dead peer.
+        let mut stall = None;
+        assert!(!stalled(&mut stall, 3, 0, at(0)));
+        assert!(!stalled(&mut stall, 6, 0, at(window - 1)));
+        assert!(stalled(&mut stall, 9, 0, at(window)));
         // Drained once: the window starts over.
         let mut stall = None;
         assert!(!stalled(&mut stall, 10, 0, at(0)));
