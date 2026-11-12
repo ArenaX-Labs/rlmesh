@@ -3,8 +3,9 @@
  * newer one replaces the one waiting, so a slow link lowers a stream's rate
  * instead of queueing it. Control publications (heartbeats) queue in order and
  * go first. Bounded in bytes: past the bound the oldest sample goes, and only
- * when no sample is left the oldest control publication. It never grows past
- * its bound, however long the link stalls. Not locked: the transport holds its
+ * when no sample is left the oldest control publication. What the send task
+ * took out and is still sending counts against the bound too, so all of it
+ * never grows past the bound, however long the link stalls. Not locked: the transport holds its
  * lock around every call. */
 
 #ifndef RLMESH_TXQ_H_
@@ -29,6 +30,8 @@ typedef struct rlmesh_txq {
   rlmesh_txq_item_t* head;
   rlmesh_txq_item_t* tail;
   size_t bytes;
+  /* Bytes the send task took out and has not finished sending. */
+  size_t inflight;
   size_t cap;
   /* Publications dropped to keep to `cap`. */
   uint32_t dropped;
@@ -77,7 +80,7 @@ static inline void rlmesh_txq_drop_after(rlmesh_txq_t* q, rlmesh_txq_item_t* pre
  * (then dropped). */
 static inline bool rlmesh_txq_push(rlmesh_txq_t* q, rlmesh_txq_item_t* t) {
   size_t size = rlmesh_txq_size(t);
-  if (size > q->cap) {
+  if (size + q->inflight > q->cap) {
     free(t);
     q->dropped++;
     return false;
@@ -97,7 +100,7 @@ static inline bool rlmesh_txq_push(rlmesh_txq_t* q, rlmesh_txq_item_t* t) {
     q->tail = t;
   }
   q->bytes += size;
-  while (q->bytes > q->cap) {
+  while (q->bytes + q->inflight > q->cap) {
     rlmesh_txq_item_t* prev = NULL;
     rlmesh_txq_item_t* sample = NULL;
     for (rlmesh_txq_item_t *p = NULL, *i = q->head; i != t; p = i, i = i->next) {
@@ -139,6 +142,19 @@ static inline void rlmesh_txq_drop_class(rlmesh_txq_t* q, uint8_t class_) {
     i = next;
   }
 }
+
+/* Takes every publication waiting, now the caller's to send: they count
+ * against the bound until rlmesh_txq_sent. */
+static inline rlmesh_txq_item_t* rlmesh_txq_take(rlmesh_txq_t* q) {
+  rlmesh_txq_item_t* list = q->head;
+  q->inflight += q->bytes;
+  q->head = q->tail = NULL;
+  q->bytes = 0;
+  return list;
+}
+
+/* What rlmesh_txq_take handed out is sent (or dropped). */
+static inline void rlmesh_txq_sent(rlmesh_txq_t* q) { q->inflight = 0; }
 
 /* Frees every publication waiting. */
 static inline void rlmesh_txq_clear(rlmesh_txq_t* q) {

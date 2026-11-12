@@ -1,5 +1,6 @@
 /* The transport's send queue under a link that never drains it: memory stays
- * within the bound, each stream keeps only its newest sample, control
+ * within the bound (with what is being sent), each stream keeps only its
+ * newest sample, control
  * publications (heartbeats) are kept before any sample, and what was dropped
  * is counted. */
 
@@ -97,6 +98,29 @@ int main(void) {
   assert(mixed.head != NULL && mixed.head->next != NULL && mixed.head->next->next == NULL);
   assert(mixed.tail == mixed.head->next);
   rlmesh_txq_clear(&mixed);
+  /* What the send task took out and is still sending counts against the
+   * bound: a link that blocks mid-send never holds twice the bound. */
+  rlmesh_txq_t sending = {.cap = 2048};
+  for (int i = 0; i < 12; ++i) {
+    snprintf(key, sizeof key, "d/eyes/part%d", i);
+    assert(rlmesh_txq_push(&sending, sample(key, (uint32_t)i, 100)));
+  }
+  size_t taken_bytes = sending.bytes;
+  rlmesh_txq_item_t* taken = rlmesh_txq_take(&sending);
+  assert(sending.head == NULL && sending.inflight == taken_bytes);
+  for (uint32_t i = 0; i < 1000; ++i) {
+    snprintf(key, sizeof key, "d/eyes/part%u", i % 40);
+    rlmesh_txq_push(&sending, sample(key, i, 100));
+    assert(sending.bytes + sending.inflight <= sending.cap);
+  }
+  rlmesh_txq_sent(&sending);
+  while (taken != NULL) {
+    rlmesh_txq_item_t* next = taken->next;
+    free(taken);
+    taken = next;
+  }
+  assert(rlmesh_txq_push(&sending, sample("d/eyes/again", 1, 100)));
+  rlmesh_txq_clear(&sending);
   /* Draining empties it. */
   for (rlmesh_txq_item_t* t = rlmesh_txq_pop(&q); t != NULL; t = rlmesh_txq_pop(&q)) free(t);
   assert(q.head == NULL && q.tail == NULL && q.bytes == 0);

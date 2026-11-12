@@ -33,9 +33,12 @@ extern "C" {
 #define RLMESH_ZENOH_SUBS 16
 #define RLMESH_ZENOH_TOKENS 2
 /* Bytes of samples and verified views queued for the robot at most: one past
- * it is dropped (and counted in `failed`). Replies and query ends always
- * queue: the robot's own queries bound them. */
-#define RLMESH_ZENOH_QUEUE_BYTES (32 * 1024)
+ * it is dropped (and counted in `failed`). A part's commands, the sealed view,
+ * the host's tick and the heartbeat echo keep only their newest sample queued
+ * (the rest counted in `superseded`), so this holds what a stalled link
+ * releases at once: key deliveries, e-stop signals, a view or two. Replies
+ * and query ends always queue: the robot's own queries bound them. */
+#define RLMESH_ZENOH_QUEUE_BYTES (6 * 1024)
 /* How long a read blocks zenoh-pico's one task per session, in milliseconds:
  * its keep-alives, lease checks and query timeouts wait behind it, and closing
  * the session waits for it. Long enough for a handshake over Wi-Fi in power
@@ -56,14 +59,16 @@ extern "C" {
  * tasks. */
 #define RLMESH_ZENOH_TX_STACK (8 * 1024)
 #define RLMESH_ZENOH_TX_PRIORITY 12
-/* Bytes of publications waiting to go out at most: past it the oldest on the
- * same key is dropped (counted in rlmesh_zenoh_failures), as with a link that
- * can't keep up. */
-#define RLMESH_ZENOH_TX_BYTES (8 * 1024)
+/* Bytes of publications waiting to go out at most, with those the send task
+ * is sending: past it the oldest sample, then the oldest heartbeat, is dropped
+ * (counted in rlmesh_zenoh_failures), as with a link that can't keep up. */
+#define RLMESH_ZENOH_TX_BYTES (4 * 1024)
 
 /* The datagram path (RLMESH_DEVICE_DATAGRAM_OPEN): one UDP socket for the
  * robot, opened, read and closed by a task of its own, so neither a name
- * lookup nor a read ever waits on the loop. It reads with a timeout, so it
+ * lookup nor a read ever waits on the loop. The task and its buffer are made
+ * when the robot first opens the socket: a board whose host offers no
+ * datagram path never has them. It reads with a timeout, so it
  * notices a close within RLMESH_ZENOH_DGRAM_POLL_MS. Datagrams go out on the
  * send task, without waiting: one the socket can't take now is dropped (a
  * newer one replaces it anyway). What arrives queues for the loop like a
@@ -118,6 +123,9 @@ typedef struct rlmesh_zenoh_view_stats_t {
   uint32_t dgram_unsent;
   uint32_t dgram_received;
   uint32_t dgram_dropped;
+  /* Samples replaced in the robot's queue by a newer one on the same
+   * subscription before the robot took them (RLMESH_ZENOH_QUEUE_BYTES). */
+  uint32_t superseded;
 } rlmesh_zenoh_view_stats_t;
 
 /* A subscription's callback context. */
@@ -181,7 +189,9 @@ typedef struct rlmesh_zenoh_t {
   uint8_t dgram_refused;
   int dgram_fd;
   z_owned_mutex_t dgram_lock;
-  uint8_t dgram_buf[RLMESH_DEVICE_DATAGRAM_MAX + 1];
+  /* The datagram task runs, reading into `dgram_buf` (its own). */
+  bool rx_started;
+  uint8_t* dgram_buf;
   /* Held around every zenoh-pico call this transport makes on a session,
    * from the loop or the send task: declaring, querying, publishing, opening
    * and closing. `open` changes only under it, and only on the loop. */
