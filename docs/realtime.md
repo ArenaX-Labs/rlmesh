@@ -182,6 +182,26 @@ viewer = realtime.Policy(
 )
 ```
 
+In Rust, `Policy::builder()` takes the same entries from the
+`rlmesh_session::spec::inputs` and `actions` builders, or as JSON, and
+builds the `Policy` that `Controller::bind` takes:
+
+```rust
+use rlmesh_session::spec::actions::{self, JointCommand};
+use rlmesh_session::spec::{Policy, inputs};
+
+let eye = |at: &str| {
+    let joints = actions::joints().at(at).command(JointCommand::Position);
+    joints.hz(50).chunk(4)
+};
+let tracker = Policy::builder()
+    .hz(15)
+    .input("cam", inputs::camera().at("webcam:cam"))
+    .action("left", eye("eye-1:eyes"))
+    .action("right", eye("eye-2:eyes"))
+    .build()?;
+```
+
 The eyes move only while the session is armed: press **Arm** in the
 cockpit (next section), or call `camera.arm()` from a robot's program.
 Arming an armed session does nothing, so any script may call it.
