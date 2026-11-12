@@ -1,0 +1,1097 @@
+{
+  "about": "Each policy-map builder, its arguments, and the entry it must give. Python (tests/unit/test_realtime_builders.py) and Rust (rlmesh-session-core tests/builders.rs) each build every case. Arguments use the map's names: size is one side or [height, width], dtype and every closed set by name, fields as {name: [dtype, shape]}, max_age_ms and ttl_ms in ms.",
+  "cases": [
+    {
+      "builder": "inputs.camera",
+      "args": {
+        "at": "hallo-cam:cam"
+      },
+      "entry": {
+        "kind": "camera",
+        "at": "hallo-cam:cam"
+      }
+    },
+    {
+      "builder": "inputs.camera",
+      "args": {
+        "at": "cam",
+        "size": 224,
+        "layout": "chw",
+        "format": "bgr8",
+        "resample": "area",
+        "crop": 0.9,
+        "upside_down": true,
+        "dtype": "float32",
+        "range": [0, 1],
+        "frame": "optical",
+        "history": 2,
+        "history_hz": 15,
+        "max_age_ms": 200,
+        "optional": true,
+        "allow": ["resize", "bgr"]
+      },
+      "entry": {
+        "kind": "camera",
+        "at": "cam",
+        "size": [224, 224],
+        "layout": "chw",
+        "format": "bgr8",
+        "resample": "area",
+        "crop": 0.9,
+        "upside_down": true,
+        "dtype": "float32",
+        "range": [0, 1],
+        "frame": "optical",
+        "history": 2,
+        "history_hz": 15,
+        "max_age_ms": 200,
+        "optional": true,
+        "allow": ["resize", "bgr"]
+      }
+    },
+    {
+      "builder": "inputs.camera",
+      "args": {
+        "size": [96, 128]
+      },
+      "entry": {
+        "kind": "camera",
+        "size": [96, 128]
+      }
+    },
+    {
+      "builder": "inputs.depth",
+      "args": {
+        "at": "d",
+        "size": [24, 32],
+        "crop": 0.5,
+        "upside_down": false,
+        "dtype": "uint16",
+        "units": {
+          "depth": "mm"
+        },
+        "range": [0, 10],
+        "frame": "optical",
+        "optional": false,
+        "max_age_ms": 100,
+        "history": 3,
+        "history_hz": 30,
+        "allow": ["resize"]
+      },
+      "entry": {
+        "kind": "depth",
+        "at": "d",
+        "size": [24, 32],
+        "crop": 0.5,
+        "upside_down": false,
+        "dtype": "uint16",
+        "units": {
+          "depth": "mm"
+        },
+        "range": [0, 10],
+        "frame": "optical",
+        "optional": false,
+        "max_age_ms": 100,
+        "history": 3,
+        "history_hz": 30,
+        "allow": ["resize"]
+      }
+    },
+    {
+      "builder": "inputs.joints",
+      "args": {
+        "at": "bench:arm",
+        "names": ["b", "a"],
+        "count": 2,
+        "fields": ["pos"],
+        "dtype": "float64",
+        "units": {
+          "pos": "deg"
+        },
+        "scale": 0.5,
+        "offset": [1, 2],
+        "range": [-1, 1],
+        "source": "published",
+        "optional": true,
+        "max_age_ms": 50,
+        "history": 4,
+        "history_hz": 50,
+        "allow": ["select", "units"]
+      },
+      "entry": {
+        "kind": "joints",
+        "at": "bench:arm",
+        "names": ["b", "a"],
+        "count": 2,
+        "fields": ["pos"],
+        "dtype": "float64",
+        "units": {
+          "pos": "deg"
+        },
+        "scale": 0.5,
+        "offset": [1, 2],
+        "range": [-1, 1],
+        "source": "published",
+        "optional": true,
+        "max_age_ms": 50,
+        "history": 4,
+        "history_hz": 50,
+        "allow": ["select", "units"]
+      }
+    },
+    {
+      "builder": "inputs.joints",
+      "args": {
+        "names": "positional",
+        "count": 6,
+        "source": "applied"
+      },
+      "entry": {
+        "kind": "joints",
+        "names": "positional",
+        "count": 6,
+        "source": "applied"
+      }
+    },
+    {
+      "builder": "inputs.hand",
+      "args": {
+        "at": "h",
+        "names": ["thumb", "index"],
+        "count": 2,
+        "fields": ["pos", "effort"],
+        "dtype": "float32",
+        "units": {
+          "pos": "deg"
+        },
+        "scale": [1, 0.5],
+        "offset": 0.25,
+        "range": [0, 1],
+        "source": "applied",
+        "optional": false,
+        "max_age_ms": 20,
+        "history": 2,
+        "history_hz": 100,
+        "allow": ["rescale"]
+      },
+      "entry": {
+        "kind": "hand",
+        "at": "h",
+        "names": ["thumb", "index"],
+        "count": 2,
+        "fields": ["pos", "effort"],
+        "dtype": "float32",
+        "units": {
+          "pos": "deg"
+        },
+        "scale": [1, 0.5],
+        "offset": 0.25,
+        "range": [0, 1],
+        "source": "applied",
+        "optional": false,
+        "max_age_ms": 20,
+        "history": 2,
+        "history_hz": 100,
+        "allow": ["rescale"]
+      }
+    },
+    {
+      "builder": "inputs.wrench",
+      "args": {
+        "at": "ft",
+        "frame": "tool0",
+        "point": "tcp",
+        "fields": ["force", "torque"],
+        "dtype": "float32",
+        "units": {
+          "force": "kN"
+        },
+        "scale": 2,
+        "offset": [0, 0, 0],
+        "range": [-50, 50],
+        "source": "published",
+        "optional": true,
+        "max_age_ms": 10,
+        "history": 8,
+        "history_hz": 500,
+        "allow": ["units"]
+      },
+      "entry": {
+        "kind": "wrench",
+        "at": "ft",
+        "frame": "tool0",
+        "point": "tcp",
+        "fields": ["force", "torque"],
+        "dtype": "float32",
+        "units": {
+          "force": "kN"
+        },
+        "scale": 2,
+        "offset": [0, 0, 0],
+        "range": [-50, 50],
+        "source": "published",
+        "optional": true,
+        "max_age_ms": 10,
+        "history": 8,
+        "history_hz": 500,
+        "allow": ["units"]
+      }
+    },
+    {
+      "builder": "inputs.imu",
+      "args": {
+        "at": "imu",
+        "frame": "base",
+        "fields": ["orientation", "ang_vel", "lin_acc", "gravity"],
+        "rotation": "quat_wxyz",
+        "dtype": "float32",
+        "units": {
+          "ang_vel": "deg/s"
+        },
+        "scale": 1.5,
+        "offset": [0.1],
+        "optional": true,
+        "max_age_ms": 15,
+        "history": 5,
+        "history_hz": 200,
+        "allow": ["rotation"]
+      },
+      "entry": {
+        "kind": "imu",
+        "at": "imu",
+        "frame": "base",
+        "fields": ["orientation", "ang_vel", "lin_acc", "gravity"],
+        "rotation": "quat_wxyz",
+        "dtype": "float32",
+        "units": {
+          "ang_vel": "deg/s"
+        },
+        "scale": 1.5,
+        "offset": [0.1],
+        "optional": true,
+        "max_age_ms": 15,
+        "history": 5,
+        "history_hz": 200,
+        "allow": ["rotation"]
+      }
+    },
+    {
+      "builder": "inputs.pose",
+      "args": {
+        "at": "tcp",
+        "frame": "base",
+        "child": "tool0",
+        "fields": ["pos", "rot"],
+        "rotation": "rot6d",
+        "dtype": "float64",
+        "units": {
+          "pos": "mm"
+        },
+        "scale": 0.001,
+        "offset": [0, 0, 1],
+        "source": "applied",
+        "optional": false,
+        "max_age_ms": 30,
+        "history": 2,
+        "history_hz": 10,
+        "allow": ["rotation", "units"]
+      },
+      "entry": {
+        "kind": "pose",
+        "at": "tcp",
+        "frame": "base",
+        "child": "tool0",
+        "fields": ["pos", "rot"],
+        "rotation": "rot6d",
+        "dtype": "float64",
+        "units": {
+          "pos": "mm"
+        },
+        "scale": 0.001,
+        "offset": [0, 0, 1],
+        "source": "applied",
+        "optional": false,
+        "max_age_ms": 30,
+        "history": 2,
+        "history_hz": 10,
+        "allow": ["rotation", "units"]
+      }
+    },
+    {
+      "builder": "inputs.gripper",
+      "args": {
+        "at": "g",
+        "dtype": "float32",
+        "scale": 0.5,
+        "offset": 1,
+        "range": [0, 255],
+        "source": "applied",
+        "optional": true,
+        "max_age_ms": 40,
+        "history": 3,
+        "history_hz": 20,
+        "allow": ["rescale"]
+      },
+      "entry": {
+        "kind": "gripper",
+        "at": "g",
+        "dtype": "float32",
+        "scale": 0.5,
+        "offset": 1,
+        "range": [0, 255],
+        "source": "applied",
+        "optional": true,
+        "max_age_ms": 40,
+        "history": 3,
+        "history_hz": 20,
+        "allow": ["rescale"]
+      }
+    },
+    {
+      "builder": "inputs.switch",
+      "args": {
+        "at": "relay",
+        "dtype": "bool",
+        "source": "applied",
+        "optional": true,
+        "max_age_ms": 500,
+        "history": 2,
+        "history_hz": 5,
+        "allow": ["dtype", "hold"]
+      },
+      "entry": {
+        "kind": "switch",
+        "at": "relay",
+        "dtype": "bool",
+        "source": "applied",
+        "optional": true,
+        "max_age_ms": 500,
+        "history": 2,
+        "history_hz": 5,
+        "allow": ["dtype", "hold"]
+      }
+    },
+    {
+      "builder": "inputs.value",
+      "args": {
+        "at": "temp",
+        "dtype": "float64",
+        "units": {
+          "value": "degF"
+        },
+        "scale": 2,
+        "offset": -32,
+        "range": [0, 100],
+        "source": "published",
+        "optional": false,
+        "max_age_ms": 1000,
+        "history": 10,
+        "history_hz": 1,
+        "allow": ["units", "warmup"]
+      },
+      "entry": {
+        "kind": "value",
+        "at": "temp",
+        "dtype": "float64",
+        "units": {
+          "value": "degF"
+        },
+        "scale": 2,
+        "offset": -32,
+        "range": [0, 100],
+        "source": "published",
+        "optional": false,
+        "max_age_ms": 1000,
+        "history": 10,
+        "history_hz": 1,
+        "allow": ["units", "warmup"]
+      }
+    },
+    {
+      "builder": "inputs.velocity",
+      "args": {
+        "at": "base",
+        "frame": "base",
+        "fields": ["linear", "angular"],
+        "dtype": "float32",
+        "units": {
+          "angular": "deg/s"
+        },
+        "scale": [1, 1, 0.5],
+        "offset": 0,
+        "range": [-2, 2],
+        "source": "applied",
+        "optional": true,
+        "max_age_ms": 25,
+        "history": 4,
+        "history_hz": 40,
+        "allow": ["units"]
+      },
+      "entry": {
+        "kind": "velocity",
+        "at": "base",
+        "frame": "base",
+        "fields": ["linear", "angular"],
+        "dtype": "float32",
+        "units": {
+          "angular": "deg/s"
+        },
+        "scale": [1, 1, 0.5],
+        "offset": 0,
+        "range": [-2, 2],
+        "source": "applied",
+        "optional": true,
+        "max_age_ms": 25,
+        "history": 4,
+        "history_hz": 40,
+        "allow": ["units"]
+      }
+    },
+    {
+      "builder": "inputs.tactile",
+      "args": {
+        "at": "skin",
+        "shape": [4, 4],
+        "dtype": "float32",
+        "scale": 0.1,
+        "offset": [0],
+        "range": [0, 1],
+        "optional": true,
+        "max_age_ms": 60,
+        "history": 2,
+        "history_hz": 60,
+        "allow": ["rescale"]
+      },
+      "entry": {
+        "kind": "tactile",
+        "at": "skin",
+        "shape": [4, 4],
+        "dtype": "float32",
+        "scale": 0.1,
+        "offset": [0],
+        "range": [0, 1],
+        "optional": true,
+        "max_age_ms": 60,
+        "history": 2,
+        "history_hz": 60,
+        "allow": ["rescale"]
+      }
+    },
+    {
+      "builder": "inputs.text",
+      "args": {},
+      "entry": {
+        "kind": "text"
+      }
+    },
+    {
+      "builder": "inputs.text",
+      "args": {
+        "at": "/task",
+        "optional": true,
+        "max_age_ms": 5000,
+        "allow": ["hold"]
+      },
+      "entry": {
+        "kind": "text",
+        "at": "/task",
+        "optional": true,
+        "max_age_ms": 5000,
+        "allow": ["hold"]
+      }
+    },
+    {
+      "builder": "inputs.reward",
+      "args": {
+        "at": "r",
+        "optional": false,
+        "max_age_ms": 50,
+        "allow": ["blank"]
+      },
+      "entry": {
+        "kind": "reward",
+        "at": "r",
+        "optional": false,
+        "max_age_ms": 50,
+        "allow": ["blank"]
+      }
+    },
+    {
+      "builder": "inputs.success",
+      "args": {
+        "at": "episode/done",
+        "optional": true,
+        "max_age_ms": 100,
+        "allow": ["blank"]
+      },
+      "entry": {
+        "kind": "success",
+        "at": "episode/done",
+        "optional": true,
+        "max_age_ms": 100,
+        "allow": ["blank"]
+      }
+    },
+    {
+      "builder": "inputs.custom",
+      "args": {
+        "at": "tracker:boxes",
+        "kind": "yolo/boxes",
+        "fields": {
+          "xy": ["float32", [8, 2]]
+        }
+      },
+      "entry": {
+        "kind": "yolo/boxes",
+        "at": "tracker:boxes",
+        "fields": {
+          "xy": ["float32", [8, 2]]
+        }
+      }
+    },
+    {
+      "builder": "inputs.custom",
+      "args": {
+        "at": "tracker:pose",
+        "kind": "pose/coco17",
+        "fields": {
+          "kp": ["float32", [17, 3]],
+          "score": ["float32", []],
+          "id": ["int64", []]
+        },
+        "frame": "camera",
+        "units": {
+          "kp": "mm"
+        },
+        "scale": 0.5,
+        "offset": [0, 0, 0],
+        "range": [0, 1],
+        "source": "published",
+        "optional": true,
+        "max_age_ms": 100,
+        "history": 2,
+        "history_hz": 30,
+        "allow": ["hold"]
+      },
+      "entry": {
+        "kind": "pose/coco17",
+        "at": "tracker:pose",
+        "fields": {
+          "kp": ["float32", [17, 3]],
+          "score": ["float32", []],
+          "id": ["int64", []]
+        },
+        "frame": "camera",
+        "units": {
+          "kp": "mm"
+        },
+        "scale": 0.5,
+        "offset": [0, 0, 0],
+        "range": [0, 1],
+        "source": "published",
+        "optional": true,
+        "max_age_ms": 100,
+        "history": 2,
+        "history_hz": 30,
+        "allow": ["hold"]
+      }
+    },
+    {
+      "builder": "inputs.of",
+      "part": {
+        "kind": "pose/coco17",
+        "hz": 30,
+        "fields": {
+          "kp": ["float32", [17, 3]]
+        }
+      },
+      "args": {
+        "at": "tracker:pose",
+        "optional": true
+      },
+      "entry": {
+        "kind": "pose/coco17",
+        "fields": {
+          "kp": ["float32", [17, 3]]
+        },
+        "at": "tracker:pose",
+        "optional": true
+      }
+    },
+    {
+      "builder": "inputs.of",
+      "part": {
+        "kind": "joints",
+        "names": ["pan", "tilt"],
+        "hz": 50,
+        "fields": ["pos"],
+        "command": "position"
+      },
+      "args": {
+        "at": "eye-1:eyes",
+        "history": 4
+      },
+      "entry": {
+        "kind": "joints",
+        "fields": ["pos"],
+        "at": "eye-1:eyes",
+        "history": 4
+      }
+    },
+    {
+      "builder": "inputs.of",
+      "part": {
+        "kind": "camera",
+        "width": 640,
+        "height": 480,
+        "hz": 30
+      },
+      "args": {},
+      "entry": {
+        "kind": "camera"
+      }
+    },
+    {
+      "builder": "inputs.of",
+      "part": {
+        "kind": "text"
+      },
+      "args": {
+        "at": "tracker:note"
+      },
+      "entry": {
+        "kind": "text",
+        "at": "tracker:note"
+      }
+    },
+    {
+      "builder": "actions.joints",
+      "args": {
+        "at": "gimbal-left:servos",
+        "command": "position",
+        "hz": 50,
+        "chunk": 4
+      },
+      "entry": {
+        "kind": "joints",
+        "at": "gimbal-left:servos",
+        "command": "position",
+        "hz": 50,
+        "chunk": 4
+      }
+    },
+    {
+      "builder": "actions.joints",
+      "args": {},
+      "entry": {
+        "kind": "joints"
+      }
+    },
+    {
+      "builder": "actions.joints",
+      "args": {
+        "at": "bench:arm",
+        "names": ["a", "b"],
+        "count": 2,
+        "units": {
+          "pos": "deg"
+        },
+        "scale": 0.5,
+        "offset": [0, 0.1],
+        "range": [-3, 3],
+        "t0": "send",
+        "ttl_ms": 150,
+        "optional": true,
+        "allow": ["select"]
+      },
+      "entry": {
+        "kind": "joints",
+        "at": "bench:arm",
+        "names": ["a", "b"],
+        "count": 2,
+        "units": {
+          "pos": "deg"
+        },
+        "scale": 0.5,
+        "offset": [0, 0.1],
+        "range": [-3, 3],
+        "t0": "send",
+        "ttl_ms": 150,
+        "optional": true,
+        "allow": ["select"]
+      }
+    },
+    {
+      "builder": "actions.joints",
+      "args": {
+        "names": "positional",
+        "count": 6,
+        "command": "torque"
+      },
+      "entry": {
+        "kind": "joints",
+        "names": "positional",
+        "count": 6,
+        "command": "torque"
+      }
+    },
+    {
+      "builder": "actions.hand",
+      "args": {
+        "at": "h",
+        "command": "velocity",
+        "hz": 100,
+        "chunk": 8,
+        "names": ["thumb"],
+        "count": 1,
+        "units": {
+          "vel": "deg/s"
+        },
+        "scale": [2],
+        "offset": 0,
+        "range": [-1, 1],
+        "t0": "snapshot",
+        "ttl_ms": 80,
+        "optional": false,
+        "allow": ["units"]
+      },
+      "entry": {
+        "kind": "hand",
+        "at": "h",
+        "command": "velocity",
+        "hz": 100,
+        "chunk": 8,
+        "names": ["thumb"],
+        "count": 1,
+        "units": {
+          "vel": "deg/s"
+        },
+        "scale": [2],
+        "offset": 0,
+        "range": [-1, 1],
+        "t0": "snapshot",
+        "ttl_ms": 80,
+        "optional": false,
+        "allow": ["units"]
+      }
+    },
+    {
+      "builder": "actions.wrench",
+      "args": {
+        "at": "ft",
+        "command": "wrench",
+        "frame": "tool0",
+        "hz": 500,
+        "chunk": 10,
+        "units": {
+          "force": "kN"
+        },
+        "scale": 1.5,
+        "offset": [0, 0, 0, 0, 0, 0],
+        "range": [-20, 20],
+        "t0": "send",
+        "ttl_ms": 20,
+        "optional": true,
+        "allow": ["rescale"]
+      },
+      "entry": {
+        "kind": "wrench",
+        "at": "ft",
+        "command": "wrench",
+        "frame": "tool0",
+        "hz": 500,
+        "chunk": 10,
+        "units": {
+          "force": "kN"
+        },
+        "scale": 1.5,
+        "offset": [0, 0, 0, 0, 0, 0],
+        "range": [-20, 20],
+        "t0": "send",
+        "ttl_ms": 20,
+        "optional": true,
+        "allow": ["rescale"]
+      }
+    },
+    {
+      "builder": "actions.pose",
+      "args": {
+        "at": "tcp",
+        "command": "delta",
+        "reference": "current",
+        "frame": "base",
+        "child": "tool0",
+        "rotation": "axis_angle",
+        "hz": 20,
+        "chunk": 5,
+        "units": {
+          "pos": "mm"
+        },
+        "scale": 0.001,
+        "offset": [0, 0, 0],
+        "t0": "snapshot",
+        "ttl_ms": 500,
+        "optional": false,
+        "allow": ["rotation"]
+      },
+      "entry": {
+        "kind": "pose",
+        "at": "tcp",
+        "command": "delta",
+        "reference": "current",
+        "frame": "base",
+        "child": "tool0",
+        "rotation": "axis_angle",
+        "hz": 20,
+        "chunk": 5,
+        "units": {
+          "pos": "mm"
+        },
+        "scale": 0.001,
+        "offset": [0, 0, 0],
+        "t0": "snapshot",
+        "ttl_ms": 500,
+        "optional": false,
+        "allow": ["rotation"]
+      }
+    },
+    {
+      "builder": "actions.pose",
+      "args": {
+        "command": "absolute",
+        "reference": "target"
+      },
+      "entry": {
+        "kind": "pose",
+        "command": "absolute",
+        "reference": "target"
+      }
+    },
+    {
+      "builder": "actions.gripper",
+      "args": {
+        "at": "g",
+        "command": "position",
+        "hz": 10,
+        "chunk": 2,
+        "open": 0,
+        "closed": 1,
+        "scale": 0.5,
+        "offset": 0.5,
+        "range": [0, 100],
+        "t0": "send",
+        "ttl_ms": 1000,
+        "optional": true,
+        "allow": ["rescale"]
+      },
+      "entry": {
+        "kind": "gripper",
+        "at": "g",
+        "command": "position",
+        "hz": 10,
+        "chunk": 2,
+        "open": 0,
+        "closed": 1,
+        "scale": 0.5,
+        "offset": 0.5,
+        "range": [0, 100],
+        "t0": "send",
+        "ttl_ms": 1000,
+        "optional": true,
+        "allow": ["rescale"]
+      }
+    },
+    {
+      "builder": "actions.switch",
+      "args": {
+        "at": "relay",
+        "command": "set",
+        "hz": 2,
+        "chunk": 2,
+        "t0": "send",
+        "ttl_ms": 2000,
+        "optional": true,
+        "allow": ["drop"]
+      },
+      "entry": {
+        "kind": "switch",
+        "at": "relay",
+        "command": "set",
+        "hz": 2,
+        "chunk": 2,
+        "t0": "send",
+        "ttl_ms": 2000,
+        "optional": true,
+        "allow": ["drop"]
+      }
+    },
+    {
+      "builder": "actions.value",
+      "args": {
+        "at": "dimmer",
+        "command": "set",
+        "hz": 5,
+        "chunk": 3,
+        "units": {
+          "value": "%"
+        },
+        "scale": 100,
+        "offset": 0,
+        "range": [0, 1],
+        "t0": "snapshot",
+        "ttl_ms": 400,
+        "optional": false,
+        "allow": ["rescale"]
+      },
+      "entry": {
+        "kind": "value",
+        "at": "dimmer",
+        "command": "set",
+        "hz": 5,
+        "chunk": 3,
+        "units": {
+          "value": "%"
+        },
+        "scale": 100,
+        "offset": 0,
+        "range": [0, 1],
+        "t0": "snapshot",
+        "ttl_ms": 400,
+        "optional": false,
+        "allow": ["rescale"]
+      }
+    },
+    {
+      "builder": "actions.velocity",
+      "args": {
+        "at": "base",
+        "command": "velocity",
+        "frame": "base",
+        "hz": 50,
+        "chunk": 10,
+        "units": {
+          "angular": "deg/s"
+        },
+        "scale": [1, 1, 0.5],
+        "offset": 0,
+        "range": [-1, 1],
+        "t0": "send",
+        "ttl_ms": 100,
+        "optional": true,
+        "allow": ["units"]
+      },
+      "entry": {
+        "kind": "velocity",
+        "at": "base",
+        "command": "velocity",
+        "frame": "base",
+        "hz": 50,
+        "chunk": 10,
+        "units": {
+          "angular": "deg/s"
+        },
+        "scale": [1, 1, 0.5],
+        "offset": 0,
+        "range": [-1, 1],
+        "t0": "send",
+        "ttl_ms": 100,
+        "optional": true,
+        "allow": ["units"]
+      }
+    },
+    {
+      "builder": "actions.custom",
+      "args": {
+        "at": "game:move",
+        "kind": "x/move",
+        "fields": {
+          "cell": ["int64", []]
+        },
+        "command": "play"
+      },
+      "entry": {
+        "kind": "x/move",
+        "at": "game:move",
+        "fields": {
+          "cell": ["int64", []]
+        },
+        "command": "play"
+      }
+    },
+    {
+      "builder": "actions.custom",
+      "args": {
+        "kind": "arm/tcp",
+        "fields": {
+          "dpos": ["float32", [6]],
+          "grip": ["bool", []]
+        },
+        "frame": "base",
+        "hz": 100,
+        "chunk": 5,
+        "units": {
+          "dpos": "mm"
+        },
+        "scale": 0.5,
+        "offset": [0, 0, 0, 0, 0, 0],
+        "range": [-1, 1],
+        "t0": "send",
+        "ttl_ms": 50,
+        "optional": true,
+        "allow": ["drop"]
+      },
+      "entry": {
+        "kind": "arm/tcp",
+        "fields": {
+          "dpos": ["float32", [6]],
+          "grip": ["bool", []]
+        },
+        "frame": "base",
+        "hz": 100,
+        "chunk": 5,
+        "units": {
+          "dpos": "mm"
+        },
+        "scale": 0.5,
+        "offset": [0, 0, 0, 0, 0, 0],
+        "range": [-1, 1],
+        "t0": "send",
+        "ttl_ms": 50,
+        "optional": true,
+        "allow": ["drop"]
+      }
+    },
+    {
+      "builder": "parts.array",
+      "args": {
+        "dtype": "float32",
+        "shape": [17, 3]
+      },
+      "entry": ["float32", [17, 3]]
+    },
+    {
+      "builder": "parts.array",
+      "args": {
+        "dtype": "uint8",
+        "shape": [2]
+      },
+      "entry": ["uint8", [2]]
+    },
+    {
+      "builder": "parts.array",
+      "args": {
+        "dtype": "bool",
+        "shape": []
+      },
+      "entry": ["bool", []]
+    },
+    {
+      "builder": "parts.array",
+      "args": {
+        "dtype": "utf8",
+        "shape": []
+      },
+      "entry": ["utf8", []]
+    }
+  ]
+}

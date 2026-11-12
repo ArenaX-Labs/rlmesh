@@ -39,6 +39,10 @@ use crate::spec::normalise::{FieldDecl, Ordered};
 use crate::spec::rotation::Rotation;
 use crate::spec::selector::{RUN_OPTIONS, Selector};
 
+mod builder;
+pub use builder::{ActionEntry, Array, InputEntry, PerElement, PolicyBuilder};
+pub(crate) use builder::{Draft, Val, builder, key, named, setter};
+
 /// The longest entry name.
 const MAX_ENTRY_NAME: usize = 128;
 /// The highest rate a policy declares.
@@ -283,6 +287,16 @@ pub enum Source {
     Applied,
 }
 
+impl Source {
+    /// Its name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Published => "published",
+            Self::Applied => "applied",
+        }
+    }
+}
+
 /// When a chunk starts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkStart {
@@ -291,6 +305,16 @@ pub enum ChunkStart {
     Snapshot,
     /// When it is sent.
     Send,
+}
+
+impl ChunkStart {
+    /// Its name in `t0`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Send => "send",
+        }
+    }
 }
 
 /// What inputs and actions share.
@@ -495,6 +519,30 @@ fn millis(where_: &str, key: &str, ms: f64) -> Result<Duration, String> {
     }
 }
 
+fn crop(where_: &str, crop: f64) -> Result<f64, String> {
+    if crop.is_finite() && crop > 0.0 && crop <= 1.0 {
+        Ok(crop)
+    } else {
+        Err(format!("{where_}: crop is a side fraction in (0, 1]"))
+    }
+}
+
+fn range(where_: &str, [low, high]: [f64; 2]) -> Result<(f64, f64), String> {
+    if low.is_finite() && high.is_finite() && low != high {
+        Ok((low, high))
+    } else {
+        Err(format!("{where_}: range is two finite, different numbers"))
+    }
+}
+
+fn finite(where_: &str, key: &str, value: f64) -> Result<f64, String> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!("{where_}: {key} must be finite"))
+    }
+}
+
 fn ident(where_: &str, key: &str, value: Option<String>) -> Result<Option<String>, String> {
     value
         .map(|v| {
@@ -652,16 +700,7 @@ fn common(
         .transpose()?;
     let units = decl.units.take().map(|u| u.0).unwrap_or_default();
     let allow = Allows::parse(where_, &decl.allow.take().unwrap_or_default())?;
-    let range = decl
-        .range
-        .map(|[low, high]| {
-            if low.is_finite() && high.is_finite() && low != high {
-                Ok((low, high))
-            } else {
-                Err(format!("{where_}: range is two finite, different numbers"))
-            }
-        })
-        .transpose()?;
+    let range = decl.range.map(|r| range(where_, r)).transpose()?;
     let schema = match decl.fields.take() {
         Some(EntryFields::Schema(schema)) => {
             if kind != Kind::Custom {
@@ -789,10 +828,8 @@ fn input(name: &str, value: Value, policy_allow: Allows) -> Result<Input, String
             )
         })?,
     };
-    if let Some(crop) = decl.crop
-        && !(crop.is_finite() && crop > 0.0 && crop <= 1.0)
-    {
-        return Err(format!("{where_}: crop is a side fraction in (0, 1]"));
+    if let Some(c) = decl.crop {
+        crop(&where_, c)?;
     }
     let dtype = decl
         .dtype
@@ -874,9 +911,7 @@ fn action(name: &str, value: Value, policy_allow: Allows) -> Result<Action, Stri
         return Err(format!("{where_}: open and closed are for gripper actions"));
     }
     for (key, value) in [("open", decl.open), ("closed", decl.closed)] {
-        if value.is_some_and(|v| !v.is_finite()) {
-            return Err(format!("{where_}: {key} must be finite"));
-        }
+        value.map(|v| finite(&where_, key, v)).transpose()?;
     }
     if decl.open.unwrap_or(1.0) == decl.closed.unwrap_or(0.0) {
         return Err(format!("{where_}: open and closed must differ"));
