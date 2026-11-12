@@ -223,6 +223,16 @@ are skipped as `publisher_gone`, and when a robot of that name declares its
 parts again the policy binds to them on its own (`rebound`) and drives it
 once it is re-armed. It waits for as long as the robot stays away.
 
+**An input the policy can do without** is declared
+`optional=True, allow=["blank"]` (an action: `allow=["drop"]`): with its
+part absent the policy binds anyway and the input reads blank; `optional`
+without that allowance is refused at bind. `allow=["hold"]` is about
+staleness, not absence: a sample older than `max_age_ms` reaches the policy,
+flagged, instead of the start being skipped, while its publisher is still in
+the session. Once the publisher leaves, an optional input allowed `blank`
+reads blank until it is back (`input_lost` says so), whether or not it
+allows `hold`; any other input's starts are skipped as `publisher_gone`.
+
 **When a policy drops off** (a crash, a lost link, or a new process
 joining under its name), the host ends only the leases it held. Those
 parts go to their declared safe behaviour, as after a release; the session

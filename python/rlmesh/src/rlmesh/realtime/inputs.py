@@ -17,7 +17,10 @@ Keyword arguments every input takes: ``optional`` (may stay unbound, read
 as blank; it needs ``"blank"`` in ``allow``, the entry's, the policy's or
 the bind call's, or the binding is refused), ``max_age_ms`` (the oldest sample the policy accepts
 at a start) and ``allow`` (the conversions this entry may use, beside the
-policy's own). A streamed kind also takes ``history`` (a window of that many
+policy's own). ``"hold"`` hands the policy a sample older than
+``max_age_ms``, flagged, instead of skipping the start, while its publisher
+is still in the session; once the publisher leaves, an optional input
+allowed ``"blank"`` reads blank until it is back, ``"hold"`` or not. A streamed kind also takes ``history`` (a window of that many
 samples) and ``history_hz`` (the rate it was trained at); a commandable kind
 takes ``source="applied"`` to read what its edge dispatched instead of what
 the robot published. Numeric kinds take ``dtype``, ``units`` (``{field:
