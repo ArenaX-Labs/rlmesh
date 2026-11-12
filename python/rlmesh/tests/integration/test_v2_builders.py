@@ -628,7 +628,7 @@ def test_a_wait_without_a_timeout_stops_on_ctrl_c() -> None:
             policy.close()
 
 
-#: A lockstep robot's map: no event parts, which a lockstep robot cannot declare yet.
+#: A lockstep robot's map.
 SERVOS = {"servos": GIMBAL["servos"]}
 
 
@@ -664,6 +664,40 @@ def test_a_lockstep_robot_is_served_by_either_name(serve: str) -> None:
             env.reset(seed=0)
             obs, reward, *_ = env.step({"servos": np.array([0.5, -0.5], np.float32)})
             assert obs["servos"].tolist() == [0.5, -0.5] and reward == 1.0
+        finally:
+            env.close()
+            robot.close()
+
+
+def test_a_lockstep_robot_declares_steps_and_delivers_event_parts() -> None:
+    pytest.importorskip("gymnasium")
+    import rlmesh.numpy
+
+    with realtime.Host() as host:
+        robot = realtime.Robot(
+            "scored",
+            {**SERVOS, "score": parts.reward(), "task": parts.text()},
+            session=host,
+            clock="lockstep",
+        )
+
+        def step(commands: dict[str, Any]) -> Any:
+            robot.publish("servos", pos=commands["servos"].astype(np.float32))
+            robot.publish("score", 0.25)
+            robot.publish("task", "reach")
+            return 1.0, False, False
+
+        def reset(seed: int | None, options: Any) -> None:
+            robot.publish("servos", pos=np.zeros(2, np.float32))
+            robot.publish("task", "start")
+
+        robot.serve(step, reset, background=True)
+        env = rlmesh.numpy.RemoteEnv(f"{host.address}/scored")
+        try:
+            obs, _ = env.reset(seed=0)
+            assert obs["task"] == "start"
+            obs, *_ = env.step({"servos": np.array([0.5, -0.5], np.float32)})
+            assert obs["task"] == "reach" and float(obs["score"]) == 0.25
         finally:
             env.close()
             robot.close()

@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use rlmesh_session::address::{Address, LEASE_GRACE, Placed, SessionAddress, place};
 use rlmesh_session::lease::LeaseGroup;
+use rlmesh_session::spec::Kind;
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
@@ -47,8 +48,9 @@ use crate::lockstep::view::{self, GymView};
 pub const GYM_HZ: f64 = 1000.0;
 
 /// A lockstep robot's map with what lockstep lets it leave out filled in: a
-/// part without `hz` runs once per step (at the notional [`GYM_HZ`]), and a
-/// part without `kind` is a custom part of its own, kind
+/// part without `hz` runs once per step (at the notional [`GYM_HZ`]) unless
+/// it is an event part (`text`, `reward`, `success`), which has no rate, and
+/// a part without `kind` is a custom part of its own, kind
 /// `local/{its last path segment}`, declared by its `fields`. A game or a
 /// classic-control env so needs no robot vocabulary.
 pub fn lockstep_robot_map(robot_json: &str) -> Result<String, GymError> {
@@ -63,7 +65,12 @@ pub fn lockstep_robot_map(robot_json: &str) -> Result<String, GymError> {
             let kind = serde_json::to_string(&format!("local/{last}")).map_err(bad)?;
             decl.insert("kind".into(), RawValue::from_string(kind).map_err(bad)?);
         }
-        if !decl.contains_key("hz") {
+        let event = decl
+            .get("kind")
+            .and_then(|kind| serde_json::from_str::<String>(kind.get()).ok())
+            .and_then(|kind| Kind::parse(&kind).ok())
+            .is_some_and(Kind::is_event);
+        if !event && !decl.contains_key("hz") {
             decl.insert(
                 "hz".into(),
                 RawValue::from_string(GYM_HZ.to_string()).map_err(bad)?,
@@ -1102,5 +1109,30 @@ mod tests {
             "a cancelled robot's lockstep session took a pending wakeup"
         );
         drop(host);
+    }
+
+    /// Event parts take no `hz`: the map leaves theirs out, and the
+    /// normaliser takes it.
+    #[test]
+    fn a_lockstep_map_gives_no_rate_to_an_event_part() {
+        let map = lockstep_robot_map(
+            r#"{"q": {"kind": "joints", "count": 2, "fields": ["pos"]},
+                "reward": {"kind": "reward"}, "task": {"kind": "text"},
+                "done": {"kind": "success"}}"#,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&map).unwrap();
+        assert_eq!(parsed["q"]["hz"], GYM_HZ);
+        for event in ["reward", "task", "done"] {
+            assert!(parsed[event].get("hz").is_none(), "{event}: {map}");
+        }
+        let robot = ParticipantId::new("robot").unwrap();
+        let parts = rlmesh_session::spec::normalise(
+            &robot,
+            rlmesh_session::wire::version::SPEC_VERSION,
+            &map,
+        )
+        .unwrap();
+        assert_eq!(parts.len(), 4);
     }
 }
