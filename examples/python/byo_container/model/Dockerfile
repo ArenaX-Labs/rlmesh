@@ -12,7 +12,8 @@ FROM python:3.11-slim
 
 # Pin rlmesh to the build your host runs against (the handshake checks
 # compatibility). Add your policy's framework + weights handling here.
-RUN pip install --no-cache-dir "rlmesh" "gymnasium" "numpy"
+ARG RLMESH_VERSION=0.2.0a0
+RUN pip install --no-cache-dir "rlmesh==${RLMESH_VERSION}" "gymnasium" "numpy"
 
 WORKDIR /app
 COPY entrypoint.py .

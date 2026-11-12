@@ -235,7 +235,7 @@ workflow `release.yml`, environment `release`) in each package's settings.
 
 ```bash
 python -m venv /tmp/rlmesh-smoke
-/tmp/rlmesh-smoke/bin/python -m pip install rlmesh
+/tmp/rlmesh-smoke/bin/python -m pip install "rlmesh==VERSION"  # the version just published
 /tmp/rlmesh-smoke/bin/python -c "import rlmesh; print(rlmesh.__version__)"
 ```
 

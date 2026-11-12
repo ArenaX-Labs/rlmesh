@@ -17,7 +17,7 @@ uv run python examples/python/v2/ur10e_mujoco/demo.py policy --address ADDR
 Then open the cockpit on the printed address:
 
 ```sh
-rlmesh cockpit 127.0.0.1:41000/local/01a15b0a-...   # from `pip install rlmesh` on a desktop
+rlmesh cockpit 127.0.0.1:41000/local/01a15b0a-...   # from `pip install --pre rlmesh` on a desktop
 mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...   # from this repo
 # or: cargo run -p rlmesh-cockpit -- ADDRESS [--id cockpit] [--timeout 10] [--record-dir DIR]
 ```

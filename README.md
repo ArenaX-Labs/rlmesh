@@ -23,6 +23,8 @@ Serve an environment in one process, drive it from another. Same `reset` / `step
 pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
+`--pre` picks the 0.2 alpha. To use this branch before its alpha is on PyPI, [install it from source](docs/installation.md#from-source).
+
 ## Quickstart
 
 Serve an env:

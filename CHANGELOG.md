@@ -85,7 +85,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 #### Real-time sessions (Python, Experimental)
 
-- `rlmesh.realtime` runs robots and policies on one network; `pip install rlmesh[robot]` adds the NumPy it needs. See [real-time sessions](docs/realtime.md).
+- `rlmesh.realtime` runs robots and policies on one network; `pip install --pre "rlmesh[robot]"` adds the NumPy it needs. See [real-time sessions](docs/realtime.md).
 - A `Robot` declares its parts with `rlmesh.realtime.parts` (`joints`, `gripper`, `camera`, `imu`, `switch`, `value` and more), publishes what it senses (`publish`, and `publish_jpeg` for frames already encoded) and plays the commands its edge says are due.
 - Every commanded part names its safe behaviour (`Safe.STOP`, `Safe.HOLD` or a named one), may stay latched while its lease is held (`latch=True`), and bounds the clock error it accepts with `max_clock_error_ms` (a quarter of `max_action_age_ms` by default, at least 5 ms).
 - A `Policy` declares what it needs by kind and path, binds to the robots that have it, and sends short timed action chunks; `bind()` with no robot drives every robot in the session.

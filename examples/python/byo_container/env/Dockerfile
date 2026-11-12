@@ -8,7 +8,8 @@ FROM python:3.11-slim
 
 # Pin rlmesh to the build your host runs against. Add your env's own
 # dependencies here too.
-RUN pip install --no-cache-dir "rlmesh" "gymnasium"
+ARG RLMESH_VERSION=0.2.0a0
+RUN pip install --no-cache-dir "rlmesh==${RLMESH_VERSION}" "gymnasium"
 
 WORKDIR /app
 COPY entrypoint.py .
