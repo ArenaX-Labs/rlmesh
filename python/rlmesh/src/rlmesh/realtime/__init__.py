@@ -7,16 +7,29 @@ action chunks that the robot's edge plays, holds, or replaces with its safe
 behaviour::
 
     from rlmesh import realtime
+    from rlmesh.realtime import actions, inputs, parts
+
+    ARM = {"arm": parts.joints(NAMES, hz=500, command="position", safe=parts.Safe.HOLD)}
 
     with realtime.Host() as host:
-        robot = realtime.Robot("ur10e", UR10E, session=host)
+        robot = realtime.Robot("ur10e", ARM, session=host)
         robot.arm()
-        policy = realtime.Policy(HOLD, session=host, name="hold")
+        policy = realtime.Policy(
+            hz=50,
+            inputs={"q": inputs.joints("ur10e:arm", fields=["pos"])},
+            actions={"arm": actions.joints("ur10e:arm", command="position", chunk=10)},
+            session=host,
+        )
         print(policy.bind("ur10e"))  # the binding table
         # robot loop: robot.publish("arm", pos=q, vel=dq); due = robot.due("arm")
         policy.run(lambda obs: {"arm": obs["q"][None]}, duration=5.0)
 
-A robot can also run in lockstep (``Robot(..., clock="lockstep")``):
+:mod:`~rlmesh.realtime.parts`, :mod:`~rlmesh.realtime.inputs` and
+:mod:`~rlmesh.realtime.actions` each return the plain dict they stand for
+(``inputs.joints("ur10e:arm")`` is ``{"kind": "joints", "at":
+"ur10e:arm"}``), and a dict written by hand is accepted wherever one is.
+
+A robot can also run in lockstep (``Robot(..., clock=Clock.LOCKSTEP)``):
 each step is one call of its ``step(commands)``, and ``RemoteEnv`` at its
 participant address (``robot.address``) drives it as a Gymnasium env.
 Existing Gym envs and v1 models reach lockstep through their own servers
@@ -32,12 +45,13 @@ reused at once.
 from __future__ import annotations
 
 import enum
+import inspect
 import json
 import logging
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 try:
     import numpy as np
@@ -62,7 +76,20 @@ from .._rlmesh import (
     V2Robot,
     parse_address,
 )
+from . import actions as actions
+from . import inputs as inputs
 from . import parts as parts
+from . import results as results
+from ._entries import Conversion
+from .results import (
+    EdgeStats,
+    Event,
+    HandBack,
+    Health,
+    Held,
+    HostLink,
+    PolicyStats,
+)
 
 if TYPE_CHECKING:
     from typing import TypeAlias
@@ -76,6 +103,7 @@ else:
 __all__ = [
     "BindingRefused",
     "BindingTable",
+    "Clock",
     "Due",
     "Host",
     "Meta",
@@ -84,6 +112,7 @@ __all__ = [
     "Rate",
     "Resume",
     "Robot",
+    "RobotPart",
     "RunMode",
     "SessionException",
     "SessionLost",
@@ -91,15 +120,26 @@ __all__ = [
     "SessionRefused",
     "StartSkipped",
     "Step",
+    "actions",
     "drive",
+    "inputs",
     "parse_address",
     "parts",
     "read_recording",
+    "results",
 ]
 
-#: A predict function: an observation in, one ``[chunk, ...]`` array (or a
+#: A predict function: an observation in (and, when it takes a second
+#: argument, the :class:`Policy` running it), one ``[chunk, ...]`` array (or a
 #: dict of arrays) per action entry out.
-Predict = Callable[["Observation"], Mapping[str, Any]]
+Predict = (
+    Callable[["Observation"], Mapping[str, Any]]
+    | Callable[["Observation", "Policy"], Mapping[str, Any]]
+)
+
+#: How long a wait with no limit waits: a year, past any run (Ctrl-C still
+#: interrupts it).
+_FOREVER_S = 365 * 24 * 3600.0
 
 _log = logging.getLogger(__name__)
 
@@ -147,7 +187,7 @@ class Host:
     def __repr__(self) -> str:
         return f"Host({redact_address(self.address)!r})"
 
-    def health(self) -> list[dict[str, Any]]:
+    def health(self) -> list[HostLink]:
         """Each participant's link as this host measured it, about once a second.
 
         Dicts of ``participant``, ``heartbeats``, ``rtt_ms``,
@@ -159,7 +199,7 @@ class Host:
         (each end of a board's datagram path, or ``None``). Empty for a
         session another process hosts.
         """
-        return self._native.health()
+        return cast("list[HostLink]", self._native.health())
 
     def close(self) -> None:
         """Stop the host."""
@@ -379,15 +419,38 @@ def _sample(
     return buffers
 
 
+class Clock(enum.Enum):
+    """Who owns a robot's time: the world, or whoever steps it.
+
+    The robot chooses, where it is declared; a policy or env learns it from
+    what it connects to.
+    """
+
+    #: The world runs whether anyone acts or not: the robot publishes what
+    #: it measures and plays what its edge says is due, at its own rate. A
+    #: :class:`Policy` drives it. The default.
+    WALL = "wall"
+    #: Time advances one step per call of the robot's ``step(commands)``,
+    #: and waits for it: :meth:`Robot.serve` serves the steps, and
+    #: ``RemoteEnv`` at :attr:`Robot.address` drives them as a Gymnasium env.
+    LOCKSTEP = "lockstep"
+
+
 class Robot:
     """One robot: its map declared, its parts published, its commands served.
 
-    ``parts`` is the robot map: ``{path: {"kind": ..., ...}}``. The
-    host normalises it; every commandable part gets an edge. The robot's
-    control loop publishes its sensors and asks :meth:`due` what to dispatch
-    on each control tick. ``on_handover(group, from_path, to_path)`` runs
-    when a command group's lease moves between members (switch the device's
-    control mode there); the group dispatches nothing until it returns.
+    ``parts`` is the robot map: ``{path: part}``, each part built with
+    :mod:`~rlmesh.realtime.parts` or written as its dict. The host
+    normalises it; every commandable part gets an edge. The robot's control
+    loop publishes its sensors and asks :meth:`due` what to dispatch on each
+    control tick; :meth:`part` gives a handle that does the same for one
+    part. ``on_handover(group, from_path, to_path)`` runs when a command
+    group's lease moves between members (switch the device's control mode
+    there); the group dispatches nothing until it returns.
+
+    ``clock`` is a :class:`Clock` (or its value, ``"wall"`` or
+    ``"lockstep"``). A lockstep robot publishes inside its ``step`` and is
+    served with :meth:`serve`.
 
     When the host drops the robot (a network gap past its presence grace)
     it joins again on its own; meanwhile its edge holds, then goes safe.
@@ -402,13 +465,15 @@ class Robot:
         session: Host | str = "",
         timeout: float = 10.0,
         on_handover: Callable[[str, str, str], None] | None = None,
-        clock: str = "wall",
+        clock: Clock | Literal["wall", "lockstep"] = Clock.WALL,
     ) -> None:
-        if clock not in ("wall", "lockstep"):
-            raise ValueError(f"clock {clock!r}: wall or lockstep")
+        try:
+            clock = Clock(clock)
+        except ValueError:
+            raise ValueError(f"clock={clock!r}: Clock.WALL or Clock.LOCKSTEP") from None
         self._timeout = timeout
         self._lockstep: V2LockstepRobot | None = None
-        if clock == "lockstep":
+        if clock is Clock.LOCKSTEP:
             self._lockstep = V2LockstepRobot(_address(session), name, _json(parts))
             self._native = cast("V2Robot", self._lockstep)
         else:
@@ -419,12 +484,18 @@ class Robot:
         self._on_handover = on_handover
         self._fields: dict[str, tuple[_Field, ...]] = {}
         self._kinds: dict[str, str] = {}
+        self._commanded: set[str] = set()
+        self._jpeg: set[str] = set()
         for part in self._native.parts():
             path = cast("str", part["path"])
             self._kinds[path] = cast("str", part["kind"])
             self._fields[path] = _fields(
                 cast("list[tuple[str, str, list[int]]]", part["fields"])
             )
+            if part.get("command") is not None:
+                self._commanded.add(path)
+            if part.get("encoding") == "jpeg":
+                self._jpeg.add(path)
 
     @property
     def name(self) -> str:
@@ -456,9 +527,20 @@ class Robot:
         return self._native.mode_reason
 
     @property
-    def held(self) -> list[dict[str, Any]]:
+    def held(self) -> list[Held]:
         """Every robot held until re-armed by name: ``robot``, ``reason``, ``detail``, ``at_ns``, ``message``."""
-        return self._native.held
+        return cast("list[Held]", self._native.held)
+
+    def part(self, path: str) -> RobotPart:
+        """A handle on the part at ``path``: its own :meth:`~RobotPart.publish`, :meth:`~RobotPart.due` and :meth:`~RobotPart.edge_stats`.
+
+        Raises ``ValueError`` at once for a path the robot does not have.
+        """
+        if path not in self._kinds:
+            raise ValueError(
+                f"{self.name} has no part {path!r} (its parts: {', '.join(self._kinds)})"
+            )
+        return RobotPart(self, path)
 
     def publish(
         self,
@@ -506,7 +588,7 @@ class Robot:
             raise TypeError("publish_jpeg is for a wall-clock robot")
         self._native.publish_jpeg(path, jpeg, capture_ns)
 
-    def serve_lockstep(
+    def serve(
         self,
         step: Callable[[dict[str, Any]], Any],
         reset: Callable[[int | None, dict[str, Any] | None], Any] | None = None,
@@ -514,7 +596,7 @@ class Robot:
         background: bool = False,
         timeout: float = 10.0,
     ) -> None:
-        """Serve the lockstep exchange: one ``step(commands)`` per step.
+        """Serve a lockstep robot's steps: one ``step(commands)`` per step.
 
         ``commands`` maps each commanded part to its command (the array of a
         single-field command, else a dict of fields). Inside ``step`` and
@@ -522,10 +604,11 @@ class Robot:
         returns ``None`` or ``(reward, terminated, truncated[, info])``
         (``reset`` may return just ``info``). Declares and arms first; with
         ``background``, returns once serving (stop with :meth:`close`).
+        Whoever drives it (``RemoteEnv`` at :attr:`address`) owns its time.
         """
         if self._lockstep is None:
             raise RuntimeError(
-                f"{self.name} runs on the wall clock: Robot(..., clock='lockstep')"
+                f"{self.name} runs on the wall clock: Robot(..., clock=Clock.LOCKSTEP)"
             )
 
         def outcome(result: Any) -> tuple[float, bool, bool, str]:
@@ -554,6 +637,17 @@ class Robot:
             return outcome(reset(seed, options) if reset is not None else None)
 
         self._lockstep.serve(on_step, on_reset, background, timeout)
+
+    def serve_lockstep(
+        self,
+        step: Callable[[dict[str, Any]], Any],
+        reset: Callable[[int | None, dict[str, Any] | None], Any] | None = None,
+        *,
+        background: bool = False,
+        timeout: float = 10.0,
+    ) -> None:
+        """:meth:`serve`'s former name: the same call."""
+        self.serve(step, reset, background=background, timeout=timeout)
 
     def due(self, path: str) -> Due | None:
         """Tick the edge serving ``path`` (and its command group): what to dispatch now.
@@ -622,9 +716,7 @@ class Robot:
         """This robot's clock: ``time.monotonic_ns()``."""
         return self._native.now_ns()
 
-    def health(
-        self, *, wait: bool = False, timeout: float | None = None
-    ) -> dict[str, Any]:
+    def health(self, *, wait: bool = False, timeout: float | None = None) -> Health:
         """The session's live link health, as the host last published it (once a second).
 
         The same as :meth:`Policy.health`, read through this robot's link.
@@ -633,9 +725,12 @@ class Robot:
             raise SessionException(
                 f"robot {self.name} runs lockstep: its session has no live link health"
             )
-        return self._native.health(wait, self._timeout if timeout is None else timeout)
+        return cast(
+            "Health",
+            self._native.health(wait, self._timeout if timeout is None else timeout),
+        )
 
-    def edge_stats(self, path: str) -> dict[str, Any]:
+    def edge_stats(self, path: str) -> EdgeStats:
         """The counters of the edge serving ``path``.
 
         Accepted, rejected (and ``rejected_by`` reason), mode ticks, and
@@ -648,7 +743,7 @@ class Robot:
         ``late_max_ms`` and ``gap_max_ms`` (the longest time between two
         accepted chunks).
         """
-        return self._native.edge_stats(path)
+        return cast("EdgeStats", self._native.edge_stats(path))
 
     def close(self) -> None:
         """Detach from the session."""
@@ -664,6 +759,82 @@ class Robot:
         tb: TracebackType | None,
     ) -> None:
         _close_leaving(self.close, exc)
+
+
+class RobotPart:
+    """One part of a :class:`Robot`, by path (:meth:`Robot.part`).
+
+    The robot's per-part calls without the path::
+
+        servos = robot.part("servos")
+        servos.publish(pos=q)
+        due = servos.due()
+
+    A call the part cannot take (``due`` on a part that takes no commands,
+    ``publish_jpeg`` on one that is not a JPEG camera) raises ``TypeError``.
+    """
+
+    __slots__ = ("_robot", "path")
+
+    def __init__(self, robot: Robot, path: str) -> None:
+        self._robot = robot
+        #: The part's path in its robot's map.
+        self.path: str = path
+
+    @property
+    def kind(self) -> str:
+        """The part's kind (``joints``, ``camera``, ``ns/name``, ...)."""
+        return self._robot._kinds[self.path]  # pyright: ignore[reportPrivateUsage]
+
+    @property
+    def commanded(self) -> bool:
+        """Whether the part takes commands (it declared a ``command`` mode)."""
+        return self.path in self._robot._commanded  # pyright: ignore[reportPrivateUsage]
+
+    def publish(
+        self,
+        value: object = None,
+        /,
+        *,
+        capture_ns: int | None = None,
+        **fields: object,
+    ) -> int | None:
+        """Publish one sample, as :meth:`Robot.publish` does."""
+        return self._robot.publish(self.path, value, capture_ns=capture_ns, **fields)
+
+    def publish_jpeg(
+        self, jpeg: bytes | bytearray | memoryview, /, *, capture_ns: int | None = None
+    ) -> None:
+        """Publish one frame already encoded as JPEG, as :meth:`Robot.publish_jpeg` does."""
+        if self.path not in self._robot._jpeg:  # pyright: ignore[reportPrivateUsage]
+            raise TypeError(
+                f"{self.path} is not a camera declared encoding='jpeg': publish() its frames"
+            )
+        self._robot.publish_jpeg(self.path, jpeg, capture_ns=capture_ns)
+
+    def due(self) -> Due | None:
+        """Tick this part's edge: what to dispatch now, as :meth:`Robot.due` does."""
+        self._commands("due")
+        return self._robot.due(self.path)
+
+    def edge_stats(self) -> EdgeStats:
+        """The counters of this part's edge, as :meth:`Robot.edge_stats` gives them."""
+        self._commands("edge_stats")
+        return self._robot.edge_stats(self.path)
+
+    def _commands(self, call: str) -> None:
+        if not self.commanded:
+            raise TypeError(
+                f"{self.path} takes no commands: {call}() is for a commanded part"
+            )
+        if self._robot._lockstep is not None:  # pyright: ignore[reportPrivateUsage]
+            raise TypeError(
+                f"{self.path}: {call}() is for a wall-clock robot; a lockstep robot "
+                "gets its commands in step()"
+            )
+
+    def __repr__(self) -> str:
+        return f"RobotPart({self._robot.name}:{self.path}, {self.kind})"
 
 
 class Meta:
@@ -727,6 +898,20 @@ class Observation(Mapping[str, Any]):
 
     def __len__(self) -> int:
         return len(self._values)
+
+    def age_ms(self, name: str) -> float | None:
+        """How old input ``name`` was at the snapshot, in ms; ``None`` for a blank input.
+
+        The conservative age :attr:`Meta.ages_ns` holds, in milliseconds.
+        Raises ``KeyError`` for a name the policy has no input for.
+        """
+        ages = self.meta.ages_ns
+        if name not in ages:
+            raise KeyError(
+                f"no input {name!r} (the inputs: {', '.join(ages) or 'none'})"
+            )
+        age = ages[name]
+        return None if age is None else age / 1e6
 
     def __repr__(self) -> str:
         return f"Observation({', '.join(self._values)})"
@@ -821,31 +1006,115 @@ class BindingTable:
         return f"BindingTable({self.json['policy']!r} on {self.json['robot']!r}, {self.fingerprint})"
 
 
+class _Inherit(enum.Enum):
+    """A keyword left to its object's own setting."""
+
+    TIMEOUT = "timeout"
+
+    def __repr__(self) -> str:
+        return "<the policy's>"
+
+
+def _limit(timeout: float | None) -> float:
+    """A timeout for the native layer: ``None`` waits without limit."""
+    return _FOREVER_S if timeout is None else timeout
+
+
+def _arity(predict: Callable[..., Any]) -> int:
+    """2 for ``predict(obs, policy)``: two required positional parameters; else 1."""
+    try:
+        params = list(inspect.signature(predict).parameters.values())
+    except (TypeError, ValueError):  # a builtin without a signature
+        return 1
+    ordered = (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    positional = [p for p in params if p.kind in ordered]
+    required = [p for p in positional if p.default is inspect.Parameter.empty]
+    if len(required) > 2:
+        raise TypeError(
+            f"predict takes {len(required)} arguments: def predict(obs) or "
+            "def predict(obs, policy)"
+        )
+    if len(required) == 2:
+        return 2
+    if not positional and not any(
+        p.kind is inspect.Parameter.VAR_POSITIONAL for p in params
+    ):
+        raise TypeError(
+            "predict takes no argument: def predict(obs) or def predict(obs, policy)"
+        )
+    return 1
+
+
 class Policy:
     """A policy map and, once bound, the controller that runs it.
+
+    The map is given by keyword, its entries built with
+    :mod:`~rlmesh.realtime.inputs` and :mod:`~rlmesh.realtime.actions`::
+
+        tracker = realtime.Policy(
+            hz=15,
+            inputs={"cam": inputs.camera("webcam:cam")},
+            actions={
+                "eye": actions.joints("eye-1:eyes", command="position", hz=50, chunk=4)
+            },
+            session="",
+        )
+
+    or as one dict, its first argument, with the same keys: ``hz`` (the
+    replan rate), ``inputs``, ``actions`` and ``allow`` (conversions every
+    entry may use). Passing both raises ``TypeError``.
 
     ``priority`` is the lease class it attaches with: ``model`` (default),
     ``operator`` (preempts models: teleop), ``safety`` or ``scripted``.
 
+    ``timeout`` is how long :meth:`bind` waits for the robots to join, and
+    :meth:`acquire` and a hand-back wait for what they need; ``None`` waits
+    for as long as it takes (Ctrl-C interrupts it).
+
     ``publishes`` declares parts of the policy's own to :meth:`publish`
-    annotations on (a detector's boxes, a tracker's target), in the robot
-    map's form, none commandable: ``{"target": {"kind": "x/target",
-    "hz": 30, "fields": {"xy": ["float32", [2]]}}}``. They appear under the policy's name
+    annotations on (a detector's boxes, a tracker's target), built with
+    :mod:`~rlmesh.realtime.parts`, none commandable:
+    ``{"target": parts.custom("x/target", hz=30, fields={"xy":
+    parts.array("float32", 2)})}``. They appear under the policy's name
     (``tracker/target``): recorded, shown in the cockpit, readable by other
-    policies, and never bound to this one.
+    policies (:func:`rlmesh.realtime.inputs.of`), and never bound to this one.
     """
 
     def __init__(
         self,
-        policy: Mapping[str, Any],
+        policy: Mapping[str, Any] | None = None,
         *,
+        hz: float | None = None,
+        inputs: Mapping[str, Any] | None = None,
+        actions: Mapping[str, Any] | None = None,
+        allow: Sequence[Conversion] | None = None,
         session: Host | str,
         name: str = "policy",
         priority: str = "model",
-        timeout: float = 10.0,
+        timeout: float | None = 10.0,
         publishes: Mapping[str, Any] | None = None,
     ) -> None:
-        self._policy_json = json.dumps(policy)
+        keywords = {"hz": hz, "inputs": inputs, "actions": actions, "allow": allow}
+        given = [key for key, value in keywords.items() if value is not None]
+        if policy is not None and given:
+            raise TypeError(
+                "Policy takes the policy map as one dict or as keywords, not both: "
+                f"drop {'=, '.join(given)}= or the dict"
+            )
+        if policy is None:
+            if hz is None:
+                raise TypeError(
+                    "Policy needs hz= with inputs= or actions= (or the map as one dict)"
+                )
+            if inputs is None and actions is None:
+                raise TypeError("Policy needs inputs=, actions= or both")
+            policy = {
+                key: value for key, value in keywords.items() if value is not None
+            }
+        self._policy_json = _json(policy)
         self._publishes_json = _json(publishes) if publishes else None
         self._address = _address(session)
         self._name = name
@@ -866,7 +1135,8 @@ class Policy:
         under: str | None = None,
         at: Mapping[str, str] | None = None,
         names: Mapping[str, str] | None = None,
-        allow: Sequence[str] | None = None,
+        allow: Sequence[Conversion] | None = None,
+        timeout: float | None | _Inherit = _Inherit.TIMEOUT,
         **captures: str,
     ) -> BindingTable:
         """Attach, bind to ``robot``'s parts and declare the binding.
@@ -879,8 +1149,8 @@ class Policy:
         ``allow`` adds conversions for every entry, and keyword captures
         fill ``{name}`` segments. Raises :class:`BindingRefused` with the
         binder's explanation, at once; a robot that has not appeared yet is
-        waited for, up to the policy's ``timeout`` (then ``TimeoutError``,
-        naming it).
+        waited for, up to the policy's ``timeout`` or this call's (then
+        ``TimeoutError``, naming it; ``None`` waits for as long as it takes).
         """
         if self._native is not None:
             raise SessionException(f"policy {self._name} is already bound")
@@ -903,7 +1173,7 @@ class Policy:
             positional=positional,
             allow=list(allow or ()),
             captures=dict(captures),
-            timeout_s=self._timeout,
+            timeout_s=_limit(self._timeout if timeout is _Inherit.TIMEOUT else timeout),
             publishes_json=self._publishes_json,
         )
         self._fields = {
@@ -974,7 +1244,7 @@ class Policy:
         """
         return dict(self._bound().acquire())
 
-    def release(self, *, to: str | None = None) -> list[dict[str, Any]] | None:
+    def release(self, *, to: str | None = None) -> list[HandBack] | None:
         """Give the leases back; they are not re-requested until acquire() or run().
 
         ``to="model"`` hands them back to the model this policy took the
@@ -1002,7 +1272,7 @@ class Policy:
         if to is None:
             native.release()
             return None
-        return native.release(to)
+        return cast("list[HandBack] | None", native.release(to))
 
     @property
     def holds(self) -> bool:
@@ -1017,12 +1287,15 @@ class Policy:
         mode: RunMode = RunMode.COMMAND,
         on_step: Callable[[Step], object] | None = None,
         resume: Resume = Resume.MANUAL,
-    ) -> dict[str, Any]:
-        """Run the policy loop on this thread; returns the run's counters.
+    ) -> PolicyStats:
+        """Run the policy loop on this thread; returns the run's counters (:meth:`stats`).
 
         ``predict(obs)`` is called at most at the replan rate, one inference
         in flight; a start that falls while it runs is skipped, never
-        queued. Leases are requested once the inputs are warm, re-requested
+        queued. A ``predict`` with two required positional parameters is
+        called as ``predict(obs, policy)``, with this policy (to
+        :meth:`publish` from inside it); any other with one. The choice is
+        made once, when the run starts. Leases are requested once the inputs are warm, re-requested
         after a lapse, a disarm or a re-arm, and released when the run
         returns.
 
@@ -1070,8 +1343,17 @@ class Policy:
         if not isinstance(resume, Resume):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"resume must be a Resume, not {resume!r}")
 
-        def call(raw: V2Observation) -> dict[str, Any]:
-            return _actions(predict(Observation(raw)))
+        if _arity(predict) == 2:
+            two = cast("Callable[[Observation, Policy], Mapping[str, Any]]", predict)
+
+            def call(raw: V2Observation) -> dict[str, Any]:
+                return _actions(two(Observation(raw), self))
+
+        else:
+            one = cast("Callable[[Observation], Mapping[str, Any]]", predict)
+
+            def call(raw: V2Observation) -> dict[str, Any]:
+                return _actions(one(Observation(raw)))
 
         def step(raw: dict[str, Any]) -> None:
             if on_step is not None:
@@ -1086,9 +1368,7 @@ class Policy:
         """Ask a :meth:`run` in progress (on another thread) to return."""
         self._bound().stop()
 
-    def health(
-        self, *, wait: bool = False, timeout: float | None = None
-    ) -> dict[str, Any]:
+    def health(self, *, wait: bool = False, timeout: float | None = None) -> Health:
         """The session's live link health, as the host last published it (once a second).
 
         The first call subscribes (nothing is received or decoded before
@@ -1124,7 +1404,8 @@ class Policy:
           ``chunks_sent``, ``pending_ms``, ``latency_p50_ms``,
           ``latency_p99_ms``, ``drifting``), else ``None``.
         """
-        return self._bound().health(wait, self._timeout if timeout is None else timeout)
+        limit = _limit(self._timeout) if timeout is None else timeout
+        return cast("Health", self._bound().health(wait, limit))
 
     def resume(self) -> list[str]:
         """Hand the parts a higher class took back to this policy; returns them (``robot:path``).
@@ -1135,7 +1416,7 @@ class Policy:
         """
         return self._bound().resume()
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self) -> PolicyStats:
         """Starts, completions, skips by reason, chunks sent and latency.
 
         ``aligned_to`` names the input whose publication the starts are
@@ -1149,16 +1430,16 @@ class Policy:
         took, ``robot:path``, kept from the policy until :meth:`resume` or a
         hand-back.
         """
-        return self._bound().stats()
+        return cast("PolicyStats", self._bound().stats())
 
     @property
-    def held(self) -> list[dict[str, Any]]:
+    def held(self) -> list[Held]:
         """Every robot held until re-armed by name: ``robot``, ``reason``, ``detail``, ``at_ns``, ``message``."""
-        return self._bound().held
+        return cast("list[Held]", self._bound().held)
 
-    def events(self) -> list[dict[str, Any]]:
+    def events(self) -> list[Event]:
         """Take the events reported so far: ``rate_drift``, ``inference_pending``, ``robot_held``, ``clock_refused``, ``waiting_to_arm``, ``shadowing``, ``commanding``, ``input_lost`` (with ``part``), ``rebound`` (with ``parts``), ``parked`` and ``handed_back`` (with ``part`` and ``by``)."""
-        return self._bound().events()
+        return cast("list[Event]", self._bound().events())
 
     def close(self) -> None:
         """Release the leases and detach."""
@@ -1269,18 +1550,20 @@ def drive(
     under: str | None = None,
     at: Mapping[str, str] | None = None,
     names: Mapping[str, str] | None = None,
-    allow: Sequence[str] | None = None,
+    allow: Sequence[Conversion] | None = None,
     duration: float | None = None,
     mode: RunMode = RunMode.COMMAND,
     on_step: Callable[[Step], object] | None = None,
-    timeout: float = 10.0,
+    timeout: float | None = 10.0,
     publishes: Mapping[str, Any] | None = None,
     resume: Resume = Resume.MANUAL,
     **captures: str,
-) -> dict[str, Any]:
+) -> PolicyStats:
     """Bind ``policy`` to ``robot`` (``None``: every robot's view) and drive it with ``predict`` until ``duration``.
 
-    Shorthand for :class:`Policy` + :meth:`Policy.bind` + :meth:`Policy.run`.
+    Shorthand for :class:`Policy` + :meth:`Policy.bind` + :meth:`Policy.run`;
+    ``predict`` may take the policy as its second argument, as for
+    :meth:`Policy.run`.
     It keeps no handle: a part a higher class took stays parked for the
     rest of the run unless ``resume=Resume.AUTO``; use :class:`Policy` to
     :meth:`Policy.resume` one.
@@ -1293,7 +1576,15 @@ def drive(
         timeout=timeout,
         publishes=publishes,
     ) as p:
-        p.bind(robot, under=under, at=at, names=names, allow=allow, **captures)
+        p.bind(
+            robot,
+            under=under,
+            at=at,
+            names=names,
+            allow=allow,
+            timeout=timeout,
+            **captures,
+        )
         return p.run(
             predict, duration=duration, mode=mode, on_step=on_step, resume=resume
         )

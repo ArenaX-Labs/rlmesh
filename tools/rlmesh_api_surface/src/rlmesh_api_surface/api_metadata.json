@@ -94,7 +94,10 @@
     "rlmesh.launch",
     "rlmesh.recorder",
     "rlmesh.realtime",
-    "rlmesh.realtime.parts"
+    "rlmesh.realtime.parts",
+    "rlmesh.realtime.inputs",
+    "rlmesh.realtime.actions",
+    "rlmesh.realtime.results"
   ],
   "modules": {
     "rlmesh": {
@@ -178,6 +181,24 @@
     "rlmesh.realtime.parts": {
       "title": "rlmesh.realtime.parts",
       "description": "Typed constructors for robot map parts, returning the plain dicts the map takes.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.realtime.inputs": {
+      "title": "rlmesh.realtime.inputs",
+      "description": "Typed constructors for a policy's inputs, returning the plain dicts the policy map takes.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.realtime.actions": {
+      "title": "rlmesh.realtime.actions",
+      "description": "Typed constructors for a policy's actions, returning the plain dicts the policy map takes.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.realtime.results": {
+      "title": "rlmesh.realtime.results",
+      "description": "TypedDicts for what the realtime calls return; plain dicts at run time.",
       "stability": "Experimental",
       "status": "Experimental."
     }

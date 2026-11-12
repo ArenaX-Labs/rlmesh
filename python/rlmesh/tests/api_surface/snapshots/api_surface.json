@@ -4098,6 +4098,7 @@
     "exports": [
       "BindingRefused",
       "BindingTable",
+      "Clock",
       "Due",
       "Host",
       "Meta",
@@ -4106,6 +4107,7 @@
       "Rate",
       "Resume",
       "Robot",
+      "RobotPart",
       "RunMode",
       "SessionException",
       "SessionLost",
@@ -4113,10 +4115,13 @@
       "SessionRefused",
       "StartSkipped",
       "Step",
+      "actions",
       "drive",
+      "inputs",
       "parse_address",
       "parts",
-      "read_recording"
+      "read_recording",
+      "results"
     ],
     "objects": {
       "BindingRefused": {
@@ -4154,6 +4159,20 @@
           }
         },
         "signature": "BindingTable(native: V2Controller)",
+        "stability": "Experimental"
+      },
+      "Clock": {
+        "kind": "class",
+        "members": {
+          "LOCKSTEP": {
+            "kind": "attribute",
+            "signature": "LOCKSTEP"
+          },
+          "WALL": {
+            "kind": "attribute",
+            "signature": "WALL"
+          }
+        },
         "stability": "Experimental"
       },
       "Due": {
@@ -4220,7 +4239,7 @@
           },
           "health": {
             "kind": "function",
-            "signature": "health() -> list[dict[str, Any]]"
+            "signature": "health() -> list[HostLink]"
           }
         },
         "signature": "Host(address: str = ':0', *, lease_grace_ms: int = 250, insecure: bool = False)",
@@ -4268,6 +4287,10 @@
       "Observation": {
         "kind": "class",
         "members": {
+          "age_ms": {
+            "kind": "function",
+            "signature": "age_ms(name: str) -> float | None"
+          },
           "meta": {
             "kind": "attribute",
             "signature": "meta: Meta"
@@ -4285,7 +4308,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, **captures: str) -> BindingTable"
+            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[Conversion] | None = None, timeout: float | None | _Inherit = _Inherit.TIMEOUT, **captures: str) -> BindingTable"
           },
           "binding": {
             "kind": "property",
@@ -4297,15 +4320,15 @@
           },
           "events": {
             "kind": "function",
-            "signature": "events() -> list[dict[str, Any]]"
+            "signature": "events() -> list[Event]"
           },
           "health": {
             "kind": "function",
-            "signature": "health(*, wait: bool = False, timeout: float | None = None) -> dict[str, Any]"
+            "signature": "health(*, wait: bool = False, timeout: float | None = None) -> Health"
           },
           "held": {
             "kind": "property",
-            "signature": "property held: list[dict[str, Any]]"
+            "signature": "property held: list[Held]"
           },
           "holds": {
             "kind": "property",
@@ -4325,7 +4348,7 @@
           },
           "release": {
             "kind": "function",
-            "signature": "release(*, to: str | None = None) -> list[dict[str, Any]] | None"
+            "signature": "release(*, to: str | None = None) -> list[HandBack] | None"
           },
           "resume": {
             "kind": "function",
@@ -4333,7 +4356,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(predict: Predict, *, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, resume: Resume = Resume.MANUAL) -> dict[str, Any]"
+            "signature": "run(predict: Predict, *, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, resume: Resume = Resume.MANUAL) -> PolicyStats"
           },
           "send": {
             "kind": "function",
@@ -4341,14 +4364,14 @@
           },
           "stats": {
             "kind": "function",
-            "signature": "stats() -> dict[str, Any]"
+            "signature": "stats() -> PolicyStats"
           },
           "stop": {
             "kind": "function",
             "signature": "stop() -> None"
           }
         },
-        "signature": "Policy(policy: Mapping[str, Any], *, session: Host | str, name: str = 'policy', priority: str = 'model', timeout: float = 10.0, publishes: Mapping[str, Any] | None = None)",
+        "signature": "Policy(policy: Mapping[str, Any] | None = None, *, hz: float | None = None, inputs: Mapping[str, Any] | None = None, actions: Mapping[str, Any] | None = None, allow: Sequence[Conversion] | None = None, session: Host | str, name: str = 'policy', priority: str = 'model', timeout: float | None = 10.0, publishes: Mapping[str, Any] | None = None)",
         "stability": "Experimental"
       },
       "Rate": {
@@ -4409,7 +4432,7 @@
           },
           "edge_stats": {
             "kind": "function",
-            "signature": "edge_stats(path: str) -> dict[str, Any]"
+            "signature": "edge_stats(path: str) -> EdgeStats"
           },
           "estop": {
             "kind": "function",
@@ -4417,11 +4440,11 @@
           },
           "health": {
             "kind": "function",
-            "signature": "health(*, wait: bool = False, timeout: float | None = None) -> dict[str, Any]"
+            "signature": "health(*, wait: bool = False, timeout: float | None = None) -> Health"
           },
           "held": {
             "kind": "property",
-            "signature": "property held: list[dict[str, Any]]"
+            "signature": "property held: list[Held]"
           },
           "keep": {
             "kind": "function",
@@ -4443,6 +4466,10 @@
             "kind": "function",
             "signature": "now_ns() -> int"
           },
+          "part": {
+            "kind": "function",
+            "signature": "part(path: str) -> RobotPart"
+          },
           "parts": {
             "kind": "property",
             "signature": "property parts: dict[str, str]"
@@ -4463,12 +4490,51 @@
             "kind": "function",
             "signature": "report_safe(reason: str) -> None"
           },
+          "serve": {
+            "kind": "function",
+            "signature": "serve(step: Callable[[dict[str, Any]], Any], reset: Callable[[int | None, dict[str, Any] | None], Any] | None = None, *, background: bool = False, timeout: float = 10.0) -> None"
+          },
           "serve_lockstep": {
             "kind": "function",
             "signature": "serve_lockstep(step: Callable[[dict[str, Any]], Any], reset: Callable[[int | None, dict[str, Any] | None], Any] | None = None, *, background: bool = False, timeout: float = 10.0) -> None"
           }
         },
-        "signature": "Robot(name: str, parts: Mapping[str, Any], *, session: Host | str = '', timeout: float = 10.0, on_handover: Callable[[str, str, str], None] | None = None, clock: str = 'wall')",
+        "signature": "Robot(name: str, parts: Mapping[str, Any], *, session: Host | str = '', timeout: float = 10.0, on_handover: Callable[[str, str, str], None] | None = None, clock: Clock | Literal['wall', 'lockstep'] = Clock.WALL)",
+        "stability": "Experimental"
+      },
+      "RobotPart": {
+        "kind": "class",
+        "members": {
+          "commanded": {
+            "kind": "property",
+            "signature": "property commanded: bool"
+          },
+          "due": {
+            "kind": "function",
+            "signature": "due() -> Due | None"
+          },
+          "edge_stats": {
+            "kind": "function",
+            "signature": "edge_stats() -> EdgeStats"
+          },
+          "kind": {
+            "kind": "property",
+            "signature": "property kind: str"
+          },
+          "path": {
+            "kind": "attribute",
+            "signature": "path: str"
+          },
+          "publish": {
+            "kind": "function",
+            "signature": "publish(value: object = None, /, *, capture_ns: int | None = None, **fields: object) -> int | None"
+          },
+          "publish_jpeg": {
+            "kind": "function",
+            "signature": "publish_jpeg(jpeg: bytes | bytearray | memoryview, /, *, capture_ns: int | None = None) -> None"
+          }
+        },
+        "signature": "RobotPart(robot: Robot, path: str)",
         "stability": "Experimental"
       },
       "RunMode": {
@@ -4577,9 +4643,17 @@
         "signature": "Step(native: Mapping[str, Any])",
         "stability": "Experimental"
       },
+      "actions": {
+        "kind": "module",
+        "stability": "Experimental"
+      },
       "drive": {
         "kind": "function",
-        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, timeout: float = 10.0, publishes: Mapping[str, Any] | None = None, resume: Resume = Resume.MANUAL, **captures: str) -> dict[str, Any]",
+        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[Conversion] | None = None, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, timeout: float | None = 10.0, publishes: Mapping[str, Any] | None = None, resume: Resume = Resume.MANUAL, **captures: str) -> PolicyStats",
+        "stability": "Experimental"
+      },
+      "inputs": {
+        "kind": "module",
         "stability": "Experimental"
       },
       "parse_address": {
@@ -4595,12 +4669,185 @@
         "kind": "function",
         "signature": "read_recording(path: str | os.PathLike[str]) -> dict[str, Any]",
         "stability": "Experimental"
+      },
+      "results": {
+        "kind": "module",
+        "stability": "Experimental"
+      }
+    }
+  },
+  "rlmesh.realtime.actions": {
+    "exports": [
+      "custom",
+      "gripper",
+      "hand",
+      "joints",
+      "pose",
+      "switch",
+      "value",
+      "velocity",
+      "wrench"
+    ],
+    "objects": {
+      "custom": {
+        "kind": "function",
+        "signature": "custom(at: str | None = None, *, kind: str, fields: Mapping[str, Sequence[Any]], command: str | None = None, frame: str | None = None, hz: float | None = None, chunk: int | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "gripper": {
+        "kind": "function",
+        "signature": "gripper(at: str | None = None, *, command: Literal['position'] | None = None, hz: float | None = None, chunk: int | None = None, open: float | None = None, closed: float | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "hand": {
+        "kind": "function",
+        "signature": "hand(at: str | None = None, *, command: JointCommand | None = None, hz: float | None = None, chunk: int | None = None, names: Sequence[str] | Literal['positional'] | None = None, count: int | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "joints": {
+        "kind": "function",
+        "signature": "joints(at: str | None = None, *, command: JointCommand | None = None, hz: float | None = None, chunk: int | None = None, names: Sequence[str] | Literal['positional'] | None = None, count: int | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "pose": {
+        "kind": "function",
+        "signature": "pose(at: str | None = None, *, command: Literal['absolute', 'delta'] | None = None, reference: Literal['current', 'target'] | None = None, frame: str | None = None, child: str | None = None, rotation: Rotation | None = None, hz: float | None = None, chunk: int | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "switch": {
+        "kind": "function",
+        "signature": "switch(at: str | None = None, *, command: Literal['set'] | None = None, hz: float | None = None, chunk: int | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "value": {
+        "kind": "function",
+        "signature": "value(at: str | None = None, *, command: Literal['set'] | None = None, hz: float | None = None, chunk: int | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "velocity": {
+        "kind": "function",
+        "signature": "velocity(at: str | None = None, *, command: Literal['velocity'] | None = None, frame: str | None = None, hz: float | None = None, chunk: int | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "wrench": {
+        "kind": "function",
+        "signature": "wrench(at: str | None = None, *, command: Literal['wrench'] | None = None, frame: str | None = None, hz: float | None = None, chunk: int | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, t0: Start | None = None, ttl_ms: float | None = None, optional: bool | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      }
+    }
+  },
+  "rlmesh.realtime.inputs": {
+    "exports": [
+      "camera",
+      "custom",
+      "depth",
+      "gripper",
+      "hand",
+      "imu",
+      "joints",
+      "of",
+      "pose",
+      "reward",
+      "success",
+      "switch",
+      "tactile",
+      "text",
+      "value",
+      "velocity",
+      "wrench"
+    ],
+    "objects": {
+      "camera": {
+        "kind": "function",
+        "signature": "camera(at: str | None = None, *, size: int | tuple[int, int] | None = None, layout: Literal['hwc', 'chw'] | None = None, format: Literal['rgb8', 'bgr8', 'mono8'] | None = None, resample: Literal['bilinear', 'bilinear_aa', 'bicubic_aa', 'lanczos3_aa', 'area'] | None = None, crop: float | None = None, upside_down: bool | None = None, dtype: DType | None = None, range: tuple[float, float] | None = None, frame: str | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "custom": {
+        "kind": "function",
+        "signature": "custom(at: str | None = None, *, kind: str, fields: Mapping[str, Sequence[Any]], frame: str | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "depth": {
+        "kind": "function",
+        "signature": "depth(at: str | None = None, *, size: int | tuple[int, int] | None = None, crop: float | None = None, upside_down: bool | None = None, dtype: DType | None = None, units: Mapping[str, str] | None = None, range: tuple[float, float] | None = None, frame: str | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "gripper": {
+        "kind": "function",
+        "signature": "gripper(at: str | None = None, *, dtype: DType | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "hand": {
+        "kind": "function",
+        "signature": "hand(at: str | None = None, *, names: Sequence[str] | Literal['positional'] | None = None, count: int | None = None, fields: Sequence[JointField] | None = None, dtype: DType | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "imu": {
+        "kind": "function",
+        "signature": "imu(at: str | None = None, *, frame: str | None = None, fields: Sequence[ImuField] | None = None, rotation: Rotation | None = None, dtype: DType | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "joints": {
+        "kind": "function",
+        "signature": "joints(at: str | None = None, *, names: Sequence[str] | Literal['positional'] | None = None, count: int | None = None, fields: Sequence[JointField] | None = None, dtype: DType | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "of": {
+        "kind": "function",
+        "signature": "of(part: Mapping[str, Any], at: str | None = None, **options: Any) -> Entry",
+        "stability": "Experimental"
+      },
+      "pose": {
+        "kind": "function",
+        "signature": "pose(at: str | None = None, *, frame: str | None = None, child: str | None = None, fields: Sequence[PoseField] | None = None, rotation: Rotation | None = None, dtype: DType | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "reward": {
+        "kind": "function",
+        "signature": "reward(at: str | None = None, *, optional: bool | None = None, max_age_ms: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "success": {
+        "kind": "function",
+        "signature": "success(at: str | None = None, *, optional: bool | None = None, max_age_ms: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "switch": {
+        "kind": "function",
+        "signature": "switch(at: str | None = None, *, dtype: DType | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "tactile": {
+        "kind": "function",
+        "signature": "tactile(at: str | None = None, *, shape: Sequence[int] | None = None, dtype: DType | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "text": {
+        "kind": "function",
+        "signature": "text(at: str | None = None, *, optional: bool | None = None, max_age_ms: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "value": {
+        "kind": "function",
+        "signature": "value(at: str | None = None, *, dtype: DType | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "velocity": {
+        "kind": "function",
+        "signature": "velocity(at: str | None = None, *, frame: str | None = None, fields: Sequence[VelocityField] | None = None, dtype: DType | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
+      },
+      "wrench": {
+        "kind": "function",
+        "signature": "wrench(at: str | None = None, *, frame: str | None = None, point: str | None = None, fields: Sequence[WrenchField] | None = None, dtype: DType | None = None, units: Mapping[str, str] | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, range: tuple[float, float] | None = None, source: Source | None = None, optional: bool | None = None, max_age_ms: float | None = None, history: int | None = None, history_hz: float | None = None, allow: Sequence[Conversion] | None = None) -> Entry",
+        "stability": "Experimental"
       }
     }
   },
   "rlmesh.realtime.parts": {
     "exports": [
       "Safe",
+      "array",
       "camera",
       "custom",
       "depth",
@@ -4640,6 +4887,11 @@
           }
         },
         "signature": "Safe(name: str)",
+        "stability": "Experimental"
+      },
+      "array": {
+        "kind": "function",
+        "signature": "array(dtype: DType, shape: int | Sequence[int] = ()) -> list[Any]",
         "stability": "Experimental"
       },
       "camera": {
@@ -4720,6 +4972,669 @@
       "wrench": {
         "kind": "function",
         "signature": "wrench(*, frame: str, hz: float, point: Sequence[float] | None = None, command: str | None = None, dtype: str | None = None, units: Mapping[str, str] | None = None, range: Mapping[str, Any] | None = None, control_hz: float | None = None, safe: Safe | None = None, hold_max_ms: float | None = None, max_action_age_ms: float | None = None, max_clock_error_ms: float | None = None, limits: Limits | None = None, merge: str | None = None, group: str | None = None, send: str | None = None, priority: str | None = None, doc: str | None = None, max_age_ms: float | None = None) -> Part",
+        "stability": "Experimental"
+      }
+    }
+  },
+  "rlmesh.realtime.results": {
+    "exports": [
+      "ChunkTiming",
+      "ClockRefusal",
+      "DatagramEnd",
+      "DatagramRelay",
+      "EdgeClockRefusal",
+      "EdgeStats",
+      "Event",
+      "HandBack",
+      "Health",
+      "Held",
+      "HostLink",
+      "InferencePendingEvent",
+      "InputLostEvent",
+      "Link",
+      "LinkRun",
+      "NoticeEvent",
+      "ParkEvent",
+      "PathTime",
+      "PolicyStats",
+      "Published",
+      "RateDriftEvent",
+      "ReboundEvent"
+    ],
+    "objects": {
+      "ChunkTiming": {
+        "kind": "class",
+        "members": {
+          "accepted": {
+            "kind": "attribute",
+            "signature": "accepted: int"
+          },
+          "gap_max_ms": {
+            "kind": "attribute",
+            "signature": "gap_max_ms: float"
+          },
+          "late_max_ms": {
+            "kind": "attribute",
+            "signature": "late_max_ms: float"
+          },
+          "late_ms": {
+            "kind": "attribute",
+            "signature": "late_ms: list[int]"
+          },
+          "lost": {
+            "kind": "attribute",
+            "signature": "lost: int"
+          },
+          "received": {
+            "kind": "attribute",
+            "signature": "received: int"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "ClockRefusal": {
+        "kind": "class",
+        "members": {
+          "bound_ms": {
+            "kind": "attribute",
+            "signature": "bound_ms: float"
+          },
+          "error_ms": {
+            "kind": "attribute",
+            "signature": "error_ms: float"
+          },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str"
+          },
+          "participant": {
+            "kind": "attribute",
+            "signature": "participant: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "DatagramEnd": {
+        "kind": "class",
+        "members": {
+          "active": {
+            "kind": "attribute",
+            "signature": "active: bool"
+          },
+          "fallbacks": {
+            "kind": "attribute",
+            "signature": "fallbacks: int"
+          },
+          "lost": {
+            "kind": "attribute",
+            "signature": "lost: int"
+          },
+          "received": {
+            "kind": "attribute",
+            "signature": "received: int"
+          },
+          "reordered": {
+            "kind": "attribute",
+            "signature": "reordered: int"
+          },
+          "sent": {
+            "kind": "attribute",
+            "signature": "sent: int"
+          },
+          "unopened": {
+            "kind": "attribute",
+            "signature": "unopened: int"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "DatagramRelay": {
+        "kind": "class",
+        "members": {
+          "max_ms": {
+            "kind": "attribute",
+            "signature": "max_ms: float"
+          },
+          "ms": {
+            "kind": "attribute",
+            "signature": "ms: list[int]"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "EdgeClockRefusal": {
+        "kind": "class",
+        "members": {
+          "bound_ms": {
+            "kind": "attribute",
+            "signature": "bound_ms: float"
+          },
+          "error_ms": {
+            "kind": "attribute",
+            "signature": "error_ms: float"
+          },
+          "message": {
+            "kind": "attribute",
+            "signature": "message: str"
+          },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str"
+          },
+          "participant": {
+            "kind": "attribute",
+            "signature": "participant: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "EdgeStats": {
+        "kind": "class",
+        "members": {
+          "accepted": {
+            "kind": "attribute",
+            "signature": "accepted: int"
+          },
+          "clamped": {
+            "kind": "attribute",
+            "signature": "clamped: int"
+          },
+          "clock_refused": {
+            "kind": "attribute",
+            "signature": "clock_refused: EdgeClockRefusal | None"
+          },
+          "gap_max_ms": {
+            "kind": "attribute",
+            "signature": "gap_max_ms: float"
+          },
+          "handovers": {
+            "kind": "attribute",
+            "signature": "handovers: int"
+          },
+          "late_max_ms": {
+            "kind": "attribute",
+            "signature": "late_max_ms: float"
+          },
+          "late_ms": {
+            "kind": "attribute",
+            "signature": "late_ms: list[int]"
+          },
+          "lost": {
+            "kind": "attribute",
+            "signature": "lost: int"
+          },
+          "modes": {
+            "kind": "attribute",
+            "signature": "modes: dict[str, tuple[int, int]]"
+          },
+          "received": {
+            "kind": "attribute",
+            "signature": "received: int"
+          },
+          "rejected": {
+            "kind": "attribute",
+            "signature": "rejected: int"
+          },
+          "rejected_by": {
+            "kind": "attribute",
+            "signature": "rejected_by: dict[str, int]"
+          },
+          "safe_reports": {
+            "kind": "attribute",
+            "signature": "safe_reports: int"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "Event": {
+        "kind": "type alias",
+        "signature": "Event = RateDriftEvent | InferencePendingEvent | NoticeEvent | InputLostEvent | ReboundEvent | ParkEvent",
+        "stability": "Experimental"
+      },
+      "HandBack": {
+        "kind": "class",
+        "members": {
+          "parts": {
+            "kind": "attribute",
+            "signature": "parts: list[str]"
+          },
+          "taken": {
+            "kind": "attribute",
+            "signature": "taken: bool"
+          },
+          "to": {
+            "kind": "attribute",
+            "signature": "to: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "Health": {
+        "kind": "class",
+        "members": {
+          "epoch": {
+            "kind": "attribute",
+            "signature": "epoch: int"
+          },
+          "host_ns": {
+            "kind": "attribute",
+            "signature": "host_ns: int"
+          },
+          "links": {
+            "kind": "attribute",
+            "signature": "links: dict[str, Link]"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "Held": {
+        "kind": "class",
+        "members": {
+          "at_ns": {
+            "kind": "attribute",
+            "signature": "at_ns: int"
+          },
+          "detail": {
+            "kind": "attribute",
+            "signature": "detail: str"
+          },
+          "message": {
+            "kind": "attribute",
+            "signature": "message: str"
+          },
+          "reason": {
+            "kind": "attribute",
+            "signature": "reason: str"
+          },
+          "robot": {
+            "kind": "attribute",
+            "signature": "robot: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "HostLink": {
+        "kind": "class",
+        "members": {
+          "chunk_timing": {
+            "kind": "attribute",
+            "signature": "chunk_timing: dict[str, ChunkTiming]"
+          },
+          "chunks_accepted": {
+            "kind": "attribute",
+            "signature": "chunks_accepted: int"
+          },
+          "data_path": {
+            "kind": "attribute",
+            "signature": "data_path: str"
+          },
+          "datagram_board": {
+            "kind": "attribute",
+            "signature": "datagram_board: DatagramEnd | None"
+          },
+          "datagram_host": {
+            "kind": "attribute",
+            "signature": "datagram_host: DatagramEnd | None"
+          },
+          "datagram_relay": {
+            "kind": "attribute",
+            "signature": "datagram_relay: DatagramRelay | None"
+          },
+          "heartbeats": {
+            "kind": "attribute",
+            "signature": "heartbeats: int"
+          },
+          "last_heartbeat_ms": {
+            "kind": "attribute",
+            "signature": "last_heartbeat_ms: float | None"
+          },
+          "participant": {
+            "kind": "attribute",
+            "signature": "participant: str"
+          },
+          "path_time": {
+            "kind": "attribute",
+            "signature": "path_time: PathTime | None"
+          },
+          "rtt_ms": {
+            "kind": "attribute",
+            "signature": "rtt_ms: float | None"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "InferencePendingEvent": {
+        "kind": "class",
+        "members": {
+          "kind": {
+            "kind": "attribute",
+            "signature": "kind: Literal['inference_pending']"
+          },
+          "message": {
+            "kind": "attribute",
+            "signature": "message: str"
+          },
+          "pending_s": {
+            "kind": "attribute",
+            "signature": "pending_s: float"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "InputLostEvent": {
+        "kind": "class",
+        "members": {
+          "kind": {
+            "kind": "attribute",
+            "signature": "kind: Literal['input_lost']"
+          },
+          "message": {
+            "kind": "attribute",
+            "signature": "message: str"
+          },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "Link": {
+        "kind": "class",
+        "members": {
+          "clock_refused": {
+            "kind": "attribute",
+            "signature": "clock_refused: list[ClockRefusal]"
+          },
+          "health": {
+            "kind": "attribute",
+            "signature": "health: str"
+          },
+          "heartbeat_gap_max_ms": {
+            "kind": "attribute",
+            "signature": "heartbeat_gap_max_ms: float"
+          },
+          "heartbeats": {
+            "kind": "attribute",
+            "signature": "heartbeats: int"
+          },
+          "jitter_ms": {
+            "kind": "attribute",
+            "signature": "jitter_ms: float"
+          },
+          "last_chunk_accepted": {
+            "kind": "attribute",
+            "signature": "last_chunk_accepted: int"
+          },
+          "last_chunk_applied": {
+            "kind": "attribute",
+            "signature": "last_chunk_applied: int"
+          },
+          "last_heartbeat_age_ms": {
+            "kind": "attribute",
+            "signature": "last_heartbeat_age_ms: float"
+          },
+          "last_seq_seen": {
+            "kind": "attribute",
+            "signature": "last_seq_seen: dict[str, int]"
+          },
+          "offset_error_ms": {
+            "kind": "attribute",
+            "signature": "offset_error_ms: float | None"
+          },
+          "offset_ms": {
+            "kind": "attribute",
+            "signature": "offset_ms: float | None"
+          },
+          "published": {
+            "kind": "attribute",
+            "signature": "published: dict[str, Published]"
+          },
+          "queue_depth": {
+            "kind": "attribute",
+            "signature": "queue_depth: int"
+          },
+          "rejected": {
+            "kind": "attribute",
+            "signature": "rejected: int"
+          },
+          "rejected_by": {
+            "kind": "attribute",
+            "signature": "rejected_by: dict[str, int]"
+          },
+          "rtt_ms": {
+            "kind": "attribute",
+            "signature": "rtt_ms: float | None"
+          },
+          "run": {
+            "kind": "attribute",
+            "signature": "run: LinkRun | None"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "LinkRun": {
+        "kind": "class",
+        "members": {
+          "chunks_sent": {
+            "kind": "attribute",
+            "signature": "chunks_sent: int"
+          },
+          "completions": {
+            "kind": "attribute",
+            "signature": "completions: int"
+          },
+          "drifting": {
+            "kind": "attribute",
+            "signature": "drifting: bool"
+          },
+          "latency_p50_ms": {
+            "kind": "attribute",
+            "signature": "latency_p50_ms: float | None"
+          },
+          "latency_p99_ms": {
+            "kind": "attribute",
+            "signature": "latency_p99_ms: float | None"
+          },
+          "pending_ms": {
+            "kind": "attribute",
+            "signature": "pending_ms: float | None"
+          },
+          "skipped": {
+            "kind": "attribute",
+            "signature": "skipped: dict[str, int]"
+          },
+          "starts": {
+            "kind": "attribute",
+            "signature": "starts: int"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "NoticeEvent": {
+        "kind": "class",
+        "members": {
+          "kind": {
+            "kind": "attribute",
+            "signature": "kind: Literal['robot_held', 'clock_refused', 'waiting_to_arm', 'shadowing', 'commanding']"
+          },
+          "message": {
+            "kind": "attribute",
+            "signature": "message: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "ParkEvent": {
+        "kind": "class",
+        "members": {
+          "by": {
+            "kind": "attribute",
+            "signature": "by: str"
+          },
+          "kind": {
+            "kind": "attribute",
+            "signature": "kind: Literal['parked', 'handed_back']"
+          },
+          "message": {
+            "kind": "attribute",
+            "signature": "message: str"
+          },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "PathTime": {
+        "kind": "class",
+        "members": {
+          "fallbacks": {
+            "kind": "attribute",
+            "signature": "fallbacks: int"
+          },
+          "returns": {
+            "kind": "attribute",
+            "signature": "returns: int"
+          },
+          "tcp_s": {
+            "kind": "attribute",
+            "signature": "tcp_s: float"
+          },
+          "udp_s": {
+            "kind": "attribute",
+            "signature": "udp_s: float"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "PolicyStats": {
+        "kind": "class",
+        "members": {
+          "aligned_to": {
+            "kind": "attribute",
+            "signature": "aligned_to: str | None"
+          },
+          "chunks_sent": {
+            "kind": "attribute",
+            "signature": "chunks_sent: int"
+          },
+          "clock_refused": {
+            "kind": "attribute",
+            "signature": "clock_refused: list[str]"
+          },
+          "completions": {
+            "kind": "attribute",
+            "signature": "completions: int"
+          },
+          "drifting": {
+            "kind": "attribute",
+            "signature": "drifting: bool"
+          },
+          "latency_max_ms": {
+            "kind": "attribute",
+            "signature": "latency_max_ms: float | None"
+          },
+          "latency_p50_ms": {
+            "kind": "attribute",
+            "signature": "latency_p50_ms: float | None"
+          },
+          "latency_p99_ms": {
+            "kind": "attribute",
+            "signature": "latency_p99_ms: float | None"
+          },
+          "parked": {
+            "kind": "attribute",
+            "signature": "parked: list[str]"
+          },
+          "phase_offset_ms": {
+            "kind": "attribute",
+            "signature": "phase_offset_ms: float"
+          },
+          "send_errors": {
+            "kind": "attribute",
+            "signature": "send_errors: int"
+          },
+          "shadow_predictions": {
+            "kind": "attribute",
+            "signature": "shadow_predictions: int"
+          },
+          "skipped": {
+            "kind": "attribute",
+            "signature": "skipped: dict[str, int]"
+          },
+          "starts": {
+            "kind": "attribute",
+            "signature": "starts: int"
+          },
+          "waiting": {
+            "kind": "attribute",
+            "signature": "waiting: str | None"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "Published": {
+        "kind": "class",
+        "members": {
+          "coalesced": {
+            "kind": "attribute",
+            "signature": "coalesced: int"
+          },
+          "published": {
+            "kind": "attribute",
+            "signature": "published: int"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "RateDriftEvent": {
+        "kind": "class",
+        "members": {
+          "cause": {
+            "kind": "attribute",
+            "signature": "cause: str"
+          },
+          "drifting": {
+            "kind": "attribute",
+            "signature": "drifting: bool"
+          },
+          "expected_hz": {
+            "kind": "attribute",
+            "signature": "expected_hz: float"
+          },
+          "kind": {
+            "kind": "attribute",
+            "signature": "kind: Literal['rate_drift']"
+          },
+          "measured_hz": {
+            "kind": "attribute",
+            "signature": "measured_hz: float"
+          },
+          "message": {
+            "kind": "attribute",
+            "signature": "message: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "ReboundEvent": {
+        "kind": "class",
+        "members": {
+          "kind": {
+            "kind": "attribute",
+            "signature": "kind: Literal['rebound']"
+          },
+          "message": {
+            "kind": "attribute",
+            "signature": "message: str"
+          },
+          "parts": {
+            "kind": "attribute",
+            "signature": "parts: list[str]"
+          }
+        },
         "stability": "Experimental"
       }
     }

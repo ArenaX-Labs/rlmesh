@@ -38,8 +38,12 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, cast
 
+from ._entries import DType, dtype_name
+from ._entries import shape as field_shape
+
 __all__ = [
     "Safe",
+    "array",
     "camera",
     "custom",
     "depth",
@@ -108,6 +112,22 @@ class Safe:
 
 Safe.STOP = Safe("stop")
 Safe.HOLD = Safe("hold")
+
+
+def array(dtype: DType, shape: int | Sequence[int] = ()) -> list[Any]:
+    """A field's element type and shape, as a custom kind's ``fields`` take it.
+
+    ``dtype`` is a NumPy dtype, a Python type NumPy understands (``float``
+    is ``float64``) or the dtype's name; ``shape`` is a tuple of sizes, one
+    size, or ``()`` for a scalar. NumPy is needed only for the first two::
+
+        parts.array(np.float32, (17, 3))  # ["float32", [17, 3]]
+        parts.array("bool", 4)  # ["bool", [4]]
+    """
+    return [
+        dtype_name("dtype", dtype, text=True),
+        field_shape("shape", shape),
+    ]
 
 
 def _part(kind: str, **keys: Any) -> Part:
@@ -703,10 +723,10 @@ def custom(
     doc: str | None = None,
     max_age_ms: float | None = None,
 ) -> Part:
-    """A custom kind ``ns/name`` with declared ``fields`` (``{name: [dtype, shape]}``).
+    """A custom kind ``ns/name`` with declared ``fields`` (``{name: array(dtype, shape)}``).
 
     A detector's boxes, say: ``custom("yolo/boxes", hz=30, fields={"xyxy":
-    ["float32", [8, 4]], "score": ["float32", [8]]})``.
+    array("float32", (8, 4)), "score": array("float32", 8)})``.
     """
     return _part(
         kind,
