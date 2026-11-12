@@ -153,6 +153,14 @@ fn custom_kinds_keep_their_declared_field_order() {
 }
 
 #[test]
+fn a_declared_priority_is_kept_and_carried_in_the_canonical_form() {
+    let robot = parts(r#"{"log": {"kind": "text", "priority": "bulk"}}"#);
+    assert_eq!(robot[0].priority, ChannelPriority::Bulk);
+    let text = canonical::to_string(&canonical(&robot));
+    assert!(text.contains(r#""priority":"bulk""#), "{text}");
+}
+
+#[test]
 fn the_fingerprint_is_of_the_normalised_form() {
     let a = parts(r#"{"arm": {"kind": "joints", "count": 2, "hz": 100}}"#);
     let b = parts(

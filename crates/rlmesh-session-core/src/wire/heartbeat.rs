@@ -295,6 +295,26 @@ mod tests {
     }
 
     #[test]
+    fn a_sample_is_usable_only_when_both_clocks_move_forward() {
+        let sample = |t1_ns, t2_ns, t3_ns, t4_ns| TimingSample {
+            seq: 1,
+            t1_ns,
+            t2_ns,
+            t3_ns,
+            t4_ns,
+        };
+        assert!(sample(0, 100, 100, 200).is_valid(), "no hold time");
+        assert!(
+            !sample(0, 100, 50, 200).is_valid(),
+            "host clock stepped back"
+        );
+        assert!(
+            !sample(100, 0, 10, 50).is_valid(),
+            "participant clock stepped back"
+        );
+    }
+
+    #[test]
     fn a_refusal_names_the_worst_clock_and_reads_in_milliseconds() {
         let robot = ParticipantId::new("eye-1").expect("id");
         let policy = ParticipantId::new("policy").expect("id");
@@ -330,6 +350,29 @@ mod tests {
             t4_ns: i64::MIN,
         };
         assert_eq!(s.offset_ns(), i64::MAX);
+        let back = TimingSample {
+            seq: 1,
+            t1_ns: i64::MAX,
+            t2_ns: i64::MIN,
+            t3_ns: i64::MIN,
+            t4_ns: i64::MAX,
+        };
+        assert_eq!(back.offset_ns(), i64::MIN);
+        let long = TimingSample {
+            seq: 1,
+            t1_ns: i64::MIN,
+            t2_ns: i64::MAX,
+            t3_ns: i64::MIN,
+            t4_ns: i64::MAX,
+        };
+        let short = TimingSample {
+            seq: 1,
+            t1_ns: i64::MAX,
+            t2_ns: i64::MIN,
+            t3_ns: i64::MAX,
+            t4_ns: i64::MIN,
+        };
+        assert_eq!((long.rtt_ns(), short.rtt_ns()), (i64::MAX, i64::MIN));
         let echo = HeartbeatEcho {
             seq: 4,
             t1_ns: 1,

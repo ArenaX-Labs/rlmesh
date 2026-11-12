@@ -285,6 +285,37 @@ mod tests {
             keys.lockstep(&ur),
             format!("rlmesh/v2/acme/s/{session}/l/ur10e")
         );
+        let p = format!("rlmesh/v2/acme/s/{session}");
+        for (key, want) in [
+            (session_server(&tenant), "rlmesh/v2/acme/server".to_string()),
+            (
+                tenant_participants(&tenant),
+                "rlmesh/v2/acme/s/*/p/*".into(),
+            ),
+            (session_hosts(), "rlmesh/v2/*/s/*/host/state".into()),
+            (keys.prefix().to_string(), p.clone()),
+            (keys.host_liveliness(), format!("{p}/host")),
+            (keys.host_state(), format!("{p}/host/state")),
+            (keys.host_health(), format!("{p}/host/health")),
+            (keys.host_tick(), format!("{p}/host/tick")),
+            (keys.host_views(), format!("{p}/host/view/*")),
+            (keys.handshake(), format!("{p}/hs")),
+            (keys.ctl(), format!("{p}/ctl")),
+            (keys.participants(), format!("{p}/p/*")),
+            (keys.datagram_probe(&ur), format!("{p}/p/ur10e/udp")),
+            (keys.heartbeats(), format!("{p}/p/*/hb")),
+            (keys.participant_view(&ur), format!("{p}/p/ur10e/view")),
+            (keys.participant_keys(&ur), format!("{p}/p/ur10e/keys")),
+            (keys.reports(), format!("{p}/p/*/report")),
+            (keys.histories(), format!("{p}/h/**")),
+            (keys.model(&ur), format!("{p}/m/ur10e")),
+            (keys.estop(&me), format!("{p}/estop/haply-emu")),
+            (keys.estops(), format!("{p}/estop/*")),
+        ] {
+            assert_eq!(key, want);
+        }
+        assert_eq!(session_of(&keys.host_state()), Some(("acme", session)));
+        assert_eq!(session_of("rlmesh/v2/acme/server"), None);
         for key in [
             keys.data(&ur, "arm"),
             keys.commands(&ur, "arm"),

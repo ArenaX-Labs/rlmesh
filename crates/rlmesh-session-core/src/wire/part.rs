@@ -855,6 +855,7 @@ pub(crate) mod tests {
         assert_eq!(packed.len(), 40);
         assert_eq!(&packed[12..16], &[0; 4], "zero padding");
         assert!(layout.pack(&[&[1; 12], &[1]]).is_err());
+        assert_eq!(Layout::Text.pack(&[b"hi"]), Ok(b"hi".to_vec()));
     }
 
     #[test]
@@ -883,12 +884,24 @@ pub(crate) mod tests {
             Layout::of(&[field("big", DType::U8, &[4096, 4096, 3])]).is_err(),
             "over 32 MiB"
         );
+        // Every cap is inclusive.
+        for ok in [
+            (0..MAX_FIELDS)
+                .map(|i| field(&format!("f{i}"), DType::U8, &[]))
+                .collect::<Vec<_>>(),
+            vec![field("x", DType::F32, &[1, 1, 1, 1])],
+            vec![field("x", DType::U8, &[32 << 20])],
+        ] {
+            assert!(Layout::of(&ok).is_ok(), "{} fields refused", ok.len());
+        }
     }
 
     #[test]
     fn payloads_are_checked_against_the_stream() {
         let arm = arm();
         let stream = arm.stream().expect("stream");
+        assert_eq!(stream.qualified(), "ur10e:arm");
+        assert!(stream.batchable() && !is_applied_path(&stream.path));
         assert!(stream.check_payload(&[0; 48]).is_ok());
         assert!(stream.check_payload(&[0; 44]).is_err());
         let applied = arm.applied_stream().expect("commandable").expect("layout");
@@ -905,6 +918,10 @@ pub(crate) mod tests {
         assert!(!camera.batchable());
         assert!(camera.check_payload(&[0; 60_000]).is_ok());
         assert!(camera.check_payload(&[]).is_err());
+        assert!(
+            camera.check_payload(&vec![0; 921_600 + 16 * 1024]).is_ok(),
+            "an encoded image may run 16 KiB over raw"
+        );
         assert!(
             camera
                 .check_payload(&vec![0; 921_600 + MAX_ENCODED_OVERHEAD + 1])
@@ -923,6 +940,7 @@ pub(crate) mod tests {
             ..stream
         };
         assert!(text.check_payload("put the cup down".as_bytes()).is_ok());
+        assert!(text.check_payload(&[b'a'; MAX_TEXT_BYTES]).is_ok());
         assert!(text.check_payload(&[0xff, 0xfe]).is_err());
         assert!(text.check_payload(&[b'a'; MAX_TEXT_BYTES + 1]).is_err());
     }
@@ -942,12 +960,31 @@ pub(crate) mod tests {
             "latest()",
             "latest(hz=0)",
             "latest(hz=10, hz=2)",
+            "latest(max_mbps=1, max_mbps=2)",
             "latest(fps=3)",
             "batch(10)",
         ] {
             assert!(SendPolicy::parse(bad).is_err(), "{bad:?} accepted");
         }
         assert_eq!(camera().send_policy().max_mbps, Some(8.0));
+    }
+
+    #[test]
+    fn the_control_period_follows_control_hz_and_defaults_to_1_ms() {
+        assert_eq!(arm().control_period(), Duration::from_millis(2));
+        assert_eq!(camera().control_period(), Duration::from_millis(1));
+    }
+
+    #[test]
+    fn rgb8_dims_names_a_u8_three_channel_image() {
+        assert_eq!(camera().fields[0].rgb8_dims(), Some((480, 640)));
+        for other in [
+            FieldSpec::new("rgba", DType::U8, &[2, 2, 4]),
+            FieldSpec::new("rgb", DType::F32, &[2, 2, 3]),
+            FieldSpec::new("pos", DType::U8, &[3]),
+        ] {
+            assert_eq!(other.rgb8_dims(), None, "{}", other.name);
+        }
     }
 
     #[test]

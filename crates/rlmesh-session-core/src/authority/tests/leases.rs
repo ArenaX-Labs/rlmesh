@@ -331,10 +331,14 @@ fn the_snapshot_fence_matches_the_host() {
         .part(f.ch("cmd3"))
         .and_then(|p| p.applied_channel)
         .expect("applied");
-    assert_eq!(snap.stream(applied).map(|s| s.applied), Some(true));
+    assert_eq!(
+        snap.stream(applied).map(|s| (s.applied, s.path)),
+        Some((true, "cmd3/_applied".to_string()))
+    );
     assert!(snap.binding(&pid("policy")).is_some());
     let later = f.auth.snapshot(Vec::new(), 2);
     assert!(later.is_newer_than(&snap));
+    assert!(!snap.is_newer_than(&snap) && !snap.is_newer_than(&later));
 }
 
 #[test]

@@ -55,3 +55,30 @@ pub struct DatagramRoute {
     /// Board to host.
     pub up: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_channel_has_one_route_each_way() {
+        let route = |route, channel, up| DatagramRoute {
+            route,
+            channel: ChannelId(channel),
+            up,
+        };
+        let routes = DatagramRoutes {
+            probe: 1,
+            routes: vec![route(2, 5, false), route(3, 5, true), route(4, 6, true)],
+        };
+        assert_eq!(
+            (routes.down(ChannelId(5)), routes.up(ChannelId(5))),
+            (Some(2), Some(3))
+        );
+        assert_eq!(
+            (routes.down(ChannelId(6)), routes.up(ChannelId(6))),
+            (None, Some(4))
+        );
+        assert_eq!(routes.up(ChannelId(7)), None);
+    }
+}
