@@ -182,6 +182,8 @@ where
         max_episode_steps: options.max_episode_steps,
         max_episode_seconds: options.max_episode_seconds,
         close_env_on_end: options.close_env,
+        // `Model.run` closes its own model after the run.
+        close_model_on_end: false,
         // A lane endpoint is driven one group per lane; the grouped predicts
         // reach the handler's `predict_grouped` (one fused forward for a model
         // with a batched corner).

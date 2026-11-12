@@ -290,10 +290,10 @@ where
         }
     }
 
-    /// Releases the model's route and, when the session owns it, closes the
-    /// env, each within the close timeout: the driver enforces it, so a
-    /// close that blocks (an RPC on a hung connection) cannot hang the run's
-    /// shutdown.
+    /// Releases the model's route and, when the session owns them, closes
+    /// the model and the env, each within the close timeout: the driver
+    /// enforces it, so a close that blocks (an RPC on a hung connection)
+    /// cannot hang the run's shutdown.
     async fn shutdown_terminal_route(&mut self, state: &RouteState, reason: &str) {
         let timeout = self.spec.limits.service_close_timeout;
         let released = release(&self.model, state.env_id().to_string());
@@ -309,6 +309,20 @@ where
                 "model route release timed out during route shutdown; abandoning it"
             ),
             Ok(Ok(())) => {}
+        }
+        if self.spec.close_model_on_end {
+            let closed = async { self.model.lock().await.on_close().await };
+            match tokio::time::timeout(timeout, closed).await {
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, reason, "model close failed during route shutdown");
+                }
+                Err(_) => tracing::warn!(
+                    timeout_ms = timeout.as_millis(),
+                    reason,
+                    "model close timed out during route shutdown; abandoning close"
+                ),
+                Ok(Ok(())) => {}
+            }
         }
         if !self.spec.close_env_on_end {
             tracing::debug!(

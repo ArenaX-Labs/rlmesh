@@ -97,6 +97,7 @@ impl RuntimeEnv for Counter {
 struct Reader {
     spaces: Arc<Mutex<Option<(SpaceSpec, SpaceSpec)>>>,
     seen: Arc<Mutex<Vec<SpaceValue>>>,
+    closed: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -145,6 +146,11 @@ impl ModelHandler for Reader {
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
         Some(Arc::new(self.clone()))
+    }
+
+    async fn on_close(&mut self) -> rlmesh::Result<()> {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -200,6 +206,7 @@ fn session(
         max_episode_steps: Some(50),
         max_episode_seconds: None,
         close_env_on_end: false,
+        close_model_on_end: false,
         limits: RuntimeLimits::default(),
         subset_step,
     }
@@ -252,9 +259,29 @@ async fn a_runner_drives_its_own_env_and_model() {
         "the session telemetry records the predicts"
     );
     // Every observation decoded against the env's space: step 0..2, twice.
-    let seen = model.seen.lock().unwrap();
-    assert_eq!(seen.len(), 6);
-    assert!(matches!(&seen[0], SpaceValue::Box(t) if *t.to_contiguous_bytes() == [0, 7]));
+    {
+        let seen = model.seen.lock().unwrap();
+        assert_eq!(seen.len(), 6);
+        assert!(matches!(&seen[0], SpaceValue::Box(t) if *t.to_contiguous_bytes() == [0, 7]));
+    }
+    // A model the run does not own is left open for the next run...
+    assert_eq!(model.closed.load(Ordering::SeqCst), 0);
+
+    // ...and one it owns is closed once, when the run ends.
+    let contract = Counter::contract();
+    let mut spec = session(&contract, 1, false, rlmesh_proto::Edition::E2026_10);
+    spec.close_model_on_end = true;
+    RuntimeDriver::new(
+        spec,
+        Counter::default(),
+        model.clone(),
+        contract,
+        Arc::new(Watch::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+    assert_eq!(model.closed.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
