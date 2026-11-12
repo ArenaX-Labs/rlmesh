@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use super::link::{ModelConnection, ModelLink};
 use super::{error_of, link_error};
 use crate::Error;
+use crate::lockstep::error::GymError;
 use crate::model::handler::{
     ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames, ResolveOptions,
 };
@@ -26,7 +27,10 @@ pub struct ServedModel {
 
 struct Remote {
     address: String,
+    /// How long joining the model's session may take.
     timeout: Duration,
+    /// How long each request may wait for the model's answer once joined.
+    deadline: std::sync::Mutex<Duration>,
     /// The session the run drives in, which the model is invited into.
     target: std::sync::Mutex<Option<String>>,
     connection: Mutex<Option<ModelConnection>>,
@@ -79,12 +83,18 @@ impl Remote {
 
     async fn call(&self, request: ModelRequest) -> Result<ModelReply, Error> {
         let predict = matches!(request, ModelRequest::Predict(_));
-        let (reply, timing) = self
-            .link()
-            .await?
-            .call(&request, None)
-            .await
-            .map_err(link_error)?;
+        let deadline = *self
+            .deadline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let called = self.link().await?.call(&request, Some(deadline)).await;
+        if let Err(GymError::Closed(_)) = &called {
+            // The model or the link to it is gone: the next call joins again
+            // rather than meet the same dead link, which is what makes the
+            // failure worth retrying.
+            self.connection.lock().await.take();
+        }
+        let (reply, timing) = called.map_err(link_error)?;
         if predict {
             *self
                 .last
@@ -105,13 +115,18 @@ impl Remote {
 }
 
 impl ServedModel {
-    /// The model at the participant address `address`; connecting waits up
-    /// to `timeout` for it.
+    /// The model at the participant address `address`; connecting (joining
+    /// its session and waiting for it to answer) waits up to `timeout` for
+    /// it. Each request after that waits up to [`DEFAULT_TIMEOUT`] for its
+    /// answer ([`Self::with_request_timeout`]).
+    ///
+    /// [`DEFAULT_TIMEOUT`]: super::DEFAULT_TIMEOUT
     pub fn new(address: impl Into<String>, timeout: Duration) -> Self {
         Self {
             remote: Arc::new(Remote {
                 address: address.into(),
                 timeout,
+                deadline: std::sync::Mutex::new(super::DEFAULT_TIMEOUT),
                 target: std::sync::Mutex::default(),
                 connection: Mutex::default(),
                 spaces: std::sync::Mutex::default(),
@@ -119,6 +134,21 @@ impl ServedModel {
                 reset_options: std::sync::atomic::AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Bounds each request to the model once joined (a predict, a route's
+    /// resolve, reset or release, a describe) by `deadline`, apart from the
+    /// join's timeout: a model that has not answered by then fails the
+    /// request with [`Error::Timeout`], which a retry may get past. A model
+    /// or link that goes away fails it at once, with [`Error::Connection`].
+    #[must_use]
+    pub fn with_request_timeout(self, deadline: Duration) -> Self {
+        *self
+            .remote
+            .deadline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = deadline;
+        self
     }
 
     /// The model's describe envelope (JSON; empty when it has none).
@@ -241,11 +271,10 @@ impl ModelHandler for ServedModel {
                     .map(|_| Err(Error::Protocol(error.to_string())))
                     .collect();
             }
+            // Each row fails as the call did: a refusal stays final, a lost
+            // link or a deadline stays worth retrying.
             Err(error) => {
-                return rows
-                    .iter()
-                    .map(|_| Err(Error::Connection(error.to_string())))
-                    .collect();
+                return rows.iter().map(|_| Err(error.clone())).collect();
             }
         };
         let spaces = self

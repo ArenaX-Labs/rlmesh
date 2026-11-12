@@ -578,7 +578,9 @@ pub fn model_describe(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult
             let mut served = rlmesh::lockstep::ServedModel::new(address, timeout);
             let described = served.describe().await;
             let _ = served.on_close().await;
-            described.map_err(|err| pyo3::exceptions::PyConnectionError::new_err(err.to_string()))
+            // Each failure as its class: a refused key is final, not a
+            // ConnectionError a caller would retry.
+            described.map_err(to_py_err)
         })
     })
 }

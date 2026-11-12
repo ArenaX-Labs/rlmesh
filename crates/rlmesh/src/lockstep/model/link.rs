@@ -89,9 +89,10 @@ impl ModelLink {
             .timeout(timeout)
             .await
             .map_err(|e| GymError::Closed(e.to_string()))?;
-        let reply = replies.recv_async().await.map_err(|_| {
-            // Replies that end with none before the timeout: the model's
-            // server went away while the request was in flight.
+        // Replies that end, or end in Zenoh's error, before the timeout: the
+        // model's server went away while the request was in flight. At the
+        // timeout, Zenoh answers its own error: the deadline passed.
+        let ended = || {
             if started.elapsed() + crate::lockstep::exchange::ENDED_EARLY < timeout {
                 GymError::Closed(
                     "the served model went away before it answered: its server exited, left \
@@ -101,11 +102,11 @@ impl ModelLink {
             } else {
                 GymError::Timeout(timeout)
             }
-        })?;
+        };
+        let reply = replies.recv_async().await.map_err(|_| ended())?;
         match reply.result() {
             Ok(sample) => Ok(decode_model_reply(payload_bytes(sample.payload()))?),
-            // A Zenoh-level error (the queryable is gone).
-            Err(_) => Err(GymError::Closed(format!("{} did not answer", self.key))),
+            Err(_) => Err(ended()),
         }
     }
 }

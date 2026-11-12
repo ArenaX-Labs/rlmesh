@@ -185,7 +185,7 @@ impl<'a> Binding<'a> {
                     .unwrap_or(1),
                 };
                 check_horizon(execution_horizon, None)?;
-                let handler = crate::lockstep::ServedModel::new(model.address(), timeout);
+                let handler = model.served(timeout);
                 (
                     Box::new(handler),
                     unauthored(workflow_edition.as_deref())?,

@@ -49,6 +49,7 @@ impl RemoteModelOptions {
 struct RemoteModelInner {
     address: String,
     connect_timeout: Option<Duration>,
+    request_timeout: Option<Duration>,
 }
 
 /// A served model (policy) to bind envs to.
@@ -64,9 +65,11 @@ impl RemoteModel {
         let address = crate::env::client::normalize_connect_address(options.address.as_deref())?;
         ConnectAddress::parse(&address)?;
         let connect_timeout = crate::env::client::normalize_timeout(options.connect_timeout);
+        let request_timeout = crate::env::client::normalize_timeout(options.request_timeout);
         Ok(RemoteModel(Arc::new(RemoteModelInner {
             address,
             connect_timeout,
+            request_timeout,
         })))
     }
 
@@ -78,6 +81,16 @@ impl RemoteModel {
 
     pub(crate) fn connect_timeout(&self) -> Option<Duration> {
         self.0.connect_timeout
+    }
+
+    /// The model this handle dials, its requests bounded by
+    /// `request_timeout` when set.
+    pub(crate) fn served(&self, connect_timeout: Duration) -> crate::lockstep::ServedModel {
+        let served = crate::lockstep::ServedModel::new(self.address(), connect_timeout);
+        match self.0.request_timeout {
+            Some(deadline) => served.with_request_timeout(deadline),
+            None => served,
+        }
     }
 }
 

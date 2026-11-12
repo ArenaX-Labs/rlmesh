@@ -202,10 +202,7 @@ pub(crate) async fn run_route(
         }
         Driven::Served(model) => {
             served_options(trust_entrypoints, instruction.as_deref())?;
-            let served = crate::lockstep::ServedModel::new(
-                model.address(),
-                model.connect_timeout().unwrap_or(SERVED_CONNECT),
-            );
+            let served = model.served(model.connect_timeout().unwrap_or(SERVED_CONNECT));
             Box::new(move |_| Box::new(served))
         }
         Driven::Random => {
