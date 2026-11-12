@@ -71,7 +71,26 @@ async fn main() {
         .expect("controller");
     let owner = ParticipantId::new("eyes").expect("id");
     if soak {
-        drive_forever(&policy, &owner).await;
+        // Each 5 s, how long the host took to relay the board's chunks on
+        // the datagram path, as `relay <buckets> max <ms>`.
+        let relays = async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if let Some(r) = host
+                    .health()
+                    .into_iter()
+                    .find(|row| row.participant == owner)
+                    .and_then(|row| row.datagram_relay)
+                {
+                    println!("relay {:?} max {:.2} ms", r.ms, r.max_us as f64 / 1e3);
+                    std::io::stdout().flush().expect("stdout");
+                }
+            }
+        };
+        tokio::select! {
+            _ = drive_forever(&policy, &owner) => {}
+            _ = relays => {}
+        }
     }
     let snapshot = policy
         .wait_for("board declared and mapped", Duration::from_secs(15), |s| {

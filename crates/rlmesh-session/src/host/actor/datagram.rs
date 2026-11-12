@@ -676,6 +676,16 @@ impl HostActor {
         (path, Some(stats), Some(entry.time.at(Instant::now())))
     }
 
+    /// How long `robot`'s chunks took through the relay, while it is
+    /// offered the path.
+    pub(in crate::host) fn datagram_relay(
+        &self,
+        robot: &ParticipantId,
+    ) -> Option<crate::metrics::RelayTiming> {
+        let entry = self.datagram.as_ref()?.robots.get(robot)?;
+        Some(entry.path.relay_timing())
+    }
+
     /// Logs the path a robot that just attached takes.
     pub(super) fn log_data_path(&self, robot: &ParticipantId) {
         let Some(info) = self.authority.participant(robot) else {

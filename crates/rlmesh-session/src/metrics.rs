@@ -110,6 +110,7 @@ impl LinkStats {
             datagram_board: None,
             datagram_host: None,
             path_time: None,
+            datagram_relay: None,
         }
     }
 }
@@ -150,6 +151,32 @@ pub struct ParticipantHealth {
     /// Robots offered the datagram path: where their realtime parts rode
     /// since they attached.
     pub path_time: Option<PathTime>,
+    /// Robots offered the datagram path: how long the host took to relay
+    /// their chunks, from its subscriber to the socket.
+    pub datagram_relay: Option<RelayTiming>,
+}
+
+/// How long the host took to relay a robot's chunks: from its subscriber
+/// receiving each to the datagram written to the socket, in buckets of
+/// milliseconds as an edge times chunks (`[0, 1)`, `[1, 2)`, `[2, 4)`, ...
+/// `[64, inf)`), and the longest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RelayTiming {
+    /// Chunks by the time they took.
+    pub ms: [u64; crate::wire::LATE_BUCKETS],
+    /// The longest any took, in microseconds.
+    pub max_us: u64,
+}
+
+impl RelayTiming {
+    pub(crate) fn add(&mut self, took: std::time::Duration) {
+        let us = u64::try_from(took.as_micros()).unwrap_or(u64::MAX);
+        self.max_us = self.max_us.max(us);
+        let ms = us / 1000;
+        // [0, 1) is bucket 0, then one per power of two.
+        let bucket = if ms == 0 { 0 } else { 1 + ms.ilog2() as usize };
+        self.ms[bucket.min(self.ms.len() - 1)] += 1;
+    }
 }
 
 /// Where a robot's realtime parts rode since it attached: time on the
@@ -226,6 +253,17 @@ impl fmt::Display for ParticipantHealth {
                 host.lost,
                 host.unopened
             )?;
+        }
+        if let Some(r) = self.datagram_relay.filter(|r| r.ms.iter().any(|n| *n > 0)) {
+            write!(f, " relay ms")?;
+            for (bucket, n) in ["<1", "1-2", "2-4", "4-8", "8-16", "16-32", "32-64", ">=64"]
+                .iter()
+                .zip(r.ms)
+                .filter(|(_, n)| *n > 0)
+            {
+                write!(f, " {bucket}:{n}")?;
+            }
+            write!(f, " max={:.1}ms", r.max_us as f64 / 1e3)?;
         }
         if let Some(t) = self.path_time {
             write!(

@@ -2659,6 +2659,10 @@ async fn a_board_on_the_datagram_path_takes_chunks_and_its_samples_reach_a_polic
         host.active && host.sent > 0 && host.unopened == 0,
         "{host:?}"
     );
+    // Every chunk the host sent on was timed through its relay (read a
+    // moment after the counters).
+    let relay = row.datagram_relay.expect("relay timing");
+    assert!(relay.ms.iter().sum::<u64>() >= host.sent, "{relay:?}");
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.messages > 0, "{stats:?}");
     let summary = rlmesh_session::record::summarize(&path).expect("summary");

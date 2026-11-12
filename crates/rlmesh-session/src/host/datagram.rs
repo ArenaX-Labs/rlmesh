@@ -38,6 +38,7 @@ use tracing::{debug, info, warn};
 
 use crate::host::lock;
 use crate::host::peer::Peer;
+use crate::metrics::RelayTiming;
 use crate::wire::{ChannelId, DatagramOffer, DatagramStats, ParticipantId};
 
 /// The host's datagram path: one UDP socket for every session this process
@@ -83,7 +84,7 @@ pub(super) struct Down {
     pub(super) id: u16,
     pub(super) channel: ChannelId,
     /// The newest datagram the socket had no room for.
-    waiting: Mutex<Latest<(Vec<u8>, SocketAddr)>>,
+    waiting: Mutex<Latest<(Vec<u8>, SocketAddr, Instant)>>,
     /// A chunk too large for a datagram arrived: the part goes back to the
     /// session.
     oversize: Mutex<Option<usize>>,
@@ -122,6 +123,8 @@ struct PathState {
     last_probe: Option<Instant>,
     fallbacks: u32,
     active: bool,
+    /// How long chunks took from the relay's subscriber to the socket.
+    relay: RelayTiming,
 }
 
 /// What one end of a robot's path counted, for judging it: datagrams the
@@ -146,6 +149,11 @@ impl RobotPath {
             unopened: state.arrivals.unopened,
             fallbacks: state.fallbacks,
         }
+    }
+
+    /// How long its chunks took through the relay.
+    pub(super) fn relay_timing(&self) -> RelayTiming {
+        lock(&self.state).relay
     }
 
     /// Its counts, for judging the path.
@@ -285,6 +293,7 @@ impl DatagramRelay {
                 samples: 0,
                 last_probe: None,
                 fallbacks: 0,
+                relay: RelayTiming::default(),
                 active: true,
             }),
         });
@@ -397,6 +406,7 @@ impl Drop for DatagramRelay {
 impl Inner {
     /// Sends one chunk on `down` to its robot, the newest only.
     fn forward(&self, path: &RobotPath, down: &Down, payload: &[u8]) {
+        let got = Instant::now();
         let mut state = lock(&path.state);
         let Some(to) = state.to.get().filter(|_| state.active) else {
             return;
@@ -419,9 +429,12 @@ impl Inner {
             waiting.replaced += 1;
         }
         match self.socket.try_send_to(&datagram, to) {
-            Ok(_) => state.sent += 1,
+            Ok(_) => {
+                state.sent += 1;
+                state.relay.add(got.elapsed());
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                waiting.put((datagram, to));
+                waiting.put((datagram, to, got));
                 self.waiting.notify_one();
             }
             Err(err) => debug!(robot = %path.robot, %err, "chunk datagram not sent"),
@@ -532,15 +545,19 @@ async fn flush(inner: Arc<Inner>, cancel: CancellationToken) {
                 () = tokio::time::sleep(RETRY) => {}
             }
             for (path, down) in downs {
-                let Some((datagram, to)) = lock(&down.waiting).take() else {
+                let Some((datagram, to, got)) = lock(&down.waiting).take() else {
                     continue;
                 };
                 match inner.socket.try_send_to(&datagram, to) {
-                    Ok(_) => lock(&path.state).sent += 1,
+                    Ok(_) => {
+                        let mut state = lock(&path.state);
+                        state.sent += 1;
+                        state.relay.add(got.elapsed());
+                    }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         let mut waiting = lock(&down.waiting);
                         if !waiting.is_waiting() {
-                            waiting.put((datagram, to));
+                            waiting.put((datagram, to, got));
                         }
                     }
                     Err(err) => debug!(robot = %path.robot, %err, "chunk datagram not sent"),
