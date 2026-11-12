@@ -97,6 +97,7 @@ pub(super) async fn predict_grouped<M: ModelHandler>(
         Some((total, phases)) => (total, Some(phases)),
         None => (None, None),
     };
+    let group_size = handler.take_group_size();
     drop(handler);
     let encode_started = Instant::now();
     let mut results = results.into_iter();
@@ -145,6 +146,7 @@ pub(super) async fn predict_grouped<M: ModelHandler>(
                     held_state_bytes: held.map(|held| held.bytes),
                     ..phases
                 },
+                group_size,
             })
         })
         .collect()

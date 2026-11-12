@@ -153,7 +153,12 @@ where
                     PeerReport {
                         endpoint_total_ns: prediction.endpoint_total_ns,
                         phases: prediction.phases,
-                        group_size: (group_count > 1).then_some(group_count),
+                        // The handler's own count when it has one (a pool
+                        // fused this call with other callers' rows), else
+                        // the groups this call carried.
+                        group_size: prediction
+                            .group_size
+                            .or((group_count > 1).then_some(group_count)),
                     },
                     request_bytes,
                     prediction

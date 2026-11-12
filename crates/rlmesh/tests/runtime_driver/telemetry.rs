@@ -77,6 +77,8 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
                 ..EndpointPhases::default()
             },
         )),
+        // A pool fused this lone group with seven other callers' lanes.
+        group_size: Some(8),
         ..TestModel::default()
     };
 
@@ -115,6 +117,8 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
     // Held state gauges: an episode count and raw bytes, not durations.
     assert_eq!(avg("model.predict", "held.episodes"), 5.0);
     assert_eq!(avg("model.predict", "held.bytes"), 6_000_000.0);
+    // The handler's own fused width, where the driver alone saw one group.
+    assert_eq!(avg("model.predict", "group.size"), 8.0);
 
     // A model that reports its phases but no total gets none made up here.
     let model = TestModel {

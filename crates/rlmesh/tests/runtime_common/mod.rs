@@ -152,6 +152,8 @@ pub struct TestModel {
     pub adapter_ns: u64,
     // What a model served elsewhere reports measuring for each predict.
     pub endpoint: Option<(Option<u64>, EndpointPhases)>,
+    // The lanes a handler in front of a batching pool says rode its forward.
+    pub group_size: Option<u64>,
     // Holds the `gate_at`th predict to arrive (0-based) until the gate opens;
     // every other predict returns at once.
     pub gate: Option<Shared<oneshot::Receiver<()>>>,
@@ -264,6 +266,10 @@ impl ModelHandler for TestModel {
 
     fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, EndpointPhases)> {
         self.endpoint
+    }
+
+    fn take_group_size(&mut self) -> Option<u64> {
+        self.group_size
     }
 
     fn route_setup(&self) -> Option<Arc<dyn rlmesh::binding::model::ModelRouteSetup>> {

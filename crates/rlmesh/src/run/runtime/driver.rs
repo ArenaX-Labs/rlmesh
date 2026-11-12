@@ -129,6 +129,8 @@ struct Prediction {
     frames: Vec<Vec<Bytes>>,
     endpoint_total_ns: Option<u64>,
     phases: EndpointPhases,
+    /// Lanes in the forward the handler answered in, as it reported them.
+    group_size: Option<u64>,
 }
 
 /// Decides which groups waiting for a prediction go out next, as one grouped
