@@ -254,6 +254,27 @@ async fn a_predict_waits_its_own_deadline_and_fails_at_once_when_the_model_is_go
     assert!(matches!(err, rlmesh::Error::Timeout(_)), "{err}");
     assert!(err.is_transient(), "{err}");
 
+    // A model its host does not have yet may still be loading: a retry may
+    // find it, so a caller that retries does not stop for good.
+    let address = model.address();
+    let (host, _) = address.rsplit_once('/').unwrap();
+    let absent = ServedModel::new(&format!("{host}/absent"), Duration::from_secs(2));
+    let err = absent
+        .route_setup()
+        .unwrap()
+        .resolve_adapter(
+            "a",
+            &contract(),
+            ResolveOptions {
+                execution_horizon: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("no such model");
+    assert!(err.is_transient(), "{err}");
+    assert!(err.to_string().contains("model absent to answer"), "{err}");
+
     let mut driver = resolved(&model.address(), "b").await;
     let predict = tokio::spawn(async move { driver.predict(observation("b")).await });
     tokio::time::sleep(Duration::from_millis(500)).await;

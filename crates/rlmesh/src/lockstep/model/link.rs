@@ -275,9 +275,11 @@ impl ModelConnection {
             key: participant.keys().model(model),
         };
         link.wait_ready(timeout).await.map_err(|err| match err {
-            GymError::Timeout(_) => GymError::Session(SessionError::Config(format!(
-                "no model {model} answered at {session}/{model} within {timeout:?}"
-            ))),
+            // A model still loading answers later: a retry may get past it.
+            GymError::Timeout(_) => GymError::Session(SessionError::Timeout(
+                timeout,
+                format!("model {model} to answer at {session}/{model}"),
+            )),
             other => other,
         })?;
         let lockstep = crate::lockstep::session::owns_links(participant.transport())
