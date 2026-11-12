@@ -111,9 +111,12 @@ typedef struct rlmesh_zenoh_view_stats_t {
   uint32_t skipped;
   uint64_t wait_max_us;
   uint64_t wait_total_us;
-  /* Publications dropped from a full send queue, and those the network task
-   * failed to send (or an action the transport failed to carry out). */
+  /* Publications dropped from a full send queue (of them, samples a newer
+   * one on the same key replaced before it went: tx_replaced), and those the
+   * network task failed to send (or an action the transport failed to carry
+   * out). */
   uint32_t tx_dropped;
+  uint32_t tx_replaced;
   uint32_t failed;
   /* Sealed views handed to the robot: the longest and total time from
    * arrival until the robot took it, and of that the robot's own (opening,
@@ -224,6 +227,11 @@ void rlmesh_zenoh_on_input(rlmesh_zenoh_t* z, void (*wake)(void*), void* arg);
 
 /* What happened to the robot's signed views so far. */
 void rlmesh_zenoh_view_stats(rlmesh_zenoh_t* z, rlmesh_zenoh_view_stats_t* out);
+
+/* Samples waiting to be sent that a newer one on the same key replaced, and
+ * publications dropped from a full send queue, since the transport opened:
+ * on a link slower than the robot publishes, a stream's rate drops here. */
+void rlmesh_zenoh_send_counts(rlmesh_zenoh_t* z, uint32_t* replaced, uint32_t* dropped);
 
 /* Tasks zenoh-pico started and has not ended (each holds its stack until it
  * has): the transport's own and one per open session. */

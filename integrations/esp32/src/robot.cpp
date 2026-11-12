@@ -242,7 +242,34 @@ void Robot::printDropped(Print& out) const {
     }
   }
   if (!any) out.print(" none");
-  out.println();
+  // Samples the board did not send: no heap room, or (on a link slower than
+  // it publishes) replaced by a newer one while waiting for the link.
+  uint32_t replaced = 0, crowded = 0;
+  if (zenoh_ != nullptr) rlmesh_zenoh_send_counts(zenoh_, &replaced, &crowded);
+  out.printf("; unsent %llu, send queue replaced %lu dropped %lu\n",
+             (unsigned long long)(robot_ != nullptr ? rlmesh_device_robot_unsent(robot_) : 0),
+             (unsigned long)replaced, (unsigned long)crowded);
+  // Each part's streams: what the sketch and the edges offered, what went
+  // out, and the rate the delivery plan allows (every sample, or a rate).
+  rlmesh_device_publishing_t p;
+  for (int part = 0; robot_ != nullptr && part < RLMESH_DEVICE_NO_PART &&
+                     rlmesh_device_robot_publishing(robot_, uint8_t(part), &p) == RLMESH_DEVICE_OK;
+       ++part) {
+    out.printf("  part %d published: state %llu of %llu at ", part,
+               (unsigned long long)p.state_sent, (unsigned long long)p.state_offered);
+    if (p.state_hz > 0) {
+      out.printf("%.1f Hz", p.state_hz);
+    } else {
+      out.print("every sample");
+    }
+    out.printf(", applied %llu of %llu at ", (unsigned long long)p.applied_sent,
+               (unsigned long long)p.applied_offered);
+    if (p.applied_hz > 0) {
+      out.printf("%.1f Hz\n", p.applied_hz);
+    } else {
+      out.println("every sample");
+    }
+  }
 }
 
 bool Robot::chunkTiming(int part, rlmesh_device_chunk_timing_t& out) const {

@@ -335,6 +335,25 @@ uint32_t rlmesh_device_robot_attaches(const rlmesh_device_robot_t* robot);
  * room for them, over every attach. */
 uint64_t rlmesh_device_robot_unsent(const rlmesh_device_robot_t* robot);
 
+/* One part's streams as they are published, over every attach: samples its
+ * state offered (rlmesh_device_robot_publish) and sent, the same of what it
+ * applied (each tick's), and the rate each one's delivery plan allows now, in
+ * hertz (0: every sample). Offered and not sent: coalesced by the plan, or
+ * no heap room (rlmesh_device_robot_unsent). */
+typedef struct rlmesh_device_publishing_t {
+  uint64_t state_offered;
+  uint64_t state_sent;
+  uint64_t applied_offered;
+  uint64_t applied_sent;
+  float state_hz;
+  float applied_hz;
+} rlmesh_device_publishing_t;
+
+/* Part's streams as they are published, into *out: RLMESH_DEVICE_OK, or
+ * RLMESH_DEVICE_ERR_ARG for a part the map doesn't have. */
+int rlmesh_device_robot_publishing(const rlmesh_device_robot_t* robot, uint8_t part,
+                                   rlmesh_device_publishing_t* out);
+
 /* Lateness buckets of rlmesh_device_chunk_timing_t. */
 #define RLMESH_DEVICE_LATE_BUCKETS 8
 

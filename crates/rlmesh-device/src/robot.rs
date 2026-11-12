@@ -816,6 +816,30 @@ pub struct Robot {
     beat: Heartbeat,
     /// Heartbeats and samples it skipped sending for want of memory.
     unsent: u64,
+    /// Each part's samples over every attach (by part index): its state's,
+    /// then what it applied.
+    streamed: Vec<[Streamed; 2]>,
+}
+
+/// One stream's samples over every attach.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Streamed {
+    /// Offered: published by the sketch, or applied by an edge.
+    pub offered: u64,
+    /// Sent: the rest its delivery plan coalesced, or the heap had no room
+    /// for.
+    pub sent: u64,
+}
+
+/// One part's streams as they are published: what each offered and sent,
+/// and the rate its delivery plan allows now.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Publishing {
+    pub state: Streamed,
+    /// The rate the state's plan allows, in hertz: `None` for every sample.
+    pub state_hz: Option<f64>,
+    pub applied: Streamed,
+    pub applied_hz: Option<f64>,
 }
 
 impl core::fmt::Debug for Robot {
@@ -881,6 +905,7 @@ impl Robot {
                 subscribed: alloc::vec![false; paths.len()],
                 edge_of: alloc::vec![None; paths.len()],
                 ticked: alloc::vec![None; paths.len()],
+                streamed: alloc::vec![[Streamed::default(); 2]; paths.len()],
                 paths,
                 config,
                 tenant,
@@ -1146,6 +1171,24 @@ impl Robot {
     /// room for them ([`crate::heap`]), over every attach.
     pub fn unsent(&self) -> u64 {
         self.unsent
+    }
+
+    /// Part `part`'s streams as they are published: counted over every
+    /// attach, with the rates the plans allow now (`None` for a part this
+    /// map doesn't have).
+    pub fn publishing(&self, part: usize) -> Option<Publishing> {
+        let [state, applied] = *self.streamed.get(part)?;
+        let rate = |channel: Option<ChannelId>| {
+            let gate = self.seqs.get(&channel?)?.gate.as_ref()?;
+            Some(1e6 / gate.period_us as f64)
+        };
+        let spec = self.parts.get(part);
+        Some(Publishing {
+            state,
+            state_hz: rate(spec.map(|p| p.channel)),
+            applied,
+            applied_hz: rate(spec.and_then(|p| p.applied_channel)),
+        })
     }
 
     /// Whether it takes the host's datagram path when the host offers it
@@ -1953,6 +1996,10 @@ impl Robot {
             else {
                 continue;
             };
+            let index = self.parts.iter().position(|p| p.channel == sample.part);
+            if let Some(counted) = index.and_then(|i| self.streamed.get_mut(i)) {
+                counted[1].offered += 1;
+            }
             let outlet = self.seqs.entry(stream.spec.channel).or_default();
             if !outlet.admit(now_us) {
                 continue;
@@ -1980,6 +2027,9 @@ impl Robot {
                     .and_then(|d| d.up_route(stream.spec.channel));
                 self.out
                     .push(send(&mut self.datagram, route, stream, payload));
+                if let Some(counted) = index.and_then(|i| self.streamed.get_mut(i)) {
+                    counted[1].sent += 1;
+                }
             }
         }
         if let Some(action) = &tick.action {
@@ -2030,6 +2080,9 @@ impl Robot {
             .spec
             .check_payload(value)
             .map_err(|_| PublishError::Invalid)?;
+        if let Some(counted) = self.streamed.get_mut(part) {
+            counted[0].offered += 1;
+        }
         let outlet = self.seqs.entry(stream.spec.channel).or_default();
         if !outlet.admit(now_us) {
             return Ok(());
@@ -2056,6 +2109,9 @@ impl Robot {
                     .and_then(|d| d.up_route(stream.spec.channel));
                 self.out
                     .push(send(&mut self.datagram, route, stream, payload));
+                if let Some(counted) = self.streamed.get_mut(part) {
+                    counted[0].sent += 1;
+                }
                 Ok(())
             }
             Err(err) => {

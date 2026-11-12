@@ -1316,6 +1316,55 @@ pub unsafe extern "C" fn rlmesh_device_robot_unsent(robot: *const DeviceRobot) -
     unsafe { robot.as_ref() }.map_or(0, |r| r.robot.unsent())
 }
 
+/// One part's streams as they are published (`rlmesh_device_publishing_t`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RlmeshDevicePublishing {
+    pub state_offered: u64,
+    pub state_sent: u64,
+    pub applied_offered: u64,
+    pub applied_sent: u64,
+    pub state_hz: f32,
+    pub applied_hz: f32,
+}
+
+/// Part `part`'s streams as they are published, into `*out`:
+/// `RLMESH_DEVICE_ERR_ARG` for a part the map doesn't have.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_publishing(
+    robot: *const DeviceRobot,
+    part: u8,
+    out: *mut RlmeshDevicePublishing,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    if out.is_null() {
+        return RLMESH_DEVICE_ERR_ARG;
+    }
+    let Some(p) = r.robot.publishing(usize::from(part)) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    #[allow(clippy::cast_possible_truncation)] // a rate, to print
+    let hz = |rate: Option<f64>| rate.map_or(0.0, |hz| hz as f32);
+    // SAFETY: checked non-null; valid for a write per the contract.
+    unsafe {
+        out.write(RlmeshDevicePublishing {
+            state_offered: p.state.offered,
+            state_sent: p.state.sent,
+            applied_offered: p.applied.offered,
+            applied_sent: p.applied.sent,
+            state_hz: hz(p.state_hz),
+            applied_hz: hz(p.applied_hz),
+        });
+    }
+    RLMESH_DEVICE_OK
+}
+
 /// How part `part`'s chunks arrived this attach, into `*out`.
 /// `RLMESH_DEVICE_ERR_NOT_READY` before the robot runs or for a part that
 /// takes no commands.

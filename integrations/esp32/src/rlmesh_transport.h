@@ -11,6 +11,7 @@ extern "C" {
 typedef struct rlmesh_zenoh_t rlmesh_zenoh_t;
 size_t rlmesh_zenoh_size(void);
 uint32_t rlmesh_zenoh_failures(rlmesh_zenoh_t* z);
+void rlmesh_zenoh_send_counts(rlmesh_zenoh_t* z, uint32_t* replaced, uint32_t* dropped);
 uint32_t rlmesh_zenoh_tasks(void);
 int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
                       rlmesh_device_now_us_fn now_us);

@@ -34,8 +34,10 @@ typedef struct rlmesh_txq {
   /* Bytes the send task took out and has not finished sending. */
   size_t inflight;
   size_t cap;
-  /* Publications dropped to keep to `cap`. */
+  /* Publications dropped to keep to `cap`, and samples a newer one on the
+   * same key replaced (counted in `dropped` too). */
   uint32_t dropped;
+  uint32_t replaced;
 } rlmesh_txq_t;
 
 static inline size_t rlmesh_txq_size(const rlmesh_txq_item_t* t) {
@@ -95,6 +97,7 @@ static inline bool rlmesh_txq_push(rlmesh_txq_t* q, rlmesh_txq_item_t* t) {
     for (rlmesh_txq_item_t *p = NULL, *i = q->head; i != NULL; p = i, i = i->next) {
       if (i->class_ == t->class_ && strcmp((const char*)i->data, (const char*)t->data) == 0) {
         rlmesh_txq_drop_after(q, p);
+        q->replaced++;
         break;
       }
     }

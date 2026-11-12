@@ -20,6 +20,13 @@ uint32_t rlmesh_zenoh_tasks(void) {
   return started - ended;
 }
 
+void rlmesh_zenoh_send_counts(rlmesh_zenoh_t* z, uint32_t* replaced, uint32_t* dropped) {
+  z_mutex_lock(z_loan_mut(z->lock));
+  *replaced = z->txq.replaced;
+  *dropped = z->txq.dropped - z->txq.replaced;
+  z_mutex_unlock(z_loan_mut(z->lock));
+}
+
 uint32_t rlmesh_zenoh_failures(rlmesh_zenoh_t* z) {
   z_mutex_lock(z_loan_mut(z->lock));
   uint32_t failed = z->failed + z->txq.dropped;
@@ -320,6 +327,7 @@ void rlmesh_zenoh_view_stats(rlmesh_zenoh_t* z, rlmesh_zenoh_view_stats_t* out) 
   z_mutex_lock(z_loan_mut(z->lock));
   *out = z->views;
   out->tx_dropped = z->txq.dropped;
+  out->tx_replaced = z->txq.replaced;
   out->failed = z->failed;
   z_mutex_unlock(z_loan_mut(z->lock));
 }
