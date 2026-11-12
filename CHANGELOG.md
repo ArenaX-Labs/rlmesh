@@ -161,6 +161,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `rlmesh eval report PATH...` prints the success tables of saved result bundles, without signing in.
 - `rlmesh registry publish TARGET` builds the compute variants declared in `rlmesh.toml` and publishes them as one image index; with `SOURCE...` it assembles already-pushed images instead.
 - `rlmesh check-image` validates an image's compute variant and warns where it contradicts the image's CUDA or ROCm versions.
+- `rlmesh doctor` and `rlmesh bench` take `--volume HOST:CONTAINER` mounts and `--kwargs-json` params for the image under probe, as a sandbox does.
 - `rlmesh doctor IMAGE` checks an env or model image's handshake, contract and conformance and writes `probe-report.json`; `rlmesh bench IMAGE` sweeps concurrent sessions against a model image and recommends `max_batch_size`. Both exit 1 on a failed check.
 
 #### Rust
@@ -229,6 +230,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 #### Python
 
 - A process that exits while a model is still serving no longer crashes during interpreter shutdown.
+- `rlmesh doctor` passes `trial_index` to an env that declares it among its reset options, names an env that serves no id by the image's `module:Class`, and says an image without a describe envelope has none.
+- `rlmesh check` accepts a model with `spec = NO_ADAPTER` without warning that it declares no spec.
 - A native env factory's serving line no longer prints the session's key.
 - Run and session warnings point at the caller's line, so warning filters apply to your code.
 - `describe(rlmesh.Model(policy))` describes the wrapped policy, and `describe` reads `native_chunk` from the class.

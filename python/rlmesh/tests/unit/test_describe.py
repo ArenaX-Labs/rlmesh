@@ -735,6 +735,15 @@ def test_check_target_buckets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) ->
     assert report.ok, report
     assert any("no class-level spec" in m for m in report.warnings), report
 
+    # Saying NO_ADAPTER on purpose is not a missing spec.
+    class _Raw(_TinyModel):
+        spec = rlmesh.NO_ADAPTER
+
+    report = check_target(_Raw)
+    assert report.ok, report
+    assert not any("no class-level spec" in m for m in report.warnings), report
+    assert any("NO_ADAPTER" in m for m in report.passed), report
+
     # The tagless env runs; the platform just cannot adapt a spec'd model to it.
     report = check_target(_UntaggedFactory)
     assert report.ok, report

@@ -21,6 +21,14 @@ const READY_ATTEMPT: Duration = Duration::from_secs(5);
 /// The ports a session host listens on, one per traffic class, consecutive.
 const SESSION_PORTS: u16 = TrafficClass::ALL.len() as u16;
 
+/// What `docker run` adds for the image under probe, as a sandbox's run
+/// options do: its `volumes`, and its params as `RLMESH_MAKE_KWARGS`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RunExtras<'a> {
+    pub volumes: &'a [String],
+    pub kwargs_json: Option<&'a str>,
+}
+
 pub struct Container {
     id: String,
     image: String,
@@ -32,10 +40,15 @@ pub struct Container {
 impl Container {
     /// `docker run -d` `image`, serving as participant `name`, with the
     /// sandbox's hardening flags and owner labels.
-    pub fn start(image: &str, name: &str, gpus: Option<&str>) -> Result<Self> {
+    pub fn start(
+        image: &str,
+        name: &str,
+        gpus: Option<&str>,
+        extras: RunExtras<'_>,
+    ) -> Result<Self> {
         let port = free_session_ports()?;
         let (identity, key) = launch_identity()?;
-        let output = run_command(image, name, gpus, port, &identity)
+        let output = run_command(image, name, gpus, port, &identity, extras)
             .stdin(Stdio::null())
             .output()
             .context("running docker run (is docker installed?)")?;
@@ -126,7 +139,14 @@ impl Drop for Container {
 /// loopback, as a container's published ports are, a session hosts only
 /// under keys its launcher passed; the secret reaches docker through its
 /// environment, never argv.
-fn run_command(image: &str, name: &str, gpus: Option<&str>, port: u16, identity: &str) -> Command {
+fn run_command(
+    image: &str,
+    name: &str,
+    gpus: Option<&str>,
+    port: u16,
+    identity: &str,
+    extras: RunExtras<'_>,
+) -> Command {
     let last = port + SESSION_PORTS - 1;
     let mut command = Command::new("docker");
     command.env(HOST_IDENTITY_VAR, identity).args([
@@ -145,6 +165,12 @@ fn run_command(image: &str, name: &str, gpus: Option<&str>, port: u16, identity:
     ]);
     if let Some(gpus) = gpus {
         command.args(["--gpus", gpus]);
+    }
+    for volume in extras.volumes {
+        command.args(["-v", volume]);
+    }
+    if let Some(kwargs) = extras.kwargs_json {
+        command.args(["-e", &format!("RLMESH_MAKE_KWARGS={kwargs}")]);
     }
     for (key, value) in [
         ("RLMESH_ADDRESS", format!("0.0.0.0:{port}")),
@@ -194,7 +220,14 @@ mod tests {
     #[test]
     fn run_passes_the_identity_by_name_and_dials_its_key() {
         let (identity, key) = launch_identity().unwrap();
-        let command = run_command("img:tag", "env", None, 40000, &identity);
+        let command = run_command(
+            "img:tag",
+            "env",
+            None,
+            40000,
+            &identity,
+            RunExtras::default(),
+        );
         let args: Vec<String> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -223,5 +256,34 @@ mod tests {
             parsed.joining().unwrap().base,
             SocketAddr::from((Ipv4Addr::LOCALHOST, 40000))
         );
+    }
+
+    #[test]
+    fn run_mounts_volumes_and_binds_params_as_a_sandbox_does() {
+        let volumes = ["/host/weights:/weights:ro".to_owned()];
+        let command = run_command(
+            "img:tag",
+            "model",
+            None,
+            40000,
+            "identity",
+            RunExtras {
+                volumes: &volumes,
+                kwargs_json: Some(r#"{"checkpoint":"/weights/a"}"#),
+            },
+        );
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-v", "/host/weights:/weights:ro"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-e", r#"RLMESH_MAKE_KWARGS={"checkpoint":"/weights/a"}"#])
+        );
+        assert_eq!(args.last().map(String::as_str), Some("img:tag"));
     }
 }

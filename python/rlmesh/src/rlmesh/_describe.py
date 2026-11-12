@@ -904,7 +904,27 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
         report.failed.append(f"describe {target!r}: {exc}")
         return report
     _check_envelope(envelope, report, "", baked=False)
+    if envelope.get("kind") == "model" and _declares_no_adapter(target):
+        # The envelope carries no spec either way; the class says it on purpose.
+        report.warnings[:] = [
+            w for w in report.warnings if not w.startswith("model_spec: ")
+        ]
+        report.passed.append(
+            "model_spec: NO_ADAPTER (serves its own predict, with no adapter)"
+        )
     return report
+
+
+def _declares_no_adapter(target: object) -> bool:
+    """Whether the model ``target`` names sets ``spec = NO_ADAPTER`` on its class."""
+    from ._models._adapter_mode import NO_ADAPTER
+
+    if isinstance(target, str):
+        try:
+            target = resolve_entrypoint(target, label="check entrypoint")
+        except Exception:
+            return False
+    return getattr(target, "spec", None) is NO_ADAPTER
 
 
 def check_labels(labels: Mapping[str, str] | None) -> CheckReport:

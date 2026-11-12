@@ -424,6 +424,16 @@ pub struct ProbeImageArgs {
     /// GPUs for the container(s), as `docker run --gpus` takes them (`all`, `device=0`).
     #[arg(long, value_name = "SPEC")]
     pub gpus: Option<String>,
+    /// A `docker run -v` mount for the image's container, as a sandbox's
+    /// `volumes` and `eval run --volume` take it (`/host/weights:/weights:ro`);
+    /// repeatable.
+    #[arg(long = "volume", value_name = "HOST:CONTAINER")]
+    pub volumes: Vec<String>,
+    /// A JSON object bound to the image's declared params: a model's
+    /// `load(**params)` or an env factory's `make(**params)`, as
+    /// `RLMESH_MAKE_KWARGS` passes them.
+    #[arg(long, value_name = "JSON", value_parser = json_object)]
+    pub kwargs_json: Option<String>,
     /// Seconds the image gets to start serving and to answer each call.
     #[arg(long, value_name = "SECONDS", default_value_t = 120)]
     pub timeout: u64,
@@ -681,6 +691,14 @@ fn duration(text: &str) -> Result<std::time::Duration, String> {
 }
 
 /// A span flag: a number with `s`, `m`, `h` or `d` (`30m`, `14d`).
+fn json_object(text: &str) -> Result<String, String> {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Object(_)) => Ok(text.to_owned()),
+        Ok(_) => Err("must be a JSON object".to_owned()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 fn span(text: &str) -> Result<std::time::Duration, String> {
     let wrong = || format!("{text:?}: a span with its unit, 90s, 30m, 2h or 14d");
     let unit = text.chars().last().ok_or_else(wrong)?;

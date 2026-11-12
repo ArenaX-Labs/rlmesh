@@ -13,7 +13,7 @@ use rlmesh::binding::doctor::{
 
 use crate::check::docker_inspect;
 use crate::cli::{BenchArgs, DoctorArgs, ProbeImageArgs, ProbeKind};
-use crate::container::Container;
+use crate::container::{Container, RunExtras};
 use crate::image_check::{self, DESCRIBE_LABEL, ImageConfig, Kind};
 use crate::render::Style;
 
@@ -25,8 +25,10 @@ pub(crate) fn doctor(args: &DoctorArgs, stdout: &mut impl Write, style: Style) -
     std::fs::create_dir_all(&output)
         .with_context(|| format!("create the output directory {}", output.display()))?;
     let image = &args.image;
+    // An env that serves no id of its own goes by what the image serves.
+    let name = image_check::parse_serve_command(&config).target;
     let mut report = off_runtime(|| match kind {
-        ProbeKind::Env => probe_env(image, describe, &output),
+        ProbeKind::Env => probe_env(image, describe, &output, name),
         ProbeKind::Model => probe_model(image, describe),
     })?;
     report.checks.insert(0, image_config_check(&config));
@@ -148,8 +150,9 @@ fn probe_env(
     image: &ProbeImageArgs,
     describe: Option<serde_json::Value>,
     output: &Path,
+    name: Option<String>,
 ) -> Result<ProbeReport> {
-    let env = start(&image.image, "env", image)?;
+    let env = start(&image.image, "env", image, probed(image))?;
     let env = match env {
         Ok(env) => env,
         Err(error) => return Ok(doctor::failed_handshake(ProbeSubject::Environment, &error)),
@@ -160,6 +163,7 @@ fn probe_env(
             describe,
             output_dir: Some(output.to_path_buf()),
             connect_timeout: Duration::from_secs(image.timeout),
+            name,
         },
     ))
 }
@@ -191,18 +195,35 @@ fn probe_model(image: &ProbeImageArgs, describe: Option<serde_json::Value>) -> R
 fn start_model(image: &ProbeImageArgs) -> Result<(Result<Container, String>, Option<Container>)> {
     let reference =
         match &image.env {
-            Some(env) => Some(start(env, "env", image)?.map_err(|error| {
-                anyhow::anyhow!("the reference env {env} did not start: {error}")
-            })?),
+            Some(env) => Some(start(env, "env", image, RunExtras::default())?.map_err(
+                |error| anyhow::anyhow!("the reference env {env} did not start: {error}"),
+            )?),
             None => None,
         };
-    Ok((start(&image.image, "model", image)?, reference))
+    Ok((
+        start(&image.image, "model", image, probed(image))?,
+        reference,
+    ))
+}
+
+/// The mounts and params `--volume` and `--kwargs-json` give the image under
+/// probe (not a reference env).
+fn probed(args: &ProbeImageArgs) -> RunExtras<'_> {
+    RunExtras {
+        volumes: &args.volumes,
+        kwargs_json: args.kwargs_json.as_deref(),
+    }
 }
 
 /// Start `image` as participant `name` and wait for it to serve; the inner
 /// error is the container's failure to come up, with its logs.
-fn start(image: &str, name: &str, args: &ProbeImageArgs) -> Result<Result<Container, String>> {
-    let container = Container::start(image, name, args.gpus.as_deref())?;
+fn start(
+    image: &str,
+    name: &str,
+    args: &ProbeImageArgs,
+    extras: RunExtras<'_>,
+) -> Result<Result<Container, String>> {
+    let container = Container::start(image, name, args.gpus.as_deref(), extras)?;
     let address = container.address.clone();
     let ready = |attempt: Duration| match name {
         "env" => doctor::env_answers(&address),
