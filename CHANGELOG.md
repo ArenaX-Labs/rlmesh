@@ -201,6 +201,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - `python -m rlmesh.serve`, a foreground `EnvServer.serve()` and `Model.serve()` drain and exit 0 on SIGTERM and 130 on Ctrl-C, and end at once on a second signal; a driver in a call to a server that went away gets a `ConnectionError` saying so.
 - `python -m rlmesh.serve`'s serving line leaves the address's key out (`#…`).
+- Running or serving an env or model that declares no workflow edition no longer warns; `rlmesh check`, `rlmesh check-image` and `rlmesh doctor` say where to pin it, and a session refused for want of a shared edition says to pin each side.
+- `[tool.rlmesh] workflow_edition` is read from the project that holds the env or model class, then from the working directory.
 - Internal and server-side failures raise `RLMeshException`, and protocol failures raise `ProtocolException`, both subclasses of `RuntimeError`.
 - An env error code `UNSUPPORTED` reaches Python as `"UNSUPPORTED"` (it read `"INTERNAL"`).
 - An env server treats a raised exception as recoverable only when it is an `EnvironmentException` with `is_recoverable` set.

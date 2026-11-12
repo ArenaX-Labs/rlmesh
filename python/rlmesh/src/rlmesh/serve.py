@@ -614,7 +614,8 @@ def serve_model(
     # stamped so both report the same declaration.
     options = serve_options_declaring(
         option=workflow_edition,
-        declared=getattr(type(model), "workflow_edition", None),
+        declared=model._class_workflow_edition(),  # pyright: ignore[reportPrivateUsage]
+        origin=model._edition_origin(),  # pyright: ignore[reportPrivateUsage]
     )
     _stamp_startup("model", f"{address.rstrip('/')}/{name}", model, options=options)
     model.serve(address, name=name, options=options, batching=batching)
@@ -776,6 +777,7 @@ def serve_env(
     options = serve_options_declaring(
         option=workflow_edition,
         declared=getattr(env_source, "workflow_edition", None),
+        origin=env_source,
     )
     server = EnvServer(
         env,

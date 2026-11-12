@@ -36,7 +36,6 @@ pub(crate) struct Resolved {
     pub(crate) allow_fusion: bool,
     pub(crate) spec: Option<SpecArg>,
     pub(crate) workflow_edition: Option<String>,
-    pub(crate) authored: bool,
     pub(crate) type_name: String,
     pub(crate) load_keys: Option<Vec<(String, bool)>>,
     pub(crate) trust_entrypoints: bool,

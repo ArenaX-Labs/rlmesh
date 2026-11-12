@@ -176,6 +176,7 @@ def serve_from_args(args: ServeArgs) -> int:
             # here; RLMESH_WORKFLOW_EDITION / [tool.rlmesh] / --workflow-edition
             # cover the rest.
             declared=getattr(type(env), "workflow_edition", None),
+            origin=type(env),
         )
         # EnvServer auto-detects the vectorized shape from the env, so there is one
         # construction path for both scalar and vector envs.

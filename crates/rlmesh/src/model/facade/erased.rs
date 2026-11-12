@@ -21,8 +21,6 @@ pub struct PolicyDecl {
     pub spec: Option<SpecArg>,
     /// The policy's edition declaration.
     pub workflow_edition: Option<String>,
-    /// Whether the policy is an authored participant.
-    pub authored: bool,
     /// The describe qualname's type part.
     pub type_name: String,
 }
@@ -41,7 +39,6 @@ impl PolicyDecl {
             }),
             spec: P::spec(),
             workflow_edition: P::workflow_edition(),
-            authored: P::AUTHORED,
             type_name: std::any::type_name::<P>().to_string(),
         }
     }

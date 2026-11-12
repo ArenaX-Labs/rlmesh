@@ -142,15 +142,10 @@ pub(crate) async fn run_route(
         Driven::Prepared(model) => model.native_chunk,
         _ => shared.and_then(|shared| shared.decl.native_chunk),
     };
-    let (declared_edition, authored, has_chunk) = match &model {
-        Driven::Prepared(model) => (
-            model.workflow_edition.clone(),
-            model.authored,
-            model.has_chunk,
-        ),
+    let (declared_edition, has_chunk) = match &model {
+        Driven::Prepared(model) => (model.workflow_edition.clone(), model.has_chunk),
         _ => (
             shared.and_then(|s| s.decl.workflow_edition.clone()),
-            shared.is_some_and(|s| s.decl.authored),
             shared.map(|s| s.decl.has_chunk()),
         ),
     };
@@ -224,14 +219,11 @@ pub(crate) async fn run_route(
         .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
     let outcome = async {
         // COR-6: the call, RLMESH_WORKFLOW_EDITION, then the model's type.
-        let edition = crate::editions::resolve_native(
-            EditionSources {
-                call: workflow_edition.as_deref(),
-                option: None,
-                declared: declared_edition.as_deref(),
-            },
-            authored,
-        )?;
+        let edition = crate::editions::resolve_native(EditionSources {
+            call: workflow_edition.as_deref(),
+            option: None,
+            declared: declared_edition.as_deref(),
+        })?;
         if execution_horizon > 1 && has_chunk == Some(false) {
             crate::warnings::warn(
                 crate::WarningCategory::UserWarning,

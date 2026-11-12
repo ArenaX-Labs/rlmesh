@@ -30,13 +30,10 @@ pub use rlmesh_proto::{
     peer_info_override, supported_workflow_editions, update_peer_info_override,
 };
 
-/// Resolve a native participant's workflow edition (COR-6): rungs 1 to 4,
-/// warning once per process when an `authored` participant floats.
-pub fn resolve_workflow_edition(
-    sources: EditionSources<'_>,
-    authored: bool,
-) -> Result<Option<String>> {
-    crate::editions::resolve_native(sources, authored)
+/// Resolve a native participant's workflow edition (COR-6): rungs 1 to 4;
+/// `None` when it floats.
+pub fn resolve_workflow_edition(sources: EditionSources<'_>) -> Result<Option<String>> {
+    crate::editions::resolve_native(sources)
 }
 
 use crate::{Error, Metadata, Result, Tensor, Value};

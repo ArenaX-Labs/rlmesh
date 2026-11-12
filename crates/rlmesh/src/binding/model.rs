@@ -160,7 +160,6 @@ pub struct PreparedModel {
     pub native_chunk: Option<u32>,
     pub execution_horizon: Option<u32>,
     pub workflow_edition: Option<String>,
-    pub authored: bool,
     pub has_chunk: Option<bool>,
 }
 

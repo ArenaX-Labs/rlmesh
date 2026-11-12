@@ -59,16 +59,12 @@ pub(super) fn serve_blocking(
                  rlmesh 0.2 for a session address)",
             ));
         }
-        // The call's edition wins over the environment variable; a served peer
-        // is authored, so a floating one warns (COR-6, COR-7).
-        let edition = crate::editions::resolve_native(
-            EditionSources {
-                call: serve.workflow_edition.as_deref(),
-                option: None,
-                declared: shared.decl.workflow_edition.as_deref(),
-            },
-            true,
-        )?;
+        // The call's edition wins over the environment variable (COR-6).
+        let edition = crate::editions::resolve_native(EditionSources {
+            call: serve.workflow_edition.as_deref(),
+            option: None,
+            declared: shared.decl.workflow_edition.as_deref(),
+        })?;
         let join = serve.close_timeout.unwrap_or(SESSION_JOIN);
         let batching = batching.unwrap_or_default();
         serve_session(shared, address, edition, batching, join, foreground, tokens)

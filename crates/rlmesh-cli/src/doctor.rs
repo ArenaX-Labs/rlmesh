@@ -30,6 +30,16 @@ pub(crate) fn doctor(args: &DoctorArgs, stdout: &mut impl Write, style: Style) -
         ProbeKind::Model => probe_model(image, describe),
     })?;
     report.checks.insert(0, image_config_check(&config));
+    // A labelled image's float is in image_config; without a label, the
+    // model's handshake describe says the same.
+    if !config.labels.contains_key(DESCRIBE_LABEL)
+        && let Some(warning) = served_float_warning(&report)
+    {
+        report.checks.insert(
+            1,
+            ProbeCheck::new("workflow_edition", CheckStatus::Warn, warning),
+        );
+    }
     if kind == ProbeKind::Env {
         report.env.repo = image.image.clone();
     }
@@ -251,6 +261,13 @@ fn image_config_check(config: &ImageConfig) -> ProbeCheck {
     ProbeCheck::new("image_config", status, lines.join("; "))
         .metric("failed", report.failed.len() as f64)
         .metric("warnings", report.warnings.len() as f64)
+}
+
+/// The float nudge from the describe the served peer stamped on its handshake.
+fn served_float_warning(report: &ProbeReport) -> Option<String> {
+    let runtime = report.peer.describe.as_ref()?.get("runtime")?.clone();
+    let runtime: image_check::RuntimeOffer = serde_json::from_value(runtime).ok()?;
+    image_check::edition_float_warning(&runtime)
 }
 
 fn failed(report: &ProbeReport) -> bool {

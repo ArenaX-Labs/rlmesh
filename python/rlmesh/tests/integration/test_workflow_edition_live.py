@@ -61,10 +61,9 @@ def declared_edition() -> str:
 
 @pytest.fixture
 def undeclared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Nothing declared anywhere: no env var, no manifest, warning re-armed."""
+    """Nothing declared anywhere: no env var, no manifest."""
     monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(_editions, "_warned", False)
     monkeypatch.setattr(_editions, "_pyproject_cache", {})
 
 

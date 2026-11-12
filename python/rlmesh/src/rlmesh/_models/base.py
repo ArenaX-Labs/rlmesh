@@ -1676,7 +1676,6 @@ class ModelBase(Generic[ObsT, ActT]):
         (a vector env's local spaces are batched while tags describe one lane,
         so its check stays at the route resolve).
         """
-        from .._editions import resolved_by_caller
         from .._load_native import load_native
         from .._server import EnvServer, VectorServerEnvLike
 
@@ -1696,28 +1695,24 @@ class ModelBase(Generic[ObsT, ActT]):
         # The in-process server is part of THIS call, so it takes the caller's
         # already-resolved declaration verbatim instead of re-resolving and
         # possibly landing on a different edition than the runtime tier.
-        resolved = resolved_by_caller.set(True)
-        try:
-            address = (
-                f"{self._env_session}/run-{uuid.uuid4().hex[:12]}/env"
-                if self._env_session is not None
-                else f"{load_native('local_run_session')()}/env"
-            )
-            server = EnvServer(
-                cast("VectorServerEnvLike", env_obj),
-                address,
-                framework=getattr(env_obj, "_bridge", None),
-                options=(
-                    load_native("ServeOptions")(workflow_edition=workflow_edition)
-                    if workflow_edition is not None
-                    else None
-                ),
-                # The env is borrowed (or built here): its close() is the
-                # caller's decision, not the in-process server's.
-                close_env_on_shutdown=False,
-            )
-        finally:
-            resolved_by_caller.reset(resolved)
+        address = (
+            f"{self._env_session}/run-{uuid.uuid4().hex[:12]}/env"
+            if self._env_session is not None
+            else f"{load_native('local_run_session')()}/env"
+        )
+        server = EnvServer(
+            cast("VectorServerEnvLike", env_obj),
+            address,
+            framework=getattr(env_obj, "_bridge", None),
+            options=(
+                load_native("ServeOptions")(workflow_edition=workflow_edition)
+                if workflow_edition is not None
+                else None
+            ),
+            # The env is borrowed (or built here): its close() is the
+            # caller's decision, not the in-process server's.
+            close_env_on_shutdown=False,
+        )
         server.start()
         return server
 
@@ -1816,6 +1811,7 @@ class ModelBase(Generic[ObsT, ActT]):
             # RLMESH_WORKFLOW_EDITION, as EnvServer adopts it (COR-6).
             call=options.workflow_edition if options is not None else None,
             declared=self._class_workflow_edition(),
+            origin=self._edition_origin(),
         )
         if not name:
             removed(
@@ -1934,25 +1930,25 @@ class ModelBase(Generic[ObsT, ActT]):
         return resolve_workflow_edition(
             call=call,
             declared=self._class_workflow_edition(),
-            # A subclass or a wrapped policy has a home for the declaration; a
-            # wrapped bare callable has none.
-            authored=self._policy is not None,
+            origin=self._edition_origin(),
         )
 
-    def _class_workflow_edition(self) -> str | None:
-        """The type-level edition declaration this model carries.
+    def _edition_origin(self) -> object:
+        """Where this model's edition is declared: the type or callable it was authored as.
 
-        A subclass's own; for a wrapping ``Model(policy)``, the wrapped policy
-        type's (``describe`` reads the same one); for a bare callable, the
-        callable's attribute.
+        A subclass's own type; for a wrapping ``Model(policy)``, the wrapped
+        policy type (``describe`` reads the same one); for a bare callable,
+        the callable. Its module's project holds the ``[tool.rlmesh]`` rung.
         """
         if self._policy is self:
-            owner: object = type(self)
-        elif self._policy is not None:
-            owner = type(self._policy)
-        else:
-            owner = self._edition_source
-        declared = getattr(owner, "workflow_edition", None)
+            return type(self)
+        if self._policy is not None:
+            return type(self._policy)
+        return self._edition_source
+
+    def _class_workflow_edition(self) -> str | None:
+        """The type-level edition declaration this model carries (see :meth:`_edition_origin`)."""
+        declared = getattr(self._edition_origin(), "workflow_edition", None)
         return declared if isinstance(declared, str) else None
 
     def __repr__(self) -> str:

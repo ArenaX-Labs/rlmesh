@@ -644,14 +644,11 @@ pub(crate) fn decode_render_png(png: &[u8]) -> Result<Value> {
 /// process and project surfaces) and dial with `options`.
 pub(super) async fn connect_core(options: RemoteEnvOptions) -> Result<EnvClientCore> {
     let address = normalize_connect_address(options.address.as_deref())?;
-    let declared = crate::editions::resolve_native(
-        crate::editions::EditionSources {
-            call: options.workflow_edition.as_deref(),
-            option: None,
-            declared: None,
-        },
-        false,
-    )?;
+    let declared = crate::editions::resolve_native(crate::editions::EditionSources {
+        call: options.workflow_edition.as_deref(),
+        option: None,
+        declared: None,
+    })?;
     EnvClientCore::connect_with(
         &address,
         CoreConnect {

@@ -482,7 +482,7 @@ fn results_print_as_python_does() {
 }
 
 #[test]
-fn closure_resolution_does_not_consume_the_authored_warning() {
+fn an_undeclared_model_runs_and_binds_without_an_edition_warning() {
     let _lock = crate::warnings::tests::HANDLER_LOCK.lock().unwrap();
     let warnings = Arc::new(AtomicUsize::new(0));
     let count = warnings.clone();
@@ -496,7 +496,6 @@ fn closure_resolution_does_not_consume_the_authored_warning() {
     let mut env = Steps::new();
     drop(closure.bind(&mut env, BindOptions::default()).unwrap());
     closure.run(&mut env, RunOptions::default()).unwrap();
-    assert_eq!(warnings.load(Ordering::SeqCst), 0);
     struct Authored;
     impl crate::Policy for Authored {
         fn predict(&mut self, _: Value) -> Result<Value> {
@@ -505,8 +504,9 @@ fn closure_resolution_does_not_consume_the_authored_warning() {
     }
     let authored = Model::new(Authored, ModelOptions::default()).unwrap();
     drop(authored.bind(&mut env, BindOptions::default()).unwrap());
+    authored.run(&mut env, RunOptions::default()).unwrap();
     crate::set_warning_handler(None);
-    assert_eq!(warnings.load(Ordering::SeqCst), 1);
+    assert_eq!(warnings.load(Ordering::SeqCst), 0);
 }
 
 #[test]

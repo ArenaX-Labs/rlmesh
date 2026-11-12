@@ -192,7 +192,6 @@ pub(crate) fn construct(
         allow_fusion,
         spec: spec.or(decl.spec),
         workflow_edition: decl.workflow_edition,
-        authored: decl.authored,
         type_name: decl.type_name,
         load_keys: decl.load_keys,
         trust_entrypoints,

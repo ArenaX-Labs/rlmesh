@@ -644,3 +644,40 @@ fn check_image_ties_the_label_to_the_command() {
     assert!(report.ok(), "{report:?}");
     assert!(report.not_checked.is_empty(), "{report:?}");
 }
+
+#[test]
+fn an_undeclared_image_is_told_where_to_pin_its_edition() {
+    let mut config = image(
+        &["python", "-m", "rlmesh.serve", "pkg:Policy"],
+        &[],
+        &[],
+        PORTS,
+    );
+    config.labels.insert(
+        DESCRIBE_LABEL.to_owned(),
+        label(
+            "model",
+            serde_json::json!({
+                "protocol_generation": PROTOCOL_GENERATION,
+                "supported_workflow_editions": supported_workflow_editions(),
+                "preferred_workflow_edition": CURRENT_WORKFLOW_EDITION,
+                "workflow_edition_floats": true,
+            }),
+        ),
+    );
+    let floats = |config: &ImageConfig| {
+        check_image(config, None)
+            .warnings
+            .iter()
+            .any(|m| m.contains("no workflow edition declared") && m.contains("Pin it"))
+    };
+    assert!(floats(&config));
+    // The image's own declaration, or a deliberate float, settles it.
+    config.env.push(format!("{WORKFLOW_EDITION_ENV}="));
+    assert!(!floats(&config));
+    config.env.pop();
+    config
+        .env
+        .push(format!("{WORKFLOW_EDITION_ENV}={CURRENT_WORKFLOW_EDITION}"));
+    assert!(!floats(&config));
+}

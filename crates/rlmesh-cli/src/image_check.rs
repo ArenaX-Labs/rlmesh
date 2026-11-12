@@ -273,6 +273,10 @@ pub struct RuntimeOffer {
     /// absent when the declaration is fine.
     #[serde(default)]
     pub workflow_edition_error: Option<String>,
+    /// Nothing declares an edition, so the image floats to its rlmesh's
+    /// newest; absent for a declaration or a deliberate float.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workflow_edition_floats: bool,
     /// The OS the envelope was generated on (`linux`); a label baked on a
     /// Mac carries `macos` and fails validation.
     #[serde(default)]
@@ -300,6 +304,27 @@ impl RuntimeOffer {
                 .map(str::to_owned),
         })
     }
+}
+
+/// The nudge for a participant that declares no workflow edition, or `None`
+/// when it declares one (or floats deliberately).
+pub fn edition_float_warning(runtime: &RuntimeOffer) -> Option<String> {
+    if !runtime.workflow_edition_floats {
+        return None;
+    }
+    let floats_to = runtime
+        .preferred_workflow_edition
+        .as_deref()
+        .map(str::trim)
+        .filter(|edition| !edition.is_empty())
+        .unwrap_or(rlmesh_proto::WORKFLOW_EDITION_BASE);
+    let base = floats_to.split('-').next().unwrap_or(floats_to);
+    Some(format!(
+        "editions: no workflow edition declared: it floats to {floats_to}, which moves when \
+         its rlmesh upgrades. Pin it before you upgrade: workflow_edition = \"{base}\" on the \
+         class, under [tool.rlmesh] in pyproject.toml, or {WORKFLOW_EDITION_ENV}={base} in \
+         the image ({WORKFLOW_EDITION_ENV}='' floats deliberately)"
+    ))
 }
 
 /// What a `dev.rlmesh.describe` label says about its image.
@@ -662,7 +687,11 @@ pub fn check_image(config: &ImageConfig, platform: Option<&SessionOffer>) -> Che
                         .unwrap_or("none")
                 ));
                 label.runtime.preferred_workflow_edition = declared;
+                label.runtime.workflow_edition_floats = false;
             }
+            report
+                .warnings
+                .extend(edition_float_warning(&label.runtime));
             match platform {
                 Some(platform) => {
                     report.extend(check_editions(&label.runtime, label.kind, platform));

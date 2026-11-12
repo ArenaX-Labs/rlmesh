@@ -427,7 +427,7 @@ static RLMeshStatus arm_step(void* self, const RLMeshValue* action, RLMeshValue*
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (the `workflow_edition` field of `RLMeshServeOptions`, the model vtable, or the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. `rlmesh_current_workflow_edition()` returns the edition to declare. See the [documentation](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (the `workflow_edition` field of `RLMeshServeOptions`, the model vtable, or the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition, so pin one before you upgrade. `rlmesh_current_workflow_edition()` returns the edition to declare. See the [documentation](https://rlmesh.dev/docs/).
 
 ## C-only extras
 

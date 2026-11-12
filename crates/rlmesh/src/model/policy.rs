@@ -140,10 +140,6 @@ pub trait Policy: Send + 'static {
     /// Whether the policy writes [`reset_options`](Policy::reset_options);
     /// a run asks it only then.
     const RESET_OPTIONS: bool = false;
-    /// Whether the policy type is an authored participant; false only for
-    /// the closure forms, as a wrapped bare callable is not one.
-    #[doc(hidden)]
-    const AUTHORED: bool = true;
 
     /// The model's adapter spec.
     fn spec() -> Option<SpecArg>
@@ -322,8 +318,6 @@ impl<F> Policy for F
 where
     F: FnMut(Value) -> Result<Value> + Send + 'static,
 {
-    const AUTHORED: bool = false;
-
     fn predict(&mut self, observation: Value) -> Result<Value> {
         self(observation)
     }
@@ -351,7 +345,6 @@ where
     F: FnMut(Value, &mut PredictContext<'_>) -> Result<Value> + Send + 'static,
 {
     const CONTEXT: Corners = Corners::PREDICT;
-    const AUTHORED: bool = false;
 
     fn predict_with_context(
         &mut self,

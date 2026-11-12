@@ -134,14 +134,11 @@ impl<'a> Binding<'a> {
                 shared.admit()?;
                 let execution_horizon = shared.decl.resolve_horizon(execution_horizon)?;
                 check_horizon(execution_horizon, shared.decl.native_chunk)?;
-                let edition = crate::editions::resolve_native(
-                    crate::editions::EditionSources {
-                        call: workflow_edition.as_deref(),
-                        option: None,
-                        declared: shared.decl.workflow_edition.as_deref(),
-                    },
-                    shared.decl.authored,
-                )?;
+                let edition = crate::editions::resolve_native(crate::editions::EditionSources {
+                    call: workflow_edition.as_deref(),
+                    option: None,
+                    declared: shared.decl.workflow_edition.as_deref(),
+                })?;
                 if execution_horizon > 1 && !shared.decl.has_chunk() {
                     crate::warnings::warn(
                         crate::WarningCategory::UserWarning,
@@ -188,7 +185,7 @@ impl<'a> Binding<'a> {
                 let handler = model.served(timeout);
                 (
                     Box::new(handler),
-                    unauthored(workflow_edition.as_deref())?,
+                    call_edition(workflow_edition.as_deref())?,
                     execution_horizon,
                 )
             }
@@ -199,14 +196,11 @@ impl<'a> Binding<'a> {
                     None,
                     model.native_chunk,
                 )?;
-                let edition = crate::editions::resolve_native(
-                    crate::editions::EditionSources {
-                        call: workflow_edition.as_deref(),
-                        option: None,
-                        declared: model.workflow_edition.as_deref(),
-                    },
-                    model.authored,
-                )?;
+                let edition = crate::editions::resolve_native(crate::editions::EditionSources {
+                    call: workflow_edition.as_deref(),
+                    option: None,
+                    declared: model.workflow_edition.as_deref(),
+                })?;
                 if horizon > 1 && model.has_chunk == Some(false) {
                     crate::warnings::warn(
                         crate::WarningCategory::UserWarning,
@@ -222,7 +216,7 @@ impl<'a> Binding<'a> {
                 check_horizon(execution_horizon, None)?;
                 (
                     Box::<crate::model::random::RandomSampleHandler>::default(),
-                    unauthored(workflow_edition.as_deref())?,
+                    call_edition(workflow_edition.as_deref())?,
                     execution_horizon,
                 )
             }
@@ -733,13 +727,10 @@ fn info_success(keys: &[&str], info: &InfoDict) -> Option<bool> {
 
 /// The edition a model with no declaration of its own (served, or the random
 /// baseline) binds under.
-fn unauthored(call: Option<&str>) -> Result<Option<String>> {
-    crate::editions::resolve_native(
-        crate::editions::EditionSources {
-            call,
-            option: None,
-            declared: None,
-        },
-        false,
-    )
+fn call_edition(call: Option<&str>) -> Result<Option<String>> {
+    crate::editions::resolve_native(crate::editions::EditionSources {
+        call,
+        option: None,
+        declared: None,
+    })
 }

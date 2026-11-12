@@ -1329,8 +1329,8 @@ RLMeshWarningCategory base)`, as R-21's error-class pair; R-9 exception).
   (`py/_models/_chunk.py:136-141`), `UserWarning` for adapter notes
   (`py/adapters/tag.py:63`), `execution_horizon` without a chunk corner
   (`py/_models/base.py:1188,1448,1681`) and an undeclared `trial_index`
-  (`py/_models/_eval.py:1048`), `WorkflowEditionWarning` for a floating
-  edition (`py/_editions.py:241-248`).
+  (`py/_models/_eval.py:1048`); `WorkflowEditionWarning` is the category
+  for edition notices (no run or serve emits it; COR-7).
 - **Types.** A value struct (R-11) in each language:
   - Rust: `#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive] pub enum WarningCategory { UserWarning,

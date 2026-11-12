@@ -270,14 +270,11 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
     let num_envs = options.num_envs.max(1);
     // Step 3: the edition, resolved once here (env var, the option, the
     // type) and handed to the server as the caller's answer.
-    let edition = crate::editions::resolve_native(
-        EditionSources {
-            call: None,
-            option: options.workflow_edition.as_deref(),
-            declared: F::workflow_edition().as_deref(),
-        },
-        true,
-    )?;
+    let edition = crate::editions::resolve_native(EditionSources {
+        call: None,
+        option: options.workflow_edition.as_deref(),
+        declared: F::workflow_edition().as_deref(),
+    })?;
     let server_options = EnvServerOptions {
         address: Some(address.to_string()),
         options: Some(ServeOptions {

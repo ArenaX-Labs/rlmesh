@@ -169,7 +169,7 @@ pub fn validate_workflow_edition(edition: &str) -> PyResult<String> {
 /// `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
 /// declaration. Returns the winner (validated and trimmed) and whether
 /// resolution stopped at a set-but-blank variable; `(None, False)` leaves
-/// Python's `pyproject.toml` rung and the float warning to the caller.
+/// Python's `pyproject.toml` rung to the caller.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 #[pyo3(signature = (*, call=None, option=None, declared=None))]

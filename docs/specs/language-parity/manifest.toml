@@ -2244,7 +2244,6 @@ also = [
   "rlmesh::ModelOptions::spec",
   "rlmesh::ModelOptions::trust_entrypoints",
   "rlmesh::Policy",
-  "rlmesh::Policy::AUTHORED",
   "rlmesh::Policy::CONTEXT",
   "rlmesh::Policy::CORNERS",
   "rlmesh::Policy::LOAD_KEYS",
@@ -2305,8 +2304,6 @@ also_rules = { "rlmesh::Corners::NONE" = [
 ], "rlmesh::Model::serve_async" = [
   "R-16",
 ], "rlmesh::Policy" = [
-  "R-12",
-], "rlmesh::Policy::AUTHORED" = [
   "R-12",
 ], "rlmesh::Policy::CONTEXT" = [
   "R-12",

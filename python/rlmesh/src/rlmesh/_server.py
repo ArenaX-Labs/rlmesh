@@ -291,7 +291,8 @@ class EnvServer:
         if options is None or options.workflow_edition is None:
             # A served env declares an edition like any other participant.
             # There is no class here to read one off -- the env is an object --
-            # so this picks up the process and project surfaces. Options that
+            # so this picks up the process and working directory's project
+            # surfaces, quietly. Options that
             # already carry a declaration are the caller's resolved answer
             # (`serve_env`, the loopback server `run()` stands up) and are
             # adopted verbatim.

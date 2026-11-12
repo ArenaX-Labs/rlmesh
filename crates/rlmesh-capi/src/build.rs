@@ -390,26 +390,25 @@ mod tests {
         let status =
             unsafe { rlmesh_set_warning_handler(Some(record), std::ptr::null_mut(), Some(free)) };
         assert_eq!(status, RLMeshStatus::Ok);
-        let err = rlmesh::binding::resolve_workflow_edition(Default::default(), true);
+        let err = rlmesh::binding::emit_warning(
+            rlmesh::WarningCategory::WorkflowEditionWarning,
+            "scripted edition warning".into(),
+        );
         assert_eq!(
             unsafe { rlmesh_set_warning_handler(None, std::ptr::null_mut(), None) },
             RLMeshStatus::Ok
         );
         assert_eq!(FREED.load(Ordering::SeqCst), 1);
-        if std::env::var("RLMESH_WORKFLOW_EDITION").is_err() {
-            let err = err.unwrap_err();
-            assert_eq!(err.to_string(), "as error");
-            let seen = SEEN.lock().unwrap();
-            assert_eq!(
-                seen[0].0,
-                RLMeshWarningCategory::WorkflowEditionWarning as i32
-            );
-            assert!(
-                seen[0].1.starts_with("no workflow edition declared"),
-                "{}",
-                seen[0].1
-            );
-        }
+        assert_eq!(err.unwrap_err().to_string(), "as error");
+        let seen = SEEN.lock().unwrap();
+        assert_eq!(
+            seen[0],
+            (
+                RLMeshWarningCategory::WorkflowEditionWarning as i32,
+                "scripted edition warning".to_owned()
+            )
+        );
+        drop(seen);
         let status = unsafe { rlmesh_set_warning_handler(None, std::ptr::null_mut(), Some(free)) };
         assert_eq!(status, RLMeshStatus::InvalidArgument);
         assert!(rlmesh_warning_category_is_subclass(3, 1));

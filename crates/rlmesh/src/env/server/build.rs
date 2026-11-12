@@ -24,7 +24,7 @@ use crate::{Error, Result, ServeOptions};
 impl EnvServer {
     /// Serve one env.
     pub fn new<E: Env + Send + 'static>(env: E, options: EnvServerOptions) -> Result<EnvServer> {
-        Self::build(Served::Lanes(vec![Box::new(env)]), options, None, false)
+        Self::build(Served::Lanes(vec![Box::new(env)]), options, None)
     }
 
     /// Serve `envs` as the lanes of one `num_envs = N` endpoint, each on its
@@ -41,7 +41,6 @@ impl EnvServer {
             ),
             options,
             None,
-            false,
         )
     }
 
@@ -51,7 +50,7 @@ impl EnvServer {
         env: V,
         options: EnvServerOptions,
     ) -> Result<EnvServer> {
-        Self::build(Served::Vector(Box::new(env)), options, None, false)
+        Self::build(Served::Vector(Box::new(env)), options, None)
     }
 
     /// A factory serve's server: the edition was resolved by the caller.
@@ -60,7 +59,7 @@ impl EnvServer {
         options: EnvServerOptions,
         publish: Publish,
     ) -> Result<EnvServer> {
-        Self::build(Served::Lanes(envs), options, Some(publish), true)
+        Self::build(Served::Lanes(envs), options, Some(publish))
     }
 
     pub(crate) fn vector_resolved(
@@ -68,7 +67,7 @@ impl EnvServer {
         options: EnvServerOptions,
         publish: Publish,
     ) -> Result<EnvServer> {
-        Self::build(Served::Vector(env), options, Some(publish), true)
+        Self::build(Served::Vector(env), options, Some(publish))
     }
 
     /// Override publication identity for an in-repo non-Rust binding, before
@@ -133,16 +132,15 @@ impl EnvServer {
             crate::run::LoopbackEnv::Env(env) => Served::Lanes(vec![env]),
             crate::run::LoopbackEnv::Vector(env) => Served::Vector(env),
         };
-        Self::build(served, options, None, true)
+        Self::build(served, options, None)
     }
 
     /// `factory`: a factory serve's publication, whose edition the caller
-    /// resolved; `resolved_by_caller` also covers a run's loopback.
+    /// resolved.
     fn build(
         served: Served,
         options: EnvServerOptions,
         factory: Option<Publish>,
-        resolved_by_caller: bool,
     ) -> Result<EnvServer> {
         // Step 1: at least one lane (the traits guarantee the spaces).
         let mut served = match served {
@@ -231,16 +229,12 @@ impl EnvServer {
         let serve = options.options.clone().unwrap_or_default();
         serve.validate()?;
 
-        // Step 6: the edition. An explicit options value is the call's own;
-        // a served env is an authored participant, so a float warns.
-        let edition = crate::editions::resolve_native(
-            EditionSources {
-                call: serve.workflow_edition.as_deref(),
-                option: None,
-                declared: None,
-            },
-            !resolved_by_caller,
-        )?;
+        // Step 6: the edition. An explicit options value is the call's own.
+        let edition = crate::editions::resolve_native(EditionSources {
+            call: serve.workflow_edition.as_deref(),
+            option: None,
+            declared: None,
+        })?;
 
         // Retain the full factory envelope for binding server introspection.
         // Rebuilding it from the contract would lose branches and variants.

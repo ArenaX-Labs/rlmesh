@@ -944,7 +944,6 @@ impl PyModel {
             native_chunk: self.native_chunk,
             execution_horizon: None,
             workflow_edition: None,
-            authored: false,
             has_chunk: (self.served.is_none() && !self.random)
                 .then_some(self.predict_chunk_fn.is_some()),
         }
