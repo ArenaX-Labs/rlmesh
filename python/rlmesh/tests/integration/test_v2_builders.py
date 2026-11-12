@@ -438,6 +438,9 @@ def test_a_keyword_policy_drives_a_robot_through_its_part_handles() -> None:
             robot.part("eyes")
         with pytest.raises(TypeError, match="task takes no commands: due"):
             task.due()
+        with pytest.raises(TypeError, match="task takes no commands: command"):
+            task.command()
+        assert servos.command() is None and robot.command("servos") is None
         with pytest.raises(TypeError, match="not a camera declared encoding='jpeg'"):
             servos.publish_jpeg(b"")
         robot.arm()
@@ -450,9 +453,9 @@ def test_a_keyword_policy_drives_a_robot_through_its_part_handles() -> None:
             rate = realtime.Rate(200)
             while not stop.is_set():
                 servos.publish(pos=q)
-                due = servos.due()
-                if due is not None and isinstance(due.value, np.ndarray):
-                    q = due.value.astype(np.float32)
+                target = servos.command()
+                if isinstance(target, np.ndarray):
+                    q = target.astype(np.float32)
                     applied.append(float(q[0]))
                 rate.sleep()
 
@@ -709,6 +712,8 @@ def test_a_lockstep_robot_is_served_by_either_name(serve: str) -> None:
             TypeError, match="a lockstep robot gets its commands in step"
         ):
             servos.due()
+        with pytest.raises(TypeError, match="command\\(\\) is for a wall-clock robot"):
+            servos.command()
         getattr(robot, serve)(step, reset, background=True)
         env = rlmesh.numpy.RemoteEnv(f"{host.address}/arm1")
         try:

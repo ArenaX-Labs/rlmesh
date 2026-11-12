@@ -108,7 +108,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A bind that waits for robots says what it waits for after 3 s, and again whenever that changes, as a logged warning.
 - `Policy.run` passes the policy as a second argument to a `predict(obs, policy)`.
 - `obs.age_ms(name)` gives an input's age at the snapshot in milliseconds.
-- `robot.part(path)` gives a handle on one part, with its own `publish`, `publish_jpeg`, `due` and `edge_stats`.
+- `robot.part(path)` gives a handle on one part, with its own `publish`, `publish_jpeg`, `due`, `command` and `edge_stats`.
+- `Robot.command(path)` (and `part.command()`) returns the value to apply now, or `None` when nothing is due or what is due carries none; `due()` still gives the mode and timing.
 - `rlmesh.realtime.results` types what `health()`, `stats()`, `run()`, `events()`, `held`, `edge_stats()` and `release(to=...)` return as `TypedDict`s; they stay plain dicts.
 - A robot the host dropped joins again on its own.
 

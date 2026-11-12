@@ -4441,6 +4441,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "command": {
+            "kind": "function",
+            "signature": "command(path: str) -> Array | dict[str, Array] | None"
+          },
           "disarm": {
             "kind": "function",
             "signature": "disarm() -> None"
@@ -4524,6 +4528,10 @@
       "RobotPart": {
         "kind": "class",
         "members": {
+          "command": {
+            "kind": "function",
+            "signature": "command() -> Array | dict[str, Array] | None"
+          },
           "commanded": {
             "kind": "property",
             "signature": "property commanded: bool"

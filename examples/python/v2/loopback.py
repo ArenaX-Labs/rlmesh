@@ -52,9 +52,9 @@ def robot_loop(
     while not stop.is_set():
         robot.publish("arm", pos=q, vel=np.zeros(6))
         robot.publish("wrist/ft", force=[0.0, 0.0, 9.8], torque=[0.0, 0.0, 0.0])
-        due = robot.due("arm")
-        if due is not None and isinstance(due.value, np.ndarray):
-            q = due.value.astype(np.float64)  # a real robot sends it to the drives here
+        target = robot.command("arm")
+        if isinstance(target, np.ndarray):
+            q = target.astype(np.float64)  # a real robot sends it to the drives here
             applied.append(float(q[0]))
         rate.sleep()
 

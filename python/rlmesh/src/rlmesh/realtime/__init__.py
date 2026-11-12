@@ -21,7 +21,7 @@ behaviour::
             session=host,
         )
         print(policy.bind("ur10e"))  # the binding table
-        # robot loop: robot.publish("arm", pos=q, vel=dq); due = robot.due("arm")
+        # robot loop: robot.publish("arm", pos=q, vel=dq); q = robot.command("arm")
         policy.run(lambda obs: {"arm": obs["q"][None]}, duration=5.0)
 
 :mod:`~rlmesh.realtime.parts`, :mod:`~rlmesh.realtime.inputs` and
@@ -696,6 +696,17 @@ class Robot:
             self._native.handover_done(path)
         return due
 
+    def command(self, path: str) -> Array | dict[str, Array] | None:
+        """Tick the edge serving ``path``, as :meth:`due` does: the command to apply now.
+
+        The validated, clamped value (one array, or a dict for a
+        multi-field command); ``None`` when nothing is due or what is due
+        carries no value (hold, safe, idle). :meth:`due` gives the mode and
+        timing beside it.
+        """
+        due = self.due(path)
+        return None if due is None else due.value
+
     def arm(self) -> None:
         """DISARMED or SAFE to ARMED, in a fresh epoch; nothing when already armed.
 
@@ -798,9 +809,9 @@ class RobotPart:
 
         servos = robot.part("servos")
         servos.publish(pos=q)
-        due = servos.due()
+        target = servos.command()  # None when there is nothing to apply
 
-    A call the part cannot take (``due`` on a part that takes no commands,
+    A call the part cannot take (``command`` on a part that takes no commands,
     ``publish_jpeg`` on one that is not a JPEG camera) raises ``TypeError``.
     """
 
@@ -846,6 +857,11 @@ class RobotPart:
         """Tick this part's edge: what to dispatch now, as :meth:`Robot.due` does."""
         self._commands("due")
         return self._robot.due(self.path)
+
+    def command(self) -> Array | dict[str, Array] | None:
+        """Tick this part's edge: the value to apply now, or ``None``, as :meth:`Robot.command` gives it."""
+        self._commands("command")
+        return self._robot.command(self.path)
 
     def edge_stats(self) -> EdgeStats:
         """The counters of this part's edge, as :meth:`Robot.edge_stats` gives them."""

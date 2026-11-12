@@ -91,9 +91,9 @@ servos = robot.part("servos")
 rate = realtime.Rate(50)
 while True:
     servos.publish(pos=read_position())
-    due = servos.due()
-    if due is not None and due.value is not None:
-        move(due.value)
+    target = servos.command()  # None when nothing is due
+    if target is not None:
+        move(target)
     rate.sleep()
 ```
 
