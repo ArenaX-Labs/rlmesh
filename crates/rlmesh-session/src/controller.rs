@@ -118,6 +118,71 @@ const RECOVER_GAP_NS: i64 = 100_000_000;
 /// The least time between two lease requests.
 const REQUEST_GAP: Duration = Duration::from_millis(50);
 
+/// How long a bind waits in silence before it says what it waits for.
+const BIND_NOTICE_AFTER: Duration = Duration::from_secs(3);
+
+/// A bind's wait for robots: past [`BIND_NOTICE_AFTER`] it logs what it
+/// waits for (a warning, so a caller who configured no logging sees it),
+/// and again whenever that changes.
+struct BindWait<'p> {
+    policy: &'p ParticipantId,
+    notice_at: tokio::time::Instant,
+    said: Option<String>,
+}
+
+/// Why [`BindWait::next`] stopped waiting.
+enum WaitEnd {
+    Closed,
+    TimedOut,
+}
+
+impl WaitEnd {
+    fn into_error(self, timeout: Duration, waiting: &str) -> SessionError {
+        match self {
+            Self::Closed => SessionError::Closed,
+            Self::TimedOut => SessionError::Timeout(timeout, waiting.to_string()),
+        }
+    }
+}
+
+impl<'p> BindWait<'p> {
+    fn new(policy: &'p ParticipantId) -> Self {
+        Self {
+            policy,
+            notice_at: tokio::time::Instant::now() + BIND_NOTICE_AFTER,
+            said: None,
+        }
+    }
+
+    /// Waits for the next view, or until `deadline`, saying it waits for
+    /// `waiting` once the notice is due.
+    async fn next(
+        &mut self,
+        view: &mut tokio::sync::watch::Receiver<Option<AuthoritySnapshot>>,
+        deadline: tokio::time::Instant,
+        waiting: &str,
+    ) -> Result<(), WaitEnd> {
+        loop {
+            let due = tokio::time::Instant::now() >= self.notice_at;
+            if due && self.said.as_deref() != Some(waiting) {
+                warn!(policy = %self.policy, "waiting for {waiting}");
+                self.said = Some(waiting.to_string());
+            }
+            let until = if due {
+                deadline
+            } else {
+                deadline.min(self.notice_at)
+            };
+            match tokio::time::timeout_at(until, view.changed()).await {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(_)) => return Err(WaitEnd::Closed),
+                Err(_) if until >= deadline => return Err(WaitEnd::TimedOut),
+                Err(_) => {}
+            }
+        }
+    }
+}
+
 /// How a controller runs.
 #[derive(Clone, Debug)]
 pub struct ControllerConfig {
@@ -1711,17 +1776,24 @@ impl Controller {
             || "a robot to declare its parts".to_string(),
             |r| format!("robot {r} to declare its parts"),
         );
-        participant
-            .wait_for(&first, config.bind_timeout, |view| {
+        let mut view = participant.watch();
+        let mut waits = BindWait::new(&me);
+        let appeared = |view: &Option<AuthoritySnapshot>| {
+            view.as_ref().is_some_and(|view| {
                 view.parts
                     .iter()
                     .any(|p| p.owner != me && robot.as_ref().is_none_or(|r| &p.owner == r))
             })
-            .await?;
+        };
+        while !appeared(&view.borrow_and_update()) {
+            waits
+                .next(&mut view, deadline, &first)
+                .await
+                .map_err(|e| e.into_error(config.bind_timeout, &first))?;
+        }
         // Robots declare one by one: a binding that names robots not
         // declared yet is tried again on each new view until it stands or
         // the timeout passes. Anything else it is refused for stands.
-        let mut view = participant.watch();
         let binding = loop {
             match participant.bind(policy, options) {
                 Ok(binding) => break binding,
@@ -1729,14 +1801,10 @@ impl Controller {
                     let Some(waiting) = err.waiting_for() else {
                         return Err(err.into());
                     };
-                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-                    match tokio::time::timeout(left, view.changed()).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(_)) => return Err(SessionError::Closed.into()),
-                        Err(_) => {
-                            return Err(SessionError::Timeout(config.bind_timeout, waiting).into());
-                        }
-                    }
+                    waits
+                        .next(&mut view, deadline, &waiting)
+                        .await
+                        .map_err(|e| e.into_error(config.bind_timeout, &waiting))?;
                 }
             }
         };

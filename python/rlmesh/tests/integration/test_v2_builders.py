@@ -577,6 +577,38 @@ def test_a_policy_without_a_timeout_waits_for_a_late_robot() -> None:
         policy.close()
 
 
+def test_a_long_bind_says_what_it_waits_for(capfd: pytest.CaptureFixture[str]) -> None:
+    with realtime.Host() as host:
+        quick = realtime.Policy(
+            hz=10,
+            inputs={"q": inputs.joints("near:servos")},
+            session=host,
+            name="quick",
+        )
+        with realtime.Robot("near", GIMBAL, session=host):
+            quick.bind("near")
+            quick.close()
+        assert "waiting for" not in capfd.readouterr().err
+        policy = realtime.Policy(
+            hz=10,
+            inputs={"q": inputs.joints("late:servos")},
+            session=host,
+            name="patient",
+            timeout=None,
+        )
+        thread = threading.Thread(target=lambda: policy.bind("late"), daemon=True)
+        thread.start()
+        time.sleep(1.0)
+        assert "waiting for" not in capfd.readouterr().err  # not yet: quiet at first
+        time.sleep(3.0)
+        err = capfd.readouterr().err
+        assert err.count("waiting for robot late to declare its parts") == 1, err
+        with realtime.Robot("late", GIMBAL, session=host):
+            thread.join(WAIT)
+            assert not thread.is_alive()
+        policy.close()
+
+
 def test_bind_overrides_the_timeout_of_its_policy() -> None:
     with realtime.Host() as host:
         policy = realtime.Policy(
