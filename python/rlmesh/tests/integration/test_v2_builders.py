@@ -81,6 +81,29 @@ def binds(host: realtime.Host, name: str, **policy: Any) -> realtime.BindingTabl
         return bound.bind("bench")
 
 
+def test_a_robot_logs_no_demand_warning_as_readers_come_and_go(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    with realtime.Host() as host, realtime.Robot("bench", BENCH, session=host):
+        time.sleep(1.0)  # joined with no reader: nothing to acknowledge
+        assert "demand" not in capfd.readouterr().err
+        for i in range(5):
+            binds(
+                host,
+                f"reader-{i}",
+                hz=10,
+                inputs={
+                    "cam": inputs.camera("bench:cam"),
+                    "imu": inputs.imu("bench:imu"),
+                    "tcp": inputs.pose("bench:tcp"),
+                    "relay": inputs.switch("bench:relay"),
+                },
+            )
+        time.sleep(1.0)
+    err = capfd.readouterr().err
+    assert "demand ack failed" not in err, err
+
+
 def test_every_builder_with_its_defaults_binds(
     bench: tuple[realtime.Host, realtime.Robot],
 ) -> None:

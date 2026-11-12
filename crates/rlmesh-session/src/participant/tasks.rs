@@ -10,6 +10,7 @@ use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+use crate::error::SessionError;
 #[cfg(doc)]
 use crate::participant::Pending;
 use crate::participant::edge::SAFE_RETRY;
@@ -230,8 +231,31 @@ async fn sync_demands(shared: &Shared) {
             .collect()
     };
     for (channel, revision) in acks {
-        match shared.ctl(Command::DemandAck { channel, revision }).await {
-            Ok(_) => debug!(participant = %shared.id, %channel, revision, "demand installed"),
+        let reply = shared
+            .ctl_reply(Command::DemandAck { channel, revision })
+            .await;
+        match reply {
+            Ok(CtlReply { result: Ok(()), .. }) => {
+                debug!(participant = %shared.id, %channel, revision, "demand installed");
+            }
+            // The reader that wanted it left, or wants it otherwise now,
+            // while this ack was on its way: the next view brings what to
+            // install, if anything. Normal whenever a reader comes and goes.
+            Ok(CtlReply {
+                result: Err(err),
+                state,
+                ..
+            }) if state.demand(channel).is_none_or(|d| d.revision != revision) => {
+                debug!(participant = %shared.id, %channel, revision, %err, "demand withdrawn before its ack");
+            }
+            Ok(CtlReply {
+                result: Err(err),
+                state,
+                ..
+            }) => {
+                let part = state.part_name(channel);
+                warn!(participant = %shared.id, %part, err = %SessionError::Rejected(err), "demand ack failed");
+            }
             Err(err) => {
                 let part = shared
                     .view
