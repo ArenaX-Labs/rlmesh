@@ -174,13 +174,14 @@ stop_host
 start_host tcp soak
 "$out/soak_robot_esp32" "$address" 1 stall
 stop_host
+# Read as a policy's input is: the newest sample at each of its ticks.
 echo "==> state read at 30 Hz from a board publishing at 50 Hz and taking 30 chunks a second"
 export SOAK_HZ=30
 start_host tcp soak
 "$out/soak_robot" "$address" 20 steady
 stop_host
 unset SOAK_HZ
-# The host's last two reports, each part's samples a second.
+# The host's last two reports, each part's new samples found a second.
 rates="$(grep '^state ' "$log" | tail -4)"
 echo "$rates"
 if ! awk '{ split($3, r, "/"); if (r[1] + 0 < 29) bad = 1 } END { exit bad || NR == 0 }' \

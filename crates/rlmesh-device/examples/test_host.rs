@@ -141,6 +141,16 @@ async fn main() {
     }
 }
 
+/// Each part's state as a policy reading it sees it: its newest sample's
+/// number, and the new ones found at the policy's ticks (one the next
+/// replaced between two ticks is never seen).
+#[derive(Default)]
+struct Seen {
+    newest: u64,
+    at_tick: u64,
+    found: u64,
+}
+
 /// Reads every commanded part of the board's state at 200 Hz and drives it
 /// with 30 chunks a second of two actions each, with leases granted again whenever the last ones ended (the
 /// board attached anew), never giving up.
@@ -151,19 +161,32 @@ async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
         .ok()
         .and_then(|hz| hz.parse::<f64>().ok())
         .unwrap_or(200.0);
-    // Each part's state as it arrives, counted, and the rate printed every
-    // 5 s as `state <part> <samples>/s`.
+    // The new samples found at each tick, printed every 5 s as
+    // `state <part> <samples>/s`.
     let mut readers = std::collections::BTreeMap::new();
-    let counts: Arc<Mutex<std::collections::BTreeMap<String, u64>>> = Arc::default();
+    let seen: Arc<Mutex<std::collections::BTreeMap<String, Seen>>> = Arc::default();
     tokio::spawn({
-        let counts = counts.clone();
+        let seen = seen.clone();
         async move {
+            let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / read_hz));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut report = Instant::now() + Duration::from_secs(5);
             loop {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                let mut counts = counts.lock().expect("counts");
-                for (part, n) in counts.iter_mut() {
-                    println!("state {part} {:.1}/s", *n as f64 / 5.0);
-                    *n = 0;
+                tick.tick().await;
+                let mut seen = seen.lock().expect("seen");
+                for part in seen.values_mut() {
+                    if part.newest != part.at_tick {
+                        part.at_tick = part.newest;
+                        part.found += 1;
+                    }
+                }
+                if Instant::now() < report {
+                    continue;
+                }
+                report += Duration::from_secs(5);
+                for (name, part) in seen.iter_mut() {
+                    println!("state {name} {:.1}/s", part.found as f64 / 5.0);
+                    part.found = 0;
                 }
                 std::io::stdout().flush().expect("stdout");
             }
@@ -188,15 +211,12 @@ async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
             if readers.contains_key(&path) {
                 continue;
             }
-            let counted = counts.clone();
+            let seen = seen.clone();
             let name = path.clone();
             let options = SubscribeOptions {
-                on_sample: Some(Arc::new(move |_| {
-                    *counted
-                        .lock()
-                        .expect("counts")
-                        .entry(name.clone())
-                        .or_default() += 1;
+                on_sample: Some(Arc::new(move |received| {
+                    let mut seen = seen.lock().expect("seen");
+                    seen.entry(name.clone()).or_default().newest = received.sample.seq;
                 })),
                 ..SubscribeOptions::default()
             };
@@ -205,8 +225,8 @@ async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
             }
         }
         let channels: Vec<ChannelId> = parts.iter().map(|p| p.channel).collect();
-        // Each part's state read at 200 Hz: the board publishes at its full
-        // rate, as under a policy that binds it.
+        // Each part's state read at its rate (at 200 Hz the board publishes
+        // every sample), stated as a policy binding it as an input states it.
         revision += 1;
         let _ = policy
             .command(Command::DeclareBinding {

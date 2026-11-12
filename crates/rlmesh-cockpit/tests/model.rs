@@ -99,7 +99,7 @@ fn declared_and_measured_rates_stay_separate_and_name_their_clocks() {
         [("policy".to_string(), "latest@50".to_string())]
     );
     assert_eq!(arm.admitted_hz, Some(50.0));
-    assert_eq!(arm.plan, "latest@50");
+    assert_eq!(arm.plan, "latest@53"); // every 9th or 10th of 500
     let (who, rate) = &arm.heard[0];
     assert_eq!(who, "policy");
     assert!(

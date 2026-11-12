@@ -15,7 +15,8 @@
 //!   most 512 MiB.
 //! - **Plan.** One per stream, from every admitted contract on it: any
 //!   `every` or `history` publishes each sample at once (the subscriber's
-//!   cache builds the window); else the newest sample at `max D`. The plan
+//!   cache builds the window); else the newest sample at `max D`, on the
+//!   source's grid so that a reader at D finds a new one each tick. The plan
 //!   never exceeds the `send` ceiling.
 
 #[allow(unused_imports)]
@@ -189,6 +190,26 @@ pub fn mode_name(mode: ContractMode) -> &'static str {
     }
 }
 
+/// The rate that publishes the newest sample at `delivery_hz` from a source
+/// at `source_hz`: every k-th sample, k the most that leaves no gap longer
+/// than `1 / delivery_hz`. A rate of D itself on a faster grid that isn't a
+/// multiple of it (50 Hz at 30) leaves gaps of one sample and of two, and a
+/// reader ticking at D finds nothing new at one tick in three. The rate sits
+/// between the grid's k-th and (k - 1)-th: a publisher a little off its
+/// rate still skips no more than k - 1 samples.
+fn latest_rate(source_hz: f64, delivery_hz: f64) -> f64 {
+    if !(delivery_hz > 0.0 && source_hz > delivery_hz) {
+        return delivery_hz;
+    }
+    // The epsilon keeps an exact multiple (50 at 25) one.
+    let k = (source_hz / delivery_hz + 1e-9).floor();
+    if k < 2.0 {
+        source_hz
+    } else {
+        source_hz / (k - 0.5)
+    }
+}
+
 /// The publication plan for a stream from its admitted contracts, and the
 /// ring retention it needs; `None` without contracts.
 pub fn plan<'a>(
@@ -214,8 +235,9 @@ pub fn plan<'a>(
         Plan::Every
     } else {
         let ceiling = if applied { None } else { part.send_policy().hz };
+        let hz = latest_rate(s, max_d);
         Plan::Latest {
-            hz: ceiling.map_or(max_d, |c| c.min(max_d)),
+            hz: ceiling.map_or(hz, |c| c.min(hz)),
         }
     };
     let retain = window.map_or(Duration::ZERO, |w| w + RECOVERY);
@@ -350,6 +372,36 @@ mod tests {
         );
     }
 
+    /// A reader at D on a faster source finds a new sample at each of its
+    /// ticks: the plan never leaves a gap longer than 1 / D on the source's
+    /// grid. At D itself, a 50 Hz source read at 30 Hz would publish one,
+    /// skip one, publish two: 20 new samples a second at the reader.
+    #[test]
+    fn a_latest_plan_leaves_no_gap_longer_than_a_readers_tick() {
+        let gimbal = part(r#"{"servos": {"kind": "joints", "names": ["pan", "tilt"], "hz": 50}}"#);
+        let rate = |d| match plan(
+            [&contract(ContractMode::Latest, d, 1, None)],
+            &gimbal,
+            false,
+        ) {
+            Some((Plan::Latest { hz }, _)) => hz,
+            other => panic!("{other:?}"),
+        };
+        for d in [10.0, 20.0, 25.0, 30.0, 40.0, 49.0] {
+            let hz = rate(d);
+            // Published every k samples on the 20 ms grid, some k - 1: the
+            // longest gap is k samples.
+            let k = (50.0_f64 / hz).ceil();
+            assert!(hz >= d && k / 50.0 <= 1.0 / d + 1e-9, "{d} Hz: plan {hz}");
+        }
+        assert_eq!(rate(30.0), 50.0, "every sample");
+        assert_eq!(
+            rate(25.0),
+            50.0 / 1.5,
+            "every second, some of them every one"
+        );
+    }
+
     #[test]
     fn one_plan_per_stream_from_every_contract() {
         let ft = part(r#"{"ft": {"kind": "wrench", "frame": "tool0", "hz": 1000}}"#);
@@ -359,7 +411,8 @@ mod tests {
         assert_eq!(plan([], &ft, false), None);
         assert_eq!(
             plan([&latest], &ft, false),
-            Some((Plan::Latest { hz: 50.0 }, Duration::ZERO))
+            Some((Plan::Latest { hz: 1000.0 / 19.5 }, Duration::ZERO)),
+            "every 19th or 20th sample"
         );
         let (merged, retain) = plan([&history, &latest], &ft, false).expect("plan");
         assert_eq!(merged, Plan::Every, "a window: each sample as published");

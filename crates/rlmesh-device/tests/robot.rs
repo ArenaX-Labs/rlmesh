@@ -1514,7 +1514,7 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
 /// A policy that reads the board's part as an input (latest, below its 50 Hz)
 /// and commands it.
 const READING_POLICY: &str = r#"{
-    "hz": 30,
+    "hz": 20,
     "inputs": {"eyes": {"kind": "joints", "at": "eye-1:eyes"}},
     "actions": {
         "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 50,
@@ -1604,14 +1604,17 @@ async fn a_policy_reading_a_boards_part_gets_its_lease_and_the_plan_applies() {
         .cloned()
         .expect("the input's demand");
     assert_eq!(demand.acked, demand.revision, "{demand:?}");
-    assert_eq!(demand.plan, Plan::Latest { hz: 30.0 });
+    // Read at 20 Hz: every second sample, some of them every one, so that
+    // no gap is over 50 ms.
+    let rate = 50.0 / 1.5;
+    assert_eq!(demand.plan, Plan::Latest { hz: rate });
 
-    // It offers 50 Hz: at most 30 go out, whatever else the machine is doing.
+    // It offers 50 Hz: at most 33 go out, whatever else the machine is doing.
     let before = seen.lock().expect("seen").sent;
     let started = Instant::now();
     tokio::time::sleep(Duration::from_secs(2)).await;
     let sent = seen.lock().expect("seen").sent - before;
-    let bound = started.elapsed().as_secs_f64() * 30.0 + 3.0;
+    let bound = started.elapsed().as_secs_f64() * rate + 3.0;
     assert!(
         f64::from(sent) <= bound && sent > 0,
         "{sent} samples sent, at most {bound}"
