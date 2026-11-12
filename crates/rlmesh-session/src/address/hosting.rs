@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use rlmesh_session_core::auth::AddressKey;
@@ -129,9 +129,18 @@ fn forget_local_host(address: &SessionAddress) {
 
 /// Whether a session host answers on `base` (its control listener accepts).
 /// Generous for a slow link, where a TCP connect takes a round trip; a port
-/// nothing listens on refuses at once.
-pub(super) fn listening(base: SocketAddr) -> bool {
-    TcpStream::connect_timeout(&joinable(base), LISTEN_PROBE).is_ok()
+/// nothing listens on refuses at once. Asynchronous: a connect that waits
+/// out a dropped SYN must not hold the thread polling the join.
+pub(super) async fn listening(base: SocketAddr) -> bool {
+    accepts(joinable(base)).await
+}
+
+/// Whether a TCP connect to `addr` succeeds within [`LISTEN_PROBE`].
+async fn accepts(addr: SocketAddr) -> bool {
+    matches!(
+        tokio::time::timeout(LISTEN_PROBE, tokio::net::TcpStream::connect(addr)).await,
+        Ok(Ok(_))
+    )
 }
 
 /// How long [`listening`] waits for a TCP connect.
@@ -141,6 +150,13 @@ const LISTEN_PROBE: Duration = Duration::from_secs(2);
 /// link before [`open_client`] calls it [`refused_link`]: a second round
 /// rules out a host still opening its listeners.
 const REFUSED_ROUNDS: u32 = 2;
+
+/// How long one attempt at a link may take before [`open_client`] gives up
+/// on it and tries again, whatever the join's own deadline: an open whose
+/// handshake reply never comes (a lost segment, a host that dropped it) is
+/// not left waiting out a join timeout of many minutes. A slowed link opens
+/// its four classes in a few seconds.
+const OPEN_ATTEMPT: Duration = Duration::from_secs(15);
 
 /// A host that listens at `base` but refused every link offered it: the
 /// key this participant joins with is not that host's (a wrong or stale
@@ -178,22 +194,23 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
 ///
 /// Once the host listens, each round makes one attempt with the password and
 /// one without (only the latter with no `link`), each allowed until
-/// `deadline`, so a slow host is never cut short. A refusal comes back within
-/// a round trip, a slow link only later: an attempt that fails before the
-/// deadline was refused. A host listening on every class's port that refuses
-/// every attempt, round after round, gates its links with another key:
-/// [`refused_link`], final. Running out of time is a timeout (a Zenoh error),
-/// which a retry may get past.
+/// `deadline` or [`OPEN_ATTEMPT`], whichever comes first, so a slow host is
+/// never cut short and a lost handshake is tried again. A refusal comes back
+/// within a round trip, a slow link only later: an attempt that fails before
+/// its bound was refused. A host listening on every class's port that
+/// refuses every attempt, round after round, gates its links with another
+/// key: [`refused_link`], final. Running out of time is a timeout (a Zenoh
+/// error), which a retry may get past.
 pub(super) async fn open_client(
     base: SocketAddr,
     link: Option<LinkAuth>,
     deadline: tokio::time::Instant,
 ) -> Result<Transport, SessionError> {
-    // One attempt, as Zenoh clients make, bounded by the deadline alone:
-    // Zenoh's own handshake timeout is lifted to it, so it never ends a slow
-    // open early, which would read as a refusal.
-    let open = |link| {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+    // One attempt, as Zenoh clients make, bounded by `until`: Zenoh's own
+    // handshake timeout is lifted to it, so it never ends a slow open early,
+    // which would read as a refusal.
+    let open = |link, until: tokio::time::Instant| {
+        let left = until.saturating_duration_since(tokio::time::Instant::now());
         let tuning = TransportTuning {
             client: true,
             open_timeout: Some(left.max(Duration::from_millis(1))),
@@ -202,7 +219,7 @@ pub(super) async fn open_client(
         };
         async move {
             let config = TransportConfig::per_class_tcp(None, Some(base))?.with_tuning(tuning);
-            tokio::time::timeout_at(deadline, Transport::open(&config))
+            tokio::time::timeout_at(until, Transport::open(&config))
                 .await
                 .unwrap_or_else(|_| Err(SessionError::Zenoh("no answer in time".into())))
         }
@@ -215,14 +232,20 @@ pub(super) async fn open_client(
     };
     let mut refused = 0;
     loop {
-        while !listening(base) && tokio::time::Instant::now() < deadline {
+        while !listening(base).await && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let mut last = None;
+        // Whether every attempt failed before its bound: refused, not slow.
+        let mut answered = true;
         for attempt in attempts {
-            match open(attempt.clone()).await {
+            let until = deadline.min(tokio::time::Instant::now() + OPEN_ATTEMPT);
+            match open(attempt.clone(), until).await {
                 Ok(transport) => return Ok(transport),
                 Err(err) => last = Some(err),
+            }
+            if tokio::time::Instant::now() >= until {
+                answered = false;
             }
             if tokio::time::Instant::now() >= deadline {
                 break;
@@ -231,7 +254,7 @@ pub(super) async fn open_client(
         if tokio::time::Instant::now() >= deadline {
             return Err(last.unwrap_or_else(|| SessionError::Zenoh("no answer in time".into())));
         }
-        refused = if every_class_listening(base) {
+        refused = if answered && every_class_listening(base).await {
             refused + 1
         } else {
             0
@@ -245,13 +268,17 @@ pub(super) async fn open_client(
 
 /// Whether the host at `base` listens on every class's port, so a link it
 /// refuses was refused by the host, not by a port not yet (or never) open.
-fn every_class_listening(base: SocketAddr) -> bool {
+async fn every_class_listening(base: SocketAddr) -> bool {
     let base = joinable(base);
-    TrafficClass::ALL.into_iter().all(|class| {
-        class_port(base.port(), class).is_ok_and(|port| {
-            TcpStream::connect_timeout(&SocketAddr::new(base.ip(), port), LISTEN_PROBE).is_ok()
-        })
-    })
+    for class in TrafficClass::ALL {
+        let Ok(port) = class_port(base.port(), class) else {
+            return false;
+        };
+        if !accepts(SocketAddr::new(base.ip(), port)).await {
+            return false;
+        }
+    }
+    true
 }
 
 /// Hosts session `name` in this process on `base` (port 0: OS-assigned),
@@ -533,20 +560,20 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
         }
         Placement::Local => {
             let base = SocketAddr::from((Ipv4Addr::LOCALHOST, well_known_port()?));
-            if listening(base) {
+            if listening(base).await {
                 return join(base);
             }
             base
         }
         // An explicit port: hosted here, unless another process (or this
         // one) already holds it.
-        Placement::Host(base) if base.port() != 0 && listening(base) => return join(base),
+        Placement::Host(base) if base.port() != 0 && listening(base).await => return join(base),
         Placement::Host(base) => base,
     };
     match host_at(base, name, lease_grace, address.insecure).await {
         Ok(placed) => Ok(placed),
         // Another process holds the port: join it.
-        Err(_) if base.port() != 0 && listening(base) => join(base),
+        Err(_) if base.port() != 0 && listening(base).await => join(base),
         Err(err) => Err(err),
     }
 }

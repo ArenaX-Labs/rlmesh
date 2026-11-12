@@ -732,7 +732,8 @@ impl SessionAddress {
         // doesn't end the wait: a host listening does.
         while self.base.ip().is_loopback()
             && tokio::time::Instant::now() < deadline
-            && (self.credential().is_err() || (self.awaits_host_key() && !listening(self.base)))
+            && (self.credential().is_err()
+                || (self.awaits_host_key() && !listening(self.base).await))
         {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

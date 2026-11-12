@@ -176,15 +176,50 @@ async fn linked(transport: &Transport, timeout: Duration) -> bool {
     }
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if control.info().peers_zid().await.next().is_some()
-            || control.info().routers_zid().await.next().is_some()
-        {
+        // Zenoh answers these in a nested `block_on`: off this thread.
+        let session = control.clone();
+        let found = crate::transport::off_thread(move || {
+            use zenoh::Wait;
+            session.info().peers_zid().wait().next().is_some()
+                || session.info().routers_zid().wait().next().is_some()
+        })
+        .await
+        .unwrap_or(false);
+        if found {
             return true;
         }
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// How often a wait for the host asks for its token again, so that the
+/// wait never rests on one event (the history reply, a later declaration, or
+/// the wakeup either sends) for the whole of its timeout.
+pub(crate) const HOST_RECHECK: Duration = Duration::from_millis(250);
+
+/// Waits until `present` says the host is there, asking for its liveliness
+/// token `key` every [`HOST_RECHECK`] meanwhile (setting `present` when it
+/// answers).
+pub(crate) async fn host_seen(
+    control: &zenoh::Session,
+    key: String,
+    present: &watch::Sender<bool>,
+) {
+    let mut seen = present.subscribe();
+    loop {
+        if tokio::time::timeout(HOST_RECHECK, seen.wait_for(|p| *p))
+            .await
+            .is_ok_and(|seen| seen.is_ok())
+        {
+            return;
+        }
+        if live(control, key.clone()).await {
+            present.send_replace(true);
+            return;
+        }
     }
 }
 
@@ -401,14 +436,12 @@ impl Participant {
         // The host declares its queryables before its liveliness token, and
         // Zenoh keeps declaration order per link, so once the token is seen
         // the first `ctl` query cannot miss the host.
-        let mut present = shared.host_present.subscribe();
+        let seen = host_seen(&control, keys.host_liveliness(), &shared.host_present);
         tokio::select! {
-            found = tokio::time::timeout(config.host_timeout, present.wait_for(|p| *p)) => {
-                found
-                    .map_err(|_| {
-                        SessionError::Timeout(config.host_timeout, "the session host".into())
-                    })?
-                    .map_err(|_| SessionError::Closed)?;
+            found = tokio::time::timeout(config.host_timeout, seen) => {
+                found.map_err(|_| {
+                    SessionError::Timeout(config.host_timeout, "the session host".into())
+                })?;
             }
             refusal = not_served(&control, &config.tenant, config.session) => return Err(refusal),
         }

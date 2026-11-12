@@ -48,7 +48,14 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 # A paired machine's host files (`~/.config/rlmesh/hosts/{host id}.toml`).
 toml = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { workspace = true, features = [
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
 tokio-rustls = { workspace = true, optional = true }
 tokio-util = { workspace = true }
 tower-http = { workspace = true, features = ["fs", "set-header"], optional = true }

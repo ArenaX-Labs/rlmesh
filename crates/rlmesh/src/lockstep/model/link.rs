@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rlmesh_session::address::{Address, LEASE_GRACE, Placed, SessionAddress, place};
-use rlmesh_session::transport::payload_bytes;
+use rlmesh_session::transport::{Transport, payload_bytes};
 use rlmesh_session::wire::codec::{decode_model_reply, encode_model_request};
 use rlmesh_session::wire::{
     EndpointTiming, ModelReply, ModelRequest, ParticipantId, PriorityClass, Role,
@@ -27,14 +27,19 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// The driver side's way to a served model: queries on `m/{model}`.
 #[derive(Clone)]
 pub struct ModelLink {
-    session: zenoh::Session,
+    /// Its session, held as a transport so that dropping the last handle
+    /// closes it off the dropping thread.
+    session: Transport,
     key: String,
 }
 
 impl ModelLink {
     /// A link to the model answering on `key`.
     pub fn new(session: zenoh::Session, key: String) -> Self {
-        Self { session, key }
+        Self {
+            session: Transport::from_session(session),
+            key,
+        }
     }
 
     /// Waits until the model answers, probing every 20 ms for up to
@@ -45,6 +50,7 @@ impl ModelLink {
         loop {
             let replies = self
                 .session
+                .control()
                 .get(&selector)
                 .consolidation(ConsolidationMode::None)
                 .timeout(Duration::from_millis(500))
@@ -73,6 +79,7 @@ impl ModelLink {
         let started = tokio::time::Instant::now();
         let replies = self
             .session
+            .control()
             .get(&self.key)
             .payload(encode_model_request(request))
             .consolidation(ConsolidationMode::None)
@@ -194,7 +201,8 @@ pub struct ModelConnection {
     pub link: ModelLink,
     model: ParticipantId,
     participant: Participant,
-    lockstep: Option<zenoh::Session>,
+    /// The lockstep session when it is this connection's own, to close.
+    lockstep: Option<Transport>,
     /// The model's own session, when this connects there.
     own: Option<SessionAddress>,
     /// The session the model was invited into, which it leaves at close.
@@ -270,7 +278,7 @@ impl ModelConnection {
             other => other,
         })?;
         let lockstep = crate::lockstep::session::owns_links(participant.transport())
-            .then_some(lockstep_session);
+            .then(|| link.session.clone());
         Ok(Self {
             link,
             model: model.clone(),

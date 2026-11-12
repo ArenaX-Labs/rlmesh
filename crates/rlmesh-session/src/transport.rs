@@ -462,7 +462,7 @@ pub fn zenoh_config(
 /// clone: sessions are shared handles.
 #[derive(Clone)]
 pub struct Transport {
-    sessions: [zenoh::Session; 4],
+    sessions: Arc<Sessions>,
     shared: bool,
     client: bool,
     /// The link gate it presented, if any ([`Self::link`]).
@@ -482,6 +482,7 @@ impl std::fmt::Debug for Transport {
                 "zids",
                 &self
                     .sessions
+                    .all()
                     .iter()
                     .map(|s| s.zid().to_string())
                     .collect::<Vec<_>>(),
@@ -491,8 +492,19 @@ impl std::fmt::Debug for Transport {
 }
 
 impl Transport {
-    /// Opens the sessions `config` describes.
+    /// Opens the sessions `config` describes, off the calling thread (see
+    /// [`off_thread`]).
     pub async fn open(config: &TransportConfig) -> Result<Self, SessionError> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) if multi_thread(&runtime) => {
+                let config = config.clone();
+                off_thread(move || runtime.block_on(Self::open_here(&config))).await?
+            }
+            _ => Self::open_here(config).await,
+        }
+    }
+
+    async fn open_here(config: &TransportConfig) -> Result<Self, SessionError> {
         match &config.layout {
             Layout::Shared(endpoints) => {
                 let session = zenoh::open(zenoh_config(endpoints, &config.tuning)?).await?;
@@ -517,7 +529,7 @@ impl Transport {
                     .try_into()
                     .map_err(|_| SessionError::Config("four class sessions".into()))?;
                 Ok(Self {
-                    sessions,
+                    sessions: Arc::new(Sessions(Some(sessions))),
                     shared: false,
                     client: config.tuning.client,
                     link: config.tuning.link.clone(),
@@ -531,7 +543,12 @@ impl Transport {
     /// Wraps one already-open session for every class.
     pub fn from_session(session: zenoh::Session) -> Self {
         Self {
-            sessions: [session.clone(), session.clone(), session.clone(), session],
+            sessions: Arc::new(Sessions(Some([
+                session.clone(),
+                session.clone(),
+                session.clone(),
+                session,
+            ]))),
             shared: true,
             client: false,
             link: None,
@@ -573,7 +590,7 @@ impl Transport {
 
     /// The session of `class`.
     pub fn session(&self, class: TrafficClass) -> &zenoh::Session {
-        &self.sessions[class.index()]
+        &self.sessions.all()[class.index()]
     }
 
     /// The control session.
@@ -597,9 +614,9 @@ impl Transport {
     /// close returns and leaves Zenoh to finish.
     pub async fn close(&self) -> Result<(), SessionError> {
         let sessions: &[zenoh::Session] = if self.shared {
-            &self.sessions[..1]
+            &self.sessions.all()[..1]
         } else {
-            &self.sessions
+            self.sessions.all()
         };
         let Some(guard) = &self.guard else {
             for session in sessions {
@@ -636,6 +653,66 @@ impl Transport {
         }
         Ok(())
     }
+}
+
+/// A transport's sessions, closed on a thread of their own when the last
+/// handle goes: Zenoh closes a session whose last handle drops in a nested
+/// `block_on` on the dropping thread (see [`off_thread`]).
+struct Sessions(Option<[zenoh::Session; 4]>);
+
+impl Sessions {
+    fn all(&self) -> &[zenoh::Session; 4] {
+        self.0
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("taken only by drop"))
+    }
+}
+
+impl Drop for Sessions {
+    fn drop(&mut self) {
+        let Some(sessions) = self.0.take() else {
+            return;
+        };
+        // A thread of its own rather than the runtime's blocking pool: a
+        // pool that is shutting down drops what it is handed in place,
+        // holding a lock Zenoh's close then takes. A thread that cannot
+        // start drops them here.
+        let _ = std::thread::Builder::new()
+            .name("rlmesh-close".into())
+            .spawn(move || drop(sessions));
+    }
+}
+
+/// Runs `work`, which blocks on Zenoh, on the blocking pool and waits for
+/// it.
+///
+/// Zenoh resolves an open (and a close, and a few queries of its state) with
+/// a nested `block_on` on the calling thread. On a thread that is itself
+/// blocking on a future (a program's main future, a binding's call, a test),
+/// that nested `block_on` parks on the same thread parker as the outer one
+/// and takes every wakeup meant for the futures the outer one polls: a reply,
+/// a timer or a watch that fires meanwhile is lost, and a future waiting on
+/// it is never polled again. A thread of the blocking pool runs no other
+/// future, so nothing there can be lost.
+pub async fn off_thread<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, SessionError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|err| SessionError::Zenoh(format!("a blocking Zenoh call failed: {err}").into()))
+}
+
+/// Whether `runtime` has a blocking pool Zenoh runs on: Zenoh refuses a
+/// current-thread runtime anyway.
+fn multi_thread(runtime: &tokio::runtime::Handle) -> bool {
+    runtime.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread
+}
+
+/// Opens a Zenoh session off the calling thread (see [`off_thread`]).
+pub async fn open_session(config: zenoh::Config) -> Result<zenoh::Session, SessionError> {
+    off_thread(move || zenoh::Wait::wait(zenoh::open(config)))
+        .await?
+        .map_err(SessionError::from)
 }
 
 /// Watches the links `sessions` accept on their TCP listeners, when they

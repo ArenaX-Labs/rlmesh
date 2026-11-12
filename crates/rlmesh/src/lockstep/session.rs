@@ -250,7 +250,7 @@ pub async fn lockstep_session(
     config
         .insert_json5("open/return_conditions/connect_scouted", "false")
         .map_err(|e| GymError::Config(e.to_string()))?;
-    zenoh::open(config)
+    rlmesh_session::transport::open_session(config)
         .await
         .map_err(|e| GymError::Closed(e.to_string()))
 }

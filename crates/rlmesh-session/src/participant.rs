@@ -356,23 +356,25 @@ pub async fn wait_for_host(
     keys: &SessionKeys,
     timeout: Duration,
 ) -> Result<(), SessionError> {
-    let host = transport
+    let (present, _) = tokio::sync::watch::channel(false);
+    let _host = transport
         .control()
         .liveliness()
         .declare_subscriber(keys.host_liveliness())
         .history(true)
-        .await?;
-    let present = async {
-        while let Ok(sample) = host.recv_async().await {
-            if sample.kind() == SampleKind::Put {
-                return Ok(());
+        .callback({
+            let present = present.clone();
+            move |sample| {
+                if sample.kind() == SampleKind::Put {
+                    present.send_replace(true);
+                }
             }
-        }
-        Err(SessionError::Closed)
-    };
-    tokio::time::timeout(timeout, present)
+        })
+        .await?;
+    let seen = attach::host_seen(transport.control(), keys.host_liveliness(), &present);
+    tokio::time::timeout(timeout, seen)
         .await
-        .map_err(|_| SessionError::Timeout(timeout, "the session host".into()))?
+        .map_err(|_| SessionError::Timeout(timeout, "the session host".into()))
 }
 
 /// Queries a session host for its authority snapshot, without attaching:
