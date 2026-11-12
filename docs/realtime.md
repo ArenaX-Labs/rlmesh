@@ -431,7 +431,10 @@ firewall. When it is not, the host moves each board to TCP (below), and
 when it can't open the port at all (another process holds it), it warns
 once and runs on TCP alone. A host in your own process (Python's `Host`)
 does the same on its own port plus one; a session without boards sees no
-difference. A board that takes it gets its realtime parts' action
+difference. It reads `RLMESH_BOARD_DATA` as `rlmesh host` does, so where UDP
+is forbidden (a sandbox, a locked-down network) one variable keeps every host
+an env, a model or a robot starts for itself on TCP; `Host(board_data="tcp")`
+(or `realtime.BoardData.TCP`) chooses for one host. A board that takes it gets its realtime parts' action
 chunks over UDP, and sends their states and `_applied` entries back the
 same way; the host relays them to and from the session, so policies, the
 recorder and the cockpit see the same samples. Everything else stays on

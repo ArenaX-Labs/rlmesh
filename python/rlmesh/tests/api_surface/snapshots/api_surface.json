@@ -4098,6 +4098,7 @@
     "exports": [
       "BindingRefused",
       "BindingTable",
+      "BoardData",
       "Clock",
       "Due",
       "Host",
@@ -4159,6 +4160,24 @@
           }
         },
         "signature": "BindingTable(native: V2Controller)",
+        "stability": "Experimental"
+      },
+      "BoardData": {
+        "kind": "class",
+        "members": {
+          "TCP": {
+            "kind": "attribute",
+            "signature": "TCP"
+          },
+          "UDP": {
+            "kind": "attribute",
+            "signature": "UDP"
+          },
+          "UDP_ONLY": {
+            "kind": "attribute",
+            "signature": "UDP_ONLY"
+          }
+        },
         "stability": "Experimental"
       },
       "Clock": {
@@ -4242,7 +4261,7 @@
             "signature": "health() -> list[HostLink]"
           }
         },
-        "signature": "Host(address: str = ':0', *, lease_grace_ms: int = 250, insecure: bool = False)",
+        "signature": "Host(address: str = ':0', *, lease_grace_ms: int = 250, insecure: bool = False, board_data: BoardData | Literal['udp', 'tcp', 'udp-only'] | None = None)",
         "stability": "Experimental"
       },
       "Meta": {

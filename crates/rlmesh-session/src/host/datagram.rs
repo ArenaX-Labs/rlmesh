@@ -274,7 +274,42 @@ impl BoardData {
     pub fn strict(self) -> bool {
         self == Self::UdpOnly
     }
+
+    /// Every value's name, as `rlmesh host --board-data` takes it.
+    pub const NAMES: [&str; 3] = ["tcp", "udp", "udp-only"];
+
+    /// The value `text` names (one of [`Self::NAMES`]); otherwise the error
+    /// `rlmesh host` gives for it, naming `what` was given it.
+    ///
+    /// # Errors
+    /// A name not in [`Self::NAMES`].
+    pub fn parse(text: &str, what: &str) -> Result<Self, String> {
+        match text {
+            "tcp" => Ok(Self::Tcp),
+            "udp" => Ok(Self::Udp),
+            "udp-only" => Ok(Self::UdpOnly),
+            _ => Err(format!(
+                "invalid value '{text}' for '{what}'\n  [possible values: {}]",
+                Self::NAMES.join(", ")
+            )),
+        }
+    }
+
+    /// The value [`BOARD_DATA_VAR`] sets, `None` when it is unset or empty.
+    ///
+    /// # Errors
+    /// A value [`Self::parse`] refuses.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        match std::env::var(BOARD_DATA_VAR) {
+            Ok(text) if !text.is_empty() => Self::parse(&text, BOARD_DATA_VAR).map(Some),
+            _ => Ok(None),
+        }
+    }
 }
+
+/// The environment variable that sets [`BoardData`] for `rlmesh host` and
+/// every host a process starts in-process without choosing one.
+pub const BOARD_DATA_VAR: &str = "RLMESH_BOARD_DATA";
 
 impl DatagramRelay {
     /// Listens on `addr` (UDP), until dropped.

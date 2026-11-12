@@ -37,7 +37,10 @@ pub use credentials::remember_credential;
 pub use credentials::{LOCAL_KEY, STATE_DIR_VAR, credential, daemon_dir, link_auth, write_private};
 #[cfg(feature = "record")]
 pub use hosting::host_recording_at;
-pub use hosting::{Placed, connect, host_at, open_listeners, open_listeners_with, place};
+pub use hosting::{
+    HostingOptions, Placed, connect, host_at, host_at_with, open_listeners, open_listeners_with,
+    place, place_with,
+};
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};

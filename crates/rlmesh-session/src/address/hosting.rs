@@ -377,19 +377,69 @@ fn unanswered_ports(base: SocketAddr, silent: &[u16], waited: Duration) -> Sessi
 /// and a board's zenoh-pico has no `usrpwd`, so there the handshake alone
 /// admits, as on any LAN link.
 ///
-/// It offers boards the datagram path as [`BoardData::default`] says, on
-/// UDP `base` + 1; a port that won't open leaves them on TCP.
+/// It offers boards the datagram path as [`BOARD_DATA_VAR`](crate::host::BOARD_DATA_VAR) says, else as
+/// [`BoardData::default`] does, on UDP `base` + 1; with `udp`, a port that
+/// won't open leaves them on TCP.
 pub async fn host_at(
     base: SocketAddr,
     name: &str,
     lease_grace: Duration,
     insecure: bool,
 ) -> Result<Placed, SessionError> {
+    host_at_with(
+        base,
+        name,
+        lease_grace,
+        insecure,
+        &HostingOptions::default(),
+    )
+    .await
+}
+
+/// How a host this process starts runs, beyond its address and lease
+/// grace ([`host_at_with`], [`place_with`]). The default is what
+/// [`host_at`] and [`place`] do.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HostingOptions {
+    /// How boards carry their realtime parts (`None`: as
+    /// [`BOARD_DATA_VAR`](crate::host::BOARD_DATA_VAR) says, else [`BoardData::default`]).
+    pub board_data: Option<BoardData>,
+}
+
+impl HostingOptions {
+    /// The board data path in force: the one chosen, else the
+    /// environment's, else the default.
+    ///
+    /// # Errors
+    /// [`SessionError::Config`] for a [`BOARD_DATA_VAR`](crate::host::BOARD_DATA_VAR) value `rlmesh host`
+    /// would refuse, with its message.
+    pub fn board_data(&self) -> Result<BoardData, SessionError> {
+        match self.board_data {
+            Some(chosen) => Ok(chosen),
+            None => BoardData::from_env()
+                .map(Option::unwrap_or_default)
+                .map_err(SessionError::Config),
+        }
+    }
+}
+
+/// [`host_at`] with `options`.
+///
+/// # Errors
+/// As [`host_at`], and [`HostingOptions::board_data`]'s.
+pub async fn host_at_with(
+    base: SocketAddr,
+    name: &str,
+    lease_grace: Duration,
+    insecure: bool,
+    options: &HostingOptions,
+) -> Result<Placed, SessionError> {
     serve_at(
         base,
         name,
         lease_grace,
         insecure,
+        options,
         #[cfg(feature = "record")]
         None,
     )
@@ -406,7 +456,15 @@ pub async fn host_recording_at(
     insecure: bool,
     rolling: crate::record::Rolling,
 ) -> Result<Placed, SessionError> {
-    serve_at(base, name, lease_grace, insecure, Some(rolling)).await
+    serve_at(
+        base,
+        name,
+        lease_grace,
+        insecure,
+        &HostingOptions::default(),
+        Some(rolling),
+    )
+    .await
 }
 
 async fn serve_at(
@@ -414,8 +472,11 @@ async fn serve_at(
     name: &str,
     lease_grace: Duration,
     insecure: bool,
+    options: &HostingOptions,
     #[cfg(feature = "record")] rolling: Option<crate::record::Rolling>,
 ) -> Result<Placed, SessionError> {
+    // Refused before anything listens.
+    let board_data = options.board_data()?;
     let launched = launched_identity()?;
     if !base.ip().is_loopback() && !insecure && launched.is_none() {
         return Err(SessionError::Config(format!(
@@ -440,7 +501,6 @@ async fn serve_at(
     let gated = base.ip().is_loopback() || launched;
     let password = gated.then(|| config.identity.link_password());
     let (transport, base) = open_listeners(base, password.as_ref()).await?;
-    let board_data = BoardData::default();
     config.datagram = board_data.open(base).await?;
     config.datagram_strict = board_data.strict();
     let mut address = SessionAddress::new(joinable(base), name)?;
@@ -630,6 +690,19 @@ fn discard_dictionary(path: &std::path::Path) {
 /// in a session this process hosts lapse `lease_grace` after their holder's
 /// last heartbeat.
 pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, SessionError> {
+    place_with(address, lease_grace, &HostingOptions::default()).await
+}
+
+/// [`place`], a session hosted here run with `options` (a joined one
+/// ignores them).
+///
+/// # Errors
+/// As [`place`], and [`HostingOptions::board_data`]'s when it hosts.
+pub async fn place_with(
+    address: &Address,
+    lease_grace: Duration,
+    options: &HostingOptions,
+) -> Result<Placed, SessionError> {
     let name = address.session_name();
     let join = |base: SocketAddr| -> Result<Placed, SessionError> {
         let base = joinable(base);
@@ -657,7 +730,7 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
         Placement::Host(base) if base.port() != 0 && listening(base).await => return join(base),
         Placement::Host(base) => base,
     };
-    match host_at(base, name, lease_grace, address.insecure).await {
+    match host_at_with(base, name, lease_grace, address.insecure, options).await {
         Ok(placed) => Ok(placed),
         // Another process holds the port: join it.
         Err(_) if base.port() != 0 && listening(base).await => join(base),

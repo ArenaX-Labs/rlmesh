@@ -103,6 +103,7 @@ else:
 __all__ = [
     "BindingRefused",
     "BindingTable",
+    "BoardData",
     "Clock",
     "Due",
     "Host",
@@ -151,6 +152,19 @@ def _close_leaving(close: Callable[[], object], exc: BaseException | None) -> No
         _log.warning("closing after %s also failed: %s", type(exc).__name__, failed)
 
 
+class BoardData(enum.Enum):
+    """How a host carries boards' realtime parts (``rlmesh host --board-data``)."""
+
+    #: Over the host's datagram path, UDP on its port + 1, back to TCP while
+    #: that path is broken. The default.
+    UDP = "udp"
+    #: Over the session's TCP links: no UDP socket. For a sandbox or network
+    #: that forbids UDP.
+    TCP = "tcp"
+    #: Over the datagram path only, for measuring it: never back to TCP.
+    UDP_ONLY = "udp-only"
+
+
 class Host:
     """The session at ``address`` (``[host/][session]``), by the hosting rule.
 
@@ -164,12 +178,24 @@ class Host:
     unless ``insecure=True`` (sessions other machines join are ``rlmesh host``'s).
     On loopback every link presents the password the address's key derives;
     a host bound beyond it gates no link, and only the handshake admits.
+
+    ``board_data`` is how a session hosted here carries boards' realtime
+    parts (:class:`BoardData` or its value, ``"tcp"``); ``None`` takes
+    ``RLMESH_BOARD_DATA`` from the environment, else ``udp``, so one
+    variable sets it for every host a process starts for itself.
     """
 
     def __init__(
-        self, address: str = ":0", *, lease_grace_ms: int = 250, insecure: bool = False
+        self,
+        address: str = ":0",
+        *,
+        lease_grace_ms: int = 250,
+        insecure: bool = False,
+        board_data: BoardData | Literal["udp", "tcp", "udp-only"] | None = None,
     ) -> None:
-        self._native: V2Host = V2Host(address, lease_grace_ms, insecure)
+        if isinstance(board_data, BoardData):
+            board_data = board_data.value
+        self._native: V2Host = V2Host(address, lease_grace_ms, insecure, board_data)
 
     @property
     def address(self) -> str:

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
-use crate::address::{Address, Placed, SessionAddress, place};
+use crate::address::{Address, HostingOptions, Placed, SessionAddress, place_with};
 use crate::controller::{Controller, ControllerConfig, ControllerError};
 use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Published, Rejection, Robot};
 use crate::error::SessionError;
@@ -232,7 +232,17 @@ impl EmbeddedHost {
     /// OS-assigned port); leases in a session hosted here lapse
     /// `lease_grace` after their holder's last heartbeat.
     pub async fn start(address: &Address, lease_grace: Duration) -> Result<Self, SessionError> {
-        let placed = place(address, lease_grace).await?;
+        Self::start_with(address, lease_grace, &HostingOptions::default()).await
+    }
+
+    /// [`Self::start`], a session hosted here run with `options` (its board
+    /// data path).
+    pub async fn start_with(
+        address: &Address,
+        lease_grace: Duration,
+        options: &HostingOptions,
+    ) -> Result<Self, SessionError> {
+        let placed = place_with(address, lease_grace, options).await?;
         Ok(Self {
             address: placed.address.clone(),
             placed: tokio::sync::Mutex::new(Some(placed)),

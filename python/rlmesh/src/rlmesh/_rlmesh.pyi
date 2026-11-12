@@ -995,10 +995,13 @@ class V2Host:
         `{ip}:{port}[/{session}]#{key}`: what participants connect to. The
         key is a credential (its holder attaches as device `local`).
         """
-    def __new__(cls, address: builtins.str = ..., lease_grace_ms: builtins.int = ..., insecure: builtins.bool = ...) -> V2Host:
+    def __new__(cls, address: builtins.str = ..., lease_grace_ms: builtins.int = ..., insecure: builtins.bool = ..., board_data: typing.Optional[builtins.str] = None) -> V2Host:
         r"""
         Places the session `address` names (`":0"`: hosted here on an
         OS-assigned port). It listens on loopback only unless `insecure`.
+        A session hosted here carries boards' realtime parts as
+        `board_data` says (`tcp`, `udp`, `udp-only`; `None`:
+        `RLMESH_BOARD_DATA`, else `udp`).
         """
     def close(self) -> None:
         r"""

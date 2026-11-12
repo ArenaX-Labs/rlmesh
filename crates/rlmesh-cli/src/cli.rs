@@ -996,4 +996,28 @@ mod tests {
         assert!(host(&["rlmesh", "host", "--board-data", "quic"]).is_err());
         assert!(host(&["rlmesh", "host", "--tcp-notsent-lowat", "0"]).is_err());
     }
+
+    /// An in-process host reads RLMESH_BOARD_DATA as `rlmesh host` does:
+    /// the same names, the same values, the same refusal.
+    #[test]
+    fn in_process_hosts_parse_board_data_as_the_cli_does() {
+        use clap::{Parser, ValueEnum};
+
+        use super::{BoardData, Cli};
+        use rlmesh_session::host::BoardData as Session;
+        let names: Vec<String> = BoardData::value_variants()
+            .iter()
+            .filter_map(|v| v.to_possible_value())
+            .map(|v| v.get_name().to_string())
+            .collect();
+        assert_eq!(names, Session::NAMES);
+        for (variant, name) in BoardData::value_variants().iter().zip(&names) {
+            assert_eq!(Session::parse(name, "x"), Ok(Session::from(*variant)));
+        }
+        let cli = Cli::try_parse_from(["rlmesh", "host", "--board-data", "quic"])
+            .expect_err("refused")
+            .to_string();
+        let ours = Session::parse("quic", "--board-data <BOARD_DATA>").expect_err("refused");
+        assert!(cli.contains(&ours), "{cli:?} vs {ours:?}");
+    }
 }

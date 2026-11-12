@@ -21,9 +21,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
-use rlmesh_session::address::Address;
+use rlmesh_session::address::{Address, HostingOptions};
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::edge::{Due, Rejection, Robot};
+use rlmesh_session::host::BoardData;
 use rlmesh_session::record::{RecordError, Recorder};
 use rlmesh_session::sdk::{self, BindOptions, BindPolicyError, EmbeddedHost, ErrorKind};
 use rlmesh_session::spec::BindError;
@@ -477,10 +478,34 @@ pub struct PyHost {
 impl PyHost {
     /// Places the session `address` names (`":0"`: hosted here on an
     /// OS-assigned port). It listens on loopback only unless `insecure`.
+    /// A session hosted here carries boards' realtime parts as
+    /// `board_data` says (`tcp`, `udp`, `udp-only`; `None`:
+    /// `RLMESH_BOARD_DATA`, else `udp`).
     #[new]
-    #[pyo3(signature = (address=":0", lease_grace_ms=250, insecure=false))]
-    fn new(py: Python<'_>, address: &str, lease_grace_ms: u64, insecure: bool) -> PyResult<Self> {
-        let host = place(py, address, Duration::from_millis(lease_grace_ms), insecure)?;
+    #[pyo3(signature = (address=":0", lease_grace_ms=250, insecure=false, board_data=None))]
+    fn new(
+        py: Python<'_>,
+        address: &str,
+        lease_grace_ms: u64,
+        insecure: bool,
+        board_data: Option<&str>,
+    ) -> PyResult<Self> {
+        let options = HostingOptions {
+            board_data: board_data
+                .map(|text| BoardData::parse(text, "board_data"))
+                .transpose()
+                .map_err(PyValueError::new_err)?,
+        };
+        let address = Address {
+            insecure,
+            ..Address::session(address).map_err(address_err)?
+        };
+        let lease_grace = Duration::from_millis(lease_grace_ms);
+        let host = block_on(py, async move {
+            EmbeddedHost::start_with(&address, lease_grace, &options)
+                .await
+                .map_err(session_err)
+        })?;
         Ok(Self { host })
     }
 
