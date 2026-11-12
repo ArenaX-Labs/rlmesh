@@ -8,11 +8,15 @@
  * first uses it.
  *
  * zenoh-pico's callbacks run on its read tasks; they only queue. The robot is
- * driven from rlmesh_zenoh_poll, on the caller's thread. Its signed views are
- * checked on a task of their own first: one signature check takes longer than
- * a control period, and the robot only has to take the result. What it
- * publishes goes out on another: sending waits for the socket and the radio.
- * Both tasks, like zenoh-pico's, stay off the core of a board's control loop. */
+ * driven from rlmesh_zenoh_poll, on the caller's thread, which only ever takes
+ * this transport's own lock, briefly: it never waits on a socket. Its signed
+ * views are checked on a task of their own first: one signature check takes
+ * longer than a control period, and the robot only has to take the result.
+ * Every call into zenoh-pico (opening, declaring, querying, publishing,
+ * closing) is made on another, the network task, in the order the robot asked:
+ * any of them can wait for the socket and the radio, and with them the locks
+ * zenoh-pico holds while it writes. Both tasks, like zenoh-pico's, stay off the
+ * core of a board's control loop. */
 
 #ifndef RLMESH_ZENOH_H_
 #define RLMESH_ZENOH_H_
@@ -54,12 +58,12 @@ extern "C" {
 #define RLMESH_ZENOH_VERIFY_STACK (12 * 1024)
 #define RLMESH_ZENOH_VERIFY_PRIORITY 1
 
-/* The task that publishes: its stack, sized from what the send path was
- * measured to use on a board, and FreeRTOS priority, that of zenoh-pico's read
+/* The network task: its stack (test/check_stack.py holds its deepest call,
+ * opening a session, to it) and FreeRTOS priority, that of zenoh-pico's read
  * tasks. */
 #define RLMESH_ZENOH_TX_STACK (8 * 1024)
 #define RLMESH_ZENOH_TX_PRIORITY 12
-/* Bytes of publications waiting to go out at most, with those the send task
+/* Bytes of publications waiting to go out at most, with those the network task
  * is sending: past it the oldest sample, then the oldest heartbeat, is dropped
  * (counted in rlmesh_zenoh_failures), as with a link that can't keep up. */
 #define RLMESH_ZENOH_TX_BYTES (4 * 1024)
@@ -70,13 +74,13 @@ extern "C" {
  * when the robot first opens the socket: a board whose host offers no
  * datagram path never has them. It reads with a timeout, so it
  * notices a close within RLMESH_ZENOH_DGRAM_POLL_MS. Datagrams go out on the
- * send task, without waiting: one the socket can't take now is dropped (a
+ * network task, without waiting: one the socket can't take now is dropped (a
  * newer one replaces it anyway). What arrives queues for the loop like a
  * sample, within RLMESH_ZENOH_QUEUE_BYTES. */
 #define RLMESH_ZENOH_RX_STACK (5 * 1024)
 #define RLMESH_ZENOH_RX_PRIORITY 12
 #define RLMESH_ZENOH_DGRAM_POLL_MS 100
-/* The send task's class for datagrams: past the session classes. */
+/* The network task's class for datagrams: past the session classes. */
 #define RLMESH_ZENOH_DATAGRAM_CLASS RLMESH_DEVICE_CLASSES
 /* Sends refused in a row (not ones that would only block) before the robot
  * is told the path failed. */
@@ -88,6 +92,7 @@ extern "C" {
 
 struct rlmesh_zenoh_event;
 struct rlmesh_zenoh_view;
+struct rlmesh_zenoh_op;
 struct rlmesh_zenoh_t;
 
 /* Signed views since the transport opened: arrived, replaced by a newer one
@@ -104,7 +109,7 @@ typedef struct rlmesh_zenoh_view_stats_t {
   uint32_t skipped;
   uint64_t wait_max_us;
   uint64_t wait_total_us;
-  /* Publications dropped from a full send queue, and those the send task
+  /* Publications dropped from a full send queue, and those the network task
    * failed to send (or an action the transport failed to carry out). */
   uint32_t tx_dropped;
   uint32_t failed;
@@ -171,15 +176,20 @@ typedef struct rlmesh_zenoh_t {
   /* Called (under `lock`) when an event is queued for the robot. */
   void (*wake)(void*);
   void* wake_arg;
-  /* The send task and the publications waiting for it, under `lock`. */
+  /* The network task, and what waits for it under `lock`: the robot's other
+   * actions in order (`ops`), the publications, and the host they go to. */
   z_owned_task_t tx_task;
   z_owned_condvar_t tx_wake;
+  struct rlmesh_zenoh_op* ops;
+  struct rlmesh_zenoh_op* ops_tail;
   rlmesh_txq_t txq;
+  char target_host[64];
+  uint16_t target_port;
   /* The datagram socket's task, what the loop asked of it (open to
    * `dgram_host`:`dgram_port` as request `dgram_want`, 0 closed) and
    * whether a send or an open failed since the loop last looked, all under
    * `lock`. The socket itself (`dgram_fd`, -1 none) is opened and closed only
-   * by its task, under `dgram_lock`, which the send task holds to use it. */
+   * by its task, under `dgram_lock`, which the network task holds to use it. */
   z_owned_task_t rx_task;
   z_owned_condvar_t rx_wake;
   uint32_t dgram_want;
@@ -192,10 +202,6 @@ typedef struct rlmesh_zenoh_t {
   /* The datagram task runs, reading into `dgram_buf` (its own). */
   bool rx_started;
   uint8_t* dgram_buf;
-  /* Held around every zenoh-pico call this transport makes on a session,
-   * from the loop or the send task: declaring, querying, publishing, opening
-   * and closing. `open` changes only under it, and only on the loop. */
-  z_owned_mutex_t net;
 } rlmesh_zenoh_t;
 
 /* Prepares the transport for `robot`, which stays the caller's: sessions open

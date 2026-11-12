@@ -331,19 +331,35 @@ static void on_query_done(void* ctx) {
 static void undeclare(rlmesh_zenoh_t* z);
 static void close_sessions(rlmesh_zenoh_t* z);
 
-/* The session for class `c`, opened to the robot's host on its port plus `c`
- * the first time it's needed; NULL when it can't be. The open sessions all
- * reach one host: opening one to another closes them, and drops what was
- * declared on them (the robot's Reset for the move follows). Under `net`, as
- * is every call below that uses a session. */
-static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c) {
+/* One of the robot's actions for the network task, copied: its fields, the
+ * host the robot meant, and its key (NUL-terminated), then its payload. */
+typedef struct rlmesh_zenoh_op {
+  struct rlmesh_zenoh_op* next;
+  uint8_t kind;
+  uint8_t class_;
+  uint8_t sub;
+  uint8_t has_payload;
+  uint32_t query_id;
+  uint32_t timeout_ms;
+  char host[64];
+  uint16_t port;
+  size_t key_len;
+  size_t len;
+  uint8_t data[];
+} op_t;
+
+/* The session for class `c`, opened to `host` on `port` plus `c` the first
+ * time it's needed; NULL when it can't be. The open sessions all reach one
+ * host: opening one to another closes them, and drops what was declared on
+ * them (the robot's Reset for the move follows). On the network task, as is
+ * every call below that uses a session. */
+static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c, const char* host,
+                                         uint16_t port) {
   if (c >= RLMESH_DEVICE_CLASSES) return NULL;
   if (!z->open[c]) {
     if (z->unreachable[c]) return NULL;
-    uint16_t port = 0;
-    const char* host = rlmesh_device_robot_host(z->robot, &port);
     char connect[96];
-    if (host == NULL || strlen(host) >= sizeof z->host) return NULL;
+    if (host[0] == '\0' || strlen(host) >= sizeof z->host) return NULL;
     int n = snprintf(connect, sizeof connect, "tcp/%s:%u#tout=" RLMESH_ZENOH_RECV_TIMEOUT_MS, host,
                      (unsigned)(port + c));
     if (n <= 0 || (size_t)n >= sizeof connect) return NULL;
@@ -366,11 +382,11 @@ static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c) {
   return z_loan(z->sessions[c]);
 }
 
-static int subscribe(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
-  const z_loaned_session_t* s = session(z, a->class_);
+static int subscribe(rlmesh_zenoh_t* z, const op_t* a) {
+  const z_loaned_session_t* s = session(z, a->class_, a->host, a->port);
   z_view_keyexpr_t ke;
   if (s == NULL || z->sub_count >= RLMESH_ZENOH_SUBS ||
-      z_view_keyexpr_from_str(&ke, a->key) != Z_OK) {
+      z_view_keyexpr_from_str(&ke, (const char*)a->data) != Z_OK) {
     return -1;
   }
   rlmesh_zenoh_sub_t* ctx = &z->sub_ctx[z->sub_count];
@@ -385,11 +401,11 @@ static int subscribe(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   return 0;
 }
 
-static int token(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
-  const z_loaned_session_t* s = session(z, a->class_);
+static int token(rlmesh_zenoh_t* z, const op_t* a) {
+  const z_loaned_session_t* s = session(z, a->class_, a->host, a->port);
   z_view_keyexpr_t ke;
   if (s == NULL || z->token_count >= RLMESH_ZENOH_TOKENS ||
-      z_view_keyexpr_from_str(&ke, a->key) != Z_OK) {
+      z_view_keyexpr_from_str(&ke, (const char*)a->data) != Z_OK) {
     return -1;
   }
   if (z_liveliness_declare_token(s, &z->tokens[z->token_count], z_loan(ke), NULL) != Z_OK) {
@@ -399,11 +415,11 @@ static int token(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   return 0;
 }
 
-static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
-  const z_loaned_session_t* s = session(z, a->class_);
+static int query(rlmesh_zenoh_t* z, const op_t* a) {
+  const z_loaned_session_t* s = session(z, a->class_, a->host, a->port);
   z_view_keyexpr_t ke;
   query_t* q = NULL;
-  if (s == NULL || z_view_keyexpr_from_str(&ke, a->key) != Z_OK ||
+  if (s == NULL || z_view_keyexpr_from_str(&ke, (const char*)a->data) != Z_OK ||
       (q = (query_t*)malloc(sizeof(query_t))) == NULL) {
     /* The robot waits on every query it asked for: it's over. */
     push(z, EV_DONE, 0, a->query_id, NULL, NULL);
@@ -419,7 +435,7 @@ static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   opts.is_express = true;
   z_owned_bytes_t payload;
   if (a->has_payload) {
-    if (z_bytes_copy_from_buf(&payload, a->payload, a->payload_len) != Z_OK) {
+    if (z_bytes_copy_from_buf(&payload, a->data + a->key_len, a->len) != Z_OK) {
       free(q);
       push(z, EV_DONE, 0, a->query_id, NULL, NULL);
       return -1;
@@ -433,17 +449,10 @@ static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   return z_get(s, z_loan(ke), "", z_move(callback), &opts) == Z_OK ? 0 : -1;
 }
 
-/* Queues a publication for the send task: sending it takes the socket and the
- * radio's path, which a control loop can't wait for. Opening its session, on
- * first use, is the one part done here. */
+/* Queues a publication for the network task: sending it takes the socket and
+ * the radio's path, which a control loop can't wait for. */
 static int publish(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   if (a->class_ >= RLMESH_DEVICE_CLASSES) return -1;
-  if (!z->open[a->class_]) {
-    z_mutex_lock(z_loan_mut(z->net));
-    const z_loaned_session_t* s = session(z, a->class_);
-    z_mutex_unlock(z_loan_mut(z->net));
-    if (s == NULL) return -1;
-  }
   rlmesh_txq_item_t* t = rlmesh_txq_item(a->class_, a->key, a->payload, a->payload_len);
   if (t == NULL) return -1;
   z_mutex_lock(z_loan_mut(z->lock));
@@ -453,8 +462,8 @@ static int publish(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   return queued ? 0 : -1;
 }
 
-/* Sends one publication on its session (open, under `net`): express when it
- * goes alone, batched with the others otherwise. */
+/* Sends one publication on its session (open): express when it goes alone,
+ * batched with the others otherwise. */
 static int send_one(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* t, bool express) {
   z_view_keyexpr_t ke;
   z_owned_bytes_t payload;
@@ -476,24 +485,23 @@ static int send_one(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* t, bool express)
 /* Sends what waited, in order within each class. Several waiting on one
  * session go out as one batch, one write instead of a segment each: on a
  * slow link that is what lets the queue drain. */
-static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list) {
-  z_mutex_lock(z_loan_mut(z->net));
+static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list, const char* host, uint16_t port) {
   for (uint8_t c = 0; c < RLMESH_DEVICE_CLASSES; ++c) {
     size_t n = 0;
     for (rlmesh_txq_item_t* t = list; t != NULL; t = t->next) n += t->class_ == c;
     if (n == 0) continue;
-    if (!z->open[c]) {
+    /* Its session opens on its first publication. */
+    const z_loaned_session_t* s = session(z, c, host, port);
+    if (s == NULL) {
       for (size_t i = 0; i < n; ++i) count_failed(z);
       continue;
     }
-    const z_loaned_session_t* s = z_loan(z->sessions[c]);
     bool batch = n > 1 && zp_batch_start(s) == Z_OK;
     for (rlmesh_txq_item_t* t = list; t != NULL; t = t->next) {
       if (t->class_ == c && send_one(z, t, !batch) != 0) count_failed(z);
     }
     if (batch) zp_batch_stop(s);
   }
-  z_mutex_unlock(z_loan_mut(z->net));
 }
 
 /* Sends the datagrams that waited, without waiting on the socket: one it
@@ -532,19 +540,71 @@ static void send_datagrams(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* list) {
   z_mutex_unlock(z_loan_mut(z->lock));
 }
 
+static bool reset(rlmesh_zenoh_t* z, const char* host, uint16_t port);
+static void reconnect(rlmesh_zenoh_t* z);
+
+/* Carries out the robot's actions in order, freeing them: whether one closed
+ * the sessions (publications taken before it are then stale). */
+static bool run_ops(rlmesh_zenoh_t* z, op_t* ops) {
+  bool closed = false;
+  while (ops != NULL) {
+    op_t* next = ops->next;
+    int done = 0;
+    switch (ops->kind) {
+      case RLMESH_DEVICE_SUBSCRIBE:
+        done = subscribe(z, ops);
+        break;
+      case RLMESH_DEVICE_TOKEN:
+        done = token(z, ops);
+        break;
+      case RLMESH_DEVICE_QUERY:
+        done = query(z, ops);
+        break;
+      case RLMESH_DEVICE_RESET:
+        closed |= reset(z, ops->host, ops->port);
+        break;
+      case RLMESH_DEVICE_RECONNECT:
+        reconnect(z);
+        closed = true;
+        break;
+      default:
+        break;
+    }
+    if (done != 0) count_failed(z);
+    free(ops);
+    ops = next;
+  }
+  return closed;
+}
+
+/* The network task: every zenoh-pico call, in the order the robot asked. It
+ * holds `lock` only to take what waits; a call that waits on the socket waits
+ * here, never on the loop. */
 static void* tx_task(void* arg) {
   rlmesh_zenoh_t* z = (rlmesh_zenoh_t*)arg;
   z_mutex_lock(z_loan_mut(z->lock));
   for (;;) {
-    while (!z->stopping && z->txq.head == NULL) {
+    while (!z->stopping && z->ops == NULL && z->txq.head == NULL) {
       z_condvar_wait(z_loan_mut(z->tx_wake), z_loan_mut(z->lock));
     }
     if (z->stopping) break;
     /* Everything waiting, at once. */
+    op_t* ops = z->ops;
+    z->ops = z->ops_tail = NULL;
     rlmesh_txq_item_t* list = rlmesh_txq_take(&z->txq);
+    char host[sizeof z->target_host];
+    memcpy(host, z->target_host, sizeof host);
+    uint16_t port = z->target_port;
     z_mutex_unlock(z_loan_mut(z->lock));
+    if (run_ops(z, ops)) {
+      /* Sealed for the links just closed: no use on new ones. */
+      for (rlmesh_txq_item_t* t = list; t != NULL; t = t->next) {
+        if (t->class_ != RLMESH_ZENOH_DATAGRAM_CLASS) count_failed(z);
+      }
+    } else {
+      send_all(z, list, host, port);
+    }
     send_datagrams(z, list);
-    send_all(z, list);
     while (list != NULL) {
       rlmesh_txq_item_t* next = list->next;
       free(list);
@@ -744,13 +804,13 @@ static void undeclare(rlmesh_zenoh_t* z) {
 
 /* Drops every subscription and token: the robot moved to another session.
  * The sessions stay for the same host, and close for another (a run on a
- * satellite, another home address). */
-static void reset(rlmesh_zenoh_t* z) {
+ * satellite, another home address): whether they closed. */
+static bool reset(rlmesh_zenoh_t* z, const char* host, uint16_t port) {
   undeclare(z);
   memset(z->unreachable, 0, sizeof z->unreachable);
-  uint16_t port = 0;
-  const char* host = rlmesh_device_robot_host(z->robot, &port);
-  if (host == NULL || port != z->port || strcmp(host, z->host) != 0) close_sessions(z);
+  if (port == z->port && strcmp(host, z->host) == 0) return false;
+  close_sessions(z);
+  return true;
 }
 
 /* Drops everything: replies stopped, and a session whose peer is gone never
@@ -783,7 +843,6 @@ static void drop_locks(rlmesh_zenoh_t* z) {
   z_drop(z_move(z->tx_wake));
   z_drop(z_move(z->verify_wake));
   z_drop(z_move(z->dgram_lock));
-  z_drop(z_move(z->net));
   z_drop(z_move(z->lock));
 }
 
@@ -796,9 +855,8 @@ int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
   z->now_us = now_us;
   z->dgram_fd = -1;
   if (z_mutex_init(&z->lock) != Z_OK) return -1;
-  if (z_mutex_init(&z->net) != Z_OK || z_mutex_init(&z->dgram_lock) != Z_OK ||
-      z_condvar_init(&z->verify_wake) != Z_OK || z_condvar_init(&z->tx_wake) != Z_OK ||
-      z_condvar_init(&z->rx_wake) != Z_OK) {
+  if (z_mutex_init(&z->dgram_lock) != Z_OK || z_condvar_init(&z->verify_wake) != Z_OK ||
+      z_condvar_init(&z->tx_wake) != Z_OK || z_condvar_init(&z->rx_wake) != Z_OK) {
     drop_locks(z);
     return -1;
   }
@@ -823,6 +881,40 @@ int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
     drop_locks(z);
     return -1;
   }
+  return 0;
+}
+
+/* Queues one of the robot's session actions for the network task, copied
+ * with the host it is meant for: 0, or -1 without memory for it. */
+static int enqueue(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
+  size_t key_len = strlen(a->key) + 1;
+  size_t len = a->has_payload ? a->payload_len : 0;
+  op_t* op = (op_t*)malloc(sizeof(op_t) + key_len + len);
+  if (op == NULL) return -1;
+  op->next = NULL;
+  op->kind = a->kind;
+  op->class_ = a->class_;
+  op->sub = a->sub;
+  op->has_payload = a->has_payload;
+  op->query_id = a->query_id;
+  op->timeout_ms = a->timeout_ms;
+  uint16_t port = 0;
+  const char* host = rlmesh_device_robot_host(z->robot, &port);
+  op->host[0] = '\0';
+  if (host != NULL && strlen(host) < sizeof op->host) strcpy(op->host, host);
+  op->port = port;
+  op->key_len = key_len;
+  op->len = len;
+  memcpy(op->data, a->key, key_len);
+  if (len > 0) memcpy(op->data + key_len, a->payload, len);
+  z_mutex_lock(z_loan_mut(z->lock));
+  if (z->ops_tail == NULL) {
+    z->ops = z->ops_tail = op;
+  } else {
+    z->ops_tail->next = op;
+    z->ops_tail = op;
+  }
+  z_mutex_unlock(z_loan_mut(z->lock));
   return 0;
 }
 
@@ -905,48 +997,38 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
       continue;
     }
     if (a.kind == RLMESH_DEVICE_RESET || a.kind == RLMESH_DEVICE_RECONNECT) dgram_request(z, 0);
-    /* The send task uses the sessions too: one zenoh-pico call at a time. */
-    z_mutex_lock(z_loan_mut(z->net));
-    int done = -1;
-    switch (a.kind) {
-      case RLMESH_DEVICE_SUBSCRIBE:
-        done = subscribe(z, &a);
-        break;
-      case RLMESH_DEVICE_TOKEN:
-        done = token(z, &a);
-        break;
-      case RLMESH_DEVICE_QUERY:
-        done = query(z, &a);
-        break;
-      case RLMESH_DEVICE_RESET:
-        reset(z);
-        done = 0;
-        break;
-      case RLMESH_DEVICE_RECONNECT:
-        reconnect(z);
-        done = 0;
-        break;
-      default:
-        break;
+    if (enqueue(z, &a) != 0) {
+      /* The robot waits on every query it asked for: it's over. */
+      if (a.kind == RLMESH_DEVICE_QUERY) push(z, EV_DONE, 0, a.query_id, NULL, NULL);
+      count_failed(z);
     }
-    z_mutex_unlock(z_loan_mut(z->net));
-    if (done != 0) count_failed(z);
   }
   /* One wake for everything this poll queued: a tick's samples leave in one
-   * write. */
+   * write. The host they go to is the robot's now. */
+  uint16_t port = 0;
+  const char* host = rlmesh_device_robot_host(z->robot, &port);
   z_mutex_lock(z_loan_mut(z->lock));
-  if (z->txq.head != NULL) z_condvar_signal(z_loan_mut(z->tx_wake));
+  if (host != NULL && strlen(host) < sizeof z->target_host) {
+    strcpy(z->target_host, host);
+    z->target_port = port;
+  }
+  if (z->txq.head != NULL || z->ops != NULL) z_condvar_signal(z_loan_mut(z->tx_wake));
   z_mutex_unlock(z_loan_mut(z->lock));
   return rc < 0 ? rc : 0;
 }
 
 void rlmesh_zenoh_close(rlmesh_zenoh_t* z) {
-  z_mutex_lock(z_loan_mut(z->net));
+  /* The network task first: then nothing else calls into zenoh-pico. */
+  stop_tasks(z, 2);
   undeclare(z);
   close_sessions(z);
-  z_mutex_unlock(z_loan_mut(z->net));
-  stop_tasks(z, 2);
   drop_unsent(z);
+  for (op_t* op = z->ops; op != NULL;) {
+    op_t* next = op->next;
+    free(op);
+    op = next;
+  }
+  z->ops = z->ops_tail = NULL;
   free(z->view);
   z->view = NULL;
   rlmesh_device_checker_free(z->next_checker);
