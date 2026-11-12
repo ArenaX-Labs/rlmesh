@@ -389,8 +389,15 @@ int rlmesh_device_robot_chunk_timing(const rlmesh_device_robot_t* robot, uint8_t
 /* A datagram from the host, on the socket RLMESH_DEVICE_DATAGRAM_OPEN opened. */
 int rlmesh_device_robot_datagram(rlmesh_device_robot_t* robot, const uint8_t* data, size_t len,
                                  uint64_t now_us);
-/* A datagram the robot asked to send failed, or its socket would not open: the
- * robot goes back to the session's links until it attaches again. */
+/* Whether `data` is a chunk datagram, and its route and statistics sequence:
+ * 1, or 0 for anything else. A transport that queues datagrams for the robot
+ * keeps only the newest chunk of each route, as it does with a part's
+ * commands on the session: one held behind it is late, and the robot would
+ * refuse it as expired or apply it after a newer plan. */
+int rlmesh_device_datagram_lane(const uint8_t* data, size_t len, uint16_t* route, uint32_t* seq);
+/* A datagram the robot asked to send failed, or its socket would not open:
+ * the robot opens the socket again, at most once a second (the host judges
+ * whether the path works). */
 int rlmesh_device_robot_datagram_failed(rlmesh_device_robot_t* robot, uint64_t now_us);
 /* Whether the robot takes the datagram path when the host offers it (on
  * nonzero, the default) or keeps every part on the session's links (0), from

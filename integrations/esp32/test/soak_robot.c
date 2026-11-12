@@ -655,6 +655,10 @@ int main(int argc, char** argv) {
     size_t standing = SIZE_MAX;
     long driven_peak = 0, allocs_warm = 0;
     bool warmed = false;
+    /* SOAK_HOLD_LOOP_MS: once a second the loop is away from poll() this
+     * long, as a sketch printing its status at 115200 baud is. */
+    long hold_loop_ms = getenv("SOAK_HOLD_LOOP_MS") != NULL ? atol(getenv("SOAK_HOLD_LOOP_MS")) : 0;
+    uint64_t next_hold = warm;
     while (now_us() < end) {
       rlmesh_zenoh_poll(&z);
       rlmesh_device_robot_status(robot, &status);
@@ -704,6 +708,11 @@ int main(int argc, char** argv) {
         }
         next_sample = now + 20000;
       }
+      if (hold_loop_ms > 0 && status.phase == 4 && now >= next_hold) {
+        next_hold = now + 1000000u;
+        struct timespec away = {hold_loop_ms / 1000, (hold_loop_ms % 1000) * 1000000L};
+        nanosleep(&away, NULL);
+      }
       if (warmed) {
         size_t live = heap_live();
         if ((long)live > driven_peak) driven_peak = (long)live;
@@ -728,6 +737,35 @@ int main(int argc, char** argv) {
     print_sites();
     bool ok_load =
         status.chunks_accepted > (uint64_t)cycles * 20u && (budget == 0 || peak <= budget);
+    if (hold_loop_ms > 0) {
+      /* With the loop held up, a chunk the robot takes is never older than
+       * the newest of its part was: the one held behind it is replaced. 64
+       * ms is two chunk periods (30 a second) past the host relaying it. */
+      uint64_t late = 0, expired = 0;
+      for (int i = 0; i < PARTS; ++i) {
+        rlmesh_device_chunk_timing_t timing;
+        if (rlmesh_device_robot_chunk_timing(robot, (uint8_t)parts[i], &timing) == 0) {
+          late += timing.late_ms[RLMESH_DEVICE_LATE_BUCKETS - 1];
+        }
+      }
+      for (uint8_t code = 1; code <= RLMESH_DEVICE_REFUSALS; ++code) {
+        const char* name = rlmesh_device_refusal_name(code);
+        if (name != NULL && strcmp(name, "expired") == 0) {
+          expired = rlmesh_device_robot_refusals_total(robot, code);
+        }
+      }
+      rlmesh_device_datagram_stats_t dgram = {0};
+      rlmesh_device_robot_datagram_stats(robot, &dgram);
+      rlmesh_zenoh_view_stats_t views;
+      rlmesh_zenoh_view_stats(&z, &views);
+      printf(
+          "held loop: %ld ms a second; %llu chunks over the datagram path, %llu taken 64 ms "
+          "or more late, %llu refused expired, %u replaced by a newer one waiting\n",
+          hold_loop_ms, (unsigned long long)dgram.received, (unsigned long long)late,
+          (unsigned long long)expired, views.dgram_superseded);
+      ok_load = ok_load && dgram.active && dgram.received > (uint64_t)cycles * 20u && late == 0 &&
+                expired == 0;
+    }
     rlmesh_zenoh_close(&z);
     rlmesh_device_robot_free(robot);
     atomic_store(&proxy.stop, 1);

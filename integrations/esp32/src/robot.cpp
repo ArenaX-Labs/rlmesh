@@ -329,6 +329,16 @@ void Robot::printDatagram(Print& out) const {
     out.printf("; on the beacon: sends %.2f of %lu, receives %.2f of %lu\n", sends,
                (unsigned long)sent, receives, (unsigned long)received);
   }
+  // The loop, since the last print: what arrives while it is away from
+  // poll() waits, and a chunk that waits past its validity is refused (on
+  // UDP) or replaced by a newer one (lost). Printing at 115200 baud with no
+  // serial transmit buffer holds it about 87 us a character.
+  if (zenoh_ != nullptr) {
+    uint32_t longest = 0, held = 0;
+    rlmesh_zenoh_poll_gaps(zenoh_, &longest, &held);
+    out.printf("  loop: longest between polls %.1f ms, %lu over 50 ms\n", longest / 1000.0,
+               (unsigned long)held);
+  }
   rlmesh_device_datagram_stats_t d;
   if (!datagramStats(d)) {
     out.println("  realtime parts over tcp");

@@ -77,6 +77,11 @@ void writeServo(int pin, float rad) {
 }
 
 void setup() {
+  // Room for a status report: with none, each print waits for the port (87 us
+  // a character at 115200 baud), and the loop with it; a report of a few
+  // hundred characters then holds commands that arrive meanwhile past their
+  // life.
+  Serial.setTxBufferSize(2048);
   Serial.begin(115200);
   delay(1000);
   ledcAttach(kPanPin, 50, 14);

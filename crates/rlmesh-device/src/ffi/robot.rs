@@ -554,9 +554,43 @@ pub unsafe extern "C" fn rlmesh_device_robot_datagram(
     RLMESH_DEVICE_OK
 }
 
+/// Whether `data` is a chunk datagram, and its route and statistics
+/// sequence, into `*route` and `*seq`: 1, or 0 for anything else.
+///
+/// # Safety
+/// `data` valid for `len` bytes; `route` and `seq` null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_datagram_lane(
+    data: *const u8,
+    len: usize,
+    route: *mut u16,
+    seq: *mut u32,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(data) = (unsafe { bytes(data, len) }) else {
+        return 0;
+    };
+    let Ok((header, _)) = rlmesh_session_core::datagram::Header::parse(data) else {
+        return 0;
+    };
+    if header.kind != rlmesh_session_core::datagram::Kind::Chunk {
+        return 0;
+    }
+    // SAFETY: null or valid for a write, per the contract.
+    unsafe {
+        if let Some(route) = route.as_mut() {
+            *route = header.route;
+        }
+        if let Some(seq) = seq.as_mut() {
+            *seq = header.seq;
+        }
+    }
+    1
+}
+
 /// A datagram it asked to send failed (the socket refused it or would not
-/// open; not one that would only have blocked): the robot goes back to the
-/// session's links for this attach.
+/// open; not one that would only have blocked): the robot opens the socket
+/// again, at most once a second.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.

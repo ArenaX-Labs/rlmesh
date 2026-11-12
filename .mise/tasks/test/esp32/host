@@ -186,6 +186,13 @@ for core in -1 0; do
   stop_host
 done
 # Read as a policy's input is: the newest sample at each of its ticks.
+# A sketch printing its status holds its loop up (at 115200 baud, about 87 us
+# a character): chunks that arrive meanwhile wait, and the newest of each
+# part is all that should reach the robot then, as on the session's links.
+echo "==> the board's loop held up 120 ms a second, its chunks over UDP"
+start_host udp soak
+SOAK_HOLD_LOOP_MS=120 "$out/soak_robot" "$address" 20 steady
+stop_host
 echo "==> state read at 30 Hz from a board publishing at 50 Hz and taking 30 chunks a second"
 export SOAK_HZ=30
 start_host tcp soak

@@ -42,6 +42,11 @@ typedef struct rlmesh_zenoh_event {
   uint8_t kind;
   uint8_t sub;
   uint32_t query_id;
+  /* An EV_DATAGRAM that carries a chunk: its route, and its statistics
+   * sequence. */
+  bool chunk;
+  uint16_t route;
+  uint32_t seq;
   /* An EV_CHECKED's verified message, and when its view arrived. */
   rlmesh_device_checked_t* checked;
   uint64_t arrived_us;
@@ -196,8 +201,29 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
   free(superseded);
 }
 
+/* Unlinks and returns the queued chunk datagram of `route`, if any (under
+ * `lock`). */
+static event_t* unlink_chunk(rlmesh_zenoh_t* z, uint16_t route) {
+  for (event_t *prev = NULL, *e = z->head; e != NULL; prev = e, e = e->next) {
+    if (e->kind != EV_DATAGRAM || !e->chunk || e->route != route) continue;
+    if (prev == NULL) {
+      z->head = e->next;
+    } else {
+      prev->next = e->next;
+    }
+    if (z->tail == e) z->tail = prev;
+    z->queued -= sizeof(event_t) + e->len;
+    return e;
+  }
+  return NULL;
+}
+
 /* Queues a datagram for the robot, from the datagram task, within the
- * samples' bound. */
+ * samples' bound. A chunk replaces one of its route still waiting, as a
+ * part's commands do on the session: when the loop is held up (a sketch
+ * printing its status, say), the robot takes the newest plan, not each one
+ * that arrived meanwhile, late. A chunk older than the one waiting (the
+ * network reordered them) goes instead. */
 static void push_datagram(rlmesh_zenoh_t* z, const uint8_t* data, size_t len) {
   size_t size = sizeof(event_t) + len;
   z_mutex_lock(z_loan_mut(z->lock));
@@ -209,9 +235,30 @@ static void push_datagram(rlmesh_zenoh_t* z, const uint8_t* data, size_t len) {
     e->kind = EV_DATAGRAM;
     e->arrived_us = z->now_us();
     e->len = len;
+    e->chunk = rlmesh_device_datagram_lane(data, len, &e->route, &e->seq) == 1;
     memcpy(e->data, data, len);
   }
   z_mutex_lock(z_loan_mut(z->lock));
+  event_t* superseded = e != NULL && e->chunk ? unlink_chunk(z, e->route) : NULL;
+  if (superseded != NULL && (int32_t)(e->seq - superseded->seq) < 0) {
+    /* The one waiting is the newer: it stays. */
+    event_t* older = e;
+    e = superseded;
+    superseded = older;
+    z->queued += sizeof(event_t) + e->len;
+    if (z->tail == NULL) {
+      z->head = z->tail = e;
+    } else {
+      z->tail->next = e;
+      z->tail = e;
+    }
+    e->next = NULL;
+    z->views.dgram_superseded++;
+    z_mutex_unlock(z_loan_mut(z->lock));
+    free(superseded);
+    return;
+  }
+  if (superseded != NULL) z->views.dgram_superseded++;
   if (e == NULL) {
     z->views.dgram_dropped++;
   } else {
@@ -227,6 +274,7 @@ static void push_datagram(rlmesh_zenoh_t* z, const uint8_t* data, size_t len) {
     }
   }
   z_mutex_unlock(z_loan_mut(z->lock));
+  free(superseded);
 }
 
 /* Queues a verified message for the robot, from the signature task. */
@@ -1017,7 +1065,21 @@ static int enqueue(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   return 0;
 }
 
+void rlmesh_zenoh_poll_gaps(rlmesh_zenoh_t* z, uint32_t* longest_us, uint32_t* over_50ms) {
+  *longest_us = z->poll_gap_max_us > UINT32_MAX ? UINT32_MAX : (uint32_t)z->poll_gap_max_us;
+  *over_50ms = z->poll_gaps_long;
+  z->poll_gap_max_us = 0;
+  z->poll_gaps_long = 0;
+}
+
 int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
+  uint64_t polled = z->now_us();
+  if (z->polled_us != 0) {
+    uint64_t gap = polled - z->polled_us;
+    if (gap > z->poll_gap_max_us) z->poll_gap_max_us = gap;
+    if (gap > 50000) z->poll_gaps_long++;
+  }
+  z->polled_us = polled;
   rlmesh_device_checker_t* checker = rlmesh_device_robot_take_checker(z->robot);
   bool skip_signed = rlmesh_device_robot_wants_signed_views(z->robot) == 0;
   z_mutex_lock(z_loan_mut(z->lock));

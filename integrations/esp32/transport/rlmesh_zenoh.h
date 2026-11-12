@@ -135,6 +135,9 @@ typedef struct rlmesh_zenoh_view_stats_t {
   uint32_t dgram_unsent;
   uint32_t dgram_received;
   uint32_t dgram_dropped;
+  /* Chunk datagrams a newer one of their route replaced before the robot
+   * took them (the loop was held up), or that came after a newer one. */
+  uint32_t dgram_superseded;
   /* Samples replaced in the robot's queue by a newer one on the same
    * subscription before the robot took them (RLMESH_ZENOH_QUEUE_BYTES). */
   uint32_t superseded;
@@ -193,6 +196,12 @@ typedef struct rlmesh_zenoh_t {
    * them, under `lock`. */
   rlmesh_zenoh_phase_t sends;
   rlmesh_zenoh_phase_t receives;
+  /* The loop's calls to rlmesh_zenoh_poll: the last, and since
+   * rlmesh_zenoh_poll_gaps read them the longest time between two and how
+   * many were over 50 ms (the poll's own thread only). */
+  uint64_t polled_us;
+  uint64_t poll_gap_max_us;
+  uint32_t poll_gaps_long;
   /* The robot takes sealed views: signed ones need no check. */
   bool skip_signed;
   /* Called (under `lock`) when an event is queued for the robot. */
@@ -259,6 +268,12 @@ void rlmesh_zenoh_send_counts(rlmesh_zenoh_t* z, uint32_t* replaced, uint32_t* d
  * a send path that waits on the radio lines up the sends. */
 void rlmesh_zenoh_beacon_lock(rlmesh_zenoh_t* z, float* sends, uint32_t* sent, float* receives,
                               uint32_t* received);
+
+/* The longest time between two calls to rlmesh_zenoh_poll, in microseconds,
+ * and how many were over 50 ms, since the last call (from the loop's thread).
+ * What arrives meanwhile waits: a chunk that waits past its validity is
+ * refused, one a newer chunk of its part replaced is lost. */
+void rlmesh_zenoh_poll_gaps(rlmesh_zenoh_t* z, uint32_t* longest_us, uint32_t* over_50ms);
 
 /* Tasks zenoh-pico started and has not ended (each holds its stack until it
  * has): the transport's own and one per open session. */

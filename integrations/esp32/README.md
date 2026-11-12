@@ -105,6 +105,24 @@ The board tries its stored home addresses in order, authenticating the host
 by the key it was provisioned with. Four consecutive TCP ports from the
 host's base port must be reachable.
 
+### Printing from the loop
+
+Arduino-ESP32 gives `Serial` no transmit buffer by default: a print waits
+for the port, 87 microseconds a character at 115200 baud, and the loop waits
+with it. A status report of 900 characters every 5 s holds the loop for
+about 75 ms, longer than a chunk lives at 30 Hz with four actions: chunks
+that arrive meanwhile are replaced by the newest of their part (lost) and
+the robot runs its safe behaviour once the last runs out. Give the port a
+buffer before `Serial.begin()`, as the `Robot` example does:
+
+```cpp
+Serial.setTxBufferSize(2048);
+Serial.begin(115200);
+```
+
+`robot.printDatagram(Serial)` prints the longest time between two calls to
+`poll()` since its last print, and how many were over 50 ms.
+
 ### Wi-Fi power save and the beacon
 
 In power save (ESP-IDF's modem sleep) a board's frames wait for the access
