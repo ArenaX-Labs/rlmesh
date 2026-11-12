@@ -195,6 +195,7 @@ __all__ = ["main", "serve_env", "serve_model", "startup_marks"]
 # ports), which takes a host identity in RLMESH_HOST_IDENTITY.
 _ADDRESS = "0.0.0.0:7447"
 _HOST_IDENTITY_VAR = "RLMESH_HOST_IDENTITY"
+_READY_FILE_VAR = "RLMESH_READY_FILE"
 
 
 class _NoHostIdentityError(ValueError):
@@ -408,7 +409,19 @@ def _reject_vectorized_framework(
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse ``[model | --env]`` and serve it on ``--address``/``RLMESH_ADDRESS``."""
-    parser = argparse.ArgumentParser(prog="python -m rlmesh.serve")
+    parser = argparse.ArgumentParser(
+        prog="python -m rlmesh.serve",
+        epilog=(
+            "For orchestrators: serving on every interface (the default "
+            f"{_ADDRESS}) takes a host identity in {_HOST_IDENTITY_VAR}, passed "
+            "through the environment, never argv: `rlmesh host-identity new "
+            "--address HOST:PORT --participant NAME` makes one and prints the "
+            "keyed address peers dial (a sandbox does this for you). "
+            f"{_READY_FILE_VAR}=PATH writes PATH, a small JSON file, once the "
+            "env or model answers, and removes it when it stops: wait on it "
+            "(HEALTHCHECK CMD test -f PATH) rather than on the log."
+        ),
+    )
     parser.add_argument(
         "model",
         nargs="?",
@@ -423,9 +436,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--address",
         default=os.environ.get("RLMESH_ADDRESS") or None,
         help=(
-            f"The session to serve in (default {_ADDRESS}, which hosts it here on "
-            f"all interfaces under the host identity in {_HOST_IDENTITY_VAR}; "
-            "127.0.0.1:PORT needs none). Defaults to RLMESH_ADDRESS."
+            f"Where to serve (default {_ADDRESS}, every interface; 127.0.0.1:PORT "
+            "for this machine only). Defaults to RLMESH_ADDRESS."
         ),
     )
     parser.add_argument(
