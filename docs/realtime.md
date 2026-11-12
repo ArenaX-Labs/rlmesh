@@ -9,7 +9,24 @@ the session: who may join, who holds which part, and what is recorded.
 
 This guide builds one setup end to end: two ESP32 "eyes" with a pan and a
 tilt servo each, a camera, and a policy on a PC that runs a detector on
-the camera and points both eyes. The same pieces fit any robot.
+the camera and points both eyes. The same pieces fit any robot. It runs on
+the wall clock: the robots keep their own time and the policy keeps up. To
+step a simulator instead, see [Choosing a clock](clocks.md).
+
+Robots, inputs and actions are declared with builders: `parts.joints(...)`
+for what a robot has, `inputs.camera(...)` and `actions.joints(...)` for
+what a policy reads and drives. Each returns the plain dict it stands for,
+and a dict you write by hand, load from a file or get from another language
+is accepted wherever a builder's is:
+
+```python
+from rlmesh.realtime import actions, inputs
+
+inputs.camera("webcam:cam")
+# {"kind": "camera", "at": "webcam:cam"}
+actions.joints("eye-1:eyes", command="position", hz=50, chunk=4)
+# {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 50, "chunk": 4}
+```
 
 ```text
   camera ──frames──▶  host (PC)  ◀──joins── eye-1 (ESP32)
@@ -112,24 +129,25 @@ names each part by robot: `webcam:cam`, `eye-1:eyes`, `eye-2:eyes`.
 ```python
 import numpy as np
 from rlmesh import realtime
-from rlmesh.realtime import parts
+from rlmesh.realtime import actions, inputs, parts
 
-TRACKER = {
-    "hz": 15,
-    "inputs": {"cam": {"kind": "camera", "at": "webcam:cam"}},
-    "actions": {
-        "left": {"kind": "joints", "at": "eye-1:eyes", "command": "position",
-                 "hz": 50, "chunk": 4},
-        "right": {"kind": "joints", "at": "eye-2:eyes", "command": "position",
-                  "hz": 50, "chunk": 4},
-    },
-}
 # What the detector saw, recorded and shown in the cockpit beside the eyes.
-HAND = {"hand": parts.custom("yolo/hand", hz=15, fields={"xy": ["float32", [2]]})}
+HAND = {"hand": parts.custom("yolo/hand", hz=15, fields={"xy": parts.array(np.float32, 2)})}
 
+tracker = realtime.Policy(
+    hz=15,
+    inputs={"cam": inputs.camera("webcam:cam")},
+    actions={
+        "left": actions.joints("eye-1:eyes", command="position", hz=50, chunk=4),
+        "right": actions.joints("eye-2:eyes", command="position", hz=50, chunk=4),
+    },
+    session="",
+    name="tracker",
+    publishes=HAND,
+)
 center = np.zeros(2, np.float32)
 
-def predict(obs):
+def predict(obs, policy):
     xy = detect(obs["cam"])  # your model: the hand's (x, y) in 0..1, or None
     target = center if xy is None else np.array(
         [(xy[0] - 0.5) * 1.2, (0.5 - xy[1]) * 0.8], np.float32
@@ -139,16 +157,28 @@ def predict(obs):
     chunk = np.tile(target, (4, 1))  # [chunk, (pan, tilt)] in radians
     return {"left": chunk, "right": chunk}
 
-with realtime.Policy(TRACKER, session="", name="tracker", publishes=HAND) as policy:
-    print(policy.bind())  # the binding table: what is bound, and how
-    policy.run(predict)
+with tracker:
+    print(tracker.bind())  # the binding table: what is bound, and how
+    tracker.run(predict)
 ```
 
 `bind()` with no robot binds the whole session's view, so one policy
 drives every eye it names. Each call of `predict` gets the newest camera
 frame as an RGB `uint8 [480, 640, 3]` array and returns a chunk of 4
 targets 20 ms apart, more than one replan period at 15 Hz, so an eye
-never runs dry between calls. The eye's edge plays the chunk, clamps it to
+never runs dry between calls. `run` passes the policy itself as a second
+argument when `predict` has two required parameters, so it can publish
+what it saw; a `predict(obs)` gets the observation alone. `obs.age_ms("cam")`
+says how old the frame was when the policy took it.
+
+Another policy, or a viewer, reads what the tracker publishes by pointing
+at the declaration, so its kind and fields are written once:
+
+````python
+viewer = realtime.Policy(
+    hz=15, inputs={"hand": inputs.of(HAND["hand"], at="tracker:hand")}, session=""
+)
+``` The eye's edge plays the chunk, clamps it to
 the limits the board declared, and holds the last target when no new
 chunk comes.
 
@@ -195,7 +225,7 @@ thread = threading.Thread(target=policy.run, args=(predict,))
 thread.start()
 ...                       # an operator jumps in, then lets go
 policy.resume()           # ["ur10e:arm"]: the model asks for it again
-```
+````
 
 Or the operator hands them back as it lets go, from its own process:
 
@@ -304,16 +334,16 @@ lease, so on a disarmed session it does nothing, and anything reading the
 parts it publishes waits. Run it in shadow mode to watch it first:
 
 ```python
-def predict(obs):
+def predict(obs, policy):
     xy = detect(obs["cam"])
-    policy.publish("aim", xy=xy)  # published while disarmed too
+    policy.publish("hand", xy=xy)  # published while disarmed too
     chunk = np.tile(gaze(xy), (4, 1))
     return {"left": chunk, "right": chunk}
 
-with realtime.Policy(TRACKER, session="", name="tracker", publishes=AIM) as policy:
-    policy.bind()
-    policy.run(predict, mode=realtime.RunMode.SHADOW,
-               on_step=lambda step: step.shadow and show(step.actions))
+with tracker:  # the tracker of section 5
+    tracker.bind()
+    tracker.run(predict, mode=realtime.RunMode.SHADOW,
+                on_step=lambda step: step.shadow and show(step.actions))
 ```
 
 While it cannot command (the session not armed, an operator holding the
@@ -322,7 +352,7 @@ publishes its own parts, and converts and checks its actions as for
 sending, so a model error or an action the binding refuses stops the run
 then, not at arming. It sends nothing. Once armed and granted its leases,
 the same run starts sending from the next start, with inputs read after
-the lease was granted; a viewer bound to `tracker:aim` reads it throughout.
+the lease was granted; a viewer bound to `tracker:hand` reads it throughout.
 `policy.events()` says `shadowing` (and why) and `commanding` at each
 change, `policy.stats()["shadow_predictions"]` counts the starts predicted
 in shadow, and `on_step` receives each start's actions as the edges would
@@ -452,7 +482,11 @@ paths with are the same on both:
 
 ## Next
 
-- The [Python API](https://rlmesh.dev/docs/) (`rlmesh.realtime`, and
-  `rlmesh.realtime.parts` for every part kind) and its [Node twin](node.md).
+- [Choosing a clock](clocks.md): lockstep for a simulator you step, the
+  wall clock for hardware.
+- The [Python API](https://rlmesh.dev/docs/) (`rlmesh.realtime`;
+  `rlmesh.realtime.parts`, `inputs` and `actions` for every kind;
+  `rlmesh.realtime.results` for what each call returns) and its
+  [Node twin](node.md).
 - [The CLI reference](reference/cli.md): `rlmesh host`, `devices`,
   `pair`, `cockpit`.
