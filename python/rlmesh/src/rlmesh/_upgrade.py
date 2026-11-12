@@ -19,23 +19,6 @@ def refuse_v1_address(where: str, address: str) -> None:
     )
 
 
-def refuse_remote_close_env(target: object) -> None:
-    """Refuse ``close_env=True`` on an env served elsewhere on a session."""
-    from ._rlmesh import is_v2_address
-
-    address = target if isinstance(target, str) else getattr(target, "address", None)
-    if (
-        isinstance(address, str)
-        and is_v2_address(address)
-        and (isinstance(target, str) or hasattr(target, "env_contract"))
-    ):
-        raise ValueError(
-            "close_env=True on a session address is gone in rlmesh 0.2: the env "
-            "belongs to its serving process; an owner shutdown is "
-            "server.shutdown() there"
-        )
-
-
 def removed(old: str, new: str) -> NoReturn:
     """Refuse the 0.1 call ``old``, naming ``new``."""
     raise TypeError(f"{old} is gone in rlmesh 0.2: {new}")
@@ -85,7 +68,6 @@ __all__ = [
     "RemoteModel",
     "Session",
     "model_session",
-    "refuse_remote_close_env",
     "refuse_v1_address",
     "removed",
     "session",
