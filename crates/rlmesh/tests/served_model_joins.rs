@@ -258,7 +258,7 @@ async fn a_predict_waits_its_own_deadline_and_fails_at_once_when_the_model_is_go
     // find it, so a caller that retries does not stop for good.
     let address = model.address();
     let (host, _) = address.rsplit_once('/').unwrap();
-    let absent = ServedModel::new(&format!("{host}/absent"), Duration::from_secs(2));
+    let absent = ServedModel::new(format!("{host}/absent"), Duration::from_secs(2));
     let err = absent
         .route_setup()
         .unwrap()
