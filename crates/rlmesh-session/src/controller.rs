@@ -1636,6 +1636,37 @@ fn push_event(events: &Mutex<VecDeque<RunEvent>>, event: RunEvent) {
     events.push_back(event);
 }
 
+/// How long a probe of a robot's lockstep key waits for an answer.
+const LOCKSTEP_PROBE: Duration = Duration::from_millis(500);
+
+/// Whether a robot serves the lockstep exchange on `key` (its `l/{robot}`):
+/// a lockstep robot answers any request there, refusing one it cannot open.
+/// The authority state does not say which clock a robot runs, so this asks
+/// the robot; a wall-clock robot declares no such key, and the query ends at
+/// once with no answer.
+pub(crate) async fn serves_lockstep(participant: &Participant, key: &str) -> bool {
+    let Ok(replies) = participant
+        .transport()
+        .control()
+        .get(key)
+        .timeout(LOCKSTEP_PROBE)
+        .await
+    else {
+        return false;
+    };
+    replies.recv_async().await.is_ok()
+}
+
+/// Why a realtime policy refuses lockstep robot `robot` (at participant
+/// address `address`, when known).
+pub(crate) fn lockstep_refusal(robot: &ParticipantId, address: Option<&str>) -> String {
+    let address = address.map_or_else(|| format!("<session>/{robot}"), str::to_string);
+    format!(
+        "robot {robot} runs in lockstep: a lockstep robot is driven as an env, \
+         RemoteEnv(\"{address}\"), not by a realtime policy"
+    )
+}
+
 /// A bound policy: see the module docs.
 pub struct Controller {
     participant: Arc<Participant>,
@@ -1704,6 +1735,20 @@ impl Controller {
                 }
             }
         };
+        // A lockstep robot publishes nothing on the session and steps only
+        // when an env driver steps it: a binding to it would wait forever.
+        let robots: BTreeSet<&ParticipantId> = binding
+            .inputs
+            .iter()
+            .filter_map(|r| r.part.as_ref())
+            .chain(binding.actions.iter().filter_map(|r| r.part.as_ref()))
+            .map(|p| &p.owner)
+            .collect();
+        for robot in robots {
+            if serves_lockstep(&participant, &participant.keys().lockstep(robot)).await {
+                return Err(BindError::Options(lockstep_refusal(robot, None)).into());
+            }
+        }
         participant.declare_bound(&binding).await?;
         let inputs = Inputs::open(&participant, &binding).await?;
         let rebinder = Arc::new(Rebinder {

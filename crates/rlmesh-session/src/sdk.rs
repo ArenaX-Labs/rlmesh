@@ -831,6 +831,11 @@ async fn bind_policy_with(
         },
         None => None,
     };
+    if let Some(robot) = lockstep_robot_named(address, &participant).await {
+        drop(published);
+        let _ = participant.detach().await;
+        return Err(ControllerError::from(BindError::Options(robot)).into());
+    }
     let config = ControllerConfig {
         bind_timeout: timeout,
         ..ControllerConfig::default()
@@ -846,6 +851,39 @@ async fn bind_policy_with(
             Err(err.into())
         }
     }
+}
+
+/// The refusal for a session address that is a lockstep robot's
+/// participant address: `host:port/cartpole` names session `cartpole`, which
+/// holds nothing, when it meant robot `cartpole` of the default session. Only
+/// asked of a session with no robot yet, so a policy waiting for its robot
+/// pays nothing more.
+async fn lockstep_robot_named(
+    address: &SessionAddress,
+    participant: &crate::participant::Participant,
+) -> Option<String> {
+    if address.name == crate::address::DEFAULT_SESSION {
+        return None;
+    }
+    let me = participant.id();
+    let robots = participant
+        .authority()
+        .is_some_and(|view| view.parts.iter().any(|p| &p.owner != me));
+    if robots {
+        return None;
+    }
+    let robot = crate::wire::ParticipantId::new(&address.name).ok()?;
+    let keys = crate::wire::SessionKeys::new(
+        &address.tenant,
+        crate::address::session_id(crate::address::DEFAULT_SESSION),
+    );
+    if !crate::controller::serves_lockstep(participant, &keys.lockstep(&robot)).await {
+        return None;
+    }
+    Some(format!(
+        "{address} is robot {robot}'s participant address, not a session: {}",
+        crate::controller::lockstep_refusal(&robot, Some(&address.to_string())),
+    ))
 }
 
 /// Stops a policy's run, gives its leases back and detaches, once no other

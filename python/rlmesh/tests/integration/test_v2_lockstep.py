@@ -572,6 +572,45 @@ def test_addresses_parse_as_written_and_old_forms_name_their_upgrade() -> None:
         rlmesh.EnvServer(CatalogEnv(), "lockstep://127.0.0.1:7447/gym")
 
 
+def test_a_realtime_policy_refuses_a_lockstep_robot_at_once(session_port: int) -> None:
+    # A lockstep robot steps only when driven as an env and publishes
+    # nothing on the session: a wall-clock policy would wait forever.
+    reader = {
+        "hz": 10,
+        "inputs": {"obs": {"kind": "gym/box", "fields": {"value": ["float32", [4]]}}},
+    }
+    base = f"127.0.0.1:{session_port}"
+    server = rlmesh.EnvServer(gym.make("CartPole-v1"), f"{base}/cartpole")
+    server.start()
+    try:
+        # The env's participant address, read as a session address, names
+        # an empty session `cartpole`; the session's own address binds it.
+        for session in (f"{base}/cartpole", base):
+            policy = v2.Policy(reader, session=session, name="reader", timeout=4)
+            started = time.monotonic()
+            with pytest.raises(v2.BindingRefused, match="runs in lockstep") as refused:
+                policy.bind()
+            assert time.monotonic() - started < 2
+            assert "RemoteEnv(" in str(refused.value)
+            assert "/cartpole" in str(refused.value)
+    finally:
+        server.shutdown()
+    with v2.Host() as host:
+        robot = v2.Robot("arm1", ARM, session=host, clock="lockstep")
+        robot.serve_lockstep(lambda commands: None, background=True)
+        try:
+            policy = v2.Policy(
+                {"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm"}}},
+                session=host,
+                name="reader",
+                timeout=4,
+            )
+            with pytest.raises(v2.BindingRefused, match="robot arm1 runs in lockstep"):
+                policy.bind()
+        finally:
+            robot.close()
+
+
 SERVE_BY_NAME = """
 import sys, gymnasium as gym, rlmesh
 server = rlmesh.EnvServer(gym.make("CartPole-v1"), "cartpole")
