@@ -17,8 +17,9 @@ mode; the binding refuses a part in another), ``hz`` (the rate of the
 actions in a chunk; default the policy's), ``chunk`` (actions per chunk,
 default 1), ``t0`` (when a chunk's first action is due: ``"snapshot"``,
 the default, at the observation it was computed from, or ``"send"``),
-``ttl_ms`` (a cap on a chunk's life), ``optional`` (may stay unbound, with
-``drop`` allowed) and ``allow``. Numeric kinds take ``units``, ``scale``,
+``ttl_ms`` (a cap on a chunk's life), ``optional`` (may stay unbound, its
+chunks dropped; it needs ``"drop"`` in ``allow``, the entry's, the policy's
+or the bind call's, or the binding is refused) and ``allow``. Numeric kinds take ``units``, ``scale``,
 ``offset`` and ``range`` as inputs do.
 """
 

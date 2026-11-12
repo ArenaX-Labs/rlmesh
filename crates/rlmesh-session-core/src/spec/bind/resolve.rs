@@ -60,6 +60,14 @@ impl<'a> Binder<'a> {
         }
     }
 
+    /// What lets an optional entry of `dir` stay unbound.
+    fn leave(dir: Dir) -> Allow {
+        match dir {
+            Dir::In => Allow::Blank,
+            Dir::Out => Allow::Drop,
+        }
+    }
+
     /// (candidates, considered) of a slot.
     fn candidates(&self, slot: &Slot<'a>) -> (Vec<Candidate<'a>>, Vec<&'a PartSpec>) {
         let scope: Vec<&str> = self.scope.iter().map(String::as_str).collect();
@@ -68,11 +76,7 @@ impl<'a> Binder<'a> {
         // An optional entry that may go blank (or be dropped) never binds to
         // the parts a robot left behind: it binds as if the robot had never
         // joined, and the controller binds it again once the robot is back.
-        let leave = match slot.dir {
-            Dir::In => Allow::Blank,
-            Dir::Out => Allow::Drop,
-        };
-        let skip_absent = !slot.required() && self.allowed(slot.entry, leave);
+        let skip_absent = !slot.required() && self.allowed(slot.entry, Self::leave(slot.dir));
         // A qualified selector resolves in its robot's own map, view or not.
         let qualified = slot.selector.as_ref().is_some_and(|s| s.robot.is_some());
         let pool: Vec<&'a PartSpec> = match self.view {
@@ -121,6 +125,44 @@ impl<'a> Binder<'a> {
             }
         }
         robots
+    }
+
+    /// Refuses every optional entry nothing allows to stay unbound
+    /// (`blank` for an input, `drop` for an action): no robot could make
+    /// such a binding stand, so it is refused before anything is waited
+    /// for. It depends on the policy and the options alone.
+    pub(super) fn check_optionals(&mut self) -> Result<(), BindError> {
+        let slots = self.slots();
+        for slot in slots.iter().filter(|s| !s.required()) {
+            let allow = Self::leave(slot.dir);
+            if !self.allowed(slot.entry, allow) {
+                let what = match slot.dir {
+                    Dir::In => "read blank",
+                    Dir::Out => "be dropped",
+                };
+                self.problems.push(problem(
+                    Code::NotAllowed,
+                    slot,
+                    format!(
+                        "{} is optional, but nothing allows it to {what} when its part is \
+                         absent.",
+                        slot.subject()
+                    ),
+                    vec![
+                        format!("    needs: {allow} (it is optional)"),
+                        format!(
+                            "    fix: allow=[{:?}] on the entry, the policy or the bind call \
+                             (or drop optional)",
+                            allow.name()
+                        ),
+                    ],
+                ));
+            }
+        }
+        if !self.problems.is_empty() {
+            return Err(self.refusal());
+        }
+        Ok(())
     }
 
     pub(super) fn bind(mut self) -> Result<Binding, BindError> {
@@ -349,40 +391,8 @@ impl<'a> Binder<'a> {
             let fitting: Vec<&Candidate<'a>> = cands.iter().filter(|c| c.fits(&chosen)).collect();
             match fitting.as_slice() {
                 [one] => bound[i] = Some(one.part),
-                [] if !slot.required() => {
-                    let allow = match slot.dir {
-                        Dir::In => Allow::Blank,
-                        Dir::Out => Allow::Drop,
-                    };
-                    if self.allowed(slot.entry, allow) {
-                        absent[i] = true;
-                    } else {
-                        let waiting = self.waiting(slot);
-                        self.problems.push(Problem {
-                            waiting,
-                            ..problem(
-                                Code::NotAllowed,
-                                slot,
-                                format!(
-                                    "{}: {} has no {} part {}",
-                                    slot.name(),
-                                    slot.robot,
-                                    slot.entry.kind_name,
-                                    slot.selector.as_ref().map_or_else(String::new, |s| format!(
-                                        "at {:?}",
-                                        s.to_string()
-                                    ))
-                                )
-                                .trim_end()
-                                .to_string(),
-                                vec![
-                                    format!("    needs: {allow} (it is optional)"),
-                                    format!("    fix: add {:?} to allow", allow.name()),
-                                ],
-                            )
-                        });
-                    }
-                }
+                // Allowed to stay unbound: refused up front otherwise.
+                [] if !slot.required() => absent[i] = true,
                 [] => self.unbound(slot, considered),
                 many => {
                     let rows: Vec<(String, String)> = many

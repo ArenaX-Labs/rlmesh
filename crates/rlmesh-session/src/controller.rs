@@ -1702,6 +1702,8 @@ impl Controller {
         options: &RunOptions,
         config: ControllerConfig,
     ) -> Result<Self, ControllerError> {
+        // What no robot could fix is refused before waiting for any.
+        crate::spec::bind::refuse_regardless(policy, options)?;
         let robot: Option<ParticipantId> = options.robot.clone();
         let me = participant.id().clone();
         let deadline = crate::clock::deadline_after(config.bind_timeout);

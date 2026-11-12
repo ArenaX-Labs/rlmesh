@@ -609,6 +609,26 @@ def test_bind_takes_the_policy_timeout_by_name() -> None:
         policy.close()
 
 
+def test_an_optional_input_that_may_not_go_blank_is_refused_at_once() -> None:
+    with realtime.Host() as host:
+        policy = realtime.Policy(
+            hz=10,
+            inputs={
+                "left": inputs.joints(
+                    "gimbal-left:servos", optional=True, allow=["hold"]
+                )
+            },
+            session=host,
+            name="eager",
+            timeout=None,
+        )
+        started = time.monotonic()
+        with pytest.raises(realtime.BindingRefused, match=r'allow=\["blank"\]'):
+            policy.bind()
+        assert time.monotonic() - started < 5.0
+        policy.close()
+
+
 def test_a_wait_without_a_timeout_stops_on_ctrl_c() -> None:
     with realtime.Host() as host:
         policy = realtime.Policy(

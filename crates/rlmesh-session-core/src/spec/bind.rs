@@ -237,6 +237,30 @@ struct Binder<'a> {
     warnings: Vec<String>,
 }
 
+impl<'a> Binder<'a> {
+    /// A binder of `policy` with `options` for `robot`, against nothing yet.
+    fn new(policy: &'a Policy, options: &'a RunOptions, robot: ParticipantId) -> Self {
+        Self {
+            policy,
+            options,
+            robot,
+            parts: &[],
+            view: None,
+            places: &[],
+            roster: &[],
+            scope: options
+                .under
+                .as_ref()
+                .map(|u| u.as_str().split('/').map(String::from).collect())
+                .unwrap_or_default(),
+            run: RunCall::of(options),
+            pending: Vec::new(),
+            problems: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
 /// What a policy binds against: every robot's parts and, when the session
 /// runs a scene, its place table.
 #[derive(Clone, Copy, Debug, Default)]
@@ -278,6 +302,21 @@ pub fn bind(
     )
 }
 
+/// The refusals `policy` gets with `options` whatever robots the session
+/// holds: an `optional` entry that nothing allows to stay unbound (`blank`
+/// for an input, `drop` for an action). A caller about to wait for robots
+/// checks this first, since no robot could make such a binding stand.
+///
+/// # Errors
+/// [`BindError::Refused`], naming each such entry and its fix.
+pub fn refuse_regardless(policy: &Policy, options: &RunOptions) -> Result<(), BindError> {
+    let robot = match &options.robot {
+        Some(robot) => robot.clone(),
+        None => ParticipantId::new(VIEW).map_err(|e| BindError::Options(e.to_string()))?,
+    };
+    Binder::new(policy, options, robot).check_optionals()
+}
+
 /// Binds `policy` against `target` with the run-time `options`: against
 /// its view when it has places and `options` names no robot, else against
 /// one robot.
@@ -286,6 +325,7 @@ pub fn bind_in(
     target: &Target<'_>,
     options: &RunOptions,
 ) -> Result<Binding, BindError> {
+    refuse_regardless(policy, options)?;
     let parts = target.parts;
     let mut owners: Vec<&ParticipantId> = Vec::new();
     for part in parts {
@@ -342,22 +382,11 @@ pub fn bind_in(
         }
     }
     let binder = Binder {
-        policy,
-        options,
-        robot,
         parts,
         view: view.as_deref(),
         places: if view.is_some() { places } else { &[] },
         roster: target.roster,
-        scope: options
-            .under
-            .as_ref()
-            .map(|u| u.as_str().split('/').map(String::from).collect())
-            .unwrap_or_default(),
-        run: RunCall::of(options),
-        pending: Vec::new(),
-        problems: Vec::new(),
-        warnings: Vec::new(),
+        ..Binder::new(policy, options, robot)
     };
     binder.bind()
 }

@@ -736,7 +736,7 @@ fn optional_entries_blank_or_drop_only_when_allowed() {
             "size": [224, 224]}}}"#,
         "ur10e",
     );
-    assert!(text.contains("[not_allowed] input \"low\": ur10e has no camera part at \"scene/cam_low\"\n    needs: blank (it is optional)"), "{text}");
+    assert!(text.contains("[not_allowed] input \"low\" (kind camera, at \"scene/cam_low\") is optional, but nothing allows it to read blank when its part is absent.\n    needs: blank (it is optional)\n    fix: allow=[\"blank\"] on the entry, the policy or the bind call (or drop optional)"), "{text}");
     let text = refusal_text(
         r#"{"hz": 10, "inputs": {"low": {"kind": "camera", "at": "scene/cam_low", "optional": true}},
             "allow": ["blank"]}"#,
@@ -753,6 +753,49 @@ fn optional_entries_blank_or_drop_only_when_allowed() {
     assert_eq!(b.action("hand").expect("hand").status, Status::Dropped);
     assert!(b.table().contains("drop_action"), "{}", b.table());
     assert!(b.channels().is_empty());
+}
+
+/// `optional` without `blank` (or `drop`) allowed is refused at once, even
+/// when the robot it names has not appeared: no robot could make it stand.
+#[test]
+fn an_optional_entry_that_may_not_stay_unbound_is_refused_at_once() {
+    let parts = robot("ur10e");
+    let options = RunOptions::named("reader").robot("ur10e").expect("robot");
+    for (json, allow) in [
+        (
+            r#"{"hz": 20, "inputs": {"left": {"kind": "joints", "at": "gimbal-left:servos",
+                "fields": ["pos"], "optional": true, "allow": ["hold"]}}}"#,
+            "blank",
+        ),
+        (
+            r#"{"hz": 20, "actions": {"eye": {"kind": "joints", "at": "gimbal-left:servos",
+                "command": "position", "optional": true}}}"#,
+            "drop",
+        ),
+        (
+            r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
+                "optional": true}}}"#,
+            "blank",
+        ),
+    ] {
+        let policy = Policy::parse(json).expect("policy");
+        let err = bind(&policy, &parts, &options).expect_err("refused");
+        assert_eq!(err.waiting_for(), None, "{err}");
+        let text = err.to_string();
+        assert!(
+            text.contains("[not_allowed]") && text.contains("is optional"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("fix: allow=[{allow:?}]")), "{text}");
+    }
+    // The bind call's allowance counts.
+    let policy = Policy::parse(
+        r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
+            "optional": true}}}"#,
+    )
+    .expect("policy");
+    let allowed = options.clone().allow(Allow::Blank);
+    assert!(bind(&policy, &parts, &allowed).is_ok());
 }
 
 #[test]

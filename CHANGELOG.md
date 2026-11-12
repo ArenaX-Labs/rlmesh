@@ -104,6 +104,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `parts.array(dtype, shape)` spells a field's `["float32", [17, 3]]` from a NumPy dtype, a Python type or a dtype's name.
 - `Policy(hz=..., inputs=..., actions=..., allow=...)` takes the policy map by keyword, beside the one-dict form.
 - `Policy(timeout=None)` waits for the robots for as long as it takes, and `bind(timeout=...)` overrides the policy's timeout for that call.
+- An `optional` entry that nothing allows to read blank (an input, `allow=["blank"]`) or be dropped (an action, `allow=["drop"]`) is refused at bind, naming the fix, instead of waiting for its robot.
 - `Policy.run` passes the policy as a second argument to a `predict(obs, policy)`.
 - `obs.age_ms(name)` gives an input's age at the snapshot in milliseconds.
 - `robot.part(path)` gives a handle on one part, with its own `publish`, `publish_jpeg`, `due` and `edge_stats`.
