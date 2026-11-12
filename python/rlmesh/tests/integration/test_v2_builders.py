@@ -590,6 +590,22 @@ def test_bind_overrides_the_timeout_of_its_policy() -> None:
         with pytest.raises(TimeoutError, match="absent"):
             policy.bind("absent", timeout=0.3)
         assert time.monotonic() - started < 5.0
+        with pytest.raises(ValueError, match='"policy"'):
+            policy.bind("absent", timeout="later")  # pyright: ignore[reportArgumentType]
+        policy.close()
+
+
+def test_bind_takes_the_policy_timeout_by_name() -> None:
+    with realtime.Host() as host:
+        policy = realtime.Policy(
+            hz=10,
+            inputs={"q": inputs.joints("absent:servos")},
+            session=host,
+            name="named",
+            timeout=0.3,
+        )
+        with pytest.raises(TimeoutError, match="absent"):
+            policy.bind("absent", timeout="policy")
         policy.close()
 
 

@@ -1014,15 +1014,6 @@ class BindingTable:
         return f"BindingTable({self.json['policy']!r} on {self.json['robot']!r}, {self.fingerprint})"
 
 
-class _Inherit(enum.Enum):
-    """A keyword left to its object's own setting."""
-
-    TIMEOUT = "timeout"
-
-    def __repr__(self) -> str:
-        return "<the policy's>"
-
-
 def _limit(timeout: float | None) -> float:
     """A timeout for the native layer: ``None`` waits without limit."""
     return _FOREVER_S if timeout is None else timeout
@@ -1144,7 +1135,7 @@ class Policy:
         at: Mapping[str, str] | None = None,
         names: Mapping[str, str] | None = None,
         allow: Sequence[Conversion] | None = None,
-        timeout: float | None | _Inherit = _Inherit.TIMEOUT,
+        timeout: float | None | Literal["policy"] = "policy",
         **captures: str,
     ) -> BindingTable:
         """Attach, bind to ``robot``'s parts and declare the binding.
@@ -1157,11 +1148,16 @@ class Policy:
         ``allow`` adds conversions for every entry, and keyword captures
         fill ``{name}`` segments. Raises :class:`BindingRefused` with the
         binder's explanation, at once; a robot that has not appeared yet is
-        waited for, up to the policy's ``timeout`` or this call's (then
-        ``TimeoutError``, naming it; ``None`` waits for as long as it takes).
+        waited for, up to ``timeout`` (then ``TimeoutError``, naming it):
+        ``"policy"`` (default) is the policy's, a number overrides it,
+        ``None`` waits for as long as it takes.
         """
         if self._native is not None:
             raise SessionException(f"policy {self._name} is already bound")
+        if isinstance(timeout, str) and timeout != "policy":
+            raise ValueError(
+                f'timeout={timeout!r}: give seconds, None or "policy" (its own)'
+            )
         positional: list[str] = []
         for entry, mode in (names or {}).items():
             if mode != "positional":
@@ -1181,7 +1177,7 @@ class Policy:
             positional=positional,
             allow=list(allow or ()),
             captures=dict(captures),
-            timeout_s=_limit(self._timeout if timeout is _Inherit.TIMEOUT else timeout),
+            timeout_s=_limit(self._timeout if timeout == "policy" else timeout),
             publishes_json=self._publishes_json,
         )
         self._fields = {

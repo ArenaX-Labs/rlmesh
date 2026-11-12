@@ -4308,7 +4308,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[Conversion] | None = None, timeout: float | None | _Inherit = _Inherit.TIMEOUT, **captures: str) -> BindingTable"
+            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[Conversion] | None = None, timeout: float | None | Literal['policy'] = 'policy', **captures: str) -> BindingTable"
           },
           "binding": {
             "kind": "property",
