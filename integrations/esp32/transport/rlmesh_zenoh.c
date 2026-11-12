@@ -11,6 +11,15 @@
 
 size_t rlmesh_zenoh_size(void) { return sizeof(rlmesh_zenoh_t); }
 
+/* Counted by zenoh-pico's ports, as patched (patch_zenoh_pico.py). */
+void zp_rlmesh_tasks(uint32_t* started, uint32_t* ended);
+
+uint32_t rlmesh_zenoh_tasks(void) {
+  uint32_t started = 0, ended = 0;
+  zp_rlmesh_tasks(&started, &ended);
+  return started - ended;
+}
+
 uint32_t rlmesh_zenoh_failures(rlmesh_zenoh_t* z) {
   z_mutex_lock(z_loan_mut(z->lock));
   uint32_t failed = z->failed + z->txq.dropped;

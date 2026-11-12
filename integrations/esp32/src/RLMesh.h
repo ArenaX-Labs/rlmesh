@@ -133,6 +133,9 @@ class Robot {
   bool running() const { return status().phase == 4; }
   // Actions the transport failed to carry out.
   uint32_t transportFailures() const;
+  // Network tasks running now (the transport's and zenoh-pico's, one per
+  // open session): flat across re-attaches, or each one is leaking a stack.
+  uint32_t transportTasks() const;
   // Why the edges last refused a command chunk ("stale_token"), or nullptr
   // while none has been refused this attach. status().chunks_refused counts
   // them.

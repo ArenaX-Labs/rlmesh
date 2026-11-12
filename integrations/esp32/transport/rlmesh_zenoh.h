@@ -223,6 +223,10 @@ void rlmesh_zenoh_on_input(rlmesh_zenoh_t* z, void (*wake)(void*), void* arg);
 /* What happened to the robot's signed views so far. */
 void rlmesh_zenoh_view_stats(rlmesh_zenoh_t* z, rlmesh_zenoh_view_stats_t* out);
 
+/* Tasks zenoh-pico started and has not ended (each holds its stack until it
+ * has): the transport's own and one per open session. */
+uint32_t rlmesh_zenoh_tasks(void);
+
 /* The transport's tasks' stacks, for the firmware's stack check. */
 size_t rlmesh_zenoh_verify_stack(void);
 size_t rlmesh_zenoh_tx_stack(void);

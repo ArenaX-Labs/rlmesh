@@ -190,6 +190,8 @@ uint32_t Robot::transportFailures() const {
   return zenoh_ != nullptr ? rlmesh_zenoh_failures(zenoh_) : 0;
 }
 
+uint32_t Robot::transportTasks() const { return rlmesh_zenoh_tasks(); }
+
 const char* Robot::lastRefusal() const { return rlmesh_device_refusal_name(status().last_refusal); }
 
 uint64_t Robot::refusals(uint8_t code) const {
