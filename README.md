@@ -27,23 +27,21 @@ pip install --pre "rlmesh[gymnasium,numpy]"
 
 ## Quickstart
 
-Serve an env, and print the address it serves at:
+Serve an env at an address:
 
 ```python
 import gymnasium as gym
 import rlmesh
 
-server = rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555/cartpole")
-print(server.address)  # 127.0.0.1:5555#<key>/cartpole
-server.serve()
+rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555/cartpole").serve()
 ```
 
-Use it from another process, with the address it printed:
+Use it from another process:
 
 ```python
 from rlmesh.numpy import RemoteEnv
 
-env = RemoteEnv("127.0.0.1:5555#<key>/cartpole")  # paste the printed address
+env = RemoteEnv("127.0.0.1:5555/cartpole")
 obs, info = env.reset(seed=0)
 
 done = False
@@ -54,7 +52,7 @@ while not done:
 env.close()
 ```
 
-The part after `#` is a key the server makes when it starts; another process needs it to connect, so copy the whole address each time you start the server.
+On one machine the address is all you need. From another machine or a container, use the full address the server reports (`server.address`): it ends in a key the server makes when it starts.
 
 More in [`examples/python`](examples/python): adapters, Docker sandboxes, bring-your-own containers.
 

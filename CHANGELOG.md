@@ -127,6 +127,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `rlmesh host-identity new | key` makes a host identity and the keyed address to dial, for a launcher that starts a session host in another process; Python has the same in `rlmesh.launch`. A wrong key is refused at once.
 - `RLMESH_READY_FILE`: a served env or model writes this file, a small JSON with no key, once it can answer, and removes it when it stops; the bring-your-own-container Dockerfiles and the sandbox image use it as their `HEALTHCHECK`.
 - `RLMESH_RUNTIME_DIR` names where a session host writes its short-lived link-password file, so a host starts in a container with no home and a read-only root.
+- Another process of the same user joins a loopback session by its address alone, as in 0.1: `RemoteEnv("127.0.0.1:5587/cartpole")` reaches `EnvServer(env, "127.0.0.1:5587/cartpole")` without the `#key` it printed. The host leaves its key in `hosts/<ip>-<port>.key` (0600) under `RLMESH_RUNTIME_DIR`, else the user's runtime or cache directory, and removes it when it closes; a file whose host is gone is passed over, and one another user owns or others can read is refused.
 - A join that reaches a session's base port but not its other three (a container that publishes one port) times out with an error naming the ports that did not answer.
 
 #### Python

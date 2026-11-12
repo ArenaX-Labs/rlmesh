@@ -9,6 +9,7 @@ use rlmesh_session_core::auth::AddressKey;
 
 use crate::address::HOST_IDENTITY_VAR;
 use crate::address::credentials::{hosted_key, write_private};
+use crate::address::host_keys::KeyFile;
 use crate::address::{
     Address, Placement, SessionAddress, TENANT, joinable, launched_identity, resolve, session_id,
     well_known_port,
@@ -29,6 +30,9 @@ pub struct Placed {
     /// Where participants join, with the key when this process hosts it.
     pub address: SessionAddress,
     pub(super) hosted: Option<(SessionServer, Transport)>,
+    /// The key it left for this user's other processes, when it hosts on
+    /// loopback.
+    key_file: Option<KeyFile>,
 }
 
 impl fmt::Debug for Placed {
@@ -48,6 +52,7 @@ impl Placed {
         Self {
             address,
             hosted: None,
+            key_file: None,
         }
     }
 
@@ -74,6 +79,8 @@ impl Placed {
 
     /// Stops the host, if this process runs it (participants see it leave).
     pub async fn close(&mut self) -> Result<(), SessionError> {
+        // Before the port is let go: a host that takes it next leaves its own.
+        self.key_file.take();
         if let Some((host, transport)) = self.hosted.take() {
             forget_local_host(&self.address);
             host.shutdown().await;
@@ -87,6 +94,7 @@ impl Drop for Placed {
     /// A placed session dropped unclosed (its owner cancelled or unwound)
     /// still stops the host it runs, on the runtime it is dropped on.
     fn drop(&mut self) {
+        self.key_file.take();
         let Some((host, transport)) = self.hosted.take() else {
             return;
         };
@@ -519,10 +527,16 @@ async fn serve_at(
     local_hosts()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(address.base, (transport.clone(), key));
+        .insert(address.base, (transport.clone(), key.clone()));
+    // A launched host's key is its launcher's to hand out; one bound beyond
+    // loopback is joined from elsewhere, by its address.
+    let key_file = (base.ip().is_loopback() && !launched)
+        .then(|| KeyFile::write(address.base, &key))
+        .flatten();
     Ok(Placed {
         address,
         hosted: Some((host, transport)),
+        key_file,
     })
 }
 
@@ -614,11 +628,30 @@ fn dictionary(password: &zeroize::Zeroizing<String>) -> Result<std::path::PathBu
                 ))
             });
     }
-    let defaults = [dirs::runtime_dir(), dirs::cache_dir()]
+    gate_in(
+        default_runtime_dirs(),
+        &std::env::temp_dir(),
+        &name,
+        contents.as_bytes(),
+    )
+}
+
+/// `rlmesh` in the user's runtime directory, then in their cache directory.
+fn default_runtime_dirs() -> impl Iterator<Item = std::path::PathBuf> {
+    [dirs::runtime_dir(), dirs::cache_dir()]
         .into_iter()
         .flatten()
-        .map(|dir| dir.join("rlmesh"));
-    gate_in(defaults, &std::env::temp_dir(), &name, contents.as_bytes())
+        .map(|dir| dir.join("rlmesh"))
+}
+
+/// The directories, private to this user, a host's files for this user's
+/// other processes go in, in order: [`RUNTIME_DIR_VAR`] alone when set,
+/// else [`default_runtime_dirs`].
+pub(super) fn runtime_dirs() -> Vec<std::path::PathBuf> {
+    match std::env::var_os(RUNTIME_DIR_VAR) {
+        Some(dir) => vec![dir.into()],
+        None => default_runtime_dirs().collect(),
+    }
 }
 
 /// Writes the link gate `name` into the first of `dirs` that takes it, else
@@ -712,6 +745,7 @@ pub async fn place_with(
                 ..SessionAddress::new(base, name)?
             },
             hosted: None,
+            key_file: None,
         })
     };
     let base = match address.placement() {
@@ -970,6 +1004,12 @@ mod tests {
         let text = host_without_home(&blocked_temp, &cache, Some(&runtime));
         assert!(!text.contains("panicked"), "{text}");
         assert!(runtime.is_dir());
-        assert_eq!(std::fs::read_dir(&runtime).unwrap().count(), 0);
+        // Only the (empty) directory its key file was in is left.
+        let left: Vec<_> = std::fs::read_dir(&runtime)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["hosts"], "{left:?}");
+        assert_eq!(std::fs::read_dir(runtime.join("hosts")).unwrap().count(), 0);
     }
 }

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
 import socket
+import tempfile
 
 import pytest
 from rlmesh._editions import WORKFLOW_EDITION_ENV_VAR
@@ -15,6 +18,14 @@ from rlmesh._editions import WORKFLOW_EDITION_ENV_VAR
 # which inherit this environment) while leaving it assertable: a test that
 # wants the warning deletes the variable with `monkeypatch.delenv`.
 os.environ.setdefault(WORKFLOW_EDITION_ENV_VAR, "")
+
+# A loopback host leaves its address key for this user's other processes in
+# the runtime directory: keep the suites' (and their subprocesses') out of the
+# user's real one.
+if "RLMESH_RUNTIME_DIR" not in os.environ:
+    _runtime_dir = tempfile.mkdtemp(prefix="rlmesh-test-runtime-")
+    atexit.register(shutil.rmtree, _runtime_dir, ignore_errors=True)
+    os.environ["RLMESH_RUNTIME_DIR"] = _runtime_dir
 
 
 @pytest.fixture

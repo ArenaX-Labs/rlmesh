@@ -60,18 +60,18 @@ def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:
     )
 
 
-def _serve_example(relative: str) -> Iterator[str]:
-    """Start a server example hosting its session on a free port and yield
-    the env's address as the server announces it: on loopback that carries
-    the session's key (``host:port#key/env``), which a client needs to
-    attach."""
+def _serve_example(relative: str, address: str | None = None) -> Iterator[str]:
+    """Start a server example hosting its session on a free port (or at
+    ``address``) and yield the env's address as the server announces it: on
+    loopback that carries the session's key (``host:port#key/env``), which
+    a client on another machine would need."""
     process = subprocess.Popen(
         [
             sys.executable,
             "-u",
             str(EXAMPLES / relative),
             "--address",
-            f"127.0.0.1:{_free_port()}/env",
+            address or f"127.0.0.1:{_free_port()}/env",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -119,6 +119,26 @@ def counter_address() -> Iterator[str]:
 def cartpole_address() -> Iterator[str]:
     """quickstart/serve_gymnasium.py: Gymnasium CartPole-v1 served over RLMesh."""
     yield from _serve_example("quickstart/serve_gymnasium.py")
+
+
+@pytest.fixture(scope="module")
+def bare_cartpole_address() -> Iterator[str]:
+    """quickstart/serve_gymnasium.py at an address a client names as the
+    README does, without the key it prints: another process of the same
+    user finds the key the loopback host leaves for it."""
+    address = f"127.0.0.1:{_free_port()}/env"
+    for announced in _serve_example("quickstart/serve_gymnasium.py", address):
+        assert announced.split("#", 1)[0] == address.split("/", 1)[0], announced
+        yield address
+
+
+def test_eval_against_gymnasium_server_by_bare_address(
+    bare_cartpole_address: str,
+) -> None:
+    result = _run_example("quickstart/eval.py", "--address", bare_cartpole_address)
+    _assert_ok(result)
+    assert f"connected to {bare_cartpole_address}" in result.stdout
+    assert "step=1 reward=" in result.stdout
 
 
 def test_eval_against_gymnasium_server(cartpole_address: str) -> None:

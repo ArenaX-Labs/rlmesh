@@ -30,6 +30,7 @@
 //! scripts meet by name at the daemon.
 
 mod credentials;
+mod host_keys;
 mod hosting;
 
 #[cfg(feature = "fleet")]
@@ -52,8 +53,10 @@ use rlmesh_session_core::auth::address::{base32, unbase32};
 use rlmesh_session_core::auth::{Credential, HostIdentity};
 use zeroize::Zeroizing;
 
+use crate::address::credentials::hosted_key;
 #[cfg(feature = "fleet")]
 use crate::address::credentials::remembered;
+use crate::address::host_keys::filed_key;
 use crate::address::hosting::{listening, local_host, open_client};
 use crate::clock::SystemMonotonicClock;
 use crate::error::SessionError;
@@ -61,7 +64,7 @@ use crate::participant::{Participant, ParticipantConfig};
 #[cfg(doc)]
 use crate::server::SessionServer;
 use crate::transport::{LinkAuth, Transport};
-use crate::wire::{ParticipantId, PriorityClass, Role, SessionId, TenantId};
+use crate::wire::{CtlError, CtlStatus, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 /// The well-known port a session host listens on (control class; the other
 /// classes follow it), unless [`PORT_VAR`] names another.
@@ -706,9 +709,53 @@ impl SessionAddress {
     }
 
     /// Whether the key it joins with would come from a host on this machine
-    /// (it carries none, and no host in this process has brought one).
+    /// (it carries none, and no host in this process, nor one on file, has
+    /// brought one).
     fn awaits_host_key(&self) -> bool {
-        self.credential.is_none() && self.key.is_none() && local_host(self.base).is_none()
+        self.credential.is_none()
+            && self.key.is_none()
+            && local_host(self.base).is_none()
+            && self.filed().is_none()
+    }
+
+    /// The key file of this user's host at its address, when the join takes
+    /// its key from one (it carries none, and this process has none).
+    fn filed(&self) -> Option<std::path::PathBuf> {
+        if self.credential.is_some() || self.key.is_some() || hosted_key(self.base).is_some() {
+            return None;
+        }
+        #[cfg(feature = "fleet")]
+        if remembered()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&(self.base, self.session))
+        {
+            return None;
+        }
+        filed_key(self.base).ok().flatten().map(|filed| filed.path)
+    }
+
+    /// `err`, a refusal of the key on file for its host, said so: the file's
+    /// host is gone and another took its address.
+    fn refused_filed(&self, err: SessionError) -> SessionError {
+        match (err, self.filed()) {
+            (SessionError::Rejected(refusal), Some(path))
+                if refusal.status == CtlStatus::Unauthenticated =>
+            {
+                SessionError::Rejected(CtlError::new(
+                    CtlStatus::Unauthenticated,
+                    format!(
+                        "the session host at {} refused the key on file for it ({}): the key on \
+                         file is not this host's, but that of one that listened there before. \
+                         Join with the address this host printed (it ends in #key), or remove \
+                         the file",
+                        self.base,
+                        path.display()
+                    ),
+                ))
+            }
+            (err, _) => err,
+        }
     }
 
     /// [`Self::join`], its config finished by `finish`.
@@ -734,17 +781,37 @@ impl SessionAddress {
         // this process runs, or rlmeshd's). rlmeshd's key is on disk whether
         // or not rlmeshd is the host at this address, so holding it alone
         // doesn't end the wait: a host listening does.
-        while self.base.ip().is_loopback()
-            && tokio::time::Instant::now() < deadline
-            && (self.credential().is_err()
-                || (self.awaits_host_key() && !listening(self.base).await))
-        {
+        while self.base.ip().is_loopback() && tokio::time::Instant::now() < deadline {
+            let waiting = match self.credential() {
+                Ok(_) => self.awaits_host_key() && !listening(self.base).await,
+                // No key yet; a key file refused is final.
+                Err(SessionError::Rejected(_)) => true,
+                Err(err) => return Err(err),
+            };
+            if !waiting {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         // Without a key there is nothing to link with: say so before
         // dialing. Taken again once linked, when a host this process runs
         // may have brought its own.
         self.credential()?;
+        self.attach_by(deadline, host_timeout, id, roles, priority, finish)
+            .await
+            .map_err(|err| self.refused_filed(err))
+    }
+
+    /// The rest of [`Self::join_with`]: links by `deadline` and attaches.
+    async fn attach_by(
+        &self,
+        deadline: tokio::time::Instant,
+        host_timeout: Duration,
+        id: &str,
+        roles: Vec<Role>,
+        priority: PriorityClass,
+        finish: impl FnOnce(&mut ParticipantConfig),
+    ) -> Result<Participant, SessionError> {
         let transport = self.link(deadline, host_timeout).await?;
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),

@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 
 #[cfg(feature = "fleet")]
 use crate::address::SessionAddress;
+use crate::address::host_keys::filed_key;
 use crate::address::hosting::local_hosts;
 use crate::error::SessionError;
 use crate::transport::LinkAuth;
@@ -50,11 +51,19 @@ fn paired(base: SocketAddr) -> Option<Credential> {
 
 /// The credential of a participant of the host at `base`: `key` (an
 /// address's), else the key of a host on this machine (one this process
-/// runs, or rlmeshd's), else this machine's key from pairing with the host
-/// ([`crate::pairing::paired_credential`]).
+/// runs, one this user's other process left on file for its loopback
+/// address, or rlmeshd's), else this machine's key from pairing with the
+/// host ([`crate::pairing::paired_credential`]). A key file this user may
+/// not trust is an error, not passed over.
 pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credential, SessionError> {
-    key.cloned()
-        .or_else(|| hosted_key(base))
+    // The file names this very address, where rlmeshd's key stands in for
+    // any loopback port: the file first. One its host outlived is passed
+    // over, so rlmeshd taking the port later is still joined.
+    let filed = match key.cloned().or_else(|| hosted_key(base)) {
+        Some(key) => Some(key),
+        None => filed_key(base)?.map(|filed| filed.key),
+    };
+    filed
         .or_else(|| base.ip().is_loopback().then(daemon_key).flatten())
         .map(|key| key.credential())
         .or_else(|| paired(base))
@@ -72,13 +81,17 @@ pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credenti
 
 /// What a link to the host at `base` presents, on any network: the
 /// password `key` (the address's) derives, else that of a host this process
-/// runs there; without either, nothing (rlmeshd, a paired host). Never
+/// runs there or this user's other process left on file for it; without
+/// any, nothing (rlmeshd, a paired host). Never
 /// rlmeshd's key, which is this machine's and gates no link. Presenting it
 /// to a host that isn't the key's owner gives that host no password (Zenoh
 /// `usrpwd` answers a nonce with an HMAC), and the handshake that follows
 /// refuses a host without the address's host key.
 pub fn link_auth(base: SocketAddr, key: Option<&AddressKey>) -> Option<LinkAuth> {
-    let key = key.cloned().or_else(|| hosted_key(base))?;
+    let key = key
+        .cloned()
+        .or_else(|| hosted_key(base))
+        .or_else(|| filed_key(base).ok().flatten().map(|filed| filed.key))?;
     Some(LinkAuth {
         password: key.link_password(),
         dictionary: None,
