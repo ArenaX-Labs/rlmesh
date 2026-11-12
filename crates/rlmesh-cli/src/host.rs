@@ -46,7 +46,6 @@ use rlmesh_session::auth::address::{base32, unbase32};
 use rlmesh_session::authority::SealPolicy;
 #[cfg(feature = "fleet")]
 use rlmesh_session::discovery;
-use rlmesh_session::host::DatagramRelay;
 use rlmesh_session::pairing::PairService;
 use rlmesh_session::record::Rolling;
 use rlmesh_session::server::SessionServer;
@@ -55,7 +54,7 @@ use rlmesh_session::wire::{PairInfo, Role, TenantId};
 use rlmesh_session::{HostConfig, SystemMonotonicClock};
 use zeroize::Zeroizing;
 
-use crate::cli::{BoardData, HostArgs};
+use crate::cli::HostArgs;
 use crate::devices::{DEVICES, Pin, Table};
 #[cfg(feature = "fleet")]
 use crate::lobby::Home;
@@ -205,26 +204,10 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     let (transport, base) = address::open_listeners_with(base, None, tuning)
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
-    if matches!(args.board_data, BoardData::Udp | BoardData::UdpOnly) {
-        // The realtime class's port number, on UDP.
-        let at = SocketAddr::new(base.ip(), base.port().saturating_add(1));
-        let relay = DatagramRelay::bind(at)
-            .await
-            .with_context(|| format!("could not listen on udp/{at} for --board-data udp"))?;
-        let strict = args.board_data == BoardData::UdpOnly;
-        writeln!(
-            stdout,
-            "boards' realtime parts over UDP port {} (open it in the firewall){}",
-            relay.port(),
-            if strict {
-                ", never back to TCP: a measurement setting"
-            } else {
-                ""
-            }
-        )?;
-        config.datagram = Some(relay);
-        config.datagram_strict = strict;
-    }
+    let board_data = rlmesh_session::host::BoardData::from(args.board_data);
+    config.datagram = board_data.open(base).await?;
+    config.datagram_strict = board_data.strict();
+    let udp = config.datagram.as_ref().map(|relay| relay.port());
     let recordings = recordings(args)?;
     let server = Arc::new(match &recordings {
         Some(dir) => {
@@ -275,9 +258,19 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
             String::new()
         }
     };
+    let udp = match udp {
+        Some(port) if board_data.strict() => format!(
+            "; boards' realtime parts over UDP port {port} (open it in the firewall), never \
+             back to TCP: a measurement setting"
+        ),
+        Some(port) => format!(
+            "; boards' realtime parts over UDP port {port} (open it in the firewall), else TCP"
+        ),
+        None => String::new(),
+    };
     writeln!(
         stdout,
-        "rlmesh host on {base} as {}, state in {}{reach}",
+        "rlmesh host on {base} as {}, state in {}{reach}{udp}",
         identity.host_id(),
         dir.display()
     )?;

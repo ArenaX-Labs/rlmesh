@@ -383,8 +383,9 @@ typedef struct rlmesh_device_chunk_timing_t {
 int rlmesh_device_robot_chunk_timing(const rlmesh_device_robot_t* robot, uint8_t part,
                                      rlmesh_device_chunk_timing_t* out);
 
-/* The host's datagram path (rlmesh host --board-data udp): a robot that takes
- * it gets its realtime parts' chunks and sends their samples over UDP. */
+/* The host's datagram path (rlmesh host's default, --board-data udp): a robot
+ * that takes it gets its realtime parts' chunks and sends their samples over
+ * UDP. */
 
 /* A datagram from the host, on the socket RLMESH_DEVICE_DATAGRAM_OPEN opened. */
 int rlmesh_device_robot_datagram(rlmesh_device_robot_t* robot, const uint8_t* data, size_t len,

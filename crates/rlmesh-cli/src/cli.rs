@@ -590,16 +590,18 @@ pub struct HostArgs {
     #[arg(long)]
     pub no_seal: bool,
     /// How boards carry their realtime parts (action chunks down, states
-    /// and `_applied` up): `tcp` over the session's links, or `udp` over the
-    /// host's datagram path on UDP port `RLMESH_PORT + 1` (open it in the
-    /// firewall), where a lost packet holds nothing up. With `udp` the host
-    /// moves a board's parts back to TCP while the path is broken (one end
-    /// sends and the other opens nothing) and onto UDP again once its probes
-    /// arrive. `udp-only` is a measurement setting: the parts stay on UDP
-    /// whatever it loses, and loss is simply loss. A board that can't take
-    /// the datagram path, a virtual-clock session and every non-board
+    /// and `_applied` up): `udp`, the default, over the host's datagram path
+    /// on UDP port `RLMESH_PORT + 1`, where a lost packet holds nothing up,
+    /// or `tcp` over the session's links. That UDP port must be reachable
+    /// from the boards (open it in the firewall) for the faster path: with
+    /// `udp` the host moves a board's parts to TCP while the path is broken
+    /// (one end sends and the other opens nothing) and onto UDP again once
+    /// its probes arrive, and runs on TCP alone, after one warning, when the
+    /// port won't open. `udp-only` is a measurement setting: the parts stay
+    /// on UDP whatever it loses, and loss is simply loss. A board that can't
+    /// take the datagram path, a virtual-clock session and every non-board
     /// participant keep TCP. Boards re-attach to switch.
-    #[arg(long, value_enum, env = "RLMESH_BOARD_DATA", default_value_t = BoardData::Tcp)]
+    #[arg(long, value_enum, env = "RLMESH_BOARD_DATA", default_value_t)]
     pub board_data: BoardData,
     /// Bound the bytes each accepted TCP link may hold unsent
     /// (`TCP_NOTSENT_LOWAT`, Linux only): what a slow link can't take waits
@@ -619,16 +621,44 @@ pub struct HostArgs {
 }
 
 /// How boards carry their realtime parts (`rlmesh host --board-data`).
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoardData {
     /// Over the session's TCP links.
-    #[default]
     Tcp,
     /// Over the host's datagram path (UDP), back to TCP while it is broken.
     Udp,
     /// Over the host's datagram path only, for measuring it: never back to
     /// TCP.
     UdpOnly,
+}
+
+// The session crate's default, so `rlmesh host` and every embedded host
+// agree.
+impl Default for BoardData {
+    fn default() -> Self {
+        rlmesh_session::host::BoardData::default().into()
+    }
+}
+
+impl From<rlmesh_session::host::BoardData> for BoardData {
+    fn from(value: rlmesh_session::host::BoardData) -> Self {
+        use rlmesh_session::host::BoardData as Session;
+        match value {
+            Session::Tcp => Self::Tcp,
+            Session::Udp => Self::Udp,
+            Session::UdpOnly => Self::UdpOnly,
+        }
+    }
+}
+
+impl From<BoardData> for rlmesh_session::host::BoardData {
+    fn from(value: BoardData) -> Self {
+        match value {
+            BoardData::Tcp => Self::Tcp,
+            BoardData::Udp => Self::Udp,
+            BoardData::UdpOnly => Self::UdpOnly,
+        }
+    }
 }
 
 /// A duration flag: a number with `ms` or `s` (`250ms`, `1.5s`).
@@ -934,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn the_host_carries_boards_over_tcp_unless_told_udp() {
+    fn the_host_carries_boards_over_udp_unless_told_tcp() {
         use clap::Parser;
 
         use super::{BoardData, Cli, Command};
@@ -943,7 +973,11 @@ mod tests {
             Ok(_) => Err("not host".to_string()),
             Err(err) => Err(err.to_string()),
         };
-        assert_eq!(host(&["rlmesh", "host"]), Ok((BoardData::Tcp, None)));
+        assert_eq!(host(&["rlmesh", "host"]), Ok((BoardData::Udp, None)));
+        assert_eq!(
+            host(&["rlmesh", "host", "--board-data", "tcp"]),
+            Ok((BoardData::Tcp, None))
+        );
         assert_eq!(
             host(&[
                 "rlmesh",

@@ -141,11 +141,12 @@ and lwIP run, and every send runs lwIP inline in the sending task.
 
 ## UDP for the realtime parts
 
-A host started with `rlmesh host --board-data udp` offers its datagram path
-in the handshake. The board then takes its parts' action chunks, and sends
-their states and `_applied` entries, over UDP to the host's base port plus
-one (UDP 7448 by default: open it in the host's firewall). Everything else
-stays on TCP. A lost Wi-Fi frame then costs that one message instead of
+`rlmesh host` offers its datagram path in the handshake by default
+(`--board-data udp`). The board then takes its parts' action chunks, and
+sends their states and `_applied` entries, over UDP to the host's base port
+plus one (UDP 7448 by default). That port must be reachable from the board
+for the faster path: open it in the host's firewall. When it is not, the
+host moves the board to TCP, as below. Everything else stays on TCP. A lost Wi-Fi frame then costs that one message instead of
 stalling the stream behind it. Datagrams are sealed and replay-checked as the
 session's messages are, and the board probes the host about once a second so
 the host follows it to a new address.
@@ -160,8 +161,9 @@ setting for measuring the path, where loss is simply loss.
 
 `robot.useDatagram(false)`, after `begin()` and before the first `poll()`,
 keeps a board on TCP whatever the host offers; the default follows the host.
-Restart the host with `--board-data tcp` (the default) to put every board
-back on TCP: they switch as they re-attach, with no reflash.
+Restart the host with `--board-data tcp` to put every board back on TCP:
+they switch as they re-attach, with no reflash. A board built from a library
+before this path takes no part in it and stays on TCP.
 
 ## Reading the board's reports
 

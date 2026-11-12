@@ -366,15 +366,22 @@ Over Wi-Fi a board loses packets. On TCP one lost packet holds back
 everything behind it until it is sent again, a few hundred milliseconds
 later, and then the backlog arrives at once: chunks that are now too old
 and are refused, then states the policy has no use for. Everything a board
-streams is latest-wins anyway, so the host can carry it over UDP instead:
+streams is latest-wins anyway, so by default the host carries it over UDP
+instead:
 
 ```sh
-rlmesh host --board-data udp          # or RLMESH_BOARD_DATA=udp
+rlmesh host                           # --board-data udp, the default
+rlmesh host --board-data tcp          # or RLMESH_BOARD_DATA=tcp: TCP only
 ```
 
-The host then also listens on UDP at its realtime port (7448 by default:
-`RLMESH_PORT + 1`; open it in the firewall) and offers that in each
-board's handshake. A board that takes it gets its realtime parts' action
+The host also listens on UDP at its realtime port (7448 by default:
+`RLMESH_PORT + 1`) and offers that in each board's handshake. That UDP port
+must be reachable from the boards for the faster path: open it in the
+firewall. When it is not, the host moves each board to TCP (below), and
+when it can't open the port at all (another process holds it), it warns
+once and runs on TCP alone. A host in your own process (Python's `Host`)
+does the same on its own port plus one; a session without boards sees no
+difference. A board that takes it gets its realtime parts' action
 chunks over UDP, and sends their states and `_applied` entries back the
 same way; the host relays them to and from the session, so policies, the
 recorder and the cockpit see the same samples. Everything else stays on
@@ -402,8 +409,8 @@ again, in the same attach, once the board's probes arrive: 5 s later at
 first, doubling up to 2 minutes while it keeps breaking. To measure the path
 itself, `rlmesh host --board-data udp-only` (or `RLMESH_BOARD_DATA=udp-only`)
 never moves a board back: loss is simply loss, and the host only warns.
-Restart the host with `--board-data tcp` (the default) to put every board
-back on TCP: they switch as they re-attach.
+Restart the host with `--board-data tcp` to put every board back on TCP:
+they switch as they re-attach.
 
 Each attach logs the path the robot takes. The counters to compare the two
 paths with are the same on both:

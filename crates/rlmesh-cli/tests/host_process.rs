@@ -708,11 +708,22 @@ impl Daemon {
 /// Runs `rlmesh host` with its state in `state` on `base` until its first
 /// line, then stops it: the line.
 fn host_first_line(state: &std::path::Path, base: std::net::SocketAddr) -> String {
+    host_first_line_with(state, base, &[])
+}
+
+/// [`host_first_line`], with `args` too.
+fn host_first_line_with(
+    state: &std::path::Path,
+    base: std::net::SocketAddr,
+    args: &[&str],
+) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
         .args(["host", "--no-record", "--state-dir"])
         .arg(state)
         .arg("--listen")
         .arg(base.to_string())
+        .args(args)
+        .env_remove("RLMESH_BOARD_DATA")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -724,6 +735,52 @@ fn host_first_line(state: &std::path::Path, base: std::net::SocketAddr) -> Strin
     let _ = child.kill();
     let _ = child.wait();
     line
+}
+
+#[test]
+fn the_host_offers_boards_udp_by_default_and_runs_on_tcp_when_the_port_is_taken() {
+    let state = tempfile::tempdir().expect("tempdir");
+    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
+    let udp = std::net::SocketAddr::new(base.ip(), base.port() + 1);
+    let offered = format!("boards' realtime parts over UDP port {}", udp.port());
+
+    let first = host_first_line(state.path(), base);
+    assert!(first.starts_with("rlmesh host on "), "{first}");
+    assert!(first.contains(&offered), "{first}");
+
+    let tcp = host_first_line_with(state.path(), base, &["--board-data", "tcp"]);
+    assert!(tcp.starts_with("rlmesh host on "), "{tcp}");
+    assert!(!tcp.contains("UDP"), "{tcp}");
+
+    // Someone else holds the UDP port: the host still runs, on TCP alone,
+    // after one warning.
+    let taken = std::net::UdpSocket::bind(udp).expect("hold the UDP port");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
+        .args(["host", "--no-record", "--state-dir"])
+        .arg(state.path())
+        .arg("--listen")
+        .arg(base.to_string())
+        .env_remove("RLMESH_BOARD_DATA")
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn rlmesh host");
+    let mut degraded = String::new();
+    BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut degraded)
+        .expect("its first line");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().expect("stderr"), &mut stderr)
+        .expect("stderr");
+    drop(taken);
+    assert!(degraded.starts_with("rlmesh host on "), "{degraded}");
+    assert!(!degraded.contains("UDP"), "{degraded}");
+    let warning = format!("could not listen on udp/{udp}");
+    assert_eq!(stderr.matches(&warning).count(), 1, "{stderr}");
+    assert!(stderr.contains("WARN"), "{stderr}");
 }
 
 #[test]

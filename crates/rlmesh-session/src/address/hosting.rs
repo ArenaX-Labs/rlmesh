@@ -15,7 +15,7 @@ use crate::address::{
 };
 use crate::clock::SystemMonotonicClock;
 use crate::error::SessionError;
-use crate::host::HostConfig;
+use crate::host::{BoardData, HostConfig};
 use crate::server::SessionServer;
 use crate::transport::{
     LINK_USER, LinkAuth, TrafficClass, Transport, TransportConfig, TransportTuning, class_port,
@@ -295,6 +295,9 @@ async fn every_class_listening(base: SocketAddr) -> bool {
 /// loopback gates no link: Zenoh gates every listener of a router or none,
 /// and a board's zenoh-pico has no `usrpwd`, so there the handshake alone
 /// admits, as on any LAN link.
+///
+/// It offers boards the datagram path as [`BoardData::default`] says, on
+/// UDP `base` + 1; a port that won't open leaves them on TCP.
 pub async fn host_at(
     base: SocketAddr,
     name: &str,
@@ -356,6 +359,9 @@ async fn serve_at(
     let gated = base.ip().is_loopback() || launched;
     let password = gated.then(|| config.identity.link_password());
     let (transport, base) = open_listeners(base, password.as_ref()).await?;
+    let board_data = BoardData::default();
+    config.datagram = board_data.open(base).await?;
+    config.datagram_strict = board_data.strict();
     let mut address = SessionAddress::new(joinable(base), name)?;
     config.clock = SystemMonotonicClock.shared();
     config.lease_grace = lease_grace.max(Duration::from_millis(1));

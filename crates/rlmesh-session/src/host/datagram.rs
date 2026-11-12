@@ -225,6 +225,57 @@ impl Down {
     }
 }
 
+/// How a host carries boards' realtime parts (`rlmesh host --board-data`).
+/// Every host this crate starts, embedded or `rlmesh host`, takes its
+/// default from here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoardData {
+    /// Over the session's TCP links.
+    Tcp,
+    /// Over the host's datagram path (UDP), back to TCP while it is broken.
+    #[default]
+    Udp,
+    /// Over the datagram path only, for measuring it: never back to TCP.
+    UdpOnly,
+}
+
+impl BoardData {
+    /// Opens the datagram path for a host listening on `base`: UDP on the
+    /// realtime class's port number (`base` + 1). `None` for [`Self::Tcp`];
+    /// with [`Self::Udp`], also when that port won't open, after one
+    /// warning, so the host still runs and its boards keep TCP.
+    ///
+    /// # Errors
+    /// With [`Self::UdpOnly`], the socket's: a measurement that can't
+    /// measure fails.
+    pub async fn open(self, base: SocketAddr) -> std::io::Result<Option<Arc<DatagramRelay>>> {
+        if self == Self::Tcp {
+            return Ok(None);
+        }
+        let at = SocketAddr::new(base.ip(), base.port().saturating_add(1));
+        match DatagramRelay::bind(at).await {
+            Ok(relay) => Ok(Some(relay)),
+            Err(err) if self == Self::Udp => {
+                warn!(
+                    "could not listen on udp/{at} ({err}): boards' realtime parts ride the \
+                     session's TCP links"
+                );
+                Ok(None)
+            }
+            Err(err) => Err(std::io::Error::new(
+                err.kind(),
+                format!("could not listen on udp/{at} for --board-data udp-only: {err}"),
+            )),
+        }
+    }
+
+    /// Whether boards stay on the datagram path whatever it loses
+    /// ([`crate::HostConfig::datagram_strict`]).
+    pub fn strict(self) -> bool {
+        self == Self::UdpOnly
+    }
+}
+
 impl DatagramRelay {
     /// Listens on `addr` (UDP), until dropped.
     ///

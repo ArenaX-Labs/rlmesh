@@ -54,7 +54,7 @@ mod history;
 mod peer;
 
 pub use config::{HistoryConfig, HostConfig, KeepRecording};
-pub use datagram::DatagramRelay;
+pub use datagram::{BoardData, DatagramRelay};
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicU64;
