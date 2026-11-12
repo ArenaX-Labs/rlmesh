@@ -35,7 +35,7 @@ use tracing::{info, warn};
 use crate::lockstep::client::{Keep, LockstepClient};
 use crate::lockstep::error::GymError;
 use crate::lockstep::exchange::{
-    DirectLink, Gate, Gated, LockstepHandler, LockstepLink, ZenohLink, serve_zenoh,
+    DirectLink, Gate, Gated, Limited, LockstepHandler, LockstepLink, ZenohLink, serve_zenoh,
 };
 use crate::lockstep::map::{self, GymEnvInfo, GymMap};
 use crate::lockstep::record::Tee;
@@ -389,7 +389,9 @@ impl LockstepBinding {
             }
         };
         let robot_json = map.robot_json.clone();
-        self.serve_robot(&robot_json, options, shutdown, move |declared| {
+        // A Gym env takes its actions as sent, as v1 served them: its parts
+        // declare no limits, and its own spaces bound it.
+        self.serve_map(&robot_json, options, shutdown, false, move |declared| {
             let mut map = map;
             map.bind_channels(&declared.parts)?;
             let lanes = map.info.contract.num_envs.max(1) as usize;
@@ -405,7 +407,9 @@ impl LockstepBinding {
     /// Attaches as the robot, declares `robot_json` (a v2 robot map),
     /// arms, and serves the handler `build` makes from the declared parts
     /// over the lockstep exchange until `shutdown` fires. Every step is
-    /// checked against the robot's own authority view first.
+    /// checked against the robot's own authority view first, and its
+    /// commands go through the validation and limits a wall-clock edge
+    /// applies ([`Limited`]): the handler sees them clamped.
     pub async fn serve_robot(
         self,
         robot_json: &str,
@@ -413,12 +417,33 @@ impl LockstepBinding {
         shutdown: CancellationToken,
         build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
     ) -> Result<(), GymError> {
+        self.serve_map(robot_json, options, shutdown, true, build)
+            .await
+    }
+
+    async fn serve_map(
+        self,
+        robot_json: &str,
+        options: ServeOptions,
+        shutdown: CancellationToken,
+        limited: bool,
+        build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
+    ) -> Result<(), GymError> {
         let LockstepBinding {
             address,
             mut placed,
             participant,
         } = self;
-        let result = serve_robot(&address, participant, robot_json, options, shutdown, build).await;
+        let result = serve_robot(
+            &address,
+            participant,
+            robot_json,
+            options,
+            shutdown,
+            limited,
+            build,
+        )
+        .await;
         let _ = placed.close().await;
         result
     }
@@ -430,6 +455,7 @@ async fn serve_robot(
     robot_json: &str,
     options: ServeOptions,
     shutdown: CancellationToken,
+    limited: bool,
     build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
 ) -> Result<(), GymError> {
     let participant = Arc::new(participant);
@@ -502,7 +528,12 @@ async fn serve_robot(
             tee = Some(started.tee());
             recorder = Some(started);
         }
-        let handler: Arc<dyn LockstepHandler> = Gated::new(gate, build(Declared { parts, tee })?);
+        let checked = limited.then(|| parts.clone());
+        let mut handler = build(Declared { parts, tee })?;
+        if let Some(parts) = checked {
+            handler = Limited::wrap(&parts, handler);
+        }
+        let handler: Arc<dyn LockstepHandler> = Gated::new(gate, handler);
         local()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

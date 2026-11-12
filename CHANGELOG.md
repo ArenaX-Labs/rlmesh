@@ -247,6 +247,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - Custom adapter inputs keep integer and boolean kinds, `None` and tuples.
 - `rlmesh check`, `rlmesh check-image` and `python -m rlmesh._describe --check` fail tags that do not fit the env's spaces, as the server does at startup.
 - DLPack exports with `copy=True` set the `IS_COPIED` flag, and DLPack imports reject overflowing sizes and strides.
+- A lockstep robot validates and clamps its commands to its parts' declared limits as on the wall clock, `RemoteEnv`'s action space carries those limits, and `info["clamped"]` counts the commands they changed.
 
 ## [0.1.0] - 2026-09-23
 

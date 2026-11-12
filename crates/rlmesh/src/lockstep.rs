@@ -52,7 +52,7 @@ pub mod adapters {
 
 pub use client::{Keep, LeafStep, LockstepClient};
 pub use error::GymError;
-pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
+pub use exchange::{DirectLink, Gate, Limited, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
 pub use model::{ModelBinding, ModelConnection, ModelLink, ModelService, ServedModel};
 pub use rlmesh_session::address::is_v2_address;

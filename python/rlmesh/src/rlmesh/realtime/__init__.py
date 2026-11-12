@@ -605,7 +605,9 @@ class Robot:
         """Serve a lockstep robot's steps: one ``step(commands)`` per step.
 
         ``commands`` maps each commanded part to its command (the array of a
-        single-field command, else a dict of fields). Inside ``step`` and
+        single-field command, else a dict of fields), validated and clamped
+        to the part's ``limits`` as a wall-clock edge would; a step with an
+        invalid command (a NaN) is refused before ``step`` sees it. Inside ``step`` and
         ``reset(seed, options)`` the robot :meth:`publish`es its parts; each
         returns ``None`` or ``(reward, terminated, truncated[, info])``
         (``reset`` may return just ``info``). Declares and arms first; with

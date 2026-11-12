@@ -8,7 +8,9 @@
 //! The env side is a [`LockstepHandler`] behind a `Gate`: before every
 //! step it checks the step's epoch and lease token against its own
 //! authority view (two atomic loads) and the e-stop latch, with no host
-//! round trip. The driver side reaches it through a [`LockstepLink`]:
+//! round trip. A v2 robot's handler is also behind [`Limited`], which
+//! validates and clamps its commands as a wall-clock edge would. The
+//! driver side reaches it through a [`LockstepLink`]:
 //!
 //! | Placement | Link |
 //! |---|---|
@@ -25,6 +27,7 @@
 //! only as a hint. Both ends check the request's lease token against the
 //! key's.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -32,17 +35,19 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use rlmesh_session::Sealer;
+use rlmesh_session::edge::command::CommandCheck;
 use rlmesh_session::transport::{Transport, payload_bytes};
 use rlmesh_session::wire::timing::ns;
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, LeaseToken, LockstepOp, LockstepReply, LockstepRequest,
-    LockstepReset, LockstepResponse, LockstepResult, LockstepStep, Mode, ParticipantId,
+    LockstepReset, LockstepResponse, LockstepResult, LockstepStep, Mode, PartSpec, ParticipantId,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::query::ConsolidationMode;
 
+use crate::ErrorCode;
 use crate::lockstep::error::{GymError, failure_from_json, failure_to_json};
 
 /// One lockstep request.
@@ -238,6 +243,70 @@ impl LockstepHandler for Gated {
             reply.timing.get_or_insert_default().queue_ns = queue_ns;
         }
         Ok(reply)
+    }
+
+    async fn render(&self, lane: u32) -> Result<Option<Bytes>, GymError> {
+        self.inner.render(lane).await
+    }
+
+    fn concurrent(&self) -> bool {
+        self.inner.concurrent()
+    }
+
+    async fn flush(&self) {
+        self.inner.flush().await;
+    }
+}
+
+/// A robot's command validation on the lockstep path: every step's
+/// commands pass the checks a wall-clock edge runs ([`CommandCheck`]:
+/// finite values, valid rotations, the declared limits, norm bounds and the
+/// binary snap) before the robot sees them, so the robot enforces its own
+/// limits whoever drives it. A step with an invalid action is refused
+/// whole, as the edge refuses a chunk.
+pub struct Limited {
+    checks: BTreeMap<ChannelId, (String, CommandCheck)>,
+    inner: Arc<dyn LockstepHandler>,
+}
+
+impl Limited {
+    /// `inner` behind the checks of `parts`' commands (`inner` itself when
+    /// no part is commandable).
+    pub fn wrap(parts: &[PartSpec], inner: Arc<dyn LockstepHandler>) -> Arc<dyn LockstepHandler> {
+        let checks: BTreeMap<_, _> = parts
+            .iter()
+            .filter_map(|p| {
+                let check = CommandCheck::new(p.command.as_ref()?)?;
+                Some((p.channel, (p.path.to_string(), check)))
+            })
+            .collect();
+        if checks.is_empty() {
+            return inner;
+        }
+        Arc::new(Self { checks, inner })
+    }
+}
+
+#[async_trait]
+impl LockstepHandler for Limited {
+    async fn handle(&self, request: Request) -> Result<LockstepReply, GymError> {
+        let request = match request {
+            Request::Step(mut step) => {
+                for values in &mut step.commands {
+                    let Some((path, check)) = self.checks.get(&values.channel) else {
+                        continue;
+                    };
+                    let count = values.payload.len() / check.stride().max(1);
+                    let checked = check.check(&values.payload, count).map_err(|err| {
+                        GymError::env(ErrorCode::InvalidAction, format!("{path}: {err}"), true)
+                    })?;
+                    values.payload = checked.actions;
+                }
+                Request::Step(step)
+            }
+            reset @ Request::Reset(_) => reset,
+        };
+        self.inner.handle(request).await
     }
 
     async fn render(&self, lane: u32) -> Result<Option<Bytes>, GymError> {

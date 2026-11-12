@@ -318,6 +318,48 @@ def test_remote_env_drives_a_lockstep_robot() -> None:
             robot.close()
 
 
+def test_a_lockstep_robot_holds_its_commands_to_its_declared_limits() -> None:
+    from rlmesh.realtime import parts
+
+    head = {
+        "head": parts.joints(
+            ["pan", "tilt"],
+            hz=50,
+            fields=["pos"],
+            command="position",
+            safe=parts.Safe.HOLD,
+            limits={"pos": [[-0.6, 0.6], [-0.4, 0.4]]},
+        )
+    }
+    with v2.Host() as host:
+        robot = v2.Robot("head", head, session=host, clock="lockstep")
+        seen: list[list[float]] = []
+
+        def step(commands: dict[str, Any]) -> None:
+            seen.append(np.asarray(commands["head"]).tolist())
+            robot.publish("head", pos=commands["head"])
+
+        def reset(seed: int | None, options: Any) -> None:
+            robot.publish("head", pos=np.zeros(2, np.float32))
+
+        robot.serve_lockstep(step, reset, background=True)
+        env = rlmesh.numpy.RemoteEnv(f"{host.address}/head")
+        try:
+            space = cast("Any", env.action_space)["head"]
+            assert space.low.tolist() == pytest.approx([-0.6, -0.4])
+            assert space.high.tolist() == pytest.approx([0.6, 0.4])
+            env.reset(seed=0)
+            _, _, _, _, info = env.step({"head": np.array([1.26, -1.70], np.float32)})
+            assert seen == [pytest.approx([0.6, -0.4])]
+            assert info["clamped"] == {"head": 1}
+            _, _, _, _, info = env.step({"head": np.array([0.1, -0.2], np.float32)})
+            assert seen[1] == pytest.approx([0.1, -0.2])
+            assert info["clamped"] == {"head": 0}
+        finally:
+            env.close()
+            robot.close()
+
+
 @pytest.mark.perf
 def test_a_remote_env_view_step_is_not_delayed_by_the_signal_poll() -> None:
     # Blocked calls poll for Ctrl-C on a timer. Its first tick used to be

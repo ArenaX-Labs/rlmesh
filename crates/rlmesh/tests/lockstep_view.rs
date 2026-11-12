@@ -247,3 +247,151 @@ async fn a_robot_whose_startup_fails_leaves_its_name_free_to_rebind() {
     assert!(failed.is_err());
     rlmesh::lockstep::bind(&address).await.unwrap();
 }
+
+const HEAD: &str = r#"{
+    "head": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"], "hz": 50,
+             "command": "position", "safe": "hold",
+             "limits": {"pos": [[-0.6, 0.6], [-0.4, 0.4]]}},
+    "temp": {"kind": "value", "hz": 50, "unit": "degC", "range": [-40, 125]}
+}"#;
+
+/// A pan/tilt head that records every command its step receives.
+struct Head {
+    parts: Vec<PartSpec>,
+    seen: Arc<Mutex<Vec<Vec<f32>>>>,
+}
+
+#[async_trait]
+impl LockstepHandler for Head {
+    async fn handle(&self, request: Request) -> Result<LockstepReply, GymError> {
+        let mut frame = Frame::new(self.parts.clone());
+        let (epoch, step) = match &request {
+            Request::Reset(reset) => (reset.epoch, 0),
+            Request::Step(step) => {
+                for (_, fields) in commands(&self.parts, step)? {
+                    self.seen.lock().unwrap().push(floats(&fields[0]));
+                }
+                (step.epoch, step.step)
+            }
+        };
+        let last = self.seen.lock().unwrap().last().cloned();
+        frame.publish("head", &[&f32s(&last.unwrap_or(vec![0.0; 2]))])?;
+        frame.publish("temp", &[&f32s(&[21.0])])?;
+        Ok(frame.reply(epoch, step))
+    }
+}
+
+fn head(values: &[f32]) -> Value {
+    Value::Tensor(Tensor {
+        dtype: DType::F32,
+        shape: vec![2],
+        data: f32s(values),
+    })
+}
+
+fn box_bounds(space: &rlmesh_spaces::SpaceSpec, key: &str) -> rlmesh_spaces::BoxBounds {
+    use rlmesh_spaces::SpaceKind;
+    let Some(SpaceKind::Dict(dict)) = &space.spec else {
+        panic!("a dict space");
+    };
+    let i = dict.keys.iter().position(|k| k == key).unwrap();
+    let Some(SpaceKind::Box(spec)) = &dict.spaces[i].spec else {
+        panic!("{key} is a box");
+    };
+    spec.bounds.clone().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lockstep_robot_holds_its_commands_to_its_parts_limits() {
+    use rlmesh_spaces::{BoxBounds, ElementwiseBounds, UniformBounds};
+    let binding = rlmesh::lockstep::bind(":0/head").await.unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let robot_seen = seen.clone();
+    tokio::spawn(binding.serve_robot(
+        HEAD,
+        rlmesh::lockstep::ServeOptions::default(),
+        cancel.clone(),
+        move |declared| {
+            Ok(Arc::new(Head {
+                parts: declared.parts,
+                seen: robot_seen,
+            }) as Arc<dyn LockstepHandler>)
+        },
+    ));
+    for direct in [true, false] {
+        let view = rlmesh::lockstep::connect_view(
+            &address,
+            None,
+            ConnectOptions {
+                direct,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        // The view's spaces carry the declared limits and range.
+        let (observations, actions) = view.spaces();
+        assert_eq!(
+            box_bounds(&actions, "head"),
+            BoxBounds::Elementwise(ElementwiseBounds {
+                low: vec![-0.6, -0.4],
+                high: vec![0.6, 0.4],
+            })
+        );
+        assert_eq!(
+            box_bounds(&observations, "temp"),
+            BoxBounds::Uniform(UniformBounds {
+                low: -40.0,
+                high: 125.0,
+            })
+        );
+        assert_eq!(
+            box_bounds(&observations, "head"),
+            BoxBounds::Uniform(UniformBounds {
+                low: f64::NEG_INFINITY,
+                high: f64::INFINITY,
+            }),
+            "a part with no range keeps the dtype's span"
+        );
+
+        // An out-of-limit action reaches the robot clamped, and `info`
+        // counts it.
+        view.reset(None, "").await.unwrap();
+        seen.lock().unwrap().clear();
+        let step = view
+            .step(&[("head".into(), head(&[1.26, -1.70]))])
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().as_slice(), [vec![0.6, -0.4]]);
+        assert_eq!(step.clamped, [("head".to_string(), 1)]);
+        let info = rlmesh::lockstep::view::info(&step).unwrap();
+        assert_eq!(
+            info["clamped"],
+            rlmesh_spaces::MetaValue::Map(
+                [("head".into(), rlmesh_spaces::MetaValue::Int(1))].into()
+            )
+        );
+        let within = view
+            .step(&[("head".into(), head(&[0.1, -0.2]))])
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap()[1], [0.1, -0.2]);
+        assert_eq!(within.clamped, [("head".to_string(), 0)]);
+
+        // An invalid action is refused before the robot's step sees it.
+        let refused = view
+            .step(&[("head".into(), head(&[f32::NAN, 0.0]))])
+            .await
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("head: a non-finite value"),
+            "{refused}"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        drop(view);
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+    cancel.cancel();
+}
