@@ -156,6 +156,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - Experimental: `Recorder.record(model=, env=, spec=)` records a run as per-episode artifacts: an `episode.json`, a Parquet trajectory and videos per camera.
 - `View(hold=...)` keeps the viewer up after the session ends, `View(step_hz=...)` paces a fast simulator, and the HTTP viewer has a quit button.
 - `rlmesh.FrameSources` and `rlmesh.recorder` are Stable.
+- A predict corner's `context` carries `observation_space` and `action_space`, the spaces of the env its episode runs in, so a model with `spec = NO_ADAPTER` can read the action space it answers in.
 
 #### CLI
 
@@ -173,6 +174,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `RemoteModelOptions::request_timeout` bounds each request to a served model once joined (600 s by default): a deadline fails with `Error::Timeout`, a link that goes away fails at once with `Error::Connection`, and a refused key fails with `Error::Protocol`.
 - `RunResult::save` and `RunResult::load`, `BindOptions::hooks`, `ModelServeOptions::name`, `Policy::reset_options`, `ModelSpec::with_allow`, and polarity and units on the adapter tags.
 - `Tensor::from_dlpack`, `to_dlpack` and `dlpack_device` exchange CPU tensors over DLPack.
+- `PredictContext::observation_space` and `action_space` name the spaces of the env a row's episode runs in.
 - Experimental: `rlmesh::managed` (feature `managed`, on by default) is a client for the managed API, sharing the CLI's sign-in.
 - Experimental: the `rlmesh-session` crate runs real-time sessions from Rust; `Controller::release_to` hands parts back to the model an operator preempted.
 - Experimental: `rlmesh_session::spec::inputs` and `spec::actions` build a policy's entries, one constructor per kind with a setter per key and enums for every closed set (`inputs::camera().at("webcam:cam").size(224)`, `actions::joints().command(JointCommand::Position).chunk(4)`); `Policy::builder()` assembles them, mixed with entries written as JSON, into the `Policy` that `Policy::parse` gives for the same map.

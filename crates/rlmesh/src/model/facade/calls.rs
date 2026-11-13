@@ -2,18 +2,21 @@
 //! store and hooks), the declarations resolved after `load`, and each row's
 //! identity.
 
+use std::sync::Arc;
+
 use super::erased::DynPolicy;
 use crate::model::context::{EpisodeStore, OwnedContext, PredictContext};
 use crate::model::policy::{Corners, SpecArg};
 use crate::model::types::EpisodeInfo;
-use crate::{Error, Metadata, Result, Value};
+use crate::{EnvContract, Error, Metadata, Result, Value};
 
-/// One row's identity, owned for a queued call.
+/// One row's identity and env, owned for a queued call.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Row {
     pub(crate) episode_id: String,
     pub(crate) env_id: String,
     pub(crate) seed: Option<i64>,
+    pub(crate) env: Option<Arc<EnvContract>>,
 }
 
 impl Row {
@@ -22,6 +25,7 @@ impl Row {
             episode_id: episode.episode_id.clone(),
             env_id: episode.env_id.clone(),
             seed: episode.seed,
+            env: None,
         })
     }
 }
@@ -89,7 +93,7 @@ impl Core {
         let mut contexts = Vec::with_capacity(rows.len());
         for row in rows {
             match self.store.begin(&row.episode_id, &row.env_id, row.seed) {
-                Ok(context) => contexts.push(context),
+                Ok(context) => contexts.push(context.on(row.env.clone())),
                 Err(err) => {
                     for context in contexts {
                         self.store.finish(context);
@@ -125,7 +129,10 @@ impl Core {
         if !self.context.contains(Corners::PREDICT) {
             return self.policy.predict(observation, None);
         }
-        let mut context = self.store.begin(&row.episode_id, &row.env_id, row.seed)?;
+        let mut context = self
+            .store
+            .begin(&row.episode_id, &row.env_id, row.seed)?
+            .on(row.env.clone());
         let result = self.policy.predict(observation, Some(&mut context.view()));
         self.store.finish(context);
         result
@@ -175,7 +182,10 @@ impl Core {
                 .policy
                 .predict_chunk(observation, execution_horizon, None);
         }
-        let mut context = self.store.begin(&row.episode_id, &row.env_id, row.seed)?;
+        let mut context = self
+            .store
+            .begin(&row.episode_id, &row.env_id, row.seed)?
+            .on(row.env.clone());
         let result =
             self.policy
                 .predict_chunk(observation, execution_horizon, Some(&mut context.view()));

@@ -59,6 +59,8 @@ def test_store_gives_an_anonymous_row_a_throwaway_context() -> None:
         "predict_index": 0,
         "predict_seed": None,
         "state": {},
+        "observation_space": None,
+        "action_space": None,
     }
     assert len(store) == 0
 
@@ -255,3 +257,65 @@ def test_chunk_corner_without_a_horizon_keeps_its_context() -> None:
 
     assert seen[0]["episode_id"] == "a"
     assert seen[0]["predict_seed"] == rlmesh.predict_seed(5, 0)
+
+
+class _Env:
+    """A local env: a Box observation, a Discrete action, two steps."""
+
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
+        self.action_space = spaces.Discrete(5)
+        self._t = 0
+
+    def reset(self, *, seed: object = None, options: object = None) -> Any:
+        _ = (seed, options)
+        self._t = 0
+        return np.zeros(3, dtype=np.float32), {}
+
+    def step(self, action: object) -> Any:
+        _ = action
+        self._t += 1
+        return np.zeros(3, dtype=np.float32), 0.0, self._t >= 2, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_an_adapterless_model_reads_its_envs_spaces_from_the_context(
+    chunked: bool,
+) -> None:
+    """A ``NO_ADAPTER`` model answers in the env's own action space, so its
+    context names that space (and the observation space) on every predict."""
+    from rlmesh import spaces
+
+    seen: list[tuple[object, object]] = []
+
+    class Sampler(Model):
+        spec = rlmesh.NO_ADAPTER
+
+        def predict(self, observation: Any, context: Any) -> Any:
+            seen.append((context["observation_space"], context["action_space"]))
+            return context["action_space"].sample()
+
+        if chunked:
+
+            def predict_chunk(self, observation: Any, context: Any) -> Any:
+                seen.append((context["observation_space"], context["action_space"]))
+                return np.asarray([context["action_space"].sample()] * 2)
+
+    result = Sampler().run(_Env(), seeds=[0], execution_horizon=2 if chunked else None)
+    assert result.episodes
+    assert seen
+    for observation_space, action_space in seen:
+        assert isinstance(action_space, spaces.Discrete)
+        assert action_space.n == 5
+        assert isinstance(observation_space, spaces.Box)
+        assert tuple(observation_space.shape) == (3,)
+    # One space object per env, not one per predict.
+    assert len({id(action) for _, action in seen}) == 1
+    # Called directly, no env is known.
+    model = Sampler()
+    assert model._episodes.context(raw())["action_space"] is None  # pyright: ignore[reportPrivateUsage]

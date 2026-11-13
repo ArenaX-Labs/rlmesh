@@ -7131,6 +7131,10 @@
       "PredictContext": {
         "kind": "class",
         "members": {
+          "action_space": {
+            "kind": "attribute",
+            "signature": "action_space: _Space[Any] | None"
+          },
           "episode_id": {
             "kind": "attribute",
             "signature": "episode_id: str"
@@ -7138,6 +7142,10 @@
           "episode_seed": {
             "kind": "attribute",
             "signature": "episode_seed: int | None"
+          },
+          "observation_space": {
+            "kind": "attribute",
+            "signature": "observation_space: _Space[Any] | None"
           },
           "predict_index": {
             "kind": "attribute",

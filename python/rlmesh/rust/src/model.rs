@@ -84,6 +84,54 @@ struct PyPredict {
     reset_options_fn: Option<Py<PyAny>>,
     /// The models this model calls from its predict (`self.inner.predict`).
     nested: Option<Arc<crate::nested::Nested>>,
+    /// Each route's env contract, for the contexts of its rows.
+    envs: RouteEnvs,
+}
+
+/// Each route's env contract as a Python `EnvContract`, by env id: kept from
+/// the route's resolve (or its first spec-less predict) to its release, so
+/// every row's context names its env's spaces.
+#[derive(Clone, Default)]
+struct RouteEnvs(Arc<std::sync::Mutex<HashMap<String, Py<PyAny>>>>);
+
+impl RouteEnvs {
+    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<String, Py<PyAny>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, py: Python<'_>, env_id: &str) -> Option<Py<PyAny>> {
+        self.map()
+            .get(env_id)
+            .map(|contract| contract.clone_ref(py))
+    }
+
+    fn keep(&self, env_id: &str, contract: Py<PyAny>) {
+        self.map().insert(env_id.to_string(), contract);
+    }
+
+    /// Keeps `contract` for `env_id` unless one is kept already.
+    fn remember(
+        &self,
+        py: Python<'_>,
+        env_id: &str,
+        contract: Option<&EnvContract>,
+    ) -> PyResult<()> {
+        let Some(contract) = contract else {
+            return Ok(());
+        };
+        if env_id.is_empty() || self.map().contains_key(env_id) {
+            return Ok(());
+        }
+        let contract = env_contract_to_py(py, contract)?;
+        self.keep(env_id, contract);
+        Ok(())
+    }
+
+    fn forget(&self, env_id: &str) {
+        self.map().remove(env_id);
+    }
 }
 
 pub(crate) type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
@@ -125,7 +173,7 @@ impl PredictFn for PyPredict {
             // The assembled input is now a Value tree (a nested dict/list/leaf
             // matching the model spec's InputNode shape).
             let input = encode_value(py, &model_input)?;
-            let context = episode_context_dict(py, episode)?;
+            let context = episode_context_dict(py, episode, &self.envs)?;
             let action = self.predict_fn.call1(py, (input, context))?;
             decode_value(action.bind(py))
         })
@@ -146,7 +194,7 @@ impl PredictFn for PyPredict {
             // The assembled input is a Value tree (dict/list/leaf matching the
             // model spec's InputNode shape), encoded as one Python argument.
             let input = encode_value(py, &model_input)?;
-            let context = episode_context_dict(py, episode)?;
+            let context = episode_context_dict(py, episode, &self.envs)?;
             // `predict_chunk(observation, horizon)`: the model returns up to
             // `horizon` actions; its chunk's leading axis is the chunk axis, which
             // the native engine's `split_chunk` unstacks into per-step frames.
@@ -168,7 +216,8 @@ impl PredictFn for PyPredict {
     ) -> rlmesh::Result<Vec<Value>> {
         rlmesh::binding::check_model_call()?;
         match self.predict_batch_fn.as_ref() {
-            Some(f) => call_batched(f, inputs, None, episodes).map_err(|err| self.internal(err)),
+            Some(f) => call_batched(f, inputs, None, episodes, &self.envs)
+                .map_err(|err| self.internal(err)),
             None => Err(RLMeshError::Internal(
                 "predict_batch not implemented".to_string(),
             )),
@@ -187,9 +236,8 @@ impl PredictFn for PyPredict {
     ) -> rlmesh::Result<Vec<Value>> {
         rlmesh::binding::check_model_call()?;
         match self.predict_chunk_batch_fn.as_ref() {
-            Some(f) => {
-                call_batched(f, inputs, Some(horizon), episodes).map_err(|err| self.internal(err))
-            }
+            Some(f) => call_batched(f, inputs, Some(horizon), episodes, &self.envs)
+                .map_err(|err| self.internal(err)),
             None => Err(RLMeshError::Internal(
                 "predict_chunk_batch not implemented".to_string(),
             )),
@@ -221,6 +269,11 @@ impl PredictFn for PyPredict {
             Vec::new()
         };
         Python::attach(|py| -> PyResult<Vec<SpaceValue>> {
+            self.envs.remember(
+                py,
+                &observation.route.env_id,
+                observation.env_contract.as_deref(),
+            )?;
             let observation_space = observation
                 .env_contract
                 .as_ref()
@@ -248,6 +301,7 @@ impl PredictFn for PyPredict {
                     contexts.append(episode_context_dict(
                         py,
                         observation.route.episodes.get(index),
+                        &self.envs,
                     )?)?;
                 }
                 let result = batch_fn.call1(py, (inputs, contexts))?;
@@ -280,7 +334,13 @@ impl PredictFn for PyPredict {
             let episode = (observation.num_envs == 1)
                 .then(|| observation.route.episodes.first())
                 .flatten();
-            let context = episode_context_dict(py, episode)?;
+            let context = episode_context_dict(py, episode, &self.envs)?;
+            if episode.is_none() {
+                // Anonymous, yet still on its route's env.
+                let env_id = observation.route.env_id.as_str();
+                context.set_item("env_id", env_id)?;
+                context.set_item("env_contract", self.envs.get(py, env_id))?;
+            }
             // An inner model's predict answers this one episode.
             let contract = observation.env_contract.as_ref();
             let action = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
@@ -345,6 +405,11 @@ impl PredictFn for PyPredict {
             .decoded_lanes()
             .map_err(|err| RLMeshError::Internal(err.to_string()))?;
         Python::attach(|py| -> PyResult<PredictFrames> {
+            self.envs.remember(
+                py,
+                &observation.route.env_id,
+                observation.env_contract.as_deref(),
+            )?;
             let contract = observation.env_contract.as_ref();
             let observation_space = contract
                 .and_then(|contract| contract.observation_space.as_ref())
@@ -368,7 +433,7 @@ impl PredictFn for PyPredict {
             let obs = space_value_to_py_neutral(py, lane, observation_space)?;
             // Guaranteed exactly one lane by the num_envs == 1 check above.
             let episode = observation.route.episodes.first();
-            let context = episode_context_dict(py, episode)?;
+            let context = episode_context_dict(py, episode, &self.envs)?;
             let chunk = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
                 predict_chunk_fn.call1(py, (obs, horizon as u32, context))
             })?;
@@ -463,6 +528,7 @@ impl PredictFn for PyPredict {
     }
 
     fn on_route_release(&self, env_id: &str) -> rlmesh::Result<()> {
+        self.envs.forget(env_id);
         self.on_route_reset(env_id)
     }
 
@@ -621,6 +687,7 @@ fn leading_axis_len(value: &Bound<'_, PyAny>) -> Option<usize> {
 fn episode_context_dict<'py>(
     py: Python<'py>,
     episode: Option<&EpisodeInfo>,
+    envs: &RouteEnvs,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     let dict = pyo3::types::PyDict::new(py);
     dict.set_item(
@@ -632,10 +699,10 @@ fn episode_context_dict<'py>(
     dict.set_item("episode_seed", episode.and_then(|episode| episode.seed))?;
     // The route the row arrived on: the store tags its entry with it, so the
     // env's teardown drops it (MDL-P4).
-    dict.set_item(
-        "env_id",
-        episode.map(|episode| episode.env_id.as_str()).unwrap_or(""),
-    )?;
+    let env_id = episode.map(|episode| episode.env_id.as_str()).unwrap_or("");
+    dict.set_item("env_id", env_id)?;
+    // The env's contract, which the SDK turns into the context's spaces.
+    dict.set_item("env_contract", envs.get(py, env_id))?;
     Ok(dict)
 }
 
@@ -655,6 +722,7 @@ fn call_batched(
     inputs: Vec<Value>,
     horizon: Option<u32>,
     episodes: &[EpisodeInfo],
+    envs: &RouteEnvs,
 ) -> PyResult<Vec<Value>> {
     Python::attach(|py| -> PyResult<Vec<Value>> {
         let list = pyo3::types::PyList::empty(py);
@@ -664,7 +732,7 @@ fn call_batched(
         }
         let contexts = pyo3::types::PyList::empty(py);
         for episode in episodes {
-            contexts.append(episode_context_dict(py, Some(episode))?)?;
+            contexts.append(episode_context_dict(py, Some(episode), envs)?)?;
         }
         let result = match horizon {
             Some(h) => fn_obj.call1(py, (list, h, contexts))?,
@@ -684,22 +752,25 @@ fn call_batched(
 /// `None` is a spec-less / `NO_ADAPTER` route.
 struct PyRouteResolver {
     configure_fn: Py<PyAny>,
+    envs: RouteEnvs,
 }
 
 #[async_trait]
 impl RouteResolver for PyRouteResolver {
     async fn resolve(
         &self,
-        _route_key: &str,
+        route_key: &str,
         env_contract: &EnvContract,
     ) -> rlmesh::Result<Option<RouteConfig>> {
         let configure_fn = Python::attach(|py| self.configure_fn.clone_ref(py));
         let contract = env_contract.clone();
+        let (envs, route_key) = (self.envs.clone(), route_key.to_string());
         let observation_space = contract.observation_space.clone();
         let action_space = contract.action_space.clone();
         tokio::task::spawn_blocking(move || {
             Python::attach(|py| -> PyResult<Option<RouteConfig>> {
                 let contract_py = env_contract_to_py(py, &contract)?;
+                envs.keep(&route_key, contract_py.clone_ref(py));
                 let resolved = configure_fn.call1(py, (contract_py,))?;
                 let resolved = resolved.bind(py);
                 if resolved.is_none() {
@@ -821,6 +892,7 @@ impl PyModel {
                 )
             })
         });
+        let envs = RouteEnvs::default();
         let predict = Python::attach(|py| PyPredict {
             predict_fn: self.predict_fn.clone_ref(py),
             predict_chunk_fn: self.predict_chunk_fn.as_ref().map(|cb| cb.clone_ref(py)),
@@ -838,11 +910,12 @@ impl PyModel {
             last_error: Arc::clone(&self.last_error),
             reset_options_fn: self.reset_options_fn.as_ref().map(|cb| cb.clone_ref(py)),
             nested: nested.clone(),
+            envs: envs.clone(),
         });
         let resolver: Option<Arc<dyn RouteResolver>> =
             self.configure_fn.as_ref().map(|configure| {
                 let configure_fn = Python::attach(|py| configure.clone_ref(py));
-                Arc::new(PyRouteResolver { configure_fn }) as Arc<dyn RouteResolver>
+                Arc::new(PyRouteResolver { configure_fn, envs }) as Arc<dyn RouteResolver>
             });
         let handler = Box::new(AdaptedModelHandler::new(Arc::new(predict), resolver));
         match nested {
@@ -1668,6 +1741,7 @@ mod review_regressions {
                 reset_options_fn: None,
                 nested: None,
                 last_error: Default::default(),
+                envs: RouteEnvs::default(),
             };
             {
                 let error = if chunked {

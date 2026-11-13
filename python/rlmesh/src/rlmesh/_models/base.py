@@ -805,7 +805,8 @@ class ModelBase(Generic[ObsT, ActT]):
         self._episodes = EpisodeStore(
             _episode_end_hook(
                 on_episode_end if on_episode_end is not None else coerced_on_episode_end
-            )
+            ),
+            bridge=self._bridge,
         )
         raw_predict = _with_episode_state(
             self._episodes, raw_predict, arity=1, batched=False
