@@ -63,6 +63,14 @@ pub const SCENE_PLACES: &str = "scene.places";
 /// parked.
 pub const LEASE_HANDBACK: &str = "lease.handback";
 
+/// A robot's `Attach.supports` declares that it runs on the lockstep
+/// clock: it advances one step per `l/{robot}` request and waits between
+/// them. The roster carries it (`ParticipantInfo.supports`), so every
+/// participant learns a robot's clock from the authority state, before the
+/// robot serves a step. A robot that does not list it is on the wall clock.
+/// The host takes no part in it, so it is not a host feature.
+pub const CLOCK_LOCKSTEP: &str = "clock.lockstep";
+
 /// Features this build implements as a host: behaviour added in later
 /// minors. `auth.sealed`: participants attach through the handshake and
 /// seal their control traffic; [`VIEW_DEVICE`]; [`VIEW_DEVICE_SEALED`];

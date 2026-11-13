@@ -792,8 +792,9 @@ impl SessionAddress {
         }
     }
 
-    /// [`Self::join`], its config finished by `finish`.
-    pub(crate) async fn join_with(
+    /// [`Self::join`], its config finished by `finish` (the features it
+    /// declares, say).
+    pub async fn join_with(
         &self,
         id: &str,
         roles: Vec<Role>,

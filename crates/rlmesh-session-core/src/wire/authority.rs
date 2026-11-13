@@ -263,6 +263,17 @@ pub struct LastStop {
     pub revision: u64,
 }
 
+/// Who owns a robot's time, as it declared when it attached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RobotClock {
+    /// The world runs whether anyone acts: the robot keeps its own time.
+    #[default]
+    Wall,
+    /// The robot advances one step per lockstep request, and waits for it
+    /// ([`CLOCK_LOCKSTEP`](crate::wire::version::CLOCK_LOCKSTEP)).
+    Lockstep,
+}
+
 /// One roster entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParticipantInfo {
@@ -296,6 +307,22 @@ pub struct ParticipantInfo {
     /// The process attached under this id: rises with every handshake that
     /// takes effect.
     pub generation: u32,
+}
+
+impl ParticipantInfo {
+    /// Its clock: lockstep when its attach declared
+    /// [`CLOCK_LOCKSTEP`](crate::wire::version::CLOCK_LOCKSTEP), else wall.
+    pub fn clock(&self) -> RobotClock {
+        if self
+            .supports
+            .iter()
+            .any(|f| f == crate::wire::version::CLOCK_LOCKSTEP)
+        {
+            RobotClock::Lockstep
+        } else {
+            RobotClock::Wall
+        }
+    }
 }
 
 impl ParticipantInfo {
@@ -500,6 +527,15 @@ pub fn held_refusal(robot: &ParticipantId, why: &Reason, run: Option<&str>) -> S
 }
 
 impl AuthoritySnapshot {
+    /// `robot`'s clock, as its attach declared it (`None`: not in the
+    /// roster).
+    pub fn clock_of(&self, robot: &ParticipantId) -> Option<RobotClock> {
+        self.roster
+            .iter()
+            .find(|p| &p.id == robot)
+            .map(ParticipantInfo::clock)
+    }
+
     /// Why `robot` takes no lease, when it is held: what the host would
     /// refuse a lease on it with.
     pub fn held_refusal(&self, robot: &ParticipantId) -> Option<String> {

@@ -395,3 +395,53 @@ async fn a_lockstep_robot_holds_its_commands_to_its_parts_limits() {
     }
     cancel.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lockstep_robot_declares_its_clock_when_it_attaches() {
+    use rlmesh_session::wire::{ParticipantId, PriorityClass, RobotClock, Role};
+    // Attached, never served: no parts declared, nothing answers `l/sim`.
+    let binding = rlmesh::lockstep::bind(":0/sim").await.unwrap();
+    let session = rlmesh_session::address::Address::participant(&binding.address())
+        .unwrap()
+        .joining()
+        .unwrap();
+    let timeout = std::time::Duration::from_secs(10);
+    let board = session
+        .join(
+            "board",
+            vec![Role::Embodiment],
+            PriorityClass::Scripted,
+            timeout,
+        )
+        .await
+        .unwrap();
+    let reader = session
+        .join(
+            "reader",
+            vec![Role::Controller],
+            PriorityClass::Model,
+            timeout,
+        )
+        .await
+        .unwrap();
+    let (sim, board_id) = (
+        ParticipantId::new("sim").unwrap(),
+        ParticipantId::new("board").unwrap(),
+    );
+    let view = reader
+        .wait_for("both robots in the roster", timeout, |s| {
+            s.clock_of(&sim).is_some() && s.clock_of(&board_id).is_some()
+        })
+        .await
+        .unwrap();
+    assert_eq!(view.clock_of(&sim), Some(RobotClock::Lockstep));
+    assert_eq!(
+        view.clock_of(&board_id),
+        Some(RobotClock::Wall),
+        "a robot that declares nothing is on the wall clock"
+    );
+    assert_eq!(view.clock_of(&ParticipantId::new("nobody").unwrap()), None);
+    reader.close().await;
+    board.close().await;
+    binding.close().await;
+}

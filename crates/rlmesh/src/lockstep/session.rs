@@ -24,6 +24,7 @@ use rlmesh_session::address::{Address, LEASE_GRACE, Placed, SessionAddress, plac
 use rlmesh_session::lease::LeaseGroup;
 use rlmesh_session::spec::Kind;
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
+use rlmesh_session::wire::version::CLOCK_LOCKSTEP;
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
     ParticipantId, PriorityClass, Role, SessionId, SessionKeys,
@@ -393,14 +394,19 @@ impl std::fmt::Debug for LockstepBinding {
 /// holds is refused here.
 pub async fn bind(address: &str) -> Result<LockstepBinding, GymError> {
     let (address, mut placed) = LockstepAddress::place(address, false).await?;
-    let attached = join(
-        &address.session,
-        address.robot.clone(),
-        vec![Role::Embodiment],
-        PriorityClass::Scripted,
-        Duration::from_secs(10),
-    )
-    .await;
+    // Its clock is declared at attach, so every participant knows it from
+    // the roster before the robot serves a step.
+    let attached = address
+        .session
+        .join_with(
+            address.robot.as_str(),
+            vec![Role::Embodiment],
+            PriorityClass::Scripted,
+            Duration::from_secs(10),
+            |config| config.supports.push(CLOCK_LOCKSTEP.to_string()),
+        )
+        .await
+        .map_err(GymError::from);
     match attached {
         Ok(participant) => Ok(LockstepBinding {
             address,

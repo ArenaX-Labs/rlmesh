@@ -748,7 +748,9 @@ message Attach {
   PriorityClass priority = 3;
   // The participant's protocol minor.
   uint32 protocol_minor = 4;
-  // Features this participant implements.
+  // Features this participant implements. A robot on the lockstep clock
+  // lists "clock.lockstep" (it advances one step per `l/{robot}` request);
+  // one that lists nothing runs on the wall clock.
   repeated string supports = 5;
   // Features it cannot run without; the host refuses the attach
   // (CTL_STATUS_INCOMPATIBLE) when it lacks one.

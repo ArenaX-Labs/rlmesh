@@ -94,7 +94,7 @@ use crate::wire::version::LEASE_HANDBACK;
 use crate::wire::{
     AuthoritySnapshot, ChannelId, ClockMode, Command, CtlError, CtlReply, CtlStatus, FieldSpec,
     HostHealth, InputRange, Lease, LeaseToken, Mode, PartSpec, ParticipantId, PriorityClass,
-    Reason, ReasonCode, RunCounters,
+    Reason, ReasonCode, RobotClock, RunCounters,
 };
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -1731,11 +1731,10 @@ fn push_event(events: &Mutex<VecDeque<RunEvent>>, event: RunEvent) {
 /// How long a probe of a robot's lockstep key waits for an answer.
 const LOCKSTEP_PROBE: Duration = Duration::from_millis(500);
 
-/// Whether a robot serves the lockstep exchange on `key` (its `l/{robot}`):
-/// a lockstep robot answers any request there, refusing one it cannot open.
-/// The authority state does not say which clock a robot runs, so this asks
-/// the robot; a wall-clock robot declares no such key, and the query ends at
-/// once with no answer.
+/// Whether something answers the lockstep exchange on `key` (an
+/// `l/{robot}`). Only for a robot of another session, whose roster this
+/// participant cannot read; in its own session a robot's clock is its
+/// declaration ([`AuthoritySnapshot::clock_of`]).
 pub(crate) async fn serves_lockstep(participant: &Participant, key: &str) -> bool {
     let Ok(replies) = participant
         .transport()
@@ -1844,8 +1843,10 @@ impl Controller {
             .chain(binding.actions.iter().filter_map(|r| r.part.as_ref()))
             .map(|p| &p.owner)
             .collect();
+        let view = participant.authority();
         for robot in robots {
-            if serves_lockstep(&participant, &participant.keys().lockstep(robot)).await {
+            let clock = view.as_ref().and_then(|v| v.clock_of(robot));
+            if clock == Some(RobotClock::Lockstep) {
                 return Err(BindError::Options(lockstep_refusal(robot, None)).into());
             }
         }
