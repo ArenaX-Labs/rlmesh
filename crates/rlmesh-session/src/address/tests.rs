@@ -779,3 +779,50 @@ fn across(netem: Option<&str>) {
     }
     assert!(output.status.success(), "{text}");
 }
+
+#[test]
+fn no_parse_error_repeats_the_key() {
+    let (identity, key) = launch_identity().expect("keys");
+    let key = key.to_string();
+    let participant = |text: String| Address::participant(&text).map(drop);
+    let session = |text: String| Address::session(&text).map(drop);
+    let errors = [
+        participant(format!("lockstep://10.0.0.5:7447/t/s/r#{key}")),
+        participant(format!("lockstep://10.0.0.5:7447#{key}/r")),
+        participant(format!("h:1#{key}x/p")),
+        participant(format!("h:1#{key}//p")),
+        participant(format!("h:x#{key}/p")),
+        participant(format!("[fe80::1#{key}/p")),
+        participant(format!("[::1]x#{key}/p")),
+        participant(format!("fe80::1:7447#{key}/p")),
+        participant(format!("h:1#{key}")),
+        participant(format!("h:1#{key}/t/s/p")),
+        participant(format!("h:1#{key}/a/b/c/d")),
+        participant(format!("h:1#{key}/bad!name/p")),
+        participant(format!("h:1#{key}/_lobby/p")),
+        participant(format!("h:1#{key}/s/bad!name")),
+        participant(format!("h:1/s#{key}/bad!name")),
+        session(format!("h:1#{key}/t/s")),
+        session(format!("h:1#{key}/a/b/c")),
+        session(format!("h:1/_s#{key}")),
+        launched_address(&identity, &format!("s#{key}")).map(drop),
+        launched_address(&identity, &format!("h:1#{key}")).map(drop),
+    ];
+    for (i, error) in errors.into_iter().enumerate() {
+        let error = error.expect_err("refused").to_string();
+        assert!(
+            !error.contains(&key),
+            "error {i} repeats the key: {}",
+            error.replace(&key, "<KEY>")
+        );
+    }
+    // What parses prints without it too.
+    let parsed = Address::participant(&format!("h:1#{key}/s/p")).expect("parses");
+    let joined: SessionAddress = format!("127.0.0.1:1/s#{key}").parse().expect("parses");
+    for shown in [
+        format!("{parsed} {parsed:?}"),
+        format!("{joined} {joined:?}"),
+    ] {
+        assert!(!shown.contains(&key), "{}", shown.replace(&key, "<KEY>"));
+    }
+}

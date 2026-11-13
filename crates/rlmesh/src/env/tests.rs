@@ -10,6 +10,7 @@ use crate::spaces::{BoxOptions, Discrete, DiscreteOptions};
 use crate::{DType, Error, ErrorClass, Kwargs, Tensor};
 
 mod factories;
+mod redaction;
 mod remote_client;
 mod serving;
 mod shutdown;

@@ -9,6 +9,8 @@ mod model;
 mod nested;
 mod peer_info;
 mod sandbox;
+#[cfg(test)]
+mod secret_traces;
 mod server;
 mod session;
 mod spaces;
