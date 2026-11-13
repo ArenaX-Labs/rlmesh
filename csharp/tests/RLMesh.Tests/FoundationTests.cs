@@ -43,6 +43,20 @@ public sealed unsafe class FoundationTests
     }
 
     [Fact]
+    public void ToStringLeavesTheAddressKeyOut()
+    {
+        using var server = new EnvServer(new Counter());
+        string address = server.Address;
+        int hash = address.IndexOf('#');
+        Assert.True(hash >= 0, address);
+        int slash = address.IndexOf('/', hash);
+        string key = address.Substring(hash + 1, (slash < 0 ? address.Length : slash) - hash - 1);
+        string shown = server.ToString();
+        Assert.DoesNotContain(key, shown);
+        Assert.Contains("#…", shown);
+    }
+
+    [Fact]
     public void ValuesHaveExactKindsAndStrictReads()
     {
         Value[] ints = { (sbyte)-1, (byte)1, (short)-1, (ushort)1, -1, 1U, -1L };
