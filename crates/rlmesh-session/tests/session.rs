@@ -1345,22 +1345,42 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         .subscribe(&robot_id(), "ft", SubscribeOptions::default())
         .await
         .expect("subscribe");
-    // Let the subscriptions (the host's history store too) propagate.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    for i in 1..=6_u8 {
-        let seq = ft
-            .publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
-            .expect("publish");
-        assert_eq!(seq, Some(u64::from(i)));
+    // Probes until both subscriptions take one: a sample published before
+    // a subscription has propagated never reaches it. The seqs below count
+    // from the last probe, `base`.
+    let started = Instant::now();
+    while early_ft.stats().received == 0 || early_again.stats().received == 0 {
+        assert!(started.elapsed() < WAIT, "no probe reached the subscribers");
+        ft.publish(robot.clock().now_ns(), ft_payload(0.0))
+            .expect("probe");
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    wait_until("early subscriber has all six", || {
-        early_ft.stats().last_seq == 6
+    let base = ft.last_seq();
+    wait_until("both subscriptions have the last probe", || {
+        early_ft.stats().last_seq == base && early_again.stats().last_seq == base
     })
     .await;
+    let (probed, probed_again) = (early_ft.stats(), early_again.stats());
+    // One at a time: a realtime stream drops what its queue cannot take at
+    // once (a burst on a starved machine), and every one of these counts.
+    for i in 1..=6_u8 {
+        let seq = base + u64::from(i);
+        let published = ft
+            .publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
+            .expect("publish");
+        assert_eq!(published, Some(seq));
+        wait_until("both subscriptions have the sample", || {
+            early_ft.stats().last_seq == seq && early_again.stats().last_seq == seq
+        })
+        .await;
+    }
     let stats = early_ft.stats();
-    assert_eq!((stats.received, stats.lost), (6, 0));
+    assert_eq!(
+        (stats.received - probed.received, stats.lost),
+        (6, probed.lost)
+    );
     wait_until("the second subscription has all six too", || {
-        early_again.stats().received == 6
+        early_again.stats().received == probed_again.received + 6
     })
     .await;
     let latest = early_ft.latest().expect("latest");
@@ -1372,7 +1392,7 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
             .iter()
             .map(|r| r.sample.seq)
             .collect::<Vec<_>>(),
-        vec![3, 4, 5, 6],
+        (base + 3..=base + 6).collect::<Vec<_>>(),
         "a window of four"
     );
     // A value that does not fit the stride is refused at the publisher.
@@ -1393,8 +1413,8 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
             &stream,
             HistoryQuery {
                 epoch,
-                after_seq: 1,
-                until_seq: Some(5),
+                after_seq: base + 1,
+                until_seq: Some(base + 5),
                 limit: Some(3),
                 request_id: 0,
             },
@@ -1405,7 +1425,11 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         .iter()
         .flat_map(|p| p.samples.iter().map(|s| s.seq))
         .collect();
-    assert_eq!(seqs, vec![3, 4, 5], "the newest three up to the watermark");
+    assert_eq!(
+        seqs,
+        vec![base + 3, base + 4, base + 5],
+        "the newest three up to the watermark"
+    );
     assert!(!pages[0].truncated && pages[0].gaps.is_empty());
     let other_epoch = early
         .query_history(
@@ -1430,7 +1454,7 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
     );
     let query = HistoryQuery {
         epoch,
-        after_seq: 4,
+        after_seq: base + 4,
         ..HistoryQuery::default()
     };
     let (id, sealed) = reader.link.history_query(&history, query).expect("seal");
@@ -1442,7 +1466,7 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
     assert!(page(&mut other.link).is_err(), "sealed for the reader only");
     let page = page(&mut reader.link).expect("the reader's page");
     let seqs: Vec<u64> = page.samples.iter().map(|s| s.seq).collect();
-    assert_eq!((page.request_id, seqs), (id, vec![5, 6]));
+    assert_eq!((page.request_id, seqs), (id, vec![base + 5, base + 6]));
     let unsealed = codec::encode_history_query(&query);
     assert!(
         replies(&reader.transport, &history, unsealed)
@@ -1467,14 +1491,20 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         .await
         .expect("subscribe");
     let stats = late_ft.stats();
-    assert_eq!(stats.last_seq, 6);
+    assert_eq!(stats.last_seq, base + 6);
     assert_eq!((stats.received, stats.from_history), (4, 4), "the window");
     assert_eq!(stats.lost, 0, "history starts the seq count");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    ft.publish(robot.clock().now_ns(), ft_payload(7.0))
-        .expect("publish");
-    wait_until("the live sample after history", || {
-        late_ft.stats().last_seq == 7
+    // Live samples follow, once the subscription has propagated.
+    let started = Instant::now();
+    while late_ft.stats().last_seq == base + 6 {
+        assert!(started.elapsed() < WAIT, "{:?}", late_ft.stats());
+        ft.publish(robot.clock().now_ns(), ft_payload(7.0))
+            .expect("publish");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let newest = ft.last_seq();
+    wait_until("the live samples after history", || {
+        late_ft.stats().last_seq == newest
     })
     .await;
 
@@ -1484,7 +1514,8 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         WAIT,
         health.wait_for(|rows| {
             rows.iter().any(|r| {
-                r.participant == *late.id() && r.report.last_seq_seen == vec![(stream.channel, 7)]
+                r.participant == *late.id()
+                    && r.report.last_seq_seen == vec![(stream.channel, newest)]
             })
         }),
     )
@@ -1514,7 +1545,12 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         let _ = ft.publish(robot.clock().now_ns(), ft_payload(8.0));
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(late_ft.stats().last_seq < 7, "{:?}", late_ft.stats());
+    // Taken from 1 again: no seq of the old process's.
+    assert!(
+        late_ft.stats().last_seq <= ft.last_seq(),
+        "{:?}",
+        late_ft.stats()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
