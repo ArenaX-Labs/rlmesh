@@ -7,6 +7,7 @@
 //! | Protocol minor | [`PROTOCOL_MINOR`], announced in `Attach` and `AuthorityState` | Monotonic, 0 at v0.2. Any minor talks to any other. New behaviour is a **feature string** (`"merge.blend"`). |
 //! | Features | `Attach.supports/requires`, `AuthorityState.supports`, `PartSpec.requires` | Attach fails with `CtlStatus::Incompatible` if the host lacks a feature the participant requires. |
 //! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | New kinds and optional settings are additive. A host accepts a robot on any table from 1 up to its own, and refuses a newer one. |
+//! | Wire revision | [`WIRE_REVISION`], in `HandshakeRequest` and `HandshakeAccept` | Pre-release only: bumped on any wire-breaking change before 0.2.0 freezes the protocol, frozen there. A participant refuses a host on another revision, or one that sends none (an earlier 0.2 pre-release). A host refuses a participant on another revision, and admits one that sends none (a board flashed before revisions were sent). Both refuse with `CtlStatus::Incompatible`, naming both revisions. |
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -19,6 +20,54 @@ pub const PROTOCOL_MINOR: u32 = 0;
 
 /// The kind table version a declaration is written against.
 pub const SPEC_VERSION: u32 = 1;
+
+/// This build's session wire revision: which transport and wire a 0.2
+/// pre-release speaks, so two builds of one version that cannot talk say so
+/// instead of timing out. 1: one port, which every traffic class dials.
+/// Bumped on any wire-breaking change before 0.2.0 freezes the protocol;
+/// frozen at 0.2.0. 0 on the wire is absent: a build from before the field,
+/// whose host listened on four ports.
+pub const WIRE_REVISION: u32 = 1;
+
+/// What each wire revision was, by number.
+const REVISIONS: &[&str] = &["four ports: an earlier 0.2 pre-release", "one port"];
+
+/// What wire revision `revision` is (`"one port"`).
+pub fn wire_revision_name(revision: u32) -> &'static str {
+    usize::try_from(revision)
+        .ok()
+        .and_then(|r| REVISIONS.get(r))
+        .copied()
+        .unwrap_or("a later pre-release")
+}
+
+/// Why a participant refuses the host `host` (`"the host at 10.0.0.2:7500"`)
+/// whose handshake accept carries `revision`, or `None` when it is this
+/// build's.
+pub fn host_revision_mismatch(host: &str, revision: u32) -> Option<String> {
+    (revision != WIRE_REVISION).then(|| {
+        format!(
+            "{host} speaks session wire revision {revision} ({}); this build speaks revision \
+             {WIRE_REVISION} ({}); rebuild both from the same release",
+            wire_revision_name(revision),
+            wire_revision_name(WIRE_REVISION),
+        )
+    })
+}
+
+/// Why a host refuses `participant`'s hello carrying `revision`, or `None`
+/// when it is this build's or absent (0: a board flashed before revisions
+/// were sent, which still talks to this host).
+pub fn participant_revision_mismatch(participant: &str, revision: u32) -> Option<String> {
+    (revision != 0 && revision != WIRE_REVISION).then(|| {
+        format!(
+            "participant {participant} speaks session wire revision {revision} ({}); this host \
+             speaks revision {WIRE_REVISION} ({}); rebuild both from the same release",
+            wire_revision_name(revision),
+            wire_revision_name(WIRE_REVISION),
+        )
+    })
+}
 
 /// A robot's `Attach.supports` asks for its device view, which a host
 /// listing it publishes on `host/view/{robot}`.
@@ -96,6 +145,33 @@ pub fn missing_features<'a>(required: &'a [String], supported: &[String]) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wire_revision_mismatch_names_both_revisions() {
+        assert_eq!(
+            host_revision_mismatch("the host at 10.0.0.2:7500", WIRE_REVISION),
+            None
+        );
+        assert_eq!(
+            host_revision_mismatch("the host at 10.0.0.2:7500", 0).as_deref(),
+            Some(
+                "the host at 10.0.0.2:7500 speaks session wire revision 0 (four ports: an earlier \
+                 0.2 pre-release); this build speaks revision 1 (one port); rebuild both from the \
+                 same release"
+            )
+        );
+        // A host admits a participant that sends no revision, and refuses
+        // any other.
+        assert_eq!(participant_revision_mismatch("eye-3", 0), None);
+        assert_eq!(participant_revision_mismatch("eye-3", WIRE_REVISION), None);
+        assert_eq!(
+            participant_revision_mismatch("eye-3", 2).as_deref(),
+            Some(
+                "participant eye-3 speaks session wire revision 2 (a later pre-release); this \
+                 host speaks revision 1 (one port); rebuild both from the same release"
+            )
+        );
+    }
 
     #[test]
     fn a_participant_requiring_an_unsupported_feature_is_incompatible() {

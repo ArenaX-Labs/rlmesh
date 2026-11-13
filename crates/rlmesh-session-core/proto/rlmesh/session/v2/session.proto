@@ -1062,6 +1062,10 @@ message Keep {
 message HandshakeRequest {
   string participant = 1;
   bytes noise = 2;
+  // The participant's session wire revision (unset: a build from before
+  // revisions were sent). A host refuses another set revision
+  // (CTL_STATUS_INCOMPATIBLE).
+  uint32 wire_revision = 3;
 }
 
 // msg 2, or a refusal (an unauthenticated hint).
@@ -1090,6 +1094,10 @@ message HandshakeAccept {
   uint32 down_key_id = 7;
   // The host relays robots' realtime parts over UDP (unset: it does not).
   DatagramOffer datagram = 8;
+  // The host's session wire revision (unset: a build from before revisions
+  // were sent, which listened on four ports). A participant refuses any
+  // revision but its own.
+  uint32 wire_revision = 9;
 }
 
 // The host's datagram path.

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::wire::codec;
-use crate::wire::version::{PROTOCOL_MINOR, VIEW_DEVICE};
+use crate::wire::version::{PROTOCOL_MINOR, VIEW_DEVICE, host_revision_mismatch};
 use crate::wire::{Command, CtlError, CtlStatus, Health, Role, SessionId, SessionKeys, TenantId};
 use rlmesh_session_core::auth;
 use rlmesh_session_core::auth::Link;
@@ -47,14 +47,28 @@ const RESTART_WAIT: Duration = Duration::from_secs(1);
 /// A host too busy to answer one of them within `ctl_timeout` (a loaded
 /// machine, a session just starting) is asked again while the join's own
 /// `host_timeout` lasts: nothing is attached yet, so asking twice is safe.
+///
+/// A host whose accept carries another wire revision, or none (an earlier
+/// 0.2 pre-release, which listened on four ports), is refused
+/// `INCOMPATIBLE`, named by `host` (`"the host at 10.0.0.2:7500"`).
 async fn handshake(
     control: &zenoh::Session,
     keys: &SessionKeys,
     config: &ParticipantConfig,
+    host: &str,
 ) -> Result<auth::Attached, SessionError> {
     let deadline = crate::clock::deadline_after(config.host_timeout);
     loop {
         match handshake_once(control, keys, config).await {
+            Ok(attached) => {
+                if let Some(why) = host_revision_mismatch(host, attached.accept.wire_revision) {
+                    return Err(SessionError::Rejected(CtlError::new(
+                        CtlStatus::Incompatible,
+                        why,
+                    )));
+                }
+                return Ok(attached);
+            }
             Err(SessionError::NoReply(waited)) if tokio::time::Instant::now() < deadline => {
                 debug!(participant = %config.id, ?waited, "no handshake reply; asking again");
             }
@@ -454,7 +468,11 @@ impl Participant {
             refusal = not_served(&control, &config.tenant, config.session) => return Err(refusal),
         }
 
-        let attached = handshake(&control, &keys, &config).await?;
+        let dialed = transport.dialed().map_or_else(
+            || "the session host".to_string(),
+            |at| format!("the host at {at}"),
+        );
+        let attached = handshake(&control, &keys, &config, &dialed).await?;
         let generation = attached.accept.generation;
         let _ = shared
             .link

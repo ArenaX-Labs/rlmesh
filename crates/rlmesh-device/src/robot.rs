@@ -3191,6 +3191,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn its_hello_carries_this_builds_wire_revision() {
+        let mut robot = robot();
+        robot.start(7, &mut Counter(0), 0);
+        let key = robot.keys.handshake();
+        let hello = robot
+            .out
+            .iter()
+            .find_map(|action| match action {
+                Action::Query {
+                    key: k,
+                    payload: Some(payload),
+                    ..
+                } if *k == key => Some(codec::decode_handshake_request(payload).expect("hello")),
+                _ => None,
+            })
+            .expect("a handshake query");
+        assert_eq!(
+            hello.wire_revision,
+            rlmesh_session_core::wire::version::WIRE_REVISION
+        );
+    }
+
     /// A robot attached to a host it shares nothing else with: its link,
     /// and the host's end of it, which seals what the robot opens.
     fn attached() -> (Box<Robot>, rlmesh_session_core::auth::Candidate) {

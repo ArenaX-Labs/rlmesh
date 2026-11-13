@@ -7,6 +7,7 @@ use crate::crypto::handshake::{self, HandshakeError, IkInitiator};
 use crate::crypto::{Rng, SealReceiver, SealSender, SignedReceiver};
 use crate::prelude::*;
 use crate::wire::codec;
+use crate::wire::version::WIRE_REVISION;
 use crate::wire::{HandshakeAccept, HandshakeRequest, ParticipantId};
 
 /// What a participant attaches with: its device's static key and the
@@ -69,7 +70,8 @@ impl Credential {
 
     /// Starts a handshake as `participant` with the host instance
     /// `host_instance` (read from the public `host/state`; a wrong value
-    /// only makes the handshake fail): the state and msg 1.
+    /// only makes the handshake fail): the state and msg 1, which carries
+    /// this build's [`WIRE_REVISION`].
     ///
     /// # Errors
     /// [`HandshakeError`].
@@ -90,6 +92,7 @@ impl Credential {
             HandshakeRequest {
                 participant: participant.clone(),
                 noise,
+                wire_revision: WIRE_REVISION,
             },
         ))
     }

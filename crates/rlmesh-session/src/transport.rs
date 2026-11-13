@@ -460,6 +460,9 @@ pub struct Transport {
     in_process: bool,
     /// What watches the links its listeners accepted, if it listens.
     guard: Option<Arc<LinkGuard>>,
+    /// The first endpoint its control session dials, without its protocol
+    /// (`10.0.0.2:7500`), if any ([`Self::dialed`]).
+    dialed: Option<String>,
 }
 
 impl std::fmt::Debug for Transport {
@@ -502,6 +505,7 @@ impl Transport {
                     client: config.tuning.client,
                     link: config.tuning.link.clone(),
                     guard,
+                    dialed: first_dialed(endpoints),
                     ..Self::from_session(session)
                 })
             }
@@ -530,6 +534,7 @@ impl Transport {
                     link: config.tuning.link.clone(),
                     in_process: false,
                     guard,
+                    dialed: first_dialed(&classes[TrafficClass::Control.index()]),
                 })
             }
         }
@@ -549,6 +554,7 @@ impl Transport {
             link: None,
             in_process: false,
             guard: None,
+            dialed: None,
         }
     }
 
@@ -581,6 +587,13 @@ impl Transport {
     /// another link of this participant to its host presents.
     pub fn link(&self) -> Option<&LinkAuth> {
         self.link.as_ref()
+    }
+
+    /// Where its control session dials the host, without the protocol
+    /// (`10.0.0.2:7500`): what a message about that host names it by. `None`
+    /// for a transport that dials nothing, or rides a host this process runs.
+    pub(crate) fn dialed(&self) -> Option<&str> {
+        self.dialed.as_deref().filter(|_| !self.in_process)
     }
 
     /// The session of `class`.
@@ -648,6 +661,15 @@ impl Transport {
         }
         Ok(())
     }
+}
+
+/// The first endpoint `endpoints` dials, without its protocol.
+fn first_dialed(endpoints: &Endpoints) -> Option<String> {
+    let endpoint = endpoints.connect.first()?;
+    let address = endpoint
+        .split_once('/')
+        .map_or(endpoint.as_str(), |(_, a)| a);
+    Some(address.to_string())
 }
 
 /// A transport's sessions, closed on a thread of their own when the last

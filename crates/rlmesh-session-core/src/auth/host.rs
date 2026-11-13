@@ -9,10 +9,10 @@ use crate::crypto::handshake::{self, IkResponder};
 use crate::crypto::lp::hash_labelled;
 use crate::crypto::{Rng, RngError, SealReceiver, SealSender, SignedSender};
 use crate::prelude::*;
-use crate::wire::codec;
 use crate::wire::{
     CtlError, CtlStatus, DatagramOffer, HandshakeAccept, HandshakeRequest, ParticipantId,
 };
+use crate::wire::{codec, version};
 use alloc::collections::BTreeMap;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -288,7 +288,8 @@ impl HostAuth {
 
     /// Answers msg 1 with the device's cap from `access`: msg 2 and the
     /// candidate, or the refusal to send back
-    /// (`UNAUTHENTICATED` for an unknown device or a message that fails to
+    /// (`INCOMPATIBLE` for a participant on another wire revision,
+    /// `UNAUTHENTICATED` for an unknown device or a message that fails to
     /// authenticate, `NOT_AUTHORIZED` for a participant id bound to another
     /// device).
     ///
@@ -302,6 +303,11 @@ impl HostAuth {
         access: &Access,
     ) -> Result<(Vec<u8>, Candidate), CtlError> {
         let participant = &request.participant;
+        if let Some(why) =
+            version::participant_revision_mismatch(participant.as_str(), request.wire_revision)
+        {
+            return Err(refused(CtlStatus::Incompatible, why));
+        }
         let prologue = handshake::prologue(
             &self.tenant,
             &self.session,
@@ -343,6 +349,7 @@ impl HostAuth {
             up_key_id,
             down_key_id,
             datagram: self.datagram,
+            wire_revision: version::WIRE_REVISION,
         };
         let (msg2, keys) = responder
             .accept(&codec::encode_handshake_accept(&accept))

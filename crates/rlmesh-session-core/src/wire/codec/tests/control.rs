@@ -398,15 +398,20 @@ fn control_messages_round_trip() {
         );
     }
 
-    let hello = HandshakeRequest {
-        participant: pid("op"),
-        noise: vec![1, 2, 3],
-    };
-    assert_eq!(
-        decode_handshake_request(g.add("handshake_request", &encode_handshake_request(&hello)))
-            .expect("decode"),
-        hello
-    );
+    // The first of each without a wire revision: the bytes a build from
+    // before the field sends.
+    for wire_revision in [0, WIRE_REVISION] {
+        let hello = HandshakeRequest {
+            participant: pid("op"),
+            noise: vec![1, 2, 3],
+            wire_revision,
+        };
+        assert_eq!(
+            decode_handshake_request(g.add("handshake_request", &encode_handshake_request(&hello)))
+                .expect("decode"),
+            hello
+        );
+    }
     for reply in [
         Ok(vec![4, 5]),
         Err(CtlError::new(CtlStatus::Unauthenticated, "unknown key")),
@@ -426,6 +431,7 @@ fn control_messages_round_trip() {
         up_key_id: 3,
         down_key_id: 4,
         datagram: None,
+        wire_revision: 0,
     };
     assert_eq!(
         decode_handshake_accept(g.add("handshake_accept", &encode_handshake_accept(&accept)))
@@ -459,6 +465,15 @@ fn control_messages_round_trip() {
             .expect("decode")
             .datagram,
         None
+    );
+    let accept = HandshakeAccept {
+        wire_revision: WIRE_REVISION,
+        ..accept
+    };
+    assert_eq!(
+        decode_handshake_accept(g.add("handshake_accept", &encode_handshake_accept(&accept)))
+            .expect("decode"),
+        accept
     );
 
     let hb = Heartbeat {

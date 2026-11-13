@@ -993,6 +993,9 @@ pub struct HandshakeRequest {
     pub participant: ParticipantId,
     /// The Noise message.
     pub noise: Vec<u8>,
+    /// The sender's [`WIRE_REVISION`](crate::wire::version::WIRE_REVISION)
+    /// (0: a build from before revisions were sent).
+    pub wire_revision: u32,
 }
 
 /// msg 2's payload: what the host issues a participant generation.
@@ -1015,4 +1018,7 @@ pub struct HandshakeAccept {
     pub down_key_id: u32,
     /// The host's datagram path, when it offers one.
     pub datagram: Option<crate::wire::datagram::DatagramOffer>,
+    /// The host's [`WIRE_REVISION`](crate::wire::version::WIRE_REVISION)
+    /// (0: a build from before revisions were sent).
+    pub wire_revision: u32,
 }

@@ -18,6 +18,7 @@ pub fn encode_handshake_request(request: &HandshakeRequest) -> Vec<u8> {
     pb::HandshakeRequest {
         participant: request.participant.to_string(),
         noise: Bytes::copy_from_slice(&request.noise),
+        wire_revision: request.wire_revision,
     }
     .encode_to_vec()
 }
@@ -28,6 +29,7 @@ pub fn decode_handshake_request(buf: &[u8]) -> Result<HandshakeRequest, WireErro
     Ok(HandshakeRequest {
         participant: ParticipantId::new(request.participant)?,
         noise: request.noise.to_vec(),
+        wire_revision: request.wire_revision,
     })
 }
 
@@ -75,6 +77,7 @@ pub fn encode_handshake_accept(accept: &HandshakeAccept) -> Vec<u8> {
             port: u32::from(d.port),
             version: u32::from(d.version),
         }),
+        wire_revision: accept.wire_revision,
     }
     .encode_to_vec()
 }
@@ -103,5 +106,6 @@ pub fn decode_handshake_accept(buf: &[u8]) -> Result<HandshakeAccept, WireError>
                 version: u8::try_from(d.version).ok()?,
             })
         }),
+        wire_revision: accept.wire_revision,
     })
 }

@@ -41,6 +41,46 @@ fn handshake(
 }
 
 #[test]
+fn a_host_admits_its_own_wire_revision_or_none_and_refuses_another_by_name() {
+    use crate::wire::version::WIRE_REVISION;
+    let (identity, mut auth) = host();
+    let credential = identity.local_credential();
+    let mut rng = TestRng::new(3);
+    for (revision, admitted) in [(WIRE_REVISION, true), (0, true), (WIRE_REVISION + 1, false)] {
+        let (initiator, mut request) = credential
+            .start(&mut rng, "local", "demo", 7, &pid("eye-3"))
+            .expect("start");
+        assert_eq!(
+            request.wire_revision, WIRE_REVISION,
+            "a hello carries this build's"
+        );
+        request.wire_revision = revision;
+        match auth.handshake(&mut rng, &identity, &request, &Access::default()) {
+            Ok((msg2, _)) => {
+                assert!(admitted, "revision {revision} admitted");
+                let attached = finish(initiator, &msg2).expect("finish");
+                assert_eq!(attached.accept.wire_revision, WIRE_REVISION);
+            }
+            Err(refusal) => {
+                assert!(
+                    !admitted,
+                    "revision {revision} refused: {}",
+                    refusal.message
+                );
+                assert_eq!(refusal.status, CtlStatus::Incompatible);
+                assert!(
+                    refusal.message.starts_with(&format!(
+                        "participant eye-3 speaks session wire revision {revision} "
+                    )),
+                    "{}",
+                    refusal.message
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_link_seals_verbs_and_heartbeats_and_takes_only_the_hosts_replies_and_broadcasts() {
     let (identity, mut auth) = host();
     let (attached, mut candidate) =

@@ -13,7 +13,8 @@ use rlmesh_session::auth::{
 use rlmesh_session::authority::DeviceAccess;
 use rlmesh_session::crypto::sealed::Header;
 use rlmesh_session::crypto::{
-    Key, Kind, KindSet, Rng, RngError, SealSender, Security, StaticKeypair, signed,
+    IkResponder, Key, Kind, KindSet, Rng, RngError, SealSender, Security, SignedKind, SignedSender,
+    StaticKeypair, handshake, signed,
 };
 use rlmesh_session::media::{Offer, decode_image, encode_jpeg, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
@@ -22,12 +23,13 @@ use rlmesh_session::scene::Scene;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::codec;
-use rlmesh_session::wire::version::VIEW_DEVICE;
+use rlmesh_session::wire::version::{VIEW_DEVICE, WIRE_REVISION, host_revision_mismatch};
 use rlmesh_session::wire::{
     AuthoritySnapshot, AuthorityView, ChannelId, ClockMode, Command, ContractMode, CtlError,
-    CtlReply, CtlStatus, Encoding, Epoch, EstopSignal, FenceError, Fingerprint, HistoryQuery,
-    LastStop, Mode, ParticipantId, Plan, PriorityClass, Reason, ReasonCode, Request, Role, Sample,
-    SessionId, TenantId, ViewReply, VirtualTick, Watermark,
+    CtlReply, CtlStatus, Encoding, Epoch, EstopSignal, FenceError, Fingerprint, HandshakeAccept,
+    HandshakeRequest, HistoryQuery, LastStop, Mode, ParticipantId, Plan, PriorityClass, Reason,
+    ReasonCode, Request, Role, Sample, SessionId, SessionKeys, TenantId, ViewReply, VirtualTick,
+    Watermark,
 };
 use rlmesh_session::{
     AuthorityEvent, ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig,
@@ -301,6 +303,18 @@ impl World {
     /// Runs the handshake as `id` with `credential`: the refusal, or a
     /// candidate not yet attached.
     async fn handshake(&self, id: &str, credential: &Credential) -> Result<Raw, CtlStatus> {
+        self.handshake_on(id, credential, WIRE_REVISION)
+            .await
+            .map_err(|refusal| refusal.status)
+    }
+
+    /// [`Self::handshake`], its hello carrying `wire_revision`.
+    async fn handshake_on(
+        &self,
+        id: &str,
+        credential: &Credential,
+        wire_revision: u32,
+    ) -> Result<Raw, CtlError> {
         let transport = self.transport().await;
         let keys = self.host.keys();
         wait_for_host(&transport, keys, WAIT).await.expect("host");
@@ -317,15 +331,17 @@ impl World {
                 &id,
             )
             .expect("msg 1");
+        let hello = HandshakeRequest {
+            wire_revision,
+            ..hello
+        };
         let reply = ask(
             &transport,
             &keys.handshake(),
             Some(codec::encode_handshake_request(&hello)),
         )
         .await;
-        let msg2 = codec::decode_handshake_reply(&reply)
-            .expect("decode")
-            .map_err(|refusal| refusal.status)?;
+        let msg2 = codec::decode_handshake_reply(&reply).expect("decode")?;
         let attached = auth::finish(initiator, &msg2).expect("msg 2");
         Ok(Raw {
             transport,
@@ -2691,4 +2707,153 @@ async fn keep_is_a_host_verb_rate_limited_and_refused_by_a_host_that_records_not
         CtlStatus::InvalidRequest
     );
     assert_eq!(kept.lock().expect("kept").len(), 1);
+}
+
+/// A host admits a hello on its own wire revision or on none (a board
+/// flashed before revisions were sent), and refuses another by name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_admits_its_own_wire_revision_or_none_and_refuses_another() {
+    let world = World::start().await;
+    let credential = world.host.credential();
+    for (id, revision) in [("current", WIRE_REVISION), ("board", 0)] {
+        let mut raw = world
+            .handshake_on(id, &credential, revision)
+            .await
+            .unwrap_or_else(|refusal| panic!("revision {revision} refused: {refusal:?}"));
+        raw.call(1, attach(id, Role::Embodiment))
+            .await
+            .result
+            .expect("attached");
+    }
+    let refusal = world
+        .handshake_on("later", &credential, WIRE_REVISION + 1)
+        .await
+        .err()
+        .expect("refused");
+    assert_eq!(refusal.status, CtlStatus::Incompatible, "{refusal:?}");
+    assert_eq!(
+        refusal.message,
+        format!(
+            "participant later speaks session wire revision {} (a later pre-release); this host \
+             speaks revision {WIRE_REVISION} (one port); rebuild both from the same release",
+            WIRE_REVISION + 1
+        )
+    );
+    world.host.shutdown().await;
+}
+
+/// A participant joining a host of an earlier 0.2 pre-release, which sends
+/// no wire revision, refuses it by name as soon as its handshake answers,
+/// well within the join's wait. The stand-in answers what such a host
+/// answers on its base port before the attach: its liveliness, its signed
+/// state and the handshake, with an accept that carries no revision.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_participant_refuses_a_host_that_sends_no_wire_revision_at_once_and_by_name() {
+    use zenoh::Wait as _;
+    let (host, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
+        .await
+        .expect("listener");
+    let control = host.control().clone();
+    let tenant = TenantId::new("test").expect("tenant");
+    let session = SessionId::new();
+    let keys = SessionKeys::new(&tenant, session);
+    let instance = 0xfeed;
+    let noise = Arc::new(StaticKeypair::generate(&mut Os).expect("static"));
+    let signer = Arc::new(std::sync::Mutex::new(SignedSender::new(&[5; 32], instance)));
+    let sign_key = signer.lock().expect("signer").verifying_key();
+
+    let state_key = keys.host_state();
+    let _state = control
+        .declare_queryable(&state_key)
+        .callback({
+            let (signer, key) = (signer.clone(), state_key.clone());
+            move |query| {
+                let state = signer
+                    .lock()
+                    .expect("signer")
+                    .sign(SignedKind::AuthorityState, &key, &[])
+                    .expect("sign");
+                let _ = query.reply(&key, state).wait();
+            }
+        })
+        .await
+        .expect("state");
+    let hs_key = keys.handshake();
+    let _hs = control
+        .declare_queryable(&hs_key)
+        .callback({
+            let (noise, key, tenant) = (noise.clone(), hs_key.clone(), tenant.clone());
+            move |query| {
+                let request =
+                    codec::decode_handshake_request(&query.payload().expect("msg 1").to_bytes())
+                        .expect("hello");
+                let prologue = handshake::prologue(
+                    tenant.as_str(),
+                    &session.to_string(),
+                    instance,
+                    request.participant.as_str(),
+                )
+                .expect("prologue");
+                let responder =
+                    IkResponder::read_request(&mut Os, &noise, &prologue, &request.noise)
+                        .expect("msg 1");
+                let accept = HandshakeAccept {
+                    generation: 1,
+                    device: "local".into(),
+                    max_priority: Some(PriorityClass::Operator),
+                    host_sign_key: sign_key,
+                    host_instance: instance,
+                    up_key_id: 1,
+                    down_key_id: 2,
+                    datagram: None,
+                    wire_revision: 0,
+                };
+                let (msg2, _) = responder
+                    .accept(&codec::encode_handshake_accept(&accept))
+                    .expect("msg 2");
+                let _ = query
+                    .reply(&key, codec::encode_handshake_reply(&Ok(msg2)))
+                    .wait();
+            }
+        })
+        .await
+        .expect("hs");
+    let _alive = control
+        .liveliness()
+        .declare_token(keys.host_liveliness())
+        .await
+        .expect("token");
+
+    let transport = Transport::open(&TransportConfig::per_class_tcp(base))
+        .await
+        .expect("participant transport");
+    let mut config = ParticipantConfig::new(
+        tenant,
+        session,
+        ParticipantId::new("policy").expect("id"),
+        vec![Role::Controller],
+        PriorityClass::Operator,
+    );
+    config.credential = Some(Credential::local(&[7; 32], *noise.public()));
+    config.host_timeout = Duration::from_secs(20);
+    let started = Instant::now();
+    let err = Participant::attach(transport, config)
+        .await
+        .err()
+        .expect("refused");
+    let waited = started.elapsed();
+    eprintln!("refused after {waited:?}: {err}");
+    let refusal = err.refusal().expect("a refusal");
+    assert_eq!(refusal.status, CtlStatus::Incompatible, "{err}");
+    assert_eq!(
+        Some(refusal.message.clone()),
+        host_revision_mismatch(&format!("the host at {base}"), 0)
+    );
+    assert!(
+        refusal.message.contains("four ports"),
+        "{}",
+        refusal.message
+    );
+    assert!(waited < Duration::from_secs(5), "refused after {waited:?}");
+    host.close().await.expect("close");
 }

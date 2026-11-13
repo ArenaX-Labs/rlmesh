@@ -49,7 +49,7 @@ use crate::wire::ids::SessionId;
 
 use crate::wire::part::tests::{arm, camera, pid};
 
-use crate::wire::version::PROTOCOL_MINOR;
+use crate::wire::version::{PROTOCOL_MINOR, WIRE_REVISION};
 
 /// Byte-level goldens of the v2 wire: every message a round-trip test
 /// encodes, in order, as hex in `tests/vectors/wire/{test}.txt`. A
