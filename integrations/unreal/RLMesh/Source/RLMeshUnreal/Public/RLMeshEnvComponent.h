@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <memory>
 
@@ -7,6 +7,8 @@
 #include "RLMeshGameThreadEnv.h"
 
 #include "RLMeshEnvComponent.generated.h"
+
+DECLARE_LOG_CATEGORY_EXTERN(LogRLMesh, Log, All);
 
 /**
  * Serves game state as an RLMesh env while the game plays: from BeginPlay until
@@ -17,6 +19,12 @@
  * tick, so they may read and change the world; a step therefore takes at least
  * one frame. Throw rlmesh::RecoverableEnvironmentException from them to fail one
  * request while the client keeps its session.
+ *
+ * Loopback Serving invites include #keys derived from HostIdentity. The plugin
+ * loads a static identity from HostIdentityFile (or
+ * %LOCALAPPDATA%/rlmesh/unreal_host_identity) into RLMESH_HOST_IDENTITY before
+ * EnvServer starts — generate it once with
+ * demos/reach_target/app.py --init-identity.
  */
 UCLASS(Abstract)
 class RLMESHUNREAL_API URLMeshEnvComponent : public UActorComponent
@@ -34,9 +42,36 @@ public:
 	UPROPERTY(EditAnywhere, Category = "RLMesh")
 	FString EnvId = TEXT("Unreal-v0");
 
+	/**
+	 * Optional path to a one-line RLMESH_HOST_IDENTITY secret file.
+	 * Empty uses %LOCALAPPDATA%/rlmesh/unreal_host_identity (or the platform
+	 * equivalent). Loaded into the process env before EnvServer starts.
+	 */
+	UPROPERTY(EditAnywhere, Category = "RLMesh")
+	FString HostIdentityFile;
+
+	/**
+	 * Cap/raise engine MaxFPS while this env is Serving so Python lockstep can
+	 * step faster than the editor's default frame rate. 0 leaves MaxFPS alone.
+	 * Clients may also pass reset option ``serving_max_fps`` (float/int).
+	 */
+	UPROPERTY(EditAnywhere, Category = "RLMesh", meta = (ClampMin = "0", ClampMax = "480"))
+	float ServingMaxFPS = 120.f;
+
+	/** Restore the previous MaxFPS when Play ends (after applying ServingMaxFPS). */
+	UPROPERTY(EditAnywhere, Category = "RLMesh")
+	bool bRestoreMaxFPSOnEndPlay = true;
+
 	/** The address the env is served on, or empty when it is not serving. */
 	UFUNCTION(BlueprintCallable, Category = "RLMesh")
 	FString GetServedAddress() const { return ServedAddress; }
+
+	/** Load the default host-identity file into RLMESH_HOST_IDENTITY (module startup). */
+	static void ApplyDefaultHostIdentity();
+
+	/** Apply ServingMaxFPS (or ``NewMaxFPS`` if > 0) while serving. */
+	UFUNCTION(BlueprintCallable, Category = "RLMesh")
+	void ApplyServingMaxFPS(float NewMaxFPS = 0.f);
 
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
 							   FActorComponentTickFunction* ThisTickFunction) override;
@@ -44,6 +79,9 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	/** Optional hook: subclasses may read reset options after the base applies FPS. */
+	virtual void OnResetOptions(const std::optional<rlmesh::InfoDict>& Options);
 
 	virtual rlmesh::spaces::Space ObservationSpace() const
 		PURE_VIRTUAL(URLMeshEnvComponent::ObservationSpace, return rlmesh::spaces::Discrete(1););
@@ -55,7 +93,17 @@ protected:
 		PURE_VIRTUAL(URLMeshEnvComponent::StepEnv, return rlmesh::StepResult(););
 
 private:
+	static FString DefaultHostIdentityPath();
+	static bool ApplyHostIdentityFromPath(const FString& Path);
+
+	void ApplyHostIdentityFromFile();
+	void ApplyServingMaxFPSFromOptions(const std::optional<rlmesh::InfoDict>& Options);
+	void RestoreServingMaxFPS();
+
 	std::shared_ptr<FRLMeshGameThread> GameThread;
 	std::unique_ptr<rlmesh::EnvServer> Server;
 	FString ServedAddress;
+
+	bool bHaveSavedMaxFPS = false;
+	float SavedMaxFPS = 0.f;
 };

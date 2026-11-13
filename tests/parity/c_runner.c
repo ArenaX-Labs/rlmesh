@@ -625,8 +625,13 @@ int main(int argc, char **argv) {
     s.warning_fail = !strcmp(variant, "fail") ||
                      !strcmp(variant, "runtime_fail") ||
                      !strcmp(variant, "recorder");
-    if (!strcmp(variant, "workflow"))
+    if (!strcmp(variant, "workflow")) {
+#ifdef _WIN32
+      REQUIRE(_putenv("RLMESH_WORKFLOW_EDITION=") == 0);
+#else
       REQUIRE(unsetenv("RLMESH_WORKFLOW_EDITION") == 0);
+#endif
+    }
     OK(rlmesh_set_warning_handler(warning, &s, NULL));
     opts.execution_horizon =
         !strcmp(variant, "workflow") || !strcmp(variant, "recorder") ? 1 : 2;

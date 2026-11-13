@@ -13,17 +13,30 @@ repo_root="$PWD"
 inc="$repo_root/crates/rlmesh-capi/include"
 target="target/debug"
 
+# Native Windows (MSVC host) needs different link/shared-lib flags than Unix.
+windows_host=0
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*) windows_host=1 ;;
+esac
+case "$(rustc -vV 2>/dev/null | sed -n 's/host: //p')" in
+  *-windows-*) windows_host=1 ;;
+esac
+
 # Compiler is overridable so CI can run this same task under real clang/gcc (and,
 # later, MSVC); $CC/$CXX may carry args ("zig cc"), so they are left unquoted below.
 # The local default also checks the C header under GCC, as most C consumers
-# build it, when GCC is available.
+# build it, when GCC is available. On Windows, prefer zig alone (no MinGW gcc).
 c_compilers=("${CC:-zig cc}")
-if [ -z "${CC:-}" ] && command -v gcc >/dev/null; then c_compilers+=(gcc); fi
+if [ -z "${CC:-}" ] && [ "$windows_host" != 1 ] && command -v gcc >/dev/null; then
+  c_compilers+=(gcc)
+fi
 CC="${c_compilers[0]}"
 # An explicit CXX selects one compiler (as in CI). The local default exercises
 # both Clang (zig's bundled compiler) and GCC when it is available.
 compilers=("${CXX:-zig c++}")
-if [ -z "${CXX:-}" ] && command -v g++ >/dev/null; then compilers+=(g++); fi
+if [ -z "${CXX:-}" ] && [ "$windows_host" != 1 ] && command -v g++ >/dev/null; then
+  compilers+=(g++)
+fi
 CXX="${compilers[0]}"
 echo "==> CC='$CC'  CXX='$CXX'"
 
@@ -35,6 +48,11 @@ cc_quiet=()
 cxx_quiet=()
 case "$CC" in *zig*) cc_quiet=(-Wno-unused-command-line-argument) ;; esac
 case "$CXX" in *zig*) cxx_quiet=(-Wno-unused-command-line-argument -Wno-nullability-completeness) ;; esac
+# Windows stdint.h uses ULL in UINT64_MAX; C++98 -pedantic -Werror rejects that.
+cxx98_extra=()
+if [ "$windows_host" = 1 ]; then
+  cxx98_extra=(-Wno-c++11-long-long -Wno-long-long)
+fi
 
 # zig 0.16's `cc -fsyntax-only` is broken (errors "FileNotFound"), so the header
 # typecheck compiles to a throwaway object in this scratch dir instead.
@@ -67,8 +85,21 @@ done
 # The C++ translation units take seconds and up to a GiB each to compile, so
 # they compile in parallel (`bg`, up to 8 at a time) and `joined` waits for
 # them, failing if any did; their binaries then run one at a time.
-cores="$(getconf _NPROCESSORS_ONLN)"
+if cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"; then
+  :
+elif cores="$(nproc 2>/dev/null)"; then
+  :
+else
+  cores="${NUMBER_OF_PROCESSORS:-4}"
+fi
 max_jobs=$((cores < 8 ? cores : 8))
+# Parallel LLD links against the same import library race with FileBusy on Windows.
+if [ "$windows_host" = 1 ]; then
+  max_jobs=1
+  # Dirty-tree C and Python extensions only negotiate when both speak the same
+  # sealed edition (docs/local-dev.md); keep the Windows subset on that cohort.
+  export RLMESH_RELEASE_BUILD="${RLMESH_RELEASE_BUILD:-1}"
+fi
 pids=()
 bg() {
   if [ "${#pids[@]}" -ge "$max_jobs" ]; then
@@ -98,7 +129,8 @@ for c_compiler in "${c_compilers[@]:1}"; do
 done
 echo "==> C header stays warning-free in C++98"
 printf '#include <rlmesh.h>\n' |
-  $CXX -std=c++98 "${warn[@]}" -pedantic "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx98.o"
+  $CXX -std=c++98 "${warn[@]}" -pedantic "${cxx_quiet[@]}" "${cxx98_extra[@]}" -I "$inc" -c -x c++ - \
+    -o "$tmp/header_cxx98.o"
 echo "==> vendored DLPack v1.0 is verbatim and accepts either include order"
 python - "$inc/rlmesh.h" "$tmp/dlpack.h" <<'PY'
 import hashlib
@@ -151,7 +183,23 @@ case "$CC" in *zig*)
 ;; esac
 
 # Compile and run C gates once; the C++ consumers below share the same library.
-link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
+if [ "$windows_host" = 1 ]; then
+  # Prefer the MSVC import library so consumers load the cdylib, not the huge staticlib.
+  if [ -f "$target/rlmesh_capi.dll.lib" ]; then
+    cp -f "$target/rlmesh_capi.dll.lib" "$tmp/rlmesh_capi.lib"
+    link=(-L "$tmp" -L "$target" -lrlmesh_capi)
+  else
+    link=(-L "$target" -lrlmesh_capi)
+  fi
+  # So spawned test binaries find rlmesh_capi.dll.
+  export PATH="$repo_root/$target:$PATH"
+  shared_ext=dll
+  shared_flags=(-shared)
+else
+  link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
+  shared_ext=so
+  shared_flags=(-fPIC -shared)
+fi
 # The shared behavioural fixtures use the same toolchain, ABI library and warnings.
 mkdir -p "$tmp/parity"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
@@ -186,12 +234,16 @@ $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_factory.c "${link[@]}" -o "$tmp/c_factory"
 "$tmp/c_factory"
 echo "==> factory start lifetime/failures, host envelopes and model signal options"
-$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
-  crates/rlmesh-capi/examples/c_serving.c "${link[@]}" -o "$tmp/c_serving"
-"$tmp/c_serving"
-# Reuse the caller's prepared client and protocol cohort. Syncing here can
-# replace an isolated non-editable client with the checkout's editable build.
-uv run --no-sync python crates/rlmesh-capi/examples/c_serving.py "$tmp/c_serving"
+if [ "$windows_host" = 1 ]; then
+  echo "==> skipping c_serving (Unix sockets/arpa) on Windows"
+else
+  $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+    crates/rlmesh-capi/examples/c_serving.c "${link[@]}" -o "$tmp/c_serving"
+  "$tmp/c_serving"
+  # Reuse the caller's prepared client and protocol cohort. Syncing here can
+  # replace an isolated non-editable client with the checkout's editable build.
+  uv run --no-sync python crates/rlmesh-capi/examples/c_serving.py "$tmp/c_serving"
+fi
 echo "==> C ABI typed adapters, transforms, ownership and model integration"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_adapters.c "${link[@]}" -o "$target/c_adapters_smoke"
@@ -228,6 +280,33 @@ $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
 echo "==> C model end-to-end vs a live env"
 "$target/e2e_harness" "$target/c_model_smoke" "run report: episodes=3 steps=6"
 
+if [ "$windows_host" = 1 ]; then
+  # Full C++ matrix hits zig/LLD FileBusy against the MSVC import library on this
+  # host. Keep the Unreal plugin checks that this task is the in-repo gate for.
+  echo "==> Windows: Unreal game-thread env + native gates (full C++ matrix is Unix CI)"
+  flags=(-std=c++17 "${warn[@]}" -pedantic-errors "${cxx_quiet[@]}" -I "$inc")
+  printf '#include <rlmesh.hpp>\n' >"$tmp/header_cxx17.cpp"
+  $CXX "${flags[@]}" -c "$tmp/header_cxx17.cpp" -o "$tmp/header_cxx17.o"
+  $CXX "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
+    -I integrations/unreal/RLMesh/Source/RLMeshUnreal/Public \
+    integrations/unreal/RLMesh/Tests/game_thread_env_test.cpp "${link[@]}" \
+    -o "$tmp/unreal_game_thread_env"
+  "$tmp/unreal_game_thread_env"
+  $CXX "${flags[@]}" crates/rlmesh-capi/examples/cpp_gate.cpp "${link[@]}" -o "$tmp/cpp_gate"
+  $CXX "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
+    -I integrations/unreal/RLMesh/Source/RLMeshUnreal/Public \
+    -I crates/rlmesh-capi/examples integrations/unreal/RLMesh/Tests/game_thread_gate.cpp \
+    "${link[@]}" -o "$tmp/unreal_gate"
+  echo "==> C++ on sessions: the Gymnasium gate's rows against Python 0.2 ($CXX)"
+  RLMESH_NATIVE_GATE="$tmp/cpp_gate" uv run --no-sync pytest -q -p no:cacheprovider \
+    python/rlmesh/tests/conformance/native_gate.py
+  echo "==> The Unreal plugin's game-thread env on sessions: the same rows ($CXX)"
+  RLMESH_NATIVE_GATE="$tmp/unreal_gate" uv run --no-sync pytest -q -p no:cacheprovider \
+    python/rlmesh/tests/conformance/native_gate.py
+  echo "==> test:cxx OK (Windows Unreal subset)"
+  exit 0
+fi
+
 for compiler in "${compilers[@]}"; do
   compiler_quiet=()
   case "$compiler" in *zig*) compiler_quiet=(-Wno-unused-command-line-argument -Wno-nullability-completeness) ;; esac
@@ -255,10 +334,10 @@ for compiler in "${compilers[@]}"; do
     bg $compiler "${flags[@]}" tests/parity/cpp_runner.cpp "${link[@]}" -o "$tmp/parity/cpp"
     # Exception payloads must be destroyed by the shared library that created them.
     payload() {
-      $compiler "${flags[@]}" -fPIC -shared crates/rlmesh-capi/examples/cpp_payload_plugin.cpp \
-        "${link[@]}" -o "$tmp/libcpp_payload_plugin.so"
+      $compiler "${flags[@]}" "${shared_flags[@]}" crates/rlmesh-capi/examples/cpp_payload_plugin.cpp \
+        "${link[@]}" -o "$tmp/libcpp_payload_plugin.$shared_ext"
       $compiler "${flags[@]}" crates/rlmesh-capi/examples/cpp_payload.cpp \
-        "$tmp/libcpp_payload_plugin.so" "${link[@]}" -o "$tmp/cpp_payload"
+        "$tmp/libcpp_payload_plugin.$shared_ext" "${link[@]}" -o "$tmp/cpp_payload"
     }
     bg payload
     # The Unreal plugin's game-thread env, which needs no Unreal headers.
