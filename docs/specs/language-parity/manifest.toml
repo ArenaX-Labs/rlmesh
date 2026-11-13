@@ -19069,6 +19069,42 @@ status = "present"
 path = "rlmesh::types::PredictContext::predict_seed"
 params = {}
 
+["rlmesh.types:PredictContext.action_space"]
+area = "model"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh.types:PredictContext.action_space".rust]
+status = "present"
+path = "rlmesh::types::PredictContext::action_space"
+params = {}
+
+["rlmesh.types:PredictContext.action_space".c]
+status = "missing"
+gap = "G-30"
+
+["rlmesh.types:PredictContext.action_space".cpp]
+status = "missing"
+gap = "G-30"
+
+["rlmesh.types:PredictContext.observation_space"]
+area = "model"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh.types:PredictContext.observation_space".rust]
+status = "present"
+path = "rlmesh::types::PredictContext::observation_space"
+params = {}
+
+["rlmesh.types:PredictContext.observation_space".c]
+status = "missing"
+gap = "G-30"
+
+["rlmesh.types:PredictContext.observation_space".cpp]
+status = "missing"
+gap = "G-30"
+
 ["rlmesh.types:PredictContext.state"]
 area = "model"
 rule = ["R-24"]
