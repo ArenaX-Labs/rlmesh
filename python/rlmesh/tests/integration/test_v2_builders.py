@@ -78,7 +78,7 @@ def bench() -> Iterator[tuple[realtime.Host, realtime.Robot]]:
 
 def binds(host: realtime.Host, name: str, **policy: Any) -> realtime.BindingTable:
     with realtime.Policy(**policy, session=host, name=name) as bound:
-        return bound.bind("bench")
+        return bound.bind("bench").binding
 
 
 def test_a_robot_logs_no_demand_warning_as_readers_come_and_go(
@@ -426,7 +426,7 @@ def test_a_hand_written_dict_and_a_builder_bind_alike(
         session=host,
         name="alike",
     ) as written:
-        assert written.bind("bench").fingerprint == built.fingerprint
+        assert written.bind("bench").binding.fingerprint == built.fingerprint
 
 
 GIMBAL = {
@@ -599,7 +599,9 @@ def test_a_policy_without_a_timeout_waits_for_a_late_robot() -> None:
         assert thread.is_alive() and not bound
         with realtime.Robot("late", GIMBAL, session=host):
             thread.join(WAIT)
-            assert isinstance(bound[0], realtime.BindingTable)
+            assert bound[0] is policy and isinstance(
+                policy.binding, realtime.BindingTable
+            )
         policy.close()
 
 

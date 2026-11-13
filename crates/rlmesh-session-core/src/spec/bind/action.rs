@@ -354,8 +354,10 @@ impl<'a> Binder<'a> {
         // delta, which keeps its target) runs its safe behaviour whenever
         // no action is due: each chunk must outlast the replan period, or
         // the robot stutters between chunks and goes safe after hold_max.
+        // In lockstep no time passes between chunks.
         let period = Duration::from_secs_f64(1.0 / replan);
-        if !command.hold_last && !command.is_delta() && valid <= period {
+        let lockstep = self.options.lockstep;
+        if !lockstep && !command.hold_last && !command.is_delta() && valid <= period {
             let needed = period.as_nanos() / dt.as_nanos().max(1) + 2;
             self.incompatible(
                 slot,

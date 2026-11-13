@@ -989,6 +989,9 @@ pub struct RunOptions {
     pub allow: Vec<Allow>,
     /// Capture values.
     pub captures: BTreeMap<String, String>,
+    /// Bound for a robot on the lockstep clock: no time passes between two
+    /// chunks, so a chunk need not outlast the replan period.
+    pub lockstep: bool,
 }
 
 impl RunOptions {
@@ -1037,6 +1040,12 @@ impl RunOptions {
     /// With extra conversions.
     pub fn allow(mut self, allow: Allow) -> Self {
         self.allow.push(allow);
+        self
+    }
+
+    /// For a robot on the lockstep clock.
+    pub fn lockstep(mut self) -> Self {
+        self.lockstep = true;
         self
     }
 

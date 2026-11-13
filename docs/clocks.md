@@ -10,25 +10,31 @@ RLMesh connects a model to a world. The one thing you have to decide is
 
 The world picks the clock, in one argument, where you declare it:
 `realtime.Robot(..., clock=realtime.Clock.LOCKSTEP)`, or the wall clock by
-default. What drives it follows from that: a lockstep robot is stepped as a
-Gymnasium env, and a wall-clock robot is driven by a `realtime.Policy`.
+default. A robot says which when it joins a session, and the model doesn't
+change: the same `realtime.Policy` and the same `predict` run on both
+clocks, and the run follows the robot it is bound to.
+
+```python
+reach.bind("sim").run(predict, episodes=20)   # lockstep: evaluated, repeatable
+reach.bind("ur10e").run(predict)               # wall clock: drives the real robot
+```
 
 The session core also has a virtual clock, which keeps the world waiting
 but charges the model a set delay; it is not yet available from Python.
 
 ## What each clock promises
 
-|                | Lockstep                                                  | Wall                                                                                           |
-| -------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Time advances  | one step per action                                       | always                                                                                         |
-| A pause        | changes nothing                                           | the world moves on                                                                             |
-| A slow model   | costs you waiting, nothing else                           | acts late by however slow it was; a chunk older than the part's `max_action_age_ms` is refused |
-| Same run twice | the same, given the same seeds and a deterministic `step` | never exactly                                                                                  |
-| Arming         | `robot.serve` arms the robot                              | you arm the session: `robot.arm()`, or **Arm** in the cockpit                                  |
-| Limits         | in the action space, and applied to every command         | applied by the robot's edge to every chunk, whatever a policy sends                            |
-| Safe behaviour | not used: nothing runs between steps                      | runs on the robot when no one commands it                                                      |
-| Driven by      | `RemoteEnv`, or anything that steps a Gymnasium env       | a `realtime.Policy`                                                                            |
-| Use it to      | train and evaluate                                        | run the real thing                                                                             |
+|                | Lockstep                                                                             | Wall                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| Time advances  | one step per action                                                                  | always                                                                                         |
+| A pause        | changes nothing                                                                      | the world moves on                                                                             |
+| A slow model   | costs you waiting, nothing else                                                      | acts late by however slow it was; a chunk older than the part's `max_action_age_ms` is refused |
+| Same run twice | the same, given the same seeds and a deterministic `step`                            | never exactly                                                                                  |
+| Arming         | `robot.serve` arms the robot; a policy's lease is taken for it                       | you arm the session: `robot.arm()`, or **Arm** in the cockpit                                  |
+| Limits         | in the action space, and applied to every command                                    | applied by the robot's edge to every chunk, whatever a policy sends                            |
+| Safe behaviour | not used: nothing runs between steps                                                 | runs on the robot when no one commands it                                                      |
+| Driven by      | a `realtime.Policy` by episodes, `RemoteEnv`, or anything that steps a Gymnasium env | a `realtime.Policy` for a duration                                                             |
+| Use it to      | train and evaluate                                                                   | run the real thing                                                                             |
 
 ## Wrapping what you have
 
@@ -71,8 +77,10 @@ def reset(seed, options):
 robot.serve(step, reset)                  # step(commands) is called once per step
 ```
 
-Whoever steps it owns its time. Any lockstep robot is a Gymnasium env at
-its address, its observations and actions keyed by part path:
+Whoever steps it owns its time: a `realtime.Policy` (see
+[one policy on both clocks](#one-policy-on-both-clocks)), or a Gymnasium
+loop, since any lockstep robot is a Gymnasium env at its address, its
+observations and actions keyed by part path:
 
 ```python
 from rlmesh.numpy import RemoteEnv
@@ -132,3 +140,83 @@ tracker.run(predict)
 adds is what it can be handed: an input may be older than you would like
 (`obs.age_ms("cam")`), and the robot's edge refuses a chunk that arrives
 too late. See [real-time sessions](realtime.md) for the whole setup.
+
+## One policy on both clocks
+
+`Policy.bind` learns the clock of the robot it binds to from what the robot
+declared when it joined the session, so it knows a lockstep robot before
+that robot serves a step; `policy.clock` says which. A robot that declares
+nothing, a board included, is on the wall clock. `Policy.run` then follows
+the clock, and `predict` is the same function either way:
+
+```python
+reach = realtime.Policy(
+    hz=25,
+    inputs={"q": inputs.joints("arm", fields=["pos"])},
+    actions={"arm": actions.joints("arm", command="position", hz=100, chunk=4)},
+    session=host,
+)
+
+stats = reach.bind("sim").run(predict, episodes=20, seed=7)
+for episode in stats["episodes"]:
+    print(episode["return"], episode["steps"], episode["terminated"])
+```
+
+On a lockstep robot:
+
+- **Episodes, not time.** `run` runs `episodes` episodes (one by default)
+  and returns when the last one ends or on `stop()`. Each episode starts
+  with the robot's `reset`. `duration=` raises `ValueError` at once.
+- **Seeds repeat.** `seed=` is a base seed: each episode's reset seed is
+  derived from it, the robot and the episode's number exactly as a model
+  run with a base seed derives it (`Model.run_routes(..., base_seed=)`, or
+  `base_seed` in Rust's `RunOptions`), so the same seed runs the same
+  episodes again, through either API. Without `seed=` the resets are
+  unseeded.
+- **A chunk is that many steps.** One `predict` returns a chunk of H
+  actions per action entry, and the robot takes H steps, one action each,
+  stopping early at the end of an episode. Their rewards add up to the
+  episode's return.
+- **`hz` is session time, not real time.** Each step stands for one action
+  period of the policy (`1/hz` of its actions; the policy's `hz` when they
+  declare none), so input ages and history windows mean what they mean on
+  the wall clock. Nothing waits on a real clock.
+- **Nothing is ever stale or missing.** Every start sees each input as the
+  robot last published it, and is never skipped. `obs.age_ms(name)` is
+  session time: the steps since the robot published that input.
+- **Arming and the lease are taken care of.** The robot arms itself when it
+  serves, and the policy takes its lease when it binds. `mode=RunMode.SHADOW`
+  and `resume=` raise `ValueError`, as do `acquire()`, `release()`, `send()`
+  and the other wall-clock verbs (`SessionException`).
+- **One lockstep robot per policy.** A policy whose binding names several
+  robots, any of them lockstep, is refused at bind with `BindingRefused`:
+  stepping several lockstep robots together needs a rule for who advances
+  time, and none exists yet.
+
+On the wall clock `run` keeps its meaning: it drives the robot until
+`duration` or `stop()`, and `episodes=` and `seed=` raise `ValueError` at
+once. Both clocks return one dictionary with a `clock` key: `"wall"` with
+the counters of `realtime.results.PolicyStats`, or `"lockstep"` with
+`starts`, `chunks_sent` and `episodes`, one `{"return", "steps",
+"terminated", "truncated"}` per episode (`realtime.results.LockstepStats`).
+
+A Gym env served with `rlmesh.EnvServer` is a lockstep robot too, its parts
+of kinds `gym/box`, `gym/discrete` and so on, so a policy binds it by kind
+and runs it the same way:
+
+```python
+balance = realtime.Policy(
+    hz=50,
+    inputs={"x": {"kind": "gym/box", "fields": {"value": ["float32", [4]]}}},
+    actions={"push": {"kind": "gym/discrete", "fields": {"value": ["int64", []]}}},
+    session="127.0.0.1:5555",
+)
+lean = lambda obs: {"push": np.array([int(obs["x"][2] > 0)])}  # chunk 1: shape [1]
+balance.bind("cartpole").run(lean, episodes=10)
+```
+
+In Rust, `rlmesh::realtime::bind` returns a `BoundPolicy`, `Wall` (the
+session's `Controller`) or `Lockstep`, and `BoundPolicy::run` takes the same
+`Predictor` on either with `RunSettings` (`duration`, `mode` and `resume`
+for the wall clock, `episodes` and `seed` for lockstep), refusing the other
+clock's settings the same way.

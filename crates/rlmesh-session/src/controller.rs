@@ -220,6 +220,14 @@ pub enum ControllerError {
     /// The session failed.
     #[error(transparent)]
     Session(#[from] SessionError),
+    /// The binding's one robot runs on the lockstep clock: it steps only
+    /// when driven, so it is run through its lockstep exchange, not this
+    /// controller (`rlmesh::realtime::bind` does).
+    #[error(
+        "robot {0} runs in lockstep: it steps only when driven, so this controller \
+         cannot run it (rlmesh::realtime::bind runs a policy on either clock)"
+    )]
+    Lockstep(ParticipantId),
 }
 
 /// Why a chunk was not sent.
@@ -421,6 +429,27 @@ pub struct StepAction {
 }
 
 impl StepAction {
+    /// An entry's chunk as it was played rather than sent as a chunk (a
+    /// lockstep step): no seq. `fields` are the part's command fields.
+    pub fn played(
+        entry: String,
+        part: Option<String>,
+        t0_ns: i64,
+        dt_ns: u64,
+        packed: Bytes,
+        fields: Vec<FieldSpec>,
+    ) -> Self {
+        Self {
+            entry,
+            part,
+            t0_ns,
+            dt_ns,
+            seq: None,
+            packed,
+            fields,
+        }
+    }
+
     /// The actions as the part's edge receives them: one array per command
     /// field, `[chunk, ...]`. `None` for a dropped entry.
     pub fn actions(&self) -> Option<Value> {
@@ -1748,14 +1777,64 @@ pub(crate) async fn serves_lockstep(participant: &Participant, key: &str) -> boo
     replies.recv_async().await.is_ok()
 }
 
-/// Why a realtime policy refuses lockstep robot `robot` (at participant
-/// address `address`, when known).
-pub(crate) fn lockstep_refusal(robot: &ParticipantId, address: Option<&str>) -> String {
-    let address = address.map_or_else(|| format!("<session>/{robot}"), str::to_string);
-    format!(
-        "robot {robot} runs in lockstep: a lockstep robot is driven as an env, \
-         RemoteEnv(\"{address}\"), not by a realtime policy"
-    )
+/// `robot`, or else the one robot that declared parts, when it runs in
+/// lockstep.
+fn lone_lockstep_robot(
+    participant: &Participant,
+    robot: Option<&ParticipantId>,
+) -> Option<ParticipantId> {
+    let view = participant.authority()?;
+    let target = match robot {
+        Some(robot) => robot.clone(),
+        None => {
+            let me = participant.id();
+            let owners: BTreeSet<&ParticipantId> = view
+                .parts
+                .iter()
+                .map(|p| &p.owner)
+                .filter(|owner| *owner != me)
+                .collect();
+            let [only] = owners.into_iter().collect::<Vec<_>>()[..] else {
+                return None;
+            };
+            only.clone()
+        }
+    };
+    (view.clock_of(&target) == Some(RobotClock::Lockstep)).then_some(target)
+}
+
+/// The one robot of `robots` (those a binding reads or commands) that runs
+/// in lockstep, by its declaration. A lockstep robot among several is
+/// refused: stepping several together needs a rule for who advances time.
+fn lockstep_robot(
+    participant: &Participant,
+    robots: &BTreeSet<&ParticipantId>,
+) -> Result<Option<ParticipantId>, BindError> {
+    let view = participant.authority();
+    let clock = |robot: &ParticipantId| view.as_ref().and_then(|v| v.clock_of(robot));
+    let lockstep: Vec<&ParticipantId> = robots
+        .iter()
+        .copied()
+        .filter(|robot| clock(robot) == Some(RobotClock::Lockstep))
+        .collect();
+    match (lockstep.as_slice(), robots.len()) {
+        ([], _) => Ok(None),
+        ([robot], 1) => Ok(Some((*robot).clone())),
+        _ => {
+            let names = |set: Vec<&ParticipantId>| {
+                set.iter()
+                    .map(|r| r.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            Err(BindError::Options(format!(
+                "the policy binds robots {}, and {} runs in lockstep: a policy runs one \
+                 lockstep robot at a time, alone; bind it to that robot only",
+                names(robots.iter().copied().collect()),
+                names(lockstep),
+            )))
+        }
+    }
 }
 
 /// A bound policy: see the module docs.
@@ -1817,6 +1896,14 @@ impl Controller {
                 .await
                 .map_err(|e| e.into_error(config.bind_timeout, &first))?;
         }
+        // A lockstep robot is bound through its own exchange, under its
+        // clock's rules.
+        if let Some(lockstep) = robot
+            .as_ref()
+            .and_then(|robot| lone_lockstep_robot(&participant, Some(robot)))
+        {
+            return Err(ControllerError::Lockstep(lockstep));
+        }
         // Robots declare one by one: a binding that names robots not
         // declared yet is tried again on each new view until it stands or
         // the timeout passes. Anything else it is refused for stands.
@@ -1825,6 +1912,11 @@ impl Controller {
                 Ok(binding) => break binding,
                 Err(err) => {
                     let Some(waiting) = err.waiting_for() else {
+                        // Refused under the wall clock's rules: a lone
+                        // lockstep robot is bound under its own.
+                        if let Some(lockstep) = lone_lockstep_robot(&participant, None) {
+                            return Err(ControllerError::Lockstep(lockstep));
+                        }
                         return Err(err.into());
                     };
                     waits
@@ -1835,7 +1927,7 @@ impl Controller {
             }
         };
         // A lockstep robot publishes nothing on the session and steps only
-        // when an env driver steps it: a binding to it would wait forever.
+        // when driven: it is run through its lockstep exchange instead.
         let robots: BTreeSet<&ParticipantId> = binding
             .inputs
             .iter()
@@ -1843,12 +1935,8 @@ impl Controller {
             .chain(binding.actions.iter().filter_map(|r| r.part.as_ref()))
             .map(|p| &p.owner)
             .collect();
-        let view = participant.authority();
-        for robot in robots {
-            let clock = view.as_ref().and_then(|v| v.clock_of(robot));
-            if clock == Some(RobotClock::Lockstep) {
-                return Err(BindError::Options(lockstep_refusal(robot, None)).into());
-            }
+        if let Some(lockstep) = lockstep_robot(&participant, &robots)? {
+            return Err(ControllerError::Lockstep(lockstep));
         }
         participant.declare_bound(&binding).await?;
         let inputs = Inputs::open(&participant, &binding).await?;

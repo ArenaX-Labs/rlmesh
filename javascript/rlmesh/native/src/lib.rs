@@ -127,6 +127,11 @@ fn controller_err(err: ControllerError) -> Error {
     match err {
         ControllerError::Bind(err) => bind_err(err),
         ControllerError::Session(err) => session_err(err),
+        // This binding runs wall-clock robots only.
+        ControllerError::Lockstep(robot) => binding_refused(format!(
+            "robot {robot} runs in lockstep, and a policy here drives wall-clock robots only: \
+             run it with Python's realtime.Policy or Rust's rlmesh::realtime"
+        )),
     }
 }
 

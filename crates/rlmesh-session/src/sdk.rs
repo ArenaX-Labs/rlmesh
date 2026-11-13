@@ -809,6 +809,29 @@ async fn bind_policy_with(
 ) -> Result<(Controller, Option<Published>), BindPolicyError> {
     let policy = Policy::parse(policy_json)
         .map_err(|why| BindPolicyError::Policy(format!("{name}: {why}")))?;
+    bind_built_policy(
+        address,
+        name,
+        &policy,
+        publishes_json,
+        options,
+        priority,
+        timeout,
+    )
+    .await
+}
+
+/// [`bind_policy`] (with `publishes_json`, [`bind_policy_publishing`]) for
+/// a policy already built.
+pub async fn bind_built_policy(
+    address: &SessionAddress,
+    name: &str,
+    policy: &Policy,
+    publishes_json: Option<&str>,
+    options: &RunOptions,
+    priority: PriorityClass,
+    timeout: Duration,
+) -> Result<(Controller, Option<Published>), BindPolicyError> {
     if let Some(json) = publishes_json {
         let commandable = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
             .map_err(|why| BindPolicyError::Policy(format!("{name}: publishes: {why}")))?
@@ -851,7 +874,7 @@ async fn bind_policy_with(
         ..ControllerConfig::default()
     };
     let participant = Arc::new(participant);
-    match Controller::bind(participant.clone(), &policy, options, config).await {
+    match Controller::bind(participant.clone(), policy, options, config).await {
         Ok(controller) => Ok((controller, published)),
         Err(err) => {
             drop(published);
@@ -867,7 +890,8 @@ async fn bind_policy_with(
 /// participant address: `host:port/cartpole` names session `cartpole`, which
 /// holds nothing, when it meant robot `cartpole` of the default session. Only
 /// asked of a session with no robot yet, so a policy waiting for its robot
-/// pays nothing more.
+/// pays nothing more. This participant cannot read the default session's
+/// roster, so it asks the robot's lockstep key there instead.
 async fn lockstep_robot_named(
     address: &SessionAddress,
     participant: &crate::participant::Participant,
@@ -891,8 +915,10 @@ async fn lockstep_robot_named(
         return None;
     }
     Some(format!(
-        "{address} is robot {robot}'s participant address, not a session: {}",
-        crate::controller::lockstep_refusal(&robot, Some(&address.to_string())),
+        "{address} is robot {robot}'s participant address, not a session: session {} \
+         holds nothing, and {robot} runs in lockstep in the host's default session; pass \
+         session=\"{}\" and bind(\"{robot}\")",
+        address.name, address.base,
     ))
 }
 

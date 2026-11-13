@@ -230,7 +230,7 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
         FakeUR10e(host) as ur,
         rlmesh.Policy(SINE, session=host, name="sine") as policy,
     ):
-        binding = policy.bind("ur10e")
+        binding = policy.bind("ur10e").binding
         assert re.search(
             r"wrist +in +wrist/cam +bound +decode\(jpeg\) → crop\(640x480 → 96x96, bilinear\)",
             str(binding),
@@ -305,7 +305,7 @@ def test_the_binding_table_and_refusals_match_the_conformance_goldens(
         with rlmesh.Policy(
             fixture("policies", "pi0_single"), session=host, name="pi0_single"
         ) as pi0:
-            binding = pi0.bind("ur10e")
+            binding = pi0.bind("ur10e").binding
             assert binding.table.rstrip("\n") == golden("pi0_single__ur10e")
             assert binding.warnings and "gripper" in binding.warnings[0]
 
@@ -320,7 +320,7 @@ def test_the_binding_table_and_refusals_match_the_conformance_goldens(
         assert caught.value.problems == [("incompatible", "input", "ft")]
         # The fix the message suggests is a different robot: the same policy
         # binds where the wrench is in tool0.
-        assert "wrist/ft" in str(refused.bind("ur10e"))
+        assert "wrist/ft" in str(refused.bind("ur10e").binding)
         refused.close()
 
         with pytest.raises(rlmesh.BindingRefused, match="unknown conversion"):
@@ -767,7 +767,7 @@ def test_a_policy_publishes_annotations_under_its_name_and_never_binds_them(
         ):
             # One robot besides the tracker's own parts: bound with no robot
             # named, the eye alone, at its path.
-            binding = tracker.bind()
+            binding = tracker.bind().binding
             assert "binding tracker on eye-1" in str(binding), str(binding)
             with pytest.raises(ValueError, match="no part 'boxes'"):
                 tracker.publish("boxes", np.zeros(2, np.float32))
@@ -1288,7 +1288,7 @@ def test_one_policy_bound_with_no_robot_drives_two_robots(host: rlmesh.Host) -> 
     try:
         eyes[0].arm()
         with rlmesh.Policy(EYES, session=host, name="tracker") as policy:
-            binding = policy.bind()
+            binding = policy.bind().binding
             assert "binding tracker on scene" in str(binding)
             gaze = np.full((1, 2), 0.25, dtype=np.float32)
             thread, result = in_thread(
@@ -1337,7 +1337,7 @@ def test_after_a_rebind_the_binding_is_the_one_in_force_and_inputs_pair_by_entry
     eye = rlmesh.Robot("eye-1", EYE, session=host)
     try:
         with rlmesh.Policy(reader, session=host, name="reader") as policy:
-            before = streams(policy.bind())
+            before = streams(policy.bind().binding)
             # The robot leaves and comes back: its parts get new stream ids.
             eye.close()
             eye = rlmesh.Robot("eye-1", EYE, session=host)

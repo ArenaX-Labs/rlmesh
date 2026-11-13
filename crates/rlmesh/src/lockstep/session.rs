@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use rlmesh_session::address::{Address, LEASE_GRACE, Placed, SessionAddress, place};
 use rlmesh_session::lease::LeaseGroup;
-use rlmesh_session::spec::Kind;
+use rlmesh_session::spec::{Kind, RunOptions};
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
 use rlmesh_session::wire::version::CLOCK_LOCKSTEP;
 use rlmesh_session::wire::{
@@ -1048,13 +1048,45 @@ pub async fn connect_view(
     options: ConnectOptions,
 ) -> Result<GymView, GymError> {
     let (attached, robot) = attach_robot(address, &options).await?;
+    let policy = policy.map(|(policy, name)| (policy, view::run_options(name, &robot)));
     view_of(attached, robot, policy, options).await
+}
+
+/// [`connect_view`] through `policy` bound with `run` (its robot set to the
+/// one at `address`), and the key its episodes' seeds derive from: a Gym
+/// env's contract id, else the robot's name, as a run of the env takes it.
+pub async fn connect_policy_view(
+    address: &str,
+    policy: &rlmesh_session::spec::Policy,
+    run: RunOptions,
+    options: ConnectOptions,
+) -> Result<(GymView, String), GymError> {
+    let (attached, robot) = attach_robot(address, &options).await?;
+    let seed_key = match gym_env_info(&attached.parts) {
+        Some(info) => info?.contract.id,
+        None => robot.to_string(),
+    };
+    let run = RunOptions {
+        robot: Some(robot.clone()),
+        lockstep: true,
+        ..run
+    };
+    let view = view_of(attached, robot, Some((policy, run)), options).await?;
+    Ok((view, seed_key))
+}
+
+/// The Gym env a robot's parts declare, if it is one.
+fn gym_env_info(parts: &[PartSpec]) -> Option<Result<GymEnvInfo, GymError>> {
+    parts
+        .iter()
+        .find_map(|p| p.attrs.get(rlmesh_session::spec::normalise::attrs::GYM_ENV))
+        .map(|text| GymEnvInfo::from_attr(text))
 }
 
 async fn view_of(
     attached: Attached,
     robot: ParticipantId,
-    policy: Option<(&rlmesh_session::spec::Policy, &str)>,
+    policy: Option<(&rlmesh_session::spec::Policy, RunOptions)>,
     options: ConnectOptions,
 ) -> Result<GymView, GymError> {
     let parts = attached.parts.clone();
@@ -1065,11 +1097,10 @@ async fn view_of(
             attached.address
         )));
     }
-    let (table, fingerprint, channels) = match policy {
-        Some((policy, name)) => {
-            let binding =
-                rlmesh_session::spec::bind(policy, &parts, &view::run_options(name, &robot))
-                    .map_err(|e| GymError::Map(e.to_string()))?;
+    let (table, fingerprint, channels) = match &policy {
+        Some((policy, run)) => {
+            let binding = rlmesh_session::spec::bind(policy, &parts, run)
+                .map_err(|e| GymError::Map(e.to_string()))?;
             (
                 binding.table_text(),
                 Some(binding.fingerprint),
@@ -1095,14 +1126,7 @@ async fn view_of(
             options.timeout,
         )
         .await?;
-    GymView::new(
-        link,
-        &parts,
-        policy.map(|(p, name)| (p, view::run_options(name, &robot))),
-        epoch,
-        token,
-        Some(Box::new(held)),
-    )
+    GymView::new(link, &parts, policy, epoch, token, Some(Box::new(held)))
 }
 
 pub(crate) fn uuid_suffix() -> String {

@@ -781,12 +781,19 @@ class Tensor:
 @typing.final
 class V2Controller:
     r"""
-    A policy bound to a robot: inputs, leases, chunks and the run loop.
+    A policy bound to a robot: inputs, leases, chunks and the run loop, on
+    the robot's clock.
     """
     @property
     def name(self) -> builtins.str:
         r"""
         The policy's participant id.
+        """
+    @property
+    def clock(self) -> builtins.str:
+        r"""
+        The bound robot's clock: `wall`, or `lockstep` (one robot that
+        declared it).
         """
     @property
     def table(self) -> builtins.str:
@@ -876,21 +883,31 @@ class V2Controller:
         """
     def holds(self) -> builtins.bool:
         r"""
-        Whether this policy holds every lease its binding commands.
+        Whether this policy holds every lease its binding commands (a
+        lockstep robot's, always: it is taken at bind).
         """
-    def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None, mode: builtins.str = ..., on_step: collections.abc.Callable[[dict[builtins.str, typing.Any]], None] | None = None, resume: builtins.str = ...) -> None:
+    def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None, mode: builtins.str = ..., on_step: collections.abc.Callable[[dict[builtins.str, typing.Any]], None] | None = None, resume: typing.Optional[builtins.str] = None, episodes: typing.Optional[builtins.int] = None, seed: typing.Optional[builtins.int] = None) -> None:
         r"""
-        Runs the policy loop on this thread until `stop()`,
-        `duration_s`, or a failure, calling `predict(observation)` at the
-        replan rate with one inference in flight. `mode` is `command`, or
-        `shadow` to predict without a lease and send nothing until it holds
-        one; `on_step(step)` gets each completed start as a dict (`shadow`,
+        Runs the policy on its robot's clock, on this thread.
+        
+        Wall clock: the loop until `stop()`, `duration_s` or a failure,
+        calling `predict(observation)` at the replan rate with one inference
+        in flight. `mode` is `command`, or `shadow` to predict without a
+        lease and send nothing until it holds one. `resume` is `manual` (the
+        default): a part a higher class took stays parked until `resume()`,
+        or `auto`: it is asked for again once free. If the robot or the host
+        is lost, it raises `SessionLost`.
+        
+        Lockstep: `episodes` episodes (default 1), each from a reset seeded
+        from `seed` as a model run seeds it, one `predict` per chunk, until
+        each ends or `stop()`. `duration_s`, `mode="shadow"` and `resume`
+        raise `ValueError` here, as `episodes` and `seed` do on the wall
+        clock.
+        
+        `on_step(step)` gets each completed start as a dict (`shadow`,
         `time_ns`, and per action entry its `actions` as the edge receives
-        them, `parts` and chunk `seqs`). `resume` is `manual`: a part a
-        higher class took stays parked until `resume()`, or `auto`: it is
-        asked for again once free. If `predict` or `on_step` raises,
-        the leases are released and the exception propagates; if the robot
-        or the host is lost, it raises `SessionLost`.
+        them, `parts` and chunk `seqs`). If `predict` or `on_step` raises,
+        the leases are released and the exception propagates.
         """
     def stop(self) -> None:
         r"""
@@ -910,8 +927,10 @@ class V2Controller:
         """
     def stats(self) -> builtins.dict[builtins.str, typing.Any]:
         r"""
-        The start, skip and completion counters, and the input the
-        starts are phased after (`aligned_to`, `phase_offset_ms`).
+        The run's counters, with its `clock`. Wall: starts, skips and
+        completions, and the input the starts are phased after
+        (`aligned_to`, `phase_offset_ms`). Lockstep: starts, chunks and one
+        dict per episode (`return`, `steps`, `terminated`, `truncated`).
         """
     def events(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
         r"""

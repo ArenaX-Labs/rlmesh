@@ -93,13 +93,14 @@ def main() -> None:
             session=host,
             name="sine",
         ) as policy:
-            print(policy.bind("ur10e"))
+            print(policy.bind("ur10e").binding)
             stats = policy.run(predict, duration=args.seconds)
         stop.set()
         loop.join()
         edge = robot.edge_stats("arm")
         robot.close()
 
+    assert stats["clock"] == "wall"  # a robot of this loop's own
     print(
         f"policy: {stats['completions']} replans, {stats['chunks_sent']} chunks, skipped {stats['skipped']}"
     )

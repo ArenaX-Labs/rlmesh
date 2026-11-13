@@ -1463,7 +1463,10 @@ spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
   Experimental `RunHooks` pair to the run, and `RunHooks::artifacts` with
   `RecorderCaptureOptions::record`, which carry Python's Experimental
   `Recorder.record` artifact tree; C, C++ and C# have no counterpart in
-  v0.2. Python's `BatchOptions` is Experimental too: Rust's
+  v0.2. `rlmesh::realtime` (Experimental) runs a real-time policy on either
+  clock, as Python's Experimental `rlmesh.realtime.Policy` does; it is
+  recorded under `binding`, semver-exempt, and C, C++ and C# have no
+  real-time surface. Python's `BatchOptions` is Experimental too: Rust's
   `BatchOptions` (`ModelServeOptions::batching`) is recorded under
   `binding`, semver-exempt, and its `rlmesh:BatchOptions` rows stay only to
   pin the defaults the two share (`parity_defaults`). The ABI

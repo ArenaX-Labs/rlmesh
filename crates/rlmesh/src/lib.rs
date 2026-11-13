@@ -178,6 +178,7 @@ pub mod managed;
 mod model;
 pub mod prelude;
 mod ready;
+pub mod realtime;
 pub mod recorder;
 mod run;
 pub mod serve_options;

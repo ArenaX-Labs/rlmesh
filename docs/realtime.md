@@ -10,8 +10,9 @@ the session: who may join, who holds which part, and what is recorded.
 This guide builds one setup end to end: two ESP32 "eyes" with a pan and a
 tilt servo each, a camera, and a policy on a PC that runs a detector on
 the camera and points both eyes. The same pieces fit any robot. It runs on
-the wall clock: the robots keep their own time and the policy keeps up. To
-step a simulator instead, see [Choosing a clock](clocks.md).
+the wall clock: the robots keep their own time and the policy keeps up. The
+same policy and the same `predict` also run a simulator stepped in
+lockstep, by episodes: see [Choosing a clock](clocks.md).
 
 Robots, inputs and actions are declared with builders: `parts.joints(...)`
 for what a robot has, `inputs.camera(...)` and `actions.joints(...)` for
@@ -158,7 +159,8 @@ def predict(obs, policy):
     return {"left": chunk, "right": chunk}
 
 with tracker:
-    print(tracker.bind())  # the binding table: what is bound, and how
+    tracker.bind()
+    print(tracker.binding)  # the binding table: what is bound, and how
     tracker.run(predict)
 ```
 

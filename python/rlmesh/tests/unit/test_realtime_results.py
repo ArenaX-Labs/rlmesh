@@ -72,6 +72,7 @@ def keys(*typed: Any) -> set[str]:
         ("fn edge_stats<'py>(", (results.EdgeStats, results.EdgeClockRefusal)),
         ("fn held_list<'py>(", (results.Held,)),
         ("fn stats<'py>(", (results.PolicyStats,)),
+        ("fn lockstep_stats<'py>(", (results.LockstepStats, results.Episode)),
         ("fn release<'py>(", (results.HandBack,)),
     ],
 )

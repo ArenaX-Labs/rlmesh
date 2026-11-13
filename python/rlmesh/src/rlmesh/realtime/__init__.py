@@ -20,7 +20,8 @@ behaviour::
             actions={"arm": actions.joints("ur10e:arm", command="position", chunk=10)},
             session=host,
         )
-        print(policy.bind("ur10e"))  # the binding table
+        policy.bind("ur10e")
+        print(policy.binding)  # the binding table
         # robot loop: robot.publish("arm", pos=q, vel=dq); q = robot.command("arm")
         policy.run(lambda obs: {"arm": obs["q"][None]}, duration=5.0)
 
@@ -30,10 +31,12 @@ behaviour::
 "ur10e:arm"}``), and a dict written by hand is accepted wherever one is.
 
 A robot can also run in lockstep (``Robot(..., clock=Clock.LOCKSTEP)``):
-each step is one call of its ``step(commands)``, and ``RemoteEnv`` at its
-participant address (``robot.address``) drives it as a Gymnasium env.
-Existing Gym envs and v1 models reach lockstep through their own servers
-and runs, unchanged.
+each step is one call of its ``step(commands)``. The same :class:`Policy`
+and the same ``predict`` run it, by episodes
+(``policy.bind("sim").run(predict, episodes=20)``), and so they run a Gym
+env served with ``rlmesh.EnvServer``; ``RemoteEnv`` at its participant
+address (``robot.address``) drives it as a Gymnasium env. Existing Gym envs
+and v1 models reach lockstep through their own servers and runs, unchanged.
 
 Every rule (normalisation, binding, conversions, leases, the edge, the run
 loop) runs in Rust; this module converts NumPy arrays at the boundary.
@@ -88,7 +91,7 @@ from .results import (
     Health,
     Held,
     HostLink,
-    PolicyStats,
+    RunStats,
 )
 
 if TYPE_CHECKING:
@@ -450,17 +453,19 @@ def _sample(
 class Clock(enum.Enum):
     """Who owns a robot's time: the world, or whoever steps it.
 
-    The robot chooses, where it is declared; a policy or env learns it from
-    what it connects to.
+    The robot chooses, where it is declared, and says so when it joins the
+    session; a policy or env learns it from what it binds to
+    (:attr:`Policy.clock`).
     """
 
     #: The world runs whether anyone acts or not: the robot publishes what
     #: it measures and plays what its edge says is due, at its own rate. A
-    #: :class:`Policy` drives it. The default.
+    #: :class:`Policy` drives it for a ``duration``. The default.
     WALL = "wall"
     #: Time advances one step per call of the robot's ``step(commands)``,
-    #: and waits for it: :meth:`Robot.serve` serves the steps, and
-    #: ``RemoteEnv`` at :attr:`Robot.address` drives them as a Gymnasium env.
+    #: and waits for it: :meth:`Robot.serve` serves the steps. A
+    #: :class:`Policy` runs it by ``episodes``, and ``RemoteEnv`` at
+    #: :attr:`Robot.address` drives it as a Gymnasium env.
     LOCKSTEP = "lockstep"
 
 
@@ -637,7 +642,8 @@ class Robot:
         returns ``None`` or ``(reward, terminated, truncated[, info])``
         (``reset`` may return just ``info``). Declares and arms first; with
         ``background``, returns once serving (stop with :meth:`close`).
-        Whoever drives it (``RemoteEnv`` at :attr:`address`) owns its time.
+        Whoever drives it (a :class:`Policy`, or ``RemoteEnv`` at
+        :attr:`address`) owns its time.
         """
         if self._lockstep is None:
             raise RuntimeError(
@@ -951,7 +957,9 @@ class Observation(Mapping[str, Any]):
     def age_ms(self, name: str) -> float | None:
         """How old input ``name`` was at the snapshot, in ms; ``None`` for a blank input.
 
-        The conservative age :attr:`Meta.ages_ns` holds, in milliseconds.
+        The conservative age :attr:`Meta.ages_ns` holds, in milliseconds. On
+        a lockstep robot it is session time: the steps since the robot last
+        published it, one action period each.
         Raises ``KeyError`` for a name the policy has no input for.
         """
         ages = self.meta.ages_ns
@@ -1116,6 +1124,13 @@ class Policy:
     parts.array("float32", 2)})}``. They appear under the policy's name
     (``tracker/target``): recorded, shown in the cockpit, readable by other
     policies (:func:`rlmesh.realtime.inputs.of`), and never bound to this one.
+    A policy that publishes runs on the wall clock only.
+
+    The robot it binds to decides the clock (:attr:`clock`), and
+    :meth:`run` follows it, so one ``predict`` runs either::
+
+        reach.bind("sim").run(predict, episodes=20)  # lockstep: evaluated, repeatable
+        reach.bind("ur10e").run(predict)  # wall clock: drives the real robot
     """
 
     def __init__(
@@ -1176,8 +1191,8 @@ class Policy:
         allow: Sequence[Conversion] | None = None,
         timeout: float | None | Literal["policy"] = "policy",
         **captures: str,
-    ) -> BindingTable:
-        """Attach, bind to ``robot``'s parts and declare the binding.
+    ) -> Self:
+        """Attach, bind to ``robot``'s parts and declare the binding; returns the policy, to :meth:`run`.
 
         With no ``robot`` it binds the session's view of every robot, each
         under its name, so one policy drives several: its actions name
@@ -1191,6 +1206,11 @@ class Policy:
         ``"policy"`` (default) is the policy's, a number overrides it for
         this bind alone (:meth:`acquire` and a hand-back keep the policy's),
         ``None`` waits for as long as it takes.
+
+        The robot's clock, as it declared it on joining, is the policy's
+        (:attr:`clock`): a lockstep robot is bound alone, and a binding that
+        names several robots, any of them lockstep, raises
+        :class:`BindingRefused`. :attr:`binding` is the table bound.
         """
         if self._native is not None:
             raise SessionException(f"policy {self._name} is already bound")
@@ -1227,7 +1247,7 @@ class Policy:
             )
             for part in self._native.published_parts()
         }
-        return BindingTable(self._native)
+        return self
 
     def publish(
         self,
@@ -1261,6 +1281,11 @@ class Policy:
     def binding(self) -> BindingTable:
         """The binding table in force (after :meth:`bind`): after a ``rebound`` event, the new one."""
         return BindingTable(self._bound())
+
+    @property
+    def clock(self) -> Clock:
+        """The bound robot's clock (after :meth:`bind`), which :meth:`run` follows."""
+        return Clock(self._bound().clock)
 
     def observe(self) -> Observation:
         """A policy start now; raises :class:`StartSkipped` when one is skipped."""
@@ -1331,18 +1356,49 @@ class Policy:
         duration: float | None = None,
         mode: RunMode = RunMode.COMMAND,
         on_step: Callable[[Step], object] | None = None,
-        resume: Resume = Resume.MANUAL,
-    ) -> PolicyStats:
-        """Run the policy loop on this thread; returns the run's counters (:meth:`stats`).
+        resume: Resume | None = None,
+        episodes: int | None = None,
+        seed: int | None = None,
+    ) -> RunStats:
+        """Run the policy on this thread, on its robot's clock; returns the run's counters (:meth:`stats`).
 
-        ``predict(obs)`` is called at most at the replan rate, one inference
-        in flight; a start that falls while it runs is skipped, never
-        queued. A ``predict`` with two required positional parameters is
-        called as ``predict(obs, policy)``, with this policy (to
-        :meth:`publish` from inside it); any other with one. The choice is
-        made once, when the run starts. Leases are requested once the inputs are warm, re-requested
-        after a lapse, a disarm or a re-arm, and released when the run
-        returns.
+        ``predict(obs)`` gets each start's observation and returns one
+        ``[chunk, ...]`` array (or a dict of arrays) per action entry. A
+        ``predict`` with two required positional parameters is called as
+        ``predict(obs, policy)``, with this policy (to :meth:`publish` from
+        inside it); any other with one. The choice is made once, when the
+        run starts. If ``predict`` raises, the policy stops commanding,
+        releases its leases and the exception propagates. ``on_step(step)``,
+        if given, is called after each completed start with a :class:`Step`:
+        the actions as the robot receives them, marked ``shadow`` or with
+        their chunk seqs; if it raises, the run ends as when ``predict``
+        raises.
+
+        The two clocks take different settings, and each raises
+        ``ValueError`` at once for the other's: ``duration``, ``mode`` and
+        ``resume`` are the wall clock's, ``episodes`` and ``seed`` lockstep's.
+
+        **Lockstep** (:attr:`clock` is ``Clock.LOCKSTEP``): runs ``episodes``
+        episodes (default 1), each from the robot's reset, until it ends or
+        :meth:`stop`. ``seed`` is a base seed: each episode's reset seed is
+        derived from it, the robot and the episode's number exactly as
+        ``Model.run(..., seed=)`` derives it, so the same seed runs the same
+        episodes through either. One ``predict`` per chunk: a chunk of H
+        actions is H steps, their rewards summed. The policy's action rate
+        sets the session time a step stands for, so ``obs.age_ms`` and
+        history windows keep their meaning; nothing waits on real time, and
+        no input is ever stale or missing. Arming and the lease are taken
+        care of; ``mode=RunMode.SHADOW`` and ``resume`` raise. The result
+        has ``clock`` ``"lockstep"``, ``starts``, ``chunks_sent`` and
+        ``episodes``: one ``{"return", "steps", "terminated", "truncated"}``
+        per episode.
+
+        **Wall clock**: ``predict`` is called at most at the replan rate, one
+        inference in flight; a start that falls while it runs is skipped,
+        never queued. Leases are requested once the inputs are warm,
+        re-requested after a lapse, a disarm or a re-arm, and released when
+        the run returns. Stops after ``duration`` seconds or on
+        :meth:`stop`; ``episodes`` and ``seed`` raise.
 
         A part a higher class takes (an operator preempting the policy) is
         parked: the policy does not take it back when the operator releases
@@ -1351,12 +1407,10 @@ class Policy:
         are skipped as ``parked``, and :meth:`stats` lists it under
         ``parked``, until :meth:`resume` (from any thread) or the operator's
         ``release(to="model")`` hands it back (a ``handed_back`` event).
-        ``resume=Resume.AUTO`` takes it back as soon as it is free. If
-        ``predict`` raises, the policy stops sending, releases its leases
-        (the robot holds, then goes safe) and the exception propagates.
-        Raises :class:`SessionLost` (``reason`` ``robot_lost`` or
-        ``host_lost``) when the robot's heartbeats lapse or the host is
-        gone. Stops after ``duration`` seconds or on :meth:`stop`.
+        ``resume=Resume.AUTO`` takes it back as soon as it is free
+        (``Resume.MANUAL`` is the default). Raises :class:`SessionLost`
+        (``reason`` ``robot_lost`` or ``host_lost``) when the robot's
+        heartbeats lapse or the host is gone.
 
         On a session that is not armed it waits for an operator to arm it,
         commanding nothing: it warns once each time (a ``waiting_to_arm``
@@ -1376,16 +1430,11 @@ class Policy:
         The run commands from the first start whose inputs were read with a
         lease held, and says so on each change (``shadowing`` and
         ``commanding`` events). :meth:`stats` counts ``shadow_predictions``.
-
-        ``on_step(step)``, if given, is called after each completed start
-        with a :class:`Step`: the actions as the edges receive them, marked
-        ``shadow`` or with their chunk seqs. If it raises, the run ends as
-        when ``predict`` raises.
         """
         native = self._bound()
         if not isinstance(mode, RunMode):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"mode must be a RunMode, not {mode!r}")
-        if not isinstance(resume, Resume):  # pyright: ignore[reportUnnecessaryIsInstance]
+        if resume is not None and not isinstance(resume, Resume):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"resume must be a Resume, not {resume!r}")
 
         if _arity(predict) == 2:
@@ -1405,7 +1454,13 @@ class Policy:
                 on_step(Step(raw))
 
         native.run(
-            call, duration, mode.value, None if on_step is None else step, resume.value
+            call,
+            duration,
+            mode.value,
+            None if on_step is None else step,
+            None if resume is None else resume.value,
+            episodes,
+            seed,
         )
         return self.stats()
 
@@ -1461,8 +1516,11 @@ class Policy:
         """
         return self._bound().resume()
 
-    def stats(self) -> PolicyStats:
-        """Starts, completions, skips by reason, chunks sent and latency.
+    def stats(self) -> RunStats:
+        """The latest run's counters, its ``clock`` saying which: see :meth:`run` for a lockstep run's.
+
+        On the wall clock: starts, completions, skips by reason, chunks sent
+        and latency.
 
         ``aligned_to`` names the input whose publication the starts are
         phased just after (wall clock), ``phase_offset_ms`` how far.
@@ -1475,7 +1533,7 @@ class Policy:
         took, ``robot:path``, kept from the policy until :meth:`resume` or a
         hand-back.
         """
-        return cast("PolicyStats", self._bound().stats())
+        return cast("RunStats", self._bound().stats())
 
     @property
     def held(self) -> list[Held]:
@@ -1601,14 +1659,17 @@ def drive(
     on_step: Callable[[Step], object] | None = None,
     timeout: float | None = 10.0,
     publishes: Mapping[str, Any] | None = None,
-    resume: Resume = Resume.MANUAL,
+    resume: Resume | None = None,
+    episodes: int | None = None,
+    seed: int | None = None,
     **captures: str,
-) -> PolicyStats:
-    """Bind ``policy`` to ``robot`` (``None``: every robot's view) and drive it with ``predict`` until ``duration``.
+) -> RunStats:
+    """Bind ``policy`` to ``robot`` (``None``: every robot's view) and drive it with ``predict`` on its clock.
 
     Shorthand for :class:`Policy` + :meth:`Policy.bind` + :meth:`Policy.run`;
-    ``predict`` may take the policy as its second argument, as for
-    :meth:`Policy.run`.
+    ``predict`` may take the policy as its second argument, and the run
+    takes ``duration`` on the wall clock or ``episodes`` and ``seed`` in
+    lockstep, as for :meth:`Policy.run`.
     It keeps no handle: a part a higher class took stays parked for the
     rest of the run unless ``resume=Resume.AUTO``; use :class:`Policy` to
     :meth:`Policy.resume` one.
@@ -1631,5 +1692,11 @@ def drive(
             **captures,
         )
         return p.run(
-            predict, duration=duration, mode=mode, on_step=on_step, resume=resume
+            predict,
+            duration=duration,
+            mode=mode,
+            on_step=on_step,
+            resume=resume,
+            episodes=episodes,
+            seed=seed,
         )

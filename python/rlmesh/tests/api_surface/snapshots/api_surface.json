@@ -4327,11 +4327,15 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[Conversion] | None = None, timeout: float | None | Literal['policy'] = 'policy', **captures: str) -> BindingTable"
+            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[Conversion] | None = None, timeout: float | None | Literal['policy'] = 'policy', **captures: str) -> Self"
           },
           "binding": {
             "kind": "property",
             "signature": "property binding: BindingTable"
+          },
+          "clock": {
+            "kind": "property",
+            "signature": "property clock: Clock"
           },
           "close": {
             "kind": "function",
@@ -4375,7 +4379,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(predict: Predict, *, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, resume: Resume = Resume.MANUAL) -> PolicyStats"
+            "signature": "run(predict: Predict, *, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, resume: Resume | None = None, episodes: int | None = None, seed: int | None = None) -> RunStats"
           },
           "send": {
             "kind": "function",
@@ -4383,7 +4387,7 @@
           },
           "stats": {
             "kind": "function",
-            "signature": "stats() -> PolicyStats"
+            "signature": "stats() -> RunStats"
           },
           "stop": {
             "kind": "function",
@@ -4676,7 +4680,7 @@
       },
       "drive": {
         "kind": "function",
-        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[Conversion] | None = None, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, timeout: float | None = 10.0, publishes: Mapping[str, Any] | None = None, resume: Resume = Resume.MANUAL, **captures: str) -> PolicyStats",
+        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[Conversion] | None = None, duration: float | None = None, mode: RunMode = RunMode.COMMAND, on_step: Callable[[Step], object] | None = None, timeout: float | None = 10.0, publishes: Mapping[str, Any] | None = None, resume: Resume | None = None, episodes: int | None = None, seed: int | None = None, **captures: str) -> RunStats",
         "stability": "Experimental"
       },
       "inputs": {
@@ -5011,6 +5015,7 @@
       "DatagramRelay",
       "EdgeClockRefusal",
       "EdgeStats",
+      "Episode",
       "Event",
       "HandBack",
       "Health",
@@ -5020,13 +5025,15 @@
       "InputLostEvent",
       "Link",
       "LinkRun",
+      "LockstepStats",
       "NoticeEvent",
       "ParkEvent",
       "PathTime",
       "PolicyStats",
       "Published",
       "RateDriftEvent",
-      "ReboundEvent"
+      "ReboundEvent",
+      "RunStats"
     ],
     "objects": {
       "ChunkTiming": {
@@ -5211,6 +5218,11 @@
             "signature": "safe_reports: int"
           }
         },
+        "stability": "Experimental"
+      },
+      "Episode": {
+        "kind": "type alias",
+        "signature": "Episode = TypedDict('Episode', {'return': float, 'steps': int, 'terminated': bool, 'truncated': bool})",
         "stability": "Experimental"
       },
       "Event": {
@@ -5478,6 +5490,28 @@
         },
         "stability": "Experimental"
       },
+      "LockstepStats": {
+        "kind": "class",
+        "members": {
+          "chunks_sent": {
+            "kind": "attribute",
+            "signature": "chunks_sent: int"
+          },
+          "clock": {
+            "kind": "attribute",
+            "signature": "clock: Literal['lockstep']"
+          },
+          "episodes": {
+            "kind": "attribute",
+            "signature": "episodes: list[Episode]"
+          },
+          "starts": {
+            "kind": "attribute",
+            "signature": "starts: int"
+          }
+        },
+        "stability": "Experimental"
+      },
       "NoticeEvent": {
         "kind": "class",
         "members": {
@@ -5546,6 +5580,10 @@
           "chunks_sent": {
             "kind": "attribute",
             "signature": "chunks_sent: int"
+          },
+          "clock": {
+            "kind": "attribute",
+            "signature": "clock: Literal['wall']"
           },
           "clock_refused": {
             "kind": "attribute",
@@ -5662,6 +5700,11 @@
             "signature": "parts: list[str]"
           }
         },
+        "stability": "Experimental"
+      },
+      "RunStats": {
+        "kind": "type alias",
+        "signature": "RunStats = PolicyStats | LockstepStats",
         "stability": "Experimental"
       }
     }

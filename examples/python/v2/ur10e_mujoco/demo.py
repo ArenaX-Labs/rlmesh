@@ -784,7 +784,7 @@ def run_policy(args: argparse.Namespace) -> int:
         session=args.address,
         name="policy",
     ) as policy:
-        binding = policy.bind(ROBOT)
+        binding = policy.bind(ROBOT).binding
         print(binding, file=sys.stderr, flush=True)
         cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
         try:

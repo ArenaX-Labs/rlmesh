@@ -17,6 +17,7 @@ __all__ = [
     "DatagramRelay",
     "EdgeClockRefusal",
     "EdgeStats",
+    "Episode",
     "Event",
     "HandBack",
     "Health",
@@ -26,6 +27,7 @@ __all__ = [
     "InputLostEvent",
     "Link",
     "LinkRun",
+    "LockstepStats",
     "NoticeEvent",
     "ParkEvent",
     "PathTime",
@@ -33,6 +35,7 @@ __all__ = [
     "Published",
     "RateDriftEvent",
     "ReboundEvent",
+    "RunStats",
 ]
 
 
@@ -219,8 +222,9 @@ class EdgeStats(TypedDict):
 
 
 class PolicyStats(TypedDict):
-    """A policy's run counters (:meth:`Policy.stats`, and what :meth:`Policy.run` returns)."""
+    """A wall-clock policy's run counters (:meth:`Policy.stats`, and what :meth:`Policy.run` returns)."""
 
+    clock: Literal["wall"]
     #: The input whose publication the starts are phased just after, and how far.
     aligned_to: str | None
     phase_offset_ms: float
@@ -242,6 +246,37 @@ class PolicyStats(TypedDict):
     waiting: str | None
     #: Parts a higher class took, ``robot:path``.
     parked: list[str]
+
+
+#: One episode of a lockstep run. A ``TypedDict`` written as a call, since
+#: ``return`` is a keyword.
+Episode = TypedDict(
+    "Episode",
+    {
+        #: Its rewards, summed.
+        "return": float,
+        #: Lockstep steps taken.
+        "steps": int,
+        "terminated": bool,
+        "truncated": bool,
+    },
+)
+
+
+class LockstepStats(TypedDict):
+    """A lockstep run's counters (:meth:`Policy.run` on a lockstep robot)."""
+
+    clock: Literal["lockstep"]
+    #: Calls of ``predict``.
+    starts: int
+    #: Chunks played, one per start (a chunk of H actions is H steps).
+    chunks_sent: int
+    #: Every episode, in order; the last is unfinished when the run was stopped.
+    episodes: list[Episode]
+
+
+#: What :meth:`Policy.run` and :meth:`Policy.stats` return: told apart by ``clock``.
+RunStats = PolicyStats | LockstepStats
 
 
 class HandBack(TypedDict):
