@@ -136,14 +136,23 @@ class SandboxRuntime:
     user: str | int | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class SandboxInfo:
     """Information about a running RLMesh sandbox container."""
 
     requested_source: str
     resolved_source: str
+    #: Carries the sandbox's key: the repr shows it redacted.
     address: str
     container_id: str
+
+    def __repr__(self) -> str:
+        return (
+            f"SandboxInfo(requested_source={self.requested_source!r}, "
+            f"resolved_source={self.resolved_source!r}, "
+            f"address={redact_address(self.address)!r}, "
+            f"container_id={self.container_id!r})"
+        )
 
 
 class _SandboxStartInfo(TypedDict):

@@ -7,6 +7,7 @@ from typing import NoReturn
 
 def refuse_v1_address(where: str, address: str) -> None:
     """Refuse ``address`` when it is a v1 endpoint (0.2 uses session addresses)."""
+    from ._client._endpoint import redact_address
     from ._rlmesh import is_v2_address
 
     scheme, separator, _ = address.strip().partition("://")
@@ -14,7 +15,7 @@ def refuse_v1_address(where: str, address: str) -> None:
     if not legacy_scheme and is_v2_address(address):
         return
     raise ValueError(
-        f"{where}({address!r}): v1 endpoints need RLMesh 0.1; "
+        f"{where}({redact_address(address)!r}): v1 endpoints need RLMesh 0.1; "
         "serve with rlmesh.serve / pass the session address"
     )
 

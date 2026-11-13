@@ -599,25 +599,27 @@ class ModelBase(Generic[ObsT, ActT]):
 
     def _served(self, address: str) -> Callable[[object], object]:
         """Take ``address`` as a served model's; the predict stand-in it returns refuses."""
+        from .._client._endpoint import redact_address
         from .._rlmesh import is_v2_address, parse_address
 
+        shown = redact_address(address)  # errors leave the key out
         if not is_v2_address(address):
             raise ValueError(
-                f"Model({address!r}): a served model is reached by its participant "
+                f"Model({shown!r}): a served model is reached by its participant "
                 "address (e.g. 'lab:7447/openpi'); 0.2 no longer dials a v1 model "
                 "endpoint"
             )
         parsed = parse_address(address)
         if not parsed.get("participant"):
             raise ValueError(
-                f"Model({address!r}) names no model: end the address with the model's "
+                f"Model({shown!r}) names no model: end the address with the model's "
                 "name, e.g. 'lab:7447/openpi'"
             )
         self._served_address = address
 
         def served_only(observation: object) -> object:
             raise TypeError(
-                f"Model({address!r}) is served elsewhere and predicts per env: run it, "
+                f"Model({shown!r}) is served elsewhere and predicts per env: run it, "
                 "bind it to a target, or serve it"
             )
 
@@ -995,8 +997,10 @@ class ModelBase(Generic[ObsT, ActT]):
             )
         except LookupError:
             if self._served_address is not None:
+                from .._client._endpoint import redact_address
+
                 raise TypeError(
-                    f"Model({self._served_address!r}) is served elsewhere and "
+                    f"Model({redact_address(self._served_address)!r}) is served elsewhere and "
                     "predicts per env: run it, bind it to a target, serve it, or "
                     "call it from the predict of a model that holds it"
                 ) from None
@@ -1817,10 +1821,13 @@ class ModelBase(Generic[ObsT, ActT]):
             origin=self._edition_origin(),
         )
         if not name:
+            from .._client._endpoint import redact_address
+
+            shown = redact_address(address)
             removed(
-                f"Model.serve({address!r}) without a name",
+                f"Model.serve({shown!r}) without a name",
                 "a model serves on a session as a named participant: "
-                f"model.serve({address!r}, name='policy') is reached at "
+                f"model.serve({shown!r}, name='policy') is reached at "
                 "'<host:port>/policy'",
             )
         worker = self._install_worker()

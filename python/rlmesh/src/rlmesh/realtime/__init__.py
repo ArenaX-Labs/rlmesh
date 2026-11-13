@@ -539,6 +539,9 @@ class Robot:
         """
         return self._native.address
 
+    def __repr__(self) -> str:
+        return f"Robot({self.name!r}, address={redact_address(self.address)!r})"
+
     @property
     def parts(self) -> dict[str, str]:
         """Each part's kind, by path, in authored order."""
@@ -1159,6 +1162,9 @@ class Policy:
     def name(self) -> str:
         """The policy's participant id."""
         return self._name
+
+    def __repr__(self) -> str:
+        return f"Policy({self._name!r}, session={redact_address(self._address)!r})"
 
     def bind(
         self,

@@ -1583,7 +1583,10 @@ impl PyModel {
             max_in_flight_batches: max_in_flight_batches.unwrap_or(defaults.max_in_flight_batches),
             batch_records,
         };
-        let run_span = tracing::info_span!("rlmesh.model.serve", address = address);
+        let run_span = tracing::info_span!(
+            "rlmesh.model.serve",
+            address = %rlmesh_session::address::redact(address)
+        );
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.serve.total");
         let options = options.map(PyServeOptions::into_rust).unwrap_or_default();

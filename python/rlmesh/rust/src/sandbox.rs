@@ -147,7 +147,7 @@ impl SandboxOptions {
 /// it is `#[must_use]`. It is `#[non_exhaustive]` so future fields (extra
 /// container metadata, ports) can be added without breaking callers that read
 /// fields by name.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[must_use = "dropping a RunResult without its container_id leaks the started container"]
 #[non_exhaustive]
 pub struct RunResult {
@@ -155,6 +155,18 @@ pub struct RunResult {
     pub resolved_source: String,
     pub address: String,
     pub container_id: String,
+}
+
+// The address carries the sandbox's key: `Debug` leaves it out.
+impl std::fmt::Debug for RunResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunResult")
+            .field("requested_source", &self.requested_source)
+            .field("resolved_source", &self.resolved_source)
+            .field("address", &rlmesh_session::address::redact(&self.address))
+            .field("container_id", &self.container_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,6 +459,27 @@ pub(crate) fn looks_like_full_git_sha(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_leaves_the_sandbox_key_out() {
+        let (_, key) = rlmesh_session::address::launch_identity().unwrap();
+        let key = key.to_string();
+        let address = format!("127.0.0.1:1#{key}/env");
+        let run = RunResult {
+            requested_source: "gym:CartPole-v1".into(),
+            resolved_source: "gym:CartPole-v1".into(),
+            address: address.clone(),
+            container_id: "c".into(),
+        };
+        let started = docker::StartedContainer {
+            container_id: "c".into(),
+            address,
+        };
+        for shown in [format!("{run:?}"), format!("{started:?}")] {
+            assert!(!shown.contains(&key), "{}", shown.replace(&key, "<KEY>"));
+            assert!(shown.contains("#…"));
+        }
+    }
 
     #[test]
     fn package_version_uses_pep440_prereleases() {

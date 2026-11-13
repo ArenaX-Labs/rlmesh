@@ -40,10 +40,20 @@ pub struct BuildArtifact {
     pub image_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StartedContainer {
     pub container_id: String,
     pub address: String,
+}
+
+// The address carries the sandbox's key: `Debug` leaves it out.
+impl std::fmt::Debug for StartedContainer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartedContainer")
+            .field("container_id", &self.container_id)
+            .field("address", &rlmesh_session::address::redact(&self.address))
+            .finish()
+    }
 }
 
 pub fn ensure_image(spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {

@@ -547,7 +547,10 @@ fn run_server(
 
     let serve = move || {
         runtime.block_on(async move {
-            tracing::info!("EnvService serving on {}", address);
+            tracing::info!(
+                "EnvService serving on {}",
+                rlmesh_session::address::redact(&address)
+            );
             if foreground {
                 spawn_signal_shutdown(shutdown.clone());
             }
