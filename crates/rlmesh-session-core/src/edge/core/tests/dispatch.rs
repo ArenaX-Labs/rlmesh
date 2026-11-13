@@ -476,3 +476,32 @@ fn a_latched_part_goes_safe_when_its_lease_lapses() {
         "the report waits to learn whether the holder is alive"
     );
 }
+
+/// A valid chunk the heap has no room for is dropped whole: its actions are
+/// counted as `no_memory`, it is neither accepted nor refused, and nothing
+/// of it is queued.
+#[test]
+fn a_chunk_the_heap_has_no_room_for_counts_its_actions_as_no_memory() {
+    let mut f = Fixture::new();
+    let lease = f.grant("policy", 0);
+    f.publish(0);
+    let n = 1000;
+    let chunk = f.chunk("policy", &lease, 1, 0, n);
+    // The splice's one list of n action slices is the first allocation
+    // that large.
+    let room = n as usize * core::mem::size_of::<Bytes>();
+    let outcome = crate::test_alloc::failing_from(room, || f.accept(chunk, 0)).expect("dropped");
+    assert_eq!(
+        outcome,
+        SpliceOutcome {
+            no_memory: u64::from(n),
+            ..SpliceOutcome::default()
+        }
+    );
+    assert!(f.tick(MS).action.is_none(), "nothing queued");
+    // With room, the next one splices.
+    let chunk = f.chunk("policy", &lease, 2, 0, n);
+    let outcome = f.accept(chunk, 0).expect("accepted");
+    assert_eq!(outcome.no_memory, 0);
+    assert!(f.tick(MS).action.is_some());
+}
