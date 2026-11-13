@@ -268,6 +268,17 @@ fn a_keyed_address_carries_its_key_through_a_participant_name() {
 async fn a_join_reaching_only_the_base_port_names_the_others() {
     let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("ports");
     let listener = tokio::net::TcpListener::bind(base).await.expect("base");
+    // Held bound but not listening, so they refuse, and no test running beside
+    // this one can take them.
+    let _held: Vec<_> = (1..4)
+        .map(|i| {
+            let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+            socket
+                .bind(SocketAddr::new(base.ip(), base.port() + i))
+                .expect("class port");
+            socket
+        })
+        .collect();
     // Accepts and says nothing, as a forwarded port whose host never answers.
     let accepting = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
