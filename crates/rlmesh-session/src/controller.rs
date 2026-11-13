@@ -103,6 +103,7 @@ use tracing::{debug, info, warn};
 
 use crate::cache::{Inputs, Observation, ObserveError};
 use crate::chunk::{ChunkDraft, ChunkPublisher};
+use crate::clock::OffsetEstimate;
 use crate::error::SessionError;
 use crate::lease::{LeaseChange, LeaseGroup};
 use crate::participant::Participant;
@@ -550,9 +551,43 @@ struct Leases {
     ends_seen: AtomicU64,
     /// The controller's events, for [`RunEvent::HandedBack`].
     events: Arc<Mutex<VecDeque<RunEvent>>>,
+    /// Serialises what the authority's answers do to the leases (parking a
+    /// part, resuming one handed back) between the threads that apply them:
+    /// the keeper, the run loop and every caller that looks.
+    settle: Mutex<()>,
 }
 
 impl Leases {
+    /// The state of a binding commanding `channels`, as `me`: nothing held
+    /// or wanted yet.
+    fn new(
+        me: &ParticipantId,
+        channels: &[ChannelId],
+        ttl: Option<Duration>,
+        events: Arc<Mutex<VecDeque<RunEvent>>>,
+    ) -> Self {
+        Self {
+            group: Mutex::new(LeaseGroup::new(me, channels, 0)),
+            publishers: Mutex::new(BTreeMap::new()),
+            want: AtomicBool::new(false),
+            request: tokio::sync::Mutex::new(()),
+            wake: Notify::new(),
+            ttl,
+            auto_resume: AtomicBool::new(false),
+            parked: Mutex::new(Vec::new()),
+            taken: Mutex::new(BTreeMap::new()),
+            ends_seen: AtomicU64::new(0),
+            events,
+            settle: Mutex::new(()),
+        }
+    }
+
+    fn settle(&self) -> MutexGuard<'_, ()> {
+        self.settle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn group(&self) -> MutexGuard<'_, LeaseGroup> {
         self.group
             .lock()
@@ -665,35 +700,86 @@ impl Leases {
     /// voided by a new epoch) with its chunk sender. A part a higher class
     /// took is parked, unless the run resumes on its own.
     fn sync(&self, participant: &Participant) {
+        // Taken under the lock: a view fetched before it could be older
+        // than one another thread applied meanwhile.
+        let _settle = self.settle();
         let Some(snapshot) = participant.authority_view().current() else {
             return;
         };
         let now = participant.clock().now_ns();
-        let changes =
-            self.group()
-                .on_snapshot(&snapshot, participant.clock_estimate().as_ref(), now);
+        let clock = participant.clock_estimate();
+        self.apply(participant.id(), &snapshot, clock.as_ref(), now);
+    }
+
+    /// [`Self::sync`] with `snapshot`, as `me`, at `now`; the caller holds
+    /// the settle lock. Whole, or another thread could take a hand-back's end
+    /// before the preemption it undoes is parked, and the part would stay
+    /// parked.
+    fn apply(
+        &self,
+        me: &ParticipantId,
+        snapshot: &AuthoritySnapshot,
+        clock: Option<&OffsetEstimate>,
+        now: i64,
+    ) {
+        let changes = self.group().on_snapshot(snapshot, clock, now);
         for (channel, change) in changes {
             if let LeaseChange::Revoked(reason) = change {
-                self.lost(participant, &snapshot, channel, &reason, now);
+                self.lost(me, snapshot, channel, &reason, now);
             }
         }
         // After parking: one snapshot may show both the preemption and the
         // hand-back.
-        self.take_hand_backs(&snapshot, participant.id());
+        self.take_hand_backs(snapshot, me);
+    }
+
+    /// The host's `reply` to a request for `channels`. A part asked for
+    /// again that a higher class took meanwhile (the refusal shows it before
+    /// any snapshot did) is lost as a preemption, not merely refused. One a
+    /// snapshot showed taken while the request was out was lost then, and a
+    /// hand-back in that snapshot may have resumed it already: it is not
+    /// parked again.
+    fn on_grant_reply(
+        &self,
+        me: &ParticipantId,
+        channels: &[ChannelId],
+        reply: &CtlReply,
+        clock: Option<&OffsetEstimate>,
+        now: i64,
+    ) {
+        let _settle = self.settle();
+        let revoked: Vec<ChannelId> = {
+            let mut group = self.group();
+            let before: Vec<bool> = channels
+                .iter()
+                .map(|c| group.preempted_by(*c).is_some())
+                .collect();
+            group.on_reply_some(channels, reply, clock, now);
+            channels
+                .iter()
+                .zip(before)
+                .filter(|(c, was)| !was && group.preempted_by(**c).is_some())
+                .map(|(c, _)| *c)
+                .collect()
+        };
+        for channel in revoked {
+            let why = "preempted while asked for again";
+            self.lost(me, &reply.state, channel, why, now);
+        }
     }
 
     /// `channel`'s lease is gone for `reason`: parked when a higher class
     /// took it, and its sender dropped.
     fn lost(
         &self,
-        participant: &Participant,
+        me: &ParticipantId,
         snapshot: &AuthoritySnapshot,
         channel: ChannelId,
         reason: &str,
         now: i64,
     ) {
         let part = snapshot.part_name(channel);
-        info!(participant = %participant.id(), %part, %reason, "lease lost");
+        info!(participant = %me, %part, %reason, "lease lost");
         self.taken().remove(&channel);
         let by = self.group().preempted_by(channel).cloned();
         if let Some(by) = by
@@ -900,23 +986,8 @@ impl Leases {
                 }
             };
             let now = participant.clock().now_ns();
-            self.group().on_reply_some(
-                &channels,
-                &reply,
-                participant.clock_estimate().as_ref(),
-                now,
-            );
-            // A part asked for again that a higher class took meanwhile (the
-            // refusal shows it before any snapshot did) is lost as a
-            // preemption, not merely refused.
-            if reply.result.is_err() {
-                for channel in &channels {
-                    if self.group().preempted_by(*channel).is_some() {
-                        let why = "preempted while asked for again";
-                        self.lost(participant, &reply.state, *channel, why, now);
-                    }
-                }
-            }
+            let clock = participant.clock_estimate();
+            self.on_grant_reply(participant.id(), &channels, &reply, clock.as_ref(), now);
             match &reply.result {
                 Ok(()) => {
                     self.note_taken(participant.id(), &reply);
@@ -1951,19 +2022,12 @@ impl Controller {
         });
         rebinder.settle(&participant);
         let events = Arc::new(Mutex::new(VecDeque::new()));
-        let leases = Arc::new(Leases {
-            group: Mutex::new(LeaseGroup::new(participant.id(), &binding.channels(), 0)),
-            publishers: Mutex::new(BTreeMap::new()),
-            want: AtomicBool::new(false),
-            request: tokio::sync::Mutex::new(()),
-            wake: Notify::new(),
-            ttl: config.lease_ttl,
-            auto_resume: AtomicBool::new(false),
-            parked: Mutex::new(Vec::new()),
-            taken: Mutex::new(BTreeMap::new()),
-            ends_seen: AtomicU64::new(0),
-            events: events.clone(),
-        });
+        let leases = Arc::new(Leases::new(
+            participant.id(),
+            &binding.channels(),
+            config.lease_ttl,
+            events.clone(),
+        ));
         let schedule = Arc::new(Mutex::new(StartSchedule::new(binding.replan_hz)));
         participant.set_run_source(Some({
             let schedule = schedule.clone();
@@ -2860,5 +2924,173 @@ pub fn sleep_until(now: impl Fn() -> i64, deadline_ns: i64) {
         } else {
             std::hint::spin_loop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wire::{Epoch, Fingerprint, LastStop, LeaseEnd, SessionId};
+
+    const MS: i64 = 1_000_000;
+    const PART: ChannelId = ChannelId(3);
+
+    fn id(name: &str) -> ParticipantId {
+        ParticipantId::new(name).expect("id")
+    }
+
+    fn lease(holder: &str, priority: PriorityClass, token: u64) -> Lease {
+        Lease {
+            channel: PART,
+            holder: id(holder),
+            priority,
+            token: LeaseToken(token),
+            ttl_ns: 300 * MS as u64,
+            granted_ns: 0,
+            expires_ns: 10_000 * MS,
+            binding: Fingerprint::from(7),
+            key_id: 0,
+        }
+    }
+
+    fn end(lease: Lease, code: ReasonCode, revision: u64) -> LeaseEnd {
+        LeaseEnd {
+            lease,
+            reason: Reason {
+                revision,
+                ..Reason::new(code)
+            },
+            by: None,
+            to: None,
+        }
+    }
+
+    fn snapshot(revision: u64, leases: Vec<Lease>, ended: Vec<LeaseEnd>) -> AuthoritySnapshot {
+        AuthoritySnapshot {
+            session: SessionId::new(),
+            epoch: Epoch(1),
+            revision,
+            mode: Mode::Active,
+            estop_latched: false,
+            roster: Vec::new(),
+            leases,
+            clocks: Vec::new(),
+            host_ns: revision.cast_signed() * MS,
+            parts: Vec::new(),
+            protocol_minor: 0,
+            supports: Vec::new(),
+            clock_mode: ClockMode::Wall,
+            tick_ns: 0,
+            bindings: Vec::new(),
+            contract: BTreeMap::new(),
+            demands: Vec::new(),
+            mode_reason: Reason::default(),
+            ended,
+            last_stop: LastStop::default(),
+            places: Vec::new(),
+            scene: None,
+            held: Vec::new(),
+        }
+    }
+
+    fn reply(result: Result<(), CtlError>, state: AuthoritySnapshot) -> CtlReply {
+        CtlReply {
+            request_id: 0,
+            leases: state.leases.clone(),
+            result,
+            state,
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        }
+    }
+
+    /// A model holding the part, asking for it again (its lease expired
+    /// here), and what the host says meanwhile: the operator took the part
+    /// (revision 2), then handed it back to the model (revision 3).
+    struct Race {
+        model: ParticipantId,
+        leases: Leases,
+        taken: AuthoritySnapshot,
+        handed_back: AuthoritySnapshot,
+    }
+
+    fn race() -> Race {
+        let model = id("model");
+        let leases = Leases::new(&model, &[PART], None, Arc::default());
+        let held = lease("model", PriorityClass::Model, 1);
+        let operator = lease("operator", PriorityClass::Operator, 2);
+        let granted = reply(Ok(()), snapshot(1, vec![held.clone()], Vec::new()));
+        let _ = leases.group().request_some(&[PART], held.binding, None, 0);
+        leases.on_grant_reply(&model, &[PART], &granted, None, MS);
+        let _ = leases
+            .group()
+            .request_some(&[PART], held.binding, None, 400 * MS);
+        let preempted = LeaseEnd {
+            by: Some(operator.clone()),
+            ..end(held, ReasonCode::Preempted, 2)
+        };
+        let returned = LeaseEnd {
+            to: Some(model.clone()),
+            ..end(operator.clone(), ReasonCode::Released, 3)
+        };
+        Race {
+            model,
+            leases,
+            taken: snapshot(2, vec![operator], vec![preempted.clone()]),
+            handed_back: snapshot(3, Vec::new(), vec![preempted, returned]),
+        }
+    }
+
+    fn busy() -> CtlError {
+        CtlError::new(CtlStatus::LeaseBusy, "held by operator at Operator")
+    }
+
+    fn handed_back(leases: &Leases) -> usize {
+        leases
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter(|e| matches!(e, RunEvent::HandedBack { .. }))
+            .count()
+    }
+
+    /// The view shows the preemption and the hand-back before the refused
+    /// request's reply is taken in (another thread applied it while the
+    /// request was out): the reply must not park the part again.
+    #[test]
+    fn a_refusal_taken_in_after_the_hand_back_leaves_the_part_resumed() {
+        let Race {
+            model,
+            leases,
+            taken,
+            handed_back: back,
+        } = race();
+        leases.apply(&model, &back, None, 410 * MS);
+        assert!(leases.parked().is_empty(), "handed back");
+        assert_eq!(handed_back(&leases), 1);
+        let refused = reply(Err(busy()), taken);
+        leases.on_grant_reply(&model, &[PART], &refused, None, 420 * MS);
+        assert!(leases.parked().is_empty(), "{:?}", leases.parked());
+        assert_eq!(handed_back(&leases), 1);
+    }
+
+    /// The refusal first: it parks the part, and the hand-back resumes it.
+    #[test]
+    fn a_refusal_taken_in_before_the_hand_back_parks_until_it() {
+        let Race {
+            model,
+            leases,
+            taken,
+            handed_back: back,
+        } = race();
+        let refused = reply(Err(busy()), taken);
+        leases.on_grant_reply(&model, &[PART], &refused, None, 410 * MS);
+        let parked: Vec<String> = leases.parked().iter().map(|p| p.by.to_string()).collect();
+        assert_eq!(parked, ["operator"]);
+        leases.apply(&model, &back, None, 420 * MS);
+        assert!(leases.parked().is_empty(), "{:?}", leases.parked());
+        assert_eq!(handed_back(&leases), 1);
     }
 }
