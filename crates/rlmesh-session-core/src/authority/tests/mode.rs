@@ -591,3 +591,36 @@ fn a_hold_ends_when_the_robot_commands_nothing_or_leaves() {
     assert!(f.auth.held(&pid("robot")).is_none(), "detached");
     assert!(f.auth.snapshot(Vec::new(), 5).held.is_empty());
 }
+
+/// An e-stop's reason is verified only when its sender is the participant
+/// it names: a member's own stop, not a signal an edge relays for another.
+#[test]
+fn an_estop_is_verified_only_from_the_member_it_names() {
+    let cases = [
+        ("viewer", ReasonCode::Unspecified, None, "viewer", true),
+        ("robot", ReasonCode::EstopLocal, None, "robot", true),
+        (
+            "robot",
+            ReasonCode::EstopSignal,
+            Some("operator"),
+            "operator",
+            false,
+        ),
+    ];
+    for (from, code, origin, by, verified) in cases {
+        let mut f = Fixture::new();
+        let estop = Command::Estop {
+            reason: "button".into(),
+            code,
+            origin: origin.map(pid),
+            at_ns: 0,
+        };
+        f.run(from, estop, 1).expect("estop");
+        let reason = f.auth.mode_reason();
+        assert_eq!(
+            (reason.by.as_str(), reason.verified),
+            (by, verified),
+            "{from} {code:?}"
+        );
+    }
+}
