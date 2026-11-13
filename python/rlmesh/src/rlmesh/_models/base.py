@@ -1099,10 +1099,13 @@ class ModelBase(Generic[ObsT, ActT]):
             "predict_chunk() (per lane) or predict_batch()."
         )
 
-    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
-        if kwargs and cls is not ModelBase:
-            _refuse_load_keywords(cls, kwargs)
-        return super().__new__(cls)
+    if not TYPE_CHECKING:
+        # Hidden from type checkers, which type a construction by the
+        # __init__ overloads.
+        def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+            if kwargs and cls is not ModelBase:
+                _refuse_load_keywords(cls, kwargs)
+            return object.__new__(cls)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)

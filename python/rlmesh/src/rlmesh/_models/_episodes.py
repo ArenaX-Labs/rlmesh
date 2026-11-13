@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from .._value_conversion import ValueBridge
@@ -95,11 +95,13 @@ class EpisodeStore:
         if cached is None or cached[0] is not contract:
             from ..spaces import space_from_spec
 
-            cached = (
-                contract,
-                space_from_spec(contract.observation_space, bridge=self._bridge),
-                space_from_spec(contract.action_space, bridge=self._bridge),
+            observation: Space[Any] = space_from_spec(
+                contract.observation_space, bridge=cast("Any", self._bridge)
             )
+            action: Space[Any] = space_from_spec(
+                contract.action_space, bridge=cast("Any", self._bridge)
+            )
+            cached = (contract, observation, action)
             self._spaces[env_id] = cached
         return cached[1], cached[2]
 
