@@ -224,6 +224,72 @@ def test_a_loaded_native_chunk_is_checked_once_after_load() -> None:
     assert model._native_chunk() == 4  # pyright: ignore[reportPrivateUsage]
 
 
+@pytest.mark.parametrize("super_first", [True, False])
+def test_load_runs_once_after_an_authored_init_returns(super_first: bool) -> None:
+    """``load()`` sees everything the authored ``__init__`` set, wherever in
+    it ``super().__init__()`` is called, and in a subclass chain too."""
+    loads: list[tuple[str, str]] = []
+
+    class Base(rlmesh.Model):
+        def __init__(self, path: str) -> None:
+            if super_first:
+                super().__init__()
+                self.path = path
+            else:
+                self.path = path
+                super().__init__()
+
+        def load(self) -> None:
+            loads.append((self.path, getattr(self, "extra", "<unset>")))
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    class Child(Base):
+        def __init__(self) -> None:
+            super().__init__("child.pt")
+            self.extra = "set"
+
+    Base("base.pt")
+    Child()
+    assert loads == [("base.pt", "<unset>"), ("child.pt", "set")]
+
+    # The served construction still loads once, with its binding.
+    class Configured(rlmesh.Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready = True
+
+        def load(self, size: int = 1) -> None:
+            loads.append((str(size), str(self.ready)))
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    loads.clear()
+    Configured.from_config(size=3)
+    assert loads == [("3", "True")]
+
+
+def test_an_authored_init_that_raises_loads_nothing() -> None:
+    loads: list[str] = []
+
+    class Broken(rlmesh.Model):
+        def __init__(self) -> None:
+            super().__init__()
+            raise RuntimeError("no checkpoint")
+
+        def load(self) -> None:
+            loads.append("load")
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    with pytest.raises(RuntimeError, match="no checkpoint"):
+        Broken()
+    assert loads == []
+
+
 def test_declarations_are_checked_before_load() -> None:
     loads: list[str] = []
 

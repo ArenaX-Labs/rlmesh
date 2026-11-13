@@ -269,6 +269,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - DLPack exports with `copy=True` set the `IS_COPIED` flag, and DLPack imports reject overflowing sizes and strides.
 - A lockstep robot validates and clamps its commands to its parts' declared limits as on the wall clock, `RemoteEnv`'s action space carries those limits, and `info["clamped"]` counts the commands they changed.
 - A `realtime.Policy` bound to a lockstep robot, or given a lockstep robot's participant address as its session, raises `BindingRefused` at once naming `RemoteEnv` instead of waiting out its timeout.
+- A `Model` subclass whose `__init__` calls `super().__init__()` before setting its attributes runs `load()` once that `__init__` returns, not inside the `super().__init__()` call.
 
 ## [0.1.0] - 2026-09-23
 

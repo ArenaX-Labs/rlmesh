@@ -515,7 +515,9 @@ class ModelBase(Generic[ObsT, ActT]):
     * **Wrap** a predict callable -- ``Model(lambda obs: ...)``.
     * **Subclass** ``Model`` and override ``predict`` (and optionally ``load`` for
       weight loading, ``on_episode_end``/``close`` lifecycle hooks, and the ``spec`` class
-      attribute), then instantiate it -- ``class P(Model): ...`` then ``P()``.
+      attribute), then instantiate it -- ``class P(Model): ...`` then ``P()``, which
+      runs ``load()`` with its defaults once ``P.__init__`` returns, or
+      ``P.from_config(checkpoint=...)`` to pass ``load`` its parameters.
 
     ``run(env, seeds=...)`` drives the model against an env and returns a typed
     :class:`RunResult` -- it resolves the adapter from the env's published tags and
@@ -888,10 +890,15 @@ class ModelBase(Generic[ObsT, ActT]):
         self._loaded_native_chunk: int | None = None
         self._loaded_execution_horizon: int | None = None
         self._loaded_allow_fusion = True
-        if autoload:
-            self.load()
-        if autoload or policy is not self:
-            self._finish_load()
+        if autoload and self.__dict__.get("_constructing"):
+            # Inside an authored __init__: its outermost one loads once it
+            # returns, so load() sees everything that __init__ set.
+            self._load_pending = True
+        else:
+            if autoload:
+                self.load()
+            if autoload or policy is not self:
+                self._finish_load()
 
     def _finish_load(self) -> None:
         """Read the policy's declarations once, after ``load()``, and cache them.
@@ -977,6 +984,10 @@ class ModelBase(Generic[ObsT, ActT]):
         instance, before any predict: with its own defaults from ``MyModel()``,
         or with the keywords :meth:`from_config` / a served binding resolved
         against the signature and :attr:`params`.
+
+        It runs once construction completes: a subclass's own ``__init__``
+        runs to its end first, wherever it calls ``super().__init__()`` (or if
+        it never does), so ``load`` sees every attribute ``__init__`` set.
         """
 
     def predict(self, observation: ObsT) -> ActT:
@@ -1091,11 +1102,22 @@ class ModelBase(Generic[ObsT, ActT]):
         if callable(authored_init):
             # A model that only sets its parts (``self.inner = inner``) need
             # not call super().__init__(): the base builds the model after it.
+            # load() runs once the outermost authored __init__ returns, not
+            # inside a super().__init__() called before the rest of it.
             @functools.wraps(authored_init)
             def init(self: ModelBase[Any, Any], *args: Any, **kwargs: Any) -> None:
-                authored_init(self, *args, **kwargs)
-                if "_calls" not in self.__dict__:
-                    super(cls, self).__init__()
+                outermost = not self.__dict__.get("_constructing")
+                self.__dict__["_constructing"] = True
+                try:
+                    authored_init(self, *args, **kwargs)
+                    if "_calls" not in self.__dict__:
+                        super(cls, self).__init__()
+                finally:
+                    if outermost:
+                        del self.__dict__["_constructing"]
+                if outermost and self.__dict__.pop("_load_pending", False):
+                    self.load()
+                    self._finish_load()
 
             cls.__init__ = init  # type: ignore[method-assign]
         authored_close = cls.__dict__.get("close")
