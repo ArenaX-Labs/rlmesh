@@ -1099,14 +1099,6 @@ class ModelBase(Generic[ObsT, ActT]):
             "predict_chunk() (per lane) or predict_batch()."
         )
 
-    if not TYPE_CHECKING:
-        # Hidden from type checkers, which type a construction by the
-        # __init__ overloads.
-        def __new__(cls, *args: Any, **kwargs: Any) -> Any:
-            if kwargs and cls is not ModelBase:
-                _refuse_load_keywords(cls, kwargs)
-            return object.__new__(cls)
-
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         authored_init = cls.__dict__.get("__init__")
@@ -1117,6 +1109,8 @@ class ModelBase(Generic[ObsT, ActT]):
             # inside a super().__init__() called before the rest of it.
             @functools.wraps(authored_init)
             def init(self: ModelBase[Any, Any], *args: Any, **kwargs: Any) -> None:
+                if kwargs:
+                    _refuse_load_keywords(type(self), kwargs)
                 outermost = not self.__dict__.get("_constructing")
                 self.__dict__["_constructing"] = True
                 try:
@@ -1131,6 +1125,17 @@ class ModelBase(Generic[ObsT, ActT]):
                     self._finish_load()
 
             cls.__init__ = init  # type: ignore[method-assign]
+        else:
+            # An inherited __init__ refuses load() keywords by name too.
+            inherited: Callable[..., None] = cls.__init__
+
+            @functools.wraps(inherited)
+            def checked(self: ModelBase[Any, Any], *args: Any, **kwargs: Any) -> None:
+                if kwargs:
+                    _refuse_load_keywords(type(self), kwargs)
+                inherited(self, *args, **kwargs)
+
+            cls.__init__ = checked  # type: ignore[method-assign]
         authored_close = cls.__dict__.get("close")
         if callable(authored_close):
             # An authored close() is the model's close hook: it runs at most once,
