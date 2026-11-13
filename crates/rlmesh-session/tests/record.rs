@@ -58,7 +58,9 @@ impl World {
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);
         config.clock = SystemMonotonicClock.shared();
-        config.lease_grace = Duration::from_millis(300);
+        // Leases change hands only by preemption and release here: a grace a
+        // loaded host's stalls cannot outlast keeps a lapse out of the timeline.
+        config.lease_grace = Duration::from_secs(2);
         config.health_log = None;
         let host = SessionHost::start(transport, config).await.expect("host");
         Self {
