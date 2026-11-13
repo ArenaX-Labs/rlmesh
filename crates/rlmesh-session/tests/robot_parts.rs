@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use rlmesh_session::edge::{EdgeConfig, Robot};
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::{ParticipantId, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     HostConfig, Participant, ParticipantConfig, SessionHost, SystemMonotonicClock, Transport,
@@ -19,7 +19,7 @@ const SECOND: &str = r#"{"z": {"kind": "joints", "count": 2, "fields": ["pos"], 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parts_stay_in_authored_order_after_a_redeclaration() {
-    let (transport, base) = open_local_listeners("127.0.0.1".parse().unwrap())
+    let (transport, base) = open_local_listener("127.0.0.1".parse().unwrap())
         .await
         .unwrap();
     let tenant = TenantId::new("order").unwrap();
@@ -29,8 +29,7 @@ async fn parts_stay_in_authored_order_after_a_redeclaration() {
     config.health_log = None;
     let host = SessionHost::start(transport, config).await.unwrap();
 
-    let any = "127.0.0.1:0".parse().unwrap();
-    let peer = Transport::open(&TransportConfig::per_class_tcp(Some(any), Some(base)).unwrap())
+    let peer = Transport::open(&TransportConfig::per_class_tcp(base))
         .await
         .unwrap();
     let mut pc = ParticipantConfig::new(

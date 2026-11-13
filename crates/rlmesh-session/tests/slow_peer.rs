@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use rlmesh_session::address::open_listeners;
-use rlmesh_session::transport::{Endpoints, free_local_base, zenoh_config};
+use rlmesh_session::address::open_listener;
+use rlmesh_session::transport::{Endpoints, zenoh_config};
 use rlmesh_session::wire::{ParticipantId, PriorityClass, Role, SessionId, SessionKeys, TenantId};
 use rlmesh_session::{
     HostConfig, Participant, ParticipantConfig, SessionHost, SessionServer, SystemMonotonicClock,
@@ -65,10 +65,10 @@ struct RelayLink {
     evicted: OnceLock<Instant>,
 }
 
-/// A relay in front of the host's four class ports. Once deaf, it stops
-/// reading from the host but keeps its lease alive with keep-alives: the
-/// host's only way to learn the link is useless is that nothing drains. It
-/// never closes a link itself, not even when dropped.
+/// A relay in front of the host's port. Once deaf, it stops reading from
+/// the host but keeps its lease alive with keep-alives: the host's only way
+/// to learn the link is useless is that nothing drains. It never closes a
+/// link itself, not even when dropped.
 struct Relay {
     base: SocketAddr,
     deaf: Arc<OnceLock<Instant>>,
@@ -77,13 +77,11 @@ struct Relay {
 
 impl Relay {
     fn start(host: SocketAddr) -> Self {
-        let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = listener.local_addr().expect("addr");
         let deaf: Arc<OnceLock<Instant>> = Arc::default();
         let links: Arc<Mutex<Vec<Arc<RelayLink>>>> = Arc::default();
-        for class in 0..4 {
-            let listener =
-                TcpListener::bind(SocketAddr::new(base.ip(), base.port() + class)).expect("bind");
-            let to = SocketAddr::new(host.ip(), host.port() + class);
+        {
             let (deaf, links) = (deaf.clone(), links.clone());
             std::thread::spawn(move || {
                 for client in listener.incoming().map_while(Result::ok) {
@@ -91,7 +89,7 @@ impl Relay {
                     if deaf.get().is_some() {
                         continue;
                     }
-                    let Some(host) = narrow_link(to) else {
+                    let Some(host) = narrow_link(host) else {
                         continue;
                     };
                     let link = Arc::new(RelayLink {
@@ -180,21 +178,20 @@ impl Relay {
     }
 }
 
-/// Clears the `TCP_USER_TIMEOUT` the host's listeners on `base` give the
+/// Clears the `TCP_USER_TIMEOUT` the host's listener on `base` gives the
 /// links they accept, as a platform without it would have them: what
 /// remains is the host's own rule. (This kernel resets a link whose zero
 /// window's probes go unanswered for that long, and one that never reads
 /// is such a link.)
 #[allow(unsafe_code)]
 fn without_kernel_timeout(base: SocketAddr) {
-    let ports = base.port()..=base.port() + 3;
     let mut cleared = 0;
     for entry in std::fs::read_dir("/proc/self/fd").expect("fds").flatten() {
         let Some(fd) = entry.file_name().to_str().and_then(|n| n.parse().ok()) else {
             continue;
         };
         // SAFETY: borrowed only for this iteration; the descriptor stays
-        // open (nothing else in the test closes the host's listeners).
+        // open (nothing else in the test closes the host's listener).
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let socket = socket2::SockRef::from(&fd);
         let listening = socket.is_listener().unwrap_or(false);
@@ -202,12 +199,12 @@ fn without_kernel_timeout(base: SocketAddr) {
             .local_addr()
             .ok()
             .and_then(|a| a.as_socket())
-            .is_some_and(|a| ports.contains(&a.port()));
+            .is_some_and(|a| a.port() == base.port());
         if listening && on_port && socket.set_tcp_user_timeout(None).is_ok() {
             cleared += 1;
         }
     }
-    assert_eq!(cleared, 4, "the host's four listeners");
+    assert_eq!(cleared, 1, "the host's listener");
 }
 
 /// Bytes the host's end of `link` holds unacknowledged or unsent, as the
@@ -338,14 +335,10 @@ fn client_tuning(lease: Duration) -> TransportTuning {
 /// is set once a sample reaches it.
 async fn deaf_board(relay: &Relay, key: &str, heard: &Arc<AtomicBool>) -> Vec<zenoh::Session> {
     let mut sessions = Vec::new();
-    for class in 0..4 {
+    for _class in 0..4 {
         let endpoints = Endpoints {
             listen: Vec::new(),
-            connect: vec![format!(
-                "tcp/{}:{}",
-                relay.base.ip(),
-                relay.base.port() + class
-            )],
+            connect: vec![format!("tcp/{}", relay.base)],
         };
         let mut config =
             zenoh_config(&endpoints, &client_tuning(Duration::from_secs(10))).expect("config");
@@ -415,7 +408,7 @@ fn log() {
         .try_init();
 }
 
-/// A plain Zenoh client of the host's control port, with a board's 10 s
+/// A plain Zenoh client of the host's port, with a board's 10 s
 /// lease: it publishes what the board subscribed to. Until the host cuts the
 /// board, its BLOCK samples wait on the board's full queue on the host's
 /// thread reading this link, which is why it is not a participant: the host
@@ -457,7 +450,7 @@ impl World {
     /// kernel's timeout.
     async fn start(kernel: bool) -> Self {
         log();
-        let (transport, base) = open_listeners("127.0.0.1:0".parse().expect("addr"), None)
+        let (transport, base) = open_listener("127.0.0.1:0".parse().expect("addr"), None)
             .await
             .expect("listeners");
         if !kernel {
@@ -491,8 +484,7 @@ impl World {
 
     async fn join(&self, id: &str, role: Role) -> Participant {
         let transport = Transport::open(
-            &TransportConfig::per_class_tcp(None, Some(self.base))
-                .expect("config")
+            &TransportConfig::per_class_tcp(self.base)
                 .with_tuning(client_tuning(Duration::from_secs(1))),
         )
         .await
@@ -789,7 +781,7 @@ fn host_process() {
     runtime.block_on(async {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("signal");
-        let (transport, base) = open_listeners("127.0.0.1:0".parse().expect("addr"), None)
+        let (transport, base) = open_listener("127.0.0.1:0".parse().expect("addr"), None)
             .await
             .expect("listeners");
         let config = HostConfig::new(

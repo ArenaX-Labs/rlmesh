@@ -8,9 +8,7 @@ use std::future::Future;
 use std::task::Poll;
 use std::time::Duration;
 
-use rlmesh_session::transport::{
-    Transport, TransportConfig, TransportTuning, open_local_listeners,
-};
+use rlmesh_session::transport::{Transport, TransportConfig, TransportTuning, open_local_listener};
 
 /// Polls `sibling` once with a timer pending whose wakeup has fired, as a
 /// runner's main future polls one route while another waits; then waits
@@ -51,19 +49,17 @@ fn timer_survives(sibling: impl Future<Output = ()> + Send + 'static) -> bool {
 }
 
 fn client_of(base: std::net::SocketAddr) -> TransportConfig {
-    TransportConfig::per_class_tcp(None, Some(base))
-        .unwrap()
-        .with_tuning(TransportTuning {
-            client: true,
-            ..TransportTuning::default()
-        })
+    TransportConfig::per_class_tcp(base).with_tuning(TransportTuning {
+        client: true,
+        ..TransportTuning::default()
+    })
 }
 
 #[test]
 fn opening_a_transport_takes_no_wakeup_of_another_future() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (host, base) = runtime
-        .block_on(open_local_listeners([127, 0, 0, 1].into()))
+        .block_on(open_local_listener([127, 0, 0, 1].into()))
         .unwrap();
     let opened = timer_survives(async move {
         let _ = Transport::open(&client_of(base)).await;
@@ -76,7 +72,7 @@ fn opening_a_transport_takes_no_wakeup_of_another_future() {
 fn dropping_a_transport_takes_no_wakeup_of_another_future() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (host, base) = runtime
-        .block_on(open_local_listeners([127, 0, 0, 1].into()))
+        .block_on(open_local_listener([127, 0, 0, 1].into()))
         .unwrap();
     let client = runtime.block_on(Transport::open(&client_of(base))).unwrap();
     let dropped = timer_survives(async move { drop(client) });

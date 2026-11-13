@@ -21,8 +21,8 @@ use crate::{
 
 /// A model child: serves at this participant address until stdin closes.
 const MODEL_AT: &str = "RLMESH_TEST_REACH_MODEL_AT";
-/// With [`MODEL_AT`]: relay each class port from a Unix socket in this
-/// directory (`c0` to `c3`), as a container's published ports.
+/// With [`MODEL_AT`]: relay the host's port from the Unix socket `session`
+/// in this directory, as a container's published port.
 const RELAY: &str = "RLMESH_TEST_REACH_RELAY";
 /// A driver child: runs the model at this address against a local env.
 const DRIVE: &str = "RLMESH_TEST_REACH_DRIVE";
@@ -82,26 +82,19 @@ fn model_child() {
     );
 }
 
-/// Relays each Unix socket `c{i}` in `dir` to class port `i` of `base`.
+/// Relays the Unix socket `session` in `dir` to `base`.
 fn relay_in(dir: PathBuf, base: SocketAddr) {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     std::thread::spawn(move || {
         runtime.block_on(async move {
-            for class in 0..4_u16 {
-                let listener =
-                    tokio::net::UnixListener::bind(dir.join(format!("c{class}"))).expect("bind");
-                let to = SocketAddr::new(base.ip(), base.port() + class);
+            let listener = tokio::net::UnixListener::bind(dir.join("session")).expect("bind");
+            while let Ok((mut from, _)) = listener.accept().await {
                 tokio::spawn(async move {
-                    while let Ok((mut from, _)) = listener.accept().await {
-                        tokio::spawn(async move {
-                            if let Ok(mut to) = tokio::net::TcpStream::connect(to).await {
-                                let _ = tokio::io::copy_bidirectional(&mut from, &mut to).await;
-                            }
-                        });
+                    if let Ok(mut to) = tokio::net::TcpStream::connect(base).await {
+                        let _ = tokio::io::copy_bidirectional(&mut from, &mut to).await;
                     }
                 });
             }
-            std::future::pending::<()>().await;
         });
     });
 }
@@ -246,7 +239,7 @@ fn drive(scratch: &Scratch, address: &str, env_by_address: bool) -> String {
 }
 
 fn free_base() -> SocketAddr {
-    rlmesh_session::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("free ports")
+    rlmesh_session::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("free port")
 }
 
 /// The plain case: the model in another process on this machine, reached
@@ -274,32 +267,29 @@ fn namespaces() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Forwards class ports `published`.. on this machine's loopback to the
-/// Unix sockets `c0`.. in `relay`, as a container's published ports.
+/// Forwards `published` on this machine's loopback to the Unix socket
+/// `session` in `relay`, as a container's published port.
 fn publish(published: SocketAddr, relay: PathBuf) -> tokio::runtime::Runtime {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    for class in 0..4_u16 {
-        let at = SocketAddr::new(published.ip(), published.port() + class);
-        let listener = runtime
-            .block_on(tokio::net::TcpListener::bind(at))
-            .expect("publish");
-        let socket = relay.join(format!("c{class}"));
-        runtime.spawn(async move {
-            while let Ok((mut from, _)) = listener.accept().await {
-                let socket = socket.clone();
-                tokio::spawn(async move {
-                    if let Ok(mut to) = tokio::net::UnixStream::connect(&socket).await {
-                        let _ = tokio::io::copy_bidirectional(&mut from, &mut to).await;
-                    }
-                });
-            }
-        });
-    }
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind(published))
+        .expect("publish");
+    let socket = relay.join("session");
+    runtime.spawn(async move {
+        while let Ok((mut from, _)) = listener.accept().await {
+            let socket = socket.clone();
+            tokio::spawn(async move {
+                if let Ok(mut to) = tokio::net::UnixStream::connect(&socket).await {
+                    let _ = tokio::io::copy_bidirectional(&mut from, &mut to).await;
+                }
+            });
+        }
+    });
     runtime
 }
 
-/// The model in a network namespace of its own, its host's ports published
-/// on this machine's loopback under other numbers: the model can dial
+/// The model in a network namespace of its own, its host's port published
+/// on this machine's loopback under another number: the model can dial
 /// neither this machine's loopback nor the address its driver dials.
 fn contained(
     scratch: &Scratch,

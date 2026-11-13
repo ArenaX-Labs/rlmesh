@@ -467,7 +467,7 @@ fn health_dict<'py>(
     Ok(d)
 }
 
-/// A session host in this process, on local per-class TCP ports.
+/// A session host in this process, on a local TCP port.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Host", frozen)]
 pub struct PyHost {

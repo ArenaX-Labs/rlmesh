@@ -548,25 +548,14 @@ test("the session's key is in the host's address, never in what inspecting shows
   for (const shown of [inspect(host), inspect(policy), String(host), String(policy)]) assert.ok(!shown.includes(key), shown);
 });
 
-/** A loopback port whose next three are free too (a daemon's classes). */
+/** A free loopback port (a daemon listens on it). */
 async function freeBase() {
   const { createServer } = await import('node:net');
-  const listen = (port) =>
-    new Promise((resolve) => {
-      const server = createServer();
-      server.once('error', () => resolve(null));
-      server.listen(port, '127.0.0.1', () => resolve(server));
-    });
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const probe = await listen(0);
-    const base = probe.address().port;
-    await new Promise((r) => probe.close(r));
-    if (base > 65531) continue;
-    const held = await Promise.all([0, 1, 2, 3].map((i) => listen(base + i)));
-    await Promise.all(held.filter(Boolean).map((s) => new Promise((r) => s.close(r))));
-    if (held.every(Boolean)) return base;
-  }
-  throw new Error('no four free ports');
+  const probe = createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address();
+  await new Promise((r) => probe.close(r));
+  return port;
 }
 
 /** A host with its lobby on loopback, whose `local.key` this process attaches with (`rlmesh host --lobby`). */

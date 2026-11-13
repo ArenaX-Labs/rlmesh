@@ -39,8 +39,8 @@ The page:
   reports it fenced, and the robot's edge refuses it (its log counts
   `StaleToken`).
 
-Environment knobs: `ROBOT_BASE` (per-class TCP base, default 17600, four
-ports), `HTTP_PORT` (18080), `CAM=jpeg|raw`, `POLICY=on|off`, `DURATION`
+Environment knobs: `ROBOT_BASE` (the host's TCP port, default 17600),
+`HTTP_PORT` (18080), `CAM=jpeg|raw`, `POLICY=on|off`, `DURATION`
 (seconds) and `SKIP_BUILD=1`.
 
 `window.__rlmesh` exposes the hooks the automated checks use: `measure(s)`,

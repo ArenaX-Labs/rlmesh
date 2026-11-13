@@ -447,8 +447,9 @@ typedef struct rlmesh_zenoh_op {
   uint8_t data[];
 } op_t;
 
-/* The session for class `c`, opened to `host` on `port` plus `c` the first
- * time it's needed; NULL when it can't be. The open sessions all reach one
+/* The session for class `c`, opened to `host` on `port` (every class dials
+ * the host's one port, on a connection of its own) the first time it's
+ * needed; NULL when it can't be. The open sessions all reach one
  * host: opening one to another closes them, and drops what was declared on
  * them (the robot's Reset for the move follows). On the network task, as is
  * every call below that uses a session. */
@@ -460,7 +461,7 @@ static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c, const cha
     char connect[96];
     if (host[0] == '\0' || strlen(host) >= sizeof z->host) return NULL;
     int n = snprintf(connect, sizeof connect, "tcp/%s:%u#tout=" RLMESH_ZENOH_RECV_TIMEOUT_MS, host,
-                     (unsigned)(port + c));
+                     (unsigned)port);
     if (n <= 0 || (size_t)n >= sizeof connect) return NULL;
     if (port != z->port || strcmp(host, z->host) != 0) {
       undeclare(z);

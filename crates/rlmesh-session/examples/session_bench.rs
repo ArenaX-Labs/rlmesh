@@ -10,7 +10,7 @@
 //!
 //! `both` runs the embodiment here and spawns the controller as a second OS
 //! process; `embodiment` and `controller` run one side each (`--base` names
-//! the per-class TCP base port, `--session-file` passes the session id and
+//! the host's TCP port, `--session-file` passes the session id and
 //! the host's address key).
 //! Every timestamp is the machine's `CLOCK_MONOTONIC`, shared by both
 //! processes. The result is one JSON object on stdout:
@@ -179,7 +179,6 @@ fn to_args(
 
 fn transport_config(args: &Args, listen: bool) -> Result<TransportConfig, BoxError> {
     let base = args.base.ok_or("--base")?;
-    let any: std::net::SocketAddr = "127.0.0.1:0".parse()?;
     Ok(match args.links.as_str() {
         "shared" => {
             let ep = format!("tcp/{base}");
@@ -189,8 +188,8 @@ fn transport_config(args: &Args, listen: bool) -> Result<TransportConfig, BoxErr
                 TransportConfig::shared(&["tcp/127.0.0.1:0"], &[&ep])
             }
         }
-        _ if listen => TransportConfig::per_class_tcp(Some(base), None)?,
-        _ => TransportConfig::per_class_tcp(Some(any), Some(base))?,
+        _ if listen => TransportConfig::host_tcp(base),
+        _ => TransportConfig::per_class_tcp(base),
     })
 }
 

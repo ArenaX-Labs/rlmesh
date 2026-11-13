@@ -1,8 +1,8 @@
 """``Model(address).run(local_env)`` with the model served by another process.
 
 The model's process serves on loopback, or in a network namespace of its own
-with its ports published on this machine's loopback under other numbers (as
-a container's are), where it can dial neither this machine's loopback nor
+with its port published on this machine's loopback under another number (as
+a container's is), where it can dial neither this machine's loopback nor
 the address its driver dials.
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 # Serves a model as `model` in the session at argv[1] until stdin closes; with argv[2], first relays
-# each Unix socket c0..c3 in that directory to the host's class ports.
+# the Unix socket `session` in that directory to the host's port.
 _MODEL_SERVER = textwrap.dedent(
     """
     import socket, sys, threading
@@ -57,11 +57,10 @@ _MODEL_SERVER = textwrap.dedent(
             threading.Thread(target=pipe, args=(host, peer), daemon=True).start()
 
     if len(sys.argv) > 2:
-        base = int(address.rsplit(":", 1)[1])
-        for c in range(4):
-            threading.Thread(
-                target=relay, args=(f"{sys.argv[2]}/c{c}", base + c), daemon=True
-            ).start()
+        port = int(address.rsplit(":", 1)[1])
+        threading.Thread(
+            target=relay, args=(f"{sys.argv[2]}/session", port), daemon=True
+        ).start()
     model = rlmesh.Model(lambda obs: 1)
     threading.Thread(target=lambda: (sys.stdin.read(), model.close()), daemon=True).start()
     model.serve(address, name="model")
@@ -139,15 +138,14 @@ _PUBLISH = textwrap.dedent(
             threading.Thread(target=pipe, args=(peer, inside), daemon=True).start()
             threading.Thread(target=pipe, args=(inside, peer), daemon=True).start()
 
-    base, relay = int(sys.argv[1]), sys.argv[2]
-    for c in range(4):
-        listener = socket.socket()
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", base + c))
-        listener.listen()
-        threading.Thread(
-            target=accept, args=(listener, f"{relay}/c{c}"), daemon=True
-        ).start()
+    port, relay = int(sys.argv[1]), sys.argv[2]
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", port))
+    listener.listen()
+    threading.Thread(
+        target=accept, args=(listener, f"{relay}/session"), daemon=True
+    ).start()
     print("ready", flush=True)
     sys.stdin.read()
     """
@@ -155,13 +153,13 @@ _PUBLISH = textwrap.dedent(
 
 
 @contextmanager
-def _published(base: int, relay: Path) -> Iterator[None]:
-    """Forward loopback ports ``base``..``base + 3`` to the Unix sockets
-    ``c0``..``c3`` in ``relay``, as a container's published ports."""
+def _published(port: int, relay: Path) -> Iterator[None]:
+    """Forward loopback ``port`` to the Unix socket ``session`` in ``relay``,
+    as a container's published port."""
     script = relay / "publish.py"
     script.write_text(_PUBLISH)
     process = subprocess.Popen(
-        [sys.executable, str(script), str(base), str(relay)],
+        [sys.executable, str(script), str(port), str(relay)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,

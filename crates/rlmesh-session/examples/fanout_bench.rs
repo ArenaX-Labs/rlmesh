@@ -14,10 +14,10 @@
 //! command part and queries the host's state (a Control round trip) every
 //! 10 ms.
 //!
-//! `--listeners four` is a host listening on four consecutive ports, one
-//! Zenoh session each, every class of a joiner dialing its own; `one` is a
-//! host with one session listening on the base port, which every class
-//! dials. `--camera-hz 0` runs without the camera.
+//! `--listeners one` is how a host listens: one session on one port, which
+//! every class dials. `four` is the layout it replaced, kept to compare: a
+//! session per class on four consecutive ports, each class of a joiner
+//! dialing its own. `--camera-hz 0` runs without the camera.
 //!
 //! Prints one JSON object: the prober's Control round trips, heartbeat
 //! inter-arrival gaps at the host (every remote participant; the period is

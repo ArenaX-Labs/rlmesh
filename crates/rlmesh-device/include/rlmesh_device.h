@@ -118,7 +118,7 @@ typedef struct rlmesh_device_robot_config_t {
 /* The most of one datagram a robot reads: anything longer is dropped. */
 #define RLMESH_DEVICE_DATAGRAM_MAX 1472
 
-/* Traffic classes: the host listens on its address's port plus the class. */
+/* Traffic classes: a session each, every one dialing the address's port. */
 #define RLMESH_DEVICE_CLASSES 4
 
 /* An action, borrowed from the robot until the next call on it. */
@@ -216,8 +216,8 @@ int rlmesh_device_robot_new(const rlmesh_device_robot_config_t* config,
                             rlmesh_device_robot_t** out);
 /* Frees a robot; NULL is a no-op. */
 void rlmesh_device_robot_free(rlmesh_device_robot_t* robot);
-/* The host to connect to (owned by the robot), and in *port its first port:
- * class i listens on port + i. */
+/* The host to connect to (owned by the robot), and in *port its port, which
+ * every class dials. */
 const char* rlmesh_device_robot_host(const rlmesh_device_robot_t* robot, uint16_t* port);
 /* The home's host id ("rlm-…", owned by the robot), empty when not known: what
  * an mDNS answer's TXT id must equal. */

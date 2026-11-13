@@ -262,27 +262,17 @@ fn a_keyed_address_carries_its_key_through_a_participant_name() {
     assert!(!err.to_string().contains(secret), "{err}");
 }
 
-/// A host reached on its base port but not on its other classes' (a
-/// container that publishes one port) times out naming the silent ports.
+/// A port that accepts and never answers (a forwarder whose host never comes
+/// up) is a timeout a retry may get past, not a refusal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_join_reaching_only_the_base_port_names_the_others() {
-    let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("ports");
+async fn a_port_that_accepts_and_never_answers_times_out() {
+    let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("port");
     let listener = tokio::net::TcpListener::bind(base).await.expect("base");
-    // Held bound but not listening, so they refuse, and no test running beside
-    // this one can take them.
-    let _held: Vec<_> = (1..4)
-        .map(|i| {
-            let socket = tokio::net::TcpSocket::new_v4().expect("socket");
-            socket
-                .bind(SocketAddr::new(base.ip(), base.port() + i))
-                .expect("class port");
-            socket
-        })
-        .collect();
-    // Accepts and says nothing, as a forwarded port whose host never answers.
+    // Holds each connection open and says nothing.
     let accepting = tokio::spawn(async move {
+        let mut held = Vec::new();
         while let Ok((stream, _)) = listener.accept().await {
-            drop(stream);
+            held.push(stream);
         }
     });
     let timeout = Duration::from_secs(3);
@@ -290,41 +280,28 @@ async fn a_join_reaching_only_the_base_port_names_the_others() {
         panic!("linked to a host that never answers");
     };
     accepting.abort();
-    let SessionError::Timeout(waited, what) = &err else {
-        panic!("not a timeout: {err}");
-    };
-    assert_eq!(*waited, timeout);
-    let p = base.port();
-    let named = format!("ports {}, {}, {} did not answer", p + 1, p + 2, p + 3);
-    assert!(what.contains(&named), "{err}");
     assert!(
-        what.contains(&format!("all four of its ports, {p} to {}", p + 3)),
-        "{err}"
+        matches!(err, SessionError::Timeout(waited, _) if waited == timeout),
+        "not a timeout a retry may get past: {err}"
     );
 }
 
-/// Ports that accept and close at once (a container runtime's proxy in front
-/// of a host still starting) are a host not up yet, never a refused key.
+/// A port that accepts and closes at once (a container runtime's proxy in
+/// front of a host still starting) is a host not up yet, never a refused key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_forwarder_that_drops_every_link_is_no_refusal() {
-    let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("ports");
-    let mut forwarding = Vec::new();
-    for class in 0..4 {
-        let addr = SocketAddr::new(base.ip(), base.port() + class);
-        let listener = tokio::net::TcpListener::bind(addr).await.expect("port");
-        forwarding.push(tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                drop(stream);
-            }
-        }));
-    }
+    let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("port");
+    let listener = tokio::net::TcpListener::bind(base).await.expect("port");
+    let forwarding = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
     let timeout = Duration::from_secs(3);
     let Err(err) = hosting::connect(base, timeout).await else {
         panic!("linked to a forwarder");
     };
-    for task in forwarding {
-        task.abort();
-    }
+    forwarding.abort();
     assert!(
         matches!(err, SessionError::Timeout(waited, _) if waited == timeout),
         "not a timeout a retry may get past: {err}"
@@ -350,9 +327,7 @@ async fn an_embedded_host_stays_on_loopback_and_links_only_with_its_key() {
             link,
             ..TransportTuning::default()
         };
-        TransportConfig::per_class_tcp(None, Some(base))
-            .expect("config")
-            .with_tuning(tuning)
+        TransportConfig::per_class_tcp(base).with_tuning(tuning)
     };
     // Another local user's process, without the key: no link at all.
     let wrong = Some(LinkAuth {
@@ -530,7 +505,7 @@ async fn one_host_serves_many_named_sessions_stops_empty_ones_and_refuses_fast_w
     let tenant = TenantId::new(TENANT).expect("tenant");
     let config = HostConfig::new(tenant, session_id("only"));
     let local = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let (transport, base) = open_listeners(local, Some(&config.identity.link_password()))
+    let (transport, base) = open_listener(local, Some(&config.identity.link_password()))
         .await
         .expect("listen");
     let key = AddressKey::of(&config.identity);
@@ -619,7 +594,7 @@ async fn across_host(dir: &std::path::Path, ip: std::net::IpAddr) {
     let mut config = HostConfig::new(TenantId::new(TENANT).expect("tenant"), session_id("across"));
     config.identity = std::sync::Arc::new(host_identity(&identity).expect("identity"));
     config.clock = SystemMonotonicClock.shared();
-    let (transport, lan) = open_listeners(SocketAddr::new(ip, 0), None)
+    let (transport, lan) = open_listener(SocketAddr::new(ip, 0), None)
         .await
         .expect("listen");
     let _lan = SessionHost::start(transport, config).await.expect("host");

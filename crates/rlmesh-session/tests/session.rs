@@ -20,7 +20,7 @@ use rlmesh_session::participant::{query_authority, wait_for_host};
 #[cfg(feature = "fleet")]
 use rlmesh_session::scene::Scene;
 use rlmesh_session::spec::{Policy, RunOptions};
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::version::VIEW_DEVICE;
 use rlmesh_session::wire::{
@@ -35,12 +35,6 @@ use rlmesh_session::{
     VirtualConfig,
 };
 use zenoh::query::ConsolidationMode;
-
-/// Participants listen too (the OS picks the ports): in peer mode, data
-/// flows peer to peer once gossip tells peers where to connect.
-fn any_local_port() -> std::net::SocketAddr {
-    "127.0.0.1:0".parse().expect("addr")
-}
 
 const WAIT: Duration = Duration::from_secs(5);
 const GRACE: Duration = Duration::from_millis(300);
@@ -110,7 +104,7 @@ impl World {
             .with_test_writer()
             .try_init();
         let anchor = Instant::now();
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("host transport");
         let tenant = TenantId::new("test").expect("tenant");
@@ -131,12 +125,9 @@ impl World {
     }
 
     async fn transport(&self) -> Transport {
-        Transport::open(
-            &TransportConfig::per_class_tcp(Some(any_local_port()), Some(self.base))
-                .expect("config"),
-        )
-        .await
-        .expect("participant transport")
+        Transport::open(&TransportConfig::per_class_tcp(self.base))
+            .await
+            .expect("participant transport")
     }
 
     fn config(

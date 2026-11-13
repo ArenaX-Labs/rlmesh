@@ -8,7 +8,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use rlmesh_session::address::SessionAddress;
-use rlmesh_session::transport::{Transport, TransportConfig, open_local_listeners};
+use rlmesh_session::transport::{Transport, TransportConfig, open_local_listener};
 use rlmesh_session::wire::{ParticipantId, PriorityClass, Role, SessionKeys};
 use rlmesh_session::{HostConfig, Participant, ParticipantConfig, SessionHost};
 
@@ -23,7 +23,7 @@ pub(crate) struct LinkedHost {
 
 impl LinkedHost {
     pub(crate) async fn start() -> Self {
-        let (transport, base) = open_local_listeners([127, 0, 0, 1].into())
+        let (transport, base) = open_local_listener([127, 0, 0, 1].into())
             .await
             .expect("listeners");
         let address = SessionAddress::new(base, "linked").expect("address");
@@ -47,15 +47,9 @@ impl LinkedHost {
         priority: PriorityClass,
     ) -> Participant {
         let base: SocketAddr = self.address.base;
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(
-                Some(SocketAddr::from(([127, 0, 0, 1], 0))),
-                Some(base),
-            )
-            .expect("config"),
-        )
-        .await
-        .expect("links");
+        let transport = Transport::open(&TransportConfig::per_class_tcp(base))
+            .await
+            .expect("links");
         let mut config = ParticipantConfig::new(
             self.address.tenant.clone(),
             self.address.session,

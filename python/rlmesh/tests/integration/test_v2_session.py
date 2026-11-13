@@ -1166,26 +1166,21 @@ LOBBY_HOLD = {
 
 
 def _free_base() -> int:
-    """A loopback port whose next three are free too (a daemon's classes)."""
-    for _ in range(50):
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            base = probe.getsockname()[1]
-        if base > 65531:
-            continue
-        try:
-            held = []
-            for offset in range(4):
-                s = socket.socket()
-                held.append(s)
-                s.bind(("127.0.0.1", base + offset))
-        except OSError:
-            continue
-        finally:
-            for s in held:
-                s.close()
-        return base
-    raise RuntimeError("no four free ports")
+    """A free local port, on TCP and UDP both: a session host listens on it
+    (and offers boards UDP on the same number)."""
+    for _ in range(64):
+        with (
+            socket.socket() as tcp,
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp,
+        ):
+            tcp.bind(("127.0.0.1", 0))
+            port = int(tcp.getsockname()[1])
+            try:
+                udp.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError("no free local port")
 
 
 @pytest.fixture

@@ -387,7 +387,7 @@ function input(e: NativeEntry): InputValue {
 
 // ---- the API --------------------------------------------------------------------------------
 
-/** A session host in this process, listening on local TCP ports. Participants connect to its `address`. */
+/** A session host in this process, listening on a local TCP port. Participants connect to its `address`. */
 export class Host implements AsyncDisposable {
   private constructor(private native: NativeHost) {}
 

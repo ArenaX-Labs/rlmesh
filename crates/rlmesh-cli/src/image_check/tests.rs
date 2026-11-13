@@ -3,8 +3,8 @@
 use super::*;
 use rlmesh_proto::CURRENT_WORKFLOW_EDITION;
 
-/// What a 0.2 image exposes: its session's base port and the next three.
-const PORTS: &[&str] = &["7447/tcp", "7448/tcp", "7449/tcp", "7450/tcp"];
+/// What a 0.2 image exposes: its session's one port.
+const PORTS: &[&str] = &["7447/tcp"];
 
 fn image(entrypoint: &[&str], cmd: &[&str], env: &[&str], ports: &[&str]) -> ImageConfig {
     ImageConfig {
@@ -51,10 +51,7 @@ fn serve_command_table() {
             ports: &[],
             kind: Some(Kind::Env),
             failed: &[],
-            warnings: &[
-                "env: image-level ENV",
-                "ports: EXPOSE 6000-6003 is incomplete",
-            ],
+            warnings: &["env: image-level ENV", "ports: EXPOSE 6000 is missing"],
             not_checked: &[],
         },
         Case {
@@ -68,7 +65,7 @@ fn serve_command_table() {
                 "0.0.0.0:7000",
             ],
             env: &[],
-            ports: &["7000/tcp", "7001/tcp", "7002/tcp", "7003/tcp"],
+            ports: &["7000/tcp"],
             kind: None,
             failed: &[],
             warnings: &["entrypoint: --address is baked"],
@@ -129,10 +126,10 @@ fn serve_command_table() {
             entrypoint: &["python", "-m", "rlmesh.serve", "pkg:Policy"],
             cmd: &[],
             env: &[],
-            ports: &["50051/tcp", "7447/tcp"],
+            ports: &["50051/tcp"],
             kind: None,
             failed: &[],
-            warnings: &["ports: EXPOSE 7447-7450 is incomplete (missing 7448, 7449, 7450)"],
+            warnings: &["ports: EXPOSE 7447 is missing"],
             not_checked: &[],
         },
     ];
@@ -157,9 +154,7 @@ fn the_port_check_follows_the_session_address() {
     let command = ["python", "-m", "rlmesh.serve", "pkg:Policy"];
     let report = check_serve_command(&image(&command, &[], &[], PORTS), None);
     assert!(
-        report
-            .passed
-            .contains(&"ports: EXPOSE 7447-7450".to_owned()),
+        report.passed.contains(&"ports: EXPOSE 7447".to_owned()),
         "{report:?}"
     );
     let missing = check_serve_command(&image(&command, &[], &[], &[]), None);
@@ -167,7 +162,10 @@ fn the_port_check_follows_the_session_address() {
     assert!(warning.contains("HOST:7447#KEY/NAME"), "{warning}");
     assert!(!warning.contains("50051"), "{warning}");
     assert_eq!(SERVE_PORT, 7447);
-    assert_eq!(SESSION_PORTS, 4);
+    // An image built for the four-port layout still serves on its base.
+    let older = ["7447/tcp", "7448/tcp", "7449/tcp", "7450/tcp"];
+    let report = check_serve_command(&image(&command, &[], &[], &older), None);
+    assert!(report.warnings.is_empty(), "{report:?}");
 }
 
 #[test]

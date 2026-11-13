@@ -13,9 +13,9 @@
 //! it publishes and acknowledges each revision, as a session's publisher
 //! does: a lease that depends on the stream waits for that.
 //!
-//! Traffic rides the host's per-class sessions (one port each, from the
-//! address's): control on the first, a part's commands and samples on its
-//! priority's ([`Action`]'s `class`).
+//! Traffic rides one session per traffic class, each its own connection to
+//! the host's one port: control on the first, a part's commands and samples
+//! on its priority's ([`Action`]'s `class`).
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -71,7 +71,7 @@ const CTL_QUEUE_MAX: usize = 16;
 /// (`Z_FRAG_MAX_SIZE`, as boards are built). Longer is dropped unread.
 pub const MAX_RECEIVED: usize = 4096;
 
-/// The control class: the host's first port.
+/// The control class: the first of a robot's class sessions.
 pub const CLASS_CONTROL: u8 = 0;
 
 /// How often a robot on the host's datagram path probes it once a chunk
@@ -118,7 +118,7 @@ pub struct Config {
     /// Wait in the home's lobby for runs: `tenant` and
     /// `session` are then the lobby's, and each run's come with its join.
     pub lobby: bool,
-    /// The home's base addresses (`host`, first port), tried in order: the
+    /// The home's addresses (`host`, port), tried in order: the
     /// address's one, or a provisioned board's stored ones.
     pub homes: Vec<(String, u16)>,
     /// The home's host id (`rlm-…`), for discovery: empty when not known.
@@ -183,7 +183,7 @@ pub enum ConfigError {
 }
 
 /// What the transport is asked to do, on traffic class `class` (0 control,
-/// 1 realtime, 2 data, 3 bulk: the address's port plus `class`). Queries
+/// 1 realtime, 2 data, 3 bulk: a session each, to the address's port). Queries
 /// carry an id; their reply (or none) comes back through [`Robot::reply`]
 /// and [`Robot::query_done`]. The robot doesn't depend on hearing either: a
 /// query is over for it at its timeout plus [`QUERY_MARGIN_MS`].
@@ -1017,8 +1017,7 @@ impl Robot {
         self.fault.as_ref()
     }
 
-    /// Where it connects now: a host and its first port (class `i` listens
-    /// on the port plus `i`).
+    /// Where it connects now: a host and its port (every class dials it).
     pub fn host(&self) -> (&str, u16) {
         (&self.target.0, self.target.1)
     }

@@ -1,6 +1,6 @@
 """How an in-process host carries boards' realtime parts.
 
-- By default it listens for the datagram path on UDP, its port + 1.
+- By default it listens for the datagram path on UDP, on its own port number.
 - ``RLMESH_BOARD_DATA=tcp`` or ``Host(board_data="tcp")`` binds no UDP
   socket there, so a sandbox that forbids UDP sets one variable.
 - A bad value is refused with ``rlmesh host``'s message.
@@ -17,11 +17,11 @@ POSSIBLE = "[possible values: tcp, udp, udp-only]"
 
 
 def _udp_taken(host: realtime.Host) -> bool:
-    """Whether the host holds UDP on its base port + 1."""
+    """Whether the host holds UDP on its port number."""
     ip, port = host.address.split("/")[0].split("#")[0].rsplit(":", 1)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         try:
-            probe.bind((ip, int(port) + 1))
+            probe.bind((ip, int(port)))
         except OSError:
             return True
     return False

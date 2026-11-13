@@ -466,7 +466,7 @@ pub enum HostIdentityCommand {
 #[derive(Args, Debug)]
 pub struct LaunchAddressArgs {
     /// Also print the keyed address (`address=`) of the session the host
-    /// serves at HOST:PORT (its base port; the default session) or
+    /// serves at HOST:PORT (its port; the default session) or
     /// HOST:PORT/SESSION, as participants dial it from where they run.
     #[arg(long, value_name = "HOST:PORT[/SESSION]")]
     pub address: Option<String>,
@@ -549,8 +549,8 @@ pub struct HostArgs {
     /// kept, so boards provisioned for this host stay valid across restarts.
     #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
     pub state_dir: Option<std::path::PathBuf>,
-    /// Listen here (this port and the next three) instead of every
-    /// interface on the well-known port (`RLMESH_PORT`, else 7447). Only the
+    /// Listen here instead of every interface on the well-known port
+    /// (`RLMESH_PORT`, else 7447). Only the
     /// devices in `devices.toml` (and this user, `local`) can attach.
     #[arg(long, value_name = "ADDR")]
     pub listen: Option<std::net::SocketAddr>,
@@ -601,7 +601,7 @@ pub struct HostArgs {
     pub no_seal: bool,
     /// How boards carry their realtime parts (action chunks down, states
     /// and `_applied` up): `udp`, the default, over the host's datagram path
-    /// on UDP port `RLMESH_PORT + 1`, where a lost packet holds nothing up,
+    /// on UDP at the session's port number, where a lost packet holds nothing up,
     /// or `tcp` over the session's links. That UDP port must be reachable
     /// from the boards (open it in the firewall) for the faster path: with
     /// `udp` the host moves a board's parts to TCP while the path is broken

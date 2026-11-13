@@ -7,9 +7,9 @@
 //! own fix, several links pinned to priority ranges, needs its
 //! `transport_multilink` feature, which pulls `rsa` (RUSTSEC-2023-0071).
 //!
-//! Instead, a [`Transport`] opens **one Zenoh session per
-//! [`TrafficClass`]**, each with its own listen and connect endpoints, so
-//! each class rides its own TCP connection and can only starve itself:
+//! Instead, a participant's [`Transport`] opens **one Zenoh client session
+//! per [`TrafficClass`]**, each its own TCP connection to the host, so each
+//! class can only starve itself:
 //!
 //! | Class | Zenoh priority | Reliability | Congestion | Express | Carries |
 //! |---|---|---|---|---|---|
@@ -17,6 +17,12 @@
 //! | [`TrafficClass::Realtime`] | InteractiveHigh | best effort | DROP | yes | small state samples, chunks, `_applied` |
 //! | [`TrafficClass::Data`] | Data | best effort; reliable for events | DROP; BLOCK for events | no | small custom kinds, events, history replies |
 //! | [`TrafficClass::Bulk`] | DataLow | best effort | DROP | no | cameras, depth, large custom kinds |
+//!
+//! The host listens on **one** port with one session, which every class
+//! session of every participant dials: a host is one routing domain. Each
+//! key belongs to one class (both ends pick its session by the same rule),
+//! so each class session subscribes only its own class's keys and the host
+//! sends each message only on the connection of the class it belongs to.
 //!
 //! These settings are applied per publisher by
 //! [`stream_qos`]. Two refinements: in a virtual-clock session every data
@@ -33,11 +39,11 @@
 //! best-effort streams get their real-time behaviour from DROP congestion
 //! control and from never being retransmitted at the session level.
 //!
-//! [`Layout::Shared`] uses one session for every class instead: in-process
-//! tests, Unix sockets, and QUIC (whose multistream already gives every
-//! priority its own stream inside one connection). Both ends of a link must
-//! use the same layout. Priorities are still set on every message, so the
-//! shared layout keeps Zenoh's own ordering.
+//! [`Layout::Shared`] uses one session for every class instead: the host's
+//! listener, in-process tests, Unix sockets, and QUIC (whose multistream
+//! already gives every priority its own stream inside one connection).
+//! Priorities are still set on every message, so the shared layout keeps
+//! Zenoh's own ordering.
 //!
 //! The lockstep class arrives with the Gym view (wave 5).
 
@@ -216,7 +222,8 @@ pub struct Endpoints {
 pub enum Layout {
     /// One session for every class.
     Shared(Endpoints),
-    /// One session per class, in [`TrafficClass::ALL`] order.
+    /// One session per class, in [`TrafficClass::ALL`] order. Listening
+    /// nowhere, each joins as a client (see [`TransportConfig::per_class_tcp`]).
     PerClass([Endpoints; 4]),
 }
 
@@ -303,14 +310,6 @@ pub struct TransportConfig {
     pub tuning: TransportTuning,
 }
 
-/// The port offset of each class from a base port in
-/// [`TransportConfig::per_class_tcp`].
-pub(crate) fn class_port(base: u16, class: TrafficClass) -> Result<u16, SessionError> {
-    base.checked_add(class.index() as u16).ok_or_else(|| {
-        SessionError::Config(format!("base port {base} leaves no room for 4 classes"))
-    })
-}
-
 fn tcp(addr: SocketAddr) -> String {
     format!("tcp/{addr}")
 }
@@ -327,38 +326,27 @@ impl TransportConfig {
         }
     }
 
-    /// One TCP session per class on consecutive ports: class `i` (in
-    /// [`TrafficClass::ALL`] order) listens on `listen.port() + i` and dials
-    /// `connect.port() + i`. The usual way to run a session off-host.
-    pub fn per_class_tcp(
-        listen: Option<SocketAddr>,
-        connect: Option<SocketAddr>,
-    ) -> Result<Self, SessionError> {
-        let mut classes: [Endpoints; 4] = Default::default();
-        for class in TrafficClass::ALL {
-            let at = |addr: SocketAddr| -> Result<String, SessionError> {
-                Ok(tcp(SocketAddr::new(
-                    addr.ip(),
-                    class_port(addr.port(), class)?,
-                )))
-            };
-            let endpoints = &mut classes[class.index()];
-            if let Some(addr) = listen {
-                // Port 0 lets the OS pick each class's port.
-                endpoints.listen.push(if addr.port() == 0 {
-                    tcp(addr)
-                } else {
-                    at(addr)?
-                });
-            }
-            if let Some(addr) = connect {
-                endpoints.connect.push(at(addr)?);
-            }
+    /// A session host's listener: one session on TCP `listen` (port 0: the
+    /// OS picks it), which every class of every participant dials
+    /// ([`Self::per_class_tcp`]).
+    pub fn host_tcp(listen: SocketAddr) -> Self {
+        Self::shared(&[&tcp(listen)], &[])
+    }
+
+    /// A participant's link to the host listening at `host`: one client
+    /// session per class, each its own TCP connection to that one port. The
+    /// usual way to join a session off-host.
+    pub fn per_class_tcp(host: SocketAddr) -> Self {
+        Self {
+            layout: Layout::PerClass(std::array::from_fn(|_| Endpoints {
+                listen: Vec::new(),
+                connect: vec![tcp(host)],
+            })),
+            tuning: TransportTuning {
+                client: true,
+                ..TransportTuning::default()
+            },
         }
-        Ok(Self {
-            layout: Layout::PerClass(classes),
-            tuning: TransportTuning::default(),
-        })
     }
 
     /// The same layout with other tuning.
@@ -518,9 +506,16 @@ impl Transport {
                 })
             }
             Layout::PerClass(classes) => {
+                // Class sessions that listen nowhere are clients: as peers,
+                // the host's gossip would link them to each other.
+                let tuning = TransportTuning {
+                    client: config.tuning.client
+                        || classes.iter().all(|class| class.listen.is_empty()),
+                    ..config.tuning.clone()
+                };
                 let mut opened = Vec::with_capacity(4);
                 for (class, endpoints) in TrafficClass::ALL.iter().zip(classes) {
-                    let session = zenoh::open(zenoh_config(endpoints, &config.tuning)?).await?;
+                    let session = zenoh::open(zenoh_config(endpoints, &tuning)?).await?;
                     debug!(class = class.name(), zid = %session.zid(), "transport open");
                     opened.push(session);
                 }
@@ -531,7 +526,7 @@ impl Transport {
                 Ok(Self {
                     sessions: Arc::new(Sessions(Some(sessions))),
                     shared: false,
-                    client: config.tuning.client,
+                    client: tuning.client,
                     link: config.tuning.link.clone(),
                     in_process: false,
                     guard,
@@ -748,36 +743,27 @@ pub fn free_local_tcp_endpoints(n: usize) -> Result<Vec<String>, SessionError> {
     listeners.iter().map(|l| Ok(tcp(l.local_addr()?))).collect()
 }
 
-/// A base port on `ip` whose next three ports were also free a moment ago
-/// (for [`TransportConfig::per_class_tcp`]). Same race as
+/// A port on `ip` that was free a moment ago for TCP and UDP both (a host
+/// listens on TCP and offers boards UDP on the same number). Same race as
 /// [`free_local_tcp_endpoints`].
 pub fn free_local_base(ip: IpAddr) -> Result<SocketAddr, SessionError> {
     for _ in 0..64 {
-        let first = std::net::TcpListener::bind(SocketAddr::new(ip, 0))?;
-        let base = first.local_addr()?.port();
-        if base > u16::MAX - 4 {
-            continue;
-        }
-        let rest: Result<Vec<_>, _> = (1..4)
-            .map(|i| std::net::TcpListener::bind(SocketAddr::new(ip, base + i)))
-            .collect();
-        if rest.is_ok() {
-            return Ok(SocketAddr::new(ip, base));
+        let tcp = std::net::TcpListener::bind(SocketAddr::new(ip, 0))?;
+        let addr = tcp.local_addr()?;
+        if std::net::UdpSocket::bind(addr).is_ok() {
+            return Ok(addr);
         }
     }
-    Err(SessionError::Config(
-        "no four consecutive free local ports".into(),
-    ))
+    Err(SessionError::Config("no free local port".into()))
 }
 
-/// Opens per-class TCP listeners on free local ports (for tests and demos):
-/// a base from [`free_local_base`], and another one when a port was taken
-/// in between. The base is what peers dial.
-pub async fn open_local_listeners(ip: IpAddr) -> Result<(Transport, SocketAddr), SessionError> {
-    let mut last = SessionError::Config("no free local ports".into());
+/// Opens a session host's listener on a free local port (for tests and
+/// demos): the address is what peers dial.
+pub async fn open_local_listener(ip: IpAddr) -> Result<(Transport, SocketAddr), SessionError> {
+    let mut last = SessionError::Config("no free local port".into());
     for _ in 0..16 {
         let base = free_local_base(ip)?;
-        match Transport::open(&TransportConfig::per_class_tcp(Some(base), None)?).await {
+        match Transport::open(&TransportConfig::host_tcp(base)).await {
             Ok(transport) => return Ok((transport, base)),
             Err(err) => last = err,
         }
@@ -863,22 +849,21 @@ mod tests {
     }
 
     #[test]
-    fn per_class_tcp_uses_consecutive_ports() {
-        let config = TransportConfig::per_class_tcp(
-            Some("0.0.0.0:7447".parse().expect("addr")),
-            Some("10.0.0.1:7500".parse().expect("addr")),
-        )
-        .expect("config");
-        let Layout::PerClass(classes) = config.layout else {
+    fn every_class_dials_the_one_port_the_host_listens_on() {
+        let host = TransportConfig::host_tcp("0.0.0.0:7447".parse().expect("addr"));
+        let Layout::Shared(endpoints) = host.layout else {
+            panic!("one session");
+        };
+        assert_eq!(endpoints.listen, vec!["tcp/0.0.0.0:7447"]);
+        let joiner = TransportConfig::per_class_tcp("10.0.0.1:7500".parse().expect("addr"));
+        assert!(joiner.tuning.client);
+        let Layout::PerClass(classes) = joiner.layout else {
             panic!("per class");
         };
-        assert_eq!(classes[0].listen, vec!["tcp/0.0.0.0:7447"]);
-        assert_eq!(classes[3].listen, vec!["tcp/0.0.0.0:7450"]);
-        assert_eq!(classes[2].connect, vec!["tcp/10.0.0.1:7502"]);
-        assert!(
-            TransportConfig::per_class_tcp(Some("0.0.0.0:65534".parse().expect("addr")), None)
-                .is_err()
-        );
+        for class in &classes {
+            assert_eq!(class.connect, vec!["tcp/10.0.0.1:7500"]);
+            assert!(class.listen.is_empty());
+        }
         assert_eq!(TrafficClass::of(ChannelPriority::Bulk), TrafficClass::Bulk);
         assert_eq!(zenoh_priority(ChannelPriority::Control), Priority::RealTime);
     }

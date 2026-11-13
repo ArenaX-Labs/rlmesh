@@ -104,14 +104,14 @@ class Served:
 
     def __init__(self, tmp: Path, kind: str, slow: float) -> None:
         from rlmesh import launch
-        from rlmesh._rlmesh import sandbox_session_ports
+        from rlmesh._rlmesh import sandbox_session_port
 
         _ = (tmp / "served.py").write_text(SERVED, encoding="utf-8")
         _ = (tmp / "driver.py").write_text(DRIVER, encoding="utf-8")
         self.marks = tmp / "marks"
         self.marks.touch()
         identity, _ = launch.launch_identity()
-        port = sandbox_session_ports()
+        port = sandbox_session_port()
         name = "env" if kind == "env" else "model"
         address = launch.launched_address(identity, f"127.0.0.1:{port}", name)
         env = {

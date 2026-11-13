@@ -22,7 +22,7 @@ use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::crypto::{Rng, RngError, SignedChecker};
 use rlmesh_session::edge::Rejection;
 use rlmesh_session::host::DatagramRelay;
-use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listeners};
+use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listener};
 use rlmesh_session::wire::{
     ChannelId, CtlStatus, EdgeMode, Fingerprint, InputRange, Mode, ParticipantId, Plan,
     PriorityClass, Role, SessionId, TenantId,
@@ -183,12 +183,9 @@ struct World {
 
 /// Client sessions to the host at `base`, one per class.
 async fn links(base: std::net::SocketAddr) -> Transport {
-    Transport::open(
-        &TransportConfig::per_class_tcp(Some("127.0.0.1:0".parse().expect("addr")), Some(base))
-            .expect("config"),
-    )
-    .await
-    .expect("transport")
+    Transport::open(&TransportConfig::per_class_tcp(base))
+        .await
+        .expect("transport")
 }
 
 impl World {
@@ -213,7 +210,7 @@ impl World {
     }
 
     async fn start_configured(configure: impl FnOnce(&mut HostConfig)) -> Self {
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("host transport");
         let tenant = TenantId::new("test").expect("tenant");
@@ -284,7 +281,7 @@ impl World {
         let started = Instant::now();
         // The ports free up as the old transport finishes closing.
         let transport = loop {
-            let config = TransportConfig::per_class_tcp(Some(base), None).expect("config");
+            let config = TransportConfig::host_tcp(base);
             match Transport::open(&config).await {
                 Ok(transport) => break transport,
                 Err(err) => assert!(started.elapsed() < WAIT, "no ports back: {err}"),
@@ -1284,7 +1281,7 @@ async fn a_provisioned_board_joins_its_homes_default_session_without_the_lobby()
         public: rlmesh_device::provision::public_key(&private),
         access: DeviceAccess::new(Some(PriorityClass::Model)),
     };
-    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+    let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
         .await
         .expect("host transport");
     let tenant = TenantId::new(rlmesh_device::address::TENANT).expect("tenant");
@@ -1366,7 +1363,7 @@ impl rlmesh_session::Predictor for Gaze {
 /// their own, is driven again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_driven_again() {
-    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+    let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
         .await
         .expect("host transport");
     let tenant = TenantId::new("test").expect("tenant");
@@ -1967,7 +1964,7 @@ const VIEWER_POLICY: &str = r#"{
 impl World {
     /// A host whose robots re-arm on their own, as the demo's does.
     async fn start_rearming() -> Self {
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("host transport");
         let tenant = TenantId::new("test").expect("tenant");

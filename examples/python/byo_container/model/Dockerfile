@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir "rlmesh==${RLMESH_VERSION}" "gymnasium" "numpy"
 WORKDIR /app
 COPY entrypoint.py .
 
-# A session host listens on four consecutive ports.
-EXPOSE 7447-7450
+# A session host listens on one port, which every traffic class dials.
+EXPOSE 7447
 ENV RLMESH_ADDRESS=0.0.0.0:7447
 # Written once the model answers, removed when it stops.
 ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json

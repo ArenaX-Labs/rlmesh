@@ -670,11 +670,11 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;
-    use crate::transport::open_local_listeners;
+    use crate::transport::open_local_listener;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_late_delete_of_a_rejoined_members_old_token_keeps_it_beside_others() {
-        let (transport, _) = open_local_listeners(IpAddr::from(Ipv4Addr::LOCALHOST))
+        let (transport, _) = open_local_listener(IpAddr::from(Ipv4Addr::LOCALHOST))
             .await
             .expect("transport");
         let control = transport.control();
@@ -699,7 +699,7 @@ mod tests {
     /// wait without a participant.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_token_alone_keeps_no_session_and_sessions_stop_at_the_limit() {
-        let (transport, _) = open_local_listeners(IpAddr::from(Ipv4Addr::LOCALHOST))
+        let (transport, _) = open_local_listener(IpAddr::from(Ipv4Addr::LOCALHOST))
             .await
             .expect("transport");
         let tenant = crate::wire::TenantId::new("limits").expect("tenant");

@@ -11,8 +11,6 @@ use uuid::Uuid;
 use crate::sandbox::source::ResolvedEnvironmentSourceRef;
 use crate::sandbox::{EffectiveSandboxSpec, EnvironmentSourceRef, hf, shell_quote};
 
-/// The ports a session host listens on, one per traffic class.
-const SESSION_PORTS: u16 = rlmesh_session::transport::TrafficClass::ALL.len() as u16;
 /// The participant a built env serves as in its container's session.
 const ENV_NAME: &str = "env";
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -121,7 +119,7 @@ pub async fn run_container_async(
 ) -> Result<StartedContainer> {
     let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
     let bootstrap_json = render_bootstrap_json(spec)?;
-    let host_port = free_session_ports()?;
+    let host_port = free_session_port()?;
     // The container hosts its session under keys made here, so this process
     // knows the address's key (the workload spec). The value
     // rides docker's own environment, never its argv.
@@ -803,31 +801,17 @@ fn docker_run_args(
         "--name".to_string(),
         container_name.to_string(),
         "-p".to_string(),
-        format!(
-            "127.0.0.1:{host_port}-{last}:{host_port}-{last}",
-            last = host_port + SESSION_PORTS - 1
-        ),
+        format!("127.0.0.1:{host_port}:{host_port}"),
         image_id.to_string(),
     ]);
     args
 }
 
-/// A base port on 127.0.0.1 with the session ports after it free, to publish
-/// a container's session host on. Free when checked: `docker run` reports a
-/// port taken since.
-pub(crate) fn free_session_ports() -> Result<u16> {
-    use std::net::TcpListener;
-    for _ in 0..64 {
-        let first = TcpListener::bind(("127.0.0.1", 0)).context("no free local port")?;
-        let base = first.local_addr()?.port();
-        let Some(last) = base.checked_add(SESSION_PORTS - 1) else {
-            continue;
-        };
-        if (base + 1..=last).all(|port| TcpListener::bind(("127.0.0.1", port)).is_ok()) {
-            return Ok(base);
-        }
-    }
-    bail!("found no {SESSION_PORTS} consecutive free ports on 127.0.0.1")
+/// A free port on 127.0.0.1 to publish a container's session host on. Free
+/// when checked: `docker run` reports a port taken since.
+pub(crate) fn free_session_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).context("no free local port")?;
+    Ok(listener.local_addr()?.port())
 }
 
 /// A rlmesh-owned container candidate for reaping: its id, the recorded owner
@@ -1180,13 +1164,16 @@ mod tests {
     }
 
     #[test]
-    fn docker_run_args_publish_the_session_ports_on_loopback() {
+    fn docker_run_args_publish_the_session_port_on_loopback() {
         let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
-        assert!(
-            args.iter()
-                .any(|arg| arg == "127.0.0.1:40000-40003:40000-40003")
-        );
+        // One port: every traffic class dials it.
+        let published: Vec<_> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-p")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(published, ["127.0.0.1:40000:40000"]);
         assert!(args.iter().any(|arg| arg == "RLMESH_ADDRESS=0.0.0.0:40000"));
         assert!(args.iter().any(|arg| arg == "RLMESH_NAME=env"));
         // The host's keys are passed by name: their value is never argv.

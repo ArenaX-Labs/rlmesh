@@ -1,6 +1,6 @@
 //! Finding rlmeshd on the LAN. rlmeshd advertises
 //! itself over mDNS as `_rlmesh._tcp.local` ([`advertise`]), with only its
-//! host id (TXT `id`) and its base port: a machine or board that knows the
+//! host id (TXT `id`) and its port: a machine or board that knows the
 //! host's id and static key from pairing or provisioning finds its current
 //! address there, and a wrong or forged answer only costs a failed IK
 //! handshake.
@@ -11,8 +11,8 @@
 //! is the host's. Each address that accepts a connection is tried with the
 //! caller's handshake, and only one the host authenticated at replaces the
 //! stored ones: a forged answer, or an old address now some other service,
-//! costs one failed handshake and is never kept. Every address is a base
-//! port: traffic class i listens at base + i.
+//! costs one failed handshake and is never kept. Every address is the
+//! host's one port, which every traffic class dials.
 
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};

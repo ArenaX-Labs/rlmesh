@@ -1150,7 +1150,7 @@ message PairResult {
 }
 
 // What an approved machine stores: its device id, and the host's static
-// key, id and base addresses (`host:port`, class i at base + i).
+// key, id and addresses (`host:port`, which every traffic class dials).
 message PairInfo {
   string device = 1;
   bytes host_key = 2;
@@ -1178,7 +1178,7 @@ message Assignment {
   }
 }
 
-// A robot's order: join `session` at `addresses` (base ports) with an IK
+// A robot's order: join `session` at `addresses` (`host:port`) with an IK
 // handshake against `host_key`.
 message Join {
   string run = 1;

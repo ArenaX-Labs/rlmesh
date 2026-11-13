@@ -1,7 +1,7 @@
 //! The serve command: parsing an image's entrypoint and command into the serve
-//! invocation, and checking the address it binds and the ports it exposes.
+//! invocation, and checking the address it binds and the port it exposes.
 
-use crate::image_check::{ADDRESS_ENV, CheckReport, ImageConfig, Kind, SERVE_PORT, SESSION_PORTS};
+use crate::image_check::{ADDRESS_ENV, CheckReport, ImageConfig, Kind, SERVE_PORT};
 
 /// The `python -m rlmesh.serve ...` invocation read off an image's
 /// `Entrypoint` + `Cmd`. See [`parse_serve_command`] for the exact reading.
@@ -210,21 +210,13 @@ pub fn shell_words(script: &str) -> Vec<String> {
     words
 }
 
-/// The base port an address (`host:port[/...]`, `:port`) names, if any.
+/// The port an address (`host:port[/...]`, `:port`) names, if any.
 fn address_port(address: &str) -> Option<u16> {
     let host = address.split(['/', '#']).next()?;
     host.rsplit_once(':')?.1.parse().ok()
 }
 
-/// The ports a session host on `base` listens on (fewer when they would run
-/// past the last port).
-fn session_ports(base: u16) -> Vec<u16> {
-    (0..SESSION_PORTS)
-        .filter_map(|offset| base.checked_add(offset))
-        .collect()
-}
-
-/// Check the serve command, the address it binds, and the ports it exposes.
+/// Check the serve command, the address it binds, and the port it exposes.
 /// `kind` is the describe label's kind when the image carries one, so `--env`
 /// can be checked against what the envelope says the image is.
 pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckReport {
@@ -278,30 +270,19 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
              container, which overrides it"
         ));
     }
-    let base = command
+    let port = command
         .address
         .as_deref()
         .or(config.env_value(ADDRESS_ENV))
         .and_then(address_port)
         .unwrap_or(SERVE_PORT);
-    let ports = session_ports(base);
-    let missing: Vec<u16> = ports
-        .iter()
-        .copied()
-        .filter(|port| !config.exposes_port(*port))
-        .collect();
-    let range = format!("{base}-{}", base.saturating_add(SESSION_PORTS - 1));
-    if missing.is_empty() {
-        report.passed.push(format!("ports: EXPOSE {range}"));
+    if config.exposes_port(port) {
+        report.passed.push(format!("ports: EXPOSE {port}"));
     } else {
-        let missing: Vec<String> = missing.iter().map(u16::to_string).collect();
         report.warnings.push(format!(
-            "ports: EXPOSE {range} is incomplete (missing {}); rlmesh.serve hosts its session \
-             on its base port {base} and the next {} (one per traffic class), and participants \
-             dial HOST:{base}#KEY/NAME on all of them. A launcher publishes them regardless; \
-             add `EXPOSE {range}` so the intent is visible",
-            missing.join(", "),
-            SESSION_PORTS - 1
+            "ports: EXPOSE {port} is missing; rlmesh.serve hosts its session on port {port}, \
+             and participants dial HOST:{port}#KEY/NAME. A launcher publishes it regardless; \
+             add `EXPOSE {port}` so the intent is visible"
         ));
     }
     report

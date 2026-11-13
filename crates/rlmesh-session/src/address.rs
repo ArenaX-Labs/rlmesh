@@ -39,7 +39,7 @@ pub use credentials::{LOCAL_KEY, STATE_DIR_VAR, credential, daemon_dir, link_aut
 #[cfg(feature = "record")]
 pub use hosting::host_recording_at;
 pub use hosting::{
-    HostingOptions, Placed, connect, host_at, host_at_with, open_listeners, open_listeners_with,
+    HostingOptions, Placed, connect, host_at, host_at_with, open_listener, open_listener_with,
     place, place_with,
 };
 
@@ -66,8 +66,8 @@ use crate::server::SessionServer;
 use crate::transport::{LinkAuth, Transport};
 use crate::wire::{CtlError, CtlStatus, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
-/// The well-known port a session host listens on (control class; the other
-/// classes follow it), unless [`PORT_VAR`] names another.
+/// The well-known port a session host listens on, the one port every
+/// traffic class dials, unless [`PORT_VAR`] names another.
 pub const DEFAULT_PORT: u16 = 7447;
 /// The environment variable that overrides the well-known port.
 pub const PORT_VAR: &str = "RLMESH_PORT";
@@ -526,7 +526,7 @@ pub fn is_v2_address(text: &str) -> bool {
 /// errors; [`SessionAddress::invite`] has it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SessionAddress {
-    /// The host's control-class listener; the other classes follow it.
+    /// The host's listener, which every traffic class dials.
     pub base: SocketAddr,
     /// The tenant namespace ([`TENANT`]).
     pub tenant: TenantId,
@@ -907,10 +907,6 @@ impl SessionAddress {
                         waited,
                         format!("the session host at {}", self.base),
                     ));
-                }
-                // Its class ports unanswered ([`hosting::unanswered_ports`]).
-                Err(SessionError::Timeout(_, what)) => {
-                    return Err(SessionError::Timeout(waited, what));
                 }
                 other => return other,
             }

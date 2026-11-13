@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 #### All languages
 
 - The 0.1 gRPC transport (`rlmesh-wire-v1`) is removed. Envs and models serve and connect on session participant addresses such as `127.0.0.1:7447/env`; `host:port`, `tcp://`, `unix://` and `https://` endpoints are refused with an error that says so.
-- A session listens on four consecutive ports from its base port (7447 by default), one per traffic class, in place of 0.1's single port 50051.
+- A session listens on one port (7447 by default; TCP, and UDP at the same number for boards) in place of 0.1's port 50051.
 - Session keys replace 0.1's `api_key`, `tls_ca_file` and endpoint tokens, and remote shutdown is gone. `RLMESH_API_KEY` still authenticates `rlmesh.managed` and the CLI's `eval` commands, but no longer env or model connections.
 - Images built for 0.1 must be rebuilt: `SandboxEnv`, `SandboxModel` and `rlmesh check-image` refuse an image that advertises the 0.1 protocol.
 - 0.2 runs workflow edition `2026.10` (provisional until 0.2.0) and refuses a declaration of `2026.06`. See the [2026.10 edition](docs/editions/2026.10.md) for every behaviour it changes.
@@ -118,7 +118,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - Sessions are authenticated and, beyond loopback, encrypted: a Noise IK handshake per participant, sealed control and data, and host-signed authority state. The [threat model](docs/threat-model.md) says what this does and does not defend.
 - `rlmesh host` (also installed as `rlmeshd`) hosts sessions on the LAN under an identity kept in its state directory, admits the devices in its `devices.toml`, and holds the arm, disarm and e-stop state.
 - `rlmesh host` records every session as zstd-compressed MCAP: a rolling window, plus incidents it keeps around an e-stop, safe mode, a preemption, missed deadlines or a Keep.
-- Session hosts carry boards' realtime parts over UDP on the base port plus one by default (`rlmesh host --board-data udp`, `RLMESH_BOARD_DATA`), so a lost Wi-Fi frame no longer stalls the stream behind it. The host moves a board to TCP while the path is broken (UDP not reachable) and onto UDP again once its probes arrive, and runs on TCP alone, with one warning, when the port won't open; `udp-only` never moves it back, and `tcp` keeps every board on TCP.
+- Session hosts carry boards' realtime parts over UDP on the session's own port number by default (`rlmesh host --board-data udp`, `RLMESH_BOARD_DATA`), so a lost Wi-Fi frame no longer stalls the stream behind it. The host moves a board to TCP while the path is broken (UDP not reachable) and onto UDP again once its probes arrive, and runs on TCP alone, with one warning, when the port won't open; `udp-only` never moves it back, and `tcp` keeps every board on TCP.
 - A host started in-process reads `RLMESH_BOARD_DATA` as `rlmesh host` does, so a sandbox that forbids UDP sets it once for every host an env, a model or a robot starts; Python's `Host(board_data=BoardData.TCP)` (or `"tcp"`) and Rust's `HostingOptions` choose it per host.
 - `rlmesh host` takes `--presence-grace`, `--lease-grace`, `--max-sessions`, `--no-seal`, `--tcp-notsent-lowat` and recording budgets (`--record-keep`, `--record-max-size`, `--record-min-free`, `--incidents-keep`, `--incidents-max-size`).
 - `rlmesh devices ls | allow | revoke | move | unpin` edits the device table, and `rlmesh devices provision --port TTY --name ROBOT` provisions a board over USB.
@@ -129,7 +129,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `RLMESH_RUNTIME_DIR` names where a session host writes its short-lived link-password file, so a host starts in a container with no home and a read-only root.
 - Another process of the same user joins a loopback session by its address alone, as in 0.1: `RemoteEnv("127.0.0.1:5587/cartpole")` reaches `EnvServer(env, "127.0.0.1:5587/cartpole")` without the `#key` it printed. The host leaves its key in `hosts/<ip>-<port>.key` (0600) under `RLMESH_RUNTIME_DIR`, else the user's runtime or cache directory, and removes it when it closes; a file whose host is gone is passed over, and one another user owns or others can read is refused.
 - A served model drives a local env wherever the model runs: `run(env)` and `bind(env)` with `Model(address)` (and the Rust, C and other bindings' served models) serve the env in a session of its own on the model's host, which the model answers in from its own process, recognising its host by the address's key however the driver reached it (a container's published port, another machine's address). It timed out after 30 s when the model could not reach the driver's loopback. A model invited into an env's session it cannot reach (an env given by address) fails within seconds, saying so.
-- A join that reaches a session's base port but not its other three (a container that publishes one port) times out with an error naming the ports that did not answer.
 
 #### Python
 
@@ -227,7 +226,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `RemoteEnv` warns once when an env's own `info` key shadows a reserved one.
 - The live viewer shows the env's first image role by default; `View(source="render")` asks for `render()`.
 - An adapter resolution error for a missing role suggests near matches.
-- `rlmesh check-image` checks that an image exposes its session's four ports instead of port 50051.
+- `rlmesh check-image` checks that an image exposes its session's port (7447) instead of port 50051.
 
 ### Fixed
 

@@ -21,7 +21,7 @@ use rlmesh_session::gateway::security::{Origins, Policy, SUBPROTOCOL, TOKEN_PREF
 use rlmesh_session::gateway::{AppState, Gateway, frame, router};
 use rlmesh_session::host::OsRng;
 use rlmesh_session::pairing::{BrowserToken, Paired, new_token, token_hash};
-use rlmesh_session::transport::{open_local_listeners, payload_bytes};
+use rlmesh_session::transport::{open_local_listener, payload_bytes};
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{
     AuthoritySnapshot, Command, CtlStatus, Epoch, Health, Heartbeat, Mode, PairInfo, ParticipantId,
@@ -57,16 +57,14 @@ struct World {
 }
 
 async fn open(base: std::net::SocketAddr) -> Transport {
-    // Peers listen too, so the others they learn of can dial them.
-    let any = "127.0.0.1:0".parse().unwrap();
-    Transport::open(&TransportConfig::per_class_tcp(Some(any), Some(base)).unwrap())
+    Transport::open(&TransportConfig::per_class_tcp(base))
         .await
         .unwrap()
 }
 
 impl World {
     async fn start() -> Self {
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().unwrap())
+        let (transport, base) = open_local_listener("127.0.0.1".parse().unwrap())
             .await
             .unwrap();
         let tenant = TenantId::new("gateway").unwrap();

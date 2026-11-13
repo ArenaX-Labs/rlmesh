@@ -36,7 +36,7 @@ struct World {
 impl World {
     async fn start(barrier_timeout: Duration) -> Self {
         let (transport, base) =
-            rlmesh_session::transport::open_local_listeners("127.0.0.1".parse().unwrap())
+            rlmesh_session::transport::open_local_listener("127.0.0.1".parse().unwrap())
                 .await
                 .unwrap();
         let tenant = TenantId::new("local").unwrap();
@@ -64,12 +64,9 @@ impl World {
     }
 
     async fn join(&self, id: &str, role: Role) -> Participant {
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(Some("127.0.0.1:0".parse().unwrap()), Some(self.base))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        let transport = Transport::open(&TransportConfig::per_class_tcp(self.base))
+            .await
+            .unwrap();
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
             self.session,

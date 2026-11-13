@@ -16,7 +16,7 @@ pub const TENANT: &str = "local";
 pub struct Address {
     /// The host's IP or name.
     pub host: String,
-    /// Its first (control) port; class `i` listens on `port + i`.
+    /// Its port, which every traffic class dials.
     pub port: u16,
     /// The session's name or UUID.
     pub session: String,
@@ -26,13 +26,14 @@ pub struct Address {
     pub name: Option<String>,
 }
 
-/// A base address, `host:port` (an IPv6 host keeps its brackets, as a
-/// Zenoh locator wants it), or `None`. Four consecutive ports follow the
-/// base, one per traffic class.
+/// A host address, `host:port` (an IPv6 host keeps its brackets, as a
+/// Zenoh locator wants it), or `None`: the one port every traffic class
+/// dials. A port above [`MAX_PORT`](rlmesh_tether::provision::MAX_PORT) is
+/// refused, as provisioning refuses it.
 pub fn host_port(text: &str) -> Option<(String, u16)> {
     let (host, port) = text.rsplit_once(':')?;
     let port: u16 = port.parse().ok()?;
-    if host.is_empty() || port == 0 || port > u16::MAX - 3 {
+    if host.is_empty() || port == 0 || port > rlmesh_tether::provision::MAX_PORT {
         return None;
     }
     Some((host.to_string(), port))

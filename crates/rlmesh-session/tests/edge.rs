@@ -12,7 +12,7 @@ use bytes::Bytes;
 use rlmesh_session::address::AddressKey;
 use rlmesh_session::crypto::{Key, Kind, KindSet, SealSender, Security};
 use rlmesh_session::edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::{
     ActionChunk, ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass,
     ReasonCode, Role, SessionId, TenantId, codec,
@@ -43,10 +43,6 @@ const ROBOT: &str = r#"{
                 "command": "delta", "safe": "stop", "group": "arm", "hold_max_ms": 100}
 }"#;
 
-fn any_local_port() -> std::net::SocketAddr {
-    "127.0.0.1:0".parse().expect("addr")
-}
-
 fn robot_id() -> ParticipantId {
     ParticipantId::new("robot").expect("id")
 }
@@ -69,7 +65,7 @@ impl World {
             )
             .with_test_writer()
             .try_init();
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("transport");
         let tenant = TenantId::new("edge").expect("tenant");
@@ -143,11 +139,9 @@ async fn join(
     roles: Vec<Role>,
     priority: PriorityClass,
 ) -> Participant {
-    let transport = Transport::open(
-        &TransportConfig::per_class_tcp(Some(any_local_port()), Some(base)).expect("config"),
-    )
-    .await
-    .expect("transport");
+    let transport = Transport::open(&TransportConfig::per_class_tcp(base))
+        .await
+        .expect("transport");
     let mut config = ParticipantConfig::new(
         tenant.clone(),
         session,

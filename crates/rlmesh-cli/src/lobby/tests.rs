@@ -52,7 +52,7 @@ async fn home_gated(
     let identity = Arc::new(crate::host::identity(dir).expect("identity"));
     let key = AddressKey::of(&identity);
     let password = gated.then(|| key.link_password());
-    let (transport, base) = address::open_listeners(
+    let (transport, base) = address::open_listener(
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         password.as_ref(),
     )
@@ -644,7 +644,7 @@ async fn satellite(
         .write(hosts)
         .expect("host file");
     let (transport, base) =
-        address::open_listeners(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), None)
+        address::open_listener(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), None)
             .await
             .expect("listeners");
     let mut config = HostConfig::new(

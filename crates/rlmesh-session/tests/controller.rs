@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use rlmesh_session::edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::version::LEASE_HANDBACK;
 use rlmesh_session::wire::{
     CtlStatus, DType, LeaseToken, Mode, PriorityClass, ReasonCode, Role, SessionId, TenantId,
@@ -61,7 +61,7 @@ impl World {
             )
             .with_test_writer()
             .try_init();
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("transport");
         let tenant = TenantId::new("controller").expect("tenant");
@@ -91,15 +91,9 @@ impl World {
         priority: PriorityClass,
         configure: impl FnOnce(&mut ParticipantConfig),
     ) -> Participant {
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(
-                Some("127.0.0.1:0".parse().expect("addr")),
-                Some(self.base),
-            )
-            .expect("config"),
-        )
-        .await
-        .expect("transport");
+        let transport = Transport::open(&TransportConfig::per_class_tcp(self.base))
+            .await
+            .expect("transport");
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
             self.session,
@@ -1175,15 +1169,9 @@ async fn the_first_chunk_after_an_explicit_acquire_is_accepted() {
 async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
     let world = World::start().await;
     let robot = world.robot().await;
-    let transport = Transport::open(
-        &TransportConfig::per_class_tcp(
-            Some("127.0.0.1:0".parse().expect("addr")),
-            Some(world.base),
-        )
-        .expect("config"),
-    )
-    .await
-    .expect("transport");
+    let transport = Transport::open(&TransportConfig::per_class_tcp(world.base))
+        .await
+        .expect("transport");
     let mut config = ParticipantConfig::new(
         world.tenant.clone(),
         world.session,

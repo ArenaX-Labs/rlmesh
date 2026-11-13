@@ -6,8 +6,8 @@
 //! cargo run -p rlmesh-session --example web_robot -- --listen-base 127.0.0.1:17600 --session-file session.id
 //! ```
 //!
-//! - **Host**: a `SessionHost` on per-class TCP at `--listen-base` (class i on
-//!   port + i), lease grace `--lease-grace-ms` (250 ms).
+//! - **Host**: a `SessionHost` listening on TCP at `--listen-base`, lease
+//!   grace `--lease-grace-ms` (250 ms).
 //! - **Robot** `arm7` (`rlmesh_session::edge::Robot`): `arm` (7 joints, `pos` and `vel`
 //!   at 1 kHz, position commands, `safe: stop`, hold 100 ms), `gripper`
 //!   (100 Hz, position, `safe: hold`) and `scene/cam` (640x480 at 20 Hz, JPEG
@@ -51,7 +51,7 @@ const LIMIT: f64 = 2.6;
 
 #[derive(Debug, Parser)]
 struct Args {
-    /// Per-class TCP base the host listens on.
+    /// The TCP address the host listens on.
     #[arg(long, default_value = "127.0.0.1:17600")]
     listen_base: SocketAddr,
     /// The tenant namespace.
@@ -163,10 +163,7 @@ async fn join(
     role: Role,
     priority: PriorityClass,
 ) -> Result<Participant, Box<dyn std::error::Error>> {
-    // Listen too: peers dial the others they learn of directly.
-    let any = SocketAddr::new(base.ip(), 0);
-    let transport =
-        Transport::open(&TransportConfig::per_class_tcp(Some(any), Some(base))?).await?;
+    let transport = Transport::open(&TransportConfig::per_class_tcp(base)).await?;
     let mut config = ParticipantConfig::new(
         tenant.clone(),
         session,
@@ -200,11 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(id) => id.parse()?,
         None => SessionId::new(),
     };
-    let transport = Transport::open(&TransportConfig::per_class_tcp(
-        Some(args.listen_base),
-        None,
-    )?)
-    .await?;
+    let transport = Transport::open(&TransportConfig::host_tcp(args.listen_base)).await?;
     let mut host = HostConfig::new(tenant.clone(), session);
     host.clock = SystemMonotonicClock.shared();
     host.lease_grace = Duration::from_millis(args.lease_grace_ms.max(1));

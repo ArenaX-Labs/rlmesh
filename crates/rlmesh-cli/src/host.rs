@@ -206,7 +206,7 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
         notsent_lowat: args.tcp_notsent_lowat,
         ..TransportTuning::default()
     };
-    let (transport, base) = address::open_listeners_with(base, None, tuning)
+    let (transport, base) = address::open_listener_with(base, None, tuning)
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
     let board_data = rlmesh_session::host::BoardData::from(args.board_data);

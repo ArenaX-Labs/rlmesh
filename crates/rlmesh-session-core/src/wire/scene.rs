@@ -39,7 +39,8 @@ pub struct Join {
     pub session: SessionId,
     /// The robot it is for: the receiver refuses another name.
     pub robot: ParticipantId,
-    /// The scene host's base addresses (`host:port`, class i at base + i).
+    /// The scene host's addresses (`host:port`, which every traffic class
+    /// dials).
     pub addresses: Vec<String>,
     /// The scene host's static X25519 key.
     pub host_key: [u8; 32],

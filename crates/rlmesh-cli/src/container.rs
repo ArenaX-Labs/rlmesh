@@ -1,6 +1,6 @@
 //! One prebuilt rlmesh image run for `doctor` and `bench`, the way the Python
 //! sandbox runs it (`rlmesh._sandbox.session.start_prebuilt_container`): the
-//! container hosts its session on the host's own port numbers, published on
+//! container hosts its session on the host's own port number, published on
 //! loopback, under keys made here, and serves in it under a participant
 //! name. Removed on drop.
 
@@ -12,14 +12,10 @@ use anyhow::{Context, Result, bail};
 use rlmesh_session::address::{
     AddressKey, DEFAULT_SESSION, HOST_IDENTITY_VAR, SessionAddress, launch_identity,
 };
-use rlmesh_session::transport::TrafficClass;
 
 /// The longest one readiness attempt waits, so an image that died is told
 /// apart between attempts.
 const READY_ATTEMPT: Duration = Duration::from_secs(5);
-
-/// The ports a session host listens on, one per traffic class, consecutive.
-const SESSION_PORTS: u16 = TrafficClass::ALL.len() as u16;
 
 /// What `docker run` adds for the image under probe, as a sandbox's run
 /// options do: its `volumes`, and its params as `RLMESH_MAKE_KWARGS`.
@@ -46,7 +42,7 @@ impl Container {
         gpus: Option<&str>,
         extras: RunExtras<'_>,
     ) -> Result<Self> {
-        let port = free_session_ports()?;
+        let port = free_session_port()?;
         let (identity, key) = launch_identity()?;
         let output = run_command(image, name, gpus, port, &identity, extras)
             .stdin(Stdio::null())
@@ -134,11 +130,11 @@ impl Drop for Container {
     }
 }
 
-/// The `docker run -d` of `image` hosting its session on `port` and the
-/// ports after it under `identity` ([`launch_identity`]'s text). Beyond
-/// loopback, as a container's published ports are, a session hosts only
-/// under keys its launcher passed; the secret reaches docker through its
-/// environment, never argv.
+/// The `docker run -d` of `image` hosting its session on `port` under
+/// `identity` ([`launch_identity`]'s text). Beyond loopback, as a
+/// container's published port is, a session hosts only under keys its
+/// launcher passed; the secret reaches docker through its environment,
+/// never argv.
 fn run_command(
     image: &str,
     name: &str,
@@ -147,13 +143,12 @@ fn run_command(
     identity: &str,
     extras: RunExtras<'_>,
 ) -> Command {
-    let last = port + SESSION_PORTS - 1;
     let mut command = Command::new("docker");
     command.env(HOST_IDENTITY_VAR, identity).args([
         "run",
         "-d",
         "-p",
-        &format!("127.0.0.1:{port}-{last}:{port}-{last}"),
+        &format!("127.0.0.1:{port}:{port}"),
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -195,20 +190,11 @@ fn participant_address(port: u16, key: AddressKey, name: &str) -> Result<String>
     Ok(session.participant_invite(name))
 }
 
-/// A base port on 127.0.0.1 with the session ports after it free. Free when
+/// A free port on 127.0.0.1 to publish a container's session on. Free when
 /// checked: `docker run` reports a port taken since.
-fn free_session_ports() -> Result<u16> {
-    for _ in 0..64 {
-        let first = TcpListener::bind(("127.0.0.1", 0)).context("no free local port")?;
-        let base = first.local_addr()?.port();
-        let Some(last) = base.checked_add(SESSION_PORTS - 1) else {
-            continue;
-        };
-        if (base + 1..=last).all(|port| TcpListener::bind(("127.0.0.1", port)).is_ok()) {
-            return Ok(base);
-        }
-    }
-    bail!("found no {SESSION_PORTS} consecutive free ports on 127.0.0.1")
+fn free_session_port() -> Result<u16> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).context("no free local port")?;
+    Ok(listener.local_addr()?.port())
 }
 
 #[cfg(test)]
@@ -241,6 +227,13 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-e", "RLMESH_ADDRESS=0.0.0.0:40000"])
         );
+        // One port: every traffic class dials it.
+        let published: Vec<_> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-p")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(published, ["127.0.0.1:40000:40000"]);
         assert_eq!(args.last().map(String::as_str), Some("img:tag"));
         let passed = command
             .get_envs()

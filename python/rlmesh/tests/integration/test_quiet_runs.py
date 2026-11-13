@@ -138,10 +138,10 @@ class _Served:
 
     def __init__(self, project: Path, step_seconds: float = 0.0) -> None:
         from rlmesh import launch
-        from rlmesh._rlmesh import sandbox_session_ports
+        from rlmesh._rlmesh import sandbox_session_port
 
         identity, _ = launch.launch_identity()
-        port = sandbox_session_ports()
+        port = sandbox_session_port()
         self.address = launch.launched_address(identity, f"127.0.0.1:{port}", "env")
         self.ready = project / "ready" / "env.json"
         self.ready.parent.mkdir()

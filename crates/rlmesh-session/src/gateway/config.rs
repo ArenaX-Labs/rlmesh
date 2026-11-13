@@ -48,8 +48,7 @@ pub struct Args {
     /// `{ip}:{port}[/{session}]#{key}`, from this file.
     #[arg(long, conflicts_with_all = ["connect", "session", "session_file"])]
     pub address_file: Option<PathBuf>,
-    /// The session host's per-class TCP base (class i on this port + i:
-    /// control, realtime, data, bulk).
+    /// The session host's TCP address, which every traffic class dials.
     #[arg(long)]
     pub connect: Option<SocketAddr>,
     /// The tenant namespace.

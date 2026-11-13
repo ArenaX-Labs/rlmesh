@@ -190,7 +190,7 @@ fn ns(value: &BigInt, what: &str) -> Result<i64> {
     }
 }
 
-/// A session host in this process, on local per-class TCP ports.
+/// A session host in this process, on a local TCP port.
 #[napi]
 pub struct NativeHost {
     host: EmbeddedHost,

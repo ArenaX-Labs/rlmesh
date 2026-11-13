@@ -104,25 +104,24 @@ DRIVER = textwrap.dedent(
 
 
 def _free_base() -> int:
-    from rlmesh._rlmesh import sandbox_session_ports
+    from rlmesh._rlmesh import sandbox_session_port
 
-    return sandbox_session_ports()
+    return sandbox_session_port()
 
 
 @final
 class _Relay:
-    """Four relayed session ports, whose connections can be cut."""
+    """A relayed session port, whose connections can be cut."""
 
     def __init__(self, target: int) -> None:
         self.base = _free_base()
         self.sockets: list[socket.socket] = []
         self.lock = threading.Lock()
-        for offset in range(4):
-            listener = socket.create_server(("127.0.0.1", self.base + offset))
-            self.sockets.append(listener)
-            threading.Thread(
-                target=self._accept, args=(listener, target + offset), daemon=True
-            ).start()
+        listener = socket.create_server(("127.0.0.1", self.base))
+        self.sockets.append(listener)
+        threading.Thread(
+            target=self._accept, args=(listener, target), daemon=True
+        ).start()
 
     def _accept(self, listener: socket.socket, port: int) -> None:
         while True:

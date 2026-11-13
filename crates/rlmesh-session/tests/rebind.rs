@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use rlmesh_session::edge::{EdgeConfig, EdgeMode, Published, Robot};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::{
     DType, ParticipantId, PriorityClass, ReasonCode, Role, SessionId, TenantId,
 };
@@ -64,7 +64,7 @@ impl World {
             )
             .with_test_writer()
             .try_init();
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("transport");
         let tenant = TenantId::new("rebind").expect("tenant");
@@ -85,15 +85,9 @@ impl World {
     }
 
     async fn join(&self, id: &str, roles: Vec<Role>) -> Participant {
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(
-                Some("127.0.0.1:0".parse().expect("addr")),
-                Some(self.base),
-            )
-            .expect("config"),
-        )
-        .await
-        .expect("transport");
+        let transport = Transport::open(&TransportConfig::per_class_tcp(self.base))
+            .await
+            .expect("transport");
         let priority = if roles.contains(&Role::Controller) {
             PriorityClass::Model
         } else {

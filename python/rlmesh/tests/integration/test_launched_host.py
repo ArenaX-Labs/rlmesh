@@ -80,10 +80,10 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
 ) -> None:
     import rlmesh
     from rlmesh import launch
-    from rlmesh._rlmesh import sandbox_session_ports
+    from rlmesh._rlmesh import sandbox_session_port
 
     (tmp_path / "launched_env.py").write_text(ENV_SOURCE, encoding="utf-8")
-    port = sandbox_session_ports()
+    port = sandbox_session_port()
     identity_file = tmp_path / "identity"
     printed = json.loads(
         _cli(
@@ -210,7 +210,7 @@ else:
 def test_a_served_env_is_reachable_from_another_machine(tmp_path: Path) -> None:
     """The keyed address alone joins a launched env across a real network."""
     from rlmesh import launch
-    from rlmesh._rlmesh import sandbox_session_ports
+    from rlmesh._rlmesh import sandbox_session_port
 
     (tmp_path / "launched_env.py").write_text(ENV_SOURCE, encoding="utf-8")
     (tmp_path / "across_client.py").write_text(ACROSS_CLIENT, encoding="utf-8")
@@ -226,7 +226,7 @@ def test_a_served_env_is_reachable_from_another_machine(tmp_path: Path) -> None:
     }
     env.update(
         RLMESH_TEST_DIR=str(tmp_path),
-        RLMESH_TEST_PORT=str(sandbox_session_ports()),
+        RLMESH_TEST_PORT=str(sandbox_session_port()),
         RLMESH_WORKFLOW_EDITION="",
         RLMESH_STATE_DIR=str(tmp_path / "state"),
     )

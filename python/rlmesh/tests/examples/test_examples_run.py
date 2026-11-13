@@ -35,25 +35,21 @@ SERVER_STARTUP_TIMEOUT = 30.0
 
 
 def _free_port() -> int:
-    """A free local port whose next three are free too: a session host
-    listens on all four (one per traffic class)."""
+    """A free local port, on TCP and UDP both: a session host listens on it
+    (and offers boards UDP on the same number)."""
     for _ in range(64):
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = int(probe.getsockname()[1])
-        held: list[socket.socket] = []
-        try:
-            for offset in range(4):
-                sock = socket.socket()
-                held.append(sock)
-                sock.bind(("127.0.0.1", port + offset))
-        except OSError:
-            continue
-        finally:
-            for sock in held:
-                sock.close()
-        return port
-    raise RuntimeError("no four consecutive free local ports")
+        with (
+            socket.socket() as tcp,
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp,
+        ):
+            tcp.bind(("127.0.0.1", 0))
+            port = int(tcp.getsockname()[1])
+            try:
+                udp.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError("no free local port")
 
 
 def _run_example(relative: str, *args: str) -> subprocess.CompletedProcess[str]:

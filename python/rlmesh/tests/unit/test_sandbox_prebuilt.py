@@ -16,9 +16,9 @@ from rlmesh._sandbox import session as sandbox
 
 
 @pytest.fixture(autouse=True)
-def _session_ports(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Containers publish on 40000-40003, under keys ``k``, and serve at once."""
-    monkeypatch.setattr(sandbox, "_sandbox_session_ports", lambda: 40000)
+def _session_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Containers publish on 40000, under keys ``k``, and serve at once."""
+    monkeypatch.setattr(sandbox, "_sandbox_session_port", lambda: 40000)
     monkeypatch.setattr(sandbox, "_sandbox_host_identity", lambda: ("secret", "k"))
     monkeypatch.setattr(_model, "wait_serving", lambda *_args: None)
 
@@ -107,8 +107,10 @@ def test_prebuilt_run_cmd_is_hardened_with_image_last() -> None:
     v_idxs = [i for i, a in enumerate(cmd) if a == "-v"]
     assert [cmd[i + 1] for i in v_idxs] == ["/h/a:/c/a", "/h/b:/c/b:ro"]
     assert cmd[cmd.index("-e") + 1] == 'RLMESH_MAKE_KWARGS={"suite": "a"}'
-    # The session's four ports, in order, on loopback, to the same numbers.
-    assert cmd[cmd.index("-p") + 1] == "127.0.0.1:40000-40003:40000-40003"
+    # The session's one port, on loopback, to the same number.
+    assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "-p"] == [
+        "127.0.0.1:40000:40000"
+    ]
     assert cmd[-1] == "img:1"  # image always last
 
 

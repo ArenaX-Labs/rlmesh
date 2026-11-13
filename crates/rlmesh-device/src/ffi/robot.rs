@@ -80,7 +80,7 @@ pub const RLMESH_DEVICE_UNSUBSCRIBE: u8 = 10;
 pub struct RlmeshDeviceAction {
     /// `RLMESH_DEVICE_SUBSCRIBE`, `_TOKEN`, `_QUERY` or `_PUBLISH`.
     pub kind: u8,
-    /// The traffic class: the host's port plus this.
+    /// The traffic class: a session of its own to the host's port.
     pub class: u8,
     /// A subscription's id, for `rlmesh_device_robot_sample`.
     pub sub: u8,
@@ -389,7 +389,7 @@ unsafe fn robot_mut<'a>(robot: *mut DeviceRobot) -> Option<&'a mut DeviceRobot> 
 }
 
 /// The host to connect to, NUL-terminated (owned by the robot), and in
-/// `*port` its first port: class `i` listens on `port + i`.
+/// `*port` its port, which every class dials.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `port` null or valid.

@@ -241,7 +241,7 @@ pub enum BoardData {
 
 impl BoardData {
     /// Opens the datagram path for a host listening on `base`: UDP on the
-    /// realtime class's port number (`base` + 1). `None` for [`Self::Tcp`];
+    /// same port number, so one number describes a session. `None` for [`Self::Tcp`];
     /// with [`Self::Udp`], also when that port won't open, after one
     /// warning, so the host still runs and its boards keep TCP.
     ///
@@ -252,19 +252,18 @@ impl BoardData {
         if self == Self::Tcp {
             return Ok(None);
         }
-        let at = SocketAddr::new(base.ip(), base.port().saturating_add(1));
-        match DatagramRelay::bind(at).await {
+        match DatagramRelay::bind(base).await {
             Ok(relay) => Ok(Some(relay)),
             Err(err) if self == Self::Udp => {
                 warn!(
-                    "could not listen on udp/{at} ({err}): boards' realtime parts ride the \
+                    "could not listen on udp/{base} ({err}): boards' realtime parts ride the \
                      session's TCP links"
                 );
                 Ok(None)
             }
             Err(err) => Err(std::io::Error::new(
                 err.kind(),
-                format!("could not listen on udp/{at} for --board-data udp-only: {err}"),
+                format!("could not listen on udp/{base} for --board-data udp-only: {err}"),
             )),
         }
     }

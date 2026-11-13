@@ -75,12 +75,11 @@ static int fill_random(uint8_t* buf, size_t len) {
   return 0;
 }
 
-/* The proxy: one listener per class port, each connection paired with one to
- * the host's same class. */
-#define CLASSES 4
+/* The proxy: one listener, each connection (one per class) paired with one
+ * to the host's port. */
 #define MAX_PAIRS 32
 typedef struct {
-  int listen[CLASSES];
+  int listen;
   uint16_t base;
   uint16_t host_port;
   int pair[MAX_PAIRS][2];
@@ -117,28 +116,12 @@ static uint16_t port_of(int fd) {
   return ntohs(a.sin_port);
 }
 
-/* Four consecutive free ports. */
+/* A free port. */
 static int proxy_listen(proxy_t* p) {
-  for (int attempt = 0; attempt < 50; ++attempt) {
-    int first = listen_on(0);
-    if (first < 0) return -1;
-    uint16_t base = port_of(first);
-    int ok = 1;
-    p->listen[0] = first;
-    for (int c = 1; c < CLASSES; ++c) {
-      p->listen[c] = listen_on((uint16_t)(base + c));
-      if (p->listen[c] < 0) {
-        for (int k = 0; k < c; ++k) close(p->listen[k]);
-        ok = 0;
-        break;
-      }
-    }
-    if (ok) {
-      p->base = base;
-      return 0;
-    }
-  }
-  return -1;
+  p->listen = listen_on(0);
+  if (p->listen < 0) return -1;
+  p->base = port_of(p->listen);
+  return 0;
 }
 
 /* Resets a connection: the peer's next read or write fails. */
@@ -163,35 +146,33 @@ static void* proxy_task(void* arg) {
       while (p->pairs > 0) drop_pair(p, 0);
     }
     bool hold = atomic_load(&p->hold);
-    struct pollfd fds[CLASSES + 2 * MAX_PAIRS];
+    struct pollfd fds[1 + 2 * MAX_PAIRS];
     int n = 0;
-    for (int c = 0; c < CLASSES; ++c) fds[n++] = (struct pollfd){p->listen[c], POLLIN, 0};
+    fds[n++] = (struct pollfd){p->listen, POLLIN, 0};
     for (int i = 0; i < p->pairs && !hold; ++i) {
       fds[n++] = (struct pollfd){p->pair[i][0], POLLIN, 0};
       fds[n++] = (struct pollfd){p->pair[i][1], POLLIN, 0};
     }
     if (poll(fds, (nfds_t)n, 20) <= 0) continue;
-    for (int c = 0; c < CLASSES; ++c) {
-      if (!(fds[c].revents & POLLIN)) continue;
-      int board = accept(p->listen[c], NULL, NULL);
-      if (board < 0) continue;
+    int board = (fds[0].revents & POLLIN) ? accept(p->listen, NULL, NULL) : -1;
+    if (board >= 0) {
       int host = socket(AF_INET, SOCK_STREAM, 0);
-      struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(p->host_port + c)};
+      struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(p->host_port)};
       a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
       if (p->pairs == MAX_PAIRS || connect(host, (struct sockaddr*)&a, sizeof a) != 0) {
         reset(board);
         close(host);
-        continue;
+      } else {
+        p->pair[p->pairs][0] = board;
+        p->pair[p->pairs][1] = host;
+        p->pairs++;
       }
-      p->pair[p->pairs][0] = board;
-      p->pair[p->pairs][1] = host;
-      p->pairs++;
     }
     /* Pairs from the poll above, newest first so dropping one keeps the
      * indices of those not yet looked at. */
-    for (int i = (n - CLASSES) / 2 - 1; i >= 0; --i) {
+    for (int i = (n - 1) / 2 - 1; i >= 0; --i) {
       for (int side = 0; side < 2; ++side) {
-        if (!(fds[CLASSES + 2 * i + side].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+        if (!(fds[1 + 2 * i + side].revents & (POLLIN | POLLHUP | POLLERR))) continue;
         ssize_t got = read(p->pair[i][side], buf, sizeof buf);
         bool ok = got > 0;
         if (ok) atomic_fetch_add(&p->forwarded, (long)got);
@@ -208,7 +189,7 @@ static void* proxy_task(void* arg) {
     }
   }
   while (p->pairs > 0) drop_pair(p, 0);
-  for (int c = 0; c < CLASSES; ++c) close(p->listen[c]);
+  close(p->listen);
   return NULL;
 }
 
@@ -568,10 +549,9 @@ int main(int argc, char** argv) {
     snprintf(nft, sizeof nft,
              "nft add table inet soak && nft add chain inet soak in "
              "'{ type filter hook input priority 0; }' && "
-             "nft add rule inet soak in tcp dport %u-%u drop && "
-             "nft add rule inet soak in tcp sport %u-%u drop",
-             (unsigned)proxy.base, (unsigned)proxy.base + 3, (unsigned)proxy.base,
-             (unsigned)proxy.base + 3);
+             "nft add rule inet soak in tcp dport %u drop && "
+             "nft add rule inet soak in tcp sport %u drop",
+             (unsigned)proxy.base, (unsigned)proxy.base);
     uint64_t stall_at = 0, safe_at = 0, back_at = 0, again_at = 0, accepted_back = 0;
     uint64_t poll_max = 0, poll_max_stalled = 0, end = start + 60000000u;
     while (now_us() < end && again_at == 0) {

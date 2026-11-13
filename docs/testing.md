@@ -185,8 +185,8 @@ out):
   only once its host listens;
 - a container that exits while starting fails with its own error and logs,
   not a join timeout;
-- a container that publishes only its base port is named with the three
-  ports that did not answer;
+- a container that publishes only its one session port serves: every
+  traffic class dials it;
 - two sandboxes start at once;
 - Docker's userland port proxy, with nothing listening behind a published
   port, closes a link well within the 250 ms a join waits to tell it from a

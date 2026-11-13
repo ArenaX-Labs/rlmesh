@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from .._client._endpoint import redact_address
 from .._rlmesh import sandbox_host_identity as _sandbox_host_identity
-from .._rlmesh import sandbox_session_ports as _sandbox_session_ports
+from .._rlmesh import sandbox_session_port as _sandbox_session_port
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
 from ._sources import (
@@ -33,8 +33,6 @@ from ._sources import (
 #: via ``SandboxEnv(..., connect_timeout_seconds=...)``.
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 30.0
 
-#: The ports a session host listens on, one per traffic class, consecutive.
-SESSION_PORTS = 4
 #: The variable a container's session host takes its keys from
 #: (``rlmesh_session::address::HOST_IDENTITY_VAR``).
 HOST_IDENTITY_VAR = "RLMESH_HOST_IDENTITY"
@@ -574,8 +572,8 @@ def start_prebuilt_container(
     # docker through its environment, never argv.
     identity, key = _sandbox_host_identity()
     with _PORTS_LOCK:
-        host_port = _sandbox_session_ports()
-        # The container hosts its session on the host's own port numbers, so a
+        host_port = _sandbox_session_port()
+        # The container hosts its session on the host's own port number, so a
         # session address means the same inside it and out.
         env_vars = {
             "RLMESH_ADDRESS": f"0.0.0.0:{host_port}",
@@ -634,8 +632,8 @@ def prebuilt_run_cmd(
     The one place container hardening lives (``--cap-drop ALL``,
     ``--security-opt no-new-privileges``, owner labels for orphan reaping), shared
     by the env and model prebuilt paths so the flags never drift apart. The
-    session's ports publish on loopback from ``host_port``, in order, to the
-    same numbers inside. The image
+    session's one port publishes on loopback from ``host_port`` to the same
+    number inside. The image
     is always last and env vars precede it, so callers/tests can rely on argv shape.
     ``devices`` -> ``--device`` (incl. CDI refs like ``nvidia.com/gpu=all``),
     ``volumes`` -> ``-v`` mounts, and ``user`` -> ``--user``, all before the env
@@ -647,8 +645,7 @@ def prebuilt_run_cmd(
         "run",
         "-d",
         "-p",
-        f"127.0.0.1:{host_port}-{host_port + SESSION_PORTS - 1}:"
-        f"{host_port}-{host_port + SESSION_PORTS - 1}",
+        f"127.0.0.1:{host_port}:{host_port}",
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -839,7 +836,6 @@ def reject_sandbox_option_params(params: Mapping[str, object]) -> None:
 
 __all__ = [
     "SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS",
-    "SESSION_PORTS",
     "SandboxBuild",
     "SandboxInfo",
     "SandboxLifecycle",

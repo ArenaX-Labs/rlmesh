@@ -1,5 +1,5 @@
 //! An embedded host offers boards the datagram path by default (UDP on its
-//! base port + 1): a session without boards sees no change, and a UDP port
+//! own port number): a session without boards sees no change, and a UDP port
 //! that won't open leaves the host running on TCP.
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -53,8 +53,7 @@ async fn an_embedded_host_offers_udp_and_a_session_without_boards_sees_no_change
     )
     .await
     .expect("host");
-    let base = host.address().base;
-    let udp = SocketAddr::new(base.ip(), base.port() + 1);
+    let udp = host.address().base;
     assert!(udp_taken(udp), "the datagram path listens on udp/{udp}");
 
     // A robot from the SDK does not take the path: its parts ride TCP, and
@@ -73,9 +72,8 @@ async fn an_embedded_host_offers_udp_and_a_session_without_boards_sees_no_change
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_udp_port_that_wont_open_leaves_the_host_on_tcp() {
-    let base = free_local_base(Ipv4Addr::LOCALHOST.into()).expect("ports");
-    let at = SocketAddr::new(base.ip(), base.port() + 1);
-    let _taken = UdpSocket::bind(at).expect("hold udp/base+1");
+    let base = free_local_base(Ipv4Addr::LOCALHOST.into()).expect("port");
+    let _taken = UdpSocket::bind(base).expect("hold the session's udp port");
 
     assert!(
         BoardData::Udp

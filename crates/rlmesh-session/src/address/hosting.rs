@@ -19,8 +19,7 @@ use crate::error::SessionError;
 use crate::host::{BoardData, HostConfig};
 use crate::server::SessionServer;
 use crate::transport::{
-    LINK_USER, LinkAuth, TrafficClass, Transport, TransportConfig, TransportTuning, class_port,
-    free_local_base,
+    LINK_USER, LinkAuth, Transport, TransportConfig, TransportTuning, free_local_base,
 };
 use crate::wire::TenantId;
 
@@ -146,7 +145,7 @@ fn forget_local_host(address: &SessionAddress) {
         .remove(&address.base);
 }
 
-/// Whether a session host answers on `base` (its control listener accepts).
+/// Whether a session host answers on `base` (its listener accepts).
 /// Generous for a slow link, where a TCP connect takes a round trip; a port
 /// nothing listens on refuses at once. Asynchronous: a connect that waits
 /// out a dropped SYN must not hold the thread polling the join.
@@ -187,23 +186,9 @@ async fn holds(addr: SocketAddr) -> bool {
     )
 }
 
-/// Whether the host at `base` [`holds`] a connection on every class's port.
-async fn every_class_holds(base: SocketAddr) -> bool {
-    let base = joinable(base);
-    let probe = |class| async move {
-        match class_port(base.port(), class) {
-            Ok(port) => holds(SocketAddr::new(base.ip(), port)).await,
-            Err(_) => false,
-        }
-    };
-    let [a, b, c, d] = TrafficClass::ALL.map(probe);
-    let (a, b, c, d) = tokio::join!(a, b, c, d);
-    a && b && c && d
-}
-
-/// How many rounds a host listening on every class's port may refuse every
-/// link before [`open_client`] calls it [`refused_link`]: a second round
-/// rules out a host still opening its listeners.
+/// How many rounds a host listening at its base may refuse every link
+/// before [`open_client`] calls it [`refused_link`]: a second round rules
+/// out a host still opening its listener.
 const REFUSED_ROUNDS: u32 = 2;
 
 /// How long one attempt at a link may take before [`open_client`] gives up
@@ -253,12 +238,11 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
 /// `deadline` or [`OPEN_ATTEMPT`], whichever comes first, so a slow host is
 /// never cut short and a lost handshake is tried again. A refusal comes back
 /// within a round trip, a slow link only later: an attempt that fails before
-/// its bound was refused. A host listening on every class's port that
-/// refuses every attempt, round after round, gates its links with another
-/// key: [`refused_link`], final. A port that drops a connection as soon as
-/// it accepts it is no such host ([`holds`]): the join keeps trying. Running out of time is a timeout (a Zenoh
-/// error), which a retry may get past, or, when the base port answered and
-/// some class's port did not, [`unanswered_ports`].
+/// its bound was refused. A host listening at `base` that refuses every
+/// attempt, round after round, gates its links with another key:
+/// [`refused_link`], final. A port that drops a connection as soon as it
+/// accepts it is no such host ([`holds`]): the join keeps trying. Running
+/// out of time is a timeout (a Zenoh error), which a retry may get past.
 pub(super) async fn open_client(
     base: SocketAddr,
     link: Option<LinkAuth>,
@@ -276,7 +260,7 @@ pub(super) async fn open_client(
             ..TransportTuning::default()
         };
         async move {
-            let config = TransportConfig::per_class_tcp(None, Some(base))?.with_tuning(tuning);
+            let config = TransportConfig::per_class_tcp(base).with_tuning(tuning);
             tokio::time::timeout_at(until, Transport::open(&config))
                 .await
                 .unwrap_or_else(|_| Err(SessionError::Zenoh("no answer in time".into())))
@@ -288,26 +272,13 @@ pub(super) async fn open_client(
     } else {
         &attempts[1..]
     };
-    // A base port that leaves no room for the classes never links.
-    TransportConfig::per_class_tcp(None, Some(base))?;
-    let started = tokio::time::Instant::now();
     let mut refused = 0;
-    // The class ports that did not answer, as last probed once the base did:
-    // kept when the deadline cuts a round's probe short.
-    let mut silent = Vec::new();
     loop {
-        let mut base_answered = false;
         while tokio::time::Instant::now() < deadline {
             if listening(base).await {
-                base_answered = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if base_answered
-            && let Ok(probed) = tokio::time::timeout_at(deadline, silent_class_ports(base)).await
-        {
-            silent = probed;
         }
         let mut last = None;
         // Whether every attempt failed before its bound: refused, not slow.
@@ -326,16 +297,12 @@ pub(super) async fn open_client(
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            if !silent.is_empty() {
-                return Err(unanswered_ports(base, &silent, started.elapsed()));
-            }
             return Err(last.unwrap_or_else(|| SessionError::Zenoh("no answer in time".into())));
         }
         // Only a listener that holds a connection open refused the link: a
         // forwarder in front of a host still starting drops it as quickly.
         let by_host = answered
-            && silent.is_empty()
-            && tokio::time::timeout_at(deadline, every_class_holds(base))
+            && tokio::time::timeout_at(deadline, holds(joinable(base)))
                 .await
                 .unwrap_or(false);
         refused = if by_host { refused + 1 } else { 0 };
@@ -344,41 +311,6 @@ pub(super) async fn open_client(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-}
-
-/// The class ports of the host at `base` that accept no TCP connect, probed
-/// at once: empty when it listens on every one, so a link it refuses was
-/// refused by the host, not by a port not yet (or never) open.
-async fn silent_class_ports(base: SocketAddr) -> Vec<u16> {
-    let base = joinable(base);
-    let probe = |class| async move {
-        let port = class_port(base.port(), class).ok()?;
-        (!accepts(SocketAddr::new(base.ip(), port)).await).then_some(port)
-    };
-    let [a, b, c, d] = TrafficClass::ALL.map(probe);
-    let (a, b, c, d) = tokio::join!(a, b, c, d);
-    [a, b, c, d].into_iter().flatten().collect()
-}
-
-/// A join that ran out of time while the host at `base` answered on its base
-/// port but not on `silent`: typically a container that publishes one port.
-fn unanswered_ports(base: SocketAddr, silent: &[u16], waited: Duration) -> SessionError {
-    let ports = silent
-        .iter()
-        .map(u16::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let noun = if silent.len() == 1 { "port" } else { "ports" };
-    let first = base.port();
-    let last = first.saturating_add(TrafficClass::ALL.len() as u16 - 1);
-    SessionError::Timeout(
-        waited,
-        format!(
-            "the session host at {base}: {noun} {ports} did not answer; a participant must reach \
-             all four of its ports, {first} to {last}, one per traffic class (a container must \
-             publish each)"
-        ),
-    )
 }
 
 /// Hosts session `name` in this process on `base` (port 0: OS-assigned),
@@ -397,8 +329,8 @@ fn unanswered_ports(base: SocketAddr, silent: &[u16], waited: Duration) -> Sessi
 /// admits, as on any LAN link.
 ///
 /// It offers boards the datagram path as [`BOARD_DATA_VAR`](crate::host::BOARD_DATA_VAR) says, else as
-/// [`BoardData::default`] does, on UDP `base` + 1; with `udp`, a port that
-/// won't open leaves them on TCP.
+/// [`BoardData::default`] does, on UDP at `base`'s port number; with `udp`,
+/// a port that won't open leaves them on TCP.
 pub async fn host_at(
     base: SocketAddr,
     name: &str,
@@ -519,7 +451,7 @@ async fn serve_at(
     };
     let gated = base.ip().is_loopback() || launched;
     let password = gated.then(|| config.identity.link_password());
-    let (transport, base) = open_listeners(base, password.as_ref()).await?;
+    let (transport, base) = open_listener(base, password.as_ref()).await?;
     config.datagram = board_data.open(base).await?;
     config.datagram_strict = board_data.strict();
     let mut address = SessionAddress::new(joinable(base), name)?;
@@ -551,22 +483,22 @@ async fn serve_at(
     })
 }
 
-/// Opens a host's per-class listeners on `base` (port 0: free local
-/// ports), every link gated by `password` (Zenoh `usrpwd`) when
-/// there is one.
-pub async fn open_listeners(
+/// Opens a host's listener on `base` (port 0: a free local port), which
+/// every class of every participant dials, every link gated by `password`
+/// (Zenoh `usrpwd`) when there is one.
+pub async fn open_listener(
     base: SocketAddr,
     password: Option<&zeroize::Zeroizing<String>>,
 ) -> Result<(Transport, SocketAddr), SessionError> {
-    open_listeners_with(base, password, TransportTuning::default()).await
+    open_listener_with(base, password, TransportTuning::default()).await
 }
 
-/// [`open_listeners`] with `tuning` for every session (its `link` is the
+/// [`open_listener`] with `tuning` for every session (its `link` is the
 /// gate `password` makes).
 ///
 /// # Errors
-/// As [`open_listeners`].
-pub async fn open_listeners_with(
+/// As [`open_listener`].
+pub async fn open_listener_with(
     base: SocketAddr,
     password: Option<&zeroize::Zeroizing<String>>,
     tuning: TransportTuning,
@@ -581,15 +513,13 @@ pub async fn open_listeners_with(
             }),
         ..tuning
     };
-    let open = |base| {
-        TransportConfig::per_class_tcp(Some(base), None).map(|c| c.with_tuning(tuning.clone()))
-    };
+    let open = |base| TransportConfig::host_tcp(base).with_tuning(tuning.clone());
     let opened = if base.port() == 0 {
         let mut last = SessionError::Config("no free local ports".into());
         let mut found = None;
         for _ in 0..16 {
             let free = free_local_base(base.ip())?;
-            match Transport::open(&open(free)?).await {
+            match Transport::open(&open(free)).await {
                 Ok(transport) => {
                     found = Some((transport, free));
                     break;
@@ -599,7 +529,7 @@ pub async fn open_listeners_with(
         }
         found.ok_or(last)
     } else {
-        Transport::open(&open(base)?)
+        Transport::open(&open(base))
             .await
             .map(|transport| (transport, base))
     };

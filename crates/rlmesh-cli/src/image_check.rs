@@ -31,13 +31,9 @@ use serde::{Deserialize, Serialize};
 pub const DESCRIBE_LABEL: &str = "dev.rlmesh.describe";
 /// OCI config label carrying packaged checkpoint declarations.
 pub const PACKAGE_LABEL: &str = "dev.rlmesh.package";
-/// The base port `rlmesh.serve` hosts its session on when `RLMESH_ADDRESS`
-/// names none: the control class's; the other traffic classes listen on the
-/// ports after it ([`SESSION_PORTS`] in all).
+/// The port `rlmesh.serve` hosts its session on when `RLMESH_ADDRESS` names
+/// none: the one port every participant dials.
 pub const SERVE_PORT: u16 = rlmesh_session::address::DEFAULT_PORT;
-/// The ports a session host listens on from its base port, one per traffic
-/// class, consecutive.
-pub const SESSION_PORTS: u16 = rlmesh_session::transport::TrafficClass::ALL.len() as u16;
 /// The env var `rlmesh.serve` binds.
 pub const ADDRESS_ENV: &str = "RLMESH_ADDRESS";
 /// The env var that declares a served peer's workflow edition, above

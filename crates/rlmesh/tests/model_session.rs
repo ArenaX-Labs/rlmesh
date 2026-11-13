@@ -366,33 +366,20 @@ async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
     served.await.unwrap().unwrap();
 }
 
-/// A session host's four class ports on 127.0.0.1, held until the sockets
-/// drop: bound with `SO_REUSEADDR` but not listening, so a connect is
-/// refused and no other socket can take them, while the host's own
-/// listeners (Zenoh sets `SO_REUSEADDR` too) bind and listen on them.
-fn reserve_session_ports() -> (u16, Vec<tokio::net::TcpSocket>) {
-    let reserve = |port: u16| {
-        let socket = tokio::net::TcpSocket::new_v4().ok()?;
-        socket.set_reuseaddr(true).ok()?;
-        socket.bind(([127, 0, 0, 1], port).into()).ok()?;
-        Some(socket)
-    };
-    for _ in 0..64 {
-        let first = reserve(0).unwrap();
-        let base = first.local_addr().unwrap().port();
-        let rest: Option<Vec<_>> = (1..4)
-            .map(|i| base.checked_add(i).and_then(reserve))
-            .collect();
-        if let Some(rest) = rest {
-            return (base, std::iter::once(first).chain(rest).collect());
-        }
-    }
-    panic!("no four consecutive free ports on 127.0.0.1")
+/// A session host's port on 127.0.0.1, held until the socket drops: bound
+/// with `SO_REUSEADDR` but not listening, so a connect is refused and no
+/// other socket can take it, while the host's own listener (Zenoh sets
+/// `SO_REUSEADDR` too) binds and listens on it.
+fn reserve_session_port() -> (u16, tokio::net::TcpSocket) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_reuseaddr(true).unwrap();
+    socket.bind(([127, 0, 0, 1], 0).into()).unwrap();
+    (socket.local_addr().unwrap().port(), socket)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_driver_waits_for_a_model_not_up_yet_and_never_hosts_its_session() {
-    let (port, reserved) = reserve_session_ports();
+    let (port, reserved) = reserve_session_port();
     let address = format!("127.0.0.1:{port}/echo");
     let connecting = tokio::spawn({
         let address = address.clone();

@@ -120,7 +120,7 @@ __all__ = [
     "run_session",
     "sandbox_host_identity",
     "sandbox_reap_orphans",
-    "sandbox_session_ports",
+    "sandbox_session_port",
     "sandbox_start_env",
     "sandbox_stop_env",
     "set_ready_hook",
@@ -988,7 +988,7 @@ class V2Due:
 @typing.final
 class V2Host:
     r"""
-    A session host in this process, on local per-class TCP ports.
+    A session host in this process, on a local TCP port.
     """
     @property
     def address(self) -> builtins.str:
@@ -1433,7 +1433,7 @@ def sandbox_host_identity() -> tuple[str, str]: ...
 
 def sandbox_reap_orphans() -> None: ...
 
-def sandbox_session_ports() -> int: ...
+def sandbox_session_port() -> int: ...
 
 def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None) -> SandboxRunInfo: ...
 

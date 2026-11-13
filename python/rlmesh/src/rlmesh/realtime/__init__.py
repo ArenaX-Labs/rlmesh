@@ -155,7 +155,7 @@ def _close_leaving(close: Callable[[], object], exc: BaseException | None) -> No
 class BoardData(enum.Enum):
     """How a host carries boards' realtime parts (``rlmesh host --board-data``)."""
 
-    #: Over the host's datagram path, UDP on its port + 1, back to TCP while
+    #: Over the host's datagram path, UDP on its own port number, back to TCP while
     #: that path is broken. The default.
     UDP = "udp"
     #: Over the session's TCP links: no UDP socket. For a sandbox or network

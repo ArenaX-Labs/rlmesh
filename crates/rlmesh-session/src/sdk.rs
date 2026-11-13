@@ -220,7 +220,7 @@ impl BindOptions<'_> {
 }
 
 /// A session placed by the hosting rule (`address::place`): hosted in
-/// this process, on local per-class TCP ports and this process's
+/// this process, on a local TCP port and this process's
 /// `CLOCK_MONOTONIC`, or joined when another process holds it.
 pub struct EmbeddedHost {
     address: SessionAddress,

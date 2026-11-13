@@ -101,8 +101,9 @@ the e-stop released. Disarm and arm the session before driving again.
 A controller's e-stop also reaches the board through the session transport.
 
 The board tries its stored home addresses in order, authenticating the host
-by the key it was provisioned with. Four consecutive TCP ports from the
-host's base port must be reachable. When replies stop for five seconds the
+by the key it was provisioned with. The host's one TCP port (7447 by
+default) must be reachable: the board opens a connection per traffic class
+to it. When replies stop for five seconds the
 board closes its links and joins again, backing off to one attempt every 30
 seconds for as long as it runs: a host restart or a Wi-Fi drop never needs a
 reset.
@@ -143,8 +144,8 @@ and lwIP run, and every send runs lwIP inline in the sending task.
 
 `rlmesh host` offers its datagram path in the handshake by default
 (`--board-data udp`). The board then takes its parts' action chunks, and
-sends their states and `_applied` entries, over UDP to the host's base port
-plus one (UDP 7448 by default). That port must be reachable from the board
+sends their states and `_applied` entries, over UDP to the host's port
+number (UDP 7447 by default). That port must be reachable from the board
 for the faster path: open it in the host's firewall. When it is not, the
 host moves the board to TCP, as below. Everything else stays on TCP. A lost Wi-Fi frame then costs that one message instead of
 stalling the stream behind it. Datagrams are sealed and replay-checked as the

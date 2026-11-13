@@ -195,7 +195,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_reap_orphans, m)?)?;
-    m.add_function(wrap_pyfunction!(sandbox::sandbox_session_ports, m)?)?;
+    m.add_function(wrap_pyfunction!(sandbox::sandbox_session_port, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_host_identity, m)?)?;
     m.add_function(wrap_pyfunction!(launch::launch_identity, m)?)?;
     m.add_function(wrap_pyfunction!(launch::identity_key, m)?)?;

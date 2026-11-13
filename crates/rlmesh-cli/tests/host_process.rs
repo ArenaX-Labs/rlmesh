@@ -1,5 +1,6 @@
 //! The session host in its own OS process (`rlmesh host`), with
-//! participants in this one, linked over per-class TCP on localhost.
+//! participants in this one, linked over TCP on localhost (one connection
+//! per traffic class, all to the host's one port).
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -26,12 +27,6 @@ use rlmesh_session::{
     Inputs, ObserveError, Participant, ParticipantConfig, SamplePublisher, SampleSubscriber,
     SessionError, SubscribeOptions, Transport, TransportConfig, TransportTuning,
 };
-
-/// Participants listen too (the OS picks the ports): in peer mode, data
-/// flows peer to peer once gossip tells peers where to connect.
-fn any_local_port() -> std::net::SocketAddr {
-    "127.0.0.1:0".parse().expect("addr")
-}
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -68,11 +63,11 @@ impl HostProcess {
                 return host;
             }
         }
-        panic!("the host process never found free ports");
+        panic!("the host process never found a free port");
     }
 
     fn try_spawn(args: &[&str], logged: bool) -> Option<Self> {
-        let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
+        let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("port");
         let recordings = tempfile::tempdir().expect("tempdir");
         let state = tempfile::tempdir().expect("tempdir");
         let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
@@ -213,13 +208,9 @@ async fn join(
         client: true,
         ..TransportTuning::default()
     };
-    let transport = Transport::open(
-        &TransportConfig::per_class_tcp(Some(any_local_port()), Some(host.base))
-            .expect("config")
-            .with_tuning(tuning),
-    )
-    .await
-    .expect("transport");
+    let transport = Transport::open(&TransportConfig::per_class_tcp(host.base).with_tuning(tuning))
+        .await
+        .expect("transport");
     let mut config = ParticipantConfig::new(
         TenantId::new(TENANT).expect("tenant"),
         host.session,
@@ -673,7 +664,7 @@ impl Daemon {
     fn spawn(state: &std::path::Path, base: Option<std::net::SocketAddr>) -> Self {
         for _ in 0..16 {
             let base = base
-                .unwrap_or_else(|| free_local_base("0.0.0.0".parse().expect("ip")).expect("ports"));
+                .unwrap_or_else(|| free_local_base("0.0.0.0".parse().expect("ip")).expect("port"));
             let mut child = Command::new(env!("CARGO_BIN_EXE_rlmeshd"))
                 .arg("--no-record")
                 .arg("--listen")
@@ -693,7 +684,7 @@ impl Daemon {
             let _ = child.kill();
             let _ = child.wait();
         }
-        panic!("rlmeshd never found free ports");
+        panic!("rlmeshd never found a free port");
     }
 
     /// Attaches as `id` at `priority` with `credential`, linked as a LAN
@@ -705,15 +696,13 @@ impl Daemon {
         credential: Credential,
     ) -> Result<Participant, SessionError> {
         let local = std::net::SocketAddr::from(([127, 0, 0, 1], self.base.port()));
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(None, Some(local))
-                .expect("config")
-                .with_tuning(TransportTuning {
-                    client: true,
-                    connect_timeout: Some(WAIT),
-                    ..TransportTuning::default()
-                }),
-        )
+        let transport = Transport::open(&TransportConfig::per_class_tcp(local).with_tuning(
+            TransportTuning {
+                client: true,
+                connect_timeout: Some(WAIT),
+                ..TransportTuning::default()
+            },
+        ))
         .await
         .expect("a link with no password");
         let mut config = ParticipantConfig::new(
@@ -764,8 +753,9 @@ fn host_first_line_with(
 #[test]
 fn the_host_offers_boards_udp_by_default_and_runs_on_tcp_when_the_port_is_taken() {
     let state = tempfile::tempdir().expect("tempdir");
-    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
-    let udp = std::net::SocketAddr::new(base.ip(), base.port() + 1);
+    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("port");
+    // UDP on the same number as the TCP listener.
+    let udp = base;
     let offered = format!("boards' realtime parts over UDP port {}", udp.port());
 
     let first = host_first_line(state.path(), base);
@@ -810,7 +800,7 @@ fn the_host_offers_boards_udp_by_default_and_runs_on_tcp_when_the_port_is_taken(
 #[test]
 fn the_host_keeps_its_identity_across_a_restart_with_no_key_flag() {
     let state = tempfile::tempdir().expect("tempdir");
-    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
+    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("port");
     let first = host_first_line(state.path(), base);
     assert!(first.starts_with("rlmesh host on "), "{first}");
     assert!(!first.contains('#'), "the host prints no key: {first}");

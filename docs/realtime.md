@@ -434,13 +434,14 @@ rlmesh host                           # --board-data udp, the default
 rlmesh host --board-data tcp          # or RLMESH_BOARD_DATA=tcp: TCP only
 ```
 
-The host also listens on UDP at its realtime port (7448 by default:
-`RLMESH_PORT + 1`) and offers that in each board's handshake. That UDP port
+The host also listens on UDP at its own port number (7447 by default,
+`RLMESH_PORT`; TCP and UDP share the number) and offers that in each
+board's handshake. That UDP port
 must be reachable from the boards for the faster path: open it in the
 firewall. When it is not, the host moves each board to TCP (below), and
 when it can't open the port at all (another process holds it), it warns
 once and runs on TCP alone. A host in your own process (Python's `Host`)
-does the same on its own port plus one; a session without boards sees no
+does the same on its own port; a session without boards sees no
 difference. It reads `RLMESH_BOARD_DATA` as `rlmesh host` does, so where UDP
 is forbidden (a sandbox, a locked-down network) one variable keeps every host
 an env, a model or a robot starts for itself on TCP; `Host(board_data="tcp")`

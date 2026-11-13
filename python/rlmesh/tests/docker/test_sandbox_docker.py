@@ -21,7 +21,7 @@ import pytest
 import rlmesh
 from rlmesh._rlmesh import (
     sandbox_host_identity,
-    sandbox_session_ports,
+    sandbox_session_port,
     sandbox_stop_env,
 )
 from rlmesh._sandbox import _model as sandbox_model
@@ -184,12 +184,14 @@ def test_a_container_that_exits_reports_its_own_error(gate_images: GateImages) -
     assert waited < 15.0, f"reported only after {waited:.2f}s"
 
 
-def test_a_container_publishing_only_its_base_port_is_named(
+def test_a_container_publishing_only_its_one_port_serves(
     gate_images: GateImages,
 ) -> None:
+    """A session host needs one published port: every traffic class of a
+    participant dials it."""
     identity, key = sandbox_host_identity()
     with sandbox_session._PORTS_LOCK:  # pyright: ignore[reportPrivateUsage]
-        base = sandbox_session_ports()
+        base = sandbox_session_port()
         container = docker(
             "run",
             "-d",
@@ -206,23 +208,19 @@ def test_a_container_publishing_only_its_base_port_is_named(
             gate_images.env,
             env={sandbox_session.HOST_IDENTITY_VAR: identity},
         )
-    # Past the join's 10s default, so the caller's own bound is the one kept.
-    timeout = 12.0
     t0 = time.monotonic()
     try:
-        with pytest.raises(Exception, match="did not answer") as unanswered:
-            rlmesh.RemoteEnv(
-                f"127.0.0.1:{base}#{key}/env", connect_timeout_seconds=timeout
-            )
-        waited = time.monotonic() - t0
+        env = rlmesh.RemoteEnv(
+            f"127.0.0.1:{base}#{key}/env", connect_timeout_seconds=60.0
+        )
+        try:
+            TIMINGS["one published port, joined"].append(time.monotonic() - t0)
+            env.reset(seed=0)
+            env.step(env.action_space.sample())
+        finally:
+            env.close()
     finally:
         docker("rm", "-f", container)
-    TIMINGS["base port only, named (12s bound)"].append(waited)
-    message = str(unanswered.value)
-    for port in (base + 1, base + 2, base + 3):
-        assert str(port) in message, message
-    assert key not in message
-    assert timeout - 1.0 < waited < timeout + 1.0, f"gave up after {waited:.2f}s"
 
 
 def test_two_sandboxes_start_at_once(gate_images: GateImages) -> None:

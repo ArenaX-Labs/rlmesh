@@ -1,7 +1,7 @@
 //! A session host for `mise run test:esp32:host`: the default session of
-//! tenant `local` on free loopback ports, printing its address with its key
+//! tenant `local` on a free loopback port, printing its address with its key
 //! (as `rlmesh host` does), until killed. With `udp`, it relays the board's
-//! realtime parts over UDP on the realtime class's port number, as
+//! realtime parts over UDP on the session's own port number, as
 //! `rlmesh host --board-data udp` does. With `soak` after that, it drives
 //! every commanded part of the board for as long as it runs, granting their
 //! leases again whenever the board attaches anew, for the board's soak.
@@ -29,34 +29,30 @@ use rlmesh_session::{ChunkDraft, Participant, ParticipantConfig, SubscribeOption
 
 use rlmesh_session::address::{AddressKey, DEFAULT_SESSION, TENANT, session_id};
 use rlmesh_session::host::DatagramRelay;
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::TenantId;
 use rlmesh_session::{HostConfig, SessionHost};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+    let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
         .await
-        .expect("listeners");
+        .expect("listener");
     let mut config = HostConfig::new(
         TenantId::new(TENANT).expect("tenant"),
         session_id(DEFAULT_SESSION),
     );
     let soak = std::env::args().nth(2).as_deref() == Some("soak");
     if std::env::args().nth(1).as_deref() == Some("udp") {
-        let at = std::net::SocketAddr::new(base.ip(), base.port() + 1);
-        config.datagram = Some(DatagramRelay::bind(at).await.expect("udp"));
+        config.datagram = Some(DatagramRelay::bind(base).await.expect("udp"));
     }
     let key = AddressKey::of(&config.identity);
     let host = SessionHost::start(transport, config).await.expect("host");
     println!("{base}#{key}");
     std::io::stdout().flush().expect("stdout");
-    let transport = Transport::open(
-        &TransportConfig::per_class_tcp(Some("127.0.0.1:0".parse().expect("ip")), Some(base))
-            .expect("config"),
-    )
-    .await
-    .expect("controller transport");
+    let transport = Transport::open(&TransportConfig::per_class_tcp(base))
+        .await
+        .expect("controller transport");
     let mut config = ParticipantConfig::new(
         TenantId::new(TENANT).expect("tenant"),
         session_id(DEFAULT_SESSION),
