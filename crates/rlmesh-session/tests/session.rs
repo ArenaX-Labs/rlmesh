@@ -1170,23 +1170,42 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
         )
         .await
         .expect("subscribe");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Probes until the subscription takes one: a sample published before it
+    // has propagated never reaches it. The seqs below count from the last
+    // probe, `base`.
+    let started = Instant::now();
+    while sub.stats().received == 0 {
+        assert!(started.elapsed() < WAIT, "no probe reached the subscriber");
+        ft.publish(robot.clock().now_ns(), ft_payload(0.0))
+            .expect("probe")
+            .expect("a window coalesces nothing");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let base = ft.last_seq();
+    wait_until("the last probe", || sub.stats().last_seq == base).await;
+    let probed = sub.stats();
+    // One at a time: a realtime stream drops what its transmit queue cannot
+    // take at once (a burst on a starved machine), and every one of these
+    // counts.
     for i in 1..=25_u8 {
-        ft.publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
+        let seq = ft
+            .publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
             .expect("publish")
             .expect("a window coalesces nothing");
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        wait_until("the sample", || sub.stats().last_seq == seq).await;
     }
-    wait_until("all 25 samples", || sub.stats().last_seq == 25).await;
     let stats = sub.stats();
-    assert_eq!((stats.received, stats.lost), (25, 0));
+    assert_eq!(
+        (stats.received - probed.received, stats.lost),
+        (25, probed.lost)
+    );
     assert_eq!(ft.coalesced(), 0);
     assert_eq!(
         sub.window()
             .iter()
             .map(|r| r.sample.seq)
             .collect::<Vec<_>>(),
-        (16..=25).collect::<Vec<_>>()
+        (base + 16..=base + 25).collect::<Vec<_>>()
     );
 
     // The controller leaving withdraws its demand: every sample again.
