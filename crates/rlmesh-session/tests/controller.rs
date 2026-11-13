@@ -1540,6 +1540,13 @@ async fn a_policy_reading_its_own_part_is_refused_at_once() {
     );
 }
 
+/// A lease grace no stall of a loaded machine outlasts, for the hand-back
+/// tests, where leases change hands only by preemption and release. A lapse
+/// would end the operator's lease (the host missing its heartbeats, or the
+/// edge its renewals), its keeper would take the part again from nobody, and
+/// no hand-back follows a lease that took its part from nobody.
+const NO_LAPSE: Duration = Duration::from_secs(2);
+
 /// An eye whose hold outlasts a hand-back on a loaded machine.
 const EYE_HOLDING: &str = r#"{
     "eyes": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"], "hz": 500,
@@ -1585,7 +1592,11 @@ fn stream(
 /// safe. The second lets go plainly: its eye stays parked.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_operator_hands_back_the_eye_it_took_and_only_that_eye_resumes() {
-    let world = World::start_with(|config| config.rearm_robots = true).await;
+    let world = World::start_with(|config| {
+        config.rearm_robots = true;
+        config.lease_grace = NO_LAPSE;
+    })
+    .await;
     let eye = |name: &'static str| {
         let world = &world;
         async move {
@@ -1752,7 +1763,7 @@ async fn a_hand_back_that_cannot_take_is_refused_and_the_operator_keeps_the_arm(
         Err(SessionError::Rejected(err)) => (err.status, err.message),
         other => panic!("not refused: {other:?}"),
     };
-    let world = World::start().await;
+    let world = World::start_with(|config| config.lease_grace = NO_LAPSE).await;
     let robot = world.robot().await;
     let (stop, log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
     let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
@@ -1798,6 +1809,7 @@ async fn a_hand_back_that_cannot_take_is_refused_and_the_operator_keeps_the_arm(
     // A host that would read a hand-back as a plain release is not sent one.
     let old = World::start_with(|config| {
         config.supports.retain(|f| f != LEASE_HANDBACK);
+        config.lease_grace = NO_LAPSE;
     })
     .await;
     let robot = old.robot().await;
