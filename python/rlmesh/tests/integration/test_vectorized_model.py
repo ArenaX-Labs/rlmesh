@@ -123,9 +123,11 @@ def test_vectorized_spec_less_predict_receives_empty_identity_context() -> None:
     assert contexts, "served policy predict was never called"
     # A multi-lane spec-less call fuses N episodes into one forward, so the
     # context carries the empty identity -- but the argument is always delivered,
-    # with a throwaway state slot nothing is keyed by.
+    # with a throwaway state slot nothing is keyed by. It still names the
+    # env's spaces: the lanes share one env.
+    identity = ("episode_id", "episode_seed", "predict_index", "predict_seed", "state")
     assert all(
-        context
+        {key: context[key] for key in identity}
         == {
             "episode_id": "",
             "episode_seed": None,
@@ -135,3 +137,4 @@ def test_vectorized_spec_less_predict_receives_empty_identity_context() -> None:
         }
         for context in contexts
     )
+    assert all(context["action_space"] is not None for context in contexts)
