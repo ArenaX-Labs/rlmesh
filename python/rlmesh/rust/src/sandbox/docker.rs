@@ -419,7 +419,9 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
                 if let Some(state) = container_terminated(container_id) {
                     bail!("sandbox container exited before ready ({state})");
                 }
-                if Instant::now() >= deadline {
+                // A refusal the same dial meets again (a key the host does
+                // not accept) is final: waiting out the deadline hides it.
+                if !err.is_transient() || Instant::now() >= deadline {
                     return Err(err.into());
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1541,5 +1543,68 @@ mod tests {
         }
         assert_eq!(spec.imports, vec!["my_envs"]);
         assert_eq!(spec.kwargs["render_mode"], json!("rgb_array"));
+    }
+}
+
+#[cfg(test)]
+mod ready_tests {
+    use std::time::{Duration, Instant};
+
+    use rlmesh::spaces::{Discrete, DiscreteOptions, Space};
+    use rlmesh::{Env, EnvServer, EnvServerOptions, InfoDict, Value};
+
+    struct Still;
+
+    impl Env for Still {
+        fn observation_space(&self) -> Space {
+            Discrete::new(2, DiscreteOptions::default()).unwrap().into()
+        }
+        fn action_space(&self) -> Space {
+            Discrete::new(2, DiscreteOptions::default()).unwrap().into()
+        }
+        fn reset(
+            &mut self,
+            _seed: Option<i64>,
+            _options: Option<&InfoDict>,
+        ) -> rlmesh::Result<(Value, InfoDict)> {
+            Ok((Value::Int(0), InfoDict::new()))
+        }
+        fn step(
+            &mut self,
+            _action: Option<Value>,
+        ) -> rlmesh::Result<(Value, f64, bool, bool, InfoDict)> {
+            Ok((Value::Int(0), 0.0, true, false, InfoDict::new()))
+        }
+    }
+
+    /// A key the host refuses is final: the wait reports it at once instead
+    /// of retrying it out to its deadline.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_readiness_wait_stops_at_a_refused_key() {
+        let server = EnvServer::new(
+            Still,
+            EnvServerOptions {
+                address: Some(":0/env".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        server.start().unwrap();
+        let address = server.address().to_string();
+        let (_, other) = rlmesh_session::address::launch_identity().unwrap();
+        let (base, rest) = address.split_once('#').expect("a keyed address");
+        let name = rest.split_once('/').map_or("env", |(_, name)| name);
+        let wrong = format!("{base}#{other}/{name}");
+        let started = Instant::now();
+        let err =
+            super::wait_for_ready(&wrong, "rlmesh-no-such-container", Duration::from_secs(30))
+                .await
+                .expect_err("refused");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "waited {:?}: {err}",
+            started.elapsed()
+        );
+        drop(server);
     }
 }
