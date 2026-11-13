@@ -148,7 +148,6 @@ impl Describable<'static> {
                 load_keys: decl.load_keys.clone(),
                 spec: None,
                 workflow_edition: decl.workflow_edition.clone(),
-                authored: decl.authored,
                 type_name: decl.type_name.clone(),
             },
             spec: decl.spec.clone(),
@@ -354,9 +353,16 @@ impl Host {
 }
 
 /// The envelope's `runtime`: the host's `PeerInfo` plus the edition offer.
-/// `preferred` is the declared edition (`None`: this build's cohort).
-pub(crate) fn runtime_json(host: &Host, preferred: Option<&str>, error: Option<String>) -> Json {
+/// `preferred` is the declared edition (`None`: this build's cohort);
+/// `workflow_edition_floats` marks an undeclared float for the checks.
+pub(crate) fn runtime_json(host: &Host, offer: Offer) -> Json {
+    let Offer {
+        preferred,
+        error,
+        floats,
+    } = offer;
     let preferred = preferred
+        .as_deref()
         .map(str::trim)
         .filter(|edition| !edition.is_empty())
         .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
@@ -374,6 +380,9 @@ pub(crate) fn runtime_json(host: &Host, preferred: Option<&str>, error: Option<S
         if let Some(error) = error {
             object.insert("workflow_edition_error".to_string(), Json::String(error));
         }
+        if floats {
+            object.insert("workflow_edition_floats".to_string(), Json::Bool(true));
+        }
         for (key, value) in &host.extra {
             object.insert(key.clone(), value.clone());
         }
@@ -381,21 +390,43 @@ pub(crate) fn runtime_json(host: &Host, preferred: Option<&str>, error: Option<S
     runtime
 }
 
+/// The edition half of an envelope's `runtime`.
+pub(crate) struct Offer {
+    preferred: Option<String>,
+    error: Option<String>,
+    /// Nothing declares an edition and the environment variable does not
+    /// float deliberately.
+    floats: bool,
+}
+
 /// A given edition is used as given (blank: none); `None` runs the
 /// environment variable and the declaration, never warning, and records a
 /// refusal instead of failing.
-fn offer(declared: Option<&str>, given: Option<&str>) -> (Option<String>, Option<String>) {
+fn offer(declared: Option<&str>, given: Option<&str>) -> Offer {
     if let Some(given) = given {
         let given = given.trim();
-        return ((!given.is_empty()).then(|| given.to_string()), None);
+        return Offer {
+            preferred: (!given.is_empty()).then(|| given.to_string()),
+            error: None,
+            floats: given.is_empty()
+                && std::env::var_os(crate::editions::WORKFLOW_EDITION_ENV_VAR).is_none(),
+        };
     }
     match crate::editions::resolve_rungs(crate::editions::EditionSources {
         call: None,
         option: None,
         declared,
     }) {
-        Ok(resolution) => (resolution.into_declared(), None),
-        Err(err) => (None, Some(err.to_string())),
+        Ok(resolution) => Offer {
+            floats: resolution == crate::editions::EditionResolution::Undeclared,
+            preferred: resolution.into_declared(),
+            error: None,
+        },
+        Err(err) => Offer {
+            preferred: None,
+            error: Some(err.to_string()),
+            floats: false,
+        },
     }
 }
 
@@ -444,7 +475,7 @@ fn model_pieces(
             )));
         }
     }
-    let (preferred, error) = offer(decl.workflow_edition.as_deref(), edition);
+    let offer = offer(decl.workflow_edition.as_deref(), edition);
     let signature_tier: Vec<Json> = decl
         .load_keys
         .iter()
@@ -456,7 +487,7 @@ fn model_pieces(
     let mut pieces = json!({
         "target": { "entrypoint": null, "qualname": if host.language == "rust" {format!("rust:{}", decl.type_name)} else {"native:model".into()} },
         "params": { "param_spec": null, "signature_tier": signature_tier },
-        "runtime": runtime_json(host, preferred.as_deref(), error),
+        "runtime": runtime_json(host, offer),
         "model_spec": match spec {
             Some(SpecArg::ModelSpec(spec)) => spec.wire_json().unwrap_or(Json::Null),
             _ => Json::Null,
@@ -480,7 +511,7 @@ fn factory_pieces(
 ) -> Result<Json> {
     let served = served.map(ServedEnv::read).transpose()?;
     let declared = form.workflow_edition();
-    let (preferred, error) = offer(declared.as_deref(), edition);
+    let offer = offer(declared.as_deref(), edition);
     let tag_params = form.tag_params();
     let signature_tier = tag_params
         .iter()
@@ -516,7 +547,7 @@ fn factory_pieces(
     let mut pieces = json!({
         "target": { "entrypoint": null, "qualname": qualname },
         "params": { "param_spec": null, "signature_tier": signature_tier },
-        "runtime": runtime_json(host, preferred.as_deref(), error),
+        "runtime": runtime_json(host, offer),
         "env_tags": env_tags,
         "env_spec": built.spec,
     });

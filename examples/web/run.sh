@@ -2,7 +2,7 @@
 # Runs the browser example: the example robot (a session host, the arm7 robot and its model policy)
 # and rlmesh-gateway serving this directory's build. `mise run demo:web` builds the page first.
 #
-# Env: ROBOT_BASE (per-class TCP base, default 17600; uses 4 ports), HTTP_PORT (default 18080),
+# Env: ROBOT_BASE (the host's TCP port, default 17600), HTTP_PORT (default 18080),
 # CAM=jpeg|raw, POLICY=on|off, DURATION (s, default 3600), SKIP_BUILD=1.
 # The page's token is minted here and handed to the gateway in its environment; the page gets it in
 # its URL fragment (#t=...), which never reaches the server or its logs.

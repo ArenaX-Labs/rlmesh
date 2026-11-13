@@ -153,9 +153,15 @@ impl fmt::Debug for EnvTarget<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             EnvKind::Adapted(_) => f.write_str("EnvTarget(<binding target>)"),
-            EnvKind::Address(address) => write!(f, "EnvTarget({address:?})"),
+            EnvKind::Address(address) => {
+                write!(f, "EnvTarget({:?})", crate::address::redact(address))
+            }
             EnvKind::Server(server) => write!(f, "EnvTarget({server})"),
-            EnvKind::Remote(env) => write!(f, "EnvTarget(<remote {}>)", env.remote_address()),
+            EnvKind::Remote(env) => write!(
+                f,
+                "EnvTarget(<remote {}>)",
+                crate::address::redact(env.remote_address())
+            ),
             EnvKind::Env(_) => f.write_str("EnvTarget(<env>)"),
             EnvKind::Vector(_) => f.write_str("EnvTarget(<vector env>)"),
             EnvKind::Factory(_) => f.write_str("EnvTarget(<factory>)"),

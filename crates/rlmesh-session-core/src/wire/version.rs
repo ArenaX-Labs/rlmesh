@@ -6,7 +6,7 @@
 //! | Schema | protobuf | Additive only. Unknown fields are ignored; unknown enum values are refused where safety depends on them (`Mode`, `PriorityClass`, `EdgeMode`, dtypes) and ignored elsewhere. |
 //! | Protocol minor | [`PROTOCOL_MINOR`], announced in `Attach` and `AuthorityState` | Monotonic, 0 at v0.2. Any minor talks to any other. New behaviour is a **feature string** (`"merge.blend"`). |
 //! | Features | `Attach.supports/requires`, `AuthorityState.supports`, `PartSpec.requires` | Attach fails with `CtlStatus::Incompatible` if the host lacks a feature the participant requires. |
-//! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | New kinds and optional settings are additive. |
+//! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | New kinds and optional settings are additive. A host accepts a robot on any table from 1 up to its own, and refuses a newer one. |
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -24,6 +24,28 @@ pub const SPEC_VERSION: u32 = 1;
 /// listing it publishes on `host/view/{robot}`.
 pub const VIEW_DEVICE: &str = "view.device";
 
+/// A robot's `Attach.supports` asks for its device view sealed under its
+/// own `k_down` on `p/{robot}/view` as well (kind 20): a board opens that at
+/// a symmetric cipher's cost instead of checking a signature on each view.
+/// A host listing it publishes both; the signed one stays for every other
+/// reader and for robots that don't ask.
+pub const VIEW_DEVICE_SEALED: &str = "view.device.sealed";
+
+/// A robot's `Attach.supports` asks for its device view without its parts
+/// (`DeviceView.parts` empty), except in the answer to its
+/// `DeclareParts`: it declared them, takes the host's normalised form once
+/// from that answer, and reads nothing of them in a view after. A host
+/// listing it sends such a robot each view smaller and cheaper to decode;
+/// one that does not sends the parts, which the robot skips unread.
+pub const VIEW_DEVICE_LEAN: &str = "view.device.lean";
+
+/// A robot's `Attach.supports` takes its realtime parts over the datagram
+/// path its host offered in the handshake (`HandshakeAccept.datagram`): the
+/// host lists their routes in its device view, and relays its chunks and
+/// samples between those routes and their keys. A robot that does not list
+/// it, or a host that offered nothing, keeps every part on the session.
+pub const LINK_DATAGRAM: &str = "link.datagram";
+
 /// A host listing it may carry a scene's places in its authority state,
 /// and policies that name no robot bind against their view ([`crate::spec::view`]). A
 /// binder that lacks it refuses to bind in a
@@ -31,11 +53,36 @@ pub const VIEW_DEVICE: &str = "view.device";
 /// by robot there would read the wrong paths.
 pub const SCENE_PLACES: &str = "scene.places";
 
+/// A hand-back: a release that names the participant its lease preempted
+/// (`ReleaseLease.to`), which takes the parts again
+/// (`LeaseEnd.to`). A host listing it checks the hand-back and records
+/// it on the lease's end; one that does not would read a plain release, so
+/// a holder asks only a host that lists it. A participant's
+/// `Attach.supports` says it resumes a part handed back to it; the host
+/// refuses a hand-back to one that does not list it, which would stay
+/// parked.
+pub const LEASE_HANDBACK: &str = "lease.handback";
+
+/// A robot's `Attach.supports` declares that it runs on the lockstep
+/// clock: it advances one step per `l/{robot}` request and waits between
+/// them. The roster carries it (`ParticipantInfo.supports`), so every
+/// participant learns a robot's clock from the authority state, before the
+/// robot serves a step. A robot that does not list it is on the wall clock.
+/// The host takes no part in it, so it is not a host feature.
+pub const CLOCK_LOCKSTEP: &str = "clock.lockstep";
+
 /// Features this build implements as a host: behaviour added in later
 /// minors. `auth.sealed`: participants attach through the handshake and
-/// seal their control traffic; [`VIEW_DEVICE`];
-/// [`SCENE_PLACES`].
-pub const FEATURES: &[&str] = &["auth.sealed", VIEW_DEVICE, SCENE_PLACES];
+/// seal their control traffic; [`VIEW_DEVICE`]; [`VIEW_DEVICE_SEALED`];
+/// [`VIEW_DEVICE_LEAN`]; [`SCENE_PLACES`]; [`LEASE_HANDBACK`].
+pub const FEATURES: &[&str] = &[
+    "auth.sealed",
+    VIEW_DEVICE,
+    VIEW_DEVICE_SEALED,
+    VIEW_DEVICE_LEAN,
+    SCENE_PLACES,
+    LEASE_HANDBACK,
+];
 
 /// The features in `required` that `supported` lacks (empty: compatible).
 pub fn missing_features<'a>(required: &'a [String], supported: &[String]) -> Vec<&'a str> {
@@ -58,6 +105,16 @@ mod tests {
             missing_features(&["merge.blend".into(), "frame.fixed".into()], &supported),
             vec!["merge.blend"]
         );
-        assert_eq!(FEATURES, ["auth.sealed", "view.device", "scene.places"]);
+        assert_eq!(
+            FEATURES,
+            [
+                "auth.sealed",
+                "view.device",
+                "view.device.sealed",
+                "view.device.lean",
+                "scene.places",
+                "lease.handback"
+            ]
+        );
     }
 }

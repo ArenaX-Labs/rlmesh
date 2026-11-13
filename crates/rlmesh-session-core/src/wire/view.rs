@@ -12,6 +12,7 @@ use crate::wire::authority::{
     Reason, ReasonCode, fence,
 };
 use crate::wire::contract::Demand;
+use crate::wire::datagram::DatagramRoutes;
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
 use crate::wire::key::IssuedKey;
 use crate::wire::part::PartSpec;
@@ -146,9 +147,38 @@ pub struct DeviceView {
     pub members: Vec<Member>,
     /// Set once the run is ending: detach and return to the lobby.
     pub closing: Option<Reason>,
+    /// Its routes on the host's datagram path, once it attached with
+    /// [`LINK_DATAGRAM`](crate::wire::version::LINK_DATAGRAM) to a host
+    /// that offered one (`None`: every part rides the session).
+    pub datagram: Option<DatagramRoutes>,
 }
 
 impl DeviceView {
+    /// A view of nothing yet for `robot`: what a decoder fills
+    /// ([`crate::wire::codec::decode_view_into`]).
+    pub fn empty(robot: ParticipantId) -> Self {
+        Self {
+            robot,
+            epoch: Epoch(0),
+            revision: 0,
+            mode: Mode::Disarmed,
+            mode_reason: ReasonCode::default(),
+            last_stop: LastStop::default(),
+            host_ns: 0,
+            clock_mode: ClockMode::default(),
+            tick_ns: 0,
+            generation: 0,
+            parts: Vec::new(),
+            leases: Vec::new(),
+            clocks: Vec::new(),
+            grids: Vec::new(),
+            demands: Vec::new(),
+            members: Vec::new(),
+            closing: None,
+            datagram: None,
+        }
+    }
+
     /// `robot`'s view of `state`: its own parts, the leases on them, the
     /// clocks and grids those leases need, its streams' plans and every
     /// present member.
@@ -221,6 +251,7 @@ impl DeviceView {
             demands,
             members,
             closing: state.scene.as_ref().and_then(|s| s.closing.clone()),
+            datagram: None,
         }
     }
 }
@@ -395,6 +426,7 @@ mod tests {
             grids: vec![ActionGrid {
                 channel: ChannelId(1),
                 dt: Duration::from_millis(20),
+                chunk: 0,
             }],
         }];
         state.demands = [2, 3]
@@ -407,6 +439,30 @@ mod tests {
             })
             .to_vec();
         state
+    }
+
+    #[test]
+    fn a_views_grid_is_its_own_channels() {
+        let mut state = state();
+        let mut wrist = arm();
+        wrist.path = crate::wire::PartPath::new("wrist").expect("path");
+        (wrist.channel, wrist.applied_channel) = (ChannelId(5), None);
+        state.parts.push(wrist);
+        state.leases.push(lease(5, "policy", 7));
+        let binding = &mut state.bindings[0];
+        binding.channels.push(ChannelId(5));
+        binding.grids.push(ActionGrid {
+            channel: ChannelId(5),
+            dt: Duration::from_millis(10),
+            chunk: 0,
+        });
+        let view = DeviceView::of(&state, &pid("ur10e"));
+        for (channel, dt) in [(1, 20), (5, 10)] {
+            assert_eq!(
+                AuthorityView::grid(&view, ChannelId(channel)),
+                Some(Duration::from_millis(dt))
+            );
+        }
     }
 
     #[test]
@@ -424,8 +480,8 @@ mod tests {
             ["ur10e", "policy"]
         );
         assert_eq!(
-            view.demands.len(),
-            1,
+            view.demands.iter().map(|d| d.channel).collect::<Vec<_>>(),
+            [ChannelId(2)],
             "its applied stream's, not the camera's"
         );
         assert_eq!(view.generation, 4);
@@ -450,6 +506,31 @@ mod tests {
         assert_eq!(
             AuthorityView::check_fence(&view, ChannelId(1), LeaseToken(1), state.epoch),
             state.check_fence(ChannelId(1), LeaseToken(1), state.epoch)
+        );
+        // The session-wide answers are the state's, whatever they are.
+        let mut state = state;
+        state.mode_reason.code = ReasonCode::EstopRemote;
+        state.host_ns = 123;
+        state.clock_mode = ClockMode::Virtual;
+        state.tick_ns = 5_000_000;
+        let view = DeviceView::of(&state, &ur);
+        assert_eq!(
+            (
+                AuthorityView::mode_reason(&view),
+                AuthorityView::host_ns(&view),
+                AuthorityView::clock_mode(&view),
+                AuthorityView::tick_ns(&view)
+            ),
+            (
+                AuthorityView::mode_reason(&state),
+                AuthorityView::host_ns(&state),
+                AuthorityView::clock_mode(&state),
+                AuthorityView::tick_ns(&state)
+            )
+        );
+        assert_eq!(
+            (AuthorityView::tick_ns(&view), AuthorityView::host_ns(&view)),
+            (5_000_000, 123)
         );
         // A robot that left the roster has no parts, no generation.
         let gone = DeviceView::of(&state, &pid("gone"));

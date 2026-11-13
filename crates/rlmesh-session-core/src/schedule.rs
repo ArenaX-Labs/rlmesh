@@ -10,8 +10,12 @@
 //!   Overdue starts are never accumulated or replayed in a burst.
 //! - **Skipped starts** keep their reason: `waiting_for` (an input never
 //!   received in this epoch), `stale_input`, `window_gap`, `decode` (a
-//!   sample did not decode or fit its plan) and `no_lease` (a standby, or
-//!   a preempted controller: its inputs stay warm, `predict` does not run).
+//!   sample did not decode or fit its plan), `no_lease` (a standby, or
+//!   a preempted controller: its inputs stay warm, `predict` does not run;
+//!   a shadow run predicts instead, counted apart), `parked` (a higher
+//!   class took its parts and it waits to be resumed) and `publisher_gone`
+//!   (an input's publisher left the session or withdrew the part, until it
+//!   is back).
 //! - **`rate_drift`** (scope `policy`): the completion rate over a window of
 //!   `max(1 s, 4 / R)`, counting silent intervals, outside `[0.8, 1.25] × R`,
 //!   with hysteresis (one event per transition). It is suppressed until the
@@ -24,7 +28,7 @@
 //! [`PhaseAlign`] phases a wall-clock grid just after the publication of
 //! one sampled input, so a snapshot reads a fresh sample.
 //!
-//! Nothing here renegotiates: rates, horizons and contracts never change
+//! Nothing here renegotiates: rates, chunk lengths and contracts never change
 //! because something got slow.
 
 #[allow(unused_imports)]
@@ -56,17 +60,25 @@ pub enum SkipReason {
     Decode,
     /// The controller does not hold its leases (a standby, or preempted).
     NoLease,
+    /// A required input's publisher is gone: it left the session, or no
+    /// longer declares the part (`publisher_gone`).
+    PublisherGone,
+    /// A higher class took the controller's parts, and it holds none: it
+    /// waits to be resumed (`parked`).
+    Parked,
 }
 
 impl SkipReason {
     /// Every reason, in report order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Busy,
         Self::Waiting,
         Self::StaleInput,
         Self::WindowGap,
         Self::Decode,
         Self::NoLease,
+        Self::PublisherGone,
+        Self::Parked,
     ];
 
     /// The report name (`busy_skip`, `waiting_for`, ...).
@@ -78,6 +90,8 @@ impl SkipReason {
             Self::WindowGap => "window_gap",
             Self::Decode => "decode",
             Self::NoLease => "no_lease",
+            Self::PublisherGone => "publisher_gone",
+            Self::Parked => "parked",
         }
     }
 
@@ -97,6 +111,8 @@ impl SkipReason {
             Self::WindowGap => 3,
             Self::Decode => 4,
             Self::NoLease => 5,
+            Self::PublisherGone => 6,
+            Self::Parked => 7,
         }
     }
 }
@@ -127,6 +143,72 @@ pub enum RunEvent {
         /// How long.
         pending: Duration,
     },
+    /// A robot this controller commands is held, as the authority state
+    /// shows it: it takes no lease until re-armed by name.
+    RobotHeld {
+        /// Why, and how to re-arm it.
+        message: String,
+    },
+    /// A robot's edge began refusing this controller's chunks for its
+    /// clock, as the authority state shows it.
+    ClockRefused {
+        /// The refusal in words.
+        message: String,
+    },
+    /// The session is not armed, so the run takes no lease and commands
+    /// nothing until it is.
+    WaitingToArm {
+        /// The session's mode, and what the run waits for.
+        message: String,
+    },
+    /// A shadow run cannot command: `predict` runs and its actions are
+    /// checked, and nothing is sent.
+    Shadowing {
+        /// Why it cannot command.
+        message: String,
+    },
+    /// A shadow run holds a lease: its actions are sent from this start.
+    Commanding {
+        /// What it holds.
+        message: String,
+    },
+    /// A bound input's publisher went away: it left the session, or no
+    /// longer declares the part.
+    InputLost {
+        /// The input's part, `robot:path`.
+        part: String,
+        /// What happened, and what the run does meanwhile.
+        message: String,
+    },
+    /// A higher class took a part from the controller: it is not asked for
+    /// again, even once free, until the controller is resumed.
+    Parked {
+        /// The part, `robot:path`.
+        part: String,
+        /// Who took it.
+        by: String,
+        /// What happened, and the call that resumes it.
+        message: String,
+    },
+    /// The holder that took a parked part released it back to the controller
+    /// (a hand-back): it is asked for again, as after a resume.
+    HandedBack {
+        /// The part, `robot:path`.
+        part: String,
+        /// Who handed it back.
+        by: String,
+        /// What happened.
+        message: String,
+    },
+    /// The controller bound again against the session's current parts: an
+    /// input's publisher came back or restarted, or a blank input's
+    /// publisher appeared.
+    Rebound {
+        /// The parts bound again, `robot:path`.
+        parts: Vec<String>,
+        /// What changed.
+        message: String,
+    },
 }
 
 impl fmt::Display for RunEvent {
@@ -152,6 +234,15 @@ impl fmt::Display for RunEvent {
             Self::InferencePending { pending } => {
                 write!(f, "inference pending for {:.1} s", pending.as_secs_f64())
             }
+            Self::RobotHeld { message }
+            | Self::ClockRefused { message }
+            | Self::WaitingToArm { message }
+            | Self::Shadowing { message }
+            | Self::Commanding { message }
+            | Self::InputLost { message, .. }
+            | Self::Parked { message, .. }
+            | Self::HandedBack { message, .. }
+            | Self::Rebound { message, .. } => f.write_str(message),
         }
     }
 }
@@ -164,9 +255,12 @@ pub struct RunStats {
     /// `predict` calls completed.
     pub completions: u64,
     /// Slots skipped, by reason ([`SkipReason::ALL`] order).
-    pub skipped: [u64; 6],
+    pub skipped: [u64; SkipReason::ALL.len()],
     /// Chunks sent.
     pub chunks_sent: u64,
+    /// Starts a shadow run predicted without a lease: `predict` completed
+    /// and its actions were checked, and nothing was sent.
+    pub shadow_predictions: u64,
     /// Chunks that could not be packed or sent.
     pub send_errors: u64,
     /// Completion latency (snapshot to the end of `predict`), median.
@@ -336,6 +430,11 @@ impl StartSchedule {
         }
     }
 
+    /// Counts a start predicted in shadow.
+    pub fn shadowed(&mut self) {
+        self.stats.shadow_predictions += 1;
+    }
+
     /// The counters, with latency percentiles over the last 1024
     /// completions.
     pub fn stats(&self) -> RunStats {
@@ -389,7 +488,7 @@ impl StartSchedule {
     }
 
     fn dominant_cause(&self) -> &'static str {
-        let mut counts = [0_u64; 6];
+        let mut counts = [0_u64; SkipReason::ALL.len()];
         for (_, reason) in &self.skips {
             counts[reason.index()] += 1;
         }
@@ -636,6 +735,15 @@ mod tests {
                     drifting, cause, ..
                 } => (*drifting, *cause),
                 RunEvent::InferencePending { .. } => (false, "pending"),
+                RunEvent::RobotHeld { .. }
+                | RunEvent::ClockRefused { .. }
+                | RunEvent::WaitingToArm { .. }
+                | RunEvent::Shadowing { .. }
+                | RunEvent::Commanding { .. }
+                | RunEvent::InputLost { .. }
+                | RunEvent::Parked { .. }
+                | RunEvent::HandedBack { .. }
+                | RunEvent::Rebound { .. } => (false, "other"),
             })
             .collect();
         assert_eq!(drift.len(), 2, "one event per transition: {events:?}");

@@ -1,4 +1,4 @@
-binding pi05_libero on libero: 5 inputs, 2 actions, fingerprint 06a09606f956e352
+binding pi05_libero on libero: 5 inputs, 2 actions, fingerprint f4f69af48e4c8114
 replan 10 Hz
 
   entry                    dir  part             status  plan                                                    delivers

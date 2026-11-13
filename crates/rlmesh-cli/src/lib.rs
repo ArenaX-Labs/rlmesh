@@ -6,6 +6,7 @@ mod devices;
 mod doctor;
 mod eval_run;
 mod host;
+mod host_identity;
 pub mod image_check;
 #[cfg(feature = "fleet")]
 mod lobby;
@@ -93,6 +94,7 @@ pub async fn run_cli_in(
         | Command::Cockpit(_)
         | Command::Devices(_)
         | Command::Pair(_)
+        | Command::HostIdentity(_)
         | Command::Eval(cli::EvalArgs {
             command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
         })
@@ -220,6 +222,7 @@ pub async fn run_cli_in(
         Command::Pair(args) => pair::pair(&args, stdout).await.map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
         Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),
+        Command::HostIdentity(args) => host_identity::host_identity(&args, stdout).map(|()| 0),
     };
 
     match result {

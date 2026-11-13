@@ -13,6 +13,8 @@ python scripts/release.py X.Y.Z             # also commit and tag vX.Y.Z (does N
 git push origin HEAD --tags                 # you push; CI does the rest
 ```
 
+The gate is `mise run release:check`. Among its steps, `test:sandbox:docker --require` runs `SandboxEnv` and `SandboxModel` against real containers built from the release's wheel (see [testing](testing.md#sandbox-docker-gate)); it is required, so run the release from a machine with a Docker daemon. A failure there blocks the release like any other.
+
 `release.py` refuses to proceed if the working tree is dirty, the `vX.Y.Z` tag already exists, the changelog still has `<!-- DRAFT -->` markers, or there is no `## [X.Y.Z]` changelog section.
 
 The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and publishes to crates.io and PyPI through trusted publishing, then creates the GitHub Release with the curated release notes. Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions. In 0.2 the GitHub Release has no native distribution assets.
@@ -68,7 +70,7 @@ RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are 
 
 ## Publish order
 
-The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh-cli`, `rlmesh`), then uploads the wheels to PyPI and cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh`, `rlmesh-cli`), then uploads the wheels to PyPI and cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
 
 ## GitHub Releases
 
@@ -233,7 +235,7 @@ workflow `release.yml`, environment `release`) in each package's settings.
 
 ```bash
 python -m venv /tmp/rlmesh-smoke
-/tmp/rlmesh-smoke/bin/python -m pip install rlmesh
+/tmp/rlmesh-smoke/bin/python -m pip install "rlmesh==VERSION"  # the version just published
 /tmp/rlmesh-smoke/bin/python -c "import rlmesh; print(rlmesh.__version__)"
 ```
 

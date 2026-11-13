@@ -361,3 +361,252 @@ impl Binding {
         &self.stacked
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
+
+    use alloc::collections::{BTreeMap, BTreeSet};
+
+    use super::{
+        ActionPlan, Binding, HistoryWindow, ImagePlan, ObsPlan, PreviousAction, StatePiece,
+        StatePlan, TextPlan,
+    };
+    use crate::spec::plan::Fit;
+    use crate::spec::policy::{ImageLayout, Resample};
+    use crate::spec::role::input::StackPad;
+    use crate::spec::role::path::NodePath;
+    use crate::wire::part::DType;
+
+    fn key(name: &str) -> NodePath {
+        NodePath::root().push_key(name)
+    }
+
+    /// A camera input at `placement` read from `source`, stacked `stack`
+    /// deep (at `offsets`, when given).
+    fn image(placement: &str, source: &str, stack: u32, offsets: Option<Vec<i32>>) -> ImagePlan {
+        ImagePlan {
+            placement: key(placement),
+            source: key(source),
+            src_layout: ImageLayout::Hwc,
+            dst_layout: ImageLayout::Hwc,
+            flip: false,
+            size: None,
+            fit: Fit::Stretch,
+            resample: Resample::Bilinear,
+            dtype: DType::U8,
+            normalize: None,
+            lead_dims: 0,
+            src_range: None,
+            stack,
+            zero_fill: None,
+            fill: 0,
+            crop: None,
+            jpeg_quality: None,
+            swap_rb: false,
+            render: None,
+            offsets,
+            stack_pad: StackPad::First,
+            frame_bytes: 12,
+            role_rebound: None,
+            part: None,
+        }
+    }
+
+    /// A state piece read from `source`.
+    fn piece(source: &str) -> StatePiece {
+        StatePiece {
+            source: key(source),
+            src_offset: None,
+            src_dim: None,
+            src_encoding: None,
+            dst_encoding: None,
+            post_rotate: None,
+            dim: None,
+            index: None,
+            src_range: None,
+            dst_range: None,
+            scale: None,
+            offset: None,
+            axis_scale: None,
+            axis_offset: None,
+            gather: None,
+            labels: None,
+            fill: None,
+            absent_role: None,
+            previous: None,
+            width: Some(1),
+            frame: None,
+            provenance: None,
+            part: None,
+            flip: None,
+        }
+    }
+
+    fn state(placement: &str, pieces: Vec<StatePiece>) -> ObsPlan {
+        ObsPlan::State(StatePlan {
+            placement: key(placement),
+            pieces,
+            pad_to: None,
+            clip: None,
+            native_width: None,
+            dtype: DType::F32,
+            reshape: None,
+            list: false,
+        })
+    }
+
+    fn text(placement: &str, source: Option<&str>) -> ObsPlan {
+        ObsPlan::Text(TextPlan {
+            placement: key(placement),
+            source: source.map(key),
+            list: false,
+            fill: None,
+        })
+    }
+
+    fn binding(plans: Vec<ObsPlan>) -> Binding {
+        let action = ActionPlan {
+            segments: Vec::new(),
+            clip: None,
+            in_dim: 0,
+        };
+        Binding::new(plans, action, Vec::new(), Vec::new())
+    }
+
+    fn previous() -> StatePiece {
+        StatePiece {
+            source: NodePath::root(),
+            fill: Some(0.0),
+            previous: Some(PreviousAction {
+                role: "action/gripper".into(),
+                start: 0,
+                stop: 1,
+            }),
+            ..piece("")
+        }
+    }
+
+    /// What each binding reads, stacks and holds per episode, one row per
+    /// shape of input.
+    #[test]
+    fn a_binding_reports_what_it_reads_stacks_and_holds() {
+        let zeroed = ImagePlan {
+            source: NodePath::root(),
+            zero_fill: Some((2, 2, 3)),
+            ..image("blank", "", 1, None)
+        };
+        let constant = StatePiece {
+            source: NodePath::root(),
+            fill: Some(1.0),
+            ..piece("")
+        };
+        type Row = (
+            &'static str,
+            Vec<ObsPlan>,
+            &'static [&'static str],
+            &'static [(&'static str, u32)],
+            bool,
+            &'static [(&'static str, u32, u64)],
+        );
+        let rows: Vec<Row> = vec![
+            ("nothing", Vec::new(), &[], &[], false, &[]),
+            (
+                "one unstacked camera",
+                vec![ObsPlan::Image(image("image", "cam", 1, None))],
+                &["cam"],
+                &[],
+                false,
+                &[],
+            ),
+            (
+                "a contiguous stack of three",
+                vec![ObsPlan::Image(image("image", "cam", 3, None))],
+                &["cam"],
+                &[("image", 3)],
+                true,
+                &[("image", 3, 12)],
+            ),
+            (
+                // Two frames, the older four steps back: five held.
+                "a strided stack",
+                vec![ObsPlan::Image(image("image", "cam", 2, Some(vec![-4, 0])))],
+                &["cam"],
+                &[("image", 2)],
+                true,
+                &[("image", 5, 12)],
+            ),
+            (
+                "a zero-filled camera reads nothing",
+                vec![ObsPlan::Image(zeroed)],
+                &[],
+                &[],
+                false,
+                &[],
+            ),
+            (
+                "state pieces, a constant and a previous action",
+                vec![state(
+                    "state",
+                    vec![piece("joints"), constant, previous(), piece("gripper")],
+                )],
+                &["gripper", "joints"],
+                &[],
+                true,
+                &[],
+            ),
+            (
+                "an env state alone holds nothing",
+                vec![state("state", vec![piece("joints")])],
+                &["joints"],
+                &[],
+                false,
+                &[],
+            ),
+            (
+                "text, read and default-only",
+                vec![text("prompt", Some("task")), text("hint", None)],
+                &["task"],
+                &[],
+                false,
+                &[],
+            ),
+            (
+                "a nested source reads its top-level key",
+                vec![ObsPlan::Image(ImagePlan {
+                    source: key("cams").push_key("wrist"),
+                    ..image("image", "", 1, None)
+                })],
+                &["cams"],
+                &[],
+                false,
+                &[],
+            ),
+        ];
+        for (what, plans, keys, stacks, holds, windows) in rows {
+            let bound = binding(plans);
+            let want: BTreeSet<String> = keys.iter().map(|k| (*k).to_owned()).collect();
+            assert_eq!(bound.referenced_obs_keys(), want, "{what}: keys");
+            let want: BTreeMap<String, u32> =
+                stacks.iter().map(|(k, d)| ((*k).to_owned(), *d)).collect();
+            assert_eq!(bound.stacks(), want, "{what}: stacks");
+            assert_eq!(bound.holds_history(), holds, "{what}: holds");
+            let want: Vec<HistoryWindow> = windows
+                .iter()
+                .map(|(k, span, bytes)| HistoryWindow {
+                    key: (*k).to_owned(),
+                    span: *span,
+                    frame_bytes: *bytes,
+                })
+                .collect();
+            assert_eq!(bound.history_windows(), want, "{what}: windows");
+        }
+        // A stack and a previous action together hold history.
+        let both = binding(vec![
+            ObsPlan::Image(image("image", "cam", 2, None)),
+            state("state", vec![previous()]),
+        ]);
+        assert!(both.holds_history());
+    }
+}

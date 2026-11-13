@@ -14,8 +14,14 @@ pub(crate) fn is_v2(text: &str) -> bool {
     rlmesh_session::address::is_v2_address(text)
 }
 
-/// A remote session participant address.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `text` with its key (`#…`) left out: what errors, logs and `Debug` show.
+pub(crate) fn redact(text: &str) -> String {
+    rlmesh_session::address::redact(text)
+}
+
+/// A remote session participant address. `Display` and `Debug` leave its
+/// key out; [`as_str`](Self::as_str) keeps it for dialing.
+#[derive(Clone, PartialEq, Eq)]
 pub enum ConnectAddress {
     /// A robot or model in a session (`:0/env`, `host:port/session/name`).
     Lockstep(String),
@@ -38,7 +44,14 @@ impl ConnectAddress {
 }
 impl fmt::Display for ConnectAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.as_str())
+        f.write_str(&redact(&self.as_str()))
+    }
+}
+impl fmt::Debug for ConnectAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lockstep(value) => f.debug_tuple("Lockstep").field(&redact(value)).finish(),
+        }
     }
 }
 impl FromStr for ConnectAddress {

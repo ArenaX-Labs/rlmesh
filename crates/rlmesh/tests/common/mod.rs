@@ -385,6 +385,16 @@ impl CatalogEnv {
         }
     }
 
+    /// The same env publishing `tags` as its adapter tags instead, as one
+    /// written by another release would.
+    pub fn with_tags(mut self, tags: &serde_json::Value) -> Self {
+        self.contract.metadata.get_or_insert_default().insert(
+            rlmesh::lockstep::adapters::ENV_METADATA_KEY.to_string(),
+            native(tags),
+        );
+        self
+    }
+
     fn observe(&self, lanes: &[usize], state: &[Lane]) -> rlmesh_proto::spaces::v1::SpaceValue {
         let values: Vec<SpaceValue> = lanes.iter().map(|l| state[*l].value(*l)).collect();
         rlmesh::binding::data::encode_batched_partial_values(

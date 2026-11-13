@@ -25,7 +25,7 @@ const POLICY = {
     wrist: { kind: 'camera', at: 'wrist/cam', size: [96, 96] },
     prompt: { kind: 'text', at: '/task' },
   },
-  actions: { arm: { kind: 'joints', at: 'arm', command: 'position', names: JOINTS, hz: 100, horizon: 10 } },
+  actions: { arm: { kind: 'joints', at: 'arm', command: 'position', names: JOINTS, hz: 100, chunk: 10 } },
   allow: ['resize', 'crop'],
 };
 const HOME = Float32Array.of(0, -1.57, 1.57, -1.57, -1.57, 0);

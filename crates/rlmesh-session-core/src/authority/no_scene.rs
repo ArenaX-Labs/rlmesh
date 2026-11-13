@@ -25,6 +25,10 @@ impl Authority {
         Ok(())
     }
 
+    pub(super) fn scene_run(&self) -> Option<&str> {
+        None
+    }
+
     pub(super) fn scene_member(&self, _: &ParticipantId) -> bool {
         false
     }

@@ -566,7 +566,6 @@ pub(crate) unsafe fn declaration(vt: RLMeshModelVtable) -> Result<PolicyDecl, Ca
         load_keys: keys,
         spec: vt.spec.read()?,
         workflow_edition: unsafe { ffi::text(vt.workflow_edition) }?,
-        authored: true,
         type_name: "CPolicy".into(),
     })
 }

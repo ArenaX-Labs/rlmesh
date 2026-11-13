@@ -15,7 +15,7 @@ Needs an RTX GPU with a driver Isaac Sim 6.1 supports, and about 11 GB of RAM. A
 docker build --build-arg RLMESH_VERSION=0.2.0a0 -t franka-reach:dev examples/python/isaacsim
 docker run --rm --gpus all --memory=16g --network host \
   -e 'RLMESH_MAKE_KWARGS={"lanes": 4}' franka-reach:dev   # ready after ~45 s
-python examples/python/isaacsim/run_local.py --address '127.0.0.1:7447#<key>/franka'
+RLMESH_ENV_ADDRESS='127.0.0.1:7447#<key>/franka' python examples/python/isaacsim/run_local.py
 ```
 
 Use the same 0.2 build in the container and client (prereleases must match).

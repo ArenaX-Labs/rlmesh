@@ -152,6 +152,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         max_episode_steps: None,
         max_episode_seconds: None,
         close_env_on_end: true,
+        close_model_on_end: false,
         subset_step: false,
         limits: RuntimeLimits::default(),
     }

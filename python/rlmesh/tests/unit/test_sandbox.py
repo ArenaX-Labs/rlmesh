@@ -94,6 +94,7 @@ def test_sandbox_cleanup_runs_on_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stopped: list[str] = []
+    killed: list[bool] = []
     captured: dict[str, object] = {}
 
     class InterruptingClient:
@@ -109,15 +110,21 @@ def test_sandbox_cleanup_runs_on_keyboard_interrupt(
             captured["connect_timeout_seconds"] = connect_timeout_seconds
             raise KeyboardInterrupt
 
+    def stop(*, container_id: str, kill: bool = False) -> None:
+        stopped.append(container_id)
+        killed.append(kill)
+
     _patch_start(monkeypatch)
-    _patch_stop(monkeypatch, lambda *, container_id: stopped.append(container_id))
+    _patch_stop(monkeypatch, stop)
     monkeypatch.setattr(native, "PyEnvClient", InterruptingClient)
 
     with pytest.raises(KeyboardInterrupt):
         rlmesh.SandboxEnv("CartPole-v1")
 
-    # The started container is stopped before the attach error propagates.
+    # The started container is stopped before the attach error propagates,
+    # killed: it never served, so no stop grace is waited out.
     assert stopped == ["container-1"]
+    assert killed == [True]
     assert captured["address"] == "127.0.0.1:40000/env"
 
 
@@ -139,7 +146,9 @@ def test_sandbox_cleanup_runs_on_remote_attach_exception(
             raise RuntimeError("attach failed")
 
     _patch_start(monkeypatch)
-    _patch_stop(monkeypatch, lambda *, container_id: stopped.append(container_id))
+    _patch_stop(
+        monkeypatch, lambda *, container_id, kill=False: stopped.append(container_id)
+    )
     monkeypatch.setattr(native, "PyEnvClient", FailingClient)
 
     with pytest.raises(RuntimeError, match="attach failed"):
@@ -155,7 +164,9 @@ def test_sandbox_options_set_rlmesh_package_and_params_are_the_binding(
     stopped: list[str] = []
 
     _patch_start(monkeypatch, captured)
-    _patch_stop(monkeypatch, lambda *, container_id: stopped.append(container_id))
+    _patch_stop(
+        monkeypatch, lambda *, container_id, kill=False: stopped.append(container_id)
+    )
     monkeypatch.setattr(native, "PyEnvClient", _OkClient)
 
     # Build infra rides in build=; everything else is the make-binding (**params).
@@ -178,7 +189,7 @@ def test_sandbox_retries_close_after_transient_stop_failure(
 ) -> None:
     stop_calls: list[str] = []
 
-    def flaky_stop(*, container_id: str) -> None:
+    def flaky_stop(*, container_id: str, kill: bool = False) -> None:
         stop_calls.append(container_id)
         if len(stop_calls) == 1:
             raise RuntimeError("docker daemon unavailable")
@@ -225,7 +236,9 @@ def test_sandbox_options_accept_string_sequence(
     stopped: list[str] = []
 
     _patch_start(monkeypatch, captured)
-    _patch_stop(monkeypatch, lambda *, container_id: stopped.append(container_id))
+    _patch_stop(
+        monkeypatch, lambda *, container_id, kill=False: stopped.append(container_id)
+    )
     monkeypatch.setattr(native, "PyEnvClient", _OkClient)
 
     build = rlmesh.SandboxBuild(**{field: ["ale-py"]})  # type: ignore[arg-type]
@@ -270,7 +283,9 @@ def test_sandbox_model_shutdown_is_idempotent(
 
     stops: list[str] = []
     monkeypatch.setattr(
-        native, "sandbox_stop_env", lambda *, container_id: stops.append(container_id)
+        native,
+        "sandbox_stop_env",
+        lambda *, container_id, kill=False: stops.append(container_id),
     )
 
     model = object.__new__(SandboxModel)
@@ -420,7 +435,7 @@ def test_attach_failure_with_failing_stop_leaves_session_retryable(
     running container for the process lifetime (mirrors _stop)."""
     stop_calls: list[str] = []
 
-    def flaky_stop(*, container_id: str) -> None:
+    def flaky_stop(*, container_id: str, kill: bool = False) -> None:
         stop_calls.append(container_id)
         if len(stop_calls) == 1:
             raise RuntimeError("docker daemon unavailable")
@@ -446,7 +461,7 @@ def test_attach_reports_inspect_failure_distinctly(
 ) -> None:
     """An inspect failure (daemon busy) must not be misreported as the container
     having exited with empty logs."""
-    _patch_stop(monkeypatch, lambda *, container_id: None)
+    _patch_stop(monkeypatch, lambda *, container_id, kill=False: None)
     monkeypatch.setattr(sandbox, "_container_running", lambda _cid: None)
 
     session = _ManualSession()
@@ -499,7 +514,7 @@ def test_attach_retries_in_short_attempts(
 
     FlakyClient.calls = 0
     _patch_start(monkeypatch)
-    _patch_stop(monkeypatch, lambda *, container_id: None)
+    _patch_stop(monkeypatch, lambda *, container_id, kill=False: None)
     monkeypatch.setattr(sandbox, "_container_running", lambda _cid: True)
     monkeypatch.setattr(native, "PyEnvClient", FlakyClient)
 
@@ -543,7 +558,7 @@ def test_sandbox_vector_env_default_mode_is_auto(
     surface instead of silently pinning the sandbox to sync."""
     captured: dict[str, object] = {}
     _patch_start(monkeypatch, captured)
-    _patch_stop(monkeypatch, lambda *, container_id: None)
+    _patch_stop(monkeypatch, lambda *, container_id, kill=False: None)
 
     class _VecContract:
         num_envs = 2

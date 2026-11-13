@@ -40,35 +40,45 @@ from typing import Any
 
 import numpy as np
 from rlmesh import realtime
+from rlmesh.realtime import actions, inputs, parts
 
 ROBOT = "ur10"
 RING = 1 << 16
 
 
+WRENCH = {"wrench": parts.array(np.float32, 6)}
+FT = {"wrench": parts.array(np.float32, 18)}
+
+
 def robot_map(args: argparse.Namespace) -> dict[str, Any]:
-    parts: dict[str, Any] = {
-        "cmd": {"kind": "x/wrench_cmd", "hz": 1000, "fields": {"wrench": ["float32", [6]]},
-                "command": "wrench", "priority": "control", "hold_max_ms": 100, "safe": "stop"},
-        "ft": {"kind": "x/ft", "hz": 1000, "fields": {"wrench": ["float32", [18]]}, "priority": "realtime"},
-    }  # fmt: skip
-    if args.camera == "raw":
-        parts["camera"] = {"kind": "camera", "hz": args.camera_hz, "width": 640, "height": 480,
-                           "max_age_ms": 100, "send": f"latest(hz={args.camera_hz})"}  # fmt: skip
-    return parts
-
-
-def policy_map(args: argparse.Namespace) -> dict[str, Any]:
-    inputs: dict[str, Any] = {
-        "ft": {"kind": "x/ft", "at": "ft", "fields": {"wrench": ["float32", [18]]}}
+    robot: dict[str, Any] = {
+        "cmd": parts.custom(
+            "x/wrench_cmd",
+            hz=1000,
+            fields=WRENCH,
+            command="wrench",
+            priority="control",
+            hold_max_ms=100,
+            safe=parts.Safe.STOP,
+        ),
+        "ft": parts.custom("x/ft", hz=1000, fields=FT, priority="realtime"),
     }
     if args.camera == "raw":
-        inputs["camera"] = {"kind": "camera", "at": "camera"}
-    return {
-        "hz": 1000 / args.replan_ms,
-        "inputs": inputs,
-        "actions": {"cmd": {"kind": "x/wrench_cmd", "at": "cmd", "command": "wrench",
-                            "fields": {"wrench": ["float32", [6]]}, "hz": 1000, "horizon": args.horizon}},
-    }  # fmt: skip
+        robot["camera"] = parts.camera(
+            640,
+            480,
+            hz=args.camera_hz,
+            max_age_ms=100,
+            send=f"latest(hz={args.camera_hz})",
+        )
+    return robot
+
+
+def policy_inputs(args: argparse.Namespace) -> dict[str, Any]:
+    reads: dict[str, Any] = {"ft": inputs.custom("ft", kind="x/ft", fields=FT)}
+    if args.camera == "raw":
+        reads["camera"] = inputs.camera("camera")
+    return reads
 
 
 def percentiles(ns: list[int]) -> dict[str, float] | None:
@@ -167,7 +177,7 @@ def embodiment(args: argparse.Namespace, host: realtime.Host | str) -> dict[str,
     return {
         "config": {
             key: getattr(args, key)
-            for key in ("camera", "camera_hz", "horizon", "replan_ms", "duration_s")
+            for key in ("camera", "camera_hz", "chunk", "replan_ms", "duration_s")
         },
         "loadavg": Path("/proc/loadavg").read_text().strip(),
         "ticks": len(window),
@@ -194,14 +204,27 @@ def embodiment(args: argparse.Namespace, host: realtime.Host | str) -> dict[str,
 
 
 def controller(args: argparse.Namespace) -> dict[str, Any]:
-    horizon = args.horizon
+    chunk = args.chunk
 
     def predict(obs: realtime.Observation) -> dict[str, Any]:
         # The "model": hold the first six floats of the wrench.
-        return {"cmd": np.broadcast_to(obs["ft"][:6], (horizon, 6))}
+        return {"cmd": np.broadcast_to(obs["ft"][:6], (chunk, 6))}
 
     with realtime.Policy(
-        policy_map(args), session=args.address, name="policy"
+        hz=1000 / args.replan_ms,
+        inputs=policy_inputs(args),
+        actions={
+            "cmd": actions.custom(
+                "cmd",
+                kind="x/wrench_cmd",
+                command="wrench",
+                fields=WRENCH,
+                hz=1000,
+                chunk=chunk,
+            )
+        },
+        session=args.address,
+        name="policy",
     ) as policy:
         policy.bind(ROBOT)
         stats = policy.run(predict, duration=args.warmup_s + args.duration_s + 2.0)
@@ -215,7 +238,7 @@ def main() -> None:
     parser.add_argument("role", choices=["both", "embodiment", "controller"])
     parser.add_argument("--camera", choices=["off", "raw"], default="off")
     parser.add_argument("--camera-hz", type=int, default=20)
-    parser.add_argument("--horizon", type=int, default=12)
+    parser.add_argument("--chunk", type=int, default=12)
     parser.add_argument("--replan-ms", type=float, default=10.0)
     parser.add_argument("--warmup-s", type=float, default=3.0)
     parser.add_argument("--duration-s", type=float, default=30.0)

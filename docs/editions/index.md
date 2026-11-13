@@ -46,7 +46,15 @@ Highest first. The two sticky homes are the ones that travel with your source.
 
 A value this build cannot run a session at is refused where you typed it, naming the value and the editions this build offers. Accepted are the bare base of every edition the build retains (`rlmesh.current_workflow_edition()` and any older sealed edition), plus any cohort spelling that admits one of its offers. Anything else — a base no release implements, or a stale prerelease cohort that sorts below everything this build offers — raises there and then.
 
-Declaring nothing is allowed. A participant with a home for the declaration -- an authored `EnvFactory`/`Model` subclass, or anything served -- warns once per process (`rlmesh.WorkflowEditionWarning`), naming the edition it floated to: an undeclared peer's behavior follows whatever rlmesh you happen to have installed. An ad hoc callable in a local `run`/`bind` floats quietly. Set `RLMESH_WORKFLOW_EDITION` to an empty string to float deliberately: resolution stops at that rung -- no class or project declaration below it is consulted -- and the warning stays quiet. That is what this repository's own test suites do, since they exercise whatever they were built from rather than a sealed contract.
+The project rung reads the `pyproject.toml` of the project that contains the authored class's module, so the answer does not depend on the directory the process starts in. When the class's module lies in no project (or there is no class, as for a plain env object handed to `EnvServer`), it reads the working directory's.
+
+Declaring nothing is allowed, and running or serving an undeclared participant says nothing: it floats to this build's newest edition, so its behavior follows whatever rlmesh you happen to have installed. Pin it before you upgrade. These say so, naming the value to paste:
+
+- `rlmesh check module:Class` warns on an env or model that declares nothing.
+- `rlmesh check-image` and `rlmesh doctor` warn on an image whose describe label (or, for `doctor`, a model's handshake) says it floats, unless the image sets `RLMESH_WORKFLOW_EDITION`.
+- A session refused because its peers share no edition says to pin each side before upgrading either.
+
+Set `RLMESH_WORKFLOW_EDITION` to an empty string to float deliberately: resolution stops at that rung -- no class or project declaration below it is consulted -- and the checks stay quiet. That is what this repository's own test suites do, since they exercise whatever they were built from rather than a sealed contract.
 
 ## Edition vs. Capability vs. Bug Fix
 

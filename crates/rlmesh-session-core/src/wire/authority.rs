@@ -10,6 +10,7 @@ use core::fmt;
 
 use crate::wire::action::ChunkRef;
 use crate::wire::contract::{ActionGrid, Demand, StreamContract};
+use crate::wire::heartbeat::ClockRefusal;
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId, SessionId};
 use crate::wire::key::{IssuedKey, KeysAck};
 use crate::wire::part::{PartSpec, StreamSpec};
@@ -246,6 +247,10 @@ pub struct LeaseEnd {
     pub reason: Reason,
     /// The lease that preempted or re-issued it.
     pub by: Option<Lease>,
+    /// A release that handed the parts back
+    /// ([`LEASE_HANDBACK`](crate::wire::version::LEASE_HANDBACK)): the
+    /// participant the lease had preempted, who takes them again.
+    pub to: Option<ParticipantId>,
 }
 
 /// The host's last entry into SAFE, DISARMED or ESTOP. Never lowered: a
@@ -256,6 +261,17 @@ pub struct LastStop {
     pub epoch: Epoch,
     /// The revision it landed in.
     pub revision: u64,
+}
+
+/// Who owns a robot's time, as it declared when it attached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RobotClock {
+    /// The world runs whether anyone acts: the robot keeps its own time.
+    #[default]
+    Wall,
+    /// The robot advances one step per lockstep request, and waits for it
+    /// ([`CLOCK_LOCKSTEP`](crate::wire::version::CLOCK_LOCKSTEP)).
+    Lockstep,
 }
 
 /// One roster entry.
@@ -291,6 +307,22 @@ pub struct ParticipantInfo {
     /// The process attached under this id: rises with every handshake that
     /// takes effect.
     pub generation: u32,
+}
+
+impl ParticipantInfo {
+    /// Its clock: lockstep when its attach declared
+    /// [`CLOCK_LOCKSTEP`](crate::wire::version::CLOCK_LOCKSTEP), else wall.
+    pub fn clock(&self) -> RobotClock {
+        if self
+            .supports
+            .iter()
+            .any(|f| f == crate::wire::version::CLOCK_LOCKSTEP)
+        {
+            RobotClock::Lockstep
+        } else {
+            RobotClock::Wall
+        }
+    }
 }
 
 impl ParticipantInfo {
@@ -457,7 +489,8 @@ pub struct AuthoritySnapshot {
     pub demands: Vec<Demand>,
     /// Why the mode is what it is.
     pub mode_reason: Reason,
-    /// The latest lease endings, oldest first.
+    /// The latest lease endings of holders still in the roster, oldest
+    /// first.
     pub ended: Vec<LeaseEnd>,
     /// The last entry into SAFE, DISARMED or ESTOP.
     pub last_stop: LastStop,
@@ -465,12 +498,62 @@ pub struct AuthoritySnapshot {
     pub places: Vec<Place>,
     /// The scene this session runs, when a daemon started it.
     pub scene: Option<Box<SceneInfo>>,
+    /// Every robot that stopped on its own and waits to be re-armed by name.
+    pub held: Vec<HeldRobot>,
+}
+
+/// A robot held until it is re-armed by name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRobot {
+    /// The robot.
+    pub robot: ParticipantId,
+    /// Why (`code`, `detail`) and when (`at_ns`, session time).
+    pub reason: Reason,
+}
+
+/// Why `robot`, held for `why`, takes no lease, and how to re-arm it (in the
+/// scene run `run`, if it is in one).
+pub fn held_refusal(robot: &ParticipantId, why: &Reason, run: Option<&str>) -> String {
+    let code = why.code;
+    match run {
+        Some(run) => format!(
+            "{robot} stopped on its own ({code}): run `rlmesh scene arm {run} {robot}` or call \
+             robot.rearm(\"{robot}\") to drive it again"
+        ),
+        None => format!(
+            "{robot} stopped on its own ({code}): call robot.rearm(\"{robot}\") to drive it again"
+        ),
+    }
 }
 
 impl AuthoritySnapshot {
+    /// `robot`'s clock, as its attach declared it (`None`: not in the
+    /// roster).
+    pub fn clock_of(&self, robot: &ParticipantId) -> Option<RobotClock> {
+        self.roster
+            .iter()
+            .find(|p| &p.id == robot)
+            .map(ParticipantInfo::clock)
+    }
+
+    /// Why `robot` takes no lease, when it is held: what the host would
+    /// refuse a lease on it with.
+    pub fn held_refusal(&self, robot: &ParticipantId) -> Option<String> {
+        let held = self.held.iter().find(|h| &h.robot == robot)?;
+        let run = self.scene.as_ref().map(|s| s.run.as_str());
+        Some(held_refusal(robot, &held.reason, run))
+    }
+
     /// The part whose stream is `channel`.
     pub fn part(&self, channel: ChannelId) -> Option<&PartSpec> {
         self.parts.iter().find(|p| p.channel == channel)
+    }
+
+    /// How a refusal or log names a stream: `robot:path`; one this
+    /// snapshot does not hold keeps its id.
+    pub fn part_name(&self, channel: ChannelId) -> String {
+        self.stream(channel)
+            .map_or_else(|| channel.to_string(), |s| s.qualified())
     }
 
     /// The part at `path` of `robot`.
@@ -491,6 +574,36 @@ impl AuthoritySnapshot {
                 None
             }
         })
+    }
+
+    /// The refusal the edge of `channel` gives `source`'s chunks for its
+    /// clock, judged from this state as the edge judges it.
+    pub fn clock_refusal(
+        &self,
+        channel: ChannelId,
+        source: &ParticipantId,
+    ) -> Option<ClockRefusal> {
+        if self.clock_mode != ClockMode::Wall {
+            return None;
+        }
+        let part = self.part(channel)?;
+        let command = part.command.as_ref()?;
+        let bound = match &command.group {
+            Some(group) => self
+                .group_members(&part.owner, group)
+                .filter_map(|p| p.command.as_ref())
+                .map(|c| c.max_clock_error)
+                .min()?,
+            None => command.max_clock_error,
+        };
+        ClockRefusal::judge(
+            channel,
+            u64::try_from(bound.as_nanos()).unwrap_or(u64::MAX),
+            [
+                (&part.owner, self.clock(&part.owner)?.error_ns),
+                (source, self.clock(source)?.error_ns),
+            ],
+        )
     }
 
     /// The commandable parts of `robot` in command group `group`.
@@ -623,8 +736,15 @@ pub enum Command {
     },
     /// Leave, releasing leases and removing owned parts.
     Detach,
-    /// DISARMED or SAFE to ARMED, in a fresh epoch.
+    /// DISARMED or SAFE to ARMED, in a fresh epoch; nothing when already
+    /// armed. It clears no robot's hold.
     Arm,
+    /// Clears one robot's hold, in a session already armed. On the wire,
+    /// an `Arm` naming the robot.
+    Rearm {
+        /// The robot.
+        robot: ParticipantId,
+    },
     /// Back to DISARMED, revoking every lease.
     Disarm,
     /// An embodiment's robot map, as authored JSON; the host normalises it.
@@ -682,6 +802,10 @@ pub enum Command {
         channels: Vec<ChannelId>,
         /// The token held on each.
         token: LeaseToken,
+        /// Hands them back to the participant this lease preempted
+        /// ([`LEASE_HANDBACK`](crate::wire::version::LEASE_HANDBACK));
+        /// `None`: a plain release.
+        to: Option<ParticipantId>,
     },
     /// Emergency stop: accepted from anyone.
     Estop {
@@ -889,4 +1013,6 @@ pub struct HandshakeAccept {
     pub up_key_id: u32,
     /// The id of `k_down` (host to participant).
     pub down_key_id: u32,
+    /// The host's datagram path, when it offers one.
+    pub datagram: Option<crate::wire::datagram::DatagramOffer>,
 }

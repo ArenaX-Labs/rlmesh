@@ -31,14 +31,17 @@
 //! - slot positions (`t0`, `replace_from`) convert as `t − θ`;
 //! - **deadlines** (`valid_until`, the lease expiry) convert conservatively,
 //!   `t − θ − ε`, so an offset error can only shorten them;
-//! - a chunk's life is capped at receipt + the part's `max_action_age`;
+//! - a chunk may be up to `ε_ctrl + ε_edge` older than it reads, so its
+//!   life ends at `min(valid_until − θ, receipt + max_action_age) − ε_ctrl −
+//!   ε_edge`;
 //! - the transit check: `receipt_session − publish_session + ε_ctrl +
 //!   ε_edge` (the controller's `publish_ns` through its own mapping) above
 //!   `max_action_age` rejects the chunk;
-//! - with no mapping, or `ε` above [`EdgeConfig::max_clock_error`] (5 ms by
-//!   default), chunks are refused and the lease cannot be timed, unless
-//!   [`EdgeConfig::require_clock_mapping`] is off (every participant on one
-//!   clock).
+//! - with no mapping, chunks are refused and the lease cannot be timed,
+//!   unless [`EdgeConfig::require_clock_mapping`] is off (every participant
+//!   on one clock);
+//! - either `ε` above the part's `max_clock_error` (a group's smallest)
+//!   refuses the chunk, and [`EdgeCore::clock_refused`] says by how much.
 //!
 //! In virtual and lockstep sessions every time is session time and no
 //! mapping is needed: the host times leases, and the edge's clock is the
@@ -51,14 +54,16 @@ use alloc::sync::Arc;
 use core::time::Duration;
 
 use crate::wire::{
-    ActionChunk, Applied, AuthorityView, ChannelId, ClockMode, EdgeMode, Epoch, FenceError,
-    LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
+    ActionChunk, Applied, AuthorityView, ChannelId, ChunkTiming, ClockMode, ClockRefusal, EdgeMode,
+    Epoch, FenceError, LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
 };
 use bytes::Bytes;
 
 use crate::edge::GroupError;
 use crate::edge::command::CommandCheck;
-use crate::edge::fallback::{Fallback, LeaseView, MemberLadder, ModeStats, SafeCause, TickView};
+use crate::edge::fallback::{
+    Decision, Fallback, LeaseView, MemberLadder, ModeStats, SafeCause, TickView,
+};
 use crate::edge::queue::{
     ActionQueue, ChunkMeta, Delivery, QueueStats, QueuedAction, Splice, SpliceOutcome,
 };
@@ -72,15 +77,12 @@ pub struct EdgeConfig {
     /// times are read as edge time and a delayed snapshot can extend the
     /// lease.
     pub require_clock_mapping: bool,
-    /// Refuse chunks while a mapping's error bound exceeds this (`max_clock_error`).
-    pub max_clock_error: Duration,
 }
 
 impl Default for EdgeConfig {
     fn default() -> Self {
         Self {
             require_clock_mapping: true,
-            max_clock_error: Duration::from_millis(5),
         }
     }
 }
@@ -119,7 +121,7 @@ pub enum Rejection {
     InvalidValue,
     /// No clock mapping yet ([`EdgeConfig::require_clock_mapping`]).
     NoClockMapping,
-    /// The clock error bound exceeds [`EdgeConfig::max_clock_error`].
+    /// A clock's error bound exceeds the part's `max_clock_error`.
     ClockUncertain,
     /// Not sealed under a command key this robot holds for the chunk's
     /// part, token and source: not the lease holder's.
@@ -183,9 +185,18 @@ pub struct EdgeStats {
     pub clamped: u64,
     /// Handovers between group members.
     pub handovers: u64,
+    /// Set while the newest clock judgement refused a chunk.
+    pub clock_refused: Option<ClockRefusal>,
+    /// How each member's chunks arrived.
+    pub timing: Vec<ChunkTiming>,
 }
 
 impl EdgeStats {
+    /// How `channel`'s chunks arrived, if it is a member.
+    pub fn timing(&self, channel: ChannelId) -> Option<&ChunkTiming> {
+        self.timing.iter().find(|t| t.channel == channel)
+    }
+
     /// Chunks refused for `reason`.
     pub fn rejected(&self, reason: Rejection) -> u64 {
         self.rejected
@@ -282,6 +293,35 @@ struct Member {
     max_action_age_ns: i64,
     /// (epoch, token, seq) of the newest accepted chunk.
     last: Option<(Epoch, LeaseToken, u64)>,
+    /// How its chunks arrived.
+    timing: ChunkTiming,
+    /// When the newest accepted chunk arrived (edge clock).
+    last_at: Option<i64>,
+}
+
+impl Member {
+    /// It accepted chunk `id` (epoch, token, seq), received at `receive_ns`
+    /// and `late_ns` past its first slot: counted, and its newest. A skip in
+    /// the seqs under one token is a loss, and only there is the time since
+    /// the last one a gap.
+    fn took(&mut self, id: (Epoch, LeaseToken, u64), receive_ns: i64, late_ns: i64) {
+        let timing = &mut self.timing;
+        timing.accepted += 1;
+        timing.late(late_ns);
+        if let Some((epoch, token, seq)) = self.last
+            && (epoch, token) == (id.0, id.1)
+        {
+            let skipped = id.2.saturating_sub(seq).saturating_sub(1);
+            timing.lost = timing
+                .lost
+                .saturating_add(u32::try_from(skipped).unwrap_or(u32::MAX));
+            if let Some(at) = self.last_at {
+                timing.gap(receive_ns.saturating_sub(at));
+            }
+        }
+        self.last = Some(id);
+        self.last_at = Some(receive_ns);
+    }
 }
 
 /// The edge of one command group.
@@ -292,13 +332,33 @@ pub struct EdgeCore {
     members: Vec<Member>,
     queues: Vec<ActionQueue>,
     config: EdgeConfig,
+    /// The smallest `max_clock_error` of the members.
+    max_clock_error_ns: u64,
+    /// Set while the newest clock judgement refused a chunk.
+    clock_refused: Option<ClockRefusal>,
     safe_behavior: Arc<str>,
     fallback: Fallback,
     accepted: u64,
     rejected: [u64; Rejection::ALL.len()],
     safe_reports: u64,
+    /// A fall not reported yet, waiting to see whether its holder is alive.
+    unjudged: Option<Unjudged>,
     clamped: u64,
     handovers: u64,
+}
+
+/// A dry queue or a lapsed lease is what a dead holder looks like from here,
+/// and the edge sees it before the host does. The group is safe either way;
+/// only the report waits. A renewal from after the fall means the holder is
+/// alive, so the fall is the robot's to report; the lease going away means
+/// the host judged the holder lost, and only its parts stop.
+#[derive(Clone, Copy, Debug)]
+struct Unjudged {
+    epoch: Epoch,
+    cause: SafeCause,
+    token: LeaseToken,
+    /// An expiry at or past this came from a heartbeat after the fall.
+    renewed_by_ns: i64,
 }
 
 impl EdgeCore {
@@ -319,6 +379,7 @@ impl EdgeCore {
         let mut members = Vec::with_capacity(parts.len());
         let mut ladders = Vec::with_capacity(parts.len());
         let mut queues = Vec::with_capacity(parts.len());
+        let mut max_clock_error = first_command.max_clock_error;
         for part in parts {
             let command = part
                 .command
@@ -337,6 +398,7 @@ impl EdgeCore {
             {
                 return Err(GroupError::NotOneGroup(part.channel));
             }
+            max_clock_error = max_clock_error.min(command.max_clock_error);
             let check =
                 CommandCheck::new(&command).ok_or(GroupError::NotCommandable(part.channel))?;
             let delivery = if command.is_delta() {
@@ -347,6 +409,7 @@ impl EdgeCore {
             ladders.push(MemberLadder {
                 hold_last: command.hold_last,
                 delivery,
+                latch: command.latch,
             });
             queues.push(ActionQueue::new(delivery));
             members.push(Member {
@@ -357,6 +420,11 @@ impl EdgeCore {
                 period_ns: duration_i64(part.control_period()).max(1),
                 max_action_age_ns: duration_i64(command.max_action_age),
                 last: None,
+                timing: ChunkTiming {
+                    channel: part.channel,
+                    ..ChunkTiming::default()
+                },
+                last_at: None,
                 part,
             });
         }
@@ -366,11 +434,14 @@ impl EdgeCore {
             members,
             queues,
             config,
+            max_clock_error_ns: u64::try_from(max_clock_error.as_nanos()).unwrap_or(u64::MAX),
+            clock_refused: None,
             safe_behavior: Arc::from(first_command.safe_behavior.as_str()),
             fallback: Fallback::new(duration_i64(first_command.hold_max), ladders),
             accepted: 0,
             rejected: [0; Rejection::ALL.len()],
             safe_reports: 0,
+            unjudged: None,
             clamped: 0,
             handovers: 0,
         })
@@ -395,6 +466,32 @@ impl EdgeCore {
     /// decode).
     pub fn count_rejection(&mut self, reason: Rejection) {
         self.rejected[reason.index()] += 1;
+    }
+
+    /// Counts a chunk for member `channel` refused before [`Self::accept`]
+    /// (one that did not open or decode): it reached the edge all the same.
+    pub fn count_unread(&mut self, channel: ChannelId, reason: Rejection) {
+        self.count_rejection(reason);
+        if let Some(member) = self.members.iter_mut().find(|m| m.part.channel == channel) {
+            member.timing.received += 1;
+        }
+    }
+
+    /// How each member's chunks arrived, without building [`Self::stats`]:
+    /// a board reports these on every heartbeat.
+    pub fn timing(&self) -> impl Iterator<Item = &ChunkTiming> {
+        self.members.iter().map(|m| &m.timing)
+    }
+
+    /// Chunks refused for `reason`, without building [`Self::stats`]: a
+    /// board reports these on every heartbeat.
+    pub fn rejected(&self, reason: Rejection) -> u64 {
+        self.rejected[reason.index()]
+    }
+
+    /// Why the clocks are refusing chunks, while the newest judgement did.
+    pub fn clock_refused(&self) -> Option<&ClockRefusal> {
+        self.clock_refused.as_ref()
     }
 
     /// The robot finished a handover: the group may dispatch again.
@@ -473,7 +570,9 @@ impl EdgeCore {
     }
 
     /// Validates `chunk`, received at `receive_ns` (edge clock), against the
-    /// view (observed at `observed_local_ns`) and splices it.
+    /// view (observed at `observed_local_ns`) and splices it. A valid chunk
+    /// the heap has no room for now is dropped whole, its actions counted in
+    /// [`SpliceOutcome::no_memory`].
     pub fn accept<V: AuthorityView + ?Sized>(
         &mut self,
         chunk: ActionChunk,
@@ -481,8 +580,17 @@ impl EdgeCore {
         view: Option<&V>,
         observed_local_ns: i64,
     ) -> Result<SpliceOutcome, Rejection> {
+        if let Some(member) = self
+            .members
+            .iter_mut()
+            .find(|m| m.part.channel == chunk.channel)
+        {
+            member.timing.received += 1;
+        }
         let result = self.validate_and_splice(chunk, receive_ns, view, observed_local_ns);
         match result {
+            // Dropped for want of memory: neither accepted nor refused.
+            Ok(outcome) if outcome.no_memory > 0 => {}
             Ok(_) => self.accepted += 1,
             Err(reason) => self.rejected[reason.index()] += 1,
         }
@@ -521,12 +629,19 @@ impl EdgeCore {
         }
         let edge = self.clock(view, &self.me);
         let source = self.clock(view, &chunk.source);
-        let max_clock_error = duration_i64(self.config.max_clock_error);
         if !edge.ticked {
             if self.config.require_clock_mapping && !(edge.mapped && source.mapped) {
                 return Err(Rejection::NoClockMapping);
             }
-            if edge.error_ns > max_clock_error || source.error_ns > max_clock_error {
+            self.clock_refused = ClockRefusal::judge(
+                chunk.channel,
+                self.max_clock_error_ns,
+                [
+                    (&self.me, edge.error_ns.unsigned_abs()),
+                    (&chunk.source, source.error_ns.unsigned_abs()),
+                ],
+            );
+            if self.clock_refused.is_some() {
                 return Err(Rejection::ClockUncertain);
             }
         }
@@ -569,8 +684,9 @@ impl EdgeCore {
         let valid_until_ns = chunk
             .valid_until_ns
             .saturating_sub(edge.offset_ns)
+            .min(receive_ns.saturating_add(member.max_action_age_ns))
             .saturating_sub(edge.error_ns)
-            .min(receive_ns.saturating_add(member.max_action_age_ns));
+            .saturating_sub(source.error_ns);
         if valid_until_ns <= receive_ns {
             return Err(Rejection::Expired);
         }
@@ -591,7 +707,23 @@ impl EdgeCore {
             return Err(Rejection::StaleSeq);
         }
         let stride = member.check.stride();
-        self.members[index].last = Some((chunk.epoch, chunk.lease_token, chunk.seq));
+        // Each action a slice of the payload, in room that may fail: a
+        // chunk the heap has no room for changes nothing.
+        let mut actions = Vec::new();
+        if actions.try_reserve_exact(count).is_err() {
+            return Ok(SpliceOutcome {
+                no_memory: count as u64,
+                ..SpliceOutcome::default()
+            });
+        }
+        actions.extend((0..count).map(|i| checked.actions.slice(i * stride..(i + 1) * stride)));
+        let t0_ns = chunk.t0_ns.saturating_sub(edge.offset_ns);
+        let member = &mut self.members[index];
+        member.took(
+            (chunk.epoch, chunk.lease_token, chunk.seq),
+            receive_ns,
+            receive_ns.saturating_sub(t0_ns),
+        );
         self.clamped += u64::from(checked.clamped);
         let meta = Arc::new(ChunkMeta {
             source: chunk.source,
@@ -602,13 +734,10 @@ impl EdgeCore {
             receive_ns,
             valid_until_ns,
         });
-        let actions = (0..count)
-            .map(|i| checked.actions.slice(i * stride..(i + 1) * stride))
-            .collect();
         Ok(self.queues[index].splice(
             Splice {
                 chunk: meta,
-                t0_ns: chunk.t0_ns.saturating_sub(edge.offset_ns),
+                t0_ns,
                 dt_ns,
                 replace_from_ns: chunk.replace_from_ns.saturating_sub(edge.offset_ns),
                 actions,
@@ -643,11 +772,7 @@ impl EdgeCore {
             reason: v.mode_reason(),
         });
         let decision = self.fallback.tick(now_ns, tick_view, &mut self.queues);
-        let report = decision
-            .went_safe
-            .filter(|cause| cause.needs_report())
-            .zip(tick_view)
-            .map(|(cause, v)| (v.epoch, cause));
+        let report = self.judge_fall(now_ns, &decision, tick_view, view);
         if report.is_some() {
             self.safe_reports += 1;
         }
@@ -710,6 +835,45 @@ impl EdgeCore {
         }
     }
 
+    /// What to tell the host this tick about the group's fall, if anything.
+    fn judge_fall<V: AuthorityView + ?Sized>(
+        &mut self,
+        now_ns: i64,
+        decision: &Decision,
+        tick_view: Option<TickView>,
+        view: Option<&V>,
+    ) -> Option<(Epoch, SafeCause)> {
+        let tick_view = tick_view?;
+        if let Some(cause) = decision.went_safe.filter(|c| c.needs_report()) {
+            let lease = tick_view
+                .lease
+                .filter(|_| matches!(cause, SafeCause::QueueDry | SafeCause::LeaseLapsed));
+            let Some(lease) = lease else {
+                return Some((tick_view.epoch, cause));
+            };
+            let ttl = decision
+                .member
+                .and_then(|i| view?.lease(self.members[i].part.channel))
+                .map_or(0, |l| l.ttl_ns);
+            self.unjudged = Some(Unjudged {
+                epoch: tick_view.epoch,
+                cause,
+                token: lease.token,
+                renewed_by_ns: now_ns.saturating_add_unsigned(ttl),
+            });
+        }
+        let fall = self.unjudged?;
+        let Some(lease) = tick_view.lease.filter(|l| l.token == fall.token) else {
+            self.unjudged = None;
+            return None;
+        };
+        if lease.expires_ns.is_some_and(|e| e < fall.renewed_by_ns) {
+            return None;
+        }
+        self.unjudged = None;
+        Some((fall.epoch, fall.cause))
+    }
+
     /// The counters so far.
     pub fn stats(&self) -> EdgeStats {
         let mut queue = QueueStats::default();
@@ -737,778 +901,11 @@ impl EdgeCore {
             safe_reports: self.safe_reports,
             clamped: self.clamped,
             handovers: self.handovers,
+            clock_refused: self.clock_refused.clone(),
+            timing: self.members.iter().map(|m| m.timing).collect(),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
-    use crate::wire::{
-        AuthoritySnapshot, ClockMapping, Command, Fingerprint, InputRange, Lease, PriorityClass,
-        ReasonCode, Request, Role, SessionId,
-    };
-    use crate::{Authority, AuthorityConfig, VirtualConfig};
-
-    use super::*;
-
-    const GRACE: i64 = 100_000_000;
-    const MS: i64 = 1_000_000;
-
-    fn pid(id: &str) -> ParticipantId {
-        ParticipantId::new(id).expect("id")
-    }
-
-    /// `cmd`: 6 float joints at 1 kHz, hold 10 ms; `grip`: binary, limited;
-    /// `arm` + `arm/tcp`: a group.
-    fn robot_map(hold_last: bool) -> String {
-        // A core joint set holds its target; a custom kind runs safe.
-        let kind = if hold_last {
-            r#""kind": "joints", "count": 6, "fields": ["pos"]"#
-        } else {
-            r#""kind": "x/joints", "fields": {"pos": ["float32", [6]]}"#
-        };
-        format!(
-            r#"{{
-            "cmd": {{{kind}, "hz": 1000,
-                    "command": "position", "hold_max_ms": 10, "safe": "brake",
-                    "max_action_age_ms": 200}},
-            "grip": {{"kind": "gripper", "hz": 1000, "command": "position", "binary": true}},
-            "arm": {{"kind": "joints", "hz": 1000, "count": 2, "fields": ["pos"],
-                    "command": "position", "group": "arm", "limits": {{"pos": [-1, 1]}}}},
-            "arm/tcp": {{"kind": "x/tcp", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
-                        "command": "delta", "group": "arm"}}
-        }}"#
-        )
-    }
-
-    struct Fixture {
-        auth: Authority,
-        edge: EdgeCore,
-        snapshot: Option<AuthoritySnapshot>,
-        observed: i64,
-        /// Mappings (offset, error) of the robot and the controllers.
-        mapping: Option<(i64, u64)>,
-    }
-
-    impl Fixture {
-        fn new() -> Self {
-            Self::with(EdgeConfig::default(), true, &["cmd"], None)
-        }
-
-        fn with(
-            config: EdgeConfig,
-            hold_last: bool,
-            paths: &[&str],
-            virtual_clock: Option<VirtualConfig>,
-        ) -> Self {
-            let mut auth = Authority::new(
-                SessionId::new(),
-                AuthorityConfig {
-                    lease_grace_ns: GRACE as u64,
-                    virtual_clock,
-                    ..AuthorityConfig::default()
-                },
-            );
-            for (id, roles, priority) in [
-                ("robot", vec![Role::Embodiment], PriorityClass::Scripted),
-                ("policy", vec![Role::Controller], PriorityClass::Model),
-                ("operator", vec![Role::Controller], PriorityClass::Operator),
-            ] {
-                Self::run(
-                    &mut auth,
-                    id,
-                    Command::Attach {
-                        name: id.into(),
-                        roles,
-                        priority,
-                        protocol_minor: PROTOCOL_MINOR,
-                        supports: Vec::new(),
-                        requires: Vec::new(),
-                        workflow_edition: String::new(),
-                        workflow_editions: Vec::new(),
-                        estop: None,
-                    },
-                );
-            }
-            Self::run(
-                &mut auth,
-                "robot",
-                Command::DeclareParts {
-                    spec_version: SPEC_VERSION,
-                    robot_json: robot_map(hold_last),
-                    seal: Vec::new(),
-                    board_id: None,
-                },
-            );
-            let channels: Vec<ChannelId> = auth
-                .parts()
-                .filter(|p| p.command.is_some())
-                .map(|p| p.channel)
-                .collect();
-            for (id, fp) in [("policy", 1), ("operator", 2)] {
-                Self::run(
-                    &mut auth,
-                    id,
-                    Command::DeclareBinding {
-                        fingerprint: Fingerprint::from(fp),
-                        revision: 1,
-                        table_json: "{}".into(),
-                        channels: channels.clone(),
-                        replan_hz: 0.0,
-                        contracts: Vec::new(),
-                        grids: Vec::new(),
-                    },
-                );
-            }
-            Self::run(&mut auth, "operator", Command::Arm);
-            let parts = paths
-                .iter()
-                .map(|path| {
-                    auth.parts()
-                        .find(|p| p.path.as_str() == *path)
-                        .cloned()
-                        .expect(path)
-                })
-                .collect();
-            let edge = EdgeCore::new(parts, pid("robot"), config).expect("edge");
-            Self {
-                auth,
-                edge,
-                snapshot: None,
-                observed: 0,
-                mapping: Some((0, 0)),
-            }
-        }
-
-        fn run(auth: &mut Authority, from: &str, command: Command) {
-            let epoch = Some(auth.epoch());
-            auth.apply(
-                Request {
-                    from: pid(from),
-                    epoch,
-                    request_id: 0,
-                    command,
-                },
-                0,
-            )
-            .expect("apply");
-        }
-
-        fn ch(&self, path: &str) -> ChannelId {
-            self.auth
-                .parts()
-                .find(|p| p.path.as_str() == path)
-                .map(|p| p.channel)
-                .expect(path)
-        }
-
-        fn grant_with(&mut self, from: &str, path: &str, release: &[&str], now: i64) -> Lease {
-            let fingerprint = self.auth.binding(&pid(from)).expect("binding").fingerprint;
-            let epoch = Some(self.auth.epoch());
-            let command = Command::GrantLease {
-                channels: vec![self.ch(path)],
-                release: release.iter().map(|p| self.ch(p)).collect(),
-                binding: fingerprint,
-                ttl_ns: None,
-            };
-            self.auth
-                .apply(
-                    Request {
-                        from: pid(from),
-                        epoch,
-                        request_id: 0,
-                        command,
-                    },
-                    now,
-                )
-                .expect("grant")
-                .leases
-                .remove(0)
-        }
-
-        fn grant(&mut self, from: &str, now: i64) -> Lease {
-            self.grant_with(from, "cmd", &[], now)
-        }
-
-        /// The edge observes the host's snapshot taken at `now`.
-        fn publish(&mut self, now: i64) {
-            let clocks = self
-                .mapping
-                .map(|(offset_ns, error_ns)| {
-                    ["robot", "policy", "operator"]
-                        .into_iter()
-                        .map(|id| ClockMapping {
-                            participant: pid(id),
-                            offset_ns,
-                            error_ns,
-                            rtt_ns: 0,
-                            sample_ns: now,
-                            drift_bound_ppm: 100.0,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            self.observed = now;
-            self.snapshot = Some(self.auth.snapshot(clocks, now));
-        }
-
-        /// `n` actions at 1 ms from `t0` (session time) for `path`, each
-        /// value `fill`.
-        #[allow(clippy::too_many_arguments)]
-        fn chunk_for(
-            &self,
-            path: &str,
-            source: &str,
-            lease: &Lease,
-            seq: u64,
-            t0: i64,
-            n: u32,
-            fill: f32,
-        ) -> ActionChunk {
-            let part = self
-                .auth
-                .parts()
-                .find(|p| p.path.as_str() == path)
-                .expect(path);
-            let command = part.command.as_ref().expect("commandable");
-            let stride = command.layout().expect("layout").stride().expect("stride");
-            let elements: usize = command
-                .fields
-                .iter()
-                .map(|f| f.elements().unwrap_or(0) as usize)
-                .sum();
-            let mut action: Vec<u8> = core::iter::repeat_n(fill.to_le_bytes(), elements)
-                .flatten()
-                .collect();
-            action.resize(stride, 0);
-            ActionChunk {
-                channel: part.channel,
-                epoch: self.auth.epoch(),
-                lease_token: lease.token,
-                seq,
-                source: pid(source),
-                binding: lease.binding,
-                based_on: vec![InputRange::one(ChannelId(99), seq)],
-                t0_ns: t0,
-                dt_ns: MS as u64,
-                replace_from_ns: t0,
-                valid_until_ns: t0 + 150 * MS,
-                count: n,
-                actions: Bytes::from(action.repeat(n as usize)),
-                publish_ns: t0,
-                tick: 0,
-            }
-        }
-
-        fn chunk(&self, source: &str, lease: &Lease, seq: u64, t0: i64, n: u32) -> ActionChunk {
-            self.chunk_for("cmd", source, lease, seq, t0, n, 0.0)
-        }
-
-        fn accept(&mut self, chunk: ActionChunk, at: i64) -> Result<SpliceOutcome, Rejection> {
-            self.edge
-                .accept(chunk, at, self.snapshot.as_ref(), self.observed)
-        }
-
-        fn tick(&mut self, at: i64) -> EdgeTick {
-            self.edge.tick(at, self.snapshot.as_ref(), self.observed)
-        }
-    }
-
-    #[test]
-    fn a_preempted_controllers_queued_and_inflight_chunks_are_fenced() {
-        let mut f = Fixture::with(EdgeConfig::default(), false, &["cmd"], None);
-        let model = f.grant("policy", 0);
-        f.publish(0);
-        f.accept(f.chunk("policy", &model, 1, 0, 50), 0)
-            .expect("accept");
-        assert_eq!(f.tick(MS).mode, EdgeMode::Driving);
-
-        let human = f.grant("operator", 2 * MS);
-        f.publish(2 * MS);
-        // The model's in-flight chunk is fenced; its queued actions go at the
-        // next tick, and the edge waits (braking) until the operator
-        // delivers.
-        assert_eq!(
-            f.accept(f.chunk("policy", &model, 2, 2 * MS, 50), 2 * MS),
-            Err(Rejection::StaleToken)
-        );
-        let tick = f.tick(3 * MS);
-        assert_eq!(tick.mode, EdgeMode::Hold);
-        assert!(tick.action.is_none() && tick.safe_behavior.is_some());
-        // A chunk claiming the operator's token but sent by someone else, or
-        // under another binding.
-        assert_eq!(
-            f.accept(f.chunk("policy", &human, 1, 4 * MS, 50), 4 * MS),
-            Err(Rejection::WrongSource)
-        );
-        let mut other = f.chunk("operator", &human, 1, 4 * MS, 50);
-        other.binding = Fingerprint::from(1);
-        assert_eq!(f.accept(other, 4 * MS), Err(Rejection::WrongBinding));
-        f.accept(f.chunk("operator", &human, 1, 4 * MS, 50), 4 * MS)
-            .expect("accept");
-        let tick = f.tick(4 * MS);
-        assert_eq!(tick.mode, EdgeMode::Driving);
-        assert_eq!(tick.action.expect("due").chunk.source, pid("operator"));
-        let stats = f.edge.stats();
-        assert_eq!(stats.accepted, 2);
-        assert_eq!(stats.rejected(Rejection::StaleToken), 1);
-        assert_eq!(stats.rejected(Rejection::WrongSource), 1);
-        assert_eq!(stats.rejected(Rejection::WrongBinding), 1);
-        assert_eq!(stats.queue.fenced, 49, "{stats:?}");
-    }
-
-    #[test]
-    fn a_chunk_without_dt_takes_the_bindings_action_grid() {
-        let mut f = Fixture::new();
-        let cmd = f.ch("cmd");
-        Fixture::run(
-            &mut f.auth,
-            "policy",
-            Command::DeclareBinding {
-                fingerprint: Fingerprint::from(7),
-                revision: 2,
-                table_json: "{}".into(),
-                channels: vec![cmd],
-                replan_hz: 0.0,
-                contracts: Vec::new(),
-                grids: vec![crate::wire::ActionGrid {
-                    channel: cmd,
-                    dt: Duration::from_millis(10),
-                }],
-            },
-        );
-        let lease = f.grant("policy", 0);
-        f.publish(0);
-        let mut chunk = f.chunk("policy", &lease, 1, 0, 5);
-        chunk.dt_ns = 0;
-        f.accept(chunk, 0).expect("accept");
-        let first = f.tick(9 * MS).action.expect("due");
-        assert_eq!((first.index, first.dt_ns), (0, 10 * MS));
-        assert_eq!(f.tick(10 * MS).action.expect("due").index, 1);
-
-        // Without a grid for the part, dt = 0 is the control period (1 ms).
-        Fixture::run(
-            &mut f.auth,
-            "policy",
-            Command::DeclareBinding {
-                fingerprint: Fingerprint::from(8),
-                revision: 3,
-                table_json: "{}".into(),
-                channels: vec![cmd],
-                replan_hz: 0.0,
-                contracts: Vec::new(),
-                grids: Vec::new(),
-            },
-        );
-        let lease = f.grant("policy", 11 * MS);
-        f.publish(11 * MS);
-        let mut chunk = f.chunk("policy", &lease, 1, 11 * MS, 5);
-        chunk.dt_ns = 0;
-        f.accept(chunk, 11 * MS).expect("accept");
-        assert_eq!(f.tick(12 * MS).action.expect("due").dt_ns, MS);
-    }
-
-    #[test]
-    fn a_rebinding_fences_the_old_tokens_chunks() {
-        let mut f = Fixture::new();
-        let lease = f.grant("policy", 0);
-        f.publish(0);
-        f.accept(f.chunk("policy", &lease, 1, 0, 20), 0)
-            .expect("accept");
-        assert_eq!(f.tick(0).mode, EdgeMode::Driving);
-        let channels = vec![f.ch("cmd")];
-        Fixture::run(
-            &mut f.auth,
-            "policy",
-            Command::DeclareBinding {
-                fingerprint: Fingerprint::from(10),
-                revision: 2,
-                table_json: "{}".into(),
-                channels,
-                replan_hz: 0.0,
-                contracts: Vec::new(),
-                grids: Vec::new(),
-            },
-        );
-        f.publish(MS);
-        let rebound = f.auth.lease(f.ch("cmd")).expect("lease").clone();
-        assert!(rebound.token > lease.token);
-        assert_eq!(
-            f.accept(f.chunk("policy", &lease, 2, MS, 20), MS),
-            Err(Rejection::StaleToken),
-            "an in-flight chunk of the old binding"
-        );
-        // The queue of the old token is purged on the next tick, and the new
-        // token's chunks drive.
-        let tick = f.tick(MS);
-        assert_eq!(tick.mode, EdgeMode::Hold, "nothing of the new token yet");
-        f.accept(f.chunk("policy", &rebound, 1, 2 * MS, 20), 2 * MS)
-            .expect("accept");
-        assert_eq!(
-            f.tick(2 * MS).action.map(|a| a.chunk.lease_token),
-            Some(rebound.token)
-        );
-        assert!(f.edge.stats().queue.fenced > 0);
-    }
-
-    #[test]
-    fn seq_is_per_token_and_void_or_invalid_chunks_are_rejected() {
-        let mut f = Fixture::new();
-        let model = f.grant("policy", 0);
-        f.publish(0);
-        let mut late = f.chunk("policy", &model, 1, 0, 3);
-        late.valid_until_ns = 5 * MS;
-        assert_eq!(f.accept(late, 6 * MS), Err(Rejection::Expired));
-        let nan = f.chunk_for("cmd", "policy", &model, 1, 0, 3, f32::NAN);
-        assert_eq!(f.accept(nan, 0), Err(Rejection::InvalidValue));
-        let mut short = f.chunk("policy", &model, 1, 0, 3);
-        short.actions = short.actions.slice(..20);
-        assert_eq!(f.accept(short, 0), Err(Rejection::Malformed));
-        let mut empty = f.chunk("policy", &model, 1, 0, 3);
-        empty.count = 0;
-        empty.actions = Bytes::new();
-        assert_eq!(f.accept(empty, 0), Err(Rejection::Empty));
-        for (seq, ok) in [(2, true), (2, false), (1, false)] {
-            assert_eq!(
-                f.accept(f.chunk("policy", &model, seq, 0, 3), 0).is_ok(),
-                ok
-            );
-        }
-        // A new holder's token starts its own seq.
-        let human = f.grant("operator", MS);
-        f.publish(MS);
-        f.accept(f.chunk("operator", &human, 1, MS, 3), MS)
-            .expect("accept");
-        let stats = f.edge.stats();
-        assert_eq!(stats.accepted, 2);
-        assert_eq!(stats.rejected(Rejection::StaleSeq), 2);
-        // A closing scene's view fences every lease, before the host ends
-        // them.
-        if let Some(view) = f.snapshot.as_mut() {
-            view.scene = Some(Box::new(crate::wire::SceneInfo {
-                run: "r-7k2m".into(),
-                name: "rig".into(),
-                fingerprint: crate::wire::Fingerprint::from(7),
-                closing: Some(crate::wire::Reason::new(ReasonCode::SceneEnded)),
-                rejoin_until_ns: None,
-            }));
-        }
-        assert_eq!(
-            f.accept(f.chunk("operator", &human, 2, MS, 3), MS),
-            Err(Rejection::NoLease)
-        );
-    }
-
-    #[test]
-    fn clock_conversion_never_extends_a_deadline_and_transit_is_checked() {
-        let mut f = Fixture::new();
-        // The edge's clock reads 1 s behind session time (offset +1 s),
-        // known within 2 ms; edge time 0 is session time 1 s.
-        let session_now = 1_000 * MS;
-        let lease = f.grant("policy", session_now);
-        f.mapping = Some((1_000 * MS, 2 * MS as u64));
-        f.publish(session_now);
-        let mut chunk = f.chunk("policy", &lease, 1, session_now, 100);
-        chunk.valid_until_ns = session_now + 30 * MS;
-        chunk.publish_ns = 0;
-        f.accept(chunk, 0).expect("accept");
-        // valid_until converts to 30 − 2 = 28 ms local.
-        assert_eq!(f.tick(27 * MS).mode, EdgeMode::Driving);
-        let tick = f.tick(29 * MS);
-        assert_eq!(
-            tick.mode,
-            EdgeMode::Hold,
-            "void after the conservative deadline"
-        );
-
-        // A chunk that spent longer than max_action_age (200 ms) in transit,
-        // with the error bounds added, is refused.
-        let mut stale = f.chunk("policy", &lease, 2, session_now, 10);
-        stale.publish_ns = -197 * MS;
-        assert_eq!(
-            f.accept(stale, 0),
-            Err(Rejection::TooOld),
-            "197 + 2 + 2 > 200"
-        );
-        let mut fresh = f.chunk("policy", &lease, 3, session_now, 10);
-        fresh.publish_ns = -195 * MS;
-        f.accept(fresh, 0).expect("195 + 4 <= 200");
-
-        // The lease (granted at session 1 s with a 100 ms grace) expires at
-        // 100 ms local, less the error bound.
-        assert_eq!(
-            f.accept(f.chunk("policy", &lease, 4, session_now, 10), 99 * MS),
-            Err(Rejection::LeaseExpired)
-        );
-
-        // An uncertain or missing mapping refuses chunks (5 ms by default).
-        let mut f = Fixture::new();
-        let lease = f.grant("policy", 0);
-        f.mapping = Some((0, 6 * MS as u64));
-        f.publish(0);
-        assert_eq!(
-            f.accept(f.chunk("policy", &lease, 1, 0, 10), 0),
-            Err(Rejection::ClockUncertain)
-        );
-        f.mapping = None;
-        f.publish(0);
-        assert_eq!(
-            f.accept(f.chunk("policy", &lease, 2, 0, 10), 0),
-            Err(Rejection::NoClockMapping)
-        );
-        assert_eq!(
-            f.tick(0).mode,
-            EdgeMode::Idle,
-            "untimed and nothing applied"
-        );
-    }
-
-    #[test]
-    fn the_lease_lapses_by_the_edge_clock_alone_and_the_edge_reports_safe() {
-        let mut f = Fixture::new();
-        let lease = f.grant("policy", 0);
-        // One snapshot, then the host goes quiet: no renewal ever arrives.
-        f.publish(0);
-        f.accept(f.chunk("policy", &lease, 1, 0, 140), 0)
-            .expect("accept");
-        assert_eq!(f.tick(MS).mode, EdgeMode::Driving);
-        let tick = f.tick(GRACE + MS);
-        assert_eq!(tick.mode, EdgeMode::Safe, "safe at once, no hold");
-        assert_eq!(tick.safe_behavior.as_deref(), Some("brake"));
-        let (epoch, cause) = tick.report.expect("a report for the host");
-        assert_eq!((epoch, cause), (f.auth.epoch(), SafeCause::LeaseLapsed));
-        let mut late = f.chunk("policy", &lease, 2, GRACE + 2 * MS, 10);
-        late.publish_ns = GRACE + 2 * MS;
-        assert_eq!(f.accept(late, GRACE + 2 * MS), Err(Rejection::LeaseExpired));
-    }
-
-    #[test]
-    fn a_dry_queue_holds_then_goes_safe_and_estop_is_immediate() {
-        let mut f = Fixture::new();
-        let lease = f.grant("policy", 0);
-        f.publish(0);
-        f.accept(f.chunk("policy", &lease, 1, 0, 5), 0)
-            .expect("accept");
-        let ticks: Vec<EdgeTick> = (0..20).map(|t| f.tick(t * MS)).collect();
-        let count = |m| ticks.iter().filter(|t| t.mode == m).count();
-        assert_eq!(count(EdgeMode::Driving), 5);
-        assert_eq!(count(EdgeMode::Hold), 10, "hold_max is 10 ms");
-        assert_eq!(count(EdgeMode::Safe), 5);
-        assert_eq!(f.edge.stats().safe_reports, 1);
-        assert_eq!(
-            ticks.iter().filter_map(|t| t.report).collect::<Vec<_>>(),
-            vec![(f.auth.epoch(), SafeCause::QueueDry)]
-        );
-
-        let mut f = Fixture::new();
-        let lease = f.grant("policy", 0);
-        f.publish(0);
-        f.accept(f.chunk("policy", &lease, 1, 0, 50), 0)
-            .expect("accept");
-        assert_eq!(f.tick(0).mode, EdgeMode::Driving);
-        Fixture::run(
-            &mut f.auth,
-            "operator",
-            Command::Estop {
-                reason: "test".into(),
-                code: ReasonCode::EstopRemote,
-                origin: None,
-                at_ns: 0,
-            },
-        );
-        f.publish(MS);
-        let tick = f.tick(MS);
-        assert_eq!(tick.mode, EdgeMode::Estop);
-        assert_eq!(tick.safe_behavior.as_deref(), Some("brake"));
-        assert_eq!(tick.applied[0].applied.reason, ReasonCode::EstopRemote);
-        assert!(tick.report.is_none(), "the host already knows");
-        assert_eq!(
-            f.accept(f.chunk("policy", &lease, 2, MS, 50), MS),
-            Err(Rejection::Estop)
-        );
-
-        // A local latch needs no host: refused chunks, purged queues, Estop.
-        let mut f = Fixture::new();
-        let lease = f.grant("policy", 0);
-        f.publish(0);
-        f.accept(f.chunk("policy", &lease, 1, 0, 50), 0)
-            .expect("accept");
-        assert_eq!(f.tick(0).mode, EdgeMode::Driving);
-        f.edge.set_local_estop(Some(ReasonCode::EstopLocal));
-        assert_eq!(
-            f.accept(f.chunk("policy", &lease, 2, MS, 50), MS),
-            Err(Rejection::Estop)
-        );
-        let tick = f.tick(MS);
-        assert_eq!(
-            (tick.mode, tick.applied[0].applied.reason),
-            (EdgeMode::Estop, ReasonCode::EstopLocal)
-        );
-        assert_eq!(f.edge.queue_depth(), 0);
-        // Cleared, the host still shows the lease, but nothing queued
-        // survived the latch.
-        f.edge.set_local_estop(None);
-        assert_eq!(f.tick(2 * MS).mode, EdgeMode::Idle);
-    }
-
-    #[test]
-    fn the_applied_stream_shows_what_was_dispatched_each_tick() {
-        let mut f = Fixture::new();
-        let lease = f.grant("policy", 0);
-        f.publish(0);
-        let applied_id = f
-            .auth
-            .part(f.ch("cmd"))
-            .and_then(|p| p.applied_channel)
-            .expect("applied");
-        let tick = f.tick(0);
-        assert_eq!(tick.applied.len(), 1);
-        assert_eq!(tick.applied[0].stream, applied_id);
-        assert_eq!(tick.applied[0].applied, Applied::absent(EdgeMode::Idle));
-        f.accept(f.chunk_for("cmd", "policy", &lease, 7, MS, 2, 0.5), MS)
-            .expect("accept");
-        let tick = f.tick(2 * MS);
-        let sample = &tick.applied[0];
-        assert_eq!(
-            sample.applied,
-            Applied {
-                mode: EdgeMode::Driving,
-                present: true,
-                lease_token: lease.token,
-                chunk_seq: 7,
-                action_index: 1,
-                reason: ReasonCode::Unspecified,
-            }
-        );
-        assert_eq!(&sample.value[..4], &0.5_f32.to_le_bytes());
-        // Hold (position): the held value, mode HOLD, present.
-        let tick = f.tick(4 * MS);
-        assert_eq!(tick.applied[0].applied.mode, EdgeMode::Hold);
-        assert!(tick.applied[0].applied.present);
-        // Safe: nothing, and why.
-        let tick = f.tick(20 * MS);
-        assert_eq!(
-            tick.applied[0].applied,
-            Applied {
-                reason: ReasonCode::QueueDry,
-                ..Applied::absent(EdgeMode::Safe)
-            }
-        );
-        assert!(tick.applied[0].value.is_empty());
-    }
-
-    #[test]
-    fn limits_and_the_binary_snap_apply_before_queueing() {
-        let mut f = Fixture::with(EdgeConfig::default(), true, &["grip"], None);
-        let lease = f.grant_with("policy", "grip", &[], 0);
-        f.publish(0);
-        f.accept(f.chunk_for("grip", "policy", &lease, 1, 0, 2, 0.8), 0)
-            .expect("accept");
-        let tick = f.tick(0);
-        assert_eq!(
-            &tick.action.expect("due").value[..4],
-            &1.0_f32.to_le_bytes()
-        );
-        assert_eq!(&tick.applied[0].value[..4], &1.0_f32.to_le_bytes());
-        assert_eq!(f.edge.stats().clamped, 2);
-    }
-
-    #[test]
-    fn a_group_dispatches_only_its_leased_member_and_hands_over() {
-        let mut f = Fixture::with(EdgeConfig::default(), true, &["arm", "arm/tcp"], None);
-        assert_eq!(f.edge.group(), Some("arm"));
-        let joint = f.grant_with("policy", "arm", &[], 0);
-        f.publish(0);
-        f.accept(f.chunk_for("arm", "policy", &joint, 1, 0, 50, 3.0), 0)
-            .expect("accept");
-        let tick = f.tick(0);
-        assert_eq!(tick.channel, Some(f.ch("arm")));
-        assert_eq!(
-            &tick.action.expect("due").value[..4],
-            &1.0_f32.to_le_bytes(),
-            "clamped to the arm's limit"
-        );
-        assert_eq!(tick.applied.len(), 2);
-        assert_eq!(tick.applied[1].applied, Applied::absent(EdgeMode::Idle));
-
-        // The model switches to the Cartesian member in one revision.
-        let tcp = f.grant_with("policy", "arm/tcp", &["arm"], MS);
-        f.publish(MS);
-        f.accept(
-            f.chunk_for("arm/tcp", "policy", &tcp, 1, 2 * MS, 5, 0.01),
-            MS,
-        )
-        .expect("accept");
-        assert_eq!(
-            f.accept(f.chunk_for("arm", "policy", &joint, 2, MS, 5, 0.0), MS),
-            Err(Rejection::NoLease)
-        );
-        let tick = f.tick(MS);
-        let handover = tick.handover.expect("a handover");
-        assert_eq!((handover.from, handover.to), (f.ch("arm"), f.ch("arm/tcp")));
-        assert!(tick.action.is_none() && tick.safe_behavior.is_none());
-        f.edge.handover_done();
-        let tick = f.tick(2 * MS);
-        assert_eq!(
-            (tick.mode, tick.channel),
-            (EdgeMode::Driving, Some(f.ch("arm/tcp")))
-        );
-        assert!(tick.action.is_some(), "a delta's first tick in its slot");
-        assert!(f.tick(2 * MS + MS / 2).action.is_none(), "dispatched once");
-        assert_eq!(f.edge.stats().handovers, 1);
-    }
-
-    #[test]
-    fn a_virtual_session_runs_the_edge_on_session_ticks() {
-        let mut f = Fixture::with(
-            EdgeConfig::default(),
-            true,
-            &["cmd"],
-            Some(VirtualConfig::default()),
-        );
-        let lease = f.grant("policy", 0);
-        f.mapping = None;
-        f.publish(0);
-        // No mapping is needed and the lease is timed by the host: a chunk
-        // received at tick 1000 (1 s) with an old publish stamp is fine.
-        let mut chunk = f.chunk("policy", &lease, 1, 1_000 * MS, 5);
-        chunk.publish_ns = -10_000 * MS;
-        f.accept(chunk, 1_000 * MS).expect("accept");
-        assert_eq!(f.tick(1_002 * MS).mode, EdgeMode::Driving);
-    }
-
-    #[test]
-    fn only_commandable_parts_of_one_group_and_owner_get_an_edge() {
-        let f = Fixture::new();
-        let part = |path: &str| {
-            f.auth
-                .parts()
-                .find(|p| p.path.as_str() == path)
-                .cloned()
-                .expect(path)
-        };
-        let mut sense = part("cmd");
-        sense.command = None;
-        assert!(matches!(
-            EdgeCore::new(vec![sense], pid("robot"), EdgeConfig::default()),
-            Err(GroupError::NotCommandable(_))
-        ));
-        assert!(matches!(
-            EdgeCore::new(vec![part("cmd")], pid("other"), EdgeConfig::default()),
-            Err(GroupError::NotOwner { .. })
-        ));
-        assert!(matches!(
-            EdgeCore::new(
-                vec![part("cmd"), part("grip")],
-                pid("robot"),
-                EdgeConfig::default()
-            ),
-            Err(GroupError::NotOneGroup(_))
-        ));
-        assert!(matches!(
-            EdgeCore::new(Vec::new(), pid("robot"), EdgeConfig::default()),
-            Err(GroupError::NoParts)
-        ));
-    }
-}
+mod tests;

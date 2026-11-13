@@ -13,7 +13,7 @@ const JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wri
 const HOLD = {
   hz: 50,
   inputs: { q: { kind: 'joints', at: 'arm', fields: ['pos'], names: JOINTS } },
-  actions: { arm: { kind: 'joints', at: 'arm', command: 'position', names: JOINTS, hz: 100, horizon: 10 } },
+  actions: { arm: { kind: 'joints', at: 'arm', command: 'position', names: JOINTS, hz: 100, chunk: 10 } },
 };
 
 const host = await Host.open();
@@ -41,7 +41,7 @@ try {
   console.log(String(await policy.bind('ur10e'))); // the binding table
   const stats = await policy.run(
     async (obs) => {
-      const arm = new Float32Array(60); // [horizon 10, 6 joints]
+      const arm = new Float32Array(60); // [chunk 10, 6 joints]
       for (let k = 0; k < 10; k++) arm.set(obs.inputs.q.data, k * 6);
       return { arm: { data: arm, shape: [10, 6] } };
     },

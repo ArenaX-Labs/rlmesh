@@ -440,11 +440,8 @@ ValueError (`py/_authoring.py:287`).
    `options.workflow_edition` is the call's value (COR-6 rung 1), adopted
    verbatim ahead of `RLMESH_WORKFLOW_EDITION`; otherwise
    `RLMESH_WORKFLOW_EDITION`; Python alone then reads the project manifest
-   (`py/_server.py:283-290`; D-7). A served env is an authored participant,
-   so a server that resolves to no edition (it floats) emits
-   `WorkflowEditionWarning` per COR-7 (R-23), unless
-   `RLMESH_WORKFLOW_EDITION` is set but blank or a caller resolved it first
-   (`py/_editions.py:139-154,251-273`).
+   (`py/_server.py:283-290`; D-7). A server that resolves to no edition
+   floats quietly (COR-7).
 7. Each lane's contract is derived: id, spaces, `render_mode`, metadata
    (tags included) and the autoreset mode, which comes from
    `metadata["autoreset_mode"]` (ENV-27; `pyrs/server/conversion.rs:43-109`).

@@ -1,4 +1,4 @@
-binding pi0_aloha on aloha2: 9 inputs, 4 actions, fingerprint fabbdcb6b0b7d41d
+binding pi0_aloha on aloha2: 9 inputs, 4 actions, fingerprint c5b9e54d09ef6cd7
 replan 50 Hz
 
   entry            dir  part             status  plan                                             delivers

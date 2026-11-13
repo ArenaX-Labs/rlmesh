@@ -2,12 +2,15 @@ mod adapters;
 mod bind;
 mod client;
 mod facade;
+mod launch;
 mod lifecycle;
 mod lockstep;
 mod model;
 mod nested;
 mod peer_info;
 mod sandbox;
+#[cfg(test)]
+mod secret_traces;
 mod server;
 mod session;
 mod spaces;
@@ -162,6 +165,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
         lifecycle::resolve_workflow_edition_rungs,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(lifecycle::set_ready_hook, m)?)?;
     m.add_class::<lifecycle::PyBuildInfo>()?;
     m.add_function(wrap_pyfunction!(lifecycle::build_info, m)?)?;
     m.add_function(wrap_pyfunction!(client::normalize_connect_address, m)?)?;
@@ -191,8 +195,11 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_reap_orphans, m)?)?;
-    m.add_function(wrap_pyfunction!(sandbox::sandbox_session_ports, m)?)?;
+    m.add_function(wrap_pyfunction!(sandbox::sandbox_session_port, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_host_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::launch_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::identity_key, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::launched_address, m)?)?;
 
     session::register(m)?;
 

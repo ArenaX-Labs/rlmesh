@@ -6,6 +6,7 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any, cast
 
+from .._client._endpoint import redact_address
 from .loaders import load_env_from_spec
 from .spec_resolution import BootstrapUsageError, resolve_bootstrap_spec
 
@@ -82,7 +83,9 @@ def main(
         server = EnvServer(
             env, f"{address.rstrip('/')}/{name}", framework=framework, device=device
         )
-        print(f"RLMesh sandbox serving {server.address}", flush=True)
+        # A container's log: the bound address carries the session's key (a
+        # credential its launcher already holds), so print it without.
+        print(f"RLMesh sandbox serving {redact_address(server.address)}", flush=True)
         server.serve()
         return 0
     except Exception as exc:  # pragma: no cover - exercised through container runs

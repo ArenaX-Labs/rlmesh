@@ -588,9 +588,7 @@ rules are Python's (`py/_models/base.py:1475-1500`,
   facade so every binding gets them (Rust and C current differences).
 - **Edition.** The endpoint declares the resolved workflow edition (COR-6;
   `options.workflow_edition` is the call's value, COR-P2) on every
-  handshake, and warns `WorkflowEditionWarning` when an authored policy's
-  edition floats (R-23, COR-7; `py/_models/base.py:1491-1501`,
-  `py/_editions.py:251-282`).
+  handshake; a floating one serves quietly (COR-7).
 - **Signals** follow ENV-11 for a foreground sync `serve`: SIGINT stops the
   server (drain, then `close`) and `serve` fails with R-21's cancellation
   class; a second SIGINT behaves as ENV-11 says (natively: the default

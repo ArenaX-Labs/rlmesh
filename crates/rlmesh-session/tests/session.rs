@@ -20,25 +20,21 @@ use rlmesh_session::participant::{query_authority, wait_for_host};
 #[cfg(feature = "fleet")]
 use rlmesh_session::scene::Scene;
 use rlmesh_session::spec::{Policy, RunOptions};
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::version::VIEW_DEVICE;
 use rlmesh_session::wire::{
-    AuthorityView, ChannelId, ClockMode, Command, ContractMode, CtlError, CtlReply, CtlStatus,
-    Encoding, Epoch, EstopSignal, FenceError, Fingerprint, HistoryQuery, Mode, ParticipantId, Plan,
-    PriorityClass, ReasonCode, Request, Role, Sample, SessionId, TenantId, ViewReply, VirtualTick,
-    Watermark,
+    AuthoritySnapshot, AuthorityView, ChannelId, ClockMode, Command, ContractMode, CtlError,
+    CtlReply, CtlStatus, Encoding, Epoch, EstopSignal, FenceError, Fingerprint, HistoryQuery,
+    LastStop, Mode, ParticipantId, Plan, PriorityClass, Reason, ReasonCode, Request, Role, Sample,
+    SessionId, TenantId, ViewReply, VirtualTick, Watermark,
 };
 use rlmesh_session::{
-    ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
-    SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
+    AuthorityEvent, ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig,
+    SessionError, SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig,
+    VirtualConfig,
 };
-
-/// Participants listen too (the OS picks the ports): in peer mode, data
-/// flows peer to peer once gossip tells peers where to connect.
-fn any_local_port() -> std::net::SocketAddr {
-    "127.0.0.1:0".parse().expect("addr")
-}
+use zenoh::query::ConsolidationMode;
 
 const WAIT: Duration = Duration::from_secs(5);
 const GRACE: Duration = Duration::from_millis(300);
@@ -50,9 +46,9 @@ fn robot_map(camera: &str) -> String {
     format!(
         r#"{{
         "arm": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
-                "command": "position", "priority": "control", "group": "arm"}},
+                "command": "position", "safe": "stop", "priority": "control", "group": "arm"}},
         "arm/tcp": {{"kind": "x/tcp", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
-                    "command": "delta", "group": "arm"}},
+                    "command": "delta", "safe": "stop", "group": "arm"}},
         "ft": {{"kind": "x/ft", "hz": 1000, "fields": {{"wrench": ["float32", [18]]}},
                "priority": "realtime", "max_age_ms": 40}},
         "wrist/cam": {{"kind": "camera", "hz": 30, {camera}}}
@@ -108,7 +104,7 @@ impl World {
             .with_test_writer()
             .try_init();
         let anchor = Instant::now();
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("host transport");
         let tenant = TenantId::new("test").expect("tenant");
@@ -129,12 +125,9 @@ impl World {
     }
 
     async fn transport(&self) -> Transport {
-        Transport::open(
-            &TransportConfig::per_class_tcp(Some(any_local_port()), Some(self.base))
-                .expect("config"),
-        )
-        .await
-        .expect("participant transport")
+        Transport::open(&TransportConfig::per_class_tcp(self.base))
+            .await
+            .expect("participant transport")
     }
 
     fn config(
@@ -573,7 +566,7 @@ async fn a_command_group_holds_one_member_and_switches_atomically() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn heartbeat_loss_lapses_the_lease_and_goes_safe() {
+async fn heartbeat_loss_lapses_the_lease_alone() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world.policy().await;
@@ -588,52 +581,65 @@ async fn heartbeat_loss_lapses_the_lease_and_goes_safe() {
     let stopped = Instant::now();
     policy.set_heartbeats_enabled(false);
     let view = robot
-        .wait_for("SAFE after lapse", WAIT, |s| s.mode == Mode::Safe)
+        .wait_for("the lease lapses", WAIT, |s| s.leases.is_empty())
         .await
-        .expect("safe");
+        .expect("lapse");
     let elapsed = stopped.elapsed();
-    assert!(view.leases.is_empty());
+    assert_eq!(view.mode, Mode::Armed);
     assert!(elapsed >= GRACE - Duration::from_millis(30), "{elapsed:?}");
     assert!(elapsed < GRACE * 3, "lapse took {elapsed:?}");
 
-    // Still present: only its heartbeats stopped. Re-arming is a fresh epoch.
+    // Still present: only its heartbeats stopped. It leases again without
+    // an arm, under a fresh token.
     assert!(view.participant(policy.id()).is_some());
     policy.set_heartbeats_enabled(true);
-    let armed = policy.arm().await.expect("re-arm");
-    assert_eq!(armed.epoch, view.epoch.next());
-    assert!(armed.check_fence(arm, lease.token, view.epoch).is_err());
+    let again = policy.grant_lease(arm, None).await.expect("grant");
+    assert_ne!(again.token, lease.token);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_vanished_holder_takes_the_session_safe() {
+async fn a_vanished_holder_ends_its_lease_alone() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world.policy().await;
     let arm = channel(&policy, "arm");
     policy.arm().await.expect("arm");
-    policy.grant_lease(arm, None).await.expect("grant");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
 
     let gone = Instant::now();
     let id = policy.id().clone();
+    let mut events = world.host.events();
     let transport = policy.transport().clone();
     drop(policy);
     transport.close().await.expect("close");
     let view = robot
-        .wait_for("SAFE and the holder gone", WAIT, |s| {
-            s.mode == Mode::Safe && s.participant(&id).is_none()
+        .wait_for("the holder gone", WAIT, |s| {
+            s.leases.is_empty() && s.participant(&id).is_none()
         })
         .await
-        .expect("safe");
+        .expect("gone");
+    assert_eq!(view.mode, Mode::Armed);
     // Its lease lapses, or it is lost first: heartbeats decide, either way.
+    // Why it ended left the state with its holder.
+    assert!(!view.ended.iter().any(|e| e.lease.holder == id));
+    let code = loop {
+        match events.try_recv().expect("the lease's end was told") {
+            AuthorityEvent::HolderLost { holder, code, .. } if holder == id => break code,
+            AuthorityEvent::LeaseEnded {
+                lease: ended,
+                reason,
+                ..
+            } if ended.token == lease.token => {
+                break reason.code;
+            }
+            _ => {}
+        }
+    };
     assert!(
-        matches!(
-            view.mode_reason.code,
-            ReasonCode::HeartbeatLapse | ReasonCode::HolderLost
-        ),
-        "{}",
-        view.mode_reason
+        matches!(code, ReasonCode::HeartbeatLapse | ReasonCode::HolderLost),
+        "{code:?}"
     );
-    tracing::info!("holder loss to SAFE in {:?}", gone.elapsed());
+    tracing::info!("holder loss in {:?}", gone.elapsed());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -805,6 +811,86 @@ async fn a_late_observer_gets_the_snapshot_by_query() {
     );
 }
 
+/// A state too large for a board's transport (zenoh-pico reassembles at most
+/// 4096 bytes and drops the rest unseen) is followed by its signed header
+/// alone, which a board reads the host instance from. Every other reader
+/// keeps the full state: the first reply, and the one Zenoh's default
+/// consolidation keeps.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_state_too_large_for_a_board_is_followed_by_its_header_alone() {
+    let world = World::start().await;
+    let policy = world
+        .join("policy", vec![Role::Controller], PriorityClass::Model, 0)
+        .await;
+    let transport = world.transport().await;
+    let key = world.host.keys().host_state();
+    let all = |consolidation| {
+        let (control, key) = (transport.control().clone(), key.clone());
+        async move {
+            let replies = control
+                .get(key)
+                .consolidation(consolidation)
+                .timeout(WAIT)
+                .await
+                .expect("query");
+            let mut out = Vec::new();
+            while let Ok(reply) = replies.recv_async().await {
+                out.push(
+                    reply
+                        .result()
+                        .expect("ok")
+                        .payload()
+                        .to_bytes()
+                        .into_owned(),
+                );
+            }
+            out
+        }
+    };
+    // A small state: one reply, as ever.
+    let small = all(ConsolidationMode::None).await;
+    assert_eq!(small.len(), 1);
+    assert!(small[0].len() < 2048, "{} bytes", small[0].len());
+
+    let table = format!(r#"{{"note": "{}"}}"#, "x".repeat(4096));
+    policy
+        .declare_binding(Fingerprint::from(7), &table, Vec::new(), 0.0)
+        .await
+        .expect("binding");
+    let both = all(ConsolidationMode::None).await;
+    assert_eq!(both.len(), 2, "the state, then its header");
+    let (state, header) = (
+        signed::peek(&both[0]).expect("signed"),
+        signed::peek(&both[1]).expect("signed"),
+    );
+    assert!(both[0].len() > 4096);
+    let decoded = codec::decode_state(state.body).expect("the full state");
+    assert!(decoded.bindings.iter().any(|b| b.table_json == table));
+    assert!(
+        header.body.is_empty() && both[1].len() < 128,
+        "{} bytes",
+        both[1].len()
+    );
+    assert_eq!(header.header.kind, signed::SignedKind::AuthorityState);
+    assert_eq!(header.header.host_instance, state.header.host_instance);
+    assert!(
+        codec::decode_state(header.body).is_err(),
+        "a header alone is no state to anyone who reads one"
+    );
+    // A reader keeping the latest reply per key keeps the full state.
+    let latest = all(ConsolidationMode::Latest).await;
+    assert_eq!(latest.len(), 1);
+    let kept = codec::decode_state(signed::peek(&latest[0]).expect("signed").body);
+    assert!(kept.is_ok_and(|s| s.bindings.iter().any(|b| b.table_json == table)));
+    // The SDK's own readers take the state.
+    let fetched = policy.fetch_authority().await.expect("fetched");
+    assert!(fetched.bindings.iter().any(|b| b.table_json == table));
+    let queried = query_authority(&transport, world.host.keys(), WAIT)
+        .await
+        .expect("queried");
+    assert!(queried.bindings.iter().any(|b| b.table_json == table));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn heartbeats_estimate_each_participants_clock_offset_within_bound() {
     let world = World::start().await;
@@ -919,7 +1005,7 @@ async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
             robot
                 .declare_parts(
                     r#"{"arm": {"kind": "joints", "names": ["a"], "hz": 500,
-                        "command": "position", "merge": "blend"}}"#
+                        "command": "position", "safe": "stop", "merge": "blend"}}"#
                 )
                 .await
                 .expect_err("a merge policy that is Later")
@@ -1003,7 +1089,7 @@ const WINDOWED: &str = r#"{
     "hz": 50,
     "inputs": {"ft": {"kind": "x/ft", "at": "ft", "fields": {"wrench": ["float32", [18]]},
                       "history": 10}},
-    "actions": {"arm": {"kind": "joints", "at": "arm", "hz": 100, "horizon": 5}}
+    "actions": {"arm": {"kind": "joints", "at": "arm", "hz": 100, "chunk": 5}}
 }"#;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1096,6 +1182,143 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
         .await
         .expect("withdrawn");
     wait_until("the default plan", || ft.plan() == (None, 0)).await;
+}
+
+/// The signed state's lists: its size with the counters, the mode and the
+/// clock estimates (which vary in any live session) set aside.
+fn listed_size(state: &AuthoritySnapshot) -> usize {
+    let mut state = state.clone();
+    state.revision = 0;
+    state.host_ns = 0;
+    state.epoch = Epoch::FIRST;
+    state.mode = Mode::Disarmed;
+    state.mode_reason = Reason::default();
+    state.last_stop = LastStop::default();
+    state.clocks.clear();
+    codec::encode_state(&state).len()
+}
+
+/// Nothing a departed policy leaves behind (its binding, its demands, why
+/// its leases ended, its clock) stays in the session's state: after a
+/// policy binds, drives and leaves, cleanly or lost, ten times over, the
+/// state is the size it started at.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_returns_to_its_state_size_after_policies_bind_drive_and_leave() {
+    let world = World::start_with(|c| c.presence_grace = Duration::from_millis(400)).await;
+    let robot = world.robot().await;
+    let ft = robot.publisher("ft").await.expect("publisher");
+    let initial = robot
+        .wait_for("the robot's clock", WAIT, |s| {
+            s.clock(&robot_id()).is_some()
+        })
+        .await
+        .expect("clock");
+    let mut first = None;
+    for round in 0..10 {
+        let policy = world
+            .join("policy", vec![Role::Controller], PriorityClass::Model, 0)
+            .await;
+        policy
+            .wait_for("the robot's parts", WAIT, |s| {
+                s.part_at(&robot_id(), "ft").is_some()
+            })
+            .await
+            .expect("parts");
+        let binding = policy
+            .bind(
+                &Policy::parse(WINDOWED).expect("policy"),
+                &RunOptions::named("windowed"),
+            )
+            .expect("bound");
+        policy.declare_bound(&binding).await.expect("declare");
+        if policy.authority().expect("view").mode == Mode::Disarmed {
+            arm_seen_by(&policy, &[&robot]).await;
+        }
+        let ft_channel = channel(&policy, "ft");
+        policy
+            .wait_for("ft's plan installed", WAIT, |s| {
+                s.demand(ft_channel).is_some_and(|d| d.acked == d.revision)
+            })
+            .await
+            .expect("acknowledged");
+        let lease = policy
+            .grant_lease(channel(&policy, "arm"), None)
+            .await
+            .expect("lease");
+        let now = policy.session_now_ns();
+        policy
+            .chunk_publisher(&lease)
+            .await
+            .expect("publisher")
+            .send(ChunkDraft {
+                based_on: Vec::new(),
+                t0_ns: now + 1_000_000,
+                dt_ns: 10_000_000,
+                replace_from_ns: now,
+                valid_until_ns: now + 100_000_000,
+                actions: Bytes::from(vec![0; 24 * 5]),
+                tick: 0,
+            })
+            .expect("send");
+        policy
+            .release_lease(&lease)
+            .await
+            .expect("release: a lease ending");
+        let lease = policy
+            .grant_lease(channel(&policy, "arm"), None)
+            .await
+            .expect("lease");
+        assert!(
+            policy
+                .authority()
+                .is_some_and(|s| s.lease(lease.channel).is_some())
+        );
+        if round % 2 == 0 {
+            policy.detach().await.expect("detach");
+        } else {
+            // Gone without a word: lost once the presence grace runs out.
+            policy.close().await;
+        }
+        let gone = |s: &AuthoritySnapshot| {
+            !s.roster.iter().any(|p| p.id.as_str() == "policy")
+                && !s.clocks.iter().any(|c| c.participant.as_str() == "policy")
+        };
+        let started = Instant::now();
+        while !gone(&world.host.snapshot()) {
+            assert!(
+                started.elapsed() < WAIT,
+                "round {round}: the policy never left"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let state = world.host.snapshot();
+        assert!(
+            state.bindings.is_empty(),
+            "round {round}: {:?}",
+            state.bindings
+        );
+        assert!(
+            state.demands.is_empty(),
+            "round {round}: {:?}",
+            state.demands
+        );
+        assert!(state.ended.is_empty(), "round {round}: {:?}", state.ended);
+        assert!(state.held.is_empty(), "round {round}: {:?}", state.held);
+        assert_eq!(
+            listed_size(&state),
+            listed_size(&initial),
+            "round {round}: {state:?}"
+        );
+        // Whole, it is the size the first departure left it at (which says
+        // why the mode is what it is), give or take its counters' varints.
+        let size = codec::encode_state(&state).len();
+        let first = *first.get_or_insert(size);
+        assert!(
+            size <= first + 8,
+            "round {round}: {size} bytes, from {first}"
+        );
+    }
+    drop(ft);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1894,27 +2117,25 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     let arm = channel(&policy, "arm");
 
     // A retry keeps its request id and takes a fresh seq: the host answers
-    // it from its reply cache (a second Arm would be refused: already
-    // ARMED). Below the window, an id is never applied.
+    // it from its reply cache (applied again, this Arm would arm the
+    // disarmed session). Below the window, an id is never applied.
     let mut twin = world.raw("twin", Role::Observer).await;
     let first = twin.call(2, Command::Arm).await;
     assert!(first.result.is_ok());
+    assert!(twin.call(3, Command::Disarm).await.result.is_ok());
     let retried = twin.call(2, Command::Arm).await;
     assert_eq!(retried, first, "the cached reply, sealed afresh");
-    assert_eq!(world.host.snapshot().epoch, first.state.epoch);
-    let refused = twin.call(70, Command::Arm).await;
-    assert_eq!(
-        refused.result.expect_err("armed").status,
-        CtlStatus::InvalidTransition
-    );
+    assert_eq!(world.host.snapshot().mode, Mode::Disarmed);
+    let first = twin.call(70, Command::Arm).await;
+    assert!(first.result.is_ok());
     let expired = twin.call(2, Command::Arm).await;
     assert_eq!(
         expired.result.expect_err("expired").status,
         CtlStatus::Expired
     );
 
-    // A controller's new process: the old one's lease ends as a detached
-    // holder's (ACTIVE goes SAFE), and the old process is no longer heard.
+    // A controller's new process: the old one's lease ends, nothing else
+    // stops for it, and the old process is no longer heard.
     policy
         .wait_for("the armed epoch", WAIT, |s| s.epoch == first.state.epoch)
         .await
@@ -1933,7 +2154,7 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     assert!(restarted.generation > old);
     let reply = restarted.call(1, attach("policy", Role::Controller)).await;
     reply.result.expect("attached");
-    assert_eq!(reply.state.mode, Mode::Safe);
+    assert_eq!(reply.state.mode, Mode::Armed);
     assert!(
         reply.state.ended.iter().any(|e| {
             e.lease.token == lease.token && e.reason.code == ReasonCode::HolderDetached
@@ -1984,6 +2205,41 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     assert!(swapped.ended.iter().any(|e| {
         e.lease.token == granted.leases[0].token && e.reason.code == ReasonCode::VoidedByEpoch
     }));
+}
+
+/// A view is dropped for a congested link: only the next one repairs that,
+/// so an idle robot's must keep coming.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_robots_device_view_keeps_coming() {
+    let world = World::start().await;
+    let keys = world.host.keys();
+    let eye = world.raw("eye", Role::Observer).await;
+    let seen = Arc::new(AtomicU64::new(0));
+    let _sub = eye
+        .transport
+        .control()
+        .declare_subscriber(keys.host_views())
+        .callback({
+            let seen = seen.clone();
+            move |_| {
+                seen.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .await
+        .expect("subscribe");
+    let mut config = world.config("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0);
+    config.supports.push(VIEW_DEVICE.into());
+    let robot = Participant::attach(world.transport().await, config)
+        .await
+        .expect("attach");
+    robot.declare_parts(&raw_camera()).await.expect("declare");
+    wait_until("the first view", || seen.load(Ordering::Relaxed) > 0).await;
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let settled = seen.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(seen.load(Ordering::Relaxed) > settled, "the view stopped");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2252,7 +2508,7 @@ role = "controller"
 device = "local"
 "#;
     const EYE: &str = r#"{"gaze": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"],
-        "hz": 50, "command": "position"}}"#;
+        "hz": 50, "command": "position", "safe": "stop"}}"#;
     let scene = Scene::parse(SCENE).unwrap_or_else(|refusal| panic!("{refusal}"));
     let world = World::start_with(|c| {
         c.scene = Some(scene.host("r-7k2m", &c.pins));

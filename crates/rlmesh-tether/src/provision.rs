@@ -20,7 +20,8 @@ pub const MAX_NAME: usize = 128;
 pub const MAX_ADDRESSES: usize = 4;
 /// The longest address.
 pub const MAX_ADDRESS: usize = 63;
-/// The highest base port: it has three class ports above it.
+/// The highest port: kept from when three class ports followed it, which
+/// boards flashed then still check.
 pub const MAX_PORT: u16 = u16::MAX - 3;
 
 /// Message types.
@@ -130,7 +131,7 @@ pub enum Prov<'a> {
     Provision(Provision<'a>),
 }
 
-/// Whether `a` is a base address: 1 to [`MAX_ADDRESS`] bytes of printable
+/// Whether `a` is a host address: 1 to [`MAX_ADDRESS`] bytes of printable
 /// ASCII `host:port`, an IPv6 host in brackets, `port` 1 to [`MAX_PORT`].
 pub fn valid_address(a: &[u8]) -> bool {
     if a.is_empty() || a.len() > MAX_ADDRESS || !a.iter().all(|b| (0x21..=0x7E).contains(b)) {

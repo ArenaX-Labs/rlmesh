@@ -183,6 +183,10 @@ mod tests {
             Some(vec![("side".into(), "left".into())])
         );
         assert_eq!(m("{s}/x/{s}", "a/x/b", &[]), None, "one value per name");
+        assert_eq!(
+            m("{s}/x/{s}", "a/x/a", &[]),
+            Some(vec![("s".into(), "a".into())])
+        );
         let qualified = Selector::parse("teleop:goal/cmd_vel").expect("qualified");
         assert_eq!(qualified.robot.as_ref().map(|r| r.as_str()), Some("teleop"));
         assert!(qualified.absolute && qualified.matches("goal/cmd_vel", &["right"]).is_some());
@@ -205,6 +209,7 @@ mod tests {
         ] {
             assert!(Selector::parse(bad).is_err(), "{bad:?}");
         }
+        assert!(Selector::parse("a/b/c/d/e/f").is_ok(), "six segments");
         assert_eq!(
             Selector::parse("{side}/{arm}/{side}")
                 .expect("ok")

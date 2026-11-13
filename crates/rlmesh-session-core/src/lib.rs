@@ -39,6 +39,9 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+#[cfg(all(test, feature = "std"))]
+mod test_alloc;
+
 /// What `std`'s prelude gives every module, from `alloc` so the crate builds
 /// without `std`.
 mod prelude {
@@ -126,6 +129,7 @@ pub mod authority;
 pub mod cache;
 pub mod clock;
 pub mod crypto;
+pub mod datagram;
 pub mod edge;
 pub mod lease;
 #[cfg(feature = "fleet")]

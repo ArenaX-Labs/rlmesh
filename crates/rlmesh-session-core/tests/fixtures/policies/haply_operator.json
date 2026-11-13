@@ -39,7 +39,7 @@
         "wrist_3_joint"
       ],
       "hz": 1000,
-      "horizon": 1,
+      "chunk": 1,
       "ttl_ms": 5
     }
   }

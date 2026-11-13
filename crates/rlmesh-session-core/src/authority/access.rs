@@ -212,7 +212,7 @@ impl Access {
         };
         if !entry.covers(robot, path) {
             return Err(refused(format!(
-                "{device} may not lease {robot}/{path} (its parts: {:?})",
+                "{device} may not lease {robot}:{path} (its parts: {:?})",
                 entry.parts
             )));
         }
@@ -345,7 +345,7 @@ mod tests {
         let err = access
             .check_lease("laptop", &ur, "base", PriorityClass::Model)
             .expect_err("outside its parts");
-        assert!(err.message.contains("ur10e/base"), "{err}");
+        assert!(err.message.contains("ur10e:base"), "{err}");
         assert_eq!(
             status(access.check_lease("laptop", &ur, "arm", PriorityClass::Operator)),
             denied
@@ -354,5 +354,47 @@ mod tests {
         assert_eq!(status(access.check_verb("laptop", Verb::Arm)), denied);
         assert_eq!(status(access.check_verb("rogue", Verb::Disarm)), None);
         assert_eq!(status(access.check_verb("local", Verb::Arm)), None);
+    }
+
+    #[test]
+    fn a_removed_device_may_do_nothing() {
+        let mut access = Access::default();
+        access.set("laptop", DeviceAccess::new(Some(PriorityClass::Operator)));
+        assert!(access.may_read("laptop", &pid("ur10e"), "arm"));
+        access.remove("laptop");
+        assert_eq!(access.get("laptop"), None);
+        assert!(!access.may_read("laptop", &pid("ur10e"), "arm"));
+    }
+
+    #[test]
+    fn a_refusal_names_the_role_or_class_and_how_to_allow_it() {
+        let mut access = Access::default();
+        access.set(
+            "laptop",
+            DeviceAccess {
+                roles: vec![Role::Embodiment, Role::Observer],
+                ..DeviceAccess::new(Some(PriorityClass::Model))
+            },
+        );
+        let message = |roles: &[Role], class| {
+            access
+                .check_attach("laptop", roles, class)
+                .expect_err("refused")
+                .message
+        };
+        assert_eq!(
+            message(&[Role::Controller], PriorityClass::Model),
+            "laptop may not attach as controller: its entry allows embodiment, observer"
+        );
+        assert_eq!(
+            message(&[Role::Embodiment], PriorityClass::Operator),
+            "laptop may attach at model at most (asked operator); \
+             on the robot: rlmesh devices allow laptop --max operator"
+        );
+        assert_eq!(
+            message(&[Role::Embodiment], PriorityClass::Safety),
+            "laptop may attach at model at most (asked safety); \
+             safety is reserved for the robot's own machine (local)"
+        );
     }
 }

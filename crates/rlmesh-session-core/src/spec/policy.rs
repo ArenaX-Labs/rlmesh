@@ -11,7 +11,7 @@
 //!     "prompt": "text"
 //!   },
 //!   "actions": {
-//!     "arm": {"kind": "joints", "at": "arm", "command": "position", "horizon": 10}
+//!     "arm": {"kind": "joints", "at": "arm", "command": "position", "chunk": 10}
 //!   },
 //!   "allow": ["resize", "pad"]
 //! }
@@ -38,6 +38,10 @@ use crate::spec::kinds::Kind;
 use crate::spec::normalise::{FieldDecl, Ordered};
 use crate::spec::rotation::Rotation;
 use crate::spec::selector::{RUN_OPTIONS, Selector};
+
+mod builder;
+pub use builder::{ActionEntry, Array, InputEntry, PerElement, PolicyBuilder};
+pub(crate) use builder::{Draft, Val, builder, key, named, setter};
 
 /// The longest entry name.
 const MAX_ENTRY_NAME: usize = 128;
@@ -167,11 +171,6 @@ impl Allows {
                 .ok_or_else(|| format!("{where_}: allow {name:?} is not a conversion"))
         })
     }
-
-    /// The conversions in the set, in [`Allow::ALL`] order.
-    pub fn iter(self) -> impl Iterator<Item = Allow> {
-        Allow::ALL.into_iter().filter(move |a| self.has(*a))
-    }
 }
 
 /// How an entry's joint names are matched.
@@ -283,6 +282,16 @@ pub enum Source {
     Applied,
 }
 
+impl Source {
+    /// Its name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Published => "published",
+            Self::Applied => "applied",
+        }
+    }
+}
+
 /// When a chunk starts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkStart {
@@ -291,6 +300,16 @@ pub enum ChunkStart {
     Snapshot,
     /// When it is sent.
     Send,
+}
+
+impl ChunkStart {
+    /// Its name in `t0`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Send => "send",
+        }
+    }
 }
 
 /// What inputs and actions share.
@@ -379,7 +398,7 @@ pub struct Action {
     /// The action grid rate (`None`: the policy rate).
     pub hz: Option<f64>,
     /// Actions per chunk.
-    pub horizon: u32,
+    pub chunk: u32,
     /// Gripper: the model value meaning open.
     pub open: Option<f64>,
     /// Gripper: the model value meaning closed.
@@ -460,7 +479,7 @@ struct EntryDecl {
     command: Option<String>,
     reference: Option<String>,
     hz: Option<f64>,
-    horizon: Option<u32>,
+    chunk: Option<u32>,
     open: Option<f64>,
     closed: Option<f64>,
     t0: Option<String>,
@@ -492,6 +511,30 @@ fn millis(where_: &str, key: &str, ms: f64) -> Result<Duration, String> {
         Ok(Duration::from_secs_f64(ms / 1e3))
     } else {
         Err(format!("{where_}: {key} {ms} is out of range"))
+    }
+}
+
+fn crop(where_: &str, crop: f64) -> Result<f64, String> {
+    if crop.is_finite() && crop > 0.0 && crop <= 1.0 {
+        Ok(crop)
+    } else {
+        Err(format!("{where_}: crop is a side fraction in (0, 1]"))
+    }
+}
+
+fn range(where_: &str, [low, high]: [f64; 2]) -> Result<(f64, f64), String> {
+    if low.is_finite() && high.is_finite() && low != high {
+        Ok((low, high))
+    } else {
+        Err(format!("{where_}: range is two finite, different numbers"))
+    }
+}
+
+fn finite(where_: &str, key: &str, value: f64) -> Result<f64, String> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!("{where_}: {key} must be finite"))
     }
 }
 
@@ -540,7 +583,7 @@ const ACTION_ONLY: [&str; 8] = [
     "command",
     "reference",
     "hz",
-    "horizon",
+    "chunk",
     "open",
     "closed",
     "t0",
@@ -571,7 +614,7 @@ impl EntryDecl {
             ("command", self.command.is_some()),
             ("reference", self.reference.is_some()),
             ("hz", self.hz.is_some()),
-            ("horizon", self.horizon.is_some()),
+            ("chunk", self.chunk.is_some()),
             ("open", self.open.is_some()),
             ("closed", self.closed.is_some()),
             ("t0", self.t0.is_some()),
@@ -652,16 +695,7 @@ fn common(
         .transpose()?;
     let units = decl.units.take().map(|u| u.0).unwrap_or_default();
     let allow = Allows::parse(where_, &decl.allow.take().unwrap_or_default())?;
-    let range = decl
-        .range
-        .map(|[low, high]| {
-            if low.is_finite() && high.is_finite() && low != high {
-                Ok((low, high))
-            } else {
-                Err(format!("{where_}: range is two finite, different numbers"))
-            }
-        })
-        .transpose()?;
+    let range = decl.range.map(|r| range(where_, r)).transpose()?;
     let schema = match decl.fields.take() {
         Some(EntryFields::Schema(schema)) => {
             if kind != Kind::Custom {
@@ -789,10 +823,8 @@ fn input(name: &str, value: Value, policy_allow: Allows) -> Result<Input, String
             )
         })?,
     };
-    if let Some(crop) = decl.crop
-        && !(crop.is_finite() && crop > 0.0 && crop <= 1.0)
-    {
-        return Err(format!("{where_}: crop is a side fraction in (0, 1]"));
+    if let Some(c) = decl.crop {
+        crop(&where_, c)?;
     }
     let dtype = decl
         .dtype
@@ -852,8 +884,10 @@ fn action(name: &str, value: Value, policy_allow: Allows) -> Result<Action, Stri
     if let Some(key) = decl
         .set_keys()
         .into_iter()
-        .find(|k| INPUT_ONLY.contains(k) || *k == "max_age_ms")
+        // A custom action's fields schema is not an input key; skip it
+        // without ending the search.
         .filter(|k| !(*k == "fields" && matches!(decl.fields, Some(EntryFields::Schema(_)))))
+        .find(|k| INPUT_ONLY.contains(k) || *k == "max_age_ms")
     {
         return Err(format!("{where_}: {key} is an input key"));
     }
@@ -866,17 +900,15 @@ fn action(name: &str, value: Value, policy_allow: Allows) -> Result<Action, Stri
     if entry.kind.command_modes().is_empty() && entry.kind != Kind::Custom {
         return Err(format!("{where_}: a {} part takes no commands", entry.kind));
     }
-    let horizon = decl.horizon.unwrap_or(1);
-    if horizon == 0 || horizon as usize > MAX_CHUNK_ACTIONS {
-        return Err(format!("{where_}: horizon is 1 to {MAX_CHUNK_ACTIONS}"));
+    let chunk = decl.chunk.unwrap_or(1);
+    if chunk == 0 || chunk as usize > MAX_CHUNK_ACTIONS {
+        return Err(format!("{where_}: chunk is 1 to {MAX_CHUNK_ACTIONS}"));
     }
     if (decl.open.is_some() || decl.closed.is_some()) && entry.kind != Kind::Gripper {
         return Err(format!("{where_}: open and closed are for gripper actions"));
     }
     for (key, value) in [("open", decl.open), ("closed", decl.closed)] {
-        if value.is_some_and(|v| !v.is_finite()) {
-            return Err(format!("{where_}: {key} must be finite"));
-        }
+        value.map(|v| finite(&where_, key, v)).transpose()?;
     }
     if decl.open.unwrap_or(1.0) == decl.closed.unwrap_or(0.0) {
         return Err(format!("{where_}: open and closed must differ"));
@@ -894,7 +926,7 @@ fn action(name: &str, value: Value, policy_allow: Allows) -> Result<Action, Stri
             Some(r) => return Err(format!("{where_}: reference {r:?}: current or target")),
         },
         hz: decl.hz.map(|hz| rate(&where_, "hz", hz)).transpose()?,
-        horizon,
+        chunk,
         open: decl.open,
         closed: decl.closed,
         t0,
@@ -940,7 +972,7 @@ impl Policy {
     }
 }
 
-/// How a policy is run: the overrides `rlmesh.run(...)` takes.
+/// How a policy is bound: the overrides `Policy.bind(...)` takes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunOptions {
     /// The policy's name, for the table and refusals.
@@ -957,6 +989,9 @@ pub struct RunOptions {
     pub allow: Vec<Allow>,
     /// Capture values.
     pub captures: BTreeMap<String, String>,
+    /// Bound for a robot on the lockstep clock: no time passes between two
+    /// chunks, so a chunk need not outlast the replan period.
+    pub lockstep: bool,
 }
 
 impl RunOptions {
@@ -1008,6 +1043,12 @@ impl RunOptions {
         self
     }
 
+    /// For a robot on the lockstep clock.
+    pub fn lockstep(mut self) -> Self {
+        self.lockstep = true;
+        self
+    }
+
     /// For the robot `robot`.
     pub fn robot(mut self, robot: &str) -> Result<Self, String> {
         self.robot = Some(ParticipantId::new(robot).map_err(|e| e.to_string())?);
@@ -1025,20 +1066,27 @@ mod tests {
             r#"{"hz": 15,
                 "inputs": {"prompt": "text",
                            "image": {"kind": "camera", "at": "/scene/cam", "size": [224, 224],
-                                     "allow": ["crop"]}},
-                "actions": {"arm": {"kind": "joints", "at": "arm", "count": 6, "horizon": 10}},
+                                     "resample": "bicubic_aa", "crop": 0.5,
+                                     "allow": ["crop", "resize", "crop"]}},
+                "actions": {"arm": {"kind": "joints", "at": "arm", "count": 6, "chunk": 10}},
                 "allow": ["resize"]}"#,
         )
         .expect("parse");
         let prompt = &policy.inputs[0];
         assert_eq!((prompt.entry.kind, prompt.history), (Kind::Text, 1));
         assert!(prompt.entry.at.is_none());
+        // Repeating a conversion, in the entry or with the policy's, keeps it.
         let image = &policy.inputs[1].entry;
         assert!(image.allow.has(Allow::Crop) && image.allow.has(Allow::Resize));
-        assert_eq!(policy.inputs[1].size, Some((224, 224)));
+        let image = &policy.inputs[1];
+        assert_eq!(image.size, Some((224, 224)));
+        assert_eq!(
+            (image.resample, image.crop),
+            (Resample::BicubicAa, Some(0.5))
+        );
         let arm = &policy.actions[0];
         assert_eq!(
-            (arm.horizon, arm.hz, arm.t0),
+            (arm.chunk, arm.hz, arm.t0),
             (10, None, ChunkStart::Snapshot)
         );
         assert!(arm.entry.allow.has(Allow::Resize) && !arm.entry.allow.has(Allow::Crop));
@@ -1056,7 +1104,7 @@ mod tests {
                 "colour",
             ),
             (
-                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "horizon": 3}}}"#,
+                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "chunk": 3}}}"#,
                 "action key",
             ),
             (
@@ -1100,8 +1148,66 @@ mod tests {
                 "input key",
             ),
             (
-                r#"{"hz": 1, "actions": {"a": {"kind": "joints", "horizon": 0}}}"#,
-                "horizon",
+                r#"{"hz": 1, "actions": {"a": {"kind": "x/arm", "fields": {"v": ["float32", [1]]},
+                    "history": 3}}}"#,
+                "history is an input key",
+            ),
+            (r#"{"hz": 1, "inputs": {"": "text"}}"#, "1-128 characters"),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "names": "all", "count": 2}}}"#,
+                "a list of names",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "names": [""]}}}"#,
+                "is empty",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "names": ["x", "y"], "count": 3}}}"#,
+                "count differs",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "count": 0}}}"#,
+                "count is 1 to 1024",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "range": [1, 1]}}}"#,
+                "range is two finite, different numbers",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "scale": []}}}"#,
+                "scale must be finite numbers",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "joints", "max_age_ms": 0}}}"#,
+                "max_age_ms 0 is out of range",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "size": [0, 10]}}}"#,
+                "image sides",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "crop": 0}}}"#,
+                "crop is a side fraction",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "camera", "resample": "nearest"}}}"#,
+                "resample \"nearest\"",
+            ),
+            (
+                r#"{"hz": 1, "inputs": {"a": {"kind": "text", "history": 2}}}"#,
+                "events take no history",
+            ),
+            (
+                r#"{"hz": 1, "actions": {"a": {"kind": "joints", "chunk": 0}}}"#,
+                "chunk",
+            ),
+            (
+                r#"{"hz": 1, "actions": {"a": {"kind": "joints", "chunk": 1025}}}"#,
+                "chunk is 1 to 1024",
+            ),
+            (
+                r#"{"hz": 1, "actions": {"a": {"kind": "joints", "reference": "base"}}}"#,
+                "current or target",
             ),
             (
                 r#"{"hz": 1, "actions": {"a": {"kind": "gripper", "open": 1, "closed": 1}}}"#,
@@ -1114,6 +1220,39 @@ mod tests {
         ] {
             let err = Policy::parse(json).expect_err(json);
             assert!(err.contains(needle), "{json}: {err}");
+        }
+        let long = "a".repeat(MAX_ENTRY_NAME + 1);
+        for json in [
+            format!(r#"{{"hz": 1, "inputs": {{"{long}": "text"}}}}"#),
+            format!(r#"{{"hz": 1, "inputs": {{"a": {{"kind": "joints", "names": ["{long}"]}}}}}}"#),
+        ] {
+            let err = Policy::parse(&json).expect_err(&json);
+            assert!(err.contains("128"), "{err}");
+        }
+    }
+
+    #[test]
+    fn entries_at_the_limits_are_accepted() {
+        let long = "a".repeat(MAX_ENTRY_NAME);
+        let policy = Policy::parse(&format!(
+            r#"{{"hz": 1,
+                "inputs": {{"{long}": {{"kind": "joints", "names": ["{long}"]}}}},
+                "actions": {{"arm": {{"kind": "joints", "count": 1024, "chunk": {MAX_CHUNK_ACTIONS}}}}}}}"#
+        ))
+        .expect("at the limits");
+        assert_eq!(policy.inputs[0].entry.name, long);
+        assert_eq!(
+            (policy.actions[0].entry.count, policy.actions[0].chunk),
+            (Some(1024), MAX_CHUNK_ACTIONS as u32)
+        );
+    }
+
+    #[test]
+    fn a_capture_is_one_segment_under_a_name_no_option_takes() {
+        assert!(RunOptions::named("p").capture("side", "left").is_ok());
+        for (name, value) in [("under", "left"), ("Side", "left"), ("side", "a/b")] {
+            let err = RunOptions::named("p").capture(name, value);
+            assert!(err.is_err(), "{name}={value}");
         }
     }
 }

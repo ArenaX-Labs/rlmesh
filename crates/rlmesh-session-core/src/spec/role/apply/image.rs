@@ -320,6 +320,48 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_maps_through_its_range_layout_and_the_models_dtype() {
+        // A float frame over [2, 4]; a degenerate range reads as [0, 1].
+        for (range, values, want) in [
+            (Some((2.0, 4.0)), [2.0, 3.0, 4.0], [0_u8, 128, 255]),
+            (Some((1.0, 1.0)), [0.0, 0.5, 1.0], [0, 128, 255]),
+        ] {
+            let mut over = plan(DType::U8, None);
+            over.src_range = range;
+            let out = apply(&over, DType::F32, &[1, 3, 1], &f32_bytes(&values));
+            assert_eq!(out.data, want, "{range:?}");
+        }
+        // CHW in, HWC out: the channel planes interleave pixel by pixel.
+        let mut chw = plan(DType::U8, None);
+        chw.src_layout = ImageLayout::Chw;
+        let out = apply(&chw, DType::U8, &[3, 1, 2], &[1, 2, 10, 20, 100, 200]);
+        assert_eq!(
+            (out.shape, out.data),
+            (vec![1, 2, 3], vec![1, 10, 100, 2, 20, 200])
+        );
+        // Normalised into float64; raw bytes widened to float32.
+        let out = apply(
+            &plan(DType::F64, Some((1.0, 3.0))),
+            DType::U8,
+            &[1, 2, 1],
+            &[0, 255],
+        );
+        let wide: Vec<f64> = out
+            .data
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| f64::from_le_bytes(*b))
+            .collect();
+        assert_eq!((out.dtype, wide), (DType::F64, vec![1.0, 3.0]));
+        let out = apply(&plan(DType::F32, None), DType::U8, &[1, 1, 1], &[7]);
+        assert_eq!(
+            (out.dtype, out.data),
+            (DType::F32, 7.0_f32.to_le_bytes().to_vec())
+        );
+    }
+
+    #[test]
     fn normalising_maps_bytes_into_the_declared_range() {
         let out = apply(
             &plan(DType::F32, Some((-1.0, 1.0))),
@@ -368,6 +410,17 @@ mod tests {
             data: &[0; 12],
         };
         let error = resize.apply(Some(frame), &NoJpeg).expect_err("zero target");
+        let mut resize = plan(DType::U8, None);
+        resize.size = Some((4, 4));
+        for shape in [[0, 2, 3], [2, 0, 3]] {
+            let frame = Array {
+                dtype: DType::U8,
+                shape: &shape,
+                data: &[],
+            };
+            let source = resize.apply(Some(frame), &NoJpeg).expect_err("zero source");
+            assert!(source.0.contains("zero dimension"), "{source}");
+        }
         assert!(error.0.contains("zero dimension"), "{error}");
     }
 }

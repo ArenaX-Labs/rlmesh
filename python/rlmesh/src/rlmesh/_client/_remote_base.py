@@ -22,7 +22,7 @@ from ..spaces import Space, space_from_spec
 from ..specs import EnvContract, SpaceSpec
 from ..types import Metadata
 from . import _gym
-from ._endpoint import normalize_connect_address
+from ._endpoint import normalize_connect_address, redact_address
 from ._metadata import EMPTY_METADATA
 
 # The contract metadata key the served env's `EnvSpec` travels under.
@@ -118,6 +118,12 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
     def address(self) -> str:
         """Endpoint address this client is connected to."""
         return self._address
+
+    def __repr__(self) -> str:
+        # The address may carry its session's key: the repr leaves it out.
+        address = getattr(self, "_address", None)
+        shown = "<unconnected>" if address is None else redact_address(address)
+        return f"{type(self).__name__}(address={shown!r})"
 
     @property
     def env_id(self) -> str:

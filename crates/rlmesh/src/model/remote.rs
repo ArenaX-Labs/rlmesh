@@ -19,7 +19,10 @@ pub struct RemoteModelOptions {
 impl std::fmt::Debug for RemoteModelOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteModelOptions")
-            .field("address", &self.address)
+            .field(
+                "address",
+                &self.address.as_deref().map(crate::address::redact),
+            )
             .field("connect_timeout", &self.connect_timeout)
             .field("request_timeout", &self.request_timeout)
             .finish()
@@ -49,6 +52,7 @@ impl RemoteModelOptions {
 struct RemoteModelInner {
     address: String,
     connect_timeout: Option<Duration>,
+    request_timeout: Option<Duration>,
 }
 
 /// A served model (policy) to bind envs to.
@@ -64,9 +68,11 @@ impl RemoteModel {
         let address = crate::env::client::normalize_connect_address(options.address.as_deref())?;
         ConnectAddress::parse(&address)?;
         let connect_timeout = crate::env::client::normalize_timeout(options.connect_timeout);
+        let request_timeout = crate::env::client::normalize_timeout(options.request_timeout);
         Ok(RemoteModel(Arc::new(RemoteModelInner {
             address,
             connect_timeout,
+            request_timeout,
         })))
     }
 
@@ -79,11 +85,22 @@ impl RemoteModel {
     pub(crate) fn connect_timeout(&self) -> Option<Duration> {
         self.0.connect_timeout
     }
+
+    /// The model this handle dials, its requests bounded by
+    /// `request_timeout` when set.
+    pub(crate) fn served(&self, connect_timeout: Duration) -> crate::lockstep::ServedModel {
+        let served = crate::lockstep::ServedModel::new(self.address(), connect_timeout);
+        match self.0.request_timeout {
+            Some(deadline) => served.with_request_timeout(deadline),
+            None => served,
+        }
+    }
 }
 
 impl std::fmt::Display for RemoteModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RemoteModel(address='{}')", self.0.address)
+        let address = crate::address::redact(&self.0.address);
+        write!(f, "RemoteModel(address='{address}')")
     }
 }
 

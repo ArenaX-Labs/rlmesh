@@ -11,7 +11,10 @@
 //!   A preempting holder's wait isn't timed from the old holder's last
 //!   action either: the edge holds as below, without the timeout, until its
 //!   first action.
-//! - `Driving`: an action is due and dispatched.
+//! - `Driving`: an action is due and dispatched. A latched part (`latch`)
+//!   stays here on its last target once its queue runs out, for as long as
+//!   the lease that commanded it is held: no age expiry and no wait. When
+//!   that lease ends, the ladder below takes over, timed from then.
 //! - `Hold`: nothing valid is due. The edge waits at most `hold_max` for a
 //!   valid action. A position-type part (`hold_last`) repeats its last
 //!   dispatched target meanwhile: the robot approved that by declaring
@@ -168,6 +171,8 @@ pub struct MemberLadder {
     pub hold_last: bool,
     /// Every tick (absolute) or once per slot (delta).
     pub delivery: Delivery,
+    /// Whether its last target stands while its lease is held.
+    pub latch: bool,
 }
 
 /// The lease moved between members of the group.
@@ -236,6 +241,8 @@ pub struct Fallback {
     last: Option<(usize, QueuedAction)>,
     /// When valid coverage ended (edge clock), while waiting.
     dry_since_ns: Option<i64>,
+    /// The last tick a latched target was applied: it covers up to here.
+    latched_ns: Option<i64>,
     /// The member that last held the lease.
     active: Option<usize>,
     /// A handover in progress: since when, and whether it was announced.
@@ -265,6 +272,7 @@ impl Fallback {
             awaiting: None,
             last: None,
             dry_since_ns: None,
+            latched_ns: None,
             active: None,
             handover: None,
             last_tick_ns: None,
@@ -479,6 +487,7 @@ impl Fallback {
         queue.fence(view.epoch, lease.token);
         if let Some(due) = queue.due(now_ns) {
             self.dry_since_ns = None;
+            self.latched_ns = None;
             self.awaiting = None;
             let ladder = self.ladder(lease.member);
             let deliver = ladder.delivery == Delivery::EveryTick || due.first;
@@ -494,7 +503,24 @@ impl Fallback {
             // A lease with nothing applied under it yet.
             return self.decision(EdgeMode::Idle, Some(lease.member), None, false);
         }
+        if let Some(latched) = self.latched(now_ns, view.epoch, lease) {
+            return latched;
+        }
         self.hold(now_ns, view, Some(lease), queues)
+    }
+
+    /// A latched member's last target, while the lease it came under is held.
+    fn latched(&mut self, now_ns: i64, epoch: Epoch, lease: LeaseView) -> Option<Decision> {
+        let (member, last) = self.last.clone()?;
+        let held = member == lease.member
+            && last.chunk.epoch == epoch
+            && last.chunk.lease_token == lease.token;
+        if !held || !self.ladder(member).latch {
+            return None;
+        }
+        self.dry_since_ns = None;
+        self.latched_ns = Some(now_ns);
+        Some(self.decision(EdgeMode::Driving, Some(member), Some(last), false))
     }
 
     /// Nothing valid is due: wait for one, at most `hold_max` from when
@@ -516,6 +542,9 @@ impl Fallback {
         // Coverage ended when the last action's slot ended, when it went
         // void, or (preempted, released) by now at the latest.
         let mut covered_until = last.end_ns().min(last.chunk.valid_until_ns);
+        if let Some(latched) = self.latched_ns {
+            covered_until = covered_until.max(latched);
+        }
         if !current {
             covered_until = covered_until.min(now_ns);
         }
@@ -553,6 +582,7 @@ impl Fallback {
         self.members.get(member).copied().unwrap_or(MemberLadder {
             hold_last: false,
             delivery: Delivery::EveryTick,
+            latch: false,
         })
     }
 
@@ -675,10 +705,95 @@ mod tests {
                 vec![MemberLadder {
                     hold_last,
                     delivery: Delivery::EveryTick,
+                    latch: false,
                 }],
             ),
             vec![ActionQueue::default()],
         )
+    }
+
+    fn latched(hold_max: i64) -> (Fallback, Vec<ActionQueue>) {
+        (
+            Fallback::new(
+                hold_max,
+                vec![MemberLadder {
+                    hold_last: true,
+                    delivery: Delivery::EveryTick,
+                    latch: true,
+                }],
+            ),
+            vec![ActionQueue::default()],
+        )
+    }
+
+    /// A latched ladder that drove one action at 0 and then 2 s of silence.
+    fn latched_for_two_seconds() -> (Fallback, Vec<ActionQueue>) {
+        let (mut f, mut q) = latched(5 * MS);
+        q[0].splice(splice(1, 0, 1, 3 * MS), 0);
+        assert_eq!(f.tick(0, held(1), &mut q).mode, EdgeMode::Driving);
+        for t in [MS, 10 * MS, 500 * MS, 2_000 * MS] {
+            let d = f.tick(t, held(1), &mut q);
+            assert_eq!(
+                (d.mode, d.went_safe, d.run_safe),
+                (EdgeMode::Driving, None, false),
+                "at {t}"
+            );
+            assert_eq!(d.action.map(|a| a.index), Some(0), "at {t}");
+        }
+        (f, q)
+    }
+
+    #[test]
+    fn a_latched_target_outlives_its_chunk_while_the_lease_is_held() {
+        let (f, _) = latched_for_two_seconds();
+        let stats: alloc::collections::BTreeMap<_, _> = f.stats().into_iter().collect();
+        assert_eq!(stats[&EdgeMode::Hold].ticks, 0, "never waits");
+        assert_eq!(stats[&EdgeMode::Safe].entries, 0, "never dry");
+    }
+
+    #[test]
+    fn a_latched_part_follows_a_newer_target_and_latches_that() {
+        let (mut f, mut q) = latched_for_two_seconds();
+        let mut next = splice(1, 2_001 * MS, 1, i64::MAX);
+        Arc::get_mut(&mut next.chunk).expect("unshared").seq = 2;
+        q[0].splice(next, 2_001 * MS);
+        let d = f.tick(2_001 * MS, held(1), &mut q);
+        assert_eq!(d.action.map(|a| a.chunk.seq), Some(2));
+        let d = f.tick(3_000 * MS, held(1), &mut q);
+        assert_eq!(d.mode, EdgeMode::Driving);
+        assert_eq!(d.action.map(|a| a.chunk.seq), Some(2));
+    }
+
+    #[test]
+    fn a_released_latch_holds_for_hold_max_from_the_release_then_runs_safe() {
+        let (mut f, mut q) = latched_for_two_seconds();
+        let d = f.tick(2_001 * MS, view(None), &mut q);
+        assert_eq!((d.mode, d.action.is_some()), (EdgeMode::Hold, true));
+        let d = f.tick(2_005 * MS, view(None), &mut q);
+        assert_eq!(
+            (d.mode, d.went_safe, d.run_safe),
+            (EdgeMode::Safe, Some(SafeCause::Released), true)
+        );
+    }
+
+    #[test]
+    fn a_lapsed_lease_takes_a_latch_safe_at_once() {
+        let (mut f, mut q) = latched_for_two_seconds();
+        let expiring = view(Some(lease(0, 1, 2_001 * MS)));
+        assert_eq!(f.tick(2_001 * MS, expiring, &mut q).mode, EdgeMode::Driving);
+        let d = f.tick(2_002 * MS, expiring, &mut q);
+        assert_eq!(
+            (d.mode, d.went_safe, d.run_safe),
+            (EdgeMode::Safe, Some(SafeCause::LeaseLapsed), true)
+        );
+    }
+
+    #[test]
+    fn a_new_holder_does_not_inherit_a_latch() {
+        let (mut f, mut q) = latched_for_two_seconds();
+        let d = f.tick(2_001 * MS, held(2), &mut q);
+        assert_eq!(d.mode, EdgeMode::Hold, "held as any position part is");
+        assert_eq!(d.action.map(|a| a.chunk.lease_token), Some(LeaseToken(1)));
     }
 
     #[test]
@@ -992,10 +1107,12 @@ mod tests {
                     MemberLadder {
                         hold_last: true,
                         delivery: Delivery::EveryTick,
+                        latch: false,
                     },
                     MemberLadder {
                         hold_last: false,
                         delivery: Delivery::Once,
+                        latch: false,
                     },
                 ],
             ),

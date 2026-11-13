@@ -202,7 +202,9 @@ def test_model_subclass_serve_loads_then_serves(
 
     seen: dict[str, object] = {}
 
-    def fake_serve(self: object, address: str, *, name: str, options=None) -> None:
+    def fake_serve(
+        self: object, address: str, *, name: str, options=None, batching=None
+    ) -> None:
         seen["address"] = address
 
     monkeypatch.setattr(ModelBase, "serve", fake_serve)
@@ -225,7 +227,9 @@ def test_serve_model_dispatch_avoids_double_construction(
 
     served: list[object] = []
 
-    def fake_serve(self: object, address: str, *, name: str, options=None) -> None:
+    def fake_serve(
+        self: object, address: str, *, name: str, options=None, batching=None
+    ) -> None:
         served.append(self)
 
     monkeypatch.setattr(ModelBase, "serve", fake_serve)

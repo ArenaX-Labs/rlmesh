@@ -101,7 +101,7 @@ impl X25519 {
     fn install(&mut self, private: &mut [u8; 32]) {
         let secret = StaticSecret::from(*private);
         private.zeroize();
-        self.public = PublicKey::from(&secret).to_bytes();
+        self.public = super::x25519_public(&secret);
         self.secret = Some(secret);
     }
 }

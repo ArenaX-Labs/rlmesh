@@ -63,8 +63,8 @@ pub struct ChunkMeta {
     pub based_on: Vec<InputRange>,
     /// Edge clock at receipt.
     pub receive_ns: i64,
-    /// `valid_until` in the edge clock, conservatively converted and clamped
-    /// to receipt + `max_action_age`.
+    /// `valid_until` in the edge clock, clamped to receipt +
+    /// `max_action_age`, both less the error of the two clocks.
     pub valid_until_ns: i64,
 }
 
@@ -131,6 +131,9 @@ pub struct SpliceOutcome {
     pub kept_committed: u64,
     /// Queued actions of another epoch or lease token, purged.
     pub fenced: u64,
+    /// The chunk's actions dropped because the heap had no room for them
+    /// now: the queue is as the fence left it.
+    pub no_memory: u64,
 }
 
 /// Running action counts for one queue.
@@ -247,7 +250,19 @@ impl ActionQueue {
             ..SpliceOutcome::default()
         };
         let dt = splice.dt_ns.max(1);
-        let mut candidates = Vec::with_capacity(splice.actions.len());
+        // Room for every action first, failing rather than aborting on a
+        // board's heap: then nothing below allocates.
+        let n = splice.actions.len();
+        let mut candidates = Vec::new();
+        let mut fresh = Vec::new();
+        if candidates.try_reserve_exact(n).is_err()
+            || fresh.try_reserve_exact(n).is_err()
+            || self.items.try_reserve(n).is_err()
+        {
+            outcome.no_memory = n as u64;
+            self.stats.add(outcome);
+            return outcome;
+        }
         for (i, value) in splice.actions.into_iter().enumerate() {
             let i = i64::try_from(i).unwrap_or(i64::MAX);
             let slot_ns = splice.t0_ns.saturating_add(i.saturating_mul(dt));
@@ -270,7 +285,6 @@ impl ActionQueue {
             .retain(|a| a.slot_ns < replace_from_ns || (once && a.delivered));
         outcome.replaced = (before - self.items.len()) as u64;
 
-        let mut fresh = Vec::with_capacity(candidates.len());
         for (i, slot_ns, value) in candidates {
             let end_ns = slot_ns.saturating_add(dt);
             if self.items.iter().any(|a| {

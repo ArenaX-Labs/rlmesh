@@ -540,6 +540,12 @@ pub const DEV_BUILD_HINT: &str = "dev builds only interoperate with the identica
      rebuild both sides from the same tree state, or build both with RLMESH_RELEASE_BUILD=1 \
      to speak the sealed edition";
 
+/// The remedy an edition refusal between released builds carries: the
+/// moment two peers' editions differ is when an undeclared one has moved.
+pub const PIN_HINT: &str = "run both sides on rlmesh releases that share an edition; a \
+     participant that declares no workflow_edition floats to its build's newest, so pin each \
+     one (to what rlmesh.current_workflow_edition() prints) before you upgrade either side";
+
 impl EditionRefusal {
     /// Whether any tier offered a local dev cohort (`<base>-dev.<git>`).
     pub fn involves_dev_build(&self) -> bool {
@@ -548,13 +554,13 @@ impl EditionRefusal {
             .any(|tier| tier.can.iter().any(|edition| edition.contains("-dev.")))
     }
 
-    /// `"; hint: ..."` with [`DEV_BUILD_HINT`] when a dev build took part, else
-    /// empty — for callers to append to their refusal message.
+    /// `"; hint: ..."` with [`DEV_BUILD_HINT`] when a dev build took part,
+    /// else [`PIN_HINT`] — for callers to append to their refusal message.
     pub fn hint(&self) -> String {
         if self.involves_dev_build() {
             format!("; hint: {DEV_BUILD_HINT}")
         } else {
-            String::new()
+            format!("; hint: {PIN_HINT}")
         }
     }
 }
@@ -1163,6 +1169,7 @@ mod tests {
         CURRENT_WORKFLOW_EDITION, SUPPORTED_WORKFLOW_EDITIONS, SessionOffer,
         negotiate_session_floor, negotiate_workflow_edition, supported_workflow_editions,
     };
+    use super::{DEFAULTS_2026_06, DEFAULTS_2026_10, Edition, defaults};
 
     /// One tier of a negotiation case: what it CAN drive, and what it WANTs
     /// (`None` = undeclared, which negotiation reads as `max(can)`).
@@ -1627,10 +1634,10 @@ mod tests {
             assert!(refusal.hint().contains("RLMESH_RELEASE_BUILD=1"));
         }
 
-        // Release and prerelease cohorts alone get no dev-build advice.
+        // Release and prerelease cohorts alone get the pin advice instead.
         let refusal = refusal(&["2025.01"], &["2026.06-0.2.0-beta.1"]);
         assert!(!refusal.involves_dev_build(), "{refusal}");
-        assert_eq!(refusal.hint(), "");
+        assert_eq!(refusal.hint(), format!("; hint: {}", super::PIN_HINT));
     }
 
     #[test]
@@ -2241,6 +2248,24 @@ mod tests {
             offer.preferred.as_deref(),
             Some(CURRENT_WORKFLOW_EDITION),
             "an undeclared build wants its current edition"
+        );
+    }
+
+    /// A run between peers on different editions executes at their floor,
+    /// but the env keeps running its own edition's defaults: correct only
+    /// while every retained row is equal.
+    #[test]
+    fn retained_edition_rows_stay_equal_until_an_env_is_pinned_to_the_floor() {
+        assert_eq!(defaults(Edition::E2026_06), &DEFAULTS_2026_06);
+        assert_eq!(defaults(Edition::E2026_10), &DEFAULTS_2026_10);
+        assert_eq!(
+            DEFAULTS_2026_06, DEFAULTS_2026_10,
+            "the 2026.06 and 2026.10 edition defaults now differ. A run whose env and model \
+             negotiated a floor below the env's edition still steps the env under the env's \
+             own row: see the TODO in `RunEdition::with_model` \
+             (crates/rlmesh/src/model/local.rs). Before the rows may differ, decide how the \
+             env is pinned to the run's floor (sent with each reset, or the pairing refused \
+             at bind), implement it there, then drop this assertion"
         );
     }
 }

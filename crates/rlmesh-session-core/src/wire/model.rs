@@ -107,8 +107,9 @@ pub struct ModelFault {
 /// frames, each one row per episode, or its fault.
 pub type ModelOutcome = Result<Vec<Leaves>, ModelFault>;
 
-/// A request to a served model.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A request to a served model. Its `Debug` leaves a session address's key
+/// (`#…`) out.
+#[derive(Clone, PartialEq, Eq)]
 pub enum ModelRequest {
     /// Resolves a route.
     Resolve(ModelResolve),
@@ -151,6 +152,52 @@ pub enum ModelRequest {
     },
 }
 
+impl core::fmt::Debug for ModelRequest {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Resolve(resolve) => f.debug_tuple("Resolve").field(resolve).finish(),
+            Self::Predict(groups) => f.debug_tuple("Predict").field(groups).finish(),
+            Self::Reset { route, episode_ids } => f
+                .debug_struct("Reset")
+                .field("route", route)
+                .field("episode_ids", episode_ids)
+                .finish(),
+            Self::Release { route } => f.debug_struct("Release").field("route", route).finish(),
+            Self::Describe => f.write_str("Describe"),
+            Self::ResetOptions {
+                route,
+                episode,
+                trial_index,
+            } => f
+                .debug_struct("ResetOptions")
+                .field("route", route)
+                .field("episode", episode)
+                .field("trial_index", trial_index)
+                .finish(),
+            // The invitation carries the session's key, a credential.
+            Self::Join { session } => f
+                .debug_struct("Join")
+                .field("session", &keyless(session))
+                .finish(),
+            Self::Leave { session } => f
+                .debug_struct("Leave")
+                .field("session", &keyless(session))
+                .finish(),
+        }
+    }
+}
+
+/// `address` with its key (`#…`) left out.
+fn keyless(address: &str) -> String {
+    match address.split_once('#') {
+        Some((before, rest)) => {
+            let after = &rest[rest.find('/').unwrap_or(rest.len())..];
+            format!("{before}#…{after}")
+        }
+        None => address.to_string(),
+    }
+}
+
 /// A served model's reply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelReply {
@@ -166,4 +213,29 @@ pub enum ModelReply {
     Options(String),
     /// The request failed as a whole.
     Fault(ModelFault),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_join_debug_leaves_the_session_key_out() {
+        let key = "k3yS3cr3tXyZ";
+        let session = format!("lab:7447/s#{key}");
+        let at_participant = format!("lab:7447#{key}/s/policy");
+        for request in [
+            ModelRequest::Join {
+                session: session.clone(),
+            },
+            ModelRequest::Leave { session },
+            ModelRequest::Join {
+                session: at_participant,
+            },
+        ] {
+            let shown = format!("{request:?} {request:#?}");
+            assert!(!shown.contains(key), "{shown}");
+            assert!(shown.contains("#…"), "{shown}");
+        }
+    }
 }

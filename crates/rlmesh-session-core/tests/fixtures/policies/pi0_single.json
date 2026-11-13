@@ -47,14 +47,14 @@
         "wrist_3_joint"
       ],
       "hz": 15,
-      "horizon": 10
+      "chunk": 10
     },
     "gripper": {
       "kind": "gripper",
       "at": "gripper",
       "command": "position",
       "hz": 15,
-      "horizon": 10,
+      "chunk": 10,
       "open": 1.0,
       "closed": -1.0
     }

@@ -288,42 +288,136 @@ impl SignedReceiver {
         keyexpr: &str,
         msg: &'m [u8],
     ) -> Result<Verified<'m>, SignedError> {
-        let Verified {
-            header:
-                SignedHeader {
-                    kind,
-                    host_instance,
-                    seq,
-                },
-            ..
-        } = peek(msg)?;
+        let verified = verify_signature(&self.key, self.host_instance, &self.last, keyexpr, msg)?;
+        self.last[verified.header.kind.index()] = Some(verified.header.seq);
+        Ok(verified)
+    }
+
+    /// A verifier of this receiver's broadcasts for another task, which
+    /// keeps its own floor: the signature check is a function of the bytes
+    /// and the key, and on a board it takes longer than a control period.
+    pub fn checker(&self) -> SignedChecker {
+        SignedChecker {
+            key: self.key,
+            host_instance: self.host_instance,
+            last: self.last,
+        }
+    }
+
+    /// Takes a broadcast [`SignedChecker::check`] verified, as
+    /// [`Self::verify`] would: it must come from this receiver's key and
+    /// host instance and have been received on `keyexpr`, and it is held to
+    /// this receiver's floor. No signature is checked here.
+    ///
+    /// # Errors
+    /// [`SignedError`]; nothing is recorded then.
+    pub fn take<'m>(
+        &mut self,
+        keyexpr: &str,
+        checked: &'m Checked,
+    ) -> Result<Verified<'m>, SignedError> {
+        if checked.key != self.key.to_bytes() {
+            return Err(SignedError::BadSignature);
+        }
+        if checked.keyexpr != keyexpr {
+            return Err(SignedError::BadSignature);
+        }
+        let verified = peek(&checked.msg)?;
+        let SignedHeader {
+            kind,
+            host_instance,
+            seq,
+        } = verified.header;
         if host_instance != self.host_instance {
             return Err(SignedError::WrongInstance(host_instance));
         }
         if self.last[kind.index()].is_some_and(|last| seq <= last) {
             return Err(SignedError::Stale(seq));
         }
-        let (signed, signature) = msg.split_at(msg.len() - SIGNATURE_LEN);
-        let mut header = [0u8; HEADER_LEN];
-        header.copy_from_slice(&signed[..HEADER_LEN]);
-        let body = &signed[HEADER_LEN..];
-        let input =
-            signing_input(&header, keyexpr, body).map_err(|_| SignedError::KeyExprTooLong)?;
-        let mut sig = [0u8; SIGNATURE_LEN];
-        sig.copy_from_slice(signature);
-        self.key
-            .verify_strict(&input, &Signature::from_bytes(&sig))
-            .map_err(|_| SignedError::BadSignature)?;
         self.last[kind.index()] = Some(seq);
-        Ok(Verified {
-            header: SignedHeader {
+        Ok(verified)
+    }
+}
+
+/// Checks `msg`'s instance, floor and signature, recording nothing.
+fn verify_signature<'m>(
+    key: &VerifyingKey,
+    expected_instance: u64,
+    last: &[Option<u64>; KINDS],
+    keyexpr: &str,
+    msg: &'m [u8],
+) -> Result<Verified<'m>, SignedError> {
+    let Verified {
+        header:
+            SignedHeader {
                 kind,
                 host_instance,
                 seq,
             },
-            body,
+        ..
+    } = peek(msg)?;
+    if host_instance != expected_instance {
+        return Err(SignedError::WrongInstance(host_instance));
+    }
+    if last[kind.index()].is_some_and(|last| seq <= last) {
+        return Err(SignedError::Stale(seq));
+    }
+    let (signed, signature) = msg.split_at(msg.len() - SIGNATURE_LEN);
+    let mut header = [0u8; HEADER_LEN];
+    header.copy_from_slice(&signed[..HEADER_LEN]);
+    let body = &signed[HEADER_LEN..];
+    let input = signing_input(&header, keyexpr, body).map_err(|_| SignedError::KeyExprTooLong)?;
+    let mut sig = [0u8; SIGNATURE_LEN];
+    sig.copy_from_slice(signature);
+    key.verify_strict(&input, &Signature::from_bytes(&sig))
+        .map_err(|_| SignedError::BadSignature)?;
+    Ok(Verified {
+        header: SignedHeader {
+            kind,
+            host_instance,
+            seq,
+        },
+        body,
+    })
+}
+
+/// [`SignedReceiver`]'s signature check, apart from the receiver: a task
+/// that holds this verifies broadcasts while the receiver's own task does
+/// something else, and hands over each as a [`Checked`]. Its floor only
+/// saves checking what the receiver would refuse anyway.
+#[derive(Debug, Clone)]
+pub struct SignedChecker {
+    key: VerifyingKey,
+    host_instance: u64,
+    last: [Option<u64>; KINDS],
+}
+
+impl SignedChecker {
+    /// Verifies `msg`, received on `keyexpr`, as
+    /// [`SignedReceiver::verify`] does.
+    ///
+    /// # Errors
+    /// [`SignedError`]; nothing is recorded then.
+    pub fn check(&mut self, keyexpr: &str, msg: Vec<u8>) -> Result<Checked, SignedError> {
+        let header =
+            verify_signature(&self.key, self.host_instance, &self.last, keyexpr, &msg)?.header;
+        self.last[header.kind.index()] = Some(header.seq);
+        Ok(Checked {
+            key: self.key.to_bytes(),
+            keyexpr: String::from(keyexpr),
+            msg,
         })
     }
+}
+
+/// A broadcast whose signature a [`SignedChecker`] verified, and the only
+/// way to give [`SignedReceiver::take`] one: its fields are private, so
+/// nothing unverified can be presented as verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    key: [u8; 32],
+    keyexpr: String,
+    msg: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -332,6 +426,80 @@ mod tests {
 
     const STATE: &str = "rlmesh/v2/acme/s/demo/host/state";
     const TICK: &str = "rlmesh/v2/acme/s/demo/host/tick";
+
+    #[test]
+    fn a_checker_verifies_and_the_receiver_takes_what_it_checked() {
+        let mut tx = host();
+        let mut rx = SignedReceiver::new(&tx.verifying_key(), 77).unwrap();
+        let mut checker = rx.checker();
+        let msg = tx
+            .sign(SignedKind::AuthorityState, STATE, b"state")
+            .unwrap();
+        let checked = checker.check(STATE, msg).unwrap();
+        let taken = rx.take(STATE, &checked).unwrap();
+        assert_eq!(taken.body, b"state");
+        assert_eq!(rx.last(SignedKind::AuthorityState), Some(1));
+    }
+
+    #[test]
+    fn a_checker_refuses_what_verify_refuses() {
+        let mut tx = host();
+        let rx = SignedReceiver::new(&tx.verifying_key(), 77).unwrap();
+        let mut checker = rx.checker();
+        let mut forged = tx
+            .sign(SignedKind::AuthorityState, STATE, b"state")
+            .unwrap();
+        forged[HEADER_LEN] ^= 1;
+        assert_eq!(checker.check(STATE, forged), Err(SignedError::BadSignature));
+        let msg = tx
+            .sign(SignedKind::AuthorityState, STATE, b"state")
+            .unwrap();
+        assert_eq!(
+            checker.check(TICK, msg.clone()),
+            Err(SignedError::BadSignature),
+            "signed for another key expression"
+        );
+        checker.check(STATE, msg.clone()).unwrap();
+        // A replay costs no signature check.
+        assert!(matches!(
+            checker.check(STATE, msg),
+            Err(SignedError::Stale(_))
+        ));
+    }
+
+    #[test]
+    fn a_receiver_holds_a_checked_broadcast_to_its_key_instance_expression_and_floor() {
+        let mut tx = host();
+        let mut rx = SignedReceiver::new(&tx.verifying_key(), 77).unwrap();
+        let mut checker = rx.checker();
+        let msg = tx
+            .sign(SignedKind::AuthorityState, STATE, b"state")
+            .unwrap();
+        let checked = checker.check(STATE, msg).unwrap();
+
+        // Received on another key expression.
+        assert_eq!(rx.take(TICK, &checked), Err(SignedError::BadSignature));
+        // Checked under another host's key.
+        let other = SignedSender::new(&[9; 32], 7);
+        let mut stranger = SignedReceiver::new(&other.verifying_key(), 7).unwrap();
+        assert_eq!(
+            stranger.take(STATE, &checked),
+            Err(SignedError::BadSignature)
+        );
+        // The same key, under a newer host instance.
+        let mut restarted = SignedReceiver::new(&tx.verifying_key(), 99).unwrap();
+        assert!(matches!(
+            restarted.take(STATE, &checked),
+            Err(SignedError::WrongInstance(_))
+        ));
+
+        rx.take(STATE, &checked).unwrap();
+        // Taken twice: the receiver's floor still holds.
+        assert!(matches!(
+            rx.take(STATE, &checked),
+            Err(SignedError::Stale(_))
+        ));
+    }
 
     fn host() -> SignedSender {
         SignedSender::new(&[3; 32], 77)

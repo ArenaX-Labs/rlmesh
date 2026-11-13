@@ -10,7 +10,8 @@
 //!   defaults, and fingerprints the canonical form.
 //! - [`canonical`]: RFC 8785 JSON and the BLAKE3 fingerprints over it.
 //! - [`policy`], [`selector`]: the policy map and run-time options, and the `at`
-//!   selectors with scope and captures.
+//!   selectors with scope and captures; [`inputs`] and [`actions`] build a
+//!   policy map's entries by kind for [`Policy::builder`].
 //! - [`bind`](mod@bind): resolution to a [`Binding`] (the table, its
 //!   delivery contracts, action grids and fingerprint) or a [`Refusal`]
 //!   listing every problem; [`plan`] is the conversion vocabulary its
@@ -33,6 +34,7 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+pub mod actions;
 pub mod apply;
 pub mod bind;
 pub mod canonical;
@@ -41,6 +43,7 @@ pub mod convert;
 pub mod explain;
 pub mod frames;
 pub mod image;
+pub mod inputs;
 pub mod kinds;
 pub mod normalise;
 pub mod plan;
@@ -55,7 +58,7 @@ pub mod view;
 pub use bind::{BindError, Binding, Refusal, Target, bind, bind_in};
 pub use kinds::Kind;
 pub use normalise::normalise;
-pub use policy::{Policy, RunOptions};
+pub use policy::{Policy, PolicyBuilder, RunOptions};
 pub use projection::Projection;
 pub use rotation::Rotation;
 pub use units::Quantity;

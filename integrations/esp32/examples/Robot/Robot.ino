@@ -63,6 +63,11 @@ uint32_t bootHeldSince = 0;
 float target[2] = {0, 0};  // radians: pan, tilt
 uint8_t lastPhase = 255;
 uint32_t lastReport = 0;
+uint8_t lastRefusal = 0;
+uint64_t lastRefused = 0;
+uint32_t lastRefusalReport = 0;
+uint64_t lastDropped = 0;
+uint32_t lastDroppedCheck = 0;
 uint64_t nextTick = 0;
 
 // A hobby servo: 1500 us centred, 1000 us either way over about 90 degrees.
@@ -72,6 +77,11 @@ void writeServo(int pin, float rad) {
 }
 
 void setup() {
+  // Room for a status report: with none, each print waits for the port (87 us
+  // a character at 115200 baud), and the loop with it; a report of a few
+  // hundred characters then holds commands that arrive meanwhile past their
+  // life.
+  Serial.setTxBufferSize(2048);
   Serial.begin(115200);
   delay(1000);
   ledcAttach(kPanPin, 50, 14);
@@ -82,6 +92,8 @@ void setup() {
   pinMode(kBootPin, INPUT_PULLUP);
 
   WiFi.mode(WIFI_STA);
+  // Power save holds each frame for the access point's next beacon (~100 ms).
+  WiFi.setSleep(false);
   WiFi.begin(kSsid, kPassword);
   Serial.printf("Wi-Fi: joining %s", kSsid);
   while (WiFi.status() != WL_CONNECTED) {
@@ -118,11 +130,41 @@ void report() {
     }
     Serial.println();
   }
+  // Why commands are refused: at once when the reason changes, and at most
+  // every 5 s while they keep coming.
+  if (s.last_refusal != lastRefusal ||
+      (s.chunks_refused != lastRefused && millis() - lastRefusalReport > 5000)) {
+    lastRefusal = s.last_refusal;
+    lastRefused = s.chunks_refused;
+    lastRefusalReport = millis();
+    robot.printRefusals(Serial);
+  }
+  // What the board could not take (a view too large for it, a reply that
+  // did not open): checked every 5 s, printed when it grew.
+  if (millis() - lastDroppedCheck > 5000) {
+    lastDroppedCheck = millis();
+    uint64_t dropped = 0;
+    for (uint8_t what = 0; what < 4; ++what) {
+      for (uint8_t code = 1; code <= RLMESH_DEVICE_DROPPED; ++code) {
+        dropped += robot.dropped(what, code);
+      }
+    }
+    if (dropped != lastDropped) {
+      lastDropped = dropped;
+      robot.printDropped(Serial);
+    }
+  }
   if (robot.running() && millis() - lastReport > 5000) {
     lastReport = millis();
     Serial.printf("  mode %u, epoch %llu, %llu chunks, %llu echoes, e-stop %u, heap %lu\n", s.mode,
                   (unsigned long long)s.epoch, (unsigned long long)s.chunks_accepted,
                   (unsigned long long)s.echoes, s.estop, (unsigned long)ESP.getFreeHeap());
+    uint64_t sealed, signedViews, droppedViews;
+    robot.viewCounts(sealed, signedViews, droppedViews);
+    Serial.printf("  views: %llu sealed, %llu signed, %llu dropped\n", (unsigned long long)sealed,
+                  (unsigned long long)signedViews, (unsigned long long)droppedViews);
+    robot.printChunkTiming(Serial, eyes);
+    robot.printDatagram(Serial);
   }
 }
 

@@ -169,7 +169,7 @@ pub fn validate_workflow_edition(edition: &str) -> PyResult<String> {
 /// `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
 /// declaration. Returns the winner (validated and trimmed) and whether
 /// resolution stopped at a set-but-blank variable; `(None, False)` leaves
-/// Python's `pyproject.toml` rung and the float warning to the caller.
+/// Python's `pyproject.toml` rung to the caller.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 #[pyo3(signature = (*, call=None, option=None, declared=None))]
@@ -190,6 +190,35 @@ pub fn resolve_workflow_edition_rungs(
         EditionResolution::FloatsDeliberately => (None, true),
         EditionResolution::Undeclared => (None, false),
     })
+}
+
+/// Call `hook` with `{kind, participant, address, port, pid}` as each env or
+/// model this process serves becomes able to answer (`None` clears it). The
+/// address is redacted; `python -m rlmesh.serve` prints its serving line here.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
+#[pyfunction]
+#[pyo3(signature = (hook))]
+pub fn set_ready_hook(hook: Option<Py<PyAny>>) {
+    let hook = hook.map(|hook| {
+        std::sync::Arc::new(move |ready: &rlmesh::binding::Ready| {
+            Python::attach(|py| {
+                let call = || -> PyResult<()> {
+                    let info = pyo3::types::PyDict::new(py);
+                    info.set_item("kind", ready.kind)?;
+                    info.set_item("participant", &ready.participant)?;
+                    info.set_item("address", &ready.address)?;
+                    info.set_item("port", ready.port)?;
+                    info.set_item("pid", ready.pid)?;
+                    hook.call1(py, (info,))?;
+                    Ok(())
+                };
+                if let Err(err) = call() {
+                    err.write_unraisable(py, None);
+                }
+            });
+        }) as std::sync::Arc<dyn Fn(&rlmesh::binding::Ready) + Send + Sync>
+    });
+    rlmesh::binding::set_ready_hook(hook);
 }
 
 /// Normalize an optional declared edition: blank declares nothing, anything

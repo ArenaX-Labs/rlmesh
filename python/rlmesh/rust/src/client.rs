@@ -105,8 +105,12 @@ impl ClientCore {
         init_tracing(role);
         let profiler = ProfileCollector::new(role);
 
-        let connect_span = profiling_enabled()
-            .then(|| tracing::info_span!("rlmesh.client.connect", address = address));
+        let connect_span = profiling_enabled().then(|| {
+            tracing::info_span!(
+                "rlmesh.client.connect",
+                address = %rlmesh_session::address::redact(address)
+            )
+        });
         let _connect_enter = connect_span.as_ref().map(|span| span.enter());
         let connect_guard = profiler.start("client.connect");
 
@@ -170,7 +174,13 @@ impl ClientCore {
 
     fn span(&self, name: &'static str) -> Option<tracing::span::EnteredSpan> {
         profiling_enabled()
-            .then(|| tracing::info_span!("rlmesh.client", op = name, address = %self.address))
+            .then(|| {
+                tracing::info_span!(
+                    "rlmesh.client",
+                    op = name,
+                    address = %rlmesh_session::address::redact(&self.address)
+                )
+            })
             .map(|span| span.entered())
     }
 

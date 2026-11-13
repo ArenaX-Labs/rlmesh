@@ -448,12 +448,16 @@ pub struct CommandSpec {
     pub fields: Vec<FieldSpec>,
     /// Bounds on command fields; the edge clamps.
     pub limits: Vec<FieldLimit>,
-    /// The robot's own safe behaviour, by id (`stop`, `brake`).
+    /// The robot's safe behaviour, as declared: `stop`, `hold`, or any other
+    /// identifier its firmware implements. Passed to the robot uninterpreted.
     pub safe_behavior: String,
     /// The robot's hold allowance once valid coverage ends.
     pub hold_max: Duration,
     /// The edge's cap on a chunk's life from receipt.
     pub max_action_age: Duration,
+    /// The largest error, on either end's clock mapping, the edge takes
+    /// chunks under.
+    pub max_clock_error: Duration,
     /// How chunks merge: `Replace` only.
     pub merge: MergePolicy,
     /// `current` or `target` (delta modes).
@@ -465,6 +469,9 @@ pub struct CommandSpec {
     /// During Hold, repeat the last dispatched target (position-type modes);
     /// otherwise run the safe behaviour.
     pub hold_last: bool,
+    /// While the commanding lease is held, keep applying the last target
+    /// with no age expiry and no wait. Only on a mode that holds its target.
+    pub latch: bool,
 }
 
 impl CommandSpec {
@@ -472,6 +479,14 @@ impl CommandSpec {
     pub const DEFAULT_HOLD_MAX: Duration = Duration::from_millis(100);
     /// The default open-loop budget.
     pub const DEFAULT_MAX_ACTION_AGE: Duration = Duration::from_millis(200);
+    /// The least clock error bound a part gets without declaring one.
+    pub const MIN_DEFAULT_MAX_CLOCK_ERROR: Duration = Duration::from_millis(5);
+
+    /// The clock error bound of a part that declares none: a quarter of its
+    /// `max_action_age`, at least [`Self::MIN_DEFAULT_MAX_CLOCK_ERROR`].
+    pub fn default_max_clock_error(max_action_age: Duration) -> Duration {
+        (max_action_age / 4).max(Self::MIN_DEFAULT_MAX_CLOCK_ERROR)
+    }
 
     /// Whether this is a delta mode: each action is dispatched at
     /// most once, and Hold dispatches nothing.
@@ -578,6 +593,11 @@ pub struct PartSpec {
 }
 
 impl PartSpec {
+    /// How refusals and logs name it: `robot:path`.
+    pub fn qualified(&self) -> String {
+        format!("{}:{}", self.owner, self.path)
+    }
+
     /// Its sample stream.
     pub fn stream(&self) -> Result<StreamSpec, String> {
         Ok(StreamSpec {
@@ -668,6 +688,11 @@ pub struct StreamSpec {
 }
 
 impl StreamSpec {
+    /// How refusals and logs name it: `robot:path`.
+    pub fn qualified(&self) -> String {
+        format!("{}:{}", self.owner, self.path)
+    }
+
     /// Whether several samples can share a batch (raw packed values).
     pub fn batchable(&self) -> bool {
         self.encoding == Encoding::Raw && matches!(self.layout, Layout::Packed { .. })
@@ -770,11 +795,13 @@ pub(crate) mod tests {
                 safe_behavior: "stop".into(),
                 hold_max: CommandSpec::DEFAULT_HOLD_MAX,
                 max_action_age: CommandSpec::DEFAULT_MAX_ACTION_AGE,
+                max_clock_error: Duration::from_millis(30),
                 merge: MergePolicy::Replace,
                 reference: String::new(),
                 group: Some("arm".into()),
                 binary: false,
                 hold_last: true,
+                latch: true,
             }),
             attrs: BTreeMap::from([("doc".to_string(), "the arm".to_string())]),
             priority: ChannelPriority::Realtime,
@@ -828,6 +855,7 @@ pub(crate) mod tests {
         assert_eq!(packed.len(), 40);
         assert_eq!(&packed[12..16], &[0; 4], "zero padding");
         assert!(layout.pack(&[&[1; 12], &[1]]).is_err());
+        assert_eq!(Layout::Text.pack(&[b"hi"]), Ok(b"hi".to_vec()));
     }
 
     #[test]
@@ -856,12 +884,24 @@ pub(crate) mod tests {
             Layout::of(&[field("big", DType::U8, &[4096, 4096, 3])]).is_err(),
             "over 32 MiB"
         );
+        // Every cap is inclusive.
+        for ok in [
+            (0..MAX_FIELDS)
+                .map(|i| field(&format!("f{i}"), DType::U8, &[]))
+                .collect::<Vec<_>>(),
+            vec![field("x", DType::F32, &[1, 1, 1, 1])],
+            vec![field("x", DType::U8, &[32 << 20])],
+        ] {
+            assert!(Layout::of(&ok).is_ok(), "{} fields refused", ok.len());
+        }
     }
 
     #[test]
     fn payloads_are_checked_against_the_stream() {
         let arm = arm();
         let stream = arm.stream().expect("stream");
+        assert_eq!(stream.qualified(), "ur10e:arm");
+        assert!(stream.batchable() && !is_applied_path(&stream.path));
         assert!(stream.check_payload(&[0; 48]).is_ok());
         assert!(stream.check_payload(&[0; 44]).is_err());
         let applied = arm.applied_stream().expect("commandable").expect("layout");
@@ -878,6 +918,10 @@ pub(crate) mod tests {
         assert!(!camera.batchable());
         assert!(camera.check_payload(&[0; 60_000]).is_ok());
         assert!(camera.check_payload(&[]).is_err());
+        assert!(
+            camera.check_payload(&vec![0; 921_600 + 16 * 1024]).is_ok(),
+            "an encoded image may run 16 KiB over raw"
+        );
         assert!(
             camera
                 .check_payload(&vec![0; 921_600 + MAX_ENCODED_OVERHEAD + 1])
@@ -896,6 +940,7 @@ pub(crate) mod tests {
             ..stream
         };
         assert!(text.check_payload("put the cup down".as_bytes()).is_ok());
+        assert!(text.check_payload(&[b'a'; MAX_TEXT_BYTES]).is_ok());
         assert!(text.check_payload(&[0xff, 0xfe]).is_err());
         assert!(text.check_payload(&[b'a'; MAX_TEXT_BYTES + 1]).is_err());
     }
@@ -915,12 +960,31 @@ pub(crate) mod tests {
             "latest()",
             "latest(hz=0)",
             "latest(hz=10, hz=2)",
+            "latest(max_mbps=1, max_mbps=2)",
             "latest(fps=3)",
             "batch(10)",
         ] {
             assert!(SendPolicy::parse(bad).is_err(), "{bad:?} accepted");
         }
         assert_eq!(camera().send_policy().max_mbps, Some(8.0));
+    }
+
+    #[test]
+    fn the_control_period_follows_control_hz_and_defaults_to_1_ms() {
+        assert_eq!(arm().control_period(), Duration::from_millis(2));
+        assert_eq!(camera().control_period(), Duration::from_millis(1));
+    }
+
+    #[test]
+    fn rgb8_dims_names_a_u8_three_channel_image() {
+        assert_eq!(camera().fields[0].rgb8_dims(), Some((480, 640)));
+        for other in [
+            FieldSpec::new("rgba", DType::U8, &[2, 2, 4]),
+            FieldSpec::new("rgb", DType::F32, &[2, 2, 3]),
+            FieldSpec::new("pos", DType::U8, &[3]),
+        ] {
+            assert_eq!(other.rgb8_dims(), None, "{}", other.name);
+        }
     }
 
     #[test]

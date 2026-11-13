@@ -485,11 +485,15 @@ mod tests {
             safe_behavior: "stop".into(),
             hold_max: CommandSpec::DEFAULT_HOLD_MAX,
             max_action_age: CommandSpec::DEFAULT_MAX_ACTION_AGE,
+            max_clock_error: CommandSpec::default_max_clock_error(
+                CommandSpec::DEFAULT_MAX_ACTION_AGE,
+            ),
             merge: rlmesh_session_core::wire::MergePolicy::Replace,
             reference: String::new(),
             group: None,
             binary: false,
             hold_last: true,
+            latch: false,
         };
         let packed = pack_command(&command, &[1.0, 2.0, 3.0, 1.0]).expect("packed");
         assert_eq!(packed.len(), 24);

@@ -139,6 +139,8 @@ message StreamContract {
 message ActionGrid {
   uint32 channel = 1;
   uint64 dt_ns = 2;
+  // The most actions one of its chunks carries (0: not declared).
+  uint32 chunk = 3;
 }
 
 // How a publisher sends one stream.
@@ -251,6 +253,9 @@ message LeaseEnd {
   Reason reason = 2;
   // The preempting or rebound lease.
   Lease by = 3;
+  // A release that handed the parts back (lease.handback): the participant
+  // the released lease had preempted, who takes them again. Empty: none.
+  string to = 4;
 }
 
 // The host's last entry into SAFE, DISARMED or ESTOP; never lowered.
@@ -298,6 +303,15 @@ message AuthorityState {
   repeated Place places = 22;
   // The scene this session runs, when a daemon started it.
   SceneInfo scene = 23;
+  // Every robot that stopped on its own and waits to be re-armed by name.
+  repeated HeldRobot held = 24;
+}
+
+// A robot held until it is re-armed by name.
+message HeldRobot {
+  string robot = 1;
+  // Why (code, detail) and when (at_ns, host session clock).
+  Reason reason = 2;
 }
 
 // One robot's place in a scene's view: its parts under `from` appear at
@@ -362,6 +376,27 @@ message DeviceView {
   repeated Member members = 16;
   // Set once the run is ending: detach and return to the lobby.
   Reason closing = 17;
+  // A robot attached with "link.datagram" to a host that offered the
+  // datagram path: the routes of its realtime parts over it (unset: none,
+  // every part rides the session).
+  DatagramRoutes datagram = 18;
+}
+
+// One robot's routes on the host's datagram path: each datagram names its
+// route instead of a key expression.
+message DatagramRoutes {
+  // The route its probes name.
+  uint32 probe = 1;
+  repeated DatagramRoute routes = 2;
+}
+
+message DatagramRoute {
+  uint32 route = 1;
+  // Down: the commandable part whose chunks it carries. Up: the stream
+  // (a part's samples or its _applied entries) it carries.
+  uint32 channel = 2;
+  // Board to host.
+  bool up = 3;
 }
 
 message ViewGrid {
@@ -417,6 +452,56 @@ message Heartbeat {
   Health health = 11;
   // Edges: chunks refused since attach, by reason (only nonzero reasons).
   repeated RejectionCount rejected = 12;
+  // Edges: one per edge whose newest clock judgement refused a chunk.
+  repeated ClockRefusal clock_refused = 13;
+  // Edges: how each commanded part's chunks arrived since attach.
+  repeated ChunkTiming chunk_timing = 14;
+  // Edges: chunks accepted since attach (`last_chunk_accepted` is the
+  // newest one's seq).
+  uint64 chunks_accepted = 15;
+  // A board on the datagram path: its end's counters this attach.
+  DatagramStats datagram = 16;
+}
+
+// How one commanded part's chunks arrived at its edge.
+message ChunkTiming {
+  uint32 channel = 1;
+  // Chunks that reached the edge (any outcome), and those it accepted.
+  uint64 received = 2;
+  uint64 accepted = 3;
+  // Gaps in the seqs of accepted chunks under one lease token.
+  uint32 lost = 4;
+  // Accepted chunks by lateness on arrival against their first slot, in
+  // milliseconds: [0, 1), [1, 2), [2, 4), ... [32, 64), [64, inf).
+  repeated uint32 late_ms = 5;
+  // The latest any accepted chunk arrived.
+  uint32 late_max_us = 6;
+  // The longest time between two accepted chunks.
+  uint32 gap_max_us = 7;
+}
+
+// One end of a robot's datagram path: what it sent, and what it received
+// by the other end's statistics sequence.
+message DatagramStats {
+  // The path carries this robot's realtime parts now.
+  bool active = 1;
+  uint64 sent = 2;
+  uint64 received = 3;
+  uint64 lost = 4;
+  uint64 reordered = 5;
+  // Received but failed to open under the route's key, or unreadable.
+  uint64 unopened = 6;
+  // Times this end gave the path up for the session's own.
+  uint32 fallbacks = 7;
+}
+
+// Which path a robot's realtime parts ride.
+enum DataPath {
+  DATA_PATH_UNSPECIFIED = 0;
+  // The session's links (TCP).
+  DATA_PATH_SESSION = 1;
+  // The host's datagram path (UDP).
+  DATA_PATH_DATAGRAM = 2;
 }
 
 // Why an edge refused a chunk.
@@ -444,6 +529,18 @@ enum Rejection {
 message RejectionCount {
   Rejection reason = 1;
   uint64 count = 2;
+}
+
+// Why an edge is refusing chunks as REJECTION_CLOCK_UNCERTAIN.
+message ClockRefusal {
+  // The part whose chunk it refused.
+  uint32 channel = 1;
+  // Whose clock mapping is over the bound.
+  string participant = 2;
+  // The mapping's measured error.
+  uint64 error_ns = 3;
+  // The bound the edge held it to.
+  uint64 bound_ns = 4;
 }
 
 // One participant's link and edge as the host sees them (in HostHealth):
@@ -475,6 +572,18 @@ message LinkHealth {
   ParticipantReport report = 15;
   // The newest seq it has received per subscribed channel.
   repeated ChannelSeq last_seq_seen = 16;
+  // Edges: one per edge whose newest clock judgement refused a chunk.
+  repeated ClockRefusal clock_refused = 17;
+  // Edges: how each commanded part's chunks arrived, and how many it
+  // accepted (its heartbeat).
+  repeated ChunkTiming chunk_timing = 18;
+  uint64 chunks_accepted = 19;
+  // Robots: the path their realtime parts ride.
+  DataPath data_path = 20;
+  // Robots on the datagram path: the board's counters (its heartbeat) and
+  // the host's for it.
+  DatagramStats datagram_board = 21;
+  DatagramStats datagram_host = 22;
 }
 
 // Host -> observers on host/health, signed, about once a second: why a
@@ -592,6 +701,12 @@ message Command {
   // During Hold, may the edge repeat the last dispatched target? Set for
   // position-type modes; otherwise it runs the safe behaviour.
   bool hold_last = 11;
+  // While the commanding lease is held, keep applying the last target with
+  // no age expiry and no wait. Only on a mode that holds its target.
+  bool latch = 12;
+  // The largest error, on either end's clock mapping, the edge takes chunks
+  // under.
+  uint64 max_clock_error_ns = 13;
 }
 
 // A part as the host normalised it, in AuthorityState.
@@ -633,7 +748,9 @@ message Attach {
   PriorityClass priority = 3;
   // The participant's protocol minor.
   uint32 protocol_minor = 4;
-  // Features this participant implements.
+  // Features this participant implements. A robot on the lockstep clock
+  // lists "clock.lockstep" (it advances one step per `l/{robot}` request);
+  // one that lists nothing runs on the wall clock.
   repeated string supports = 5;
   // Features it cannot run without; the host refuses the attach
   // (CTL_STATUS_INCOMPATIBLE) when it lacks one.
@@ -654,7 +771,11 @@ message LocalEstop {
 
 message Detach {}
 
-message Arm {}
+message Arm {
+  // Empty: arm the session. A robot's name: clear that robot's hold, in a
+  // session already armed.
+  string robot = 1;
+}
 
 message Disarm {}
 
@@ -701,6 +822,11 @@ message GrantLease {
 message ReleaseLease {
   repeated uint32 channels = 1;
   uint64 token = 2;
+  // Hands the parts back to this participant: the one the released lease
+  // preempted, which resumes them (lease.handback). Refused when it is not
+  // that participant, lacks the feature, or the robot is held. Empty: a
+  // plain release.
+  string to = 3;
 }
 
 message Estop {
@@ -962,6 +1088,16 @@ message HandshakeAccept {
   uint64 host_instance = 5;
   uint32 up_key_id = 6;
   uint32 down_key_id = 7;
+  // The host relays robots' realtime parts over UDP (unset: it does not).
+  DatagramOffer datagram = 8;
+}
+
+// The host's datagram path.
+message DatagramOffer {
+  // Its UDP port, on the host the participant reached.
+  uint32 port = 1;
+  // The datagram header's version.
+  uint32 version = 2;
 }
 
 // Machine pairing: every packet is a query on
@@ -1016,7 +1152,7 @@ message PairResult {
 }
 
 // What an approved machine stores: its device id, and the host's static
-// key, id and base addresses (`host:port`, class i at base + i).
+// key, id and addresses (`host:port`, which every traffic class dials).
 message PairInfo {
   string device = 1;
   bytes host_key = 2;
@@ -1044,7 +1180,7 @@ message Assignment {
   }
 }
 
-// A robot's order: join `session` at `addresses` (base ports) with an IK
+// A robot's order: join `session` at `addresses` (`host:port`) with an IK
 // handshake against `host_key`.
 message Join {
   string run = 1;

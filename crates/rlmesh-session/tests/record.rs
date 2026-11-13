@@ -9,17 +9,17 @@ use std::time::{Duration, Instant};
 use rlmesh_session::auth::Credential;
 use rlmesh_session::edge::{EdgeConfig, Robot};
 use rlmesh_session::record::{
-    Episode, RECORDING_METADATA, RecordError, Recorded, Recorder, Rolling, collect, decode_samples,
-    keep, read, samples as samples_of, summarize,
+    Episode, RECORDING_METADATA, RecordError, Recorded, RecordedMessage, Recorder, Rolling,
+    collect, decode_samples, keep, read, samples as samples_of, summarize,
 };
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::{DType, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
-    Predictor, SamplePublisher, SessionHost, SessionServer, SystemMonotonicClock, Transport,
-    TransportConfig,
+    Predictor, RunConfig, RunMode, SamplePublisher, SessionHost, SessionServer,
+    SystemMonotonicClock, Transport, TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -28,7 +28,7 @@ const WAIT: Duration = Duration::from_secs(10);
 // host a controller's chunks arrive late enough to run a short one out.
 const ROBOT: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 500,
-            "command": "position", "hold_max_ms": 2000, "max_action_age_ms": 1000},
+            "command": "position", "safe": "stop", "hold_max_ms": 2000, "max_action_age_ms": 1000},
     "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 500}
 }"#;
 
@@ -36,7 +36,7 @@ const POLICY: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                        "hz": 100, "horizon": 5}}
+                        "hz": 100, "chunk": 5}}
 }"#;
 
 struct World {
@@ -51,14 +51,16 @@ struct World {
 
 impl World {
     async fn start() -> Self {
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("transport");
         let tenant = TenantId::new("record").expect("tenant");
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);
         config.clock = SystemMonotonicClock.shared();
-        config.lease_grace = Duration::from_millis(300);
+        // Leases change hands only by preemption and release here: a grace a
+        // loaded host's stalls cannot outlast keeps a lapse out of the timeline.
+        config.lease_grace = Duration::from_secs(2);
         config.health_log = None;
         let host = SessionHost::start(transport, config).await.expect("host");
         Self {
@@ -71,15 +73,9 @@ impl World {
     }
 
     async fn join(&self, id: &str, role: Role, priority: PriorityClass) -> Participant {
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(
-                Some("127.0.0.1:0".parse().expect("addr")),
-                Some(self.base),
-            )
-            .expect("config"),
-        )
-        .await
-        .expect("transport");
+        let transport = Transport::open(&TransportConfig::per_class_tcp(self.base))
+            .await
+            .expect("transport");
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
             self.session,
@@ -208,7 +204,12 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     let operator = world.controller("operator", PriorityClass::Operator).await;
     let run = {
         let model = model.clone();
-        std::thread::spawn(move || model.run(&mut Constant(1.0), Some(Duration::from_secs(30))))
+        std::thread::spawn(move || {
+            model.run(
+                &mut Constant(1.0),
+                RunConfig::default().duration(Duration::from_secs(30)),
+            )
+        })
     };
     wait_until("the model holding the arm", || model.holds()).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -224,6 +225,8 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     operator.release().await.expect("release");
+    // Preempted, the model is parked until handed back.
+    assert_eq!(model.resume(), vec!["ur10e:arm".to_string()]);
     wait_until("the model back", || model.holds()).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     model.stop();
@@ -327,6 +330,131 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     );
 }
 
+/// A shadow run's starts leave no chunk and no dispatched action in the
+/// recording: only the run counters in the host's health say they happened.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shadow_run_records_no_chunk_until_it_holds_a_lease() {
+    let world = World::start().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("shadow.mcap");
+    let observer = world
+        .join("recorder", Role::Observer, PriorityClass::Scripted)
+        .await;
+    let recorder = Recorder::start(Arc::new(observer), &path)
+        .await
+        .expect("recorder");
+    let watcher = world
+        .join("watcher", Role::Observer, PriorityClass::Scripted)
+        .await;
+    // The model's counters as the host relays them, once it has predicted.
+    let shadow_reported = Arc::new(AtomicBool::new(false));
+    let _health = watcher
+        .host_health({
+            let reported = shadow_reported.clone();
+            move |health| {
+                let shadowed = health.links.iter().any(|l| {
+                    l.report
+                        .as_ref()
+                        .and_then(|r| r.run.as_ref())
+                        .is_some_and(|run| run.completions > 0 && run.chunks_sent == 0)
+                });
+                if shadowed {
+                    reported.store(true, Ordering::Relaxed);
+                }
+            }
+        })
+        .await
+        .expect("health");
+    let robot = Arc::new(
+        Robot::declare(
+            world
+                .join("ur10e", Role::Embodiment, PriorityClass::Scripted)
+                .await,
+            ROBOT,
+            EdgeConfig::default(),
+        )
+        .await
+        .expect("declare"),
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let spin = {
+        let (robot, stop) = (robot.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let clock = robot.participant().clock().clone();
+            while !stop.load(Ordering::Relaxed) {
+                robot
+                    .publish("arm", clock.now_ns(), &[&f32s(&[0.5; 6])])
+                    .expect("arm");
+                robot.due("arm").expect("due");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        })
+    };
+    let model = world.controller("model", PriorityClass::Model).await;
+    let run = {
+        let model = model.clone();
+        std::thread::spawn(move || {
+            model.run(
+                &mut Constant(1.0),
+                RunConfig::default()
+                    .mode(RunMode::Shadow)
+                    .duration(Duration::from_secs(30)),
+            )
+        })
+    };
+    wait_until("shadow predictions in the host's health", || {
+        shadow_reported.load(Ordering::Relaxed)
+    })
+    .await;
+    robot.participant().arm().await.expect("arm");
+    wait_until("chunks sent once armed", || model.stats().chunks_sent > 10).await;
+    model.stop();
+    run.join().expect("run thread").expect("clean stop");
+    stop.store(true, Ordering::Relaxed);
+    spin.join().expect("robot loop");
+    let shadow = model.stats().shadow_predictions;
+    assert!(shadow > 0);
+    recorder.finish().await.expect("finish");
+
+    let summary = summarize(&path).expect("summary");
+    let leased = summary
+        .leases
+        .iter()
+        .find(|l| l.holder.as_deref() == Some("model"))
+        .expect("the model's lease")
+        .log_ns;
+    let leased = i64::try_from(leased).expect("time");
+    let messages = read(&path).expect("read");
+    let before: Vec<&RecordedMessage> = messages.iter().filter(|m| m.log_ns < leased).collect();
+    assert!(
+        before
+            .iter()
+            .all(|m| !matches!(m.message, Recorded::Chunk(_))),
+        "a chunk recorded before the model held a lease"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| matches!(m.message, Recorded::Chunk(_)))
+    );
+    let dispatched_early = decode_samples(&messages)
+        .into_iter()
+        .filter(|s| s.topic.ends_with("/_applied") && !s.fields.is_empty())
+        .any(|s| s.log_ns < leased);
+    assert!(!dispatched_early, "an action dispatched before the lease");
+    // The shadow starts show only in the counters the host relays.
+    let shadow_health = before.iter().any(|m| match &m.message {
+        Recorded::Health(health) => health.links.iter().any(|l| {
+            l.report
+                .as_ref()
+                .and_then(|r| r.run.as_ref())
+                .is_some_and(|run| run.completions > 0 && run.chunks_sent == 0 && run.no_lease == 0)
+        }),
+        _ => false,
+    });
+    assert!(shadow_health, "the shadow starts' counters in the health");
+}
+
 /// The segment files of one session's rolling recording, oldest first.
 fn segments(root: &std::path::Path, session: SessionId) -> Vec<std::path::PathBuf> {
     files_in(&root.join("rolling").join(session.to_string()))
@@ -355,7 +483,7 @@ const FT: &str = r#"{"ft": {"kind": "wrench", "frame": "tool0", "hz": 100}}"#;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_recording_server_rolls_self_contained_segments_and_still_ends_sessions() {
-    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+    let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
         .await
         .expect("transport");
     let tenant = TenantId::new("rolling").expect("tenant");

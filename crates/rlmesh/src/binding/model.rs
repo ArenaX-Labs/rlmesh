@@ -11,7 +11,7 @@ pub use crate::model::handler::{
     HeldState, HistoryNeeds, ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames,
     ResolveOptions, RouteNeeds,
 };
-pub use crate::model::local::LockstepEnv;
+pub use crate::model::local::{ConnectedEnv, LockstepEnv};
 pub use crate::model::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use crate::model::random::RandomSampleHandler;
 pub use crate::model::types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
@@ -52,9 +52,11 @@ pub fn new_model(
 /// (`"lab:7447/openpi"`), as Python's `Model(address)` takes it: a v1
 /// endpoint or an address naming no model is the ValueError class.
 pub fn served_model(address: &str) -> Result<crate::RemoteModel> {
+    // The address may carry a key: errors show it without.
+    let shown = crate::address::redact(address);
     if !crate::address::is_v2(address) {
         return Err(Error::invalid_argument(format!(
-            "Model({address:?}): a served model is reached by its participant address (e.g. \
+            "Model({shown:?}): a served model is reached by its participant address (e.g. \
              'lab:7447/openpi'); 0.2 no longer dials a v1 model endpoint"
         )));
     }
@@ -62,7 +64,7 @@ pub fn served_model(address: &str) -> Result<crate::RemoteModel> {
         .map_err(|err| Error::invalid_argument(err.to_string()))?;
     if parsed.participant.is_none() {
         return Err(Error::invalid_argument(format!(
-            "Model({address:?}) names no model: end the address with the model's name, e.g. \
+            "Model({shown:?}) names no model: end the address with the model's name, e.g. \
              'lab:7447/openpi'"
         )));
     }
@@ -160,7 +162,6 @@ pub struct PreparedModel {
     pub native_chunk: Option<u32>,
     pub execution_horizon: Option<u32>,
     pub workflow_edition: Option<String>,
-    pub authored: bool,
     pub has_chunk: Option<bool>,
 }
 

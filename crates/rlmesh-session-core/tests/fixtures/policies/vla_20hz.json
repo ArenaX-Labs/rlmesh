@@ -25,7 +25,7 @@
       "at": "arm",
       "command": "position",
       "hz": 100,
-      "horizon": 20,
+      "chunk": 20,
       "ttl_ms": 200
     }
   }

@@ -3,8 +3,9 @@
 You write a Dockerfile (see the sibling ``Dockerfile``) and this entrypoint, and
 RLMesh runs the image. The container hosts a session on ``RLMESH_ADDRESS``
 (default ``0.0.0.0:7447``) and serves the env in it as ``RLMESH_NAME``
-(default ``env``); a client dials it with ``rlmesh.RemoteEnv("<host>:7447/env")``,
-and the RLMesh Managed platform runs the same image.
+(default ``env``); a client dials the address its launcher made with
+``rlmesh.RemoteEnv(address)``, and the RLMesh Managed platform runs the same
+image.
 
 The lazy path: set the Dockerfile ENTRYPOINT to
 ``python -m rlmesh.serve --env my_pkg:MyEnv`` -- it runs the MyEnv factory below
@@ -36,8 +37,8 @@ class MyEnv(EnvFactory):
 def main() -> None:
     address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:7447")
     name = os.environ.get("RLMESH_NAME", "env")
-    print(f"RLMesh BYO env serving {address}/{name}", flush=True)
-    # Equivalent one-liner: `python -m rlmesh.serve --env <this_module>:MyEnv`.
+    # Prints "RLMesh serving env on ..." once the env answers. Equivalent
+    # one-liner: `python -m rlmesh.serve --env <this_module>:MyEnv`.
     MyEnv().serve(f"{address}/{name}")
 
 

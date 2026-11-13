@@ -1,4 +1,4 @@
-binding vla_20hz on ur10e_sim: 3 inputs, 1 action, fingerprint 6f8bbb5c29126086
+binding vla_20hz on ur10e_sim: 3 inputs, 1 action, fingerprint 5aad9bfd0d613210
 replan 20 Hz
 
   entry  dir  part       status  plan                                      delivers

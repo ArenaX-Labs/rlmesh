@@ -22,5 +22,5 @@ pub mod server;
 pub mod tls;
 
 pub use bridge::{BrowserLink, Gateway, Outbound};
-pub use config::{Args, Config};
+pub use config::{ADDRESS_VAR, Args, Config};
 pub use server::{AppState, router};

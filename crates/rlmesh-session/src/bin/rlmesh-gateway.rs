@@ -1,8 +1,12 @@
 //! `rlmesh-gateway`: serves browsers a session until interrupted.
 //!
 //! ```text
-//! RLMESH_GATEWAY_TOKEN=… rlmesh-gateway --address 127.0.0.1:17600/<session>#<key> --static examples/web/dist
+//! RLMESH_GATEWAY_TOKEN=… RLMESH_GATEWAY_ADDRESS='127.0.0.1:17600/<session>#<key>' \
+//!     rlmesh-gateway --static examples/web/dist
 //! ```
+//!
+//! The address's key, as the token, never goes on the command line (argv
+//! is world-readable): `RLMESH_GATEWAY_ADDRESS` or `--address-file` holds it.
 //!
 //! It logs to stderr (`RUST_LOG`) and prints `READY <url>` once it serves
 //! (never with a token: the page's comes in its fragment, `#t=…`, from
@@ -20,11 +24,16 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    use tracing_subscriber::prelude::*;
+    // Zenoh logs its config, link password included, below INFO.
+    let capped = tracing_subscriber::filter::filter_fn(rlmesh_session::logging::may_record);
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
+        .finish()
+        .with(capped)
         .init();
     match run(Args::parse()).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -36,7 +45,11 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run(args: Args) -> Result<(), String> {
-    let config = Config::from_args(args, std::env::var("RLMESH_GATEWAY_TOKEN").ok())?;
+    let config = Config::from_args_and_env(
+        args,
+        std::env::var("RLMESH_GATEWAY_TOKEN").ok(),
+        std::env::var(rlmesh_session::gateway::ADDRESS_VAR).ok(),
+    )?;
     let tls = match &config.tls {
         Some((cert, key)) => Some(tls::load_config(cert, key)?),
         None => None,

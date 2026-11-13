@@ -10,7 +10,7 @@
 //! (`{tenant}/server`) tells a participant that a host here will serve its
 //! session, so one that finds only other sessions' hosts fails at once.
 //!
-//! A session started explicitly ([`SessionServer::start_session`]: the
+//! A session started explicitly (`SessionServer::start_session`: the
 //! home daemon's lobby, a scene's run) is kept however its participants
 //! come and go, until [`SessionServer::stop`]; once stopped, it is never
 //! started again for a straggler.
@@ -31,6 +31,7 @@ use zenoh::sample::SampleKind;
 use crate::auth::{Device, Pin};
 use crate::error::SessionError;
 use crate::host::{HostConfig, SessionHost, token_declared};
+#[cfg(any(feature = "fleet", feature = "record"))]
 use crate::participant::{Participant, ParticipantConfig};
 #[cfg(feature = "record")]
 use crate::record::{Recorder, Rolling};
@@ -68,9 +69,12 @@ pub struct SessionServer {
     table: Table,
     /// The sessions started with their own devices and pins
     /// ([`Self::host_session`]), which [`Self::set_devices`] leaves alone.
+    #[cfg(feature = "fleet")]
     own_tables: std::sync::Mutex<HashSet<SessionId>>,
+    #[cfg(feature = "fleet")]
     transport: Transport,
     /// What its own participants attach with.
+    #[cfg(feature = "fleet")]
     own: (
         crate::wire::TenantId,
         Arc<dyn crate::clock::Clock>,
@@ -148,6 +152,7 @@ impl SessionServer {
         }
         let hosts: Hosts = Arc::default();
         let kept: Kept = Arc::default();
+        #[cfg(feature = "fleet")]
         let own = (
             config.tenant.clone(),
             config.clock.clone(),
@@ -370,8 +375,11 @@ impl SessionServer {
             hosts,
             kept,
             table,
+            #[cfg(feature = "fleet")]
             own_tables: std::sync::Mutex::default(),
+            #[cfg(feature = "fleet")]
             own,
+            #[cfg(feature = "fleet")]
             transport,
             #[cfg(feature = "record")]
             recorders,
@@ -407,6 +415,17 @@ impl SessionServer {
         self.hosts.lock().await.keys().copied().collect()
     }
 
+    /// Every session's participants' link health, as of each host's last
+    /// health interval.
+    pub async fn health(&self) -> Vec<(SessionId, Vec<crate::ParticipantHealth>)> {
+        self.hosts
+            .lock()
+            .await
+            .iter()
+            .map(|(id, host)| (*id, host.health()))
+            .collect()
+    }
+
     /// Every session's latest authority snapshot.
     pub async fn snapshots(&self) -> Vec<AuthoritySnapshot> {
         self.hosts
@@ -430,12 +449,17 @@ impl SessionServer {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             (devices.clone(), pins.clone()),
         );
+        #[cfg(feature = "fleet")]
         let own_tables = self
             .own_tables
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        for (session, host) in hosts.iter().filter(|(s, _)| !own_tables.contains(s)) {
+        for (session, host) in hosts.iter() {
+            #[cfg(feature = "fleet")]
+            if own_tables.contains(session) {
+                continue;
+            }
             if let Err(err) = apply(host, (&old, &old_pins), (&devices, &pins)).await {
                 warn!(%session, %err, "device table not applied");
             }
@@ -449,6 +473,7 @@ impl SessionServer {
     /// # Errors
     /// [`SessionError::Config`] when the session is already hosted here, or
     /// what starting it failed with.
+    #[cfg(feature = "fleet")]
     pub async fn start_session(
         &self,
         config: HostConfig,
@@ -462,6 +487,7 @@ impl SessionServer {
     ///
     /// # Errors
     /// As [`Self::start_session`].
+    #[cfg(feature = "fleet")]
     pub async fn host_session(
         &self,
         config: HostConfig,
@@ -469,6 +495,7 @@ impl SessionServer {
         self.start_kept(config, true).await
     }
 
+    #[cfg(feature = "fleet")]
     async fn start_kept(
         &self,
         config: HostConfig,
@@ -522,6 +549,7 @@ impl SessionServer {
     ///
     /// # Errors
     /// What attaching failed with.
+    #[cfg(feature = "fleet")]
     pub async fn attach(
         &self,
         session: SessionId,
@@ -642,11 +670,11 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;
-    use crate::transport::open_local_listeners;
+    use crate::transport::open_local_listener;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_late_delete_of_a_rejoined_members_old_token_keeps_it_beside_others() {
-        let (transport, _) = open_local_listeners(IpAddr::from(Ipv4Addr::LOCALHOST))
+        let (transport, _) = open_local_listener(IpAddr::from(Ipv4Addr::LOCALHOST))
             .await
             .expect("transport");
         let control = transport.control();
@@ -671,7 +699,7 @@ mod tests {
     /// wait without a participant.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_token_alone_keeps_no_session_and_sessions_stop_at_the_limit() {
-        let (transport, _) = open_local_listeners(IpAddr::from(Ipv4Addr::LOCALHOST))
+        let (transport, _) = open_local_listener(IpAddr::from(Ipv4Addr::LOCALHOST))
             .await
             .expect("transport");
         let tenant = crate::wire::TenantId::new("limits").expect("tenant");

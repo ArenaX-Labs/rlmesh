@@ -842,8 +842,13 @@ fn measured(ui: &mut egui::Ui, view: &View) {
             } else {
                 let total: u64 = r.rejected.iter().map(|(_, n)| n).sum();
                 let by: Vec<String> = r.rejected.iter().map(|(w, n)| format!("{n} {w}")).collect();
+                let mut why = by.join(", ");
+                if let Some(refused) = &r.clock_refused {
+                    why.push('\n');
+                    why.push_str(refused);
+                }
                 ui.label(RichText::new(total.to_string()).color(tone_color(Tone::Warn)))
-                    .on_hover_text(by.join(", "));
+                    .on_hover_text(why);
             }
             ui.label(format!("{}/{}", r.present.0, r.present.1));
             ui.label(r.holder.as_deref().unwrap_or("free"))

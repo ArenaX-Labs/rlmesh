@@ -10,8 +10,8 @@ use rlmesh_session::edge::Rejection;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session::wire::{
-    ActionChunk, Applied, ChannelId, ClockMapping, Command, DType, EdgeMode, Epoch, Health,
-    HostHealth, LeaseToken, LinkHealth, ParticipantId, ParticipantReport, PriorityClass,
+    ActionChunk, Applied, ChannelId, ClockMapping, ClockRefusal, Command, DType, EdgeMode, Epoch,
+    Health, HostHealth, LeaseToken, LinkHealth, ParticipantId, ParticipantReport, PriorityClass,
     PublisherCounters, ReasonCode, Request, Role, RunCounters, Sample, SessionId, StreamSpec,
 };
 use rlmesh_session::{Authority, AuthorityConfig};
@@ -35,7 +35,7 @@ pub const POLICY: &str = r#"{
     },
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
                         "names": ["shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3"],
-                        "hz": 500, "horizon": 20}},
+                        "hz": 500, "chunk": 20}},
     "allow": ["resize", "pad"]
 }"#;
 
@@ -62,6 +62,7 @@ pub struct World {
     pub edge_reason: ReasonCode,
     /// The robot's refused chunks, as the host relays them.
     pub rejected: Vec<(Rejection, u64)>,
+    pub clock_refused: Vec<ClockRefusal>,
     /// What a recorder would have written (snapshots, samples, chunks), by
     /// receipt time, in ingest order.
     pub recorded: Vec<(i64, Input)>,
@@ -83,6 +84,7 @@ impl World {
             edge_mode: EdgeMode::Driving,
             edge_reason: ReasonCode::Unspecified,
             rejected: Vec::new(),
+            clock_refused: Vec::new(),
             recorded: Vec::new(),
         };
         for (id, role, priority) in [
@@ -437,6 +439,7 @@ impl World {
                     self.link("policy", seen, 0, report("policy", vec![], Some(self.run))),
                     LinkHealth {
                         rejected: self.rejected.clone(),
+                        clock_refused: self.clock_refused.clone(),
                         ..self.link("ur10e", vec![], 18, report("ur10e", streams, None))
                     },
                 ];

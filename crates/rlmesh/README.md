@@ -8,7 +8,7 @@ RLMesh aims to feel familiar in whichever language you use it from. Python, Rust
 
 ```toml
 [dependencies]
-rlmesh = "0.1"
+rlmesh = "0.2.0-alpha.0"
 ```
 
 The build generates session protobuf messages, so it needs `protoc` on `PATH` (`apt install protobuf-compiler` or `brew install protobuf`). The minimum supported Rust version is the crate's `rust-version`.
@@ -300,7 +300,7 @@ When a model and an env describe their observations and actions differently (cam
 **`rlmesh::ext`** holds Rust-only extras that sit beside the shared surface:
 
 - `ext::CancelToken`: a cloneable cancellation handle. Pass it in `RunOptions::cancel` (or the serve and factory options) and call `cancel()` from anywhere; the call in flight fails with `Error::Cancelled`. `RemoteEnv::cancel_handle` returns the token a handle already uses.
-- `ext::TensorExt` (zero-copy `from_vec`, `zeros`, `stack`, `unstack`, storage and stride access) and `ext::SpaceExt::contains_detail` (why a value is not in a space).
+- `ext::TensorExt` (zero-copy `from_vec`, `zeros`, `stack`, `unstack`, storage and stride access), `ext::SpaceExt::contains_detail` (why a value is not in a space) and `ext::ErrorExt::is_transient` (whether retrying a failed call can succeed).
 - Raw DLPack types in `ext::dlpack`, and `ext::register_entrypoint` for custom adapter transforms.
 
 ## Errors
@@ -326,7 +326,7 @@ Inside an env, return `Error::environment_recoverable("...")` to fail one reques
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (`Policy::workflow_edition`, `ServeOptions::workflow_edition`, the `workflow_edition` field of the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. See [workflow editions](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (`Policy::workflow_edition`, `ServeOptions::workflow_edition`, the `workflow_edition` field of the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition, so pin one before you upgrade. See [workflow editions](https://rlmesh.dev/docs/).
 
 ## Stability
 

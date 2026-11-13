@@ -77,7 +77,7 @@ impl ChunkPublisher {
         sealer: Sealer,
     ) -> Result<Self, SessionError> {
         let wrong = |reason: String| SessionError::WrongChannel {
-            channel: spec.channel,
+            part: spec.qualified(),
             reason,
         };
         let stride = spec
@@ -134,7 +134,7 @@ impl ChunkPublisher {
     /// ended).
     pub fn send(&self, draft: ChunkDraft) -> Result<u64, SessionError> {
         let invalid = |reason: String| SessionError::InvalidValue {
-            channel: self.spec.channel,
+            part: self.spec.qualified(),
             reason,
         };
         let len = draft.actions.len();

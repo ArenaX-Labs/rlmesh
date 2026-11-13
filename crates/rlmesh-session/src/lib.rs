@@ -66,6 +66,8 @@
 //!   Node addon), so each only converts values.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
 //!   only starve its own class.
+//! - [`logging`]: the Zenoh target every tracing subscriber must cap at
+//!   `INFO` (it logs the link password a session's key derives at `DEBUG`).
 //!
 //! Every time is a monotonic nanosecond count in some participant's clock
 //! domain; session time is the host's. Motion never depends on the clock
@@ -91,10 +93,12 @@ pub mod gateway;
 pub mod host;
 #[cfg(feature = "fleet")]
 pub mod lobby;
+pub mod logging;
 pub mod media;
 pub mod metrics;
 pub mod pairing;
 pub mod participant;
+mod quiet;
 #[cfg(feature = "record")]
 pub mod record;
 pub mod report;
@@ -109,6 +113,11 @@ pub use rlmesh_session_core::spec;
 pub mod transport;
 pub use rlmesh_session_core::virtual_clock;
 
+/// The log filter a binary or binding starts with when `RUST_LOG` is unset:
+/// warnings, none of Zenoh's. Its messages name its own source files, and
+/// whatever of it matters reaches the caller as a session error.
+pub const DEFAULT_LOG_FILTER: &str = "warn,zenoh=off";
+
 pub use address::SessionAddress;
 pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason};
 pub use cache::{
@@ -117,7 +126,8 @@ pub use cache::{
 pub use chunk::{ChunkDraft, ChunkPublisher};
 pub use clock::{Clock, MonotonicClock, OffsetEstimate, SystemMonotonicClock};
 pub use controller::{
-    Controller, ControllerConfig, ControllerError, Predictor, RunError, SendError, Sent,
+    Controller, ControllerConfig, ControllerError, HandBack, Parked, Predictor, Resume, RunConfig,
+    RunError, RunMode, SendError, Sent, Step, StepAction,
 };
 pub use error::SessionError;
 pub use host::{HistoryConfig, HostConfig, KeepRecording, SessionHost};

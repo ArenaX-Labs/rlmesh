@@ -20,6 +20,7 @@ use rlmesh_session_core::crypto::pairing::{
 use rlmesh_session_core::crypto::sealed::{Kind, KindSet, SealReceiver, SealSender, Security};
 use rlmesh_session_core::crypto::signed::{SignedKind, SignedReceiver, SignedSender};
 use rlmesh_session_core::crypto::{Key, Rng, RngError, StaticKeypair};
+use rlmesh_session_core::datagram;
 use rlmesh_session_core::spec::normalise;
 use rlmesh_session_core::wire::version::SPEC_VERSION;
 use rlmesh_session_core::wire::{
@@ -194,6 +195,41 @@ fn sealed_vector(encrypted: bool) -> Value {
     })
 }
 
+/// A robot's probe on the datagram path: a `Sealed` probe (kind 21) under
+/// its `k_up`, behind the datagram header.
+fn datagram_vector() -> Value {
+    let name = "datagram probe key";
+    let key = fixed(name);
+    let key_id = 0x0000_0102;
+    let keyexpr = "rlmesh/v2/acme/s/demo/p/arm-1/udp";
+    let mut tx = SealSender::new(key_id, Key::from_bytes(key), handshake::UP, Security::Seal);
+    let message = tx.seal(Kind::DatagramProbe, keyexpr, b"").expect("seal");
+    let header = datagram::Header {
+        kind: datagram::Kind::Probe,
+        route: 0x0201,
+        seq: 7,
+    };
+    let framed = header.frame(&message).expect("fits");
+    json!({
+        "inputs": { "key": name },
+        "key": hex(&key),
+        "key_id": key_id,
+        "kind": Kind::DatagramProbe.as_u8(),
+        "seq": 1,
+        "security": "seal",
+        "encrypted": true,
+        "keyexpr": keyexpr,
+        "body": "",
+        "message": hex(&message),
+        "datagram": {
+            "type": 3,
+            "route": 0x0201,
+            "seq": 7,
+            "bytes": hex(&framed),
+        },
+    })
+}
+
 fn signed_vector() -> Value {
     let secret = fixed("signed host ed25519 secret");
     let host_instance = 0x1122_3344_5566_7788;
@@ -233,7 +269,7 @@ fn device_view() -> DeviceView {
         &eye,
         SPEC_VERSION,
         r#"{"gaze": {"kind": "joints", "hz": 100, "count": 2, "fields": ["pos"],
-                     "command": "position"}}"#,
+                     "command": "position", "safe": "stop"}}"#,
     )
     .expect("map");
     parts[0].channel = ChannelId(1);
@@ -296,6 +332,7 @@ fn device_view() -> DeviceView {
             },
         ],
         closing: None,
+        datagram: None,
     }
 }
 
@@ -504,7 +541,7 @@ fn pairing_vector() -> Value {
 fn generate() -> Value {
     json!({
         "about": ABOUT,
-        "sealed": [sealed_vector(true), sealed_vector(false)],
+        "sealed": [sealed_vector(true), sealed_vector(false), datagram_vector()],
         "signed": signed_vector(),
         "signed_view": signed_view_vector(),
         "ik": ik_vector(),
@@ -579,6 +616,30 @@ fn sealed_vectors_match_chacha20poly1305_directly() {
         assert_eq!(opened.header.seq, seq);
         assert_eq!(opened.encrypted(), encrypted);
     }
+}
+
+#[test]
+fn the_datagram_vector_is_its_header_then_the_sealed_probe() {
+    let probe = &load()["sealed"][2];
+    let datagram = &probe["datagram"];
+    let bytes = unhex(&datagram["bytes"]);
+    let route = u16::try_from(int(&datagram["route"])).expect("u16");
+    let seq = u32::try_from(int(&datagram["seq"])).expect("u32");
+    let mut want = vec![0xD1, u8::try_from(int(&datagram["type"])).expect("u8")];
+    want.extend_from_slice(&route.to_le_bytes());
+    want.extend_from_slice(&seq.to_le_bytes());
+    want.extend_from_slice(&unhex(&probe["message"]));
+    assert_eq!(bytes, want);
+    // Only `k_up` opens it, and only as a probe.
+    let mut rx = SealReceiver::new(
+        u32::try_from(int(&probe["key_id"])).expect("u32"),
+        Key::from_bytes(unhex32(&probe["key"])),
+        handshake::UP,
+        Security::Seal,
+    );
+    let mut msg = bytes[datagram::HEADER_LEN..].to_vec();
+    let opened = rx.open(text(&probe["keyexpr"]), &mut msg).expect("open");
+    assert_eq!(opened.header.kind, Kind::DatagramProbe);
 }
 
 #[test]

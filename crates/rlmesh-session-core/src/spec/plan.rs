@@ -510,6 +510,14 @@ mod tests {
             None,
         );
         assert_eq!(mixed.to_string(), "{pos: f32 [3], rot: f64 [4]}");
+        let mixed_window = Delivery::of(
+            vec![f("pos", DType::F32, &[3]), f("rot", DType::F64, &[4])],
+            Some(50),
+        );
+        assert_eq!(
+            mixed_window.to_string(),
+            "{pos: f32 [50, 3], rot: f64 [50, 4]}"
+        );
         assert_eq!(
             Delivery::of(vec![f("text", DType::Utf8, &[])], None),
             Delivery::Text

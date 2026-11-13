@@ -7,6 +7,7 @@ from typing import NoReturn
 
 def refuse_v1_address(where: str, address: str) -> None:
     """Refuse ``address`` when it is a v1 endpoint (0.2 uses session addresses)."""
+    from ._client._endpoint import redact_address
     from ._rlmesh import is_v2_address
 
     scheme, separator, _ = address.strip().partition("://")
@@ -14,26 +15,9 @@ def refuse_v1_address(where: str, address: str) -> None:
     if not legacy_scheme and is_v2_address(address):
         return
     raise ValueError(
-        f"{where}({address!r}): v1 endpoints need RLMesh 0.1; "
+        f"{where}({redact_address(address)!r}): v1 endpoints need RLMesh 0.1; "
         "serve with rlmesh.serve / pass the session address"
     )
-
-
-def refuse_remote_close_env(target: object) -> None:
-    """Refuse ``close_env=True`` on an env served elsewhere on a session."""
-    from ._rlmesh import is_v2_address
-
-    address = target if isinstance(target, str) else getattr(target, "address", None)
-    if (
-        isinstance(address, str)
-        and is_v2_address(address)
-        and (isinstance(target, str) or hasattr(target, "env_contract"))
-    ):
-        raise ValueError(
-            "close_env=True on a session address is gone in rlmesh 0.2: the env "
-            "belongs to its serving process; an owner shutdown is "
-            "server.shutdown() there"
-        )
 
 
 def removed(old: str, new: str) -> NoReturn:
@@ -85,7 +69,6 @@ __all__ = [
     "RemoteModel",
     "Session",
     "model_session",
-    "refuse_remote_close_env",
     "refuse_v1_address",
     "removed",
     "session",

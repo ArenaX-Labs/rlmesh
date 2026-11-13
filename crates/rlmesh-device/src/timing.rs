@@ -14,7 +14,7 @@ use rlmesh_session_core::crypto::{
 
 /// An authority state's body: a few parts, leases and roster entries.
 pub const STATE_LEN: usize = 1024;
-/// A chunk's body: a few parts over a short horizon.
+/// A chunk's body: a few parts over a few actions.
 pub const CHUNK_LEN: usize = 256;
 /// A sample's body: one part's state or `_applied` entry.
 pub const SAMPLE_LEN: usize = 64;
@@ -60,6 +60,7 @@ pub enum TimingError {
 /// # Errors
 /// [`TimingError`].
 pub fn run(now_us: &mut dyn FnMut() -> u64, rng: &mut dyn Rng) -> Result<Timing, TimingError> {
+    // Each step out of line, so their frames don't add up on a board's stack.
     let mut out = Timing::default();
     handshakes(now_us, rng, &mut out)?;
     states(now_us, rng, &mut out)?;
@@ -69,6 +70,7 @@ pub fn run(now_us: &mut dyn FnMut() -> u64, rng: &mut dyn Rng) -> Result<Timing,
     Ok(out)
 }
 
+#[inline(never)]
 fn handshakes(
     now_us: &mut dyn FnMut() -> u64,
     rng: &mut dyn Rng,
@@ -101,6 +103,7 @@ fn handshakes(
     Ok(())
 }
 
+#[inline(never)]
 fn states(
     now_us: &mut dyn FnMut() -> u64,
     rng: &mut dyn Rng,
@@ -127,6 +130,7 @@ fn states(
     Ok(())
 }
 
+#[inline(never)]
 fn open_chunks(
     now_us: &mut dyn FnMut() -> u64,
     rng: &mut dyn Rng,
@@ -154,6 +158,7 @@ fn open_chunks(
     Ok(mean(total, MESSAGES))
 }
 
+#[inline(never)]
 fn seal_samples(now_us: &mut dyn FnMut() -> u64, rng: &mut dyn Rng) -> Result<u32, TimingError> {
     let (mut robot, mut reader) = pair(rng, Kind::Sample, Security::Mac)?;
     let body = body(rng, SAMPLE_LEN)?;

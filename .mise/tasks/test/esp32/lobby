@@ -16,17 +16,12 @@ rlmesh="$target_dir/debug/rlmesh"
 board_bin="$target_dir/debug/examples/lobby_board"
 export RLMESH_STATE_DIR="$out/state"
 
-# Four consecutive free loopback ports, one per traffic class.
+# A free loopback port.
 port="$(python3 -c '
 import socket
-for base in range(27447, 28447, 4):
-    try:
-        socks = [socket.socket() for _ in range(4)]
-        for i, s in enumerate(socks): s.bind(("127.0.0.1", base + i))
-        print(base); break
-    except OSError: pass
-    finally:
-        for s in socks: s.close()
+with socket.socket() as s:
+    s.bind(("127.0.0.1", 0))
+    print(s.getsockname()[1])
 ')"
 home="127.0.0.1:$port"
 pids=()

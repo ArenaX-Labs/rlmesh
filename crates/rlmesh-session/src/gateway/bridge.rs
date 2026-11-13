@@ -619,7 +619,7 @@ impl BrowserLink {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => {
                 let stream = part.stream().map_err(|reason| SessionError::WrongChannel {
-                    channel: part.channel,
+                    part: part.qualified(),
                     reason,
                 })?;
                 let qos = stream_qos(&stream, view.clock_mode);
@@ -662,12 +662,27 @@ impl BrowserLink {
                     .grant_leases(channels, release, ttl_ns.map(Duration::from_nanos))
                     .await
                     .map_err(|e| refusal(&e)),
-                Command::ReleaseLease { channels, token } => p
+                // Not forwarded as a plain release: the browser would think
+                // the parts went back to the model.
+                Command::ReleaseLease { to: Some(_), .. } => Err(CtlError::new(
+                    CtlStatus::Unsupported,
+                    "the gateway does not forward a hand-back (lease.handback)",
+                )),
+                Command::ReleaseLease {
+                    channels,
+                    token,
+                    to: None,
+                } => p
                     .release_leases(channels, token)
                     .await
                     .map(|_| Vec::new())
                     .map_err(|e| refusal(&e)),
                 Command::Arm => p.arm().await.map(|_| Vec::new()).map_err(|e| refusal(&e)),
+                Command::Rearm { robot } => p
+                    .rearm(&robot)
+                    .await
+                    .map(|_| Vec::new())
+                    .map_err(|e| refusal(&e)),
                 Command::Disarm => p
                     .disarm()
                     .await

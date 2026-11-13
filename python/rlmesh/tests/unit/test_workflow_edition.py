@@ -36,7 +36,7 @@ COHORT = rlmesh.build_info().workflow_edition
 def _isolated_resolution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> Iterator[None]:
-    """Resolve against nothing: no env var, no project manifest, warning re-armed.
+    """Resolve against nothing: no env var, no project manifest.
 
     The suite-wide conftest sets ``RLMESH_WORKFLOW_EDITION`` to the empty string
     (the documented quiet switch), and the repo's own ``pyproject.toml`` is an
@@ -45,7 +45,6 @@ def _isolated_resolution(
     """
     monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(_editions, "_warned", False)
     monkeypatch.setattr(_editions, "_pyproject_cache", {})
     yield
 
@@ -99,8 +98,8 @@ class TestPrecedence:
     """Each rung of the A.5 table, and that the rung above it wins."""
 
     def test_undeclared_resolves_to_nothing(self) -> None:
-        with pytest.warns(UserWarning, match="no workflow edition declared"):
-            assert resolve_workflow_edition(authored=True) is None
+        assert resolve_workflow_edition() is None
+        assert _editions.resolve_declaration() == (None, True)
 
     def test_pyproject_is_the_lowest_declaration(self, tmp_path: Path) -> None:
         write_pyproject(tmp_path, EDITION)
@@ -145,11 +144,7 @@ class TestPrecedence:
 
     @pytest.mark.parametrize("blank", ["", "   "])
     def test_a_blank_declaration_is_no_declaration(self, blank: str) -> None:
-        with pytest.warns(UserWarning, match="no workflow edition declared"):
-            assert (
-                resolve_workflow_edition(call=blank, option=blank, authored=True)
-                is None
-            )
+        assert _editions.resolve_declaration(call=blank, option=blank) == (None, True)
 
 
 class TestRefusal:
@@ -193,52 +188,43 @@ class TestRefusal:
         assert COHORT in str(refusal.value)
 
 
-class TestOneTimeWarning:
-    """The undeclared warning fires once per process, not once per call."""
+def _module_in(directory: Path, name: str, source: str) -> Any:
+    """Import ``source`` as module ``name`` from a file in ``directory``."""
+    import importlib.util
+    import sys
 
-    def test_warns_once(self, recwarn: pytest.WarningsRecorder) -> None:
-        assert resolve_workflow_edition(authored=True) is None
-        assert resolve_workflow_edition(authored=True) is None
-        assert (
-            len(
-                [w for w in recwarn if "no workflow edition declared" in str(w.message)]
-            )
-            == 1
-        )
+    path = directory / f"{name}.py"
+    _ = path.write_text(textwrap.dedent(source), encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
-    def test_names_the_edition_it_floated_to_and_how_to_declare(self) -> None:
-        with pytest.warns(rlmesh.WorkflowEditionWarning) as records:
-            _ = resolve_workflow_edition(authored=True)
-        message = str(records[0].message)
-        assert current_workflow_edition() in message
-        assert "workflow_edition" in message
-        assert WORKFLOW_EDITION_ENV_VAR in message
-        assert len(message) < 240
 
-    def test_only_an_authored_participant_is_nudged(
+class TestQuietResolution:
+    """Running and serving an undeclared participant say nothing."""
+
+    def test_a_subclass_run_floats_quietly(
         self, recwarn: pytest.WarningsRecorder
     ) -> None:
-        # An ad hoc callable has nowhere to write a declaration; a subclass does.
         class Authored(rlmesh.Model[Any, Any]):
             def predict(self, obs: Any) -> Any:
                 return obs
 
-        from rlmesh.numpy import Model as NumpyModel
-
-        env = _two_step_env()
-        NumpyModel(lambda obs: obs).run(env, episodes=1)
+        Authored().run(_two_step_env(), episodes=1)
         assert [w for w in recwarn if "workflow edition" in str(w.message)] == []
-        Authored().run(env, episodes=1)
-        nudges = [w for w in recwarn if "workflow edition" in str(w.message)]
-        assert len(nudges) == 1
-        assert nudges[0].category is rlmesh.WorkflowEditionWarning
-        assert Path(nudges[0].filename) == Path(__file__)
 
-    def test_a_wrapped_policy_declares_and_is_nudged_like_a_subclass(
+    def test_an_env_server_floats_quietly(
         self, recwarn: pytest.WarningsRecorder
     ) -> None:
-        # Model(policy) reads the policy type's declaration and, floating, is
-        # authored: the policy type is where the declaration lives (COR-P6).
+        server = rlmesh.EnvServer(_two_step_env(), ":0/env")
+        server.shutdown()
+        assert [w for w in recwarn if "workflow edition" in str(w.message)] == []
+
+    def test_a_wrapped_policy_reads_its_policy_types_declaration(self) -> None:
+        # Model(policy) reads the policy type's declaration (COR-P6).
         class Declared:
             workflow_edition = EDITION
 
@@ -249,25 +235,14 @@ class TestOneTimeWarning:
             def predict(self, obs: Any) -> Any:
                 return obs
 
-        declared = rlmesh.Model(Declared())
-        assert declared._declared_workflow_edition(None) == EDITION  # pyright: ignore[reportPrivateUsage]
-        assert [w for w in recwarn if "workflow edition" in str(w.message)] == []
+        assert rlmesh.Model(Declared())._declared_workflow_edition(None) == EDITION  # pyright: ignore[reportPrivateUsage]
         assert rlmesh.Model(Floating())._declared_workflow_edition(None) is None  # pyright: ignore[reportPrivateUsage]
-        nudges = [w for w in recwarn if "workflow edition" in str(w.message)]
-        assert len(nudges) == 1
-        # A bare callable has nowhere to declare and stays quiet.
-        _editions._warned = False  # pyright: ignore[reportPrivateUsage]
-        assert rlmesh.Model(lambda obs: obs)._declared_workflow_edition(None) is None  # pyright: ignore[reportPrivateUsage]
-        assert len([w for w in recwarn if "workflow edition" in str(w.message)]) == 1
 
-    def test_the_empty_env_var_floats_deliberately_and_stays_quiet(
-        self, monkeypatch: pytest.MonkeyPatch, recwarn: pytest.WarningsRecorder
+    def test_the_empty_env_var_floats_deliberately(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, "")
-        assert resolve_workflow_edition(authored=True) is None
-        assert [
-            w for w in recwarn if "no workflow edition declared" in str(w.message)
-        ] == []
+        assert _editions.resolve_declaration() == (None, False)
 
     def test_the_empty_env_var_short_circuits_every_lower_rung(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -282,20 +257,70 @@ class TestOneTimeWarning:
         # Only the call keyword outranks it.
         assert resolve_workflow_edition(call=EDITION) == EDITION
 
-    def test_the_warning_is_attributed_to_the_caller(self) -> None:
-        # Not to rlmesh's own resolver: every surface reaches it through a
-        # different number of internal hops, and a user filtering by module has
-        # to be able to name their own.
-        with pytest.warns(UserWarning, match="no workflow edition declared") as records:
-            _ = serve_options_declaring()
-        assert Path(records[0].filename) == Path(__file__)
+    def test_the_nudge_names_the_value_to_pin(self) -> None:
+        message = _editions.float_nudge()
+        assert f'workflow_edition = "{EDITION}"' in message
+        assert "[tool.rlmesh]" in message
+        assert WORKFLOW_EDITION_ENV_VAR in message
 
-    def test_the_warning_names_the_env_server_construction_site(self) -> None:
-        # One hop deeper than the resolver's direct callers: EnvServer.__init__.
-        with pytest.warns(UserWarning, match="no workflow edition declared") as records:
-            server = rlmesh.EnvServer(_two_step_env(), ":0/env")
-        server.shutdown()
-        assert Path(records[0].filename) == Path(__file__)
+
+class TestProjectOfTheClass:
+    """The project rung follows the authored class, not the working directory."""
+
+    def test_the_class_project_wins_over_the_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        (project / "src").mkdir(parents=True)
+        write_pyproject(project, EDITION)
+        module = _module_in(
+            project / "src",
+            "edition_project_policy",
+            """
+            class Policy:
+                def predict(self, obs):
+                    return obs
+            """,
+        )
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        write_pyproject(elsewhere, UNKNOWN_EDITION)
+        monkeypatch.chdir(elsewhere)
+        assert resolve_workflow_edition(origin=module.Policy) == EDITION
+        model = rlmesh.Model(module.Policy())
+        assert model._declared_workflow_edition(None) == EDITION  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_class_in_no_project_falls_back_to_the_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loose = tmp_path / "loose"
+        loose.mkdir()
+        module = _module_in(
+            loose,
+            "edition_loose_policy",
+            """
+            class Policy:
+                pass
+            """,
+        )
+        # No pyproject.toml above tmp_path's file (pytest's tmp dirs are
+        # outside any project), so the working directory decides.
+        if module.__file__ and any(
+            (parent / "pyproject.toml").is_file()
+            for parent in Path(module.__file__).resolve().parents
+        ):
+            pytest.skip("the temporary directory lies inside a project")
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        write_pyproject(cwd, EDITION)
+        monkeypatch.chdir(cwd)
+        assert resolve_workflow_edition(origin=module.Policy) == EDITION
+
+    def test_without_an_origin_the_working_directory_decides(
+        self, tmp_path: Path
+    ) -> None:
+        write_pyproject(tmp_path, EDITION)
+        assert resolve_workflow_edition() == EDITION
 
 
 class TestPyprojectScan:
@@ -371,8 +396,7 @@ class TestServeOptionsDeclaring:
 
     def test_declaring_nothing_leaves_the_options_untouched(self) -> None:
         given = ServeOptions(close_timeout_seconds=2.5)
-        with pytest.warns(UserWarning, match="no workflow edition declared"):
-            assert serve_options_declaring(given) is given
+        assert serve_options_declaring(given) is given
 
     def test_an_already_resolved_call_declaration_is_adopted_verbatim(
         self, monkeypatch: pytest.MonkeyPatch
@@ -417,5 +441,4 @@ class TestServeOptionsDeclaring:
 
     def test_declaring_nothing_without_options_stays_none(self) -> None:
         # Byte-identical to a build without the field: no declaration goes out.
-        with pytest.warns(UserWarning, match="no workflow edition declared"):
-            assert serve_options_declaring() is None
+        assert serve_options_declaring() is None

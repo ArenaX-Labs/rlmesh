@@ -643,4 +643,19 @@ mod tests {
         let xx3 = noise::write(&mut attacker, &[], XX3_LEN).unwrap();
         assert_eq!(resp.finish(&xx3).unwrap_err().1, HandshakeError::LowOrder);
     }
+
+    #[test]
+    fn pairing_state_never_prints_a_secret() {
+        let (laptop, daemon) = statics();
+        let (init, xx1) = PairInitiator::start(&mut TestRng::new(1), &laptop, &EXCHANGE).unwrap();
+        let (resp, _) =
+            PairResponder::start(&mut TestRng::new(2), &daemon, &EXCHANGE, &xx1).unwrap();
+        crate::crypto::assert_redacted(&init, &[5; 32]);
+        crate::crypto::assert_redacted(&resp, &[6; 32]);
+        let (link, _) = handshake();
+        crate::crypto::assert_redacted(&link, &[5; 32]);
+        crate::crypto::assert_redacted(&link, &[6; 32]);
+        let commit = DaemonCommit::new(&mut TestRng::new(3), link.handshake_hash()).unwrap();
+        crate::crypto::assert_redacted(&commit, &commit.nr);
+    }
 }

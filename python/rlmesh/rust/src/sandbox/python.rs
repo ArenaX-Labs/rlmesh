@@ -102,17 +102,24 @@ pub fn sandbox_start_env(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def sandbox_stop_env(*, container_id: str) -> None: ...
+def sandbox_stop_env(*, container_id: str, kill: bool = False) -> None: ...
 "#
     )
 )]
 #[pyfunction]
-#[pyo3(signature = (*, container_id))]
-pub fn sandbox_stop_env(py: Python<'_>, container_id: &str) -> PyResult<()> {
+#[pyo3(signature = (*, container_id, kill=false))]
+/// Stops and removes a sandbox container; `kill` skips the stop's grace
+/// period, for one that never became ready.
+pub fn sandbox_stop_env(py: Python<'_>, container_id: &str, kill: bool) -> PyResult<()> {
     let container_id = container_id.to_string();
 
     let result = py.detach(move || {
-        super::stop_container(&container_id).map_err(|err| err.to_string())?;
+        let stopped = if kill {
+            super::discard_container(&container_id)
+        } else {
+            super::stop_container(&container_id)
+        };
+        stopped.map_err(|err| err.to_string())?;
         Ok::<(), String>(())
     });
     result.map_err(PyRuntimeError::new_err)?;
@@ -140,20 +147,20 @@ pub fn sandbox_reap_orphans(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// A base port on 127.0.0.1 with the session ports after it free, to publish
-/// a prebuilt container's session host on.
+/// A free port on 127.0.0.1 to publish a prebuilt container's session host
+/// on.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def sandbox_session_ports() -> int: ...
+def sandbox_session_port() -> int: ...
 "#
     )
 )]
 #[pyfunction]
-pub fn sandbox_session_ports() -> PyResult<u16> {
-    super::docker::free_session_ports().map_err(|err| PyRuntimeError::new_err(err.to_string()))
+pub fn sandbox_session_port() -> PyResult<u16> {
+    super::docker::free_session_port().map_err(|err| PyRuntimeError::new_err(err.to_string()))
 }
 
 /// Fresh keys for the session host a prebuilt container runs: the value of

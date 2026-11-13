@@ -1,4 +1,4 @@
-binding tracker on scene: 2 inputs, 3 actions, fingerprint 1e146d343d66c70a
+binding tracker on scene: 2 inputs, 3 actions, fingerprint b5fbc9f8fd3f4cf7
 replan 30 Hz
 
   entry      dir  part        status  plan                   delivers

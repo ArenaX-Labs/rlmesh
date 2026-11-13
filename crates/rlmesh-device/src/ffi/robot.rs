@@ -7,22 +7,25 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_char, c_int};
 
 use rlmesh_session_core::wire::{
-    CtlStatus, EdgeMode, Mode, ParticipantId, ReasonCode, SessionId, TenantId,
+    CtlStatus, EdgeMode, LATE_BUCKETS, Mode, ParticipantId, ReasonCode, SessionId, TenantId,
 };
 
 use super::{
     CRng, RLMESH_DEVICE_ERR_ARG, RLMESH_DEVICE_ERR_CONFIG, RLMESH_DEVICE_ERR_INVALID,
-    RLMESH_DEVICE_ERR_NOT_READY, RLMESH_DEVICE_OK, Random,
+    RLMESH_DEVICE_ERR_NO_MEMORY, RLMESH_DEVICE_ERR_NOT_READY, RLMESH_DEVICE_OK, Random,
 };
 use rlmesh_session_core::auth::Credential;
-use rlmesh_session_core::crypto::StaticKeypair;
+use rlmesh_session_core::crypto::{Checked, SignedChecker, StaticKeypair};
 use zeroize::Zeroizing;
 
 use crate::address;
 use crate::provision::Record;
+use rlmesh_session_core::edge::Rejection;
 use rlmesh_session_core::lobby::Leave;
 
-use crate::robot::{Action, Config, Fault, Phase, PublishError, Robot};
+use crate::robot::{
+    Action, Config, Dropped, Fault, MAX_RECEIVED, Phase, PublishError, Received, Robot,
+};
 
 /// `rlmesh_device_robot_config_t`.
 #[repr(C)]
@@ -58,6 +61,17 @@ pub const RLMESH_DEVICE_PUBLISH: u8 = 4;
 /// Drop every subscription and token (the robot moves to another session
 /// on the same host).
 pub const RLMESH_DEVICE_RESET: u8 = 5;
+/// Close every session to the host, however healthy it looks: replies
+/// stopped. The next action on a class opens it again.
+pub const RLMESH_DEVICE_RECONNECT: u8 = 6;
+/// Open the datagram socket to the host on UDP `port`.
+pub const RLMESH_DEVICE_DATAGRAM_OPEN: u8 = 7;
+/// Send `payload` on the datagram socket, in place of one not yet sent on
+/// lane `key`.
+pub const RLMESH_DEVICE_DATAGRAM: u8 = 8;
+/// Close the datagram socket.
+pub const RLMESH_DEVICE_DATAGRAM_CLOSE: u8 = 9;
+pub const RLMESH_DEVICE_UNSUBSCRIBE: u8 = 10;
 
 /// `rlmesh_device_action_t`: borrowed from the robot until the next call
 /// on it.
@@ -66,7 +80,7 @@ pub const RLMESH_DEVICE_RESET: u8 = 5;
 pub struct RlmeshDeviceAction {
     /// `RLMESH_DEVICE_SUBSCRIBE`, `_TOKEN`, `_QUERY` or `_PUBLISH`.
     pub kind: u8,
-    /// The traffic class: the host's port plus this.
+    /// The traffic class: a session of its own to the host's port.
     pub class: u8,
     /// A subscription's id, for `rlmesh_device_robot_sample`.
     pub sub: u8,
@@ -82,6 +96,8 @@ pub struct RlmeshDeviceAction {
     pub payload: *const u8,
     /// Its length.
     pub payload_len: usize,
+    /// `RLMESH_DEVICE_DATAGRAM_OPEN`'s UDP port.
+    pub port: u16,
 }
 
 /// `rlmesh_device_robot_status_t`.
@@ -121,6 +137,11 @@ pub struct RlmeshDeviceRobotStatus {
     /// Why it last left a run: 0 never, 1 the run closed, 2 the run lost it,
     /// 3 superseded (it stopped).
     pub left: u8,
+    /// Why the edges last refused a chunk, this attach: 0 none, or the code
+    /// `rlmesh_device_refusal_name` names.
+    pub last_refusal: u8,
+    /// Chunks the edges refused, this attach.
+    pub chunks_refused: u64,
 }
 
 /// No part: `rlmesh_device_tick_t.part` and the handover's.
@@ -155,10 +176,30 @@ pub struct RlmeshDeviceTick {
     pub safe: *const c_char,
 }
 
+/// `rlmesh_device_chunk_timing_t`: how one commanded part's chunks arrived
+/// this attach.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RlmeshDeviceChunkTiming {
+    /// Chunks that reached its edge, whatever became of them.
+    pub received: u64,
+    /// Chunks it accepted.
+    pub accepted: u64,
+    /// Gaps in the seqs of accepted chunks under one lease token.
+    pub lost: u32,
+    /// Accepted chunks by lateness on arrival against their first slot:
+    /// `[0, 1)` ms, `[1, 2)`, `[2, 4)`, ... `[32, 64)`, `[64, inf)`.
+    pub late_ms: [u32; LATE_BUCKETS],
+    /// The latest any accepted chunk arrived, in microseconds.
+    pub late_max_us: u32,
+    /// The longest time between two accepted chunks, in microseconds.
+    pub gap_max_us: u32,
+}
+
 /// `rlmesh_device_robot_t`: the robot, its randomness, and what the caller
 /// borrows from it.
 pub struct DeviceRobot {
-    robot: Robot,
+    robot: Box<Robot>,
     rng: CRng,
     queue: VecDeque<Action>,
     /// Where it connects now, NUL-terminated (refreshed by each `_next`).
@@ -314,7 +355,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
     let robot = Box::new(DeviceRobot {
         robot,
         rng: CRng(random),
-        queue: VecDeque::new(),
+        // Room for a poll's actions, kept: see `Robot::poll_into`.
+        queue: VecDeque::with_capacity(16),
         host,
         home_id,
         key: Vec::new(),
@@ -347,7 +389,7 @@ unsafe fn robot_mut<'a>(robot: *mut DeviceRobot) -> Option<&'a mut DeviceRobot> 
 }
 
 /// The host to connect to, NUL-terminated (owned by the robot), and in
-/// `*port` its first port: class `i` listens on `port + i`.
+/// `*port` its port, which every class dials.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `port` null or valid.
@@ -408,7 +450,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
         return RLMESH_DEVICE_ERR_ARG;
     }
     if r.queue.is_empty() {
-        r.queue.extend(r.robot.poll(now_us));
+        r.robot.poll_into(now_us, &mut r.queue);
         // A new host (a run elsewhere, another home address) comes with a
         // reset: the transport reads it then.
         if r.host.split_last().map(|(_, h)| h) != Some(r.robot.host().0.as_bytes()) {
@@ -418,9 +460,13 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
     let Some(action) = r.queue.pop_front() else {
         return 0;
     };
+    let mut port = 0;
     let (kind, class, sub, query_id, timeout_ms, key, payload) = match action {
         Action::Subscribe { class, sub, key } => {
             (RLMESH_DEVICE_SUBSCRIBE, class, sub, 0, 0, key, None)
+        }
+        Action::Unsubscribe { sub } => {
+            (RLMESH_DEVICE_UNSUBSCRIBE, 0, sub, 0, 0, String::new(), None)
         }
         Action::Token { class, key } => (RLMESH_DEVICE_TOKEN, class, 0, 0, 0, key, None),
         Action::Query {
@@ -429,15 +475,43 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             timeout_ms,
             key,
             payload,
-        } => (RLMESH_DEVICE_QUERY, class, 0, id, timeout_ms, key, payload),
+        } => {
+            // The actions before it may have taken a while (opening a link).
+            r.robot.query_sent(id, now_us);
+            (RLMESH_DEVICE_QUERY, class, 0, id, timeout_ms, key, payload)
+        }
         Action::Publish {
             class,
             key,
             payload,
         } => (RLMESH_DEVICE_PUBLISH, class, 0, 0, 0, key, Some(payload)),
         Action::Reset => (RLMESH_DEVICE_RESET, 0, 0, 0, 0, String::new(), None),
+        Action::Reconnect => (RLMESH_DEVICE_RECONNECT, 0, 0, 0, 0, String::new(), None),
+        Action::DatagramOpen { port: udp } => {
+            port = udp;
+            (RLMESH_DEVICE_DATAGRAM_OPEN, 0, 0, 0, 0, String::new(), None)
+        }
+        Action::Datagram { lane, payload } => {
+            (RLMESH_DEVICE_DATAGRAM, 0, 0, 0, 0, lane, Some(payload))
+        }
+        Action::DatagramClose => (
+            RLMESH_DEVICE_DATAGRAM_CLOSE,
+            0,
+            0,
+            0,
+            0,
+            String::new(),
+            None,
+        ),
     };
-    r.key = key.into_bytes();
+    // NUL-terminated into the buffer kept for it: no allocation once it has
+    // held a key this long (one that can't grow keeps the action's own).
+    r.key.clear();
+    if r.key.try_reserve(key.len() + 1).is_ok() {
+        r.key.extend_from_slice(key.as_bytes());
+    } else {
+        r.key = key.into_bytes();
+    }
     r.key.push(0);
     let has_payload = payload.is_some();
     r.payload = payload.unwrap_or_default();
@@ -453,9 +527,175 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             key: r.key.as_ptr().cast(),
             payload: r.payload.as_ptr(),
             payload_len: r.payload.len(),
+            port,
         });
     }
     1
+}
+
+/// A datagram from the host on the socket `RLMESH_DEVICE_DATAGRAM_OPEN`
+/// opened (at most 1472 bytes: anything longer is dropped unread).
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `data` valid for
+/// `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_datagram(
+    robot: *mut DeviceRobot,
+    data: *const u8,
+    len: usize,
+    now_us: u64,
+) -> c_int {
+    // SAFETY: per the contract.
+    let (Some(r), Some(data)) = (unsafe { robot_mut(robot) }, unsafe { bytes(data, len) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.datagram(data, now_us);
+    RLMESH_DEVICE_OK
+}
+
+/// Whether `data` is a chunk datagram, and its route and statistics
+/// sequence, into `*route` and `*seq`: 1, or 0 for anything else.
+///
+/// # Safety
+/// `data` valid for `len` bytes; `route` and `seq` null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_datagram_lane(
+    data: *const u8,
+    len: usize,
+    route: *mut u16,
+    seq: *mut u32,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(data) = (unsafe { bytes(data, len) }) else {
+        return 0;
+    };
+    let Ok((header, _)) = rlmesh_session_core::datagram::Header::parse(data) else {
+        return 0;
+    };
+    if header.kind != rlmesh_session_core::datagram::Kind::Chunk {
+        return 0;
+    }
+    // SAFETY: null or valid for a write, per the contract.
+    unsafe {
+        if let Some(route) = route.as_mut() {
+            *route = header.route;
+        }
+        if let Some(seq) = seq.as_mut() {
+            *seq = header.seq;
+        }
+    }
+    1
+}
+
+/// A datagram it asked to send failed (the socket refused it or would not
+/// open; not one that would only have blocked): the robot opens the socket
+/// again, at most once a second.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_datagram_failed(
+    robot: *mut DeviceRobot,
+    now_us: u64,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.datagram_failed(now_us);
+    RLMESH_DEVICE_OK
+}
+
+/// Whether the robot takes the host's datagram path when offered (`on`
+/// nonzero, the default) or keeps every part on the session's links (0),
+/// from its next attach.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_use_datagram(
+    robot: *mut DeviceRobot,
+    on: c_int,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.use_datagram(on != 0);
+    RLMESH_DEVICE_OK
+}
+
+/// `rlmesh_device_datagram_stats_t`: the robot's end of the host's datagram
+/// path this attach.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RlmeshDeviceDatagramStats {
+    /// The path carries realtime parts now.
+    pub active: u8,
+    /// They are on the session's links now, though the host offered it.
+    pub fell_back: u8,
+    /// Times they went back to the session's links, over every attach.
+    pub fallbacks: u32,
+    /// Datagrams sent (samples and probes).
+    pub sent: u64,
+    /// Chunk datagrams received that opened.
+    pub received: u64,
+    /// Gaps in the host's statistics sequence, and datagrams that arrived
+    /// after a later one.
+    pub lost: u64,
+    /// Arrived after a later one.
+    pub reordered: u64,
+    /// Received but unreadable, or failed to open.
+    pub unopened: u64,
+    /// Times they came back to the path in the same attach, over every
+    /// attach.
+    pub returns: u32,
+    /// Milliseconds running with them on the path, and on the session's
+    /// links, over every attach.
+    pub datagram_ms: u64,
+    pub session_ms: u64,
+}
+
+/// The robot's end of the datagram path this attach, into `*out`:
+/// `RLMESH_DEVICE_ERR_NOT_READY` when the host offered none (or the robot
+/// does not take it).
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_datagram_stats(
+    robot: *const DeviceRobot,
+    out: *mut RlmeshDeviceDatagramStats,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    if out.is_null() {
+        return RLMESH_DEVICE_ERR_ARG;
+    }
+    let Some(s) = r.robot.datagram_stats() else {
+        return RLMESH_DEVICE_ERR_NOT_READY;
+    };
+    let time = r.robot.path_time();
+    // SAFETY: checked non-null; valid for a write per the contract.
+    unsafe {
+        out.write(RlmeshDeviceDatagramStats {
+            active: u8::from(s.active),
+            fell_back: u8::from(!s.active),
+            fallbacks: time.fallbacks,
+            sent: s.sent,
+            received: s.received,
+            lost: s.lost,
+            reordered: s.reordered,
+            unopened: s.unopened,
+            returns: time.returns,
+            datagram_ms: time.datagram_us / 1000,
+            session_ms: time.session_us / 1000,
+        });
+    }
+    RLMESH_DEVICE_OK
 }
 
 /// # Safety
@@ -489,7 +729,9 @@ pub unsafe extern "C" fn rlmesh_device_robot_reply(
     RLMESH_DEVICE_OK
 }
 
-/// Query `query_id` is over: every reply has arrived, or it timed out.
+/// Query `query_id` is over: every reply has arrived, or it timed out. The
+/// robot gives up on a query by itself soon after its timeout; this only
+/// tells it sooner.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -534,9 +776,202 @@ pub unsafe extern "C" fn rlmesh_device_robot_sample(
     let Ok(key) = core::str::from_utf8(key) else {
         return RLMESH_DEVICE_ERR_ARG;
     };
-    // Opened in place: the transport's buffer is its own.
-    let mut copy = data.to_vec();
+    if data.len() > MAX_RECEIVED {
+        r.robot.drop_received(sub, Dropped::TooLarge);
+        return RLMESH_DEVICE_OK;
+    }
+    // Opened in place: the transport's buffer is its own. The copy may
+    // fail: dropped and counted, never an abort.
+    let mut copy = Vec::new();
+    if copy.try_reserve_exact(data.len()).is_err() {
+        r.robot.drop_received(sub, Dropped::NoMemory);
+        return RLMESH_DEVICE_OK;
+    }
+    copy.extend_from_slice(data);
     r.robot.sample(sub, key, &mut copy, now_us);
+    RLMESH_DEVICE_OK
+}
+
+/// Microseconds from `now_us` until the robot next has something to do
+/// without new input (`Robot::next_due`): 0 when that is now, `UINT64_MAX`
+/// when nothing is scheduled. A board's loop sleeps until then, or until the
+/// transport has input.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_next_due(
+    robot: *const DeviceRobot,
+    now_us: u64,
+) -> u64 {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return 0;
+    };
+    if !r.queue.is_empty() {
+        return 0;
+    }
+    r.robot
+        .next_due()
+        .map_or(u64::MAX, |due| due.saturating_sub(now_us))
+}
+
+/// Whether the transport should still check signed views for this robot (1)
+/// or drop them unchecked (0): not once its link has taken a sealed view.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_wants_signed_views(
+    robot: *const DeviceRobot,
+) -> c_int {
+    // SAFETY: per the contract.
+    unsafe { robot.as_ref() }.map_or(1, |r| c_int::from(r.robot.wants_signed_views()))
+}
+
+/// Sealed views taken, signed views taken, and views refused, over every
+/// attach; any out-pointer may be null.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; each pointer null or
+/// valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_view_counts(
+    robot: *const DeviceRobot,
+    sealed: *mut u64,
+    signed: *mut u64,
+    refused: *mut u64,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    let (s, g, f) = r.robot.view_counts();
+    for (out, value) in [(sealed, s), (signed, g), (refused, f)] {
+        if !out.is_null() {
+            // SAFETY: per the contract.
+            unsafe { out.write(value) };
+        }
+    }
+    RLMESH_DEVICE_OK
+}
+
+/// `rlmesh_device_checker_t`: a verifier of a robot's signed broadcasts.
+#[derive(Debug)]
+pub struct DeviceChecker(SignedChecker);
+
+/// `rlmesh_device_checked_t`: a signed broadcast a checker verified.
+#[derive(Debug)]
+pub struct DeviceChecked(Checked);
+
+/// The verifier for the robot's current link, once per link (the caller
+/// frees it with `_checker_free`); null when there is no new one.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_take_checker(
+    robot: *mut DeviceRobot,
+) -> *mut DeviceChecker {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return core::ptr::null_mut();
+    };
+    match r.robot.take_checker() {
+        Some(checker) => Box::into_raw(Box::new(DeviceChecker(checker))),
+        None => core::ptr::null_mut(),
+    }
+}
+
+/// Frees a checker; null is a no-op.
+///
+/// # Safety
+/// `checker` is null or from `rlmesh_device_robot_take_checker`, and not used
+/// after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_checker_free(checker: *mut DeviceChecker) {
+    if !checker.is_null() {
+        // SAFETY: from `Box::into_raw`, per the contract.
+        drop(unsafe { Box::from_raw(checker) });
+    }
+}
+
+/// Verifies a signed broadcast received on `key`: the verified message, for
+/// `_robot_sample_checked`, or null when it isn't the host's. A pure
+/// function of the bytes and the checker, on any task but one at a time per
+/// checker. About 9 KB of stack.
+///
+/// # Safety
+/// `checker` is null or from `rlmesh_device_robot_take_checker`; `key` valid
+/// for `key_len` bytes and `data` for `len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_checker_check(
+    checker: *mut DeviceChecker,
+    key: *const c_char,
+    key_len: usize,
+    data: *const u8,
+    len: usize,
+) -> *mut DeviceChecked {
+    // SAFETY: per the contract.
+    let (Some(c), Some(key), Some(data)) = (
+        unsafe { checker.as_mut() },
+        unsafe { bytes(key.cast(), key_len) },
+        unsafe { bytes(data, len) },
+    ) else {
+        return core::ptr::null_mut();
+    };
+    let Ok(key) = core::str::from_utf8(key) else {
+        return core::ptr::null_mut();
+    };
+    let mut copy = Vec::new();
+    if data.len() > MAX_RECEIVED
+        || !crate::heap::room()
+        || copy.try_reserve_exact(data.len()).is_err()
+    {
+        return core::ptr::null_mut();
+    }
+    copy.extend_from_slice(data);
+    match c.0.check(key, copy) {
+        Ok(checked) => Box::into_raw(Box::new(DeviceChecked(checked))),
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+/// Frees a verified message nobody will take; null is a no-op.
+///
+/// # Safety
+/// `checked` is null or from `rlmesh_device_checker_check`, and not used
+/// after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_checked_free(checked: *mut DeviceChecked) {
+    if !checked.is_null() {
+        // SAFETY: from `Box::into_raw`, per the contract.
+        drop(unsafe { Box::from_raw(checked) });
+    }
+}
+
+/// A sample on subscription `sub` that a checker verified, consumed here.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `checked` null or from
+/// `rlmesh_device_checker_check`, and not used after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_sample_checked(
+    robot: *mut DeviceRobot,
+    sub: u8,
+    checked: *mut DeviceChecked,
+    now_us: u64,
+) -> c_int {
+    if checked.is_null() {
+        return RLMESH_DEVICE_ERR_ARG;
+    }
+    // SAFETY: from `Box::into_raw`, per the contract.
+    let checked = unsafe { Box::from_raw(checked) };
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.sample_checked(sub, &checked.0, now_us);
     RLMESH_DEVICE_OK
 }
 
@@ -714,6 +1149,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_publish(
         Err(PublishError::UnknownPart) => RLMESH_DEVICE_ERR_ARG,
         Err(PublishError::NotReady) => RLMESH_DEVICE_ERR_NOT_READY,
         Err(PublishError::Invalid) => RLMESH_DEVICE_ERR_INVALID,
+        Err(PublishError::NoMemory) => RLMESH_DEVICE_ERR_NO_MEMORY,
     }
 }
 
@@ -777,6 +1213,241 @@ fn status_code(status: CtlStatus) -> u8 {
         CtlStatus::RobotBusy => 20,
         CtlStatus::NotPresent => 21,
     }
+}
+
+// The header's `RLMESH_DEVICE_REFUSALS` and `RLMESH_DEVICE_DROPPED`.
+const _: () = assert!(Rejection::ALL.len() == 17);
+const _: () = assert!(Dropped::ALL.len() == 6);
+
+/// A refusal's code: its place in [`Rejection::ALL`], from 1.
+fn refusal_code(reason: Rejection) -> u8 {
+    u8::try_from(reason.index() + 1).unwrap_or(0)
+}
+
+/// The refusal with `code`.
+fn refusal(code: u8) -> Option<Rejection> {
+    Rejection::ALL
+        .get(usize::from(code.checked_sub(1)?))
+        .copied()
+}
+
+/// The name of a refusal's code (1 to `RLMESH_DEVICE_REFUSALS`), static and
+/// NUL-terminated, or null for any other. The names are the wire's.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_device_refusal_name(code: u8) -> *const c_char {
+    let Some(reason) = refusal(code) else {
+        return core::ptr::null();
+    };
+    let name = match reason {
+        Rejection::Malformed => c"malformed",
+        Rejection::WrongChannel => c"wrong_channel",
+        Rejection::Estop => c"estop",
+        Rejection::StaleEpoch => c"stale_epoch",
+        Rejection::NoLease => c"no_lease",
+        Rejection::StaleToken => c"stale_token",
+        Rejection::WrongSource => c"wrong_source",
+        Rejection::WrongBinding => c"wrong_binding",
+        Rejection::LeaseExpired => c"lease_expired",
+        Rejection::StaleSeq => c"stale_seq",
+        Rejection::Expired => c"expired",
+        Rejection::TooOld => c"too_old",
+        Rejection::Empty => c"empty",
+        Rejection::InvalidValue => c"invalid_value",
+        Rejection::NoClockMapping => c"no_clock_mapping",
+        Rejection::ClockUncertain => c"clock_uncertain",
+        Rejection::Unauthenticated => c"unauthenticated",
+    };
+    name.as_ptr()
+}
+
+/// The name of a drop reason's code (1 to `RLMESH_DEVICE_DROPPED`), static
+/// and NUL-terminated, or null for any other.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_device_dropped_name(code: u8) -> *const c_char {
+    let Some(why) = dropped(code) else {
+        return core::ptr::null();
+    };
+    let name = match why {
+        Dropped::Unopened => c"unopened",
+        Dropped::Replayed => c"replayed",
+        Dropped::Malformed => c"malformed",
+        Dropped::TooLarge => c"too_large",
+        Dropped::NoMemory => c"no_memory",
+        Dropped::Stale => c"stale",
+    };
+    name.as_ptr()
+}
+
+/// The drop reason with `code`.
+fn dropped(code: u8) -> Option<Dropped> {
+    Dropped::ALL.get(usize::from(code.checked_sub(1)?)).copied()
+}
+
+/// What the robot received and dropped for drop reason `code`, over every
+/// attach: `what` 0 for its views, 1 for replies, 2 for chunks that did not
+/// open, 3 for anything else; 0 for any other `what` or code. A view, reply or message it cannot afford
+/// or read is dropped and counted here, and the robot keeps what it held.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_dropped(
+    robot: *const DeviceRobot,
+    what: u8,
+    code: u8,
+) -> u64 {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return 0;
+    };
+    let what = match what {
+        0 => Received::View,
+        1 => Received::Reply,
+        2 => Received::Chunk,
+        3 => Received::Other,
+        _ => return 0,
+    };
+    dropped(code).map_or(0, |why| r.robot.dropped(what, why))
+}
+
+/// Chunks refused this attach for the refusal `code`; 0 for any other code.
+/// Costlier than the status: call it to report, not every loop.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_refusals(robot: *const DeviceRobot, code: u8) -> u64 {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return 0;
+    };
+    refusal(code).map_or(0, |reason| r.robot.refusals(reason))
+}
+
+/// Chunks refused for the refusal `code` over every attach, this one
+/// included; `code` 0 counts every reason, and any other code past them 0.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_refusals_total(
+    robot: *const DeviceRobot,
+    code: u8,
+) -> u64 {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return 0;
+    };
+    if code == 0 {
+        return r.robot.chunks_refused_total();
+    }
+    refusal(code).map_or(0, |reason| r.robot.refusals_total(reason))
+}
+
+/// Attaches the host accepted, in any session: one more each time the robot
+/// joined again.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_attaches(robot: *const DeviceRobot) -> u32 {
+    // SAFETY: per the contract.
+    unsafe { robot.as_ref() }.map_or(0, |r| r.robot.attaches())
+}
+
+/// Heartbeats and samples the robot skipped sending for want of memory.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_unsent(robot: *const DeviceRobot) -> u64 {
+    // SAFETY: per the contract.
+    unsafe { robot.as_ref() }.map_or(0, |r| r.robot.unsent())
+}
+
+/// One part's streams as they are published (`rlmesh_device_publishing_t`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RlmeshDevicePublishing {
+    pub state_offered: u64,
+    pub state_sent: u64,
+    pub applied_offered: u64,
+    pub applied_sent: u64,
+    pub state_hz: f32,
+    pub applied_hz: f32,
+}
+
+/// Part `part`'s streams as they are published, into `*out`:
+/// `RLMESH_DEVICE_ERR_ARG` for a part the map doesn't have.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_publishing(
+    robot: *const DeviceRobot,
+    part: u8,
+    out: *mut RlmeshDevicePublishing,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    if out.is_null() {
+        return RLMESH_DEVICE_ERR_ARG;
+    }
+    let Some(p) = r.robot.publishing(usize::from(part)) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    #[allow(clippy::cast_possible_truncation)] // a rate, to print
+    let hz = |rate: Option<f64>| rate.map_or(0.0, |hz| hz as f32);
+    // SAFETY: checked non-null; valid for a write per the contract.
+    unsafe {
+        out.write(RlmeshDevicePublishing {
+            state_offered: p.state.offered,
+            state_sent: p.state.sent,
+            applied_offered: p.applied.offered,
+            applied_sent: p.applied.sent,
+            state_hz: hz(p.state_hz),
+            applied_hz: hz(p.applied_hz),
+        });
+    }
+    RLMESH_DEVICE_OK
+}
+
+/// How part `part`'s chunks arrived this attach, into `*out`.
+/// `RLMESH_DEVICE_ERR_NOT_READY` before the robot runs or for a part that
+/// takes no commands.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_chunk_timing(
+    robot: *const DeviceRobot,
+    part: u8,
+    out: *mut RlmeshDeviceChunkTiming,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot.as_ref() }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    if out.is_null() {
+        return RLMESH_DEVICE_ERR_ARG;
+    }
+    let Some(t) = r.robot.chunk_timing(usize::from(part)) else {
+        return RLMESH_DEVICE_ERR_NOT_READY;
+    };
+    // SAFETY: checked non-null; valid for a write per the contract.
+    unsafe {
+        out.write(RlmeshDeviceChunkTiming {
+            received: t.received,
+            accepted: t.accepted,
+            lost: t.lost,
+            late_ms: t.late_ms,
+            late_max_us: t.late_max_us,
+            gap_max_us: t.gap_max_us,
+        });
+    }
+    RLMESH_DEVICE_OK
 }
 
 /// Where the robot is.
@@ -848,6 +1519,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_status(
                 Some(ReasonCode::EstopSignal) => 2,
                 Some(_) => 1,
             },
+            last_refusal: robot.last_refusal().map_or(0, refusal_code),
+            chunks_refused: robot.chunks_refused(),
         });
     }
     RLMESH_DEVICE_OK
@@ -910,6 +1583,7 @@ mod tests {
             key: core::ptr::null(),
             payload: core::ptr::null(),
             payload_len: 0,
+            port: 0,
         }
     }
 
@@ -943,6 +1617,7 @@ mod tests {
             kinds,
             [
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 0, 0),
+                (RLMESH_DEVICE_SUBSCRIBE, 0, 255, 0),
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 1, 0),
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 2, 0),
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 3, 0),
@@ -952,9 +1627,10 @@ mod tests {
             ]
         );
         assert!(keys[0].ends_with("/host/view/eyes"), "{keys:?}");
-        assert!(keys[6].ends_with("/host/state"), "{keys:?}");
-        assert!(keys[3].ends_with("/p/eyes/keys"), "{keys:?}");
-        assert!(keys[4].ends_with("/estop/*"), "{keys:?}");
+        assert!(keys[1].ends_with("/p/eyes/view"), "{keys:?}");
+        assert!(keys[7].ends_with("/host/state"), "{keys:?}");
+        assert!(keys[4].ends_with("/p/eyes/keys"), "{keys:?}");
+        assert!(keys[5].ends_with("/estop/*"), "{keys:?}");
         assert_eq!(action.query_id, 1);
 
         let mut status = RlmeshDeviceRobotStatus::default();
@@ -996,6 +1672,67 @@ mod tests {
         );
         unsafe { rlmesh_device_robot_status(robot, &mut status) };
         assert_eq!(status.estop, 0);
+        unsafe { rlmesh_device_robot_free(robot) };
+    }
+
+    #[test]
+    fn every_refusal_has_a_name_and_a_code_past_them_has_none() {
+        let name = |code| {
+            let name = rlmesh_device_refusal_name(code);
+            (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_str().unwrap())
+        };
+        assert_eq!(name(0), None);
+        assert_eq!(name(1), Some("malformed"));
+        assert_eq!(name(6), Some("stale_token"));
+        let last = u8::try_from(Rejection::ALL.len()).unwrap();
+        assert_eq!(name(last), Some("unauthenticated"));
+        assert_eq!(name(last + 1), None);
+        for reason in Rejection::ALL {
+            assert!(name(refusal_code(reason)).is_some(), "{reason:?}");
+        }
+        assert_eq!(
+            unsafe { rlmesh_device_robot_refusals(core::ptr::null(), 1) },
+            0
+        );
+        assert_eq!(
+            unsafe { rlmesh_device_robot_refusals_total(core::ptr::null(), 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { rlmesh_device_robot_attaches(core::ptr::null()) },
+            0
+        );
+    }
+
+    /// A query's timeout runs from when it was handed out, not from when
+    /// the robot wanted it: opening the link first can take seconds.
+    #[test]
+    fn a_query_is_timed_from_when_it_is_handed_out() {
+        let addr = address("");
+        let mut robot = core::ptr::null_mut();
+        let rc = unsafe { rlmesh_device_robot_new(&config(&addr, Some(c"eyes"), MAP), &mut robot) };
+        assert_eq!(rc, RLMESH_DEVICE_OK);
+        let mut action = empty_action();
+        // The subscriptions and the token, the first taking 3 s to link.
+        let sent = 3_000_000;
+        assert_eq!(
+            unsafe { rlmesh_device_robot_next(robot, 0, &mut action) },
+            1
+        );
+        while action.kind != RLMESH_DEVICE_QUERY {
+            assert_eq!(
+                unsafe { rlmesh_device_robot_next(robot, sent, &mut action) },
+                1
+            );
+        }
+        let timeout = u64::from(crate::robot::QUERY_MS + crate::robot::QUERY_MARGIN_MS) * 1000;
+        let mut status = RlmeshDeviceRobotStatus::default();
+        unsafe { rlmesh_device_robot_next(robot, sent + timeout - 1, &mut action) };
+        unsafe { rlmesh_device_robot_status(robot, &mut status) };
+        assert_eq!((status.phase, status.fault), (0, 0), "still waiting");
+        unsafe { rlmesh_device_robot_next(robot, sent + timeout, &mut action) };
+        unsafe { rlmesh_device_robot_status(robot, &mut status) };
+        assert_eq!((status.phase, status.fault), (5, 1), "over");
         unsafe { rlmesh_device_robot_free(robot) };
     }
 

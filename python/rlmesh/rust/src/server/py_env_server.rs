@@ -36,6 +36,8 @@ struct ServerResources {
     /// Call the env's `close()` when the server stops (the default). Off for a
     /// server standing in front of an env its caller owns and closes.
     close_env_on_shutdown: bool,
+    /// Announce the env once it answers (`None` for a run's own server).
+    announce: Option<rlmesh::binding::Announce>,
 }
 
 enum ServerState {
@@ -66,13 +68,14 @@ impl PyVectorEnvServer {
     /// * `env` - Python gymnasium.vector.VectorEnv object
     /// * `address` - Optional bind address shortcut
     #[new]
-    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true))]
+    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true, announce=true))]
     fn new(
         env: Py<PyAny>,
         address: Option<&str>,
         options: Option<PyServeOptions>,
         native_values: bool,
         close_env_on_shutdown: bool,
+        announce: bool,
     ) -> PyResult<Self> {
         Ok(Self {
             inner: construct_server(
@@ -80,6 +83,7 @@ impl PyVectorEnvServer {
                 address,
                 options,
                 close_env_on_shutdown,
+                announce,
             )?,
         })
     }
@@ -131,6 +135,7 @@ fn construct_server(
     address: Option<&str>,
     options: Option<PyServeOptions>,
     close_env_on_shutdown: bool,
+    announce: bool,
 ) -> PyResult<PyEnvServer> {
     crate::telemetry::init_tracing("env_server");
     let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
@@ -154,14 +159,16 @@ fn construct_server(
     rlmesh::ext::ConnectAddress::parse(address).map_err(to_py_err)?;
     rlmesh::lockstep::check(env_contract.clone())
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    let binding = runtime
-        .block_on(rlmesh::lockstep::bind(address))
-        .map_err(|e| match e {
-            rlmesh::lockstep::GymError::Config(why) => {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(why)
-            }
-            other => PyErr::new::<pyo3::exceptions::PyConnectionError, _>(other.to_string()),
-        })?;
+    // Without the GIL: the host it joins may be a Python thread's of this
+    // process (a model serving beside a run's env) still starting.
+    let binding =
+        Python::attach(|py| py.detach(|| runtime.block_on(rlmesh::lockstep::bind(address))))
+            .map_err(|e| match e {
+                rlmesh::lockstep::GymError::Config(why) => {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(why)
+                }
+                other => PyErr::new::<pyo3::exceptions::PyConnectionError, _>(other.to_string()),
+            })?;
     Ok(PyEnvServer {
         id,
         address: binding.address(),
@@ -172,6 +179,7 @@ fn construct_server(
             listener: BoundListener::Lockstep(Box::new(binding)),
             options,
             close_env_on_shutdown,
+            announce: announce.then(|| rlmesh::binding::Announce::from_env(address)),
         }))),
         shutdown,
     })
@@ -187,7 +195,7 @@ impl PyEnvServer {
     ///   lanes of one endpoint (`num_envs = len(list)`)
     /// * `address` - Optional bind address shortcut
     #[new]
-    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true))]
+    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true, announce=true))]
     fn new(
         py: Python<'_>,
         env: Py<PyAny>,
@@ -195,6 +203,7 @@ impl PyEnvServer {
         options: Option<PyServeOptions>,
         native_values: bool,
         close_env_on_shutdown: bool,
+        announce: bool,
     ) -> PyResult<Self> {
         let lanes: Vec<Py<PyAny>> = match env.bind(py).cast::<pyo3::types::PyList>() {
             Ok(list) => list.iter().map(|lane| lane.unbind()).collect(),
@@ -205,6 +214,7 @@ impl PyEnvServer {
             address,
             options,
             close_env_on_shutdown,
+            announce,
         )
     }
 
@@ -512,6 +522,7 @@ fn run_server(
         listener,
         options,
         close_env_on_shutdown,
+        announce,
     } = resources;
 
     let jobs = foreground.then(|| {
@@ -536,14 +547,25 @@ fn run_server(
 
     let serve = move || {
         runtime.block_on(async move {
-            tracing::info!("EnvService serving on {}", address);
+            tracing::info!(
+                "EnvService serving on {}",
+                rlmesh_session::address::redact(&address)
+            );
             if foreground {
                 spawn_signal_shutdown(shutdown.clone());
             }
             match env {
                 PyServerEnv::Lanes(lanes) => {
                     let lanes = WireLaneAdapter::new(lanes).map_err(|err| err.to_string())?;
-                    run_env_server(lanes, listener, options, shutdown, close_env_on_shutdown).await
+                    run_env_server(
+                        lanes,
+                        listener,
+                        options,
+                        shutdown,
+                        close_env_on_shutdown,
+                        announce,
+                    )
+                    .await
                 }
                 PyServerEnv::Vector(env) => {
                     run_env_server(
@@ -552,6 +574,7 @@ fn run_server(
                         options,
                         shutdown,
                         close_env_on_shutdown,
+                        announce,
                     )
                     .await
                 }
@@ -588,6 +611,7 @@ async fn run_env_server<E>(
     options: ServeOptions,
     shutdown: ShutdownTrigger,
     close_env_on_shutdown: bool,
+    announce: Option<rlmesh::binding::Announce>,
 ) -> ServeResult
 where
     E: rlmesh::lockstep::Served,
@@ -611,6 +635,7 @@ where
                     rlmesh::lockstep::ServeOptions {
                         workflow_edition,
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
+                        announce,
                     },
                     cancel,
                 )
