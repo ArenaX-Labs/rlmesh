@@ -182,12 +182,17 @@ async fn join(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use tracing_subscriber::prelude::*;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,zenoh=warn".into()),
         )
         .with_writer(std::io::stderr)
+        .finish()
+        .with(tracing_subscriber::filter::filter_fn(
+            rlmesh_session::logging::may_record,
+        ))
         .init();
     let args = Args::parse();
     let tenant = TenantId::new(&args.tenant)?;
@@ -254,8 +259,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(path) = &args.session_file {
-        // The session and its key, as the gateway's --session-file takes them.
-        std::fs::write(path, format!("{session}#{key}"))?;
+        // The session and its key, as the gateway's --session-file takes
+        // them: a credential, so for this user only.
+        rlmesh_session::address::write_private(path, format!("{session}#{key}").as_bytes())?;
     }
     println!("SESSION {session}");
     println!("READY robot {ROBOT} on {base}");

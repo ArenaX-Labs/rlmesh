@@ -66,6 +66,8 @@
 //!   Node addon), so each only converts values.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
 //!   only starve its own class.
+//! - [`logging`]: the Zenoh target every tracing subscriber must cap at
+//!   `INFO` (it logs the link password a session's key derives at `DEBUG`).
 //!
 //! Every time is a monotonic nanosecond count in some participant's clock
 //! domain; session time is the host's. Motion never depends on the clock
@@ -91,6 +93,7 @@ pub mod gateway;
 pub mod host;
 #[cfg(feature = "fleet")]
 pub mod lobby;
+pub mod logging;
 pub mod media;
 pub mod metrics;
 pub mod pairing;

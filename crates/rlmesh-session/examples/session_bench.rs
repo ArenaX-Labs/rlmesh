@@ -274,11 +274,16 @@ fn sleep_until(clock: &SystemMonotonicClock, deadline_ns: i64) {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), BoxError> {
+    use tracing_subscriber::prelude::*;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .with_writer(std::io::stderr)
+        .finish()
+        .with(tracing_subscriber::filter::filter_fn(
+            rlmesh_session::logging::may_record,
+        ))
         .init();
     let args = parse_args()?;
     match args.role.as_str() {
@@ -389,7 +394,8 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let cmd = declared.part_at(&robot_id, "cmd").ok_or("cmd")?.channel;
     let ft_channel = declared.part_at(&robot_id, "ft").ok_or("ft")?.channel;
     if let Some(path) = &args.session_file {
-        std::fs::write(path, format!("{session} {key}"))?;
+        // It holds the key: for this user only.
+        rlmesh_session::address::write_private(path, format!("{session} {key}").as_bytes())?;
     }
 
     let clock = SystemMonotonicClock;
