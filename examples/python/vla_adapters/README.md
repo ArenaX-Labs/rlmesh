@@ -60,10 +60,10 @@ Each run starts by printing `adapter.explain()` — the exact transformations th
 
 X-VLA's checkpoint layout is a unified single/bimanual convention (dims 11-20 are a second arm). This example is a single-arm spec; a bimanual pairing names both arms with `part=` on the model and the env.
 
-Against a live endpoint, pass `--address`. Serve the env with its tags published (`rlmesh.EnvServer(env, "127.0.0.1:7447/libero", tags=TAGS)`); the harness then resolves the adapter straight from the session contract — for a plain pairing it just hands `Model(spec=...)` the env and the adapter is built from the contract:
+Against a live endpoint, set `RLMESH_ENV_ADDRESS` (or pass `--address`, but the address carries its key, and the command line is readable by every user of the machine). Serve the env with its tags published (`rlmesh.EnvServer(env, "127.0.0.1:7447/libero", tags=TAGS)`); the harness then resolves the adapter straight from the session contract — for a plain pairing it just hands `Model(spec=...)` the env and the adapter is built from the contract:
 
 ```sh
-uv run python -m vla_adapters.eval --model smolvla --env libero --address '127.0.0.1:7447#<key>/libero'
+RLMESH_ENV_ADDRESS='127.0.0.1:7447#<key>/libero' uv run python -m vla_adapters.eval --model smolvla --env libero
 ```
 
 Use the participant address announced by the server, including its session key
