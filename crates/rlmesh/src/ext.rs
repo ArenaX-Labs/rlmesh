@@ -162,6 +162,29 @@ impl SpaceExt for Space {
     }
 }
 
+/// Whether a failed call can succeed when retried: what Python answers by
+/// class (`ConnectionError`, `TimeoutError`, a recoverable failure).
+pub trait ErrorExt {
+    /// Whether retrying the same call can succeed: a recoverable failure
+    /// ([`Error::is_recoverable`]), a transport failure
+    /// ([`Error::Connection`]) or a deadline ([`Error::Timeout`]). Every
+    /// other class is final: the same call meets it again (a key the host
+    /// refuses, an edition the env does not run, a malformed address).
+    ///
+    /// The runtime records a model or env failure as recoverable when this
+    /// holds, and a run's env connect retries while it does. A model
+    /// handler signals a failure worth retrying with
+    /// [`Error::model_recoverable`], or [`Error::Connection`] /
+    /// [`Error::Timeout`] for its own transport; any other error is final.
+    fn is_transient(&self) -> bool;
+}
+
+impl ErrorExt for Error {
+    fn is_transient(&self) -> bool {
+        Error::is_transient(self)
+    }
+}
+
 /// The Rust- and C-only fields of an env server's options, reached through
 /// [`EnvServerOptions::ext`](crate::EnvServerOptions::ext).
 #[derive(Clone, Debug, Default)]

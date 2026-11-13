@@ -939,6 +939,8 @@ def check(
                             or target.startswith("rlmesh::serve_options::BatchOptions")
                             # The Experimental managed-platform client.
                             or target.startswith("rlmesh::managed::")
+                            # The Experimental real-time run on either clock.
+                            or target.startswith("rlmesh::realtime::")
                             or target
                             in {
                                 "rlmesh::BatchOptions",

@@ -279,6 +279,21 @@ mod tests {
             change(Quantity::Force, "N", "kPa"),
             UnitChange::Incompatible
         );
+        // Into a non-SI unit, and the other ways round.
+        let UnitChange::Auto(f) = change(Quantity::AngularVelocity, "deg/s", "rad/s") else {
+            panic!("deg/s -> rad/s is automatic");
+        };
+        assert!((f * 180.0 - PI).abs() < 1e-12);
+        assert_eq!(
+            change(Quantity::Length, "m", "mm"),
+            UnitChange::Allowed(1000.0)
+        );
+        assert_eq!(
+            change(Quantity::Gripper, NORMALIZED, "m"),
+            UnitChange::GripperWidth {
+                to_normalized: false
+            }
+        );
     }
 
     #[test]

@@ -489,6 +489,7 @@ mod tests {
             last_stop: LastStop::default(),
             places: Vec::new(),
             scene: None,
+            held: Vec::new(),
         }
     }
 

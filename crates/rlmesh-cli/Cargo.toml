@@ -63,6 +63,8 @@ tokio = { workspace = true, features = [
   "time",
 ] }
 toml = { workspace = true, features = ["preserve_order"] }
+# `rlmesh host`'s own warnings, on stderr.
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 # rlmeshd's keys (`host.key`, `local.key`) are wiped after use.
 zeroize = { workspace = true }
 

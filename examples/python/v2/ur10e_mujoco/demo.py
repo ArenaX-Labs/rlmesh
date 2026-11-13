@@ -16,8 +16,8 @@ The v0.2 milestone demo (protocol v2), three processes over one session:
   ``arm`` lease (pre-empting the policy: the edge fences the policy's
   chunks and holds its last target until the operator's first chunk), the
   digits ``1``-``6`` pick a joint, ``+``/``-`` jog it, ``t`` again hands
-  back (the policy re-requests and resumes under a fresh lease token), ``q``
-  quits. Keys come from the terminal (``--keys interactive``) or from a
+  back (``release(to="model")``: the policy, parked since the takeover,
+  resumes under a fresh lease token), ``q`` quits. Keys come from the terminal (``--keys interactive``) or from a
   script of ``seconds:key`` events (the default). ``--operator haptic``
   makes it 1 kHz, reading the wrench every sample,
   one-action chunks with a 5 ms life.
@@ -64,6 +64,7 @@ os.environ.setdefault("LP_NUM_THREADS", "2")
 
 import numpy as np
 from rlmesh import realtime
+from rlmesh.realtime import actions, inputs, parts
 
 HERE = Path(__file__).resolve().parent
 ROBOT = "ur10e"
@@ -79,78 +80,89 @@ UR_JOINTS = [
 ]
 HOME = np.array([-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0])
 OPERATOR_HZ = 50
-OPERATOR_HORIZON = 40  # 40 x 1 ms: twice the operator's replan period
+OPERATOR_CHUNK = 40  # 40 x 1 ms: twice the operator's replan period
 FT_WINDOW = 10  # 10 ms of the 1 kHz wrench
 JOG_RAD = 0.1
 MAX_SPEED = 1.0  # rad/s, policy and operator alike
+LOAD = {"v": parts.array(np.float32, 6)}
 
 
 # --- maps: UR10e simulation, policy and operator -----------------------------
 
 
 def robot_map(args: argparse.Namespace) -> dict[str, Any]:
-    parts: dict[str, Any] = {
-        "arm": {"kind": "joints", "names": UR_JOINTS, "fields": ["pos", "vel", "effort"],
-                "hz": CONTROL_HZ, "command": "position", "safe": "stop", "hold_max_ms": 100,
-                "max_action_age_ms": 1000, "limits": {"pos": [-6.283, 6.283]}},
-        "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": CONTROL_HZ},
-        "task": {"kind": "text"},
-    }  # fmt: skip
-    for i in range(args.extra_streams):  # synthetic 1 kHz load
-        parts[f"extra/s{i}"] = {"kind": "x/load", "hz": CONTROL_HZ,
-                                "fields": {"v": ["float32", [6]]}}  # fmt: skip
-    if args.camera != "off":
-        camera: dict[str, Any] = {"kind": "camera", "width": args.width, "height": args.height,
-                                  "hz": args.camera_hz, "frame": "wrist_cam_optical"}  # fmt: skip
-        if args.camera == "jpeg":
-            camera |= {"encoding": "jpeg", "quality": 75, "send": "latest(max_mbps=20)"}
-        parts["wrist/cam"] = camera
-    return parts
-
-
-def policy_map(args: argparse.Namespace) -> dict[str, Any]:
-    inputs: dict[str, Any] = {
-        "q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
+    robot: dict[str, Any] = {
+        "arm": parts.joints(
+            UR_JOINTS,
+            fields=["pos", "vel", "effort"],
+            hz=CONTROL_HZ,
+            command="position",
+            safe=parts.Safe.STOP,
+            hold_max_ms=100,
+            max_action_age_ms=1000,
+            limits={"pos": [-6.283, 6.283]},
+        ),
+        "wrist/ft": parts.wrench(frame="tool0", hz=CONTROL_HZ),
+        "task": parts.text(),
     }
+    for i in range(args.extra_streams):  # synthetic 1 kHz load
+        robot[f"extra/s{i}"] = parts.custom("x/load", hz=CONTROL_HZ, fields=LOAD)
+    if args.camera != "off":
+        jpeg = args.camera == "jpeg"
+        robot["wrist/cam"] = parts.camera(
+            args.width,
+            args.height,
+            hz=args.camera_hz,
+            frame="wrist_cam_optical",
+            encoding="jpeg" if jpeg else None,
+            quality=75 if jpeg else None,
+            send="latest(max_mbps=20)" if jpeg else None,
+        )
+    return robot
+
+
+def policy_inputs(args: argparse.Namespace) -> dict[str, Any]:
+    reads: dict[str, Any] = {"q": inputs.joints("arm", fields=["pos"], names=UR_JOINTS)}
     if args.policy == "force":
         # At 100 Hz: the newest 10 ms of the wrench, every sample.
-        inputs["ft"] = {"kind": "wrench", "at": "wrist/ft", "frame": "tool0",
-                        "history": FT_WINDOW}  # fmt: skip
+        reads["ft"] = inputs.wrench("wrist/ft", frame="tool0", history=FT_WINDOW)
         for i in range(args.extra_streams):
-            inputs[f"x{i}"] = {"kind": "x/load", "at": f"extra/s{i}",
-                               "fields": {"v": ["float32", [6]]}, "history": FT_WINDOW}  # fmt: skip
+            reads[f"x{i}"] = inputs.custom(
+                f"extra/s{i}", kind="x/load", fields=LOAD, history=FT_WINDOW
+            )
     if args.camera != "off":
-        inputs["cam"] = {
-            "kind": "camera",
-            "at": "wrist/cam",
-            "size": [96, 96],
-            "max_age_ms": 150,
-        }
-    return {
-        "hz": args.replan_hz,
-        "inputs": inputs,
-        "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                            "names": UR_JOINTS, "hz": CONTROL_HZ, "horizon": args.horizon}},
-        "allow": ["resize", "pad"],
-    }  # fmt: skip
+        reads["cam"] = inputs.camera("wrist/cam", size=96, max_age_ms=150)
+    return reads
 
 
 def operator_map(args: argparse.Namespace) -> dict[str, Any]:
+    q = inputs.joints("arm", fields=["pos"], names=UR_JOINTS)
     if args.operator == "haptic":
         # 1 kHz, the wrench every sample, one-action chunks, 5 ms life.
         return {
             "hz": CONTROL_HZ,
-            "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
-                       "ft": {"kind": "wrench", "at": "wrist/ft", "frame": "tool0", "max_age_ms": 3}},
-            "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                                "names": UR_JOINTS, "hz": CONTROL_HZ, "horizon": 1, "ttl_ms": 5}},
-        }  # fmt: skip
+            "inputs": {
+                "q": q,
+                "ft": inputs.wrench("wrist/ft", frame="tool0", max_age_ms=3),
+            },
+            "actions": {"arm": arm_action(chunk=1, ttl_ms=5)},
+        }
     return {
         "hz": OPERATOR_HZ,
-        "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS}},
-        "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
-                            "names": UR_JOINTS, "hz": CONTROL_HZ, "horizon": OPERATOR_HORIZON}},
-    }  # fmt: skip
+        "inputs": {"q": q},
+        "actions": {"arm": arm_action(chunk=OPERATOR_CHUNK)},
+    }
+
+
+def arm_action(*, chunk: int, ttl_ms: float | None = None) -> dict[str, Any]:
+    return actions.joints(
+        "arm",
+        command="position",
+        names=UR_JOINTS,
+        hz=CONTROL_HZ,
+        chunk=chunk,
+        ttl_ms=ttl_ms,
+    )
 
 
 def ramp(start: np.ndarray, target: np.ndarray, n: int, dt: float) -> np.ndarray:
@@ -334,7 +346,7 @@ class Sim:
         finally:
             renderer.close()
 
-    def finish(self) -> dict[str, Any]:
+    def finish(self) -> realtime.results.EdgeStats:
         self.stop.set()
         for t in self.threads:
             t.join()
@@ -364,7 +376,7 @@ def holders(recording: dict[str, Any]) -> tuple[dict[int, str], list[dict[str, A
 def report(
     args: argparse.Namespace,
     sim: Sim,
-    edge: dict[str, Any],
+    edge: realtime.results.EdgeStats,
     recorded: dict[str, Any] | None,
     recording: dict[str, Any],
     children: dict[str, Any],
@@ -464,7 +476,7 @@ def report(
                 "width",
                 "height",
                 "replan_hz",
-                "horizon",
+                "chunk",
                 "keys",
             )
         },
@@ -599,7 +611,7 @@ def child(
             "seconds",
             "camera",
             "replan_hz",
-            "horizon",
+            "chunk",
             "keys",
             "policy",
             "operator",
@@ -740,7 +752,7 @@ def emit(args: argparse.Namespace, out: dict[str, Any]) -> None:
 
 
 def run_policy(args: argparse.Namespace) -> int:
-    horizon, dt = args.horizon, 1.0 / CONTROL_HZ
+    chunk, dt = args.chunk, 1.0 / CONTROL_HZ
     brightness: list[float] = []
     origin: list[float] = []
     # Per start, the age of the newest sample in each window input.
@@ -754,23 +766,30 @@ def run_policy(args: argparse.Namespace) -> int:
         if not origin:
             origin.append(now)
         # The reach: sweep the pan and the first wrist joint around home.
-        t = now - origin[0] + np.arange(horizon) * dt
-        target = np.repeat(HOME[None], horizon, axis=0)
+        t = now - origin[0] + np.arange(chunk) * dt
+        target = np.repeat(HOME[None], chunk, axis=0)
         target[:, 0] += 0.5 * np.sin(2 * np.pi * 0.2 * t)
         target[:, 3] += 0.3 * np.sin(2 * np.pi * 0.3 * t)
         if "cam" in obs:
             brightness.append(float(np.asarray(obs["cam"]).mean()))
         q = np.asarray(obs["q"], dtype=np.float64)
-        step = MAX_SPEED * dt * np.arange(1, horizon + 1)[:, None]
+        step = MAX_SPEED * dt * np.arange(1, chunk + 1)[:, None]
         return {"arm": (q + np.clip(target - q, -step, step)).astype(np.float32)}
 
     with realtime.Policy(
-        policy_map(args), session=args.address, name="policy"
+        hz=args.replan_hz,
+        inputs=policy_inputs(args),
+        actions={"arm": arm_action(chunk=args.chunk)},
+        allow=["resize", "pad"],
+        session=args.address,
+        name="policy",
     ) as policy:
-        binding = policy.bind(ROBOT)
+        binding = policy.bind(ROBOT).binding
         print(binding, file=sys.stderr, flush=True)
         cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
         try:
+            # Parked while the operator holds the arm (and after it lets go
+            # plainly or its process dies); the operator's hand-back resumes it.
             stats = policy.run(predict, duration=args.seconds)
         except KeyboardInterrupt:
             stats = policy.stats()
@@ -845,7 +864,7 @@ def run_operator(args: argparse.Namespace) -> int:
     chunks = 0
     haptic = args.operator == "haptic"
     hz = CONTROL_HZ if haptic else OPERATOR_HZ
-    horizon = 1 if haptic else OPERATOR_HORIZON
+    length = 1 if haptic else OPERATOR_CHUNK
     with realtime.Policy(
         operator_map(args), session=args.address, name="operator", priority="operator"
     ) as op:
@@ -891,9 +910,12 @@ def run_operator(args: argparse.Namespace) -> int:
                     active, fresh = True, True
                     events.append((stamp, "take"))
                 elif key == "t":
-                    op.release()
+                    backs = op.release(to="model")
                     active = False
-                    events.append((stamp, "hand back"))
+                    taken = all(back["taken"] for back in backs or [])
+                    events.append(
+                        (stamp, "hand back" if taken else "hand back, not taken")
+                    )
                 elif key in "123456" and len(key) == 1:
                     joint = int(key) - 1
                 elif key in ("+", "=", "k") and active and not fresh:
@@ -913,7 +935,7 @@ def run_operator(args: argparse.Namespace) -> int:
                 if fresh:
                     cmd = np.asarray(obs["q"], dtype=np.float64).copy()
                     target, fresh = cmd.copy(), False
-                chunk = ramp(cmd, target, horizon, 1.0 / CONTROL_HZ)
+                chunk = ramp(cmd, target, length, 1.0 / CONTROL_HZ)
                 sent = op.send({"arm": chunk.astype(np.float32)}, obs)
                 if sent.get("arm") is not None:
                     chunks += 1
@@ -959,9 +981,7 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--replan-hz", type=float, default=100.0)
-    parser.add_argument(
-        "--horizon", type=int, default=12, help="1 ms actions per chunk"
-    )
+    parser.add_argument("--chunk", type=int, default=12, help="1 ms actions per chunk")
     parser.add_argument(
         "--keys",
         default="scripted",

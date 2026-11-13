@@ -9,7 +9,6 @@ import dataclasses
 import functools
 import inspect
 import os
-import uuid
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import (
@@ -516,7 +515,9 @@ class ModelBase(Generic[ObsT, ActT]):
     * **Wrap** a predict callable -- ``Model(lambda obs: ...)``.
     * **Subclass** ``Model`` and override ``predict`` (and optionally ``load`` for
       weight loading, ``on_episode_end``/``close`` lifecycle hooks, and the ``spec`` class
-      attribute), then instantiate it -- ``class P(Model): ...`` then ``P()``.
+      attribute), then instantiate it -- ``class P(Model): ...`` then ``P()``, which
+      runs ``load()`` with its defaults once ``P.__init__`` returns, or
+      ``P.from_config(checkpoint=...)`` to pass ``load`` its parameters.
 
     ``run(env, seeds=...)`` drives the model against an env and returns a typed
     :class:`RunResult` -- it resolves the adapter from the env's published tags and
@@ -600,25 +601,27 @@ class ModelBase(Generic[ObsT, ActT]):
 
     def _served(self, address: str) -> Callable[[object], object]:
         """Take ``address`` as a served model's; the predict stand-in it returns refuses."""
+        from .._client._endpoint import redact_address
         from .._rlmesh import is_v2_address, parse_address
 
+        shown = redact_address(address)  # errors leave the key out
         if not is_v2_address(address):
             raise ValueError(
-                f"Model({address!r}): a served model is reached by its participant "
+                f"Model({shown!r}): a served model is reached by its participant "
                 "address (e.g. 'lab:7447/openpi'); 0.2 no longer dials a v1 model "
                 "endpoint"
             )
         parsed = parse_address(address)
         if not parsed.get("participant"):
             raise ValueError(
-                f"Model({address!r}) names no model: end the address with the model's "
+                f"Model({shown!r}) names no model: end the address with the model's "
                 "name, e.g. 'lab:7447/openpi'"
             )
         self._served_address = address
 
         def served_only(observation: object) -> object:
             raise TypeError(
-                f"Model({address!r}) is served elsewhere and predicts per env: run it, "
+                f"Model({shown!r}) is served elsewhere and predicts per env: run it, "
                 "bind it to a target, or serve it"
             )
 
@@ -723,9 +726,9 @@ class ModelBase(Generic[ObsT, ActT]):
         #: A served model's participant address (``Model("lab:7447/openpi")``):
         #: runs, bindings and serves then drive that model.
         self._served_address: str | None = None
-        #: The host a run or binding serves a local env on, each in a session
-        #: of its own, when not this process's: a sandboxed model's, which its
-        #: container can reach.
+        #: Set for a model served in a sandbox container (its own session):
+        #: a ``SandboxEnv`` it runs against is then joined at that container's
+        #: address on their shared Docker network, which this one reaches.
         self._env_session: str | None = None
         #: The random baseline (``Model(RANDOM_SAMPLE)``): runs and bindings
         #: sample the env's action space.
@@ -802,7 +805,8 @@ class ModelBase(Generic[ObsT, ActT]):
         self._episodes = EpisodeStore(
             _episode_end_hook(
                 on_episode_end if on_episode_end is not None else coerced_on_episode_end
-            )
+            ),
+            bridge=self._bridge,
         )
         raw_predict = _with_episode_state(
             self._episodes, raw_predict, arity=1, batched=False
@@ -887,10 +891,15 @@ class ModelBase(Generic[ObsT, ActT]):
         self._loaded_native_chunk: int | None = None
         self._loaded_execution_horizon: int | None = None
         self._loaded_allow_fusion = True
-        if autoload:
-            self.load()
-        if autoload or policy is not self:
-            self._finish_load()
+        if autoload and self.__dict__.get("_constructing"):
+            # Inside an authored __init__: its outermost one loads once it
+            # returns, so load() sees everything that __init__ set.
+            self._load_pending = True
+        else:
+            if autoload:
+                self.load()
+            if autoload or policy is not self:
+                self._finish_load()
 
     def _finish_load(self) -> None:
         """Read the policy's declarations once, after ``load()``, and cache them.
@@ -975,7 +984,13 @@ class ModelBase(Generic[ObsT, ActT]):
         Optional subclass hook; a no-op by default. Runs exactly once per
         instance, before any predict: with its own defaults from ``MyModel()``,
         or with the keywords :meth:`from_config` / a served binding resolved
-        against the signature and :attr:`params`.
+        against the signature and :attr:`params`. Its parameters are not
+        constructor keywords: ``MyModel(variant="b")`` is refused, naming
+        ``MyModel.from_config(variant="b")``.
+
+        It runs once construction completes: a subclass's own ``__init__``
+        runs to its end first, wherever it calls ``super().__init__()`` (or if
+        it never does), so ``load`` sees every attribute ``__init__`` set.
         """
 
     def predict(self, observation: ObsT) -> ActT:
@@ -996,8 +1011,10 @@ class ModelBase(Generic[ObsT, ActT]):
             )
         except LookupError:
             if self._served_address is not None:
+                from .._client._endpoint import redact_address
+
                 raise TypeError(
-                    f"Model({self._served_address!r}) is served elsewhere and "
+                    f"Model({redact_address(self._served_address)!r}) is served elsewhere and "
                     "predicts per env: run it, bind it to a target, serve it, or "
                     "call it from the predict of a model that holds it"
                 ) from None
@@ -1088,13 +1105,37 @@ class ModelBase(Generic[ObsT, ActT]):
         if callable(authored_init):
             # A model that only sets its parts (``self.inner = inner``) need
             # not call super().__init__(): the base builds the model after it.
+            # load() runs once the outermost authored __init__ returns, not
+            # inside a super().__init__() called before the rest of it.
             @functools.wraps(authored_init)
             def init(self: ModelBase[Any, Any], *args: Any, **kwargs: Any) -> None:
-                authored_init(self, *args, **kwargs)
-                if "_calls" not in self.__dict__:
-                    super(cls, self).__init__()
+                if kwargs:
+                    _refuse_load_keywords(type(self), kwargs)
+                outermost = not self.__dict__.get("_constructing")
+                self.__dict__["_constructing"] = True
+                try:
+                    authored_init(self, *args, **kwargs)
+                    if "_calls" not in self.__dict__:
+                        super(cls, self).__init__()
+                finally:
+                    if outermost:
+                        del self.__dict__["_constructing"]
+                if outermost and self.__dict__.pop("_load_pending", False):
+                    self.load()
+                    self._finish_load()
 
             cls.__init__ = init  # type: ignore[method-assign]
+        else:
+            # An inherited __init__ refuses load() keywords by name too.
+            inherited: Callable[..., None] = cls.__init__
+
+            @functools.wraps(inherited)
+            def checked(self: ModelBase[Any, Any], *args: Any, **kwargs: Any) -> None:
+                if kwargs:
+                    _refuse_load_keywords(type(self), kwargs)
+                inherited(self, *args, **kwargs)
+
+            cls.__init__ = checked  # type: ignore[method-assign]
         authored_close = cls.__dict__.get("close")
         if callable(authored_close):
             # An authored close() is the model's close hook: it runs at most once,
@@ -1405,7 +1446,8 @@ class ModelBase(Generic[ObsT, ActT]):
         :class:`~rlmesh.SandboxEnv` lends its container to the run and attaches
         again after), or a local env object -- served
         in this process for
-        the duration of the run (tag it via
+        the duration of the run, in a session on a served model's own host,
+        which that model reaches wherever it runs (tag it via
         :func:`rlmesh.adapters.tag` for a spec'd model). Both the model and a
         caller's env are borrowed: the run releases what it created (the
         in-process server, a factory-built env, the runtime session) and leaves
@@ -1669,16 +1711,15 @@ class ModelBase(Generic[ObsT, ActT]):
     def _serve_here(self, env_obj: object, workflow_edition: str | None) -> EnvServer:
         """Serve the local env ``env_obj`` in this process for one run or binding.
 
-        In a session of this process's shared host, so the driver calls the
-        env directly; or in a fresh session on :attr:`_env_session`'s host
-        when set. A local single env's spec/tags pairing is pre-flighted
+        In a session of its own, on a served model's host (which the model
+        reaches, wherever it runs), else on this process's shared host;
+        the driver calls the env directly either way. A local single env's spec/tags pairing is pre-flighted
         here, so a mismatch surfaces as the typed ``AdapterResolutionError``
         (a vector env's local spaces are batched while tags describe one lane,
         so its check stays at the route resolve).
         """
-        from .._editions import resolved_by_caller
         from .._load_native import load_native
-        from .._server import EnvServer, VectorServerEnvLike
+        from .._server import EnvServer, VectorServerEnvLike, loopback
 
         if (
             not hasattr(env_obj, "single_observation_space")
@@ -1696,13 +1737,9 @@ class ModelBase(Generic[ObsT, ActT]):
         # The in-process server is part of THIS call, so it takes the caller's
         # already-resolved declaration verbatim instead of re-resolving and
         # possibly landing on a different edition than the runtime tier.
-        resolved = resolved_by_caller.set(True)
+        token = loopback.set(True)
         try:
-            address = (
-                f"{self._env_session}/run-{uuid.uuid4().hex[:12]}/env"
-                if self._env_session is not None
-                else f"{load_native('local_run_session')()}/env"
-            )
+            address = f"{load_native('run_session')(self._served_address)}/env"
             server = EnvServer(
                 cast("VectorServerEnvLike", env_obj),
                 address,
@@ -1717,7 +1754,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 close_env_on_shutdown=False,
             )
         finally:
-            resolved_by_caller.reset(resolved)
+            loopback.reset(token)
         server.start()
         return server
 
@@ -1797,6 +1834,9 @@ class ModelBase(Generic[ObsT, ActT]):
         route's resolve delivers, then applies it around predict; a spec-less /
         ``NO_ADAPTER`` model serves its own predict directly.
 
+        With ``RLMESH_READY_FILE`` set, the model writes that file once it can
+        answer and removes it when it stops.
+
         A session checks no endpoint token yet, so a set
         ``RLMESH_MODEL_ENDPOINT_TOKEN`` is refused: keep the session on a
         private network.
@@ -1816,12 +1856,16 @@ class ModelBase(Generic[ObsT, ActT]):
             # RLMESH_WORKFLOW_EDITION, as EnvServer adopts it (COR-6).
             call=options.workflow_edition if options is not None else None,
             declared=self._class_workflow_edition(),
+            origin=self._edition_origin(),
         )
         if not name:
+            from .._client._endpoint import redact_address
+
+            shown = redact_address(address)
             removed(
-                f"Model.serve({address!r}) without a name",
+                f"Model.serve({shown!r}) without a name",
                 "a model serves on a session as a named participant: "
-                f"model.serve({address!r}, name='policy') is reached at "
+                f"model.serve({shown!r}, name='policy') is reached at "
                 "'<host:port>/policy'",
             )
         worker = self._install_worker()
@@ -1934,29 +1978,60 @@ class ModelBase(Generic[ObsT, ActT]):
         return resolve_workflow_edition(
             call=call,
             declared=self._class_workflow_edition(),
-            # A subclass or a wrapped policy has a home for the declaration; a
-            # wrapped bare callable has none.
-            authored=self._policy is not None,
+            origin=self._edition_origin(),
         )
 
-    def _class_workflow_edition(self) -> str | None:
-        """The type-level edition declaration this model carries.
+    def _edition_origin(self) -> object:
+        """Where this model's edition is declared: the type or callable it was authored as.
 
-        A subclass's own; for a wrapping ``Model(policy)``, the wrapped policy
-        type's (``describe`` reads the same one); for a bare callable, the
-        callable's attribute.
+        A subclass's own type; for a wrapping ``Model(policy)``, the wrapped
+        policy type (``describe`` reads the same one); for a bare callable,
+        the callable. Its module's project holds the ``[tool.rlmesh]`` rung.
         """
         if self._policy is self:
-            owner: object = type(self)
-        elif self._policy is not None:
-            owner = type(self._policy)
-        else:
-            owner = self._edition_source
-        declared = getattr(owner, "workflow_edition", None)
+            return type(self)
+        if self._policy is not None:
+            return type(self._policy)
+        return self._edition_source
+
+    def _class_workflow_edition(self) -> str | None:
+        """The type-level edition declaration this model carries (see :meth:`_edition_origin`)."""
+        declared = getattr(self._edition_origin(), "workflow_edition", None)
         return declared if isinstance(declared, str) else None
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
+
+
+def _refuse_load_keywords(
+    cls: type[ModelBase[Any, Any]], kwargs: Mapping[str, Any]
+) -> None:
+    """Name ``from_config`` when ``MyModel(x=...)`` passes keywords only ``load`` takes.
+
+    The constructor would refuse them anyway, with Python's bare "unexpected
+    keyword argument"; this says where load parameters go instead.
+    """
+    if getattr(cls, "load") is getattr(ModelBase, "load"):  # noqa: B009
+        return
+
+    def accepts(fn: Callable[..., object], name: str) -> bool:
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return True
+        return name in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+
+    unexpected = [name for name in kwargs if not accepts(cls.__init__, name)]
+    if not unexpected or not all(accepts(cls.load, name) for name in unexpected):
+        return
+    given = ", ".join(f"{name}=..." for name in sorted(unexpected))
+    raise TypeError(
+        f"{cls.__name__}() does not take {', '.join(sorted(unexpected))}: "
+        f"load() parameters reach a model through {cls.__name__}.from_config({given}), "
+        f"which validates them and runs load() with them once"
+    )
 
 
 def as_model(model: object) -> ModelBase[Any, Any]:

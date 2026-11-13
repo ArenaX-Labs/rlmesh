@@ -49,6 +49,10 @@ pub struct EnvProbeOptions {
     pub output_dir: Option<PathBuf>,
     /// How long the env gets to answer the handshake.
     pub connect_timeout: Duration,
+    /// What to call an env that serves no id of its own (a factory's
+    /// unregistered env): its image's `module:Class`, say. The describe
+    /// envelope's target is used when this is `None`.
+    pub name: Option<String>,
 }
 
 impl Default for EnvProbeOptions {
@@ -57,8 +61,30 @@ impl Default for EnvProbeOptions {
             describe: None,
             output_dir: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            name: None,
         }
     }
+}
+
+/// The env's served id, else `name`, else its describe target: a served id
+/// is only the default when the env sets none.
+fn env_name(served: &str, options: &EnvProbeOptions) -> String {
+    if served != crate::env::sync_wire::UNKNOWN_ENV_ID {
+        return served.to_owned();
+    }
+    let target = options.describe.as_ref().and_then(|envelope| {
+        let target = envelope.get("target")?;
+        target
+            .get("entrypoint")
+            .and_then(Json::as_str)
+            .or_else(|| target.get("qualname").and_then(Json::as_str))
+            .map(str::to_owned)
+    });
+    options
+        .name
+        .clone()
+        .or(target)
+        .unwrap_or_else(|| served.to_owned())
 }
 
 /// Probe the env served at the session participant `address`. Never fails:
@@ -79,7 +105,7 @@ pub fn probe_env(address: &str, options: &EnvProbeOptions) -> ProbeReport {
         }
     };
     let contract = binding.contract().clone();
-    let env_id = contract.id().to_string();
+    let env_id = env_name(contract.id(), options);
     probe.record(
         ProbeCheck::new(
             "env_handshake",
@@ -149,10 +175,28 @@ impl EnvChecks<'_, '_> {
             .unwrap_or(Json::Null)
     }
 
+    /// The reset options a run sends an env that declares `trial_index`
+    /// among its reset options: trial 0 every time, so the seeded replays
+    /// stay comparable.
+    fn reset_options(&self) -> Option<crate::InfoDict> {
+        let declared = self.metadata_json(crate::ENV_RESET_OPTIONS_KEY);
+        let wants = |value: &Json| value.as_str() == Some(crate::binding::TRIAL_INDEX_OPTION);
+        let asks = wants(&declared)
+            || declared
+                .as_array()
+                .is_some_and(|keys| keys.iter().any(wants));
+        asks.then(|| {
+            let mut options = crate::InfoDict::new();
+            options.insert(crate::binding::TRIAL_INDEX_OPTION, 0_i64);
+            options
+        })
+    }
+
     fn reset(&mut self) -> Result<SpaceValue, String> {
+        let options = self.reset_options();
         let (observation, _) = self
             .binding
-            .reset(Some(ENV_RESET_SEED), None)
+            .reset(Some(ENV_RESET_SEED), options.as_ref())
             .map_err(|error| error.to_string())?;
         space_codec::value_to_space(&self.observation, &observation).map_err(|error| {
             format!("reset observation does not fit the observation space: {error}")
@@ -233,11 +277,15 @@ impl EnvChecks<'_, '_> {
     /// reconciles widths, dim laws and ranges but never role *names*, so a
     /// same-width contract swap passes every other check silently.
     fn check_contract(&mut self) {
-        let contracts = self
-            .describe
-            .and_then(|envelope| envelope.get("env_contracts"))
-            .cloned()
-            .unwrap_or(Json::Null);
+        let Some(envelope) = self.describe else {
+            self.probe.record(ProbeCheck::skipped(
+                "env_contract",
+                "the image carries no describe envelope, so it declares nothing to hold the \
+                 served contract to",
+            ));
+            return;
+        };
+        let contracts = envelope.get("env_contracts").cloned().unwrap_or(Json::Null);
         let served_branch = self.metadata_json(ENV_BRANCH_METADATA_KEY);
         let served_tags = self.metadata_json(rlmesh_adapters::v1::ENV_METADATA_KEY);
         self.probe

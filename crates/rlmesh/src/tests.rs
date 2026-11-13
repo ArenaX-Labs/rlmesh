@@ -81,3 +81,32 @@ fn describe_and_reset_keys_match_python() {
     assert_eq!(crate::DESCRIBE_SCHEMA_VERSION, 1);
     assert_eq!(crate::ENV_RESET_OPTIONS_KEY, "rlmesh.env.v1.reset_options");
 }
+
+/// The cargo features the crate docs list (`//! - `name`` under
+/// `# Features`), and the ones the manifest declares (`default` aside).
+#[test]
+fn the_crate_docs_list_exactly_the_manifest_features() {
+    let mut documented: Vec<&str> = include_str!("lib.rs")
+        .lines()
+        .skip_while(|line| *line != "//! # Features")
+        .skip(1)
+        .take_while(|line| !line.starts_with("//! # "))
+        .filter_map(|line| line.strip_prefix("//! - `"))
+        .filter_map(|line| line.split('`').next())
+        .collect();
+    let mut declared: Vec<&str> = include_str!("../Cargo.toml")
+        .lines()
+        .skip_while(|line| *line != "[features]")
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .filter_map(|line| line.split_once(" = ").map(|(name, _)| name.trim()))
+        .filter(|name| !name.starts_with('#') && *name != "default")
+        .collect();
+    documented.sort_unstable();
+    declared.sort_unstable();
+    assert!(!declared.is_empty());
+    assert_eq!(
+        documented, declared,
+        "the `# Features` list in crates/rlmesh/src/lib.rs and [features] in its Cargo.toml differ"
+    );
+}

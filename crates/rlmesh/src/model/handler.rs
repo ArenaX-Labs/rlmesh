@@ -239,6 +239,17 @@ pub trait ModelHandler: Send {
         None
     }
 
+    /// How many lanes rode the forward the last predict-family call was
+    /// answered in, when this handler knows it better than its caller: one
+    /// in front of a batching pool, which fused this call's groups with
+    /// other callers' rows. Recorded as the `group.size` metric.
+    /// Read-and-clear, drained with [`take_endpoint_timing`](Self::take_endpoint_timing).
+    /// `None` (the default): the runtime records the number of groups in the
+    /// call, when more than one.
+    fn take_group_size(&mut self) -> Option<u64> {
+        None
+    }
+
     /// Per-route setup invoked at `ResolveAdapter`, before any `predict` on the
     /// route. Returns a cheaply-cloned, independently-synchronized handle (or
     /// `None` for no per-route setup), obtained once when serving begins so the
@@ -350,6 +361,10 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
 
     fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
         (**self).take_endpoint_timing()
+    }
+
+    fn take_group_size(&mut self) -> Option<u64> {
+        (**self).take_group_size()
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {

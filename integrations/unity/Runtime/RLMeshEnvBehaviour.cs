@@ -71,7 +71,8 @@ namespace RLMesh.Unity
                 ownsBackground = true;
                 Application.runInBackground = true;
                 Debug.Log("RLMesh host runtime: " + hostRuntimeJson, this);
-                Debug.Log("Serving " + EnvId + " on " + servedAddress, this);
+                // The server's ToString leaves the address's key out; GetServedAddress has it.
+                Debug.Log("Serving " + EnvId + ": " + server, this);
             }
             catch { StopServing(); throw; }
         }

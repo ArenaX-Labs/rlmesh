@@ -398,7 +398,7 @@ mod tests {
             &ParticipantId::new("robot").expect("id"),
             SPEC_VERSION,
             r#"{"ft": {"kind": "wrench", "frame": "tool0", "hz": 1000},
-                "arm": {"kind": "joints", "count": 2, "hz": 1000, "command": "position"},
+                "arm": {"kind": "joints", "count": 2, "hz": 1000, "command": "position", "safe": "stop"},
                 "cam": {"kind": "camera", "width": 4, "height": 4, "hz": 30},
                 "task": {"kind": "text"}}"#,
         )

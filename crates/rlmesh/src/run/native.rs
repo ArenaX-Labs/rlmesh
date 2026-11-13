@@ -142,15 +142,10 @@ pub(crate) async fn run_route(
         Driven::Prepared(model) => model.native_chunk,
         _ => shared.and_then(|shared| shared.decl.native_chunk),
     };
-    let (declared_edition, authored, has_chunk) = match &model {
-        Driven::Prepared(model) => (
-            model.workflow_edition.clone(),
-            model.authored,
-            model.has_chunk,
-        ),
+    let (declared_edition, has_chunk) = match &model {
+        Driven::Prepared(model) => (model.workflow_edition.clone(), model.has_chunk),
         _ => (
             shared.and_then(|s| s.decl.workflow_edition.clone()),
-            shared.is_some_and(|s| s.decl.authored),
             shared.map(|s| s.decl.has_chunk()),
         ),
     };
@@ -186,6 +181,11 @@ pub(crate) async fn run_route(
         )?,
     };
     check_horizon(execution_horizon, native_chunk)?;
+    // A local env is served on a served model's host, which it reaches.
+    let beside = match &model {
+        Driven::Served(model) => Some(model.address().to_string()),
+        _ => None,
+    };
     let make_handler: MakeHandler = match model {
         Driven::Prepared(model) => Box::new(move |_| model.handler),
         Driven::Local(model) => {
@@ -202,10 +202,7 @@ pub(crate) async fn run_route(
         }
         Driven::Served(model) => {
             served_options(trust_entrypoints, instruction.as_deref())?;
-            let served = crate::lockstep::ServedModel::new(
-                model.address(),
-                model.connect_timeout().unwrap_or(SERVED_CONNECT),
-            );
+            let served = model.served(model.connect_timeout().unwrap_or(SERVED_CONNECT));
             Box::new(move |_| Box::new(served))
         }
         Driven::Random => {
@@ -227,14 +224,11 @@ pub(crate) async fn run_route(
         .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
     let outcome = async {
         // COR-6: the call, RLMESH_WORKFLOW_EDITION, then the model's type.
-        let edition = crate::editions::resolve_native(
-            EditionSources {
-                call: workflow_edition.as_deref(),
-                option: None,
-                declared: declared_edition.as_deref(),
-            },
-            authored,
-        )?;
+        let edition = crate::editions::resolve_native(EditionSources {
+            call: workflow_edition.as_deref(),
+            option: None,
+            declared: declared_edition.as_deref(),
+        })?;
         if execution_horizon > 1 && has_chunk == Some(false) {
             crate::warnings::warn(
                 crate::WarningCategory::UserWarning,
@@ -248,6 +242,7 @@ pub(crate) async fn run_route(
         let plan = Plan {
             ended: ended.clone(),
             make_handler,
+            beside,
             budget,
             seeds: seeds.unwrap_or_default(),
             caps,
@@ -356,6 +351,8 @@ impl Drop for OwnedMadeEnv {
 struct Plan {
     ended: Arc<std::sync::atomic::AtomicBool>,
     make_handler: MakeHandler,
+    /// The served model's address, whose host serves a local env.
+    beside: Option<String>,
     budget: u64,
     seeds: Vec<i64>,
     caps: super::options::Caps,
@@ -476,7 +473,7 @@ async fn run_body(
                     LoopbackEnv::Vector(Box::new(LentVectorEnv::new(&**env, port.clone())))
                 }
             };
-            let server = EnvServer::loopback(lent, plan.edition.clone())?;
+            let server = EnvServer::loopback(lent, plan.edition.clone(), plan.beside.as_deref())?;
             server.start()?;
             Dial {
                 address: server.address().to_string(),

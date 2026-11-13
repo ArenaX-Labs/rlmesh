@@ -160,6 +160,11 @@ pub struct RuntimeSessionSpec {
     /// semantics and autoreset requirement as `max_episode_steps`.
     pub max_episode_seconds: Option<f64>,
     pub close_env_on_end: bool,
+    /// Close the model (`ModelHandler::on_close`) when the run ends, within
+    /// the close timeout: for a model this run alone owns (a served model
+    /// joined for it then leaves its host rather than being counted lost).
+    /// Leave unset for a model other runs share.
+    pub close_model_on_end: bool,
     pub limits: RuntimeLimits,
     /// The env advertised the `subset_step` handshake capability: every lane
     /// can be reset and stepped on its own. The driver then runs one episode
@@ -615,6 +620,7 @@ mod tests {
             max_episode_steps: None,
             max_episode_seconds: None,
             close_env_on_end: true,
+            close_model_on_end: false,
             subset_step: false,
             limits: RuntimeLimits::default(),
         }

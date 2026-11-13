@@ -12,7 +12,7 @@ use bytes::Bytes;
 use rlmesh_session::address::AddressKey;
 use rlmesh_session::crypto::{Key, Kind, KindSet, SealSender, Security};
 use rlmesh_session::edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
-use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::{
     ActionChunk, ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass,
     ReasonCode, Role, SessionId, TenantId, codec,
@@ -33,19 +33,15 @@ const WARMUP: Duration = Duration::from_millis(100);
 /// `ft`: force/torque; `arm` + `arm/tcp`: a command group.
 const ROBOT: &str = r#"{
     "cmd": {"kind": "x/joints", "hz": 1000, "fields": {"pos": ["float32", [6]]},
-            "command": "position", "priority": "control", "hold_max_ms": 100,
+            "command": "position", "safe": "stop", "priority": "control", "hold_max_ms": 100,
             "max_action_age_ms": 2000},
     "ft": {"kind": "x/ft", "hz": 1000, "fields": {"wrench": ["float32", [18]]},
            "priority": "realtime"},
     "arm": {"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
-            "command": "position", "group": "arm", "hold_max_ms": 100},
+            "command": "position", "safe": "stop", "group": "arm", "hold_max_ms": 100},
     "arm/tcp": {"kind": "x/tcp", "hz": 1000, "fields": {"dpos": ["float32", [6]]},
-                "command": "delta", "group": "arm", "hold_max_ms": 100}
+                "command": "delta", "safe": "stop", "group": "arm", "hold_max_ms": 100}
 }"#;
-
-fn any_local_port() -> std::net::SocketAddr {
-    "127.0.0.1:0".parse().expect("addr")
-}
 
 fn robot_id() -> ParticipantId {
     ParticipantId::new("robot").expect("id")
@@ -69,7 +65,7 @@ impl World {
             )
             .with_test_writer()
             .try_init();
-        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
             .expect("transport");
         let tenant = TenantId::new("edge").expect("tenant");
@@ -143,11 +139,9 @@ async fn join(
     roles: Vec<Role>,
     priority: PriorityClass,
 ) -> Participant {
-    let transport = Transport::open(
-        &TransportConfig::per_class_tcp(Some(any_local_port()), Some(base)).expect("config"),
-    )
-    .await
-    .expect("transport");
+    let transport = Transport::open(&TransportConfig::per_class_tcp(base))
+        .await
+        .expect("transport");
     let mut config = ParticipantConfig::new(
         tenant.clone(),
         session,
@@ -226,7 +220,7 @@ fn tick_at_1khz(
 }
 
 /// `n` actions at 1 ms from now (session time), every byte `tag`.
-fn horizon(p: &Participant, n: usize, tag: u8, valid_for: Duration) -> ChunkDraft {
+fn chunk(p: &Participant, n: usize, tag: u8, valid_for: Duration) -> ChunkDraft {
     let now = p.session_now_ns();
     ChunkDraft {
         based_on: vec![InputRange::one(ChannelId(99), 1)],
@@ -269,7 +263,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     model_tx
         // Long enough to still be due however late a loaded machine ticks.
-        .send(horizon(&policy, 1000, 1, Duration::from_secs(2)))
+        .send(chunk(&policy, 1000, 1, Duration::from_secs(2)))
         .expect("send");
     wait_until("model chunk accepted", || edge.stats().accepted == 1).await;
     tokio::time::sleep(Duration::from_millis(2)).await;
@@ -281,7 +275,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
 
     // Already void on arrival.
     model_tx
-        .send(horizon(&policy, 50, 1, Duration::ZERO))
+        .send(chunk(&policy, 50, 1, Duration::ZERO))
         .expect("send");
     wait_until("expired chunk rejected", || {
         edge.stats().rejected(Rejection::Expired) == 1
@@ -310,7 +304,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
         })
         .await
         .expect("view");
-    let late = model_tx.send(horizon(&policy, 50, 1, Duration::from_millis(100)));
+    let late = model_tx.send(chunk(&policy, 50, 1, Duration::from_millis(100)));
     assert!(matches!(late, Err(SessionError::Key(_))), "{late:?}");
     // ...and a chunk naming the new lease, sealed by anyone but its holder
     // (here under its public key id with a made-up key), never opens.
@@ -354,7 +348,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
     let human_tx = operator.chunk_publisher(&human).await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(50)).await;
     human_tx
-        .send(horizon(&operator, 1000, 2, Duration::from_secs(2)))
+        .send(chunk(&operator, 1000, 2, Duration::from_secs(2)))
         .expect("send");
     wait_until("operator chunk accepted", || edge.stats().accepted == 2).await;
     tokio::time::sleep(Duration::from_millis(2)).await;
@@ -398,13 +392,13 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(Mutex::new(Vec::new()));
     let ticker = tick_at_1khz(edge.clone(), stop.clone(), Some(ticks.clone()));
-    // The model re-plans a 50 ms horizon every 10 ms.
+    // The model re-plans a 50 ms chunk every 10 ms.
     let streaming = Arc::new(AtomicBool::new(true));
     let model_loop = tokio::spawn({
         let streaming = streaming.clone();
         async move {
             while streaming.load(Ordering::Relaxed) {
-                let _ = model_tx.send(horizon(&policy, 50, 1, Duration::from_millis(150)));
+                let _ = model_tx.send(chunk(&policy, 50, 1, Duration::from_millis(150)));
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             policy
@@ -421,7 +415,7 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
         .await
         .expect("view");
     for _ in 0..30 {
-        let _ = human_tx.send(horizon(&operator, 50, 2, Duration::from_millis(150)));
+        let _ = human_tx.send(chunk(&operator, 50, 2, Duration::from_millis(150)));
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     streaming.store(false, Ordering::Relaxed);
@@ -487,7 +481,7 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
     let ticker = tick_at_1khz(edge.clone(), stop.clone(), None);
     // One 20 ms chunk, then silence (heartbeats continue: the host alone
     // would never lapse the lease).
-    tx.send(horizon(&policy, 20, 1, Duration::from_millis(150)))
+    tx.send(chunk(&policy, 20, 1, Duration::from_millis(150)))
         .expect("send");
     // The edge's EnterSafe ends this robot's lease alone; the session is
     // not taken SAFE for it.
@@ -509,6 +503,12 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
         (ended.reason.code, ended.reason.by.as_str()),
         (ReasonCode::VoidedBySafe, robot.id().as_str())
     );
+    let part = format!("{}:cmd: ", robot.id());
+    assert!(
+        ended.reason.detail.starts_with(&part),
+        "{}",
+        ended.reason.detail
+    );
     stop.store(true, Ordering::Relaxed);
     ticker.join().expect("ticker");
     let stats = edge.stats();
@@ -527,6 +527,119 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
     );
     // The session, with no lease left, is ARMED; the robot waits for an arm.
     assert_eq!(world.host.snapshot().mode, Mode::Armed);
+}
+
+/// Two controllers drive one part each; the first vanishes. Its queue runs
+/// dry at the edge before the host notices, and still only its part stops.
+async fn a_vanished_holder_leaves_the_other_driving(
+    world: &World,
+    dying: (&Participant, &str),
+    staying: (&Participant, &str),
+) {
+    let one = world
+        .join("one", vec![Role::Controller], PriorityClass::Model)
+        .await;
+    let two = world
+        .join("two", vec![Role::Controller], PriorityClass::Model)
+        .await;
+    for (p, fingerprint) in [(&one, 1), (&two, 2)] {
+        let view = p
+            .wait_for("every part", WAIT, |s| {
+                s.part_at(dying.0.id(), dying.1).is_some()
+                    && s.part_at(staying.0.id(), staying.1).is_some()
+            })
+            .await
+            .expect("parts");
+        let channels = view
+            .parts
+            .iter()
+            .filter(|part| part.command.is_some())
+            .map(|part| part.channel)
+            .collect();
+        p.declare_binding(Fingerprint::from(fingerprint), "{}", channels, 0.0)
+            .await
+            .expect("bind");
+    }
+    let dying_part = one.part(dying.0.id(), dying.1).expect("part").channel;
+    let staying_part = one.part(staying.0.id(), staying.1).expect("part").channel;
+    let dying_edge = Arc::new(
+        Edge::attach(dying.0, dying.1, EdgeConfig::default(), None)
+            .await
+            .expect("edge"),
+    );
+    let staying_edge = Arc::new(
+        Edge::attach(staying.0, staying.1, EdgeConfig::default(), None)
+            .await
+            .expect("edge"),
+    );
+    for p in [dying.0, staying.0, &one, &two] {
+        mapped(p).await;
+    }
+    let armed = one.arm().await.expect("arm");
+    let lost = one.grant_lease(dying_part, None).await.expect("lease");
+    let kept = two.grant_lease(staying_part, None).await.expect("lease");
+    for robot in [dying.0, staying.0] {
+        robot
+            .wait_for("both leases", WAIT, |s| {
+                s.lease(dying_part).is_some() && s.lease(staying_part).is_some()
+            })
+            .await
+            .expect("view");
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let tickers = [
+        tick_at_1khz(dying_edge.clone(), stop.clone(), None),
+        tick_at_1khz(staying_edge.clone(), stop.clone(), None),
+    ];
+    let vanish = async {
+        stream(&one, &lost, 1, Duration::from_millis(300), WARMUP).await;
+        one.set_heartbeats_enabled(false);
+        let view = two
+            .wait_for("its lease ends", WAIT, |s| s.lease(dying_part).is_none())
+            .await
+            .expect("lapse");
+        assert_eq!((view.mode, view.epoch), (Mode::Active, armed.epoch));
+        assert!(view.lease(staying_part).is_some());
+    };
+    tokio::join!(
+        stream(&two, &kept, 2, Duration::from_millis(1200), WARMUP),
+        vanish,
+    );
+    let last_driven = staying_edge.tick().mode;
+    stop.store(true, Ordering::Relaxed);
+    for ticker in tickers {
+        ticker.join().expect("ticker");
+    }
+    assert_eq!(last_driven, EdgeMode::Driving);
+    let (lost_stats, kept_stats) = (dying_edge.stats(), staying_edge.stats());
+    assert_eq!(lost_stats.mode(EdgeMode::Safe).entries, 1, "{lost_stats:?}");
+    assert_eq!(lost_stats.safe_reports, 0, "{lost_stats:?}");
+    assert_eq!(kept_stats.mode(EdgeMode::Safe).entries, 0, "{kept_stats:?}");
+    let snapshot = world.host.snapshot();
+    assert_eq!((snapshot.mode, snapshot.epoch), (Mode::Active, armed.epoch));
+    assert_eq!(
+        snapshot.lease(staying_part).map(|l| l.token),
+        Some(kept.token),
+        "never interrupted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_policies_on_two_parts_of_one_robot_lose_one_and_the_other_drives() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    a_vanished_holder_leaves_the_other_driving(&world, (&robot, "cmd"), (&robot, "arm")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_policies_on_two_robots_lose_one_and_the_other_drives() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let other = world
+        .join("other", vec![Role::Embodiment], PriorityClass::Scripted)
+        .await;
+    other.declare_parts(ROBOT).await.expect("declare");
+    a_vanished_holder_leaves_the_other_driving(&world, (&robot, "cmd"), (&other, "cmd")).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -550,9 +663,9 @@ async fn with_the_host_gone_the_edge_falls_back_on_its_own_clock() {
         .expect("view");
     let tx = policy.chunk_publisher(&lease).await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(200)).await;
-    // A long horizon (the part's open-loop budget is 2 s): the queue would
+    // A long chunk (the part's open-loop budget is 2 s): the queue would
     // drive for a second, the most one chunk carries.
-    tx.send(horizon(&policy, 1024, 1, Duration::from_secs(2)))
+    tx.send(chunk(&policy, 1024, 1, Duration::from_secs(2)))
         .expect("send");
     wait_until("chunk accepted", || edge.stats().accepted == 1).await;
     let stop = Arc::new(AtomicBool::new(false));
@@ -575,7 +688,7 @@ async fn with_the_host_gone_the_edge_falls_back_on_its_own_clock() {
     assert!(after < GRACE + Duration::from_secs(2), "after {after:?}");
     let stats = edge.stats();
     assert_eq!(stats.mode(EdgeMode::Hold).ticks, 0, "no hold: {stats:?}");
-    assert_eq!(stats.safe_reports, 1);
+    assert_eq!(stats.safe_reports, 0, "nobody is left to tell");
     let tick = edge.tick();
     assert_eq!(tick.mode, EdgeMode::Safe);
     assert_eq!(tick.safe_behavior.as_deref(), Some("stop"));
@@ -589,7 +702,7 @@ async fn stream(p: &Participant, lease: &Lease, tag: u8, duration: Duration, war
     let stride = tx.stride();
     let started = Instant::now();
     while started.elapsed() < duration {
-        let mut draft = horizon(p, 50, tag, Duration::from_millis(150));
+        let mut draft = chunk(p, 50, tag, Duration::from_millis(150));
         draft.actions = Bytes::from(vec![tag; stride * 50]);
         tx.send(draft).expect("send");
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -645,9 +758,18 @@ async fn child_process() {
             )
             .await
             .expect("subscribe");
-        // Ready: the parent starts driving once it sees this line.
+        // Ready: the parent drives until it reads the report, which goes
+        // once more than a hundred driving ticks reached this process.
         println!("CHILD_READY");
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let driving = |seen: &[(rlmesh_session::wire::Applied, Option<u8>)]| {
+            seen.iter()
+                .filter(|(a, _)| a.present && a.mode == rlmesh_session::wire::EdgeMode::Driving)
+                .count()
+        };
+        let started = Instant::now();
+        while driving(&seen.lock().expect("seen")) <= 100 && started.elapsed() < WAIT {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         let seen = seen.lock().expect("seen").clone();
         let present: Vec<_> = seen.iter().filter(|(a, _)| a.present).collect();
         let report = json!({
@@ -931,7 +1053,6 @@ async fn the_applied_stream_reaches_an_observer_in_another_process() {
         .await
         .expect("armed");
     let lease = policy.grant_lease(cmd, None).await.expect("lease");
-    stream(&policy, &lease, 5, Duration::from_millis(600), WARMUP).await;
     let report = tokio::task::spawn_blocking(move || {
         for line in ready {
             let line = line.expect("line");
@@ -940,16 +1061,24 @@ async fn the_applied_stream_reaches_an_observer_in_another_process() {
             }
         }
         panic!("no report");
-    })
-    .await
-    .expect("report");
+    });
+    // Drives until the other process has seen enough of it, however long
+    // a loaded machine takes to carry it there.
+    let tx = policy.chunk_publisher(&lease).await.expect("publisher");
+    tokio::time::sleep(WARMUP).await;
+    let stride = tx.stride();
+    while !report.is_finished() {
+        let mut draft = chunk(&policy, 50, 5, Duration::from_millis(150));
+        draft.actions = Bytes::from(vec![5; stride * 50]);
+        tx.send(draft).expect("send");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let report = report.await.expect("report");
     assert!(child.wait().expect("child").success());
     driven.stop();
-    // One sample per 1 kHz tick reached the other process: absent ones
+    // Ticks reached the other process as applied samples: absent ones
     // (Idle, then Hold) carry no value, present ones the dispatched action
-    // under the lease's token, in chunk order. 600 ms of streaming drives
-    // about 600 ticks; a loaded CI runner has delivered as few as 262, so
-    // the counts only check that driving reached the other process.
+    // under the lease's token, in chunk order.
     assert!(report["samples"].as_u64().expect("n") > 100, "{report}");
     assert!(report["present"].as_u64().expect("n") > 100, "{report}");
     assert!(report["driving"].as_u64().expect("n") > 100, "{report}");

@@ -224,6 +224,72 @@ def test_a_loaded_native_chunk_is_checked_once_after_load() -> None:
     assert model._native_chunk() == 4  # pyright: ignore[reportPrivateUsage]
 
 
+@pytest.mark.parametrize("super_first", [True, False])
+def test_load_runs_once_after_an_authored_init_returns(super_first: bool) -> None:
+    """``load()`` sees everything the authored ``__init__`` set, wherever in
+    it ``super().__init__()`` is called, and in a subclass chain too."""
+    loads: list[tuple[str, str]] = []
+
+    class Base(rlmesh.Model):
+        def __init__(self, path: str) -> None:
+            if super_first:
+                super().__init__()
+                self.path = path
+            else:
+                self.path = path
+                super().__init__()
+
+        def load(self) -> None:
+            loads.append((self.path, getattr(self, "extra", "<unset>")))
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    class Child(Base):
+        def __init__(self) -> None:
+            super().__init__("child.pt")
+            self.extra = "set"
+
+    Base("base.pt")
+    Child()
+    assert loads == [("base.pt", "<unset>"), ("child.pt", "set")]
+
+    # The served construction still loads once, with its binding.
+    class Configured(rlmesh.Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready = True
+
+        def load(self, size: int = 1) -> None:
+            loads.append((str(size), str(self.ready)))
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    loads.clear()
+    Configured.from_config(size=3)
+    assert loads == [("3", "True")]
+
+
+def test_an_authored_init_that_raises_loads_nothing() -> None:
+    loads: list[str] = []
+
+    class Broken(rlmesh.Model):
+        def __init__(self) -> None:
+            super().__init__()
+            raise RuntimeError("no checkpoint")
+
+        def load(self) -> None:
+            loads.append("load")
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    with pytest.raises(RuntimeError, match="no checkpoint"):
+        Broken()
+    assert loads == []
+
+
 def test_declarations_are_checked_before_load() -> None:
     loads: list[str] = []
 
@@ -263,3 +329,34 @@ def test_a_wrapped_policy_declarations_are_the_models() -> None:
         True,
         None,
     )
+
+
+def test_load_parameters_as_constructor_keywords_name_from_config() -> None:
+    class Noop(rlmesh.Model):
+        def load(self, variant: str = "a") -> None:
+            self.variant = variant
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    with pytest.raises(TypeError, match=r"Noop.from_config\(variant=\.\.\.\)"):
+        Noop(variant="b")  # pyright: ignore[reportCallIssue]
+    assert Noop.from_config(variant="b").variant == "b"
+    # A keyword neither takes is Python's own refusal.
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        Noop(nonsense=1)  # pyright: ignore[reportCallIssue]
+
+    class Sized(rlmesh.Model):
+        def __init__(self, size: int = 1) -> None:
+            self.size = size
+
+        def load(self, size: int = 1, variant: str = "a") -> None:
+            self.variant = variant
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    # A keyword the authored __init__ takes is its own.
+    assert Sized(size=3).size == 3
+    with pytest.raises(TypeError, match=r"Sized.from_config\(variant=\.\.\.\)"):
+        Sized(variant="b")  # pyright: ignore[reportCallIssue]

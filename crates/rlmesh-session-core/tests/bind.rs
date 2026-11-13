@@ -8,11 +8,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status};
+use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status, waiting_before_any};
 use rlmesh_session_core::spec::policy::Allow;
 use rlmesh_session_core::spec::{Policy, RunOptions, Target, bind, bind_in, normalise};
 use rlmesh_session_core::wire::version::SPEC_VERSION;
-use rlmesh_session_core::wire::{ChannelId, ContractMode, PartSpec, ParticipantId, Place, Pose};
+use rlmesh_session_core::wire::{
+    ChannelId, ContractMode, PartSpec, ParticipantId, ParticipantInfo, Place, Pose, PriorityClass,
+    Role,
+};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
@@ -111,10 +114,7 @@ fn pi0_single_on_ur10e() {
     assert_eq!(plan(&b, "gripper"), "none");
     assert_eq!(plan(&b, "prompt"), "none");
     let arm = b.action("arm").expect("arm");
-    assert_eq!(
-        (arm.horizon, arm.dt),
-        (10, Duration::from_nanos(66_666_667))
-    );
+    assert_eq!((arm.chunk, arm.dt), (10, Duration::from_nanos(66_666_667)));
     assert_eq!(arm.plan.to_string(), "none; names identical");
     assert_eq!(
         b.action("gripper").expect("gripper").plan.to_string(),
@@ -274,7 +274,7 @@ fn force_policy_on_ur10e() {
     );
     let arm = b.action("arm").expect("arm");
     assert_eq!(
-        (arm.dt, arm.horizon, arm.valid),
+        (arm.dt, arm.chunk, arm.valid),
         (Duration::from_millis(10), 20, Duration::from_millis(150))
     );
     golden("force_policy__ur10e", &b.table());
@@ -448,6 +448,37 @@ fn pi05_libero_on_a_v2_native_libero_robot() {
     );
 }
 
+/// One fix with every option repeated: what the Python test of the hints
+/// reads, so no keyword goes unchecked.
+#[test]
+fn a_fix_repeats_every_option_the_call_gave() {
+    let options = RunOptions::named("every_option")
+        .under("right")
+        .expect("under")
+        .at("wrist", "wrist/cam")
+        .expect("at")
+        .positional("state")
+        .allow(Allow::Resize);
+    let options = RunOptions {
+        robot: Some(ParticipantId::new("aloha2").expect("id")),
+        ..options
+    };
+    let policy = Policy::parse(
+        r#"{"hz": 20,
+            "inputs": {
+                "image": {"kind": "camera", "at": "*/cam"},
+                "wrist": {"kind": "camera"},
+                "state": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
+            "actions": {}}"#,
+    )
+    .expect("policy");
+    let parts = robot("aloha2");
+    let Err(BindError::Refused(refusal)) = bind(&policy, &parts, &options) else {
+        panic!("expected a refusal");
+    };
+    golden("every_option__aloha2__refused", &refusal.to_string());
+}
+
 #[test]
 fn an_ambiguous_selector_and_an_unallowed_resize() {
     let refusal = refused("my_vla", "ur10e", RunOptions::named("my_vla"));
@@ -489,14 +520,50 @@ fn refusal_text(json: &str, robot_name: &str) -> String {
 }
 
 #[test]
+fn a_custom_schema_binds_in_any_authored_field_order() {
+    let robot = r#"{"pose": {"kind": "pose/coco17", "hz": 15,
+        "fields": {"xy": ["float32", [17, 2]], "conf": ["float32", [17]]}}}"#;
+    let mut parts =
+        normalise(&ParticipantId::new("cam").expect("id"), SPEC_VERSION, robot).expect("robot");
+    parts[0].channel = ChannelId(1);
+    for fields in [
+        r#"{"xy": ["float32", [17, 2]], "conf": ["float32", [17]]}"#,
+        r#"{"conf": ["float32", [17]], "xy": ["float32", [17, 2]]}"#,
+    ] {
+        let policy = format!(
+            r#"{{"hz": 15, "inputs": {{"pose": {{"kind": "pose/coco17", "at": "pose", "fields": {fields}}}}}}}"#
+        );
+        bind(
+            &Policy::parse(&policy).expect("policy"),
+            &parts,
+            &RunOptions::named("inline"),
+        )
+        .unwrap_or_else(|err| panic!("{fields}: {err}"));
+    }
+}
+
+#[test]
 fn two_actions_on_one_command_group_are_refused() {
     let text = refusal_text(
         r#"{"hz": 10, "actions": {
-            "joints": {"kind": "joints", "at": "arm", "horizon": 1},
-            "cartesian": {"kind": "pose", "at": "arm/tcp", "command": "delta", "horizon": 1}}}"#,
+            "joints": {"kind": "joints", "at": "arm", "chunk": 1},
+            "cartesian": {"kind": "pose", "at": "arm/tcp", "command": "delta", "chunk": 1}}}"#,
         "ur10e",
     );
-    assert!(text.contains("[duplicate_target] actions \"joints\" and \"cartesian\" command arm and arm/tcp, members of one command group \"arm\"."), "{text}");
+    assert!(text.contains("[duplicate_target] actions \"joints\" and \"cartesian\" command ur10e:arm and ur10e:arm/tcp, members of one command group \"arm\"."), "{text}");
+    let Err(BindError::Refused(refusal)) = inline(
+        r#"{"hz": 10, "actions": {
+            "joints": {"kind": "joints", "at": "arm", "chunk": 1},
+            "cartesian": {"kind": "pose", "at": "arm/tcp", "command": "delta", "chunk": 1}}}"#,
+        "ur10e",
+    ) else {
+        panic!("bound");
+    };
+    assert_eq!(
+        codes(&refusal),
+        [(Code::DuplicateTarget, "cartesian".into())],
+        "the later action carries it"
+    );
 }
 
 #[test]
@@ -505,16 +572,16 @@ fn a_part_that_cannot_hold_its_target_needs_chunks_that_outlast_a_replan() {
     // one 20 Hz action per 20 Hz replan leaves it waiting between chunks.
     let text = refusal_text(
         r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
-            "hz": 20, "horizon": 1}}}"#,
+            "hz": 20, "chunk": 1}}}"#,
         "go2",
     );
     assert!(
-        text.contains("can't hold its target between chunks") && text.contains("\"horizon\": 3"),
+        text.contains("can't hold its target between chunks") && text.contains("\"chunk\": 3"),
         "{text}"
     );
     inline(
         r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
-            "hz": 20, "horizon": 3}}}"#,
+            "hz": 20, "chunk": 3}}}"#,
         "go2",
     )
     .expect("three actions outlast a replan");
@@ -535,7 +602,7 @@ fn conversions_need_allow_unless_lossless() {
             "units": {"pos": "mm"}}}}"#,
         "ur10e",
     );
-    assert!(text.contains("[not_allowed] input \"p\": arm/tcp publishes pos in m, the model wants mm\n    needs: units"), "{text}");
+    assert!(text.contains("[not_allowed] input \"p\": ur10e:arm/tcp publishes pos in m, the model wants mm\n    needs: units"), "{text}");
     // Quaternion order is automatic; the depth camera's millimetres are not.
     let ok = inline(
         r#"{"hz": 10, "inputs": {"o": {"kind": "imu", "at": "pelvis/imu", "fields": ["orientation"],
@@ -573,7 +640,7 @@ fn conversions_need_allow_unless_lossless() {
         "ur10e",
     );
     assert!(
-        text.contains("arm has 6 joints, the model names 2 of them\n    needs: select"),
+        text.contains("ur10e:arm has 6 joints, the model names 2 of them\n    needs: select"),
         "{text}"
     );
     let text = refusal_text(
@@ -610,7 +677,7 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 10, "actions": {"a": {"kind": "joints", "at": "arm", "command": "velocity"}}}"#,
             "ur10e",
-            "arm accepts \"position\".\n    RLMesh does not convert between command modes.",
+            "ur10e:arm accepts \"position\".\n    RLMesh does not convert between command modes.",
         ),
         (
             r#"{"hz": 10, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "reference": "target"}}}"#,
@@ -620,13 +687,13 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 1000, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "hz": 1000}}}"#,
             "ur10e",
-            "faster than arm/tcp's control rate of 500 Hz",
+            "faster than ur10e:arm/tcp's control rate of 500 Hz",
         ),
         (
             r#"{"hz": 50, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft", "history": 50,
                 "history_hz": 1000}}}"#,
             "ur10e",
-            "the window was trained at 1000 Hz; wrist/ft publishes at 500 Hz",
+            "the window was trained at 1000 Hz; ur10e:wrist/ft publishes at 500 Hz.\n    RLMesh does not resample a window to another rate yet: resample in the model, or declare the part at 1000 Hz on the robot.",
         ),
         (
             r#"{"hz": 20, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft",
@@ -643,12 +710,12 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 20, "inputs": {"c": {"kind": "camera", "at": "wrist/cam", "history": 4}}}"#,
             "ur10e",
-            "a window of 4 needs every sample, but wrist/cam publishes latest(max_mbps=20)",
+            "a window of 4 needs every sample, but ur10e:wrist/cam publishes latest(max_mbps=20)",
         ),
         (
             r#"{"hz": 20, "inputs": {"c": {"kind": "camera", "at": "wrist/cam", "format": "mono8"}}}"#,
             "ur10e",
-            "Mono ↔ RGB conversion is Later",
+            "RLMesh does not convert between mono and RGB yet: convert in the model, or declare the other format on the robot.",
         ),
         (
             r#"{"hz": 20, "inputs": {"t": {"kind": "tactile", "at": "left/hand/tactile", "shape": [108]}}}"#,
@@ -664,12 +731,12 @@ fn mismatches_with_no_conversion_are_incompatible() {
         (
             r#"{"hz": 20, "actions": {"l": {"kind": "joints", "at": "legs", "names": ["FL_hip_joint"]}}}"#,
             "go2",
-            "Commanding a subset of a part (scatter) is Later",
+            "RLMesh does not command a subset of a part yet: command every joint from the model, or declare the subset as its own part on the robot.",
         ),
         (
             r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "names": "positional", "count": 7}}}"#,
             "ur10e",
-            "the model has 7 joints; arm has 6.",
+            "the model has 7 joints; ur10e:arm has 6.",
         ),
     ] {
         let text = refusal_text(json, robot_name);
@@ -685,7 +752,7 @@ fn optional_entries_blank_or_drop_only_when_allowed() {
             "size": [224, 224]}}}"#,
         "ur10e",
     );
-    assert!(text.contains("[not_allowed] input \"low\": ur10e has no camera part at \"scene/cam_low\"\n    needs: blank (it is optional)"), "{text}");
+    assert!(text.contains("[not_allowed] input \"low\" (kind camera, at \"scene/cam_low\") is optional, but nothing allows it to read blank when its part is absent.\n    needs: blank (it is optional)\n    fix: allow=[\"blank\"] on the entry, the policy or the bind call (or drop optional)"), "{text}");
     let text = refusal_text(
         r#"{"hz": 10, "inputs": {"low": {"kind": "camera", "at": "scene/cam_low", "optional": true}},
             "allow": ["blank"]}"#,
@@ -702,6 +769,49 @@ fn optional_entries_blank_or_drop_only_when_allowed() {
     assert_eq!(b.action("hand").expect("hand").status, Status::Dropped);
     assert!(b.table().contains("drop_action"), "{}", b.table());
     assert!(b.channels().is_empty());
+}
+
+/// `optional` without `blank` (or `drop`) allowed is refused at once, even
+/// when the robot it names has not appeared: no robot could make it stand.
+#[test]
+fn an_optional_entry_that_may_not_stay_unbound_is_refused_at_once() {
+    let parts = robot("ur10e");
+    let options = RunOptions::named("reader").robot("ur10e").expect("robot");
+    for (json, allow) in [
+        (
+            r#"{"hz": 20, "inputs": {"left": {"kind": "joints", "at": "gimbal-left:servos",
+                "fields": ["pos"], "optional": true, "allow": ["hold"]}}}"#,
+            "blank",
+        ),
+        (
+            r#"{"hz": 20, "actions": {"eye": {"kind": "joints", "at": "gimbal-left:servos",
+                "command": "position", "optional": true}}}"#,
+            "drop",
+        ),
+        (
+            r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
+                "optional": true}}}"#,
+            "blank",
+        ),
+    ] {
+        let policy = Policy::parse(json).expect("policy");
+        let err = bind(&policy, &parts, &options).expect_err("refused");
+        assert_eq!(err.waiting_for(), None, "{err}");
+        let text = err.to_string();
+        assert!(
+            text.contains("[not_allowed]") && text.contains("is optional"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("fix: allow=[{allow:?}]")), "{text}");
+    }
+    // The bind call's allowance counts.
+    let policy = Policy::parse(
+        r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
+            "optional": true}}}"#,
+    )
+    .expect("policy");
+    let allowed = options.clone().allow(Allow::Blank);
+    assert!(bind(&policy, &parts, &allowed).is_ok());
 }
 
 #[test]
@@ -745,7 +855,7 @@ fn captures_scope_and_qualified_selectors() {
     );
     let policy = Policy::parse(
         r#"{"hz": 50, "inputs": {"goal": {"kind": "velocity", "at": "supervisor:goal/cmd_vel"}},
-            "actions": {"legs": {"kind": "joints", "at": "legs", "horizon": 1}}}"#,
+            "actions": {"legs": {"kind": "joints", "at": "legs", "chunk": 1}}}"#,
     )
     .expect("policy");
     // No robot named: the session's view, every robot under its name, so
@@ -841,6 +951,7 @@ fn one_policy_binds_across_placed_robots() {
     let target = Target {
         parts: &parts,
         places: &places,
+        ..Target::default()
     };
     let b = bind_in(
         &policy("eyeball_tracker"),
@@ -884,6 +995,7 @@ fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
     let target = Target {
         parts: &parts,
         places: &places,
+        ..Target::default()
     };
     let spans = Policy::parse(
         r#"{"hz": 30, "actions": {
@@ -903,4 +1015,737 @@ fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
         ]
     );
     golden("spans__eyeball_rig__refused", &refusal.to_string());
+}
+
+#[test]
+fn a_views_refusal_names_a_part_as_its_robot_declared_it() {
+    let (parts, places) = eyeball_rig(&[]);
+    let target = Target {
+        parts: &parts,
+        places: &places,
+        ..Target::default()
+    };
+    let policy = Policy::parse(
+        r#"{"hz": 30, "actions": {"gaze": {"kind": "joints", "at": "eyes/left/gaze",
+            "names": "positional", "count": 7}}}"#,
+    )
+    .expect("policy");
+    let refusal = match bind_in(&policy, &target, &RunOptions::named("seven")) {
+        Err(BindError::Refused(refusal)) => *refusal,
+        other => panic!("{other:?}"),
+    };
+    let text = refusal.to_string();
+    assert!(
+        text.contains("the model has 7 joints; eye-l:gaze has 2."),
+        "{text}"
+    );
+}
+
+#[test]
+fn before_any_robot_the_robots_entries_name_are_what_a_bind_waits_for() {
+    let named = RunOptions::named("tracker");
+    let cases: [(&str, Option<&RunOptions>, Option<&str>); 4] = [
+        (
+            // Every required entry names its robot: they are known at once.
+            r#"{"hz": 20,
+                "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}},
+                "actions": {"arm": {"kind": "joints", "at": "a:arm", "command": "position"}}}"#,
+            None,
+            Some(
+                "robots b, a to declare their parts; input \"target\" (kind joints, at \
+                 \"b:target\"), action \"arm\" (kind joints, at \"a:arm\") need them",
+            ),
+        ),
+        (
+            // An entry naming no robot may be any robot's.
+            r#"{"hz": 20,
+                "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}},
+                "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position"}}}"#,
+            None,
+            None,
+        ),
+        (
+            // An optional entry's robot is not waited for.
+            r#"{"hz": 20, "allow": ["blank"],
+                "inputs": {"cam": {"kind": "joints", "at": "c:cam", "fields": ["pos"],
+                                   "count": 2, "optional": true},
+                           "target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}}}"#,
+            None,
+            Some(
+                "robot b to declare its parts; input \"target\" (kind joints, at \
+                 \"b:target\") needs it",
+            ),
+        ),
+        (
+            // A named robot is the caller's to say.
+            r#"{"hz": 20,
+                "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}}}"#,
+            Some(&RunOptions::named("tracker").robot("a").expect("robot")),
+            None,
+        ),
+    ];
+    for (json, options, want) in cases {
+        let policy = Policy::parse(json).expect("policy");
+        assert_eq!(
+            waiting_before_any(&policy, options.unwrap_or(&named)).as_deref(),
+            want,
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn only_a_robot_that_has_not_appeared_is_waited_for() {
+    let parts = robot("ur10e");
+    let options = RunOptions::named("reader").robot("ur10e").expect("robot");
+    let refusal = |json: &str| {
+        let policy = Policy::parse(json).expect("policy");
+        bind(&policy, &parts, &options).expect_err("refused")
+    };
+    let absent = refusal(
+        r#"{"hz": 20, "inputs": {
+            "q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
+            "target": {"kind": "joints", "at": "tracker:target", "fields": ["pos"]}}}"#,
+    );
+    assert_eq!(
+        absent.waiting_for().as_deref(),
+        Some(
+            "robot tracker to declare its parts; input \"target\" (kind joints, at \
+             \"tracker:target\") needs it"
+        )
+    );
+    assert!(
+        absent
+            .to_string()
+            .contains("tracker has not declared any parts yet.\n    fix: start tracker"),
+        "{absent}"
+    );
+    // A present robot's missing part stands, alone or beside an absent robot.
+    let missing = refusal(r#"{"hz": 20, "inputs": {"c": {"kind": "gripper", "at": "nope"}}}"#);
+    assert_eq!(missing.waiting_for(), None, "{missing}");
+    let both = refusal(
+        r#"{"hz": 20, "inputs": {
+            "c": {"kind": "gripper", "at": "nope"},
+            "target": {"kind": "joints", "at": "tracker:target", "fields": ["pos"]}}}"#,
+    );
+    assert_eq!(both.waiting_for(), None, "{both}");
+    // An optional entry's robot is not waited for: absent binds blank.
+    let policy = Policy::parse(
+        r#"{"hz": 20, "inputs": {"target": {"kind": "joints", "at": "tracker:target",
+            "fields": ["pos"], "count": 2, "optional": true}},
+            "allow": ["blank"]}"#,
+    )
+    .expect("policy");
+    let bound = bind(&policy, &parts, &options).unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(bound.input("target").expect("row").status, Status::Blank);
+}
+
+#[test]
+fn switches_and_values_bind_by_kind() {
+    let binding = bound("lamp_keeper", "lamp", RunOptions::named("lamp_keeper"));
+    golden("lamp_keeper__lamp", &binding.table());
+    let relay = binding.action("relay").expect("relay");
+    assert_eq!(relay.delivers.to_string(), "bool [1]");
+    assert_eq!(relay.chunk, 1);
+}
+
+#[test]
+fn a_custom_kind_blanks_from_its_fields_schema() {
+    let policy = Policy::parse(
+        r#"{"hz": 15, "inputs": {"pose": {"kind": "pose/coco17", "at": "tracker:aim",
+            "optional": true, "allow": ["blank"],
+            "fields": {"xy": ["float32", [17, 2]], "conf": ["float32", [17]]}}}}"#,
+    )
+    .expect("policy");
+    let bound = bind(&policy, &robot("ur10e"), &RunOptions::named("inline"))
+        .unwrap_or_else(|err| panic!("{err}"));
+    let row = bound.input("pose").expect("pose");
+    assert_eq!(row.status, Status::Blank);
+    assert_eq!(
+        row.delivers.to_string(),
+        "{conf: f32 [17], xy: f32 [17, 2]}",
+        "{}",
+        bound.table()
+    );
+    let rlmesh_session_core::spec::apply::Value::Dict(fields) = row.apply(&[]).expect("blank")
+    else {
+        panic!("not a dict");
+    };
+    let shapes: Vec<(String, Vec<u32>)> = fields
+        .iter()
+        .map(|(name, t)| (name.clone(), t.shape.clone()))
+        .collect();
+    assert_eq!(
+        shapes,
+        [
+            ("conf".to_string(), vec![17]),
+            ("xy".to_string(), vec![17, 2])
+        ]
+    );
+}
+
+/// An inline robot's parts, channels assigned as [`robot`] does.
+fn inline_robot(json: &str) -> Vec<PartSpec> {
+    let mut parts =
+        normalise(&ParticipantId::new("bot").expect("id"), SPEC_VERSION, json).expect("robot");
+    let mut next = 0;
+    for part in &mut parts {
+        next += 1;
+        part.channel = ChannelId(next);
+        if part.command.is_some() {
+            next += 1;
+            part.applied_channel = Some(ChannelId(next));
+        }
+    }
+    parts
+}
+
+fn on_inline(robot: &str, policy: &str) -> Result<Binding, BindError> {
+    bind(
+        &Policy::parse(policy).expect("policy"),
+        &inline_robot(robot),
+        &RunOptions::named("inline"),
+    )
+}
+
+fn delivers(binding: &Binding, entry: &str) -> String {
+    match (binding.input(entry), binding.action(entry)) {
+        (Some(row), _) => row.delivers.to_string(),
+        (_, Some(row)) => row.delivers.to_string(),
+        _ => panic!("no entry {entry}"),
+    }
+}
+
+#[test]
+fn a_range_rescales_only_when_it_differs_and_only_when_allowed() {
+    let gripper = |dir: &str, range: &str, allow: &str| {
+        format!(
+            r#"{{"hz": 10, "{dir}": {{"g": {{"kind": "gripper", "at": "gripper", "range": {range}}}}},
+                "allow": [{allow}]}}"#
+        )
+    };
+    let same = inline(&gripper("actions", "[0, 1]", ""), "ur10e").expect("same range");
+    assert_eq!(same.action("g").expect("g").plan.to_string(), "none");
+    let text = refusal_text(&gripper("actions", "[-1, 1]", ""), "ur10e");
+    assert!(
+        text.contains("the model emits -1…1, ur10e:gripper takes 0…1\n    needs: rescale"),
+        "{text}"
+    );
+    let same = inline(&gripper("inputs", "[0, 1]", ""), "ur10e").expect("same range");
+    assert_eq!(plan(&same, "g"), "none");
+    let text = refusal_text(&gripper("inputs", "[-1, 1]", ""), "ur10e");
+    assert!(
+        text.contains("ur10e:gripper ranges 0…1, the model wants -1…1\n    needs: rescale"),
+        "{text}"
+    );
+    let rescaled = inline(&gripper("inputs", "[-1, 1]", r#""rescale""#), "ur10e").expect("allowed");
+    assert_eq!(plan(&rescaled, "g"), "rescale(0…1 → -1…1)");
+    // An integer field is rescaled into float32.
+    let knob = r#"{"knob": {"kind": "acme/knob", "hz": 10, "fields": {"v": ["int16", [1]]},
+        "range": {"v": [0, 100]}}}"#;
+    let b = on_inline(
+        knob,
+        r#"{"hz": 10, "inputs": {"k": {"kind": "acme/knob", "at": "knob",
+            "fields": {"v": ["int16", [1]]}, "range": [0, 1]}}, "allow": ["rescale"]}"#,
+    )
+    .expect("allowed");
+    assert_eq!(delivers(&b, "k"), "f32 [1]");
+}
+
+#[test]
+fn an_action_converts_units_and_rotation_into_the_parts_and_may_run_at_its_control_rate() {
+    let b = inline(
+        r#"{"hz": 10, "actions": {"q": {"kind": "joints", "at": "arm", "units": {"pos": "deg"},
+            "chunk": 10}}}"#,
+        "ur10e",
+    )
+    .expect("units");
+    assert_eq!(
+        b.action("q").expect("q").plan.to_string(),
+        "auto units(pos deg → rad)"
+    );
+    let b = inline(
+        r#"{"hz": 10, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "command": "delta",
+            "rotation": "quat_xyzw", "chunk": 10}}, "allow": ["rotation"]}"#,
+        "ur10e",
+    )
+    .expect("rotation");
+    let t = b.action("t").expect("t");
+    assert_eq!(t.plan.to_string(), "rotation(rot quat_xyzw → axis_angle)");
+    assert_eq!(t.delivers.to_string(), "f32 [10, 7]");
+    // One delta per control tick at most: exactly the control rate binds.
+    inline(
+        r#"{"hz": 500, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "command": "delta",
+            "hz": 500, "chunk": 10}}}"#,
+        "ur10e",
+    )
+    .expect("at the control rate");
+}
+
+#[test]
+fn a_custom_action_binds_by_its_fields_schema_up_to_the_chunk_cap() {
+    let bot = |fields: &str, units: &str| {
+        format!(
+            r#"{{"x": {{"kind": "acme/arm", "hz": 100, "fields": {{"q": ["float32", [1]]}},
+                "command": "go", "safe": "hold", "command_fields": {fields}{units}}}}}"#
+        )
+    };
+    let action = |fields: &str, chunk: u32| {
+        format!(
+            r#"{{"hz": 1, "actions": {{"x": {{"kind": "acme/arm", "at": "x", "fields": {fields},
+                "chunk": {chunk}}}}}}}"#
+        )
+    };
+    let two = r#"{"q": ["float32", [4]], "v": ["float32", [2]]}"#;
+    for fields in [two, r#"{"v": ["float32", [2]], "q": ["float32", [4]]}"#] {
+        on_inline(&bot(two, ""), &action(fields, 10)).unwrap_or_else(|e| panic!("{fields}: {e}"));
+    }
+    for fields in [
+        r#"{"q": ["float32", [4]], "v": ["float32", [3]]}"#,
+        r#"{"q": ["float32", [4]]}"#,
+    ] {
+        let err = on_inline(&bot(two, ""), &action(fields, 10)).expect_err(fields);
+        assert!(
+            err.to_string().contains("do not match the declared schema"),
+            "{err}"
+        );
+    }
+    // A command field keeps its own unit: no conversion to declare.
+    let b = on_inline(
+        &bot(r#"{"q": ["float32", [2]]}"#, r#", "units": {"q": "tick"}"#),
+        &action(r#"{"q": ["float32", [2]]}"#, 10),
+    )
+    .expect("own unit");
+    assert_eq!(b.action("x").expect("x").plan.to_string(), "none");
+    // A chunk of exactly 4 MiB binds; one more element per action does not.
+    let field = |n: u32| format!(r#"{{"q": ["float32", [{n}]]}}"#);
+    on_inline(&bot(&field(1024), ""), &action(&field(1024), 1024)).expect("4 MiB");
+    let err = on_inline(&bot(&field(1026), ""), &action(&field(1026), 1024)).expect_err("over");
+    assert!(
+        err.to_string().contains("over the 4 MiB chunk cap"),
+        "{err}"
+    );
+}
+
+#[test]
+fn image_fits_and_conversions_need_their_allows() {
+    let camera = |extra: &str, allow: &str| {
+        format!(
+            r#"{{"hz": 10, "inputs": {{"c": {{"kind": "camera", "at": "wrist/cam"{extra}}}}},
+                "allow": [{allow}]}}"#
+        )
+    };
+    for (extra, allow, want) in [
+        (r#", "fields": ["image"]"#, "", "decode(jpeg)"),
+        (
+            r#", "crop": 0.5"#,
+            "",
+            "decode(jpeg) → crop(0.5 of 640x480 → 320x240)",
+        ),
+        // Scaled by 1 to fit, then padded: nothing is enlarged.
+        (
+            r#", "size": [640, 640]"#,
+            r#""resize", "pad""#,
+            "decode(jpeg) → pad(640x480 → 640x640, bilinear)",
+        ),
+        (
+            r#", "size": [480, 480]"#,
+            r#""resize", "crop""#,
+            "decode(jpeg) → crop(640x480 → 480x480, bilinear)",
+        ),
+        (
+            r#", "size": [240, 640]"#,
+            r#""resize", "stretch""#,
+            "decode(jpeg) → stretch(640x480 → 640x240, bilinear)",
+        ),
+        (
+            r#", "size": [480, 320]"#,
+            r#""resize", "stretch""#,
+            "decode(jpeg) → stretch(640x480 → 320x480, bilinear)",
+        ),
+        (r#", "format": "bgr8""#, r#""bgr""#, "decode(jpeg) → bgr"),
+    ] {
+        let b = inline(&camera(extra, allow), "ur10e").unwrap_or_else(|e| panic!("{extra}: {e}"));
+        assert_eq!(plan(&b, "c"), want, "{extra}");
+    }
+    for (extra, allow, needle) in [
+        (
+            r#", "fields": ["depth"]"#,
+            "",
+            "fields are not selectable on an image",
+        ),
+        (
+            r#", "size": [800, 400]"#,
+            r#""resize", "stretch""#,
+            "(1:2), which enlarges it\n    needs: upscale",
+        ),
+        (
+            r#", "size": [240, 320]"#,
+            "",
+            "the model wants 320x240 (4:3)\n    needs: resize\n",
+        ),
+        (
+            r#", "size": [224, 224]"#,
+            r#""resize""#,
+            "needs: one of crop | pad | stretch to change the aspect ratio",
+        ),
+        (
+            r#", "format": "bgr8""#,
+            "",
+            "is rgb8, the model wants bgr8\n    needs: bgr",
+        ),
+    ] {
+        let text = refusal_text(&camera(extra, allow), "ur10e");
+        assert!(text.contains(needle), "{extra}: {text}");
+    }
+    // A depth image already in the model's unit needs no conversion.
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"d": {"kind": "depth", "at": "head/depth", "units": {"depth": "mm"}}}}"#,
+        "g1",
+    )
+    .expect("mm");
+    assert_eq!(
+        (plan(&b, "d"), delivers(&b, "d")),
+        ("none".into(), "u16 [480, 640]".into())
+    );
+}
+
+#[test]
+fn input_fields_keep_their_dtype_and_affines_count_elements() {
+    let b = on_inline(
+        r#"{"arm": {"kind": "joints", "count": 2, "hz": 10, "dtype": "float64"}}"#,
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
+            "units": {"pos": "deg"}}}}"#,
+    )
+    .expect("units");
+    assert_eq!(delivers(&b, "q"), "f64 [2]");
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos", "vel"],
+            "scale": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}}}"#,
+        "ur10e",
+    )
+    .expect("one scale per element of the concatenation");
+    assert_eq!(plan(&b, "q"), "fields pos, vel → scale(12 values)");
+    let text = refusal_text(
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos", "vel"],
+            "scale": [1, 2, 3, 4, 5, 6]}}}"#,
+        "ur10e",
+    );
+    assert!(
+        text.contains("scale has 6 values for 12 elements"),
+        "{text}"
+    );
+    // One field counts all its elements; mixed dtypes take one value each.
+    let pose = |fields: &str, scale: usize| {
+        let scale = vec!["1"; scale].join(", ");
+        on_inline(
+            &format!(r#"{{"pose": {{"kind": "pose/coco17", "hz": 15, "fields": {fields}}}}}"#),
+            &format!(
+                r#"{{"hz": 15, "inputs": {{"p": {{"kind": "pose/coco17", "at": "pose",
+                    "fields": {fields}, "scale": [{scale}]}}}}}}"#
+            ),
+        )
+    };
+    pose(r#"{"a": ["float32", [17, 2]]}"#, 34).expect("34 elements");
+    let err =
+        pose(r#"{"a": ["float32", [17, 2]], "b": ["int16", [17]]}"#, 51).expect_err("per field");
+    assert!(
+        err.to_string().contains("51 values for per-field elements"),
+        "{err}"
+    );
+    // An integer field under an affine is delivered as float32.
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"f": {"kind": "unitree/foot_force", "at": "feet/force",
+            "fields": {"force": ["int16", [4]]}, "scale": [0.5]}}}"#,
+        "go2",
+    )
+    .expect("scaled");
+    assert_eq!(delivers(&b, "f"), "f32 [4]");
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
+            "names": ["elbow_joint", "shoulder_pan_joint"]}}, "allow": ["select"]}"#,
+        "ur10e",
+    )
+    .expect("select");
+    assert_eq!(delivers(&b, "q"), "f32 [2]");
+    // A window trained within 1% of the source rate binds.
+    inline(
+        r#"{"hz": 50, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft", "history": 50,
+            "history_hz": 505}}}"#,
+        "ur10e",
+    )
+    .expect("within 1%");
+}
+
+#[test]
+fn an_absent_optional_input_blanks_to_its_declared_shape_and_preprocessing() {
+    use rlmesh_session_core::spec::plan::Step;
+    let blank = |entry: &str| {
+        let policy = format!(r#"{{"hz": 10, "inputs": {{"x": {entry}}}, "allow": ["blank"]}}"#);
+        let b = inline(&policy, "ur10e").unwrap_or_else(|e| panic!("{entry}: {e}"));
+        let fill = match b.input("x").expect("x").plan.steps.as_slice() {
+            [Step::Blank { fill, .. }] => fill.clone(),
+            other => panic!("{other:?}"),
+        };
+        (delivers(&b, "x"), fill)
+    };
+    let absent = r#""at": "nothing", "optional": true"#;
+    for (entry, want, fill) in [
+        (format!(r#"{{"kind": "text", {absent}}}"#), "str", vec![0.0]),
+        (
+            format!(
+                r#"{{"kind": "joints", {absent}, "names": ["a", "b"], "fields": ["pos"],
+                "history": 4, "offset": [1]}}"#
+            ),
+            "f32 [4, 2]",
+            vec![0.0],
+        ),
+        // Black (the range's low end) through the per-channel scale.
+        (
+            format!(
+                r#"{{"kind": "camera", {absent}, "size": [2, 2], "range": [-1, 1],
+                "scale": [2, 3, 4]}}"#
+            ),
+            "f32 [2, 2, 3]",
+            vec![-2.0, -3.0, -4.0],
+        ),
+        (
+            format!(
+                r#"{{"kind": "acme/thing", {absent},
+                "fields": {{"a": ["int16", [3]], "b": ["float32", []]}}}}"#
+            ),
+            "{a: i16 [3], b: f32 []}",
+            vec![0.0],
+        ),
+        (
+            format!(
+                r#"{{"kind": "acme/thing", {absent}, "fields": {{"a": ["int16", [3]]}},
+                "shape": [5], "dtype": "float32"}}"#
+            ),
+            "f32 [5]",
+            vec![0.0],
+        ),
+    ] {
+        assert_eq!(blank(&entry), (want.to_string(), fill), "{entry}");
+    }
+    let text = refusal_text(
+        &format!(
+            r#"{{"hz": 10, "inputs": {{"x": {{"kind": "acme/thing", {absent},
+                "fields": {{"a": ["int16", [3]]}}, "shape": [5]}}}}, "allow": ["blank"]}}"#
+        ),
+        "ur10e",
+    );
+    assert!(
+        text.contains("cannot blank it without a shape and a dtype"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_bindings_leased_channels_and_wire_table_follow_its_actions() {
+    let b = bound("pi0_single", "ur10e", RunOptions::named("pi0_single"));
+    let parts = robot("ur10e");
+    let channel = |path: &str| {
+        parts
+            .iter()
+            .find(|p| p.path.as_str() == path)
+            .map(|p| p.channel)
+            .expect(path)
+    };
+    assert_eq!(b.channels(), [channel("arm"), channel("gripper")]);
+    let text: serde_json::Value = serde_json::from_str(&b.table_text()).expect("json");
+    assert_eq!(
+        rlmesh_session_core::spec::canonical::fingerprint(&text),
+        b.fingerprint,
+        "the table text sent on the wire is what the fingerprint covers"
+    );
+}
+
+#[test]
+fn units_name_their_conversion_and_gripper_metres_need_a_width() {
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"p": {"kind": "pose", "at": "arm/tcp", "fields": ["pos"],
+            "units": {"pos": "mm"}}}, "allow": ["units"]}"#,
+        "ur10e",
+    )
+    .expect("allowed");
+    assert_eq!(plan(&b, "p"), "fields pos → units(pos m → mm)");
+    // A robot publishing millimetres on a pose converts as plain units.
+    let b = on_inline(
+        r#"{"tcp": {"kind": "pose", "frame": "b", "child": "t", "hz": 10, "units": {"pos": "mm"}}}"#,
+        r#"{"hz": 10, "inputs": {"p": {"kind": "pose", "at": "tcp", "fields": ["pos"]}},
+            "allow": ["units"]}"#,
+    )
+    .expect("allowed");
+    assert_eq!(plan(&b, "p"), "fields pos → units(pos mm → m)");
+    let gripper = |allow: &str| {
+        inline(
+            &format!(
+                r#"{{"hz": 10, "inputs": {{"g": {{"kind": "gripper", "at": "gripper",
+                    "units": {{"pos": "m"}}}}}}, "allow": [{allow}]}}"#
+            ),
+            "ur10e",
+        )
+    };
+    let err = gripper("").expect_err("needs units");
+    assert!(err.to_string().contains("needs: units"), "{err}");
+    let b = gripper(r#""units""#).expect("allowed");
+    assert_eq!(plan(&b, "g"), "units(pos 0…1 → 0…0.085 m)");
+}
+
+#[test]
+fn a_joint_count_must_match_the_robots() {
+    let text = refusal_text(
+        r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "count": 7}}}"#,
+        "ur10e",
+    );
+    assert!(
+        text.contains("the model has 7 joints; ur10e:arm has 6."),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_given_capture_narrows_the_others_candidates() {
+    let parts = inline_robot(r#"{"l/x": {"kind": "text"}, "r/y": {"kind": "text"}}"#);
+    let policy = Policy::parse(r#"{"hz": 10, "inputs": {"t": {"kind": "text", "at": "{s}/{t}"}}}"#)
+        .expect("policy");
+    for (name, value) in [("s", "l"), ("t", "x")] {
+        let options = RunOptions::named("inline")
+            .capture(name, value)
+            .expect("capture");
+        let b = bind(&policy, &parts, &options).unwrap_or_else(|e| panic!("{name}={value}: {e}"));
+        assert_eq!(
+            b.input("t")
+                .and_then(|r| r.part.as_ref())
+                .map(|p| p.path.as_str()),
+            Some("l/x"),
+            "{name}={value}"
+        );
+    }
+}
+
+#[test]
+fn a_capture_only_optional_entries_use_is_not_inferred() {
+    let text = refusal_text(
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "{a}", "fields": ["pos"]},
+            "c": {"kind": "camera", "at": "{side}/cam", "optional": true, "size": [480, 640]}},
+            "allow": ["blank"]}"#,
+        "ur10e",
+    );
+    assert!(
+        text.contains("{side} is used only by optional entries, so it is not inferred."),
+        "{text}"
+    );
+}
+
+fn member(id: &str, present: bool) -> ParticipantInfo {
+    ParticipantInfo {
+        id: ParticipantId::new(id).expect("id"),
+        name: id.into(),
+        roles: vec![Role::Embodiment],
+        priority: PriorityClass::Scripted,
+        attached_ns: 0,
+        protocol_minor: 0,
+        supports: Vec::new(),
+        requires: Vec::new(),
+        workflow_edition: String::new(),
+        workflow_editions: Vec::new(),
+        present,
+        left: None,
+        device: "local".into(),
+        generation: 1,
+    }
+}
+
+#[test]
+fn an_optional_entry_blanks_instead_of_binding_a_departed_robots_part() {
+    let parts = robot("ur10e");
+    let policy = Policy::parse(
+        r#"{"hz": 10, "inputs": {"c": {"kind": "camera", "at": "wrist/cam", "optional": true,
+            "size": [480, 640]}}, "allow": ["blank"]}"#,
+    )
+    .expect("policy");
+    let options = RunOptions::named("inline").robot("ur10e").expect("robot");
+    for (present, status) in [(true, Status::Bound), (false, Status::Blank)] {
+        let roster = [member("ur10e", present)];
+        let target = Target {
+            parts: &parts,
+            roster: &roster,
+            ..Target::default()
+        };
+        let b = bind_in(&policy, &target, &options).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(b.input("c").expect("c").status, status, "present {present}");
+    }
+    // A required entry keeps its part through the robot's absence, even
+    // where blank is allowed.
+    let required = Policy::parse(
+        r#"{"hz": 10, "inputs": {"c": {"kind": "camera", "at": "wrist/cam"}},
+            "allow": ["blank"]}"#,
+    )
+    .expect("policy");
+    let roster = [member("ur10e", false)];
+    let target = Target {
+        parts: &parts,
+        roster: &roster,
+        ..Target::default()
+    };
+    let b = bind_in(&required, &target, &options).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(b.input("c").expect("c").status, Status::Bound);
+}
+
+#[test]
+fn a_view_waits_for_a_placed_robot_that_has_declared_nothing() {
+    let (parts, mut places) = eyeball_rig(&[]);
+    places.push(Place {
+        robot: ParticipantId::new("eye-x").expect("id"),
+        at: "eyes/extra".into(),
+        ..places[0].clone()
+    });
+    let target = Target {
+        parts: &parts,
+        places: &places,
+        ..Target::default()
+    };
+    let policy = Policy::parse(
+        r#"{"hz": 30, "actions": {"gaze": {"kind": "joints", "at": "eyes/extra/gaze"}}}"#,
+    )
+    .expect("policy");
+    let err = bind_in(&policy, &target, &RunOptions::named("extra")).expect_err("waits");
+    assert_eq!(
+        err.waiting_for().as_deref(),
+        Some(
+            "robot eye-x to declare its parts; action \"gaze\" (kind joints, at \"eyes/extra/gaze\") needs it"
+        )
+    );
+}
+
+#[test]
+fn an_optional_entry_on_an_absent_robot_without_blank_is_refused_not_waited_for() {
+    let policy = Policy::parse(
+        r#"{"hz": 20, "inputs": {"target": {"kind": "joints", "at": "tracker:target",
+            "fields": ["pos"], "count": 2, "optional": true}}}"#,
+    )
+    .expect("policy");
+    let options = RunOptions::named("reader").robot("ur10e").expect("robot");
+    let err = bind(&policy, &robot("ur10e"), &options).expect_err("refused");
+    assert_eq!(err.waiting_for(), None);
+    let text = err.to_string();
+    assert!(
+        text.contains("is optional, but nothing allows it to read blank"),
+        "{text}"
+    );
+}
+
+#[test]
+fn windows_over_the_ring_budget_are_refused() {
+    let text = match on_inline(
+        r#"{"cam": {"kind": "camera", "width": 1920, "height": 1080, "hz": 30, "frame": "f",
+            "send": "every"}}"#,
+        r#"{"hz": 10, "inputs": {"c": {"kind": "camera", "at": "cam", "history": 300}}}"#,
+    ) {
+        Ok(b) => panic!("bound:\n{b}"),
+        Err(err) => err.to_string(),
+    };
+    assert!(text.contains("at most 512 MiB per controller"), "{text}");
 }

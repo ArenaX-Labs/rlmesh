@@ -8,10 +8,19 @@
 //! Virtual and lockstep session clocks are later work (wave 5).
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The offset estimator is sans-IO and lives in `rlmesh-session-core`.
 pub use rlmesh_session_core::clock::{OffsetEstimate, OffsetEstimator, OffsetEstimatorConfig};
+
+/// The instant `timeout` from now. A wait with no limit ([`Duration::MAX`])
+/// ends past what an instant can hold: decades away, as Tokio's own
+/// unbounded sleeps do.
+pub(crate) fn deadline_after(timeout: Duration) -> tokio::time::Instant {
+    const FAR: Duration = Duration::from_secs(30 * 365 * 24 * 3600);
+    let now = tokio::time::Instant::now();
+    now.checked_add(timeout).unwrap_or_else(|| now + FAR)
+}
 
 /// A monotonic clock in nanoseconds. Each participant owns one clock domain.
 pub trait Clock: Send + Sync + 'static {

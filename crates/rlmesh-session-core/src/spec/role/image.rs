@@ -686,6 +686,62 @@ mod image_resolve_tests {
     }
 
     #[test]
+    fn a_frame_window_budgets_its_processed_frame_and_takes_its_limits() {
+        let env = env_image(8, 8);
+        // Bytes of one processed frame: its size, channels and dtype.
+        let mut model = model_image(4, 4, false);
+        model.dtype = DType::F32;
+        assert_eq!(
+            plan(&model, &images(&env)).expect("ok").frame_bytes,
+            4 * 4 * 3 * 4
+        );
+        (model.height, model.width) = (None, None);
+        assert_eq!(
+            plan(&model, &images(&env)).expect("ok").frame_bytes,
+            8 * 8 * 3 * 4
+        );
+        let unknown = env_image(0, 0);
+        assert_eq!(plan(&model, &images(&unknown)).expect("ok").frame_bytes, 0);
+        // The window: strictly increasing to 0, spanning at most 128 frames.
+        let window = |offsets: &[i32]| {
+            let mut model = model_image(8, 8, false);
+            model.stack = u32::try_from(offsets.len()).expect("small");
+            model.offsets = Some(offsets.to_vec());
+            plan(&model, &images(&env))
+        };
+        for ok in [&[0][..], &[-127, 0], &[-2, -1, 0]] {
+            window(ok).unwrap_or_else(|e| panic!("{ok:?}: {}", e.message));
+        }
+        for bad in [&[-1, -1, 0][..], &[-2, -1], &[-128, 0]] {
+            assert!(window(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_crop_at_the_cameras_own_height_or_width_is_not_an_upscale() {
+        let env = env_image(128, 128);
+        for (height, width) in [(128, 64), (64, 128)] {
+            let mut model = model_image(height, width, false);
+            model.fit = Some(fits(&["crop"]));
+            plan(&model, &images(&env))
+                .unwrap_or_else(|e| panic!("{height}x{width}: {}", e.message));
+        }
+        // Pad only upscales when both axes are short of the target.
+        for (height, width) in [(128, 256), (64, 256), (256, 128)] {
+            let mut model = model_image(height, width, false);
+            model.fit = Some(fits(&["pad"]));
+            plan(&model, &images(&env))
+                .unwrap_or_else(|e| panic!("pad {height}x{width}: {}", e.message));
+        }
+        // A camera with one underivable axis is not compared at all.
+        let half = env_image(0, 128);
+        plan(&model_image(256, 256, false), &images(&half)).expect("nothing to compare");
+        let mut model = model_image(224, 224, false);
+        model.render = Some((448, 448));
+        assert_eq!(plan(&model, &images(&half)).expect("ok").render, None);
+    }
+
+    #[test]
     fn upscale_with_opt_in_resolves() {
         let env = env_image(128, 128);
         assert!(plan(&model_image(256, 256, true), &images(&env)).is_ok());

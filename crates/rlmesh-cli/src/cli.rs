@@ -84,6 +84,10 @@ pub enum Command {
     /// Run a model image and sweep how many concurrent sessions it serves,
     /// recommending `max_batch_size` (exits 1 when no size runs).
     Bench(BenchArgs),
+    /// Make the identity a session host another process runs is started
+    /// under (`RLMESH_HOST_IDENTITY`, a secret), or print the address key of
+    /// one: what a launcher passes a container, and the key it dials it by.
+    HostIdentity(HostIdentityArgs),
 }
 
 /// Shared flag selecting which named profile to act on.
@@ -420,10 +424,81 @@ pub struct ProbeImageArgs {
     /// GPUs for the container(s), as `docker run --gpus` takes them (`all`, `device=0`).
     #[arg(long, value_name = "SPEC")]
     pub gpus: Option<String>,
+    /// A `docker run -v` mount for the image's container, as a sandbox's
+    /// `volumes` and `eval run --volume` take it (`/host/weights:/weights:ro`);
+    /// repeatable.
+    #[arg(long = "volume", value_name = "HOST:CONTAINER")]
+    pub volumes: Vec<String>,
+    /// A JSON object bound to the image's declared params: a model's
+    /// `load(**params)` or an env factory's `make(**params)`, as
+    /// `RLMESH_MAKE_KWARGS` passes them.
+    #[arg(long, value_name = "JSON", value_parser = json_object)]
+    pub kwargs_json: Option<String>,
     /// Seconds the image gets to start serving and to answer each call.
     #[arg(long, value_name = "SECONDS", default_value_t = 120)]
     pub timeout: u64,
     /// Print the report as JSON, in the `probe-report.json` shape.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `rlmesh host-identity` subcommands.
+#[derive(Args, Debug)]
+pub struct HostIdentityArgs {
+    #[command(subcommand)]
+    pub command: HostIdentityCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HostIdentityCommand {
+    /// Print a fresh host identity and its address key, as `identity=` and
+    /// `key=` lines. The identity is a secret: pass it to the host in
+    /// `RLMESH_HOST_IDENTITY` through the environment, never argv, and keep
+    /// it out of logs; `--out` writes it to a 0600 file instead of stdout.
+    New(HostIdentityNewArgs),
+    /// Print the address key (`key=`) of the host identity in
+    /// `RLMESH_HOST_IDENTITY`, or in `--identity-file`. The identity is a
+    /// secret, so it is never taken on the command line.
+    Key(HostIdentityKeyArgs),
+}
+
+/// The keyed address `rlmesh host-identity` prints beside the key.
+#[derive(Args, Debug)]
+pub struct LaunchAddressArgs {
+    /// Also print the keyed address (`address=`) of the session the host
+    /// serves at HOST:PORT (its port; the default session) or
+    /// HOST:PORT/SESSION, as participants dial it from where they run.
+    #[arg(long, value_name = "HOST:PORT[/SESSION]")]
+    pub address: Option<String>,
+    /// With `--address`: print participant NAME's address in that session.
+    #[arg(long, value_name = "NAME", requires = "address")]
+    pub participant: Option<String>,
+}
+
+/// Flags for `rlmesh host-identity new`.
+#[derive(Args, Debug)]
+pub struct HostIdentityNewArgs {
+    /// Write the identity (a secret) to FILE, mode 0600, instead of
+    /// printing it.
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<std::path::PathBuf>,
+    #[command(flatten)]
+    pub address: LaunchAddressArgs,
+    /// Print `{"identity","identityFile","key","address"}` instead of lines.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Flags for `rlmesh host-identity key`.
+#[derive(Args, Debug)]
+pub struct HostIdentityKeyArgs {
+    /// Read the identity (a secret) from FILE, `-` for stdin, instead of
+    /// `RLMESH_HOST_IDENTITY`.
+    #[arg(long, value_name = "FILE")]
+    pub identity_file: Option<std::path::PathBuf>,
+    #[command(flatten)]
+    pub address: LaunchAddressArgs,
+    /// Print `{"key","address"}` instead of lines.
     #[arg(long)]
     pub json: bool,
 }
@@ -474,8 +549,8 @@ pub struct HostArgs {
     /// kept, so boards provisioned for this host stay valid across restarts.
     #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
     pub state_dir: Option<std::path::PathBuf>,
-    /// Listen here (this port and the next three) instead of every
-    /// interface on the well-known port (`RLMESH_PORT`, else 7447). Only the
+    /// Listen here instead of every interface on the well-known port
+    /// (`RLMESH_PORT`, else 7447). Only the
     /// devices in `devices.toml` (and this user, `local`) can attach.
     #[arg(long, value_name = "ADDR")]
     pub listen: Option<std::net::SocketAddr>,
@@ -515,7 +590,7 @@ pub struct HostArgs {
     #[arg(long, value_name = "DURATION", value_parser = duration)]
     pub lease_grace: Option<std::time::Duration>,
     /// A robot that went safe, restarted or came back from a loss is driven
-    /// again at once, instead of waiting for the next arm. Other robots
+    /// again at once, instead of waiting to be re-armed by name. Other robots
     /// never stop for one either way.
     #[arg(long)]
     pub rearm_robots: bool,
@@ -524,6 +599,26 @@ pub struct HostArgs {
     /// seals (encrypts) every part by default; on loopback it MACs.
     #[arg(long)]
     pub no_seal: bool,
+    /// How boards carry their realtime parts (action chunks down, states
+    /// and `_applied` up): `udp`, the default, over the host's datagram path
+    /// on UDP at the session's port number, where a lost packet holds nothing up,
+    /// or `tcp` over the session's links. That UDP port must be reachable
+    /// from the boards (open it in the firewall) for the faster path: with
+    /// `udp` the host moves a board's parts to TCP while the path is broken
+    /// (one end sends and the other opens nothing) and onto UDP again once
+    /// its probes arrive, and runs on TCP alone, after one warning, when the
+    /// port won't open. `udp-only` is a measurement setting: the parts stay
+    /// on UDP whatever it loses, and loss is simply loss. A board that can't
+    /// take the datagram path, a virtual-clock session and every non-board
+    /// participant keep TCP. Boards re-attach to switch.
+    #[arg(long, value_enum, env = "RLMESH_BOARD_DATA", default_value_t)]
+    pub board_data: BoardData,
+    /// Bound the bytes each accepted TCP link may hold unsent
+    /// (`TCP_NOTSENT_LOWAT`, Linux only): what a slow link can't take waits
+    /// in the host's queues, where stale samples are dropped, instead of in
+    /// the socket. Off by default; for measuring lossy links.
+    #[arg(long, value_name = "BYTES", value_parser = clap::value_parser!(u32).range(1..))]
+    pub tcp_notsent_lowat: Option<u32>,
     /// Host at most this many sessions: the default one and those its
     /// participants name. A session no participant attaches to within 10 s
     /// stops.
@@ -533,6 +628,47 @@ pub struct HostArgs {
     #[cfg(feature = "fleet")]
     #[arg(long)]
     pub lobby: bool,
+}
+
+/// How boards carry their realtime parts (`rlmesh host --board-data`).
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardData {
+    /// Over the session's TCP links.
+    Tcp,
+    /// Over the host's datagram path (UDP), back to TCP while it is broken.
+    Udp,
+    /// Over the host's datagram path only, for measuring it: never back to
+    /// TCP.
+    UdpOnly,
+}
+
+// The session crate's default, so `rlmesh host` and every embedded host
+// agree.
+impl Default for BoardData {
+    fn default() -> Self {
+        rlmesh_session::host::BoardData::default().into()
+    }
+}
+
+impl From<rlmesh_session::host::BoardData> for BoardData {
+    fn from(value: rlmesh_session::host::BoardData) -> Self {
+        use rlmesh_session::host::BoardData as Session;
+        match value {
+            Session::Tcp => Self::Tcp,
+            Session::Udp => Self::Udp,
+            Session::UdpOnly => Self::UdpOnly,
+        }
+    }
+}
+
+impl From<BoardData> for rlmesh_session::host::BoardData {
+    fn from(value: BoardData) -> Self {
+        match value {
+            BoardData::Tcp => Self::Tcp,
+            BoardData::Udp => Self::Udp,
+            BoardData::UdpOnly => Self::UdpOnly,
+        }
+    }
 }
 
 /// A duration flag: a number with `ms` or `s` (`250ms`, `1.5s`).
@@ -555,6 +691,14 @@ fn duration(text: &str) -> Result<std::time::Duration, String> {
 }
 
 /// A span flag: a number with `s`, `m`, `h` or `d` (`30m`, `14d`).
+fn json_object(text: &str) -> Result<String, String> {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Object(_)) => Ok(text.to_owned()),
+        Ok(_) => Err("must be a JSON object".to_owned()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 fn span(text: &str) -> Result<std::time::Duration, String> {
     let wrong = || format!("{text:?}: a span with its unit, 90s, 30m, 2h or 14d");
     let unit = text.chars().last().ok_or_else(wrong)?;
@@ -710,8 +854,8 @@ pub enum SceneCommand {
     /// Stop a run.
     Stop(RunIdArgs),
     /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
-    /// lost member rejoined).
-    Arm(RunIdArgs),
+    /// lost member rejoined), or re-arm one robot of a running run.
+    Arm(ArmArgs),
 }
 
 #[cfg(feature = "fleet")]
@@ -740,11 +884,25 @@ pub struct RunArgs {
 }
 
 #[cfg(feature = "fleet")]
-/// Flags for `rlmesh scene stop` and `rlmesh scene arm`.
+/// Flags for `rlmesh scene stop`.
 #[derive(Args, Debug)]
 pub struct RunIdArgs {
     /// The run (`r-7k2m`), as `rlmesh scene run` printed it.
     pub run: String,
+    #[command(flatten)]
+    pub home: HomeArgs,
+}
+
+#[cfg(feature = "fleet")]
+/// Flags for `rlmesh scene arm`.
+#[derive(Args, Debug)]
+pub struct ArmArgs {
+    /// The run (`r-7k2m`), as `rlmesh scene run` printed it.
+    pub run: String,
+    /// Re-arm this robot alone: it stopped on its own (a fault, a restart)
+    /// and the run went on without it.
+    #[arg(value_name = "ROBOT")]
+    pub robot: Option<String>,
     #[command(flatten)]
     pub home: HomeArgs,
 }
@@ -821,5 +979,63 @@ mod tests {
         for bad in ["", "20", "GB", "0GB", "1XB", "1e30TB"] {
             assert!(size(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_host_carries_boards_over_udp_unless_told_tcp() {
+        use clap::Parser;
+
+        use super::{BoardData, Cli, Command};
+        let host = |args: &[&str]| match Cli::try_parse_from(args).map(|c| c.command) {
+            Ok(Command::Host(host)) => Ok((host.board_data, host.tcp_notsent_lowat)),
+            Ok(_) => Err("not host".to_string()),
+            Err(err) => Err(err.to_string()),
+        };
+        assert_eq!(host(&["rlmesh", "host"]), Ok((BoardData::Udp, None)));
+        assert_eq!(
+            host(&["rlmesh", "host", "--board-data", "tcp"]),
+            Ok((BoardData::Tcp, None))
+        );
+        assert_eq!(
+            host(&[
+                "rlmesh",
+                "host",
+                "--board-data",
+                "udp",
+                "--tcp-notsent-lowat",
+                "4096"
+            ]),
+            Ok((BoardData::Udp, Some(4096)))
+        );
+        assert_eq!(
+            host(&["rlmesh", "host", "--board-data", "udp-only"]),
+            Ok((BoardData::UdpOnly, None))
+        );
+        assert!(host(&["rlmesh", "host", "--board-data", "quic"]).is_err());
+        assert!(host(&["rlmesh", "host", "--tcp-notsent-lowat", "0"]).is_err());
+    }
+
+    /// An in-process host reads RLMESH_BOARD_DATA as `rlmesh host` does:
+    /// the same names, the same values, the same refusal.
+    #[test]
+    fn in_process_hosts_parse_board_data_as_the_cli_does() {
+        use clap::{Parser, ValueEnum};
+
+        use super::{BoardData, Cli};
+        use rlmesh_session::host::BoardData as Session;
+        let names: Vec<String> = BoardData::value_variants()
+            .iter()
+            .filter_map(|v| v.to_possible_value())
+            .map(|v| v.get_name().to_string())
+            .collect();
+        assert_eq!(names, Session::NAMES);
+        for (variant, name) in BoardData::value_variants().iter().zip(&names) {
+            assert_eq!(Session::parse(name, "x"), Ok(Session::from(*variant)));
+        }
+        let cli = Cli::try_parse_from(["rlmesh", "host", "--board-data", "quic"])
+            .expect_err("refused")
+            .to_string();
+        let ours = Session::parse("quic", "--board-data <BOARD_DATA>").expect_err("refused");
+        assert!(cli.contains(&ours), "{cli:?} vs {ours:?}");
     }
 }

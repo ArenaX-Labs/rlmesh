@@ -354,6 +354,33 @@ impl LobbyClient {
         run_of(long_poll(&self.participant, command, None).await?)
     }
 
+    /// Re-arms `robot` in run `run`, at the run's own host; its state.
+    ///
+    /// # Errors
+    /// A run with no host yet, the re-arm's refusal, or what the call
+    /// failed with.
+    pub async fn rearm(&self, run: &str, robot: &ParticipantId) -> Result<RunState, SessionError> {
+        let state = self.status(run, 0, None).await?;
+        let address = run_address(&self.lobby, &state)?.ok_or_else(|| {
+            SessionError::Rejected(CtlError::new(
+                CtlStatus::NotReady,
+                format!("run {run} has no host yet"),
+            ))
+        })?;
+        let id = format!("cli.{:08x}", rand::random::<u32>());
+        let participant = address
+            .join(
+                &id,
+                vec![Role::Observer],
+                PriorityClass::Scripted,
+                REARM_TIMEOUT,
+            )
+            .await?;
+        let rearmed = participant.rearm(robot).await.map(|_| state);
+        participant.close().await;
+        rearmed
+    }
+
     /// The robots waiting in the lobby, by its latest state.
     pub fn waiting(&self) -> Vec<ParticipantInfo> {
         self.participant
@@ -385,6 +412,9 @@ impl LobbyClient {
         self.participant.detach().await
     }
 }
+
+/// How long [`LobbyClient::rearm`] waits to join the run's host.
+const REARM_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A satellite daemon's id in its home's lobby: `rlmeshd.` and its device.
 pub const SATELLITE_PREFIX: &str = "rlmeshd.";

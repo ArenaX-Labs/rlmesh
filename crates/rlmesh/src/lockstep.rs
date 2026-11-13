@@ -29,6 +29,8 @@ pub mod client;
 pub mod error;
 pub mod escape;
 pub mod exchange;
+#[cfg(test)]
+pub(crate) mod linked_host;
 pub mod map;
 pub mod meta_json;
 pub mod model;
@@ -50,13 +52,14 @@ pub mod adapters {
 
 pub use client::{Keep, LeafStep, LockstepClient};
 pub use error::GymError;
-pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
+pub use exchange::{DirectLink, Gate, Limited, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
 pub use model::{ModelBinding, ModelConnection, ModelLink, ModelService, ServedModel};
 pub use rlmesh_session::address::is_v2_address;
 pub use served::{GymEnv, Reset, Served, Step};
 pub use session::{
     ConnectOptions, Declared, Driven, LockstepAddress, LockstepBinding, ServeOptions, bind, check,
-    connect, connect_driver, connect_view, local_run_session, lockstep_robot_map,
+    connect, connect_driver, connect_view, local_run_session, lockstep_robot_map, run_session,
+    run_session_beside,
 };
 pub use view::{Frame, GymView};

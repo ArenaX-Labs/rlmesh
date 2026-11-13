@@ -411,7 +411,8 @@ impl Error {
     }
 
     /// Whether the session remains usable: the Environment or Model error's
-    /// own flag, and false for every other class.
+    /// own flag, and false for every other class. Whether to retry a call is
+    /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient).
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::Attached(attached) => attached.error.is_recoverable(),
@@ -421,10 +422,8 @@ impl Error {
         }
     }
 
-    /// Whether retrying the same request may succeed: the recoverable flag,
-    /// plus transport failures and deadlines. The facade's own retry and
-    /// driver plumbing use it; it is not the user-facing
-    /// [`Error::is_recoverable`].
+    /// Whether retrying the same call can succeed; the public question is
+    /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient).
     pub(crate) fn is_transient(&self) -> bool {
         match self {
             Self::Attached(attached) => attached.error.is_transient(),

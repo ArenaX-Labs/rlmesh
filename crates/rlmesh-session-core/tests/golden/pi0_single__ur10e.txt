@@ -1,4 +1,4 @@
-binding pi0_single on ur10e: 5 inputs, 2 actions, fingerprint bf3bd95bee8923b7
+binding pi0_single on ur10e: 5 inputs, 2 actions, fingerprint e217cc79c68cc620
 replan 15 Hz
 
   entry        dir  part       status  plan                                              delivers
@@ -22,4 +22,4 @@ replan 15 Hz
   gripper  15 Hz  10 × 66.7 ms = 667 ms  667 ms  100 Hz (default)  200 ms (default)
 
   warnings
-    action "gripper": a chunk covers 667 ms, but gripper's edge plays at most 200 ms of it (max_action_age_ms); the rest is never dispatched.
+    action "gripper": a chunk covers 667 ms, but ur10e:gripper's edge plays at most 200 ms of it (max_action_age_ms); the rest is never dispatched.

@@ -10,14 +10,13 @@ part of the public API.
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Callable, Mapping
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from .. import _rlmesh
-from . import Robot
+from . import Robot, _close_leaving, _json
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -30,6 +29,7 @@ class _NativeScene(Protocol):
     def status(self) -> dict[str, Any]: ...
     def wait_until(self, stage: str, timeout: float) -> dict[str, Any]: ...
     def arm(self) -> dict[str, Any]: ...
+    def rearm(self, robot: str) -> dict[str, Any]: ...
     def stop(self, timeout: float) -> dict[str, Any]: ...
     def close(self) -> None: ...
 
@@ -62,7 +62,8 @@ def wait_in_lobby(
     """
     robot = Robot.__new__(Robot)
     robot._lockstep = None
-    robot._native = _from_lobby(home, name, json.dumps(parts), timeout)
+    robot._timeout = 10.0 if timeout is None else timeout
+    robot._native = _from_lobby(home, name, _json(parts), timeout)
     robot._adopt(on_handover)
     return robot
 
@@ -119,6 +120,10 @@ class Scene:
         """Arm a run that waits for it (``arm="manual"``, or after a lost member rejoined)."""
         return self._native.arm()
 
+    def rearm(self, robot: str) -> dict[str, Any]:
+        """Re-arm one robot of a running run, stopped on its own; the run's state."""
+        return self._native.rearm(robot)
+
     def stop(self, *, timeout: float = 10.0) -> dict[str, Any]:
         """Stop the run and wait for it to end; this process's policies' runs return."""
         return self._native.stop(timeout)
@@ -139,7 +144,7 @@ class Scene:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        _close_leaving(self.close, exc)
 
 
 def run_scene(

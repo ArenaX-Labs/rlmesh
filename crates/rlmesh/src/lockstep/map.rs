@@ -509,6 +509,7 @@ impl GymMap {
                 ];
             }
             keys.push(("command", json_text(&json!("value"))));
+            keys.push(("safe", json_text(&json!("stop"))));
             Self::push(
                 &mut drafts,
                 &mut by_path,

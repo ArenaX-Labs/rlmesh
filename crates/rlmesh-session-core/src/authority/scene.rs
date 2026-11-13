@@ -182,7 +182,12 @@ impl Authority {
     /// takes a lease in it again, a grant waiting for its keys included.
     pub(super) fn scene_refuses(&self, command: &Command) -> Result<(), CtlError> {
         match &self.scene.closing {
-            Some(closing) if matches!(command, Command::Arm | Command::GrantLease { .. }) => {
+            Some(closing)
+                if matches!(
+                    command,
+                    Command::Arm | Command::Rearm { .. } | Command::GrantLease { .. }
+                ) =>
+            {
                 Err(CtlError::new(
                     CtlStatus::InvalidTransition,
                     format!("the scene's run is closing ({})", closing.code),
@@ -203,6 +208,11 @@ impl Authority {
             Some(scene) => scene.admit(from, &sender.device, roles, priority),
             None => Ok(()),
         }
+    }
+
+    /// The id of the run this session hosts.
+    pub(super) fn scene_run(&self) -> Option<&str> {
+        self.scene_config().map(|s| s.info.run.as_str())
     }
 
     /// Whether `id` is a member of the scene this session runs.

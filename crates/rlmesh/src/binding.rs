@@ -30,13 +30,14 @@ pub use rlmesh_proto::{
     peer_info_override, supported_workflow_editions, update_peer_info_override,
 };
 
-/// Resolve a native participant's workflow edition (COR-6): rungs 1 to 4,
-/// warning once per process when an `authored` participant floats.
-pub fn resolve_workflow_edition(
-    sources: EditionSources<'_>,
-    authored: bool,
-) -> Result<Option<String>> {
-    crate::editions::resolve_native(sources, authored)
+/// The readiness signal: the serving hook a binding prints its line from,
+/// and the `RLMESH_READY_FILE` a launcher waits on.
+pub use crate::ready::{Announce, READY_FILE_ENV, Ready, ready_file_from_env, set_ready_hook};
+
+/// Resolve a native participant's workflow edition (COR-6): rungs 1 to 4;
+/// `None` when it floats.
+pub fn resolve_workflow_edition(sources: EditionSources<'_>) -> Result<Option<String>> {
+    crate::editions::resolve_native(sources)
 }
 
 use crate::{Error, Metadata, Result, Tensor, Value};
@@ -272,6 +273,13 @@ pub fn foreground_sigterm_scope(
     trigger: crate::lifecycle::ShutdownTrigger,
 ) -> crate::env::signals::SignalScope {
     crate::env::signals::enter_with(trigger, false)
+}
+
+/// Ends the process as an unhandled SIGINT does: the Python binding's
+/// foreground model serve on a second Ctrl-C while its stop waits on a
+/// call that will not return.
+pub fn end_by_interrupt() -> ! {
+    crate::env::signals::end_by_interrupt()
 }
 
 /// PNG-encode a render frame by Python's lenient rule (ENV-5); `None` for a

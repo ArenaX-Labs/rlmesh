@@ -6,8 +6,8 @@
 //! cargo run -p rlmesh-session --example web_robot -- --listen-base 127.0.0.1:17600 --session-file session.id
 //! ```
 //!
-//! - **Host**: a `SessionHost` on per-class TCP at `--listen-base` (class i on
-//!   port + i), lease grace `--lease-grace-ms` (250 ms).
+//! - **Host**: a `SessionHost` listening on TCP at `--listen-base`, lease
+//!   grace `--lease-grace-ms` (250 ms).
 //! - **Robot** `arm7` (`rlmesh_session::edge::Robot`): `arm` (7 joints, `pos` and `vel`
 //!   at 1 kHz, position commands, `safe: stop`, hold 100 ms), `gripper`
 //!   (100 Hz, position, `safe: hold`) and `scene/cam` (640x480 at 20 Hz, JPEG
@@ -40,7 +40,7 @@ use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::wire::{DType, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
-    Predictor, SessionHost, SystemMonotonicClock, Transport, TransportConfig,
+    Predictor, Resume, RunConfig, SessionHost, SystemMonotonicClock, Transport, TransportConfig,
 };
 
 const ROBOT: &str = "arm7";
@@ -51,7 +51,7 @@ const LIMIT: f64 = 2.6;
 
 #[derive(Debug, Parser)]
 struct Args {
-    /// Per-class TCP base the host listens on.
+    /// The TCP address the host listens on.
     #[arg(long, default_value = "127.0.0.1:17600")]
     listen_base: SocketAddr,
     /// The tenant namespace.
@@ -99,7 +99,7 @@ fn robot_map(cam: &str) -> String {
 /// Replans at 50 Hz, ten 10 ms actions per chunk: a slow sway of every joint.
 const POLICY: &str = r#"{
     "hz": 50,
-    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position", "hz": 100, "horizon": 10}}
+    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position", "hz": 100, "chunk": 10}}
 }"#;
 
 struct Sway;
@@ -163,10 +163,7 @@ async fn join(
     role: Role,
     priority: PriorityClass,
 ) -> Result<Participant, Box<dyn std::error::Error>> {
-    // Listen too: peers dial the others they learn of directly.
-    let any = SocketAddr::new(base.ip(), 0);
-    let transport =
-        Transport::open(&TransportConfig::per_class_tcp(Some(any), Some(base))?).await?;
+    let transport = Transport::open(&TransportConfig::per_class_tcp(base)).await?;
     let mut config = ParticipantConfig::new(
         tenant.clone(),
         session,
@@ -182,12 +179,17 @@ async fn join(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use tracing_subscriber::prelude::*;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,zenoh=warn".into()),
         )
         .with_writer(std::io::stderr)
+        .finish()
+        .with(tracing_subscriber::filter::filter_fn(
+            rlmesh_session::logging::may_record,
+        ))
         .init();
     let args = Args::parse();
     let tenant = TenantId::new(&args.tenant)?;
@@ -195,11 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(id) => id.parse()?,
         None => SessionId::new(),
     };
-    let transport = Transport::open(&TransportConfig::per_class_tcp(
-        Some(args.listen_base),
-        None,
-    )?)
-    .await?;
+    let transport = Transport::open(&TransportConfig::host_tcp(args.listen_base)).await?;
     let mut host = HostConfig::new(tenant.clone(), session);
     host.clock = SystemMonotonicClock.shared();
     host.lease_grace = Duration::from_millis(args.lease_grace_ms.max(1));
@@ -241,7 +239,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let controller = Arc::new(controller);
         let runner = controller.clone();
         std::thread::spawn(move || {
-            if let Err(err) = runner.run(&mut Sway, None) {
+            // Unattended: the browser binding releases plainly (it sends
+            // no hand-back), and no one is at this process to resume it.
+            let config = RunConfig::default().resume(Resume::Auto);
+            if let Err(err) = runner.run(&mut Sway, config) {
                 eprintln!("policy stopped: {err}");
             }
         });
@@ -251,8 +252,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(path) = &args.session_file {
-        // The session and its key, as the gateway's --session-file takes them.
-        std::fs::write(path, format!("{session}#{key}"))?;
+        // The session and its key, as the gateway's --session-file takes
+        // them: a credential, so for this user only.
+        rlmesh_session::address::write_private(path, format!("{session}#{key}").as_bytes())?;
     }
     println!("SESSION {session}");
     println!("READY robot {ROBOT} on {base}");

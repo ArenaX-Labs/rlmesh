@@ -43,7 +43,7 @@ try {
   console.log(String(await policy.bind("ur10e"))); // the binding table
   await policy.run(
     async (obs) => {
-      const arm = new Float32Array(60); // [horizon 10, 6 joints]
+      const arm = new Float32Array(60); // [chunk 10, 6 joints]
       for (let k = 0; k < 10; k++) arm.set(obs.inputs.q.data, k * 6);
       return { arm: { data: arm, shape: [10, 6] } };
     },
@@ -74,7 +74,12 @@ block instead of the `finally`.
 | `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                                  |
 | `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }`      |
 | `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                       |
-| `policy.acquire()` → `{"arm": token}`              | `await policy.acquire()` → `{ arm: token }` (`bigint`)             |
+| `policy.run(predict, mode=RunMode.SHADOW)`         | `await policy.run(predict, { mode: 'shadow' })`                    |
+| `policy.run(predict, resume=Resume.AUTO)`          | `await policy.run(predict, { resume: 'auto' })`                    |
+| `policy.resume()` → `["ur10e:arm"]`                | `policy.resume()` → `['ur10e:arm']`                                |
+| `policy.health(wait=True)["links"]["ur10e"]`       | `(await policy.health({ wait: true })).links['ur10e']`             |
+| `on_step=f` (`step.shadow`, `step.actions`)        | `onStep: f` (`step.shadow`, `step.actions`)                        |
+| `policy.acquire()` → `{"ur10e:arm": token}`        | `await policy.acquire()` → `{ 'ur10e:arm': token }` (`bigint`)     |
 | `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                      |
 | `with SessionRecorder(path, session=host)`         | `const rec = await SessionRecorder.start(path, { session: host })` |
 | `read_recording(path)`                             | `await readRecording(path)`                                        |

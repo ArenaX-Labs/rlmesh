@@ -28,9 +28,9 @@ use rlmesh_session::wire::{CtlStatus, PriorityClass};
 use std::time::Duration;
 
 use rlmesh_session::lobby::{LobbyClient, find_home};
-use rlmesh_session::wire::{MemberState, RunStage, RunState};
+use rlmesh_session::wire::{MemberState, ParticipantId, RunStage, RunState};
 
-use crate::cli::{HomeArgs, RunArgs, RunIdArgs, SceneArgs, SceneCommand};
+use crate::cli::{ArmArgs, HomeArgs, RunArgs, RunIdArgs, SceneArgs, SceneCommand};
 use crate::devices::{DEVICES, Table};
 
 fn class_name(class: Option<PriorityClass>) -> &'static str {
@@ -359,11 +359,25 @@ pub async fn stop(args: &RunIdArgs, stdout: &mut impl Write) -> Result<i32> {
     Ok(0)
 }
 
-/// `rlmesh scene arm`: arms a run waiting for it.
-pub async fn arm(args: &RunIdArgs, stdout: &mut impl Write) -> Result<()> {
+/// `rlmesh scene arm`: arms a run waiting for it, or re-arms one robot.
+pub async fn arm(args: &ArmArgs, stdout: &mut impl Write) -> Result<()> {
+    let robot = args
+        .robot
+        .as_deref()
+        .map(ParticipantId::new)
+        .transpose()
+        .context("the robot's name")?;
     let lobby = connect(&args.home).await?;
-    let state = lobby.arm(&args.run).await?;
-    writeln!(stdout, "{}: {}", state.run, run_stage_name(state.stage))?;
+    match &robot {
+        Some(robot) => {
+            let state = lobby.rearm(&args.run, robot).await?;
+            writeln!(stdout, "{}: {robot} re-armed", state.run)?;
+        }
+        None => {
+            let state = lobby.arm(&args.run).await?;
+            writeln!(stdout, "{}: {}", state.run, run_stage_name(state.stage))?;
+        }
+    }
     let _ = lobby.close().await;
     Ok(())
 }

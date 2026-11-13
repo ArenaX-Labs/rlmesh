@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 from rlmesh import realtime
+from rlmesh.realtime import actions, inputs, parts
 
 UR_JOINTS = [
     "shoulder_pan_joint",
@@ -28,25 +29,18 @@ UR_JOINTS = [
 ]
 
 UR10E = {
-    "arm": {
-        "kind": "joints", "names": UR_JOINTS, "fields": ["pos", "vel"], "hz": 500,
-        "command": "position", "safe": "stop", "hold_max_ms": 100, "max_action_age_ms": 1000,
-    },
-    "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 500},
-    "task": {"kind": "text"},
-}  # fmt: skip
-
-SINE = {
-    "hz": 20,
-    "inputs": {
-        "q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
-        "prompt": "text",
-    },
-    "actions": {
-        "arm": {"kind": "joints", "at": "arm", "command": "position", "names": UR_JOINTS,
-                "hz": 100, "horizon": 10},
-    },
-}  # fmt: skip
+    "arm": parts.joints(
+        UR_JOINTS,
+        fields=["pos", "vel"],
+        hz=500,
+        command="position",
+        safe=parts.Safe.STOP,
+        hold_max_ms=100,
+        max_action_age_ms=1000,
+    ),
+    "wrist/ft": parts.wrench(frame="tool0", hz=500),
+    "task": parts.text(),
+}
 
 
 def robot_loop(
@@ -58,9 +52,9 @@ def robot_loop(
     while not stop.is_set():
         robot.publish("arm", pos=q, vel=np.zeros(6))
         robot.publish("wrist/ft", force=[0.0, 0.0, 9.8], torque=[0.0, 0.0, 0.0])
-        due = robot.due("arm")
-        if due is not None and isinstance(due.value, np.ndarray):
-            q = due.value.astype(np.float64)  # a real robot sends it to the drives here
+        target = robot.command("arm")
+        if isinstance(target, np.ndarray):
+            q = target.astype(np.float64)  # a real robot sends it to the drives here
             applied.append(float(q[0]))
         rate.sleep()
 
@@ -83,14 +77,30 @@ def main() -> None:
             arm[:, 0] = 0.2 * np.sin(2 * np.pi * 0.5 * t)
             return {"arm": arm}
 
-        with realtime.Policy(SINE, session=host, name="sine") as policy:
-            print(policy.bind("ur10e"))
+        # Each builder returns the plain dict the policy map takes: a dict
+        # written by hand works the same.
+        with realtime.Policy(
+            hz=20,
+            inputs={
+                "q": inputs.joints("arm", fields=["pos"], names=UR_JOINTS),
+                "prompt": inputs.text(),
+            },
+            actions={
+                "arm": actions.joints(
+                    "arm", command="position", names=UR_JOINTS, hz=100, chunk=10
+                )
+            },
+            session=host,
+            name="sine",
+        ) as policy:
+            print(policy.bind("ur10e").binding)
             stats = policy.run(predict, duration=args.seconds)
         stop.set()
         loop.join()
         edge = robot.edge_stats("arm")
         robot.close()
 
+    assert stats["clock"] == "wall"  # a robot of this loop's own
     print(
         f"policy: {stats['completions']} replans, {stats['chunks_sent']} chunks, skipped {stats['skipped']}"
     )

@@ -1,0 +1,23 @@
+[package]
+name = "rlmesh-adapters-compat"
+description = "Internal RLMesh test crate: env tags and spaces this release writes, read by the released readers a model or runner built on an older release checks them with."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+publish = false
+
+[dev-dependencies]
+rlmesh-adapters = { workspace = true }
+# The reader a 0.1 model resolves its adapter with, from crates.io. Kept out
+# of the workspace's default members: only this crate's tests build it.
+rlmesh-adapters-0-1 = { package = "rlmesh-adapters", version = "=0.1.0" }
+rlmesh-spaces = { workspace = true }
+# The space validator a 0.1 runner checks an env's contract with (already
+# built for the 0.1 adapters reader).
+rlmesh-spaces-0-1 = { package = "rlmesh-spaces", version = "=0.1.0" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

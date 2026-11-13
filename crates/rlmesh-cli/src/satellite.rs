@@ -347,7 +347,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runs_are_kept_per_home_and_a_restarted_homes_close_at_once() {
         let (transport, _) =
-            address::open_listeners(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), None)
+            address::open_listener(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), None)
                 .await
                 .expect("listeners");
         let mut config = HostConfig::new(

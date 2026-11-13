@@ -1,4 +1,4 @@
-binding dex_grasp on g1 with side="left": 3 inputs, 1 action, fingerprint 447f11294982a7c3
+binding dex_grasp on g1 with side="left": 3 inputs, 1 action, fingerprint 312d69a2344410ee
 replan 30 Hz
 
   entry  dir  part               status  plan                                              delivers
@@ -16,4 +16,4 @@ replan 30 Hz
   hand    30 Hz (default)  8 × 33.3 ms = 267 ms  267 ms  100 Hz (default)  200 ms (default)
 
   warnings
-    action "hand": a chunk covers 267 ms, but left/hand's edge plays at most 200 ms of it (max_action_age_ms); the rest is never dispatched.
+    action "hand": a chunk covers 267 ms, but g1:left/hand's edge plays at most 200 ms of it (max_action_age_ms); the rest is never dispatched.

@@ -1,8 +1,10 @@
 //! The session host in its own OS process (`rlmesh host`), with
-//! participants in this one, linked over per-class TCP on localhost.
+//! participants in this one, linked over TCP on localhost (one connection
+//! per traffic class, all to the host's one port).
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -26,12 +28,6 @@ use rlmesh_session::{
     SessionError, SubscribeOptions, Transport, TransportConfig, TransportTuning,
 };
 
-/// Participants listen too (the OS picks the ports): in peer mode, data
-/// flows peer to peer once gossip tells peers where to connect.
-fn any_local_port() -> std::net::SocketAddr {
-    "127.0.0.1:0".parse().expect("addr")
-}
-
 const WAIT: Duration = Duration::from_secs(10);
 
 /// The host process; killed on drop whatever the test did.
@@ -45,22 +41,33 @@ struct HostProcess {
     _state: tempfile::TempDir,
     /// Its address with `local`'s key.
     address: SessionAddress,
+    /// What it wrote to stderr, when [`Self::spawn_logged`] kept it.
+    log: Arc<Mutex<String>>,
 }
 
 impl HostProcess {
     /// Spawns the host on free local ports, again on others when one was
     /// taken in between (the host then exits before printing its address).
     fn spawn() -> Self {
+        Self::spawn_with(&[], false)
+    }
+
+    /// Spawned with `args` too, keeping what it writes to stderr.
+    fn spawn_logged(args: &[&str]) -> Self {
+        Self::spawn_with(args, true)
+    }
+
+    fn spawn_with(args: &[&str], logged: bool) -> Self {
         for _ in 0..16 {
-            if let Some(host) = Self::try_spawn() {
+            if let Some(host) = Self::try_spawn(args, logged) {
                 return host;
             }
         }
-        panic!("the host process never found free ports");
+        panic!("the host process never found a free port");
     }
 
-    fn try_spawn() -> Option<Self> {
-        let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
+    fn try_spawn(args: &[&str], logged: bool) -> Option<Self> {
+        let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("port");
         let recordings = tempfile::tempdir().expect("tempdir");
         let state = tempfile::tempdir().expect("tempdir");
         let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
@@ -70,10 +77,26 @@ impl HostProcess {
             .args(["--record-min-free", "1B"])
             .arg("--state-dir")
             .arg(state.path())
+            .args(args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(if logged {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            })
             .spawn()
             .expect("spawn the host");
+        let log = Arc::new(Mutex::new(String::new()));
+        if let Some(stderr) = child.stderr.take() {
+            let log = log.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    let mut log = log.lock().expect("log");
+                    log.push_str(&line);
+                    log.push('\n');
+                }
+            });
+        }
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
         let mut line = String::new();
         stdout.read_line(&mut line).expect("address line");
@@ -93,6 +116,7 @@ impl HostProcess {
                 recordings,
                 _state: state,
                 address,
+                log,
             });
         }
         let _ = child.kill();
@@ -184,13 +208,9 @@ async fn join(
         client: true,
         ..TransportTuning::default()
     };
-    let transport = Transport::open(
-        &TransportConfig::per_class_tcp(Some(any_local_port()), Some(host.base))
-            .expect("config")
-            .with_tuning(tuning),
-    )
-    .await
-    .expect("transport");
+    let transport = Transport::open(&TransportConfig::per_class_tcp(host.base).with_tuning(tuning))
+        .await
+        .expect("transport");
     let mut config = ParticipantConfig::new(
         TenantId::new(TENANT).expect("tenant"),
         host.session,
@@ -207,7 +227,7 @@ async fn join(
 
 const ROBOT: &str = r#"{
     "cmd": {"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
-            "command": "position", "priority": "control"},
+            "command": "position", "safe": "stop", "priority": "control"},
     "ft": {"kind": "wrench", "frame": "tool0", "hz": 1000}
 }"#;
 
@@ -304,6 +324,84 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
         "{err}"
     );
     assert!(!host.wait_exit().success());
+}
+
+/// The host's own warnings reach its stderr: a participant it dropped, with
+/// why, once however often it happens in a row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_process_warns_once_of_a_participant_it_dropped() {
+    let host = HostProcess::spawn_logged(&["--presence-grace", "300ms"]);
+    let observer = join(
+        &host,
+        "observer",
+        vec![Role::Observer],
+        PriorityClass::Model,
+    )
+    .await;
+    let robot = join(
+        &host,
+        "robot",
+        vec![Role::Embodiment],
+        PriorityClass::Scripted,
+    )
+    .await;
+    let view = robot.declare_parts(ROBOT).await.expect("declare");
+    let cmd = view.part_at(robot.id(), "cmd").expect("cmd").channel;
+    let dropped = |log: &str, who: &str| {
+        log.lines()
+            .filter(|l| l.contains("participant dropped from the session") && l.contains(who))
+            .count()
+    };
+    let gone = |id: &'static str| {
+        observer.wait_for("the participant dropped", WAIT, move |s| {
+            !s.roster.iter().any(|p| p.id.as_str() == id)
+        })
+    };
+    // A lockstep driver's ending: no lease bound it, so no warning.
+    let driver = join(
+        &host,
+        "driver",
+        vec![Role::Controller],
+        PriorityClass::Model,
+    )
+    .await;
+    driver.close().await;
+    gone("driver").await.expect("dropped");
+    for fingerprint in 1..=2 {
+        let policy = join(
+            &host,
+            "policy",
+            vec![Role::Controller],
+            PriorityClass::Model,
+        )
+        .await;
+        policy
+            .wait_for("the robot's parts", WAIT, |s| s.part(cmd).is_some())
+            .await
+            .expect("parts");
+        policy
+            .declare_binding(Fingerprint::from(fingerprint), "{}", vec![cmd], 0.0)
+            .await
+            .expect("bind");
+        policy.arm().await.expect("arm");
+        policy.grant_lease(cmd, None).await.expect("lease");
+        // Gone without a word while it holds the robot: its heartbeats stop.
+        policy.close().await;
+        gone("policy").await.expect("dropped");
+    }
+    let started = Instant::now();
+    while dropped(&host.log.lock().expect("log"), "policy") == 0 {
+        assert!(
+            started.elapsed() < WAIT,
+            "no warning: {}",
+            host.log.lock().expect("log")
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let log = host.log.lock().expect("log").clone();
+    assert_eq!(dropped(&log, "policy"), 1, "{log}");
+    assert_eq!(dropped(&log, "driver"), 0, "{log}");
+    assert!(log.contains("Lost"), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -566,7 +664,7 @@ impl Daemon {
     fn spawn(state: &std::path::Path, base: Option<std::net::SocketAddr>) -> Self {
         for _ in 0..16 {
             let base = base
-                .unwrap_or_else(|| free_local_base("0.0.0.0".parse().expect("ip")).expect("ports"));
+                .unwrap_or_else(|| free_local_base("0.0.0.0".parse().expect("ip")).expect("port"));
             let mut child = Command::new(env!("CARGO_BIN_EXE_rlmeshd"))
                 .arg("--no-record")
                 .arg("--listen")
@@ -586,7 +684,7 @@ impl Daemon {
             let _ = child.kill();
             let _ = child.wait();
         }
-        panic!("rlmeshd never found free ports");
+        panic!("rlmeshd never found a free port");
     }
 
     /// Attaches as `id` at `priority` with `credential`, linked as a LAN
@@ -598,15 +696,13 @@ impl Daemon {
         credential: Credential,
     ) -> Result<Participant, SessionError> {
         let local = std::net::SocketAddr::from(([127, 0, 0, 1], self.base.port()));
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(None, Some(local))
-                .expect("config")
-                .with_tuning(TransportTuning {
-                    client: true,
-                    connect_timeout: Some(WAIT),
-                    ..TransportTuning::default()
-                }),
-        )
+        let transport = Transport::open(&TransportConfig::per_class_tcp(local).with_tuning(
+            TransportTuning {
+                client: true,
+                connect_timeout: Some(WAIT),
+                ..TransportTuning::default()
+            },
+        ))
         .await
         .expect("a link with no password");
         let mut config = ParticipantConfig::new(
@@ -625,11 +721,22 @@ impl Daemon {
 /// Runs `rlmesh host` with its state in `state` on `base` until its first
 /// line, then stops it: the line.
 fn host_first_line(state: &std::path::Path, base: std::net::SocketAddr) -> String {
+    host_first_line_with(state, base, &[])
+}
+
+/// [`host_first_line`], with `args` too.
+fn host_first_line_with(
+    state: &std::path::Path,
+    base: std::net::SocketAddr,
+    args: &[&str],
+) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
         .args(["host", "--no-record", "--state-dir"])
         .arg(state)
         .arg("--listen")
         .arg(base.to_string())
+        .args(args)
+        .env_remove("RLMESH_BOARD_DATA")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -644,9 +751,56 @@ fn host_first_line(state: &std::path::Path, base: std::net::SocketAddr) -> Strin
 }
 
 #[test]
+fn the_host_offers_boards_udp_by_default_and_runs_on_tcp_when_the_port_is_taken() {
+    let state = tempfile::tempdir().expect("tempdir");
+    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("port");
+    // UDP on the same number as the TCP listener.
+    let udp = base;
+    let offered = format!("boards' realtime parts over UDP port {}", udp.port());
+
+    let first = host_first_line(state.path(), base);
+    assert!(first.starts_with("rlmesh host on "), "{first}");
+    assert!(first.contains(&offered), "{first}");
+
+    let tcp = host_first_line_with(state.path(), base, &["--board-data", "tcp"]);
+    assert!(tcp.starts_with("rlmesh host on "), "{tcp}");
+    assert!(!tcp.contains("UDP"), "{tcp}");
+
+    // Someone else holds the UDP port: the host still runs, on TCP alone,
+    // after one warning.
+    let taken = std::net::UdpSocket::bind(udp).expect("hold the UDP port");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
+        .args(["host", "--no-record", "--state-dir"])
+        .arg(state.path())
+        .arg("--listen")
+        .arg(base.to_string())
+        .env_remove("RLMESH_BOARD_DATA")
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn rlmesh host");
+    let mut degraded = String::new();
+    BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut degraded)
+        .expect("its first line");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().expect("stderr"), &mut stderr)
+        .expect("stderr");
+    drop(taken);
+    assert!(degraded.starts_with("rlmesh host on "), "{degraded}");
+    assert!(!degraded.contains("UDP"), "{degraded}");
+    let warning = format!("could not listen on udp/{udp}");
+    assert_eq!(stderr.matches(&warning).count(), 1, "{stderr}");
+    assert!(stderr.contains("WARN"), "{stderr}");
+}
+
+#[test]
 fn the_host_keeps_its_identity_across_a_restart_with_no_key_flag() {
     let state = tempfile::tempdir().expect("tempdir");
-    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
+    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("port");
     let first = host_first_line(state.path(), base);
     assert!(first.starts_with("rlmesh host on "), "{first}");
     assert!(!first.contains('#'), "the host prints no key: {first}");

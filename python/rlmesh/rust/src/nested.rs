@@ -231,6 +231,10 @@ impl ModelHandler for NestedHandler {
         self.outer.take_endpoint_timing()
     }
 
+    fn take_group_size(&mut self) -> Option<u64> {
+        self.outer.take_group_size()
+    }
+
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
         Some(Arc::new(NestedSetup {
             outer: self.outer.route_setup(),

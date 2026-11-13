@@ -643,12 +643,15 @@ impl Model {
             }
         }
         if !refused.is_empty() {
-            self.push(
-                receive_ns,
-                Kind::Edge,
-                Tone::Warn,
-                format!("edge {id} refused chunks: {}", refused.join(", ")),
-            );
+            let mut text = format!("edge {id} refused chunks: {}", refused.join(", "));
+            for refusal in &link.clock_refused {
+                let part = self.snapshot.as_ref().and_then(|s| s.part(refusal.channel));
+                if let Some(part) = part {
+                    text.push_str("; ");
+                    text.push_str(&refusal.explain(id, part.path.as_str()));
+                }
+            }
+            self.push(receive_ns, Kind::Edge, Tone::Warn, text);
         }
     }
 

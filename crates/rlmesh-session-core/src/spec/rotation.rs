@@ -489,12 +489,103 @@ mod tests {
 
     #[test]
     fn every_encoding_round_trips_through_quat_xyzw() {
-        let q = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)];
-        for to in Rotation::ALL.into_iter().filter(|r| r.is_source()) {
-            let encoded = one(&q, Rotation::QuatXyzw, to);
-            assert_eq!(encoded.len(), to.width() as usize);
-            let back = one(&encoded, to, Rotation::QuatXyzw);
-            assert!(close(&back, &q), "{to}: {back:?}");
+        let quarter_z = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)];
+        // 0.7 rad about an axis off every coordinate plane.
+        let axis = [1.0, 2.0, 3.0].map(|c: f64| c / 14_f64.sqrt());
+        let (s, c) = math::sin_cos(0.35);
+        let general = [axis[0] * s, axis[1] * s, axis[2] * s, c];
+        for q in [quarter_z, general] {
+            for to in Rotation::ALL.into_iter().filter(|r| r.is_source()) {
+                let encoded = one(&q, Rotation::QuatXyzw, to);
+                assert_eq!(encoded.len(), to.width() as usize);
+                let back = one(&encoded, to, Rotation::QuatXyzw);
+                assert!(close(&back, &q), "{to}: {back:?}");
+            }
+        }
+        let rotvec = one(&general, Rotation::QuatXyzw, Rotation::AxisAngle);
+        assert!(close(&rotvec, &axis.map(|c| c * 0.7)), "{rotvec:?}");
+    }
+
+    #[test]
+    fn rot6d_is_orthonormalised_column_by_column() {
+        // A model's raw 6D output: neither unit nor orthogonal.
+        let m = one(
+            &[1.0, 2.0, 2.0, 1.0, 0.0, 0.0],
+            Rotation::Rot6d,
+            Rotation::Matrix,
+        );
+        let col = |j: usize| [m[j], m[3 + j], m[6 + j]];
+        assert!(close(&col(0), &[1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0]), "{m:?}");
+        // a2 less its component along b1, normalised: (8, -2, -2) / 6√2.
+        let k = 1.0 / (6.0 * 2_f64.sqrt());
+        assert!(close(&col(1), &[8.0 * k, -2.0 * k, -2.0 * k]), "{m:?}");
+        let h = core::f64::consts::FRAC_1_SQRT_2;
+        assert!(close(&col(2), &[0.0, h, -h]), "b1 × b2: {m:?}");
+    }
+
+    #[test]
+    fn a_matrix_reads_back_through_its_largest_diagonal_with_that_component_positive() {
+        use Rotation::{Matrix, QuatXyzw};
+        // 170° about axes led by x, y and z (trace < 0): the quaternion
+        // comes back with its largest component positive.
+        let (s, c) = math::sin_cos(85_f64.to_radians());
+        for axis in [
+            [-1.0, 0.3, 0.5],
+            [0.3, -1.0, 0.2],
+            [0.2, 0.4, -1.0],
+            [1.0, -0.3, 0.5],
+        ] {
+            let n = axis.iter().map(|a| a * a).sum::<f64>().sqrt();
+            let q = [axis[0] / n * s, axis[1] / n * s, axis[2] / n * s, c];
+            let back = one(&one(&q, QuatXyzw, Matrix), Matrix, QuatXyzw);
+            let lead = (0..3)
+                .max_by(|&i, &j| q[i].abs().total_cmp(&q[j].abs()))
+                .expect("three");
+            let sign = q[lead].signum();
+            assert!(close(&back, &q.map(|c| c * sign)), "{axis:?}: {back:?}");
+        }
+        // A zero trace and tied diagonals keep the method's order: the
+        // trace above zero, then x, y, z on a strict maximum.
+        let h = core::f64::consts::FRAC_1_SQRT_2;
+        let r3 = 3_f64.sqrt() / 2.0;
+        for (m, q) in [
+            // Rx(-120°).
+            (
+                [1.0, 0.0, 0.0, 0.0, -0.5, r3, 0.0, -r3, -0.5],
+                [r3, 0.0, 0.0, -0.5],
+            ),
+            // Half turns about (1, -1, 0), (1, 0, -1) and (0, 1, -1).
+            (
+                [0.0, -1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0],
+                [-h, h, 0.0, 0.0],
+            ),
+            (
+                [0.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0],
+                [-h, 0.0, h, 0.0],
+            ),
+            (
+                [-1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, -1.0, 0.0],
+                [0.0, -h, h, 0.0],
+            ),
+        ] {
+            let got = one(&m, Matrix, QuatXyzw);
+            assert!(close(&got, &q), "{m:?}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn a_zero_rotation_vector_and_degenerate_inputs_read_as_the_identity() {
+        use Rotation::{AxisAngle, Matrix, QuatXyzw, Rot6d};
+        for (value, from) in [
+            (&[0.0; 3][..], AxisAngle),
+            (&[0.0; 4], QuatXyzw),
+            (&[0.0; 6], Rot6d),
+        ] {
+            let m = one(value, from, Matrix);
+            assert!(
+                close(&m, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
+                "{from}: {m:?}"
+            );
         }
     }
 
@@ -543,7 +634,9 @@ mod tests {
     fn matrix_to_axis_angle_is_stable_near_zero_and_pi() {
         use Rotation::{AxisAngle, EulerXyz, Rot6d};
         for offset in [1e-4, 3e-4, 4e-4, 1e-3, 1e-2, 0.5] {
-            for angle in [offset, PI - offset] {
+            // A negative angle's quaternion comes back with w < 0 and is
+            // flipped to the minimal vector.
+            for angle in [offset, PI - offset, offset - PI] {
                 let got = one(&[angle, 0.0, 0.0], EulerXyz, AxisAngle);
                 assert!(
                     (got[0] - angle).abs() < 1e-9 && got[1].abs() < 1e-9 && got[2].abs() < 1e-9,

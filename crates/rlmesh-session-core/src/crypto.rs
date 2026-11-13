@@ -31,7 +31,9 @@ pub use sealed::{
     Kind, KindSet, OpenError, Opened, Opening, SealError, SealReceiver, SealSender, Sealing,
     Security,
 };
-pub use signed::{SignError, SignedError, SignedKind, SignedReceiver, SignedSender};
+pub use signed::{
+    Checked, SignError, SignedChecker, SignedError, SignedKind, SignedReceiver, SignedSender,
+};
 
 /// A source of cryptographic randomness, implemented by the caller: the OS
 /// on a host, the hardware RNG on a board, a fixed stream in tests.
@@ -89,6 +91,15 @@ impl core::fmt::Debug for Key {
     }
 }
 
+/// `secret`'s public key, by the same Montgomery ladder every key exchange
+/// runs. `PublicKey::from` multiplies on the Edwards curve instead, which
+/// without precomputed tables holds a lookup table on the stack (about 2 KB
+/// more, on a board).
+pub(crate) fn x25519_public(secret: &x25519_dalek::StaticSecret) -> [u8; 32] {
+    let base = x25519_dalek::PublicKey::from(x25519_dalek::X25519_BASEPOINT_BYTES);
+    secret.diffie_hellman(&base).to_bytes()
+}
+
 /// A static X25519 key pair: a host's or a participant's Noise identity.
 #[derive(Clone)]
 pub struct StaticKeypair {
@@ -103,7 +114,7 @@ impl StaticKeypair {
         // copy left to the compiler.
         let secret = x25519_dalek::StaticSecret::from(*private);
         private.zeroize();
-        let public = x25519_dalek::PublicKey::from(&secret).to_bytes();
+        let public = x25519_public(&secret);
         Self { secret, public }
     }
 
@@ -139,6 +150,82 @@ impl core::fmt::Debug for StaticKeypair {
         f.debug_struct("StaticKeypair")
             .field("public", &self.public)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ladder and the Edwards multiply agree: the same public key.
+    #[test]
+    fn x25519_public_is_the_edwards_result() {
+        for byte in [0_u8, 1, 0x42, 0x7f, 0x80, 0xff] {
+            let mut private = [byte; 32];
+            private[0] = byte.wrapping_add(3);
+            let secret = x25519_dalek::StaticSecret::from(private);
+            let want = x25519_dalek::PublicKey::from(&secret).to_bytes();
+            assert_eq!(x25519_public(&secret), want);
+            assert_eq!(*StaticKeypair::from_private(&mut private).public(), want);
+        }
+    }
+
+    const SECRET: [u8; 32] = [0xa7; 32];
+
+    #[test]
+    fn a_keypair_writes_back_the_private_key_it_was_made_from() {
+        let mut private = SECRET;
+        let pair = StaticKeypair::from_private(&mut private);
+        let mut stored = [0; 32];
+        pair.write_private(&mut stored);
+        let again = StaticKeypair::from_private(&mut stored);
+        assert_eq!(again.public(), pair.public());
+    }
+
+    #[test]
+    fn a_key_and_a_keypair_never_print_their_secret() {
+        let mut private = SECRET;
+        assert_redacted(&Key::from_bytes(SECRET), &SECRET);
+        assert_redacted(&StaticKeypair::from_private(&mut private), &SECRET);
+    }
+
+    #[test]
+    fn sealing_and_opening_state_never_print_the_key() {
+        let kinds = KindSet::of(&[Kind::Sample]);
+        let mut sender = SealSender::new(1, Key::from_bytes(SECRET), kinds, Security::Mac);
+        let receiver = SealReceiver::new(1, Key::from_bytes(SECRET), kinds, Security::Mac);
+        let msg = sender.seal(Kind::Sample, "k", b"body").expect("seal");
+        assert_redacted(&sender, &SECRET);
+        assert_redacted(&receiver, &SECRET);
+        assert_redacted(&sender.begin(Kind::Sample).expect("begin"), &SECRET);
+        assert_redacted(&receiver.begin(&msg).expect("begin"), &SECRET);
+    }
+
+    #[test]
+    fn a_signer_never_prints_its_signing_key() {
+        assert_redacted(&SignedSender::new(&SECRET, 7), &SECRET);
+    }
+}
+
+/// Asserts `value` prints something and none of it is `secret`, in the
+/// forms a careless `Debug` would use: hex, a byte list, the raw bytes.
+#[cfg(test)]
+pub(crate) fn assert_redacted(value: &impl core::fmt::Debug, secret: &[u8]) {
+    let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+    let list: Vec<String> = secret.iter().map(ToString::to_string).collect();
+    let list = list.join(",");
+    for printed in [format!("{value:?}"), format!("{value:#?}")] {
+        assert!(!printed.is_empty(), "it prints something");
+        let compact: String = printed.split_whitespace().collect();
+        assert!(!compact.to_lowercase().contains(&hex), "hex in {printed}");
+        assert!(!compact.contains(&list), "the bytes in {printed}");
+        assert!(
+            !printed
+                .as_bytes()
+                .windows(secret.len())
+                .any(|w| w == secret),
+            "raw bytes in {printed}"
+        );
     }
 }
 

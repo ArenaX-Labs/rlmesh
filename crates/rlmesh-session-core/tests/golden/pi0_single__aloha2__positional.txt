@@ -1,4 +1,4 @@
-binding pi0_single on aloha2 under "right": 5 inputs, 2 actions, fingerprint c312390899177a87
+binding pi0_single on aloha2 under "right": 5 inputs, 2 actions, fingerprint 34f1bbb6bc081093
 replan 15 Hz
 
   entry        dir  part             status    plan                                             delivers

@@ -249,6 +249,8 @@ pub struct EdgeRow {
     pub reason: Option<String>,
     /// Chunks the robot refused since it attached, by reason.
     pub rejected: Vec<(String, u64)>,
+    /// Why its edge is refusing chunks for its clock, in words.
+    pub clock_refused: Option<String>,
     /// `hold_max`, ms, and the safe behaviour.
     pub hold: (f64, String),
 }
@@ -700,9 +702,10 @@ impl Model {
     }
 
     /// Valid coverage remaining on a commandable part, as an
-    /// observer estimates it: `min(t0 + horizon·dt, valid_until, receipt +
+    /// observer estimates it: `min(t0 + chunk·dt, valid_until, receipt +
     /// max_action_age, lease expiry) − now`, in session time, with the
-    /// cockpit's receipt standing in for the edge's.
+    /// cockpit's receipt standing in for the edge's and the validity less
+    /// the two clocks' error, as the edge counts it.
     fn coverage_ms(&self, channel: ChannelId, now_ns: i64) -> Option<f64> {
         let s = self.snapshot.as_ref()?;
         let lease = s.lease(channel)?;
@@ -714,11 +717,20 @@ impl Model {
             .part(channel)
             .and_then(|p| p.command.as_ref())
             .map_or(i64::MAX, |c| ns(c.max_action_age));
+        let error = |who| {
+            s.clock(who)
+                .map_or(0, |c| i64::try_from(c.error_ns).unwrap_or(i64::MAX))
+        };
+        let part = s.part(channel)?;
+        let valid_end = chunk
+            .valid_until_ns
+            .min(chunk.receipt_session_ns.saturating_add(max_age))
+            .saturating_sub(error(&part.owner))
+            .saturating_sub(error(&chunk.source));
         let end = chunk
             .t0_ns
             .saturating_add(chunk.dt_ns.saturating_mul(i64::from(chunk.count)))
-            .min(chunk.valid_until_ns)
-            .min(chunk.receipt_session_ns.saturating_add(max_age))
+            .min(valid_end)
             .min(lease.expires_ns);
         Some(ms((end - self.session_ns(now_ns)).max(0)))
     }
@@ -842,6 +854,12 @@ impl Model {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    clock_refused: self.links.get(&part.owner).and_then(|(link, _)| {
+                        link.clock_refused
+                            .iter()
+                            .find(|r| r.channel == part.channel)
+                            .map(|r| r.explain(&part.owner, part.path.as_str()))
+                    }),
                     hold: (ms(ns(command.hold_max)), command.safe_behavior.clone()),
                 }
             })
@@ -1080,7 +1098,7 @@ impl Model {
                     .and_then(Json::as_u64)
                     .and_then(|c| s.part(ChannelId(u32::try_from(c).unwrap_or(u32::MAX))));
                 let dt_ns = row.get("dt_ns").and_then(Json::as_u64).unwrap_or(0);
-                let horizon = row.get("horizon").and_then(Json::as_u64).unwrap_or(0);
+                let chunk = row.get("chunk").and_then(Json::as_u64).unwrap_or(0);
                 let valid_ns = row.get("valid_ns").and_then(Json::as_u64).unwrap_or(0);
                 let dt_ms = dt_ns as f64 * 1e-6;
                 [
@@ -1091,9 +1109,9 @@ impl Model {
                         "-".into()
                     },
                     format!(
-                        "{horizon} × {} = {}",
+                        "{chunk} × {} = {}",
                         ms_text(dt_ms),
-                        ms_text(dt_ms * horizon as f64)
+                        ms_text(dt_ms * chunk as f64)
                     ),
                     ms_text(valid_ns as f64 * 1e-6),
                     part.map_or("-".into(), |p| hz_text(p.control_hz)),

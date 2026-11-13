@@ -10,6 +10,9 @@ COPY franka_reach /app/franka_reach
 LABEL dev.rlmesh.package='{"schemaVersion":1,"name":"franka-reach","description":"Franka reach with an RTX camera on Isaac Sim 6.1.","tags":["gpu"],"resources":{"memory":"16Gi"}}'
 
 EXPOSE 7447
+# Written once the env answers, removed when it stops.
+ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json
+HEALTHCHECK --interval=5s --start-period=600s CMD test -f /tmp/rlmesh-ready.json
 # python.sh never execs, so it would sit as PID 1 and swallow SIGTERM; set up
 # its environment and exec Isaac's Python instead.
 ENTRYPOINT ["bash", "-c", "source /isaac-sim/setup_python_env.sh && CARB_APP_PATH=/isaac-sim/kit ISAAC_PATH=/isaac-sim EXP_PATH=/isaac-sim/apps LD_PRELOAD=/isaac-sim/kit/libcarb.so exec /isaac-sim/kit/python/bin/python3 \"$@\"", "--"]

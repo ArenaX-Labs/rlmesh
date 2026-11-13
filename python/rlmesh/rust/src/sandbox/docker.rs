@@ -11,8 +11,6 @@ use uuid::Uuid;
 use crate::sandbox::source::ResolvedEnvironmentSourceRef;
 use crate::sandbox::{EffectiveSandboxSpec, EnvironmentSourceRef, hf, shell_quote};
 
-/// The ports a session host listens on, one per traffic class.
-const SESSION_PORTS: u16 = rlmesh_session::transport::TrafficClass::ALL.len() as u16;
 /// The participant a built env serves as in its container's session.
 const ENV_NAME: &str = "env";
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -40,10 +38,20 @@ pub struct BuildArtifact {
     pub image_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StartedContainer {
     pub container_id: String,
     pub address: String,
+}
+
+// The address carries the sandbox's key: `Debug` leaves it out.
+impl std::fmt::Debug for StartedContainer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartedContainer")
+            .field("container_id", &self.container_id)
+            .field("address", &rlmesh_session::address::redact(&self.address))
+            .finish()
+    }
 }
 
 pub fn ensure_image(spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
@@ -111,7 +119,7 @@ pub async fn run_container_async(
 ) -> Result<StartedContainer> {
     let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
     let bootstrap_json = render_bootstrap_json(spec)?;
-    let host_port = free_session_ports()?;
+    let host_port = free_session_port()?;
     // The container hosts its session under keys made here, so this process
     // knows the address's key (the workload spec). The value
     // rides docker's own environment, never its argv.
@@ -140,7 +148,10 @@ pub async fn run_container_async(
     if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
         let hint = spec.rlmesh_package.skew_hint();
         let report = startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
-        let _ = stop_container(&container_id);
+        // Killed, not stopped: a container that never became ready has
+        // nothing to drain, and `docker stop` would wait out its grace period
+        // (its entrypoint, PID 1, ignores SIGTERM) before the error surfaces.
+        let _ = discard_container(&container_id);
         return Err(report);
     }
 
@@ -206,6 +217,22 @@ fn stop_running_container(container_id: &str) -> Result<()> {
             return Ok(());
         }
         bail!("docker stop failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+/// Kills and removes a container at once (`docker rm -f`).
+pub fn discard_container(container_id: &str) -> Result<()> {
+    let output = Command::new("docker")
+        .args(["rm", "-f", container_id])
+        .output()
+        .context("failed to remove docker container")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such container") {
+            return Ok(());
+        }
+        bail!("docker rm -f failed: {}", stderr.trim());
     }
     Ok(())
 }
@@ -409,7 +436,9 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
                 if let Some(state) = container_terminated(container_id) {
                     bail!("sandbox container exited before ready ({state})");
                 }
-                if Instant::now() >= deadline {
+                // A refusal the same dial meets again (a key the host does
+                // not accept) is final: waiting out the deadline hides it.
+                if !err.is_transient() || Instant::now() >= deadline {
                     return Err(err.into());
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -474,6 +503,9 @@ WORKDIR /opt/rlmesh\n\
 {}\
 \n\
 RUN sh -lc {}\n\n\
+# Written once the env answers, removed when it stops.\n\
+ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json\n\
+HEALTHCHECK --interval=2s --start-period=300s CMD test -f /tmp/rlmesh-ready.json\n\n\
 ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
         spec.base_image,
         source_copy,
@@ -769,31 +801,17 @@ fn docker_run_args(
         "--name".to_string(),
         container_name.to_string(),
         "-p".to_string(),
-        format!(
-            "127.0.0.1:{host_port}-{last}:{host_port}-{last}",
-            last = host_port + SESSION_PORTS - 1
-        ),
+        format!("127.0.0.1:{host_port}:{host_port}"),
         image_id.to_string(),
     ]);
     args
 }
 
-/// A base port on 127.0.0.1 with the session ports after it free, to publish
-/// a container's session host on. Free when checked: `docker run` reports a
-/// port taken since.
-pub(crate) fn free_session_ports() -> Result<u16> {
-    use std::net::TcpListener;
-    for _ in 0..64 {
-        let first = TcpListener::bind(("127.0.0.1", 0)).context("no free local port")?;
-        let base = first.local_addr()?.port();
-        let Some(last) = base.checked_add(SESSION_PORTS - 1) else {
-            continue;
-        };
-        if (base + 1..=last).all(|port| TcpListener::bind(("127.0.0.1", port)).is_ok()) {
-            return Ok(base);
-        }
-    }
-    bail!("found no {SESSION_PORTS} consecutive free ports on 127.0.0.1")
+/// A free port on 127.0.0.1 to publish a container's session host on. Free
+/// when checked: `docker run` reports a port taken since.
+pub(crate) fn free_session_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).context("no free local port")?;
+    Ok(listener.local_addr()?.port())
 }
 
 /// A rlmesh-owned container candidate for reaping: its id, the recorded owner
@@ -1077,6 +1095,8 @@ mod tests {
         assert!(dockerfile.contains("gymnasium"));
         assert!(dockerfile.contains("pygame"));
         assert!(dockerfile.contains("rlmesh._bootstrap.sandbox_env"));
+        assert!(dockerfile.contains("ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json"));
+        assert!(dockerfile.contains("HEALTHCHECK"));
         assert!(!dockerfile.contains("COPY source"));
         assert!(!dockerfile.contains("COPY bootstrap.json"));
         assert!(!dockerfile.contains("bootstrap.json"));
@@ -1144,13 +1164,16 @@ mod tests {
     }
 
     #[test]
-    fn docker_run_args_publish_the_session_ports_on_loopback() {
+    fn docker_run_args_publish_the_session_port_on_loopback() {
         let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
-        assert!(
-            args.iter()
-                .any(|arg| arg == "127.0.0.1:40000-40003:40000-40003")
-        );
+        // One port: every traffic class dials it.
+        let published: Vec<_> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-p")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(published, ["127.0.0.1:40000:40000"]);
         assert!(args.iter().any(|arg| arg == "RLMESH_ADDRESS=0.0.0.0:40000"));
         assert!(args.iter().any(|arg| arg == "RLMESH_NAME=env"));
         // The host's keys are passed by name: their value is never argv.
@@ -1526,5 +1549,68 @@ mod tests {
         }
         assert_eq!(spec.imports, vec!["my_envs"]);
         assert_eq!(spec.kwargs["render_mode"], json!("rgb_array"));
+    }
+}
+
+#[cfg(test)]
+mod ready_tests {
+    use std::time::{Duration, Instant};
+
+    use rlmesh::spaces::{Discrete, DiscreteOptions, Space};
+    use rlmesh::{Env, EnvServer, EnvServerOptions, InfoDict, Value};
+
+    struct Still;
+
+    impl Env for Still {
+        fn observation_space(&self) -> Space {
+            Discrete::new(2, DiscreteOptions::default()).unwrap().into()
+        }
+        fn action_space(&self) -> Space {
+            Discrete::new(2, DiscreteOptions::default()).unwrap().into()
+        }
+        fn reset(
+            &mut self,
+            _seed: Option<i64>,
+            _options: Option<&InfoDict>,
+        ) -> rlmesh::Result<(Value, InfoDict)> {
+            Ok((Value::Int(0), InfoDict::new()))
+        }
+        fn step(
+            &mut self,
+            _action: Option<Value>,
+        ) -> rlmesh::Result<(Value, f64, bool, bool, InfoDict)> {
+            Ok((Value::Int(0), 0.0, true, false, InfoDict::new()))
+        }
+    }
+
+    /// A key the host refuses is final: the wait reports it at once instead
+    /// of retrying it out to its deadline.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_readiness_wait_stops_at_a_refused_key() {
+        let server = EnvServer::new(
+            Still,
+            EnvServerOptions {
+                address: Some(":0/env".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        server.start().unwrap();
+        let address = server.address().to_string();
+        let (_, other) = rlmesh_session::address::launch_identity().unwrap();
+        let (base, rest) = address.split_once('#').expect("a keyed address");
+        let name = rest.split_once('/').map_or("env", |(_, name)| name);
+        let wrong = format!("{base}#{other}/{name}");
+        let started = Instant::now();
+        let err =
+            super::wait_for_ready(&wrong, "rlmesh-no-such-container", Duration::from_secs(30))
+                .await
+                .expect_err("refused");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "waited {:?}: {err}",
+            started.elapsed()
+        );
+        drop(server);
     }
 }

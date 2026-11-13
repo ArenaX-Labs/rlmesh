@@ -1,4 +1,4 @@
-binding loco_go2 on go2: 6 inputs, 1 action, fingerprint e2b1af7aea1fdd22
+binding loco_go2 on go2: 6 inputs, 1 action, fingerprint 2bffcd40b7db40ad
 replan 50 Hz
 
   entry    dir  part           status  plan                                                                delivers

@@ -27,6 +27,8 @@ import numpy as np
 import pytest
 import rlmesh.realtime as rlmesh
 from rlmesh import _rlmesh
+from rlmesh.realtime import results
+from typed_results import check
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SPEC = REPO_ROOT / "crates" / "rlmesh-session-core" / "tests"
@@ -60,14 +62,14 @@ SINE = {
             "command": "position",
             "names": UR_JOINTS,
             "hz": 100,
-            "horizon": 10,
+            "chunk": 10,
         },
         "gripper": {
             "kind": "gripper",
             "at": "gripper",
             "command": "position",
             "hz": 100,
-            "horizon": 10,
+            "chunk": 10,
         },
     },
     "allow": ["resize", "crop"],
@@ -87,7 +89,7 @@ HOLD = {
             "command": "position",
             "names": UR_JOINTS,
             "hz": 100,
-            "horizon": 10,
+            "chunk": 10,
         }
     },
 }
@@ -228,18 +230,20 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
         FakeUR10e(host) as ur,
         rlmesh.Policy(SINE, session=host, name="sine") as policy,
     ):
-        binding = policy.bind("ur10e")
+        binding = policy.bind("ur10e").binding
         assert re.search(
             r"wrist +in +wrist/cam +bound +decode\(jpeg\) → crop\(640x480 → 96x96, bilinear\)",
             str(binding),
         )
-        assert binding.json["actions"][0]["horizon"] == 10
+        assert binding.json["actions"][0]["chunk"] == 10
         assert len(binding.fingerprint) == 16
         thread, result = in_thread(lambda: policy.run(predict, duration=30.0))
         wait_until(
             "the arm driven by the sine",
-            lambda: raised(result)
-            or ur.driven(lambda d: abs(float(np.asarray(d.value)[0])) <= 0.1001),
+            lambda: (
+                raised(result)
+                or ur.driven(lambda d: abs(float(np.asarray(d.value)[0])) <= 0.1001)
+            ),
             lambda: {"stats": policy.stats(), "holds": policy.holds},
         )
         wait_until("the gripper commanded", lambda: abs(ur.gripper - 0.5) < 1e-6)
@@ -268,6 +272,27 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
         assert any(path == "arm" for path, _, _ in driving[-1].based_on)
         edge = ur.robot.edge_stats("arm")
         assert edge["accepted"] > 0 and edge["rejected"] == 0, edge["rejected_by"]
+        assert edge["clock_refused"] is None
+        # How the chunks arrived: every one reached the edge and was taken.
+        assert edge["received"] == edge["accepted"]
+        assert len(edge["late_ms"]) == 8 and sum(edge["late_ms"]) == edge["accepted"]
+        assert edge["late_max_ms"] >= 0.0 and edge["gap_max_ms"] >= 0.0
+        # The host's health carries the robot's figures from its heartbeats.
+
+        def robot_row() -> dict[str, Any] | None:
+            rows = {row["participant"]: row for row in host.health()}
+            row = rows.get("ur10e")
+            return row if row and row["chunks_accepted"] > 0 else None
+
+        wait_until(
+            "the robot's chunk timing in the host's health",
+            lambda: robot_row() is not None,
+        )
+        row = robot_row()
+        assert row is not None and row["data_path"] == "tcp"
+        assert row["datagram_board"] is None and row["datagram_host"] is None
+        timing = row["chunk_timing"]["ur10e:arm"]
+        assert timing["accepted"] > 0 and len(timing["late_ms"]) == 8
         assert edge["modes"]["safe"] == (0, 0), "a released lease never latches safe"
 
 
@@ -280,7 +305,7 @@ def test_the_binding_table_and_refusals_match_the_conformance_goldens(
         with rlmesh.Policy(
             fixture("policies", "pi0_single"), session=host, name="pi0_single"
         ) as pi0:
-            binding = pi0.bind("ur10e")
+            binding = pi0.bind("ur10e").binding
             assert binding.table.rstrip("\n") == golden("pi0_single__ur10e")
             assert binding.warnings and "gripper" in binding.warnings[0]
 
@@ -295,7 +320,7 @@ def test_the_binding_table_and_refusals_match_the_conformance_goldens(
         assert caught.value.problems == [("incompatible", "input", "ft")]
         # The fix the message suggests is a different robot: the same policy
         # binds where the wrench is in tool0.
-        assert "wrist/ft" in str(refused.bind("ur10e"))
+        assert "wrist/ft" in str(refused.bind("ur10e").binding)
         refused.close()
 
         with pytest.raises(rlmesh.BindingRefused, match="unknown conversion"):
@@ -307,7 +332,7 @@ def test_the_binding_table_and_refusals_match_the_conformance_goldens(
         robot.close()
 
 
-def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
+def test_an_operator_preempts_the_model_which_stays_stopped_until_resumed(
     host: rlmesh.Host,
 ) -> None:
     def hold(target: float) -> Callable[[rlmesh.Observation], dict[str, Any]]:
@@ -325,8 +350,10 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         thread, result = in_thread(lambda: model.run(hold(0.25), duration=30.0))
         wait_until(
             "the model driving",
-            lambda: raised(result)
-            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25),
+            lambda: (
+                raised(result)
+                or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25)
+            ),
             lambda: {"stats": model.stats(), "holds": model.holds},
         )
         model_token = ur.log[-1].lease_token
@@ -334,7 +361,7 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
 
         # Taking over: the operator class preempts the model class.
         tokens = operator.acquire()
-        assert tokens["arm"] > model_token
+        assert tokens["ur10e:arm"] > model_token
         wait_until("the model's lease gone", lambda: not model.holds)
         streaming = threading.Event()
 
@@ -356,8 +383,10 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         operator_thread, operator_result = in_thread(teleop)
         wait_until(
             "the operator driving",
-            lambda: raised(operator_result)
-            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.75),
+            lambda: (
+                raised(operator_result)
+                or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.75)
+            ),
             lambda: {
                 "teleop": operator_result,
                 "rejected_by": ur.robot.edge_stats("arm")["rejected_by"],
@@ -365,31 +394,195 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
                 "operator_holds": operator.holds,
             },
         )
-        assert ur.log[-1].lease_token == tokens["arm"]
-        assert model.stats()["skipped"]["no_lease"] > 0, (
+        assert ur.log[-1].lease_token == tokens["ur10e:arm"]
+        assert model.stats()["skipped"]["parked"] > 0, (
             "a preempted model stays warm, skips its starts"
         )
+        assert model.stats()["parked"] == ["ur10e:arm"]
 
         # A model cannot take it back while the operator holds it.
         with pytest.raises(rlmesh.SessionRefused) as busy:
             model.acquire()
         assert busy.value.status == "LEASE_BUSY"
 
-        # Handing back: the model re-requests and resumes under a fresh token.
+        # The operator lets go: the model stays stopped, and the arm goes to
+        # its safe behaviour.
         streaming.set()
         operator_thread.join(WAIT)
         assert operator_result == [None]
         operator.release()
+        parked = model.stats()["skipped"]["parked"]
+        wait_until(
+            "the model parked and the arm safe",
+            lambda: (
+                raised(result)
+                or (
+                    model.stats()["skipped"]["parked"] >= parked + 25
+                    and ur.log[-1].mode == "safe"
+                )
+            ),
+            lambda: {"stats": model.stats(), "recent": ur.log[-1:]},
+        )
+        assert not model.holds
+        events = [e for e in model.events() if e["kind"] == "parked"]
+        assert [(e["part"], e["by"], e["message"]) for e in events] == [
+            (
+                "ur10e:arm",
+                "teleop",
+                "ur10e:arm was taken by teleop at Operator; this policy stays "
+                "stopped until policy.resume()",
+            )
+        ]
+
+        # Resumed from this thread, the run on the other re-requests and
+        # drives under a fresh token.
+        assert model.resume() == ["ur10e:arm"]
+        assert model.stats()["parked"] == []
         wait_until(
             "the model driving again",
-            lambda: raised(result)
-            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25),
+            lambda: (
+                raised(result)
+                or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25)
+            ),
             lambda: {"stats": model.stats(), "holds": model.holds},
         )
         resumed = ur.log[-1].lease_token
-        assert resumed is not None and resumed > tokens["arm"]
+        assert resumed is not None and resumed > tokens["ur10e:arm"]
         model.stop()
         thread.join(WAIT)
+        assert isinstance(result[0], dict)
+
+
+def test_a_model_set_to_resume_on_its_own_takes_the_arm_back_when_the_operator_lets_go(
+    host: rlmesh.Host,
+) -> None:
+    def hold(target: float) -> Callable[[rlmesh.Observation], dict[str, Any]]:
+        return lambda obs: {"arm": np.full((10, 6), target, dtype=np.float32)}
+
+    with (
+        FakeUR10e(host) as ur,
+        rlmesh.Policy(HOLD, session=host, name="model") as model,
+        rlmesh.Policy(
+            HOLD, session=host, name="teleop", priority="operator"
+        ) as operator,
+    ):
+        model.bind("ur10e")
+        operator.bind("ur10e")
+        with pytest.raises(TypeError, match="Resume"):
+            model.run(hold(0.25), resume="auto")  # type: ignore[arg-type]
+        thread, result = in_thread(
+            lambda: model.run(hold(0.25), duration=30.0, resume=rlmesh.Resume.AUTO)
+        )
+
+        def driving() -> bool:
+            return raised(result) or ur.driven(
+                lambda d: float(np.asarray(d.value)[0]) == 0.25
+            )
+
+        wait_until("the model driving", driving)
+        operator.acquire()
+        wait_until("the model's lease gone", lambda: not model.holds)
+        assert model.stats()["parked"] == []
+        operator.release()
+        wait_until("the model driving again, unresumed", driving)
+        stats = model.stats()
+        assert stats["skipped"]["parked"] == 0
+        assert not [e for e in model.events() if e["kind"] == "parked"]
+        model.stop()
+        thread.join(WAIT)
+        assert isinstance(result[0], dict)
+
+
+def test_an_operator_hands_the_arm_back_and_the_parked_model_resumes_it(
+    host: rlmesh.Host,
+) -> None:
+    def hold(target: float) -> Callable[[rlmesh.Observation], dict[str, Any]]:
+        return lambda obs: {"arm": np.full((10, 6), target, dtype=np.float32)}
+
+    with (
+        FakeUR10e(host) as ur,
+        rlmesh.Policy(HOLD, session=host, name="model") as model,
+        rlmesh.Policy(
+            HOLD, session=host, name="teleop", priority="operator"
+        ) as operator,
+    ):
+        model.bind("ur10e")
+        operator.bind("ur10e")
+        thread, result = in_thread(lambda: model.run(hold(0.25), duration=30.0))
+
+        def driving() -> bool:
+            return raised(result) or ur.driven(
+                lambda d: float(np.asarray(d.value)[0]) == 0.25
+            )
+
+        wait_until("the model driving", driving)
+        operator.acquire()
+        wait_until("the model parked", lambda: model.stats()["parked"] == ["ur10e:arm"])
+
+        handed = operator.release(to="model")
+        assert handed == [{"to": "model", "parts": ["ur10e:arm"], "taken": True}]
+        check(handed, list[results.HandBack], "release(to=)")
+        wait_until("the model driving again, handed back", driving)
+        assert model.stats()["parked"] == []
+        taken = model.events()
+        check(taken, list[results.Event], "events()")
+        events = [e for e in taken if e["kind"] == "handed_back"]
+        assert [(e["part"], e["by"]) for e in events] == [("ur10e:arm", "teleop")]
+        # Nothing held, nothing to hand back.
+        with pytest.raises(rlmesh.SessionRefused, match="holds no lease"):
+            operator.release(to="model")
+        with pytest.raises(ValueError, match="priority"):
+            operator.release(to="robot")
+        model.stop()
+        thread.join(WAIT)
+        assert isinstance(result[0], dict)
+
+
+def test_a_policy_whose_only_robot_closes_binds_again_when_it_returns(
+    host: rlmesh.Host,
+) -> None:
+    def hold(obs: rlmesh.Observation) -> dict[str, Any]:
+        return {"arm": np.full((10, 6), 0.25, dtype=np.float32)}
+
+    def driving(ur: FakeUR10e) -> bool:
+        return raised(result) or ur.driven(
+            lambda d: float(np.asarray(d.value)[0]) == 0.25
+        )
+
+    with rlmesh.Policy(HOLD, session=host, name="model") as model:
+        ur = FakeUR10e(host).__enter__()
+        model.bind("ur10e")
+        thread, result = in_thread(lambda: model.run(hold, duration=60.0))
+        wait_until("the model driving", lambda: driving(ur))
+
+        # The robot closes cleanly: the run waits for it, and says why.
+        ur.__exit__(None, None, None)
+        skipped = 0
+
+        def waiting() -> bool:
+            nonlocal skipped
+            raised(result)
+            skipped = model.stats()["skipped"]["publisher_gone"]
+            return skipped >= 10
+
+        wait_until("starts skipped while the robot is away", waiting)
+        lost = [e for e in model.events() if e["kind"] == "input_lost"]
+        assert lost and lost[0]["part"] == "ur10e:arm", lost
+        assert "ur10e left the session" in lost[0]["message"]
+        assert thread.is_alive()
+
+        # A robot of that name comes back: the policy binds again, and
+        # drives it once it is re-armed by name.
+        with FakeUR10e(host) as back:
+            wait_until(
+                "the policy bound again",
+                lambda: raised(result)
+                or any(e["kind"] == "rebound" for e in model.events()),
+            )
+            back.robot.rearm("ur10e")
+            wait_until("the model driving again", lambda: driving(back))
+            model.stop()
+            thread.join(WAIT)
         assert isinstance(result[0], dict)
 
 
@@ -574,7 +767,7 @@ def test_a_policy_publishes_annotations_under_its_name_and_never_binds_them(
         ):
             # One robot besides the tracker's own parts: bound with no robot
             # named, the eye alone, at its path.
-            binding = tracker.bind()
+            binding = tracker.bind().binding
             assert "binding tracker on eye-1" in str(binding), str(binding)
             with pytest.raises(ValueError, match="no part 'boxes'"):
                 tracker.publish("boxes", np.zeros(2, np.float32))
@@ -731,6 +924,141 @@ def test_eyes_with_no_state_export_and_an_idle_eye_keeps_its_last_action(
     np.testing.assert_allclose(rows[-1]["action"], [0.25, 0.25, 0.5, 0.5])
 
 
+def test_a_leader_arm_stays_out_of_the_followers_state_unless_asked_for(
+    host: rlmesh.Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rlmesh.realtime import lerobot
+
+    joints = {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 100}
+    follower_map = {
+        "arm": {**joints, "command": "position", "safe": "stop", "hold_max_ms": 500}
+    }
+    mirror = {
+        "hz": 25,
+        "inputs": {"q": {"kind": "joints", "at": "leader:arm", "fields": ["pos"]}},
+        "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position"}},
+    }
+    path = tmp_path / "teleop.mcap"
+    stop = threading.Event()
+    leader = rlmesh.Robot("leader", {"arm": joints}, session=host)
+    follower = rlmesh.Robot("follower", follower_map, session=host)
+
+    def loop() -> None:
+        rate = rlmesh.Rate(200)
+        while not stop.is_set():
+            leader.publish("arm", pos=[0.1, 0.2])
+            follower.publish("arm", pos=[0.3, 0.4])
+            follower.due("arm")
+            rate.sleep()
+
+    try:
+        follower.arm()
+        with rlmesh.SessionRecorder(path, session=host):
+            ticker = threading.Thread(target=loop, daemon=True)
+            ticker.start()
+            with rlmesh.Policy(mirror, session=host, name="mirror") as policy:
+                policy.bind("follower")
+                thread, out = in_thread(
+                    lambda: policy.run(
+                        lambda obs: {"arm": np.asarray(obs["q"])[None]}, duration=30.0
+                    )
+                )
+                wait_until(
+                    "the follower driven",
+                    lambda: follower.edge_stats("arm")["accepted"] > 5,
+                )
+                policy.stop()
+                thread.join(WAIT)
+                assert not raised(out)
+            stop.set()
+            ticker.join(WAIT)
+    finally:
+        stop.set()
+        leader.close()
+        follower.close()
+
+    datasets = fake_lerobot(monkeypatch)
+    assert lerobot.export(path, tmp_path / "out", repo_id="me/teleop") == 1
+    follower_state = ["follower/arm.pos[0]", "follower/arm.pos[1]"]
+    assert datasets[0].features["observation.state"]["names"] == follower_state
+    np.testing.assert_allclose(
+        datasets[0].episodes[0][-1]["observation.state"], [0.3, 0.4]
+    )
+
+    both = fake_lerobot(monkeypatch)
+    lerobot.export(
+        path,
+        tmp_path / "both",
+        repo_id="me/teleop",
+        state=["leader/arm", "follower/arm"],
+    )
+    assert both[0].features["observation.state"]["names"] == [
+        "leader/arm.pos[0]",
+        "leader/arm.pos[1]",
+        *follower_state,
+    ]
+
+
+def test_a_run_on_a_disarmed_session_says_it_waits_to_be_armed(
+    host: rlmesh.Host,
+) -> None:
+    arm_map = {
+        "arm": {
+            "kind": "joints",
+            "count": 2,
+            "fields": ["pos"],
+            "hz": 100,
+            "command": "position",
+            "safe": "stop",
+        }
+    }
+    hold = {
+        "hz": 25,
+        "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position"}},
+    }
+    robot = rlmesh.Robot("arm", arm_map, session=host)
+    stop = threading.Event()
+
+    def loop() -> None:
+        rate = rlmesh.Rate(200)
+        while not stop.is_set():
+            robot.due("arm")
+            rate.sleep()
+
+    ticker = threading.Thread(target=loop, daemon=True)
+    ticker.start()
+    try:
+        with rlmesh.Policy(hold, session=host, name="hold") as policy:
+            policy.bind("arm")
+            thread, out = in_thread(
+                lambda: policy.run(
+                    lambda obs: {"arm": np.zeros((1, 2), np.float32)}, duration=30.0
+                )
+            )
+            said: list[Any] = []
+
+            def says_it_waits() -> bool:
+                said.extend(policy.events())
+                return any(e["kind"] == "waiting_to_arm" for e in said)
+
+            wait_until("the run says it waits", says_it_waits)
+            check(said, list[results.Event], "events()")
+            waiting = policy.stats()["waiting"]
+            assert waiting.startswith("the session is DISARMED"), waiting
+            assert "robot.arm()" in waiting
+            assert thread.is_alive() and not raised(out)
+            robot.arm()
+            wait_until("the run commands once armed", lambda: policy.holds)
+            assert policy.stats()["waiting"] is None
+            policy.stop()
+            thread.join(WAIT)
+            assert not raised(out)
+    finally:
+        stop.set()
+        ticker.join(WAIT)
+        robot.close()
+
+
 def test_a_raising_predict_releases_the_leases_and_propagates(
     host: rlmesh.Host,
 ) -> None:
@@ -818,6 +1146,7 @@ LOBBY_ARM = {
         "fields": ["pos"],
         "hz": 100,
         "command": "position",
+        "safe": "stop",
         "hold_max_ms": 200,
     }
 }
@@ -830,33 +1159,28 @@ LOBBY_HOLD = {
             "at": "arm",
             "command": "position",
             "hz": 20,
-            "horizon": 2,
+            "chunk": 2,
         }
     },
 }
 
 
 def _free_base() -> int:
-    """A loopback port whose next three are free too (a daemon's classes)."""
-    for _ in range(50):
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            base = probe.getsockname()[1]
-        if base > 65531:
-            continue
-        try:
-            held = []
-            for offset in range(4):
-                s = socket.socket()
-                held.append(s)
-                s.bind(("127.0.0.1", base + offset))
-        except OSError:
-            continue
-        finally:
-            for s in held:
-                s.close()
-        return base
-    raise RuntimeError("no four free ports")
+    """A free local port, on TCP and UDP both: a session host listens on it
+    (and offers boards UDP on the same number)."""
+    for _ in range(64):
+        with (
+            socket.socket() as tcp,
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp,
+        ):
+            tcp.bind(("127.0.0.1", 0))
+            port = int(tcp.getsockname()[1])
+            try:
+                udp.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError("no free local port")
 
 
 @pytest.fixture
@@ -964,7 +1288,7 @@ def test_one_policy_bound_with_no_robot_drives_two_robots(host: rlmesh.Host) -> 
     try:
         eyes[0].arm()
         with rlmesh.Policy(EYES, session=host, name="tracker") as policy:
-            binding = policy.bind()
+            binding = policy.bind().binding
             assert "binding tracker on scene" in str(binding)
             gaze = np.full((1, 2), 0.25, dtype=np.float32)
             thread, result = in_thread(
@@ -997,6 +1321,123 @@ def test_one_policy_bound_with_no_robot_drives_two_robots(host: rlmesh.Host) -> 
             eye.close()
 
 
+def test_after_a_rebind_the_binding_is_the_one_in_force_and_inputs_pair_by_entry(
+    host: rlmesh.Host,
+) -> None:
+    reader = {
+        "hz": 25,
+        "inputs": {"gaze": {"kind": "joints", "at": "eye-1:eyes", "fields": ["pos"]}},
+    }
+
+    def streams(table: rlmesh.BindingTable) -> dict[str, int]:
+        return {row["entry"]: row["channel"] for row in table.json["inputs"]}
+
+    # Another robot stays: the session never has none to bind against.
+    other = rlmesh.Robot("eye-2", EYE, session=host)
+    eye = rlmesh.Robot("eye-1", EYE, session=host)
+    try:
+        with rlmesh.Policy(reader, session=host, name="reader") as policy:
+            before = streams(policy.bind().binding)
+            # The robot leaves and comes back: its parts get new stream ids.
+            eye.close()
+            eye = rlmesh.Robot("eye-1", EYE, session=host)
+            events: list[dict[str, Any]] = []
+
+            def rebound() -> bool:
+                events.extend(policy.events())
+                return any(e["kind"] == "rebound" for e in events)
+
+            wait_until("the policy bound again", rebound, lambda: events)
+            after = streams(policy.binding)
+            assert after.keys() == before.keys()
+            assert after["gaze"] != before["gaze"], "the binding in force"
+
+            def observed() -> rlmesh.Observation | None:
+                eye.publish("eyes", pos=np.zeros(2, dtype=np.float32))
+                try:
+                    return policy.observe()
+                except rlmesh.StartSkipped:
+                    return None
+
+            seen: list[rlmesh.Observation] = []
+            wait_until(
+                "an observation after the rebind",
+                lambda: (obs := observed()) is not None and not seen.append(obs),
+            )
+            meta = seen[0].meta
+            assert set(meta.ages_ns) == set(meta.seqs) == {"gaze"}
+            first, last = meta.seqs["gaze"] or (0, 0)
+            assert 0 < first <= last
+            # Its based_on names the new stream, which the binding pairs
+            # with the entry.
+            assert [s for s, _, _ in meta.based_on] == [after["gaze"]]
+    finally:
+        eye.close()
+        other.close()
+
+
+def test_acquire_names_each_part_by_its_robot(host: rlmesh.Host) -> None:
+    # Both eyes have an "eyes" part: one token per robot's part.
+    one = rlmesh.Robot("eye-1", EYE, session=host)
+    two = rlmesh.Robot("eye-2", EYE, session=host)
+    try:
+        one.arm()
+        with rlmesh.Policy(EYES, session=host, name="tracker") as policy:
+            policy.bind()
+            tokens = policy.acquire()
+            assert sorted(tokens) == ["eye-1:eyes", "eye-2:eyes"]
+            assert all(token > 0 for token in tokens.values())
+    finally:
+        one.close()
+        two.close()
+
+
+def test_a_robot_held_in_an_armed_session_needs_a_rearm_by_name(
+    host: rlmesh.Host,
+) -> None:
+    first = rlmesh.Robot("eye-1", EYE, session=host)
+    late = None
+    try:
+        with pytest.raises(rlmesh.SessionRefused, match="arm it first"):
+            first.rearm("eye-1")
+        first.arm()
+        first.arm()
+        with pytest.raises(rlmesh.SessionRefused, match="ghost") as unknown:
+            first.rearm("ghost")
+        assert unknown.value.status == "INVALID_REQUEST"
+        first.rearm("eye-1")
+        # A robot declaring commandable parts in an armed session is held.
+        late = rlmesh.Robot("eye-2", EYE, session=host)
+        actions = {"two": EYES["actions"]["two"]}
+        with rlmesh.Policy(
+            {**EYES, "actions": actions}, session=host, name="tracker"
+        ) as policy:
+            policy.bind()
+            wait_until("the policy sees eye-2 held", lambda: bool(policy.held))
+            [entry] = policy.held
+            check(policy.held, list[results.Held], "Policy.held")
+            check(first.held, list[results.Held], "Robot.held")
+            assert (entry["robot"], entry["reason"]) == ("eye-2", "unspecified")
+            assert entry["detail"] == "declared commandable parts while armed"
+            assert entry["at_ns"] > 0
+            with pytest.raises(
+                rlmesh.SessionRefused, match=r'robot\.rearm\("eye-2"\)'
+            ) as held:
+                policy.acquire()
+            assert held.value.status == "NOT_READY"
+            assert str(held.value) == entry["message"]
+            first.arm()
+            with pytest.raises(rlmesh.SessionRefused, match="eye-2"):
+                policy.acquire()
+            first.rearm("eye-2")
+            wait_until("every lease", lambda: bool(policy.acquire()))
+            wait_until("the hold is gone", lambda: not first.held)
+    finally:
+        first.close()
+        if late is not None:
+            late.close()
+
+
 _STALLED_ROBOT = """
 import threading
 
@@ -1015,7 +1456,7 @@ POLICY = {
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": ["a", "b"]}},
     "actions": {
         "arm": {"kind": "joints", "at": "arm", "command": "position",
-                "names": ["a", "b"], "hz": 100, "horizon": 10},
+                "names": ["a", "b"], "hz": 100, "chunk": 10},
     },
 }
 

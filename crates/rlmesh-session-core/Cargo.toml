@@ -80,6 +80,11 @@ std = [
 [target.'cfg(not(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "none")))'.dependencies]
 uuid = { version = "1", default-features = false, features = ["std", "v7"] }
 
+[dev-dependencies]
+# The schema's descriptors, read by the test that every repeated field a
+# board decodes is capped.
+prost-types = "0.14"
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 

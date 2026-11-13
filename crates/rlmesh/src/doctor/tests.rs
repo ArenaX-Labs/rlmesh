@@ -90,6 +90,84 @@ fn serve_scene() -> EnvServer {
     server
 }
 
+/// A [`Scene`] that, like a catalog env, refuses a reset without the
+/// `trial_index` it declares among its reset options.
+struct Trial(Scene);
+
+impl Env for Trial {
+    fn observation_space(&self) -> Space {
+        self.0.observation_space()
+    }
+    fn action_space(&self) -> Space {
+        self.0.action_space()
+    }
+    fn reset(
+        &mut self,
+        seed: Option<i64>,
+        options: Option<&InfoDict>,
+    ) -> crate::Result<(Value, InfoDict)> {
+        if crate::trial_index(options, None)?.is_none() {
+            return Err(crate::Error::invalid_argument("reset needs a trial_index"));
+        }
+        self.0.reset(seed, options)
+    }
+    fn step(&mut self, action: Option<Value>) -> crate::Result<(Value, f64, bool, bool, InfoDict)> {
+        self.0.step(action)
+    }
+    fn metadata(&self) -> Option<crate::Metadata> {
+        let mut metadata = crate::Metadata::new();
+        metadata.insert(
+            crate::ENV_RESET_OPTIONS_KEY,
+            Value::List(vec![Value::from("trial_index")]),
+        );
+        Some(metadata)
+    }
+}
+
+#[test]
+fn an_env_asking_for_a_trial_index_gets_one_and_a_name_for_its_unknown_id() {
+    let server = EnvServer::new(
+        Trial(Scene { seed: 0, step: 0 }),
+        EnvServerOptions {
+            address: Some(crate::tests::ENV_ADDRESS.into()),
+            options: Some(crate::tests::env_serve_options()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    server.start().unwrap();
+    let report = probe_env(
+        server.address(),
+        &EnvProbeOptions {
+            connect_timeout: Duration::from_secs(10),
+            name: Some("catalog:Reach".into()),
+            ..Default::default()
+        },
+    );
+    use CheckStatus::{Pass, Skip};
+    assert_eq!(
+        statuses(&report),
+        [
+            ("env_handshake", Pass),
+            ("env_spec_matches_describe", Skip),
+            ("env_contract", Skip),
+            ("env_repro", Pass),
+            ("env_step_conforms", Pass),
+            ("env_step_latency", Pass),
+            ("preview", Skip),
+        ],
+        "{:#?}",
+        report.checks
+    );
+    assert!(
+        report.checks[2].detail.contains("no describe envelope"),
+        "{}",
+        report.checks[2].detail
+    );
+    assert_eq!(report.env.env_id, "catalog:Reach");
+    assert!(report.checks[0].detail.contains("catalog:Reach"));
+}
+
 fn statuses(report: &ProbeReport) -> Vec<(&str, CheckStatus)> {
     report
         .checks
@@ -118,6 +196,7 @@ fn an_env_that_matches_its_describe_passes_and_one_that_does_not_fails() {
             describe: Some(truthful),
             output_dir: Some(output.path().to_path_buf()),
             connect_timeout: Duration::from_secs(10),
+            name: None,
         },
     );
     use CheckStatus::{Fail, Pass, Skip};
@@ -146,6 +225,7 @@ fn an_env_that_matches_its_describe_passes_and_one_that_does_not_fails() {
             describe: Some(lying),
             output_dir: None,
             connect_timeout: Duration::from_secs(10),
+            name: None,
         },
     );
     let mismatch = &report.checks[1];
@@ -191,7 +271,7 @@ fn a_model_is_checked_against_its_spec_or_its_reference_env() {
             Some(adapter_less.clone()),
             Some(server.address().to_string()),
             CheckStatus::Pass,
-            server.address().to_string(),
+            rlmesh_session::address::redact(server.address()),
         ),
         (Some(adapter_less), None, CheckStatus::Warn, String::new()),
         // Nothing to synthesize from: no label, and this model describes nothing.

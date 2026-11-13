@@ -168,3 +168,126 @@ pub fn parts(parts: &[PartSpec], places: &[Place]) -> Result<Vec<PartSpec>, Stri
     }
     Ok(view)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::normalise::normalise;
+    use crate::wire::Pose;
+    use crate::wire::version::SPEC_VERSION;
+
+    fn id(robot: &str) -> ParticipantId {
+        ParticipantId::new(robot).expect("id")
+    }
+
+    fn place(robot: &str, at: &str, from: &str) -> Place {
+        Place {
+            robot: id(robot),
+            at: at.into(),
+            from: from.into(),
+            frame: String::new(),
+            pose: Pose {
+                xyz: [0.0; 3],
+                quat_xyzw: [0.0, 0.0, 0.0, 1.0],
+            },
+        }
+    }
+
+    fn texts(robot: &str, paths: &[&str]) -> Vec<PartSpec> {
+        let map: Vec<String> = paths
+            .iter()
+            .map(|p| format!(r#""{p}": {{"kind": "text"}}"#))
+            .collect();
+        normalise(&id(robot), SPEC_VERSION, &format!("{{{}}}", map.join(","))).expect("map")
+    }
+
+    #[test]
+    fn malformed_places_are_refused() {
+        let ok = place("arm", "left", "");
+        let posed = |xyz: [f64; 3], quat_xyzw: [f64; 4]| Place {
+            pose: Pose { xyz, quat_xyzw },
+            ..ok.clone()
+        };
+        assert_eq!(check_place(&ok), Ok(()));
+        assert_eq!(
+            check_place(&posed([0.0; 3], [0.0, 0.0, 0.0, 1.0 + 5e-7])),
+            Ok(()),
+            "within the unit tolerance"
+        );
+        for (bad, needle) in [
+            (place("arm", "Left", ""), "place at"),
+            (place("arm", "left", "a//b"), "place from"),
+            (
+                Place {
+                    frame: "Base".into(),
+                    ..ok.clone()
+                },
+                "not a frame name",
+            ),
+            (posed([f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), "finite"),
+            (posed([0.0; 3], [0.0, 0.0, 0.0, 2.0]), "norm 2"),
+            (posed([0.0; 3], [f64::NAN; 4]), "norm NaN"),
+        ] {
+            let err = check_place(&bad).expect_err(needle);
+            assert!(err.contains(needle), "{needle}: {err}");
+        }
+        let twice = check(&[ok.clone(), place("arm", "right", "")]).expect_err("twice");
+        assert!(twice.contains("placed twice"), "{twice}");
+    }
+
+    #[test]
+    fn each_robot_sits_at_its_name_numbered_when_two_read_alike() {
+        let long = "x".repeat(40);
+        let robots: Vec<ParticipantId> = [
+            "eye-1",
+            "eye_1",
+            "eye.1",
+            "9lives",
+            &long,
+            &format!("{long}y"),
+        ]
+        .into_iter()
+        .map(id)
+        .collect();
+        let places = each_at_its_name(&robots.iter().collect::<Vec<_>>());
+        let at: Vec<&str> = places.iter().map(|p| p.at.as_str()).collect();
+        let short = "x".repeat(MAX_SEGMENT_LEN - 4);
+        assert_eq!(
+            at,
+            [
+                "eye_1",
+                "eye_1_2",
+                "eye_1_3",
+                "r9lives",
+                short.as_str(),
+                format!("{short}_2").as_str()
+            ]
+        );
+        assert_eq!(check(&places), Ok(()));
+    }
+
+    #[test]
+    fn a_place_renames_the_parts_at_or_below_its_from() {
+        let mut robot = texts("left", &["arm", "arm/tip", "base"]);
+        robot.extend(texts("right", &["arm"]));
+        let view = parts(
+            &robot,
+            &[place("left", "l", "arm"), place("right", "r", "")],
+        )
+        .expect("view");
+        let named: Vec<(&str, &str)> = view
+            .iter()
+            .map(|p| (p.owner.as_str(), p.path.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [("left", "l"), ("left", "l/tip"), ("right", "r/arm")]
+        );
+        let err = parts(
+            &robot,
+            &[place("left", "l", "arm"), place("right", "l/tip", "arm")],
+        )
+        .expect_err("collision");
+        assert!(err.contains("collide at l/tip"), "{err}");
+    }
+}

@@ -12,14 +12,18 @@ FROM python:3.11-slim
 
 # Pin rlmesh to the build your host runs against (the handshake checks
 # compatibility). Add your policy's framework + weights handling here.
-RUN pip install --no-cache-dir "rlmesh" "gymnasium" "numpy"
+ARG RLMESH_VERSION=0.2.0a0
+RUN pip install --no-cache-dir "rlmesh==${RLMESH_VERSION}" "gymnasium" "numpy"
 
 WORKDIR /app
 COPY entrypoint.py .
 
-# A session host listens on four consecutive ports.
-EXPOSE 7447-7450
+# A session host listens on one port, which every traffic class dials.
+EXPOSE 7447
 ENV RLMESH_ADDRESS=0.0.0.0:7447
+# Written once the model answers, removed when it stops.
+ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json
+HEALTHCHECK --interval=2s --start-period=300s CMD test -f /tmp/rlmesh-ready.json
 # Or skip entrypoint.py and serve the recipe directly:
 #   ENTRYPOINT ["python", "-m", "rlmesh.serve", "entrypoint:MyPolicy"]
 ENTRYPOINT ["python", "entrypoint.py"]

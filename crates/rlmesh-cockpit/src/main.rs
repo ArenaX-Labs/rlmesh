@@ -18,11 +18,17 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    use tracing_subscriber::prelude::*;
+    // Zenoh logs its config, link password included, below INFO.
+    let capped = tracing_subscriber::filter::filter_fn(rlmesh_session::logging::may_record);
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn,rlmesh_cockpit=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                format!("{},rlmesh_cockpit=info", rlmesh_session::DEFAULT_LOG_FILTER).into()
+            }),
         )
+        .finish()
+        .with(capped)
         .init();
     let args = Cli::parse().args;
     let result = tokio::runtime::Builder::new_multi_thread()

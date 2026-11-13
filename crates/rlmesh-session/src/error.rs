@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::participant::Pending;
-use crate::wire::{ChannelId, CtlError, IdError, WireError};
+use crate::wire::{CtlError, IdError, WireError};
 
 /// Everything a session call can fail with.
 #[derive(Debug, thiserror::Error)]
@@ -47,18 +47,18 @@ pub enum SessionError {
     #[error("{0} is not declared")]
     UnknownPart(String),
     /// The stream exists but cannot be used this way.
-    #[error("{channel}: {reason}")]
+    #[error("{part}: {reason}")]
     WrongChannel {
-        /// The channel.
-        channel: ChannelId,
+        /// The stream, `robot:path`.
+        part: String,
         /// Why it cannot be used.
         reason: String,
     },
     /// A value does not fit its stream.
-    #[error("{channel} value: {reason}")]
+    #[error("{part} value: {reason}")]
     InvalidValue {
-        /// The channel.
-        channel: ChannelId,
+        /// The stream, `robot:path`.
+        part: String,
         /// What is wrong.
         reason: String,
     },

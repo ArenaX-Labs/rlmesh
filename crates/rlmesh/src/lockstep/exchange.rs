@@ -8,7 +8,9 @@
 //! The env side is a [`LockstepHandler`] behind a `Gate`: before every
 //! step it checks the step's epoch and lease token against its own
 //! authority view (two atomic loads) and the e-stop latch, with no host
-//! round trip. The driver side reaches it through a [`LockstepLink`]:
+//! round trip. A v2 robot's handler is also behind [`Limited`], which
+//! validates and clamps its commands as a wall-clock edge would. The
+//! driver side reaches it through a [`LockstepLink`]:
 //!
 //! | Placement | Link |
 //! |---|---|
@@ -25,6 +27,7 @@
 //! only as a hint. Both ends check the request's lease token against the
 //! key's.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -32,17 +35,19 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use rlmesh_session::Sealer;
-use rlmesh_session::transport::payload_bytes;
+use rlmesh_session::edge::command::CommandCheck;
+use rlmesh_session::transport::{Transport, payload_bytes};
 use rlmesh_session::wire::timing::ns;
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, LeaseToken, LockstepOp, LockstepReply, LockstepRequest,
-    LockstepReset, LockstepResponse, LockstepResult, LockstepStep, Mode, ParticipantId,
+    LockstepReset, LockstepResponse, LockstepResult, LockstepStep, Mode, PartSpec, ParticipantId,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::query::ConsolidationMode;
 
+use crate::ErrorCode;
 use crate::lockstep::error::{GymError, failure_from_json, failure_to_json};
 
 /// One lockstep request.
@@ -189,7 +194,9 @@ impl Gate {
         let held = self.token.load(Ordering::Acquire);
         if held == 0 || token != held {
             return Err(GymError::Refused(format!(
-                "lease token {token} does not hold the robot's commandable parts"
+                "lease token {token} does not hold the robot's commandable parts: this \
+                 driver's lease ended (the host stopped hearing from it) or moved to another, \
+                 so reconnect to drive it again"
             )));
         }
         Ok(())
@@ -236,6 +243,70 @@ impl LockstepHandler for Gated {
             reply.timing.get_or_insert_default().queue_ns = queue_ns;
         }
         Ok(reply)
+    }
+
+    async fn render(&self, lane: u32) -> Result<Option<Bytes>, GymError> {
+        self.inner.render(lane).await
+    }
+
+    fn concurrent(&self) -> bool {
+        self.inner.concurrent()
+    }
+
+    async fn flush(&self) {
+        self.inner.flush().await;
+    }
+}
+
+/// A robot's command validation on the lockstep path: every step's
+/// commands pass the checks a wall-clock edge runs ([`CommandCheck`]:
+/// finite values, valid rotations, the declared limits, norm bounds and the
+/// binary snap) before the robot sees them, so the robot enforces its own
+/// limits whoever drives it. A step with an invalid action is refused
+/// whole, as the edge refuses a chunk.
+pub struct Limited {
+    checks: BTreeMap<ChannelId, (String, CommandCheck)>,
+    inner: Arc<dyn LockstepHandler>,
+}
+
+impl Limited {
+    /// `inner` behind the checks of `parts`' commands (`inner` itself when
+    /// no part is commandable).
+    pub fn wrap(parts: &[PartSpec], inner: Arc<dyn LockstepHandler>) -> Arc<dyn LockstepHandler> {
+        let checks: BTreeMap<_, _> = parts
+            .iter()
+            .filter_map(|p| {
+                let check = CommandCheck::new(p.command.as_ref()?)?;
+                Some((p.channel, (p.path.to_string(), check)))
+            })
+            .collect();
+        if checks.is_empty() {
+            return inner;
+        }
+        Arc::new(Self { checks, inner })
+    }
+}
+
+#[async_trait]
+impl LockstepHandler for Limited {
+    async fn handle(&self, request: Request) -> Result<LockstepReply, GymError> {
+        let request = match request {
+            Request::Step(mut step) => {
+                for values in &mut step.commands {
+                    let Some((path, check)) = self.checks.get(&values.channel) else {
+                        continue;
+                    };
+                    let count = values.payload.len() / check.stride().max(1);
+                    let checked = check.check(&values.payload, count).map_err(|err| {
+                        GymError::env(ErrorCode::InvalidAction, format!("{path}: {err}"), true)
+                    })?;
+                    values.payload = checked.actions;
+                }
+                Request::Step(step)
+            }
+            reset @ Request::Reset(_) => reset,
+        };
+        self.inner.handle(request).await
     }
 
     async fn render(&self, lane: u32) -> Result<Option<Bytes>, GymError> {
@@ -317,7 +388,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// A query on `l/{robot}` over the lockstep class session, sealed under
 /// the lease's keys.
 pub struct ZenohLink {
-    session: zenoh::Session,
+    /// Held as a transport so that dropping the last handle closes it off
+    /// the dropping thread.
+    session: Transport,
     key: String,
     sealer: Sealer,
     robot: ParticipantId,
@@ -336,7 +409,7 @@ impl ZenohLink {
         token: LeaseToken,
     ) -> Self {
         Self {
-            session,
+            session: Transport::from_session(session),
             key,
             sealer,
             robot,
@@ -372,6 +445,7 @@ impl ZenohLink {
         timeout: Option<Duration>,
     ) -> Result<LockstepResult, GymError> {
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
+        let started = tokio::time::Instant::now();
         let request_id = self.last_request.fetch_add(1, Ordering::Relaxed) + 1;
         let sealed = self.sealer.seal_lockstep_request(
             &self.key,
@@ -381,6 +455,7 @@ impl ZenohLink {
         )?;
         let replies = self
             .session
+            .control()
             .get(&self.key)
             .payload(sealed)
             .consolidation(ConsolidationMode::None)
@@ -419,9 +494,32 @@ impl ZenohLink {
         }
         // No sealed reply: the env's plain refusal, or a Zenoh-level error
         // (the queryable is gone).
-        Err(hint.unwrap_or(GymError::Timeout(timeout)))
+        Err(hint.unwrap_or_else(|| unanswered(&self.robot, started, timeout)))
     }
 }
+
+/// A request whose replies ended with none: a timeout when its time ran
+/// out, else the env went away while it was in flight (its process exited,
+/// it left the session, or the link to it dropped), which waiting would
+/// not mend.
+pub(crate) fn unanswered(
+    robot: &ParticipantId,
+    started: tokio::time::Instant,
+    timeout: Duration,
+) -> GymError {
+    if started.elapsed() + ENDED_EARLY < timeout {
+        GymError::Closed(format!(
+            "the served env '{robot}' went away before it answered: its server exited, left the \
+             session, or the link to it was lost"
+        ))
+    } else {
+        GymError::Timeout(timeout)
+    }
+}
+
+/// How much sooner than its timeout a request's replies must end for the
+/// end to be its server going away rather than the timeout.
+pub(crate) const ENDED_EARLY: Duration = Duration::from_millis(100);
 
 /// The env's failure in `json`, if it names one.
 fn failure(json: &[u8]) -> Option<GymError> {
@@ -477,13 +575,15 @@ async fn answer(
         sealer.seal_lockstep_response(key, token, &LockstepResponse { request_id, result });
     let sent = match sealed {
         Ok(sealed) => query.reply(key, sealed).express(true).await,
+        // The driver left while its request ran (finished, or Ctrl-C): its
+        // lease, and the key to answer under, went with it.
         Err(err) => {
-            warn!(%err, "lockstep reply not sealed");
+            debug!(%err, "lockstep reply not sealed");
             return;
         }
     };
     if let Err(err) = sent {
-        warn!(%err, "lockstep reply not sent");
+        debug!(%err, "lockstep reply not sent");
     }
 }
 
@@ -508,19 +608,26 @@ async fn timed(
 }
 
 /// Serves `handler` on `key` until `cancel` fires, opening requests and
-/// sealing replies under the lease keys `sealer` holds.
-pub async fn serve_zenoh(
+/// sealing replies under the lease keys `sealer` holds. `ready` runs once
+/// requests can arrive; what it returns lives as long as the serve.
+pub async fn serve_zenoh<R>(
     session: zenoh::Session,
     key: String,
     handler: Arc<dyn LockstepHandler>,
     cancel: CancellationToken,
     sealer: Sealer,
+    ready: Option<impl FnOnce() -> R>,
 ) -> Result<(), GymError> {
+    // Held as a transport: a serve cancelled with the last handle closes it
+    // off the dropping thread.
+    let session = Transport::from_session(session);
     let queryable = session
+        .control()
         .declare_queryable(&key)
         .complete(true)
         .await
         .map_err(|e| GymError::Closed(e.to_string()))?;
+    let _ready = ready.map(|ready| ready());
     let concurrent = handler.concurrent();
     loop {
         let query = tokio::select! {
@@ -619,4 +726,53 @@ pub async fn serve_zenoh(
     }
     drop(queryable);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn replies_that_end_early_name_the_server_going_away() {
+        let robot = ParticipantId::new("env").unwrap();
+        let started = tokio::time::Instant::now();
+        let gone = unanswered(&robot, started, Duration::from_secs(600));
+        assert!(
+            matches!(&gone, GymError::Closed(why) if why.contains("'env' went away")),
+            "{gone:?}"
+        );
+        let late = unanswered(&robot, started, Duration::from_millis(50));
+        assert!(matches!(late, GymError::Timeout(_)), "{late:?}");
+    }
+
+    #[test]
+    fn dropping_a_zenoh_link_takes_no_wakeup_of_another_future() {
+        use crate::lockstep::linked_host::{LinkedHost, timer_survives};
+        use rlmesh_session::wire::{PriorityClass, Role};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (host, driver, link) = runtime.block_on(async {
+            let host = LinkedHost::start().await;
+            let driver = host
+                .attach("driver", Role::Controller, PriorityClass::Model)
+                .await;
+            let session =
+                crate::lockstep::session::lockstep_session(driver.transport(), &host.address)
+                    .await
+                    .unwrap();
+            let robot = ParticipantId::new("robot").unwrap();
+            let link = ZenohLink::new(
+                session,
+                host.keys().lockstep(&robot),
+                driver.sealer(),
+                robot,
+                LeaseToken(0),
+            );
+            (host, driver, link)
+        });
+        // The link holds the only handle on its session.
+        let dropped = timer_survives(async move { drop(link) });
+        assert!(dropped, "a dropped link's session took a pending wakeup");
+        drop((driver, host));
+    }
 }

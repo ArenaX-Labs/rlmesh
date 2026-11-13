@@ -908,4 +908,272 @@ mod tests {
         assert_eq!(error.code, ErrorCode::MissingRole);
         assert!(error.message.contains("env action needs role"));
     }
+
+    /// Every way a model/env actuator pairing is (or is not) convertible:
+    /// `Ok` or the error code each refusal carries.
+    #[test]
+    fn action_dims_are_checked_per_rule() {
+        use super::check_action_dims;
+        use crate::spec::role::input::CustomArms;
+
+        let rot = |dim: u32, encoding: Option<Rotation>| Actuator {
+            dim,
+            encoding,
+            ..component("custom/rot")
+        };
+        let custom = |to_base: bool, dim: u32| Actuator {
+            custom: Some(CustomArms {
+                from_base: false,
+                to_base,
+            }),
+            ..rot(dim, Some(Rotation::Rot6d))
+        };
+        let quat = Some(Rotation::QuatXyzw);
+        let euler = Some(Rotation::EulerXyz);
+        let scaled = Actuator {
+            axis_scale: Some(vec![1.0; 4]),
+            ..rot(4, quat)
+        };
+        let offset = Actuator {
+            axis_offset: Some(vec![0.0; 4]),
+            ..rot(4, quat)
+        };
+        let pos = |dim: u32| Actuator {
+            dim,
+            ..component("action/delta_eef_pos")
+        };
+        let cases: Vec<(&str, Actuator, Actuator, Option<ErrorCode>)> = vec![
+            ("the role's fixed dims", pos(3), pos(3), None),
+            (
+                "off the role's fixed dims",
+                pos(2),
+                pos(2),
+                Some(ErrorCode::DimMismatch),
+            ),
+            (
+                "a custom with its action arm",
+                custom(true, 6),
+                rot(6, Some(Rotation::Rot6d)),
+                None,
+            ),
+            (
+                "a custom without it",
+                custom(false, 6),
+                rot(6, Some(Rotation::Rot6d)),
+                Some(ErrorCode::Unsupported),
+            ),
+            ("a quaternion to Euler", rot(4, quat), rot(3, euler), None),
+            (
+                "a model dim off its encoding",
+                rot(3, quat),
+                rot(3, euler),
+                Some(ErrorCode::DimMismatch),
+            ),
+            (
+                "an env dim off its encoding",
+                rot(4, quat),
+                rot(4, euler),
+                Some(ErrorCode::DimMismatch),
+            ),
+            (
+                "model axis_scale across a conversion",
+                scaled.clone(),
+                rot(3, euler),
+                Some(ErrorCode::Unsupported),
+            ),
+            (
+                "model axis_offset across a conversion",
+                offset.clone(),
+                rot(3, euler),
+                Some(ErrorCode::Unsupported),
+            ),
+            (
+                "model axis corrections, no conversion",
+                scaled,
+                rot(4, quat),
+                None,
+            ),
+            (
+                "an encoding on the model alone",
+                rot(4, quat),
+                rot(4, None),
+                Some(ErrorCode::EncodingMismatch),
+            ),
+            (
+                "an encoding on the env alone",
+                rot(4, None),
+                rot(4, quat),
+                Some(ErrorCode::EncodingMismatch),
+            ),
+            (
+                "no encoding, the same dims",
+                rot(2, None),
+                rot(2, None),
+                None,
+            ),
+            (
+                "no encoding, other dims",
+                rot(2, None),
+                rot(3, None),
+                Some(ErrorCode::DimMismatch),
+            ),
+            (
+                "one encoding, other dims",
+                offset,
+                rot(3, quat),
+                Some(ErrorCode::DimMismatch),
+            ),
+        ];
+        for (what, model, env, want) in cases {
+            let role = model.role.clone().expect("a role");
+            let got = check_action_dims(&model, &env, &role).err().map(|e| e.code);
+            assert_eq!(got, want, "{what}");
+        }
+    }
+
+    /// The delta unit check: what one model unit reaches the env as, through
+    /// the range map and both sides' scales, and the factor that rescales it.
+    #[test]
+    fn a_unit_mismatch_is_the_factor_that_rescales_it() {
+        use super::check_unit;
+        use crate::spec::projection::Projection;
+        use crate::spec::role::error::Severity;
+
+        let side = |unit: Option<f64>, range: Option<(f64, f64)>, scale: Option<f64>| Actuator {
+            unit,
+            range,
+            scale,
+            ..component("action/delta_eef_pos")
+        };
+        let allowed = || Projections::allowing(&[Projection::ConvertUnits]);
+        // (what, model, env, same_range, the factor)
+        let cases: Vec<(&str, Actuator, Actuator, bool, Option<f64>)> = vec![
+            (
+                "no units",
+                side(None, None, None),
+                side(None, None, None),
+                false,
+                None,
+            ),
+            (
+                "equal units",
+                side(Some(1000.0), None, None),
+                side(Some(1000.0), None, None),
+                false,
+                None,
+            ),
+            (
+                "within a relative 1e-9",
+                side(Some(1000.0), None, None),
+                side(Some(1000.0 * (1.0 + 1e-10)), None, None),
+                false,
+                None,
+            ),
+            (
+                "other units",
+                side(Some(0.01), None, None),
+                side(Some(0.04), None, None),
+                false,
+                Some(0.25),
+            ),
+            (
+                // Spans 2 and 8: one model unit is 4 env units.
+                "a range map",
+                side(Some(0.04), Some((1.0, 3.0)), None),
+                side(Some(0.01), Some((2.0, 10.0)), None),
+                false,
+                None,
+            ),
+            (
+                "a range map the caller found the same",
+                side(Some(0.04), Some((1.0, 3.0)), None),
+                side(Some(0.01), Some((2.0, 10.0)), None),
+                true,
+                Some(4.0),
+            ),
+            (
+                "an empty model range maps nothing",
+                side(Some(0.04), Some((2.0, 2.0)), None),
+                side(Some(0.01), Some((2.0, 10.0)), None),
+                false,
+                Some(4.0),
+            ),
+            (
+                // |-2| × |3|: one model unit is six env units.
+                "both scales, by magnitude",
+                side(Some(0.06), None, Some(-2.0)),
+                side(Some(0.01), None, Some(3.0)),
+                false,
+                None,
+            ),
+            (
+                "the model's scale alone",
+                side(Some(0.06), None, Some(2.0)),
+                side(Some(0.01), None, None),
+                false,
+                Some(3.0),
+            ),
+            (
+                "the env's scale alone",
+                side(Some(0.06), None, None),
+                side(Some(0.01), None, Some(2.0)),
+                false,
+                Some(3.0),
+            ),
+        ];
+        for (what, model, env, same_range, want) in cases {
+            let mut advisories = Vec::new();
+            let mut projections = allowed();
+            let got = check_unit(
+                "action/delta_eef_pos",
+                &env,
+                &model,
+                same_range,
+                &mut advisories,
+                &mut projections,
+            )
+            .expect(what);
+            match (got, want) {
+                (Some(got), Some(want)) => {
+                    assert!((got - want).abs() < 1e-12, "{what}: {got} != {want}")
+                }
+                (got, want) => assert_eq!(got, want, "{what}"),
+            }
+            assert!(advisories.is_empty(), "{what}: {advisories:?}");
+        }
+        // A rescale the model spec does not allow is refused.
+        let refused = check_unit(
+            "action/delta_eef_pos",
+            &side(Some(0.04), None, None),
+            &side(Some(0.01), None, None),
+            false,
+            &mut Vec::new(),
+            &mut Projections::allowing(&[]),
+        )
+        .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::ConventionMismatch);
+        // A unit on one side only is noted, not checked.
+        for (model, env, who) in [(Some(0.01), None, "model"), (None, Some(0.01), "env")] {
+            let mut advisories = Vec::new();
+            let got = check_unit(
+                "action/delta_eef_pos",
+                &side(env, None, None),
+                &side(model, None, None),
+                false,
+                &mut advisories,
+                &mut allowed(),
+            )
+            .expect("noted");
+            assert_eq!(got, None);
+            assert_eq!(advisories.len(), 1, "{who}");
+            assert_eq!(advisories[0].severity, Severity::Info);
+            assert!(
+                advisories[0]
+                    .message
+                    .contains(&format!("only the {who} declares a unit")),
+                "{}",
+                advisories[0].message
+            );
+        }
+    }
 }

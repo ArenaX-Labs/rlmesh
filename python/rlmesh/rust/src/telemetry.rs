@@ -11,9 +11,16 @@ pub fn init_tracing(process_role: &'static str) {
     static INIT: OnceLock<()> = OnceLock::new();
 
     INIT.get_or_init(|| {
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(rlmesh_session::DEFAULT_LOG_FILTER));
         let fmt_layer = fmt::layer().with_writer(std::io::stderr).with_target(false);
-        let _ = registry().with(filter).with(fmt_layer).try_init();
+        // Zenoh logs its config, link password included, below INFO.
+        let capped = tracing_subscriber::filter::filter_fn(rlmesh_session::logging::may_record);
+        let _ = registry()
+            .with(filter)
+            .with(capped)
+            .with(fmt_layer)
+            .try_init();
     });
 
     if profiling_enabled() {

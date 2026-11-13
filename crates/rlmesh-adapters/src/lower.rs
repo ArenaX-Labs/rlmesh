@@ -62,10 +62,26 @@ pub fn resolve(
     // for a modifier it never parsed is worse than failing. Fail closed, on both
     // sides, before any plan is built. Unknown *kinds* are tolerated here (the
     // binder ignores or fails them precisely); only fields taint.
-    crate::spec::reject_bare_fields_env(env_tags)
-        .map_err(|message| err(ErrorCode::UnsupportedKind, message))?;
-    crate::spec::reject_bare_fields_model(model_spec)
-        .map_err(|message| err(ErrorCode::UnsupportedKind, message))?;
+    // Past its own publish gate, a field the declaring side wrote and this
+    // reader does not know means the declaring side is newer: say which.
+    crate::spec::reject_bare_fields_env(env_tags).map_err(|message| {
+        err(
+            ErrorCode::UnsupportedKind,
+            format!(
+                "the env's tags are newer than this model's rlmesh ({}) reads: {message}",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+    })?;
+    crate::spec::reject_bare_fields_model(model_spec).map_err(|message| {
+        err(
+            ErrorCode::UnsupportedKind,
+            format!(
+                "the model's spec is newer than this rlmesh ({}) reads: {message}",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+    })?;
     let spec = lower_model(model_spec)?;
     let features = join(env_tags, observation_space, action_space).map_err(|error| {
         let code = match error {

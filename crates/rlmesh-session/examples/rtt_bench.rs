@@ -55,7 +55,11 @@ fn config(
             let connect: Vec<&str> = connect.iter().map(String::as_str).collect();
             TransportConfig::shared(&listen, &connect)
         }
-        _ => TransportConfig::per_class_tcp(listen, connect)?,
+        _ => match (listen, connect) {
+            (Some(listen), _) => TransportConfig::host_tcp(listen),
+            (None, Some(connect)) => TransportConfig::per_class_tcp(connect),
+            (None, None) => return Err("listen or connect".into()),
+        },
     })
 }
 

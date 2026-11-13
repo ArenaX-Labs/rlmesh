@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+#MISE description="Gate SandboxEnv and SandboxModel on real containers: build env and model images from this checkout once, then start, join, evaluate and fail them the ways a stock Docker host can; skips when Docker is absent"
+#MISE dir="{{ config_root }}"
+#MISE depends=["setup:python"]
+#USAGE flag "--require" help="Fail instead of skipping when no Docker daemon answers (release machines)"
+#USAGE flag "--rebuild" help="Rebuild the container wheel even when it was made from this tree state"
+#USAGE flag "--starts <n>" help="Starts of each sandbox, one after another (default 10)"
+#USAGE flag "--runs <n>" help="Evaluations of the model image against the env image (default 3)"
+
+# The tests are python/rlmesh/tests/docker (pytest marker `docker`). Every
+# container and image they create carries the label rlmesh.test.run=<run>,
+# and only those are removed afterwards: the Docker host may be shared.
+set -euo pipefail
+
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  if [ "${usage_require:-false}" = true ]; then
+    echo "error: test:sandbox:docker needs a Docker daemon, and \`docker info\` failed" >&2
+    exit 1
+  fi
+  echo "skip: test:sandbox:docker needs a Docker daemon, and \`docker info\` failed; nothing ran"
+  exit 0
+fi
+
+# Both sides of each session are release-cohort builds of this tree: a dev
+# build stamps its workflow edition with a tree state its build script does
+# not always refresh, and talks only to the identical stamp (docs/local-dev.md).
+export RLMESH_RELEASE_BUILD=1
+mise run dev:heavy -- mise run build:python:develop
+
+# The images install the manylinux wheel build:python:docker makes, which
+# skips when one for this version exists: rebuild it unless it was made from
+# this tree state.
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' python/rlmesh/pyproject.toml | head -1)
+tree=$({
+  git rev-parse HEAD
+  git diff --binary HEAD
+  git ls-files --others --exclude-standard -z | xargs -0 -r sha256sum
+} | sha256sum | cut -d' ' -f1)
+stamp=target/sandbox-docker-gate/wheel-tree
+wheels() { compgen -G "python/rlmesh/dist/rlmesh-${version}-cp311-abi3-manylinux*.whl" | xargs -r stat -c '%n %Y'; }
+rebuild=()
+if [ "${usage_rebuild:-false}" = true ] || [ "$(cat "$stamp" 2>/dev/null)" != "$tree $(wheels)" ]; then
+  rebuild=(--force)
+fi
+mise run dev:heavy -- mise run build:python:docker "${rebuild[@]}"
+mkdir -p "$(dirname "$stamp")"
+echo "$tree $(wheels)" >"$stamp"
+
+run="rlmesh-gate-$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.\n-' '-')-$$"
+state="$(mktemp -d "${TMPDIR:-/tmp}/rlmesh-docker-gate.XXXXXX")"
+cleanup() {
+  local selector="label=rlmesh.test.run=$run"
+  docker ps -aq --filter "$selector" | xargs -r docker rm -f >/dev/null || true
+  docker images -q --filter "$selector" | sort -u | xargs -r docker rmi -f >/dev/null || true
+  rm -rf "$state"
+}
+trap cleanup EXIT
+
+export RLMESH_DOCKER_GATE_RUN="$run"
+export RLMESH_STATE_DIR="$state"
+export RLMESH_DOCKER_GATE_STARTS="${usage_starts:-10}"
+export RLMESH_DOCKER_GATE_RUNS="${usage_runs:-3}"
+[ "${usage_require:-false}" = true ] && export RLMESH_DOCKER_GATE_REQUIRED=1
+mise run dev:heavy -- uv run --no-sync pytest python/rlmesh/tests/docker -m docker -q -p no:cacheprovider

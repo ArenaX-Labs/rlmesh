@@ -7,12 +7,17 @@ Run as a module from ``examples/python`` (no server needed):
 
 Against a live env endpoint:
 
-    uv run python -m vla_adapters.eval --model smolvla --env libero --address '127.0.0.1:7447#<key>/libero'
+    RLMESH_ENV_ADDRESS='127.0.0.1:7447#<key>/libero' \
+        uv run python -m vla_adapters.eval --model smolvla --env libero
+
+The address carries the session's key, so it comes from the environment
+rather than the command line, which every user of the machine can read.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -40,13 +45,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--address",
-        help="env session participant address (requires --model and --env); "
+        default=os.environ.get("RLMESH_ENV_ADDRESS"),
+        help="env session participant address (requires --model and --env; "
+        "default: RLMESH_ENV_ADDRESS, the better place for its key); "
         "omit to do offline dry runs instead",
     )
     parser.add_argument("--episodes", type=int, default=1)
     args = parser.parse_args()
     if args.address and not (args.model and args.env):
-        parser.error("--address requires both --model and --env")
+        parser.error(
+            "--address (or RLMESH_ENV_ADDRESS) requires both --model and --env"
+        )
     return args
 
 

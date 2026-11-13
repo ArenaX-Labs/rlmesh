@@ -35,8 +35,9 @@ use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{BindError, RunOptions};
 use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, ReasonCode};
 use rlmesh_session::{
-    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
-    SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, Resume, RunConfig,
+    RunError, RunEvent, RunMode, SendError, Sent, SessionAddress, SessionError, SkipReason,
+    Snapshot, Step, SystemMonotonicClock,
 };
 
 /// The first line of an error's message, naming its kind for the wrapper.
@@ -126,6 +127,11 @@ fn controller_err(err: ControllerError) -> Error {
     match err {
         ControllerError::Bind(err) => bind_err(err),
         ControllerError::Session(err) => session_err(err),
+        // This binding runs wall-clock robots only.
+        ControllerError::Lockstep(robot) => binding_refused(format!(
+            "robot {robot} runs in lockstep, and a policy here drives wall-clock robots only: \
+             run it with Python's realtime.Policy or Rust's rlmesh::realtime"
+        )),
     }
 }
 
@@ -189,7 +195,7 @@ fn ns(value: &BigInt, what: &str) -> Result<i64> {
     }
 }
 
-/// A session host in this process, on local per-class TCP ports.
+/// A session host in this process, on a local TCP port.
 #[napi]
 pub struct NativeHost {
     host: EmbeddedHost,
@@ -481,6 +487,161 @@ pub struct EdgeStats {
     pub modes: Vec<ModeCount>,
 }
 
+/// A part whose edge refuses chunks for a clock error.
+#[napi(object)]
+pub struct HealthClockRefusal {
+    pub part: String,
+    pub participant: String,
+    pub error_ms: f64,
+    pub bound_ms: f64,
+}
+
+/// One stream a participant publishes.
+#[napi(object)]
+pub struct HealthPublished {
+    pub part: String,
+    pub published: i64,
+    pub coalesced: i64,
+}
+
+/// The newest seq a participant received of one part.
+#[napi(object)]
+pub struct HealthSeen {
+    pub part: String,
+    pub seq: i64,
+}
+
+/// A bound policy's counters from its latest report.
+#[napi(object)]
+pub struct HealthRun {
+    pub starts: i64,
+    pub completions: i64,
+    pub skipped: Vec<SkipCount>,
+    pub chunks_sent: i64,
+    pub pending_ms: Option<f64>,
+    pub latency_p50_ms: Option<f64>,
+    pub latency_p99_ms: Option<f64>,
+    pub drifting: bool,
+}
+
+/// One participant's link as the host measures it (durations in ms).
+#[napi(object)]
+pub struct HealthLink {
+    pub participant: String,
+    pub heartbeats: i64,
+    pub rtt_ms: Option<f64>,
+    pub jitter_ms: f64,
+    pub heartbeat_gap_max_ms: f64,
+    pub last_heartbeat_age_ms: f64,
+    pub offset_ms: Option<f64>,
+    pub offset_error_ms: Option<f64>,
+    pub health: String,
+    pub last_chunk_accepted: i64,
+    pub last_chunk_applied: i64,
+    pub queue_depth: u32,
+    pub rejected_by: Vec<RejectionCount>,
+    pub clock_refused: Vec<HealthClockRefusal>,
+    pub published: Vec<HealthPublished>,
+    pub run: Option<HealthRun>,
+    pub last_seq_seen: Vec<HealthSeen>,
+}
+
+/// The host's health message as a participant read it.
+#[napi(object)]
+pub struct SessionHealth {
+    pub epoch: i64,
+    /// The host's clock when it published.
+    pub host_ns: i64,
+    pub links: Vec<HealthLink>,
+}
+
+/// The host's health as `participant` reads it: the newest, or with `wait`
+/// the next.
+async fn read_health(
+    participant: &rlmesh_session::Participant,
+    wait: bool,
+    timeout_s: f64,
+) -> Result<SessionHealth> {
+    let wait_for = timeout(timeout_s)?;
+    let health = if wait {
+        participant.next_health(wait_for).await
+    } else {
+        participant.health(wait_for).await
+    }
+    .map_err(session_err)?;
+    let links = sdk::health_links(participant, &health)
+        .into_iter()
+        .map(|link| HealthLink {
+            participant: link.participant,
+            heartbeats: seq(link.heartbeats),
+            rtt_ms: link.rtt_ms,
+            jitter_ms: link.jitter_ms,
+            heartbeat_gap_max_ms: link.heartbeat_gap_max_ms,
+            last_heartbeat_age_ms: link.last_heartbeat_age_ms,
+            offset_ms: link.offset_ms.map(|(offset, _)| offset),
+            offset_error_ms: link.offset_ms.map(|(_, error)| error),
+            health: link.health.into(),
+            last_chunk_accepted: seq(link.last_chunk_accepted),
+            last_chunk_applied: seq(link.last_chunk_applied),
+            queue_depth: link.queue_depth,
+            rejected_by: link
+                .rejected_by
+                .into_iter()
+                .map(|(reason, n)| RejectionCount {
+                    reason,
+                    count: seq(n),
+                })
+                .collect(),
+            clock_refused: link
+                .clock_refused
+                .into_iter()
+                .map(|r| HealthClockRefusal {
+                    part: r.part,
+                    participant: r.participant,
+                    error_ms: r.error_ms,
+                    bound_ms: r.bound_ms,
+                })
+                .collect(),
+            published: link
+                .published
+                .into_iter()
+                .map(|(part, published, coalesced)| HealthPublished {
+                    part,
+                    published: seq(published),
+                    coalesced: seq(coalesced),
+                })
+                .collect(),
+            run: link.run.map(|run| HealthRun {
+                starts: seq(run.starts),
+                completions: seq(run.completions),
+                skipped: run
+                    .skipped
+                    .into_iter()
+                    .map(|(reason, n)| SkipCount {
+                        reason: reason.into(),
+                        count: seq(n),
+                    })
+                    .collect(),
+                chunks_sent: seq(run.chunks_sent),
+                pending_ms: run.pending_ms,
+                latency_p50_ms: run.latency_p50_ms,
+                latency_p99_ms: run.latency_p99_ms,
+                drifting: run.drifting,
+            }),
+            last_seq_seen: link
+                .last_seq_seen
+                .into_iter()
+                .map(|(part, n)| HealthSeen { part, seq: seq(n) })
+                .collect(),
+        })
+        .collect();
+    Ok(SessionHealth {
+        epoch: seq(health.epoch.0),
+        host_ns: health.host_ns,
+        links,
+    })
+}
+
 /// A robot: its map declared, a publisher per part and an edge per command
 /// group.
 #[napi]
@@ -718,6 +879,15 @@ impl NativeRobot {
         let robot = self.robot()?;
         robot.participant().disarm().await.map_err(session_err)?;
         Ok(())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one.
+    #[napi]
+    pub async fn health(&self, wait: bool, timeout_s: f64) -> Result<SessionHealth> {
+        let robot = self.robot()?;
+        read_health(robot.participant(), wait, timeout_s).await
     }
 
     /// Asks the host to keep its recent recording as an incident named
@@ -1031,6 +1201,14 @@ pub struct InputPadding {
     pub slots: u32,
 }
 
+/// An input's seq range delivered, by entry.
+#[napi(object)]
+pub struct EntrySeqs {
+    pub entry: String,
+    pub seq_first: i64,
+    pub seq_last: i64,
+}
+
 /// Per stream, the seq range a start used.
 #[napi(object)]
 pub struct StreamSeqs {
@@ -1136,6 +1314,22 @@ impl NativeObservation {
         BigInt::from(self.meta.skew_ns)
     }
 
+    /// Each input's seq range delivered, by entry (none for a blank one).
+    #[napi(getter)]
+    pub fn seqs(&self) -> Vec<EntrySeqs> {
+        self.meta
+            .inputs
+            .iter()
+            .filter_map(|i| {
+                Some(EntrySeqs {
+                    entry: i.entry.clone(),
+                    seq_first: seq(i.samples.first()?.seq),
+                    seq_last: seq(i.samples.last()?.seq),
+                })
+            })
+            .collect()
+    }
+
     /// Per stream, the seq range used.
     #[napi(getter)]
     pub fn based_on(&self) -> Vec<StreamSeqs> {
@@ -1187,12 +1381,12 @@ fn run_options(
 }
 
 /// A bound action: its entry, the part it drives (none when dropped) and its
-/// horizon.
+/// chunk length.
 #[napi(object)]
 pub struct ActionInfo {
     pub entry: String,
     pub part: Option<String>,
-    pub horizon: u32,
+    pub chunk: u32,
 }
 
 /// An action entry's chunk seq, or none without the lease (or dropped).
@@ -1228,11 +1422,16 @@ pub struct RunStats {
     pub completions: i64,
     pub skipped: Vec<SkipCount>,
     pub chunks_sent: i64,
+    /// Starts a shadow run predicted without a lease.
+    pub shadow_predictions: i64,
     pub send_errors: i64,
     pub latency_p50_ms: Option<f64>,
     pub latency_p99_ms: Option<f64>,
     pub latency_max_ms: Option<f64>,
     pub drifting: bool,
+    /// The parts a higher class took, `robot:path`, kept from the policy
+    /// until `resume()`.
+    pub parked: Vec<String>,
 }
 
 /// An event the run loop reported.
@@ -1246,13 +1445,17 @@ pub struct RunEventInfo {
     pub cause: Option<String>,
     pub drifting: Option<bool>,
     pub pending_s: Option<f64>,
+    /// `parked`: the part, `robot:path`.
+    pub part: Option<String>,
+    /// `parked`: who took it.
+    pub by: Option<String>,
 }
 
 fn run_stats(controller: &Controller) -> RunStats {
     let stats = controller.stats();
     let ms = |d: Option<Duration>| d.map(|d| d.as_secs_f64() * 1e3);
     RunStats {
-        aligned_to: controller.aligned_input().map(str::to_string),
+        aligned_to: controller.aligned_input(),
         phase_offset_ms: controller.phase_offset().as_secs_f64() * 1e3,
         starts: seq(stats.starts),
         completions: seq(stats.completions),
@@ -1264,11 +1467,13 @@ fn run_stats(controller: &Controller) -> RunStats {
             })
             .collect(),
         chunks_sent: seq(stats.chunks_sent),
+        shadow_predictions: seq(stats.shadow_predictions),
         send_errors: seq(stats.send_errors),
         latency_p50_ms: ms(stats.latency_p50),
         latency_p99_ms: ms(stats.latency_p99),
         latency_max_ms: ms(stats.latency_max),
         drifting: stats.drifting,
+        parked: controller.parked().into_iter().map(|p| p.part).collect(),
     }
 }
 
@@ -1278,10 +1483,81 @@ type Reply = std::result::Result<Vec<(String, Value)>, String>;
 /// The start handed to JS: `predict` is called with it.
 type PredictFn = ThreadsafeFunction<NativeObservation, (), NativeObservation, Status, false>;
 
+/// A completed start handed to JS: `onStep` is called with it.
+type StepFn = ThreadsafeFunction<NativeStep, (), NativeStep, Status, false>;
+
+/// A completed start: whether it was a shadow one, and each action entry's
+/// chunk as the edge receives it.
+#[napi]
+pub struct NativeStep {
+    shadow: bool,
+    time_ns: i64,
+    actions: Mutex<Vec<StepEntry>>,
+}
+
+/// One action entry of a completed start.
+#[napi(object)]
+pub struct StepEntry {
+    pub entry: String,
+    /// The part it commands, `robot:path` (none: dropped).
+    pub part: Option<String>,
+    /// Its chunk seq when sent.
+    pub seq: Option<i64>,
+    /// One `[chunk, ...]` array per command field (none: dropped).
+    pub actions: Option<EntryValue>,
+}
+
+impl NativeStep {
+    fn new(step: &Step) -> Self {
+        Self {
+            shadow: step.shadow,
+            time_ns: step.snapshot_ns,
+            actions: Mutex::new(
+                step.actions
+                    .iter()
+                    .map(|a| StepEntry {
+                        entry: a.entry.clone(),
+                        part: a.part.clone(),
+                        seq: a.seq.map(seq),
+                        actions: a.actions().map(|v| value_out(a.entry.clone(), v)),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[napi]
+impl NativeStep {
+    /// A shadow start: its actions were checked and not sent.
+    #[napi(getter)]
+    pub fn shadow(&self) -> bool {
+        self.shadow
+    }
+
+    /// The session time of the start's snapshot.
+    #[napi(getter)]
+    pub fn time_ns(&self) -> BigInt {
+        BigInt::from(self.time_ns)
+    }
+
+    /// Takes the action entries (the arrays move to JS: a second call
+    /// returns none).
+    #[napi]
+    pub fn take_actions(&self) -> Vec<StepEntry> {
+        self.actions
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+}
+
 /// `predict`, called from the run loop's thread: the observation goes to JS
-/// and the thread waits for [`NativePolicy::reply`].
+/// and the thread waits for [`NativePolicy::reply`]. Each completed start
+/// goes to `on_step`, without waiting.
 struct JsPredictor {
     predict: PredictFn,
+    on_step: Option<StepFn>,
     replies: mpsc::Receiver<Reply>,
     closing: Arc<AtomicBool>,
 }
@@ -1307,6 +1583,19 @@ impl Predictor for JsPredictor {
                 Err(RecvTimeoutError::Timeout) if !self.closing.load(Ordering::Relaxed) => {}
                 Err(_) => return Err("the policy closed while predict ran".into()),
             }
+        }
+    }
+
+    fn step(&mut self, step: &Step) -> std::result::Result<(), String> {
+        let Some(on_step) = &self.on_step else {
+            return Ok(());
+        };
+        match on_step.call(
+            NativeStep::new(step),
+            ThreadsafeFunctionCallMode::NonBlocking,
+        ) {
+            Status::Ok => Ok(()),
+            status => Err(format!("onStep could not be called: {status}")),
         }
     }
 }
@@ -1466,7 +1755,7 @@ impl NativePolicy {
             .map(|a| ActionInfo {
                 entry: a.entry.clone(),
                 part: a.part.as_ref().map(|p| p.path.to_string()),
-                horizon: a.horizon,
+                chunk: a.chunk,
             })
             .collect())
     }
@@ -1480,7 +1769,7 @@ impl NativePolicy {
     }
 
     /// Sends one chunk per action entry, computed from `observation`, each
-    /// `[horizon, ...]`.
+    /// `[chunk, ...]`.
     #[napi]
     pub fn send(
         &self,
@@ -1516,7 +1805,7 @@ impl NativePolicy {
                 path: controller
                     .participant()
                     .part_by_id(l.channel)
-                    .map_or_else(|_| l.channel.to_string(), |p| p.path.to_string()),
+                    .map_or_else(|_| l.channel.to_string(), |p| p.qualified()),
                 token: BigInt::from(l.token.0),
             })
             .collect())
@@ -1539,14 +1828,35 @@ impl NativePolicy {
     /// Runs the policy loop on a thread of its own until `stop()`,
     /// `duration_s`, or a failure, calling `predict(observation)` on the JS
     /// thread at the replan rate with one inference in flight; each call is
-    /// answered with `reply`. If a reply is an error, the leases are
-    /// released and the run rejects with code `Predict`. Resolves to the
-    /// run's counters (taken as it returns, so a `close` racing the
-    /// resolution cannot lose them).
+    /// answered with `reply`. `mode` is `command` (default) or `shadow`;
+    /// `on_step` gets each completed start. `resume` is `manual` (default:
+    /// a part a higher class took stays parked until `resume()`) or `auto`.
+    /// If a reply is an error, the
+    /// leases are released and the run rejects with code `Predict`.
+    /// Resolves to the run's counters (taken as it returns, so a `close`
+    /// racing the resolution cannot lose them).
     #[napi]
-    pub async fn run(&self, predict: PredictFn, duration_s: Option<f64>) -> Result<RunStats> {
+    pub async fn run(
+        &self,
+        predict: PredictFn,
+        duration_s: Option<f64>,
+        mode: Option<String>,
+        on_step: Option<StepFn>,
+        resume: Option<String>,
+    ) -> Result<RunStats> {
         let controller = self.controller()?;
-        let duration = duration_s.map(timeout).transpose()?;
+        let mode = match mode.as_deref() {
+            None => RunMode::Command,
+            Some(name) => RunMode::from_name(name)
+                .ok_or_else(|| invalid(format!("mode {name:?}: 'command' or 'shadow'")))?,
+        };
+        let resume = match resume.as_deref() {
+            None => Resume::Manual,
+            Some(name) => Resume::from_name(name)
+                .ok_or_else(|| invalid(format!("resume {name:?}: 'manual' or 'auto'")))?,
+        };
+        let mut config = RunConfig::default().mode(mode).resume(resume);
+        config.duration = duration_s.map(timeout).transpose()?;
         let (tx, rx) = mpsc::sync_channel(1);
         {
             let mut slot = self.replies.lock().map_err(|_| exception("poisoned"))?;
@@ -1560,12 +1870,13 @@ impl NativePolicy {
         }
         let mut predictor = JsPredictor {
             predict,
+            on_step,
             replies: rx,
             closing: self.closing.clone(),
         };
         let result = tokio::task::spawn_blocking(move || {
             controller
-                .run(&mut predictor, duration)
+                .run(&mut predictor, config)
                 .map(|()| run_stats(&controller))
         })
         .await;
@@ -1581,6 +1892,7 @@ impl NativePolicy {
                 &[("reason", format!("{:?}", sdk::reason_name(reason.code)))],
                 format!("the session was lost: {reason}"),
             )),
+            Ok(Err(RunError::Rebind(why))) => Err(binding_refused(why)),
             Err(join) => Err(exception(format!("the run loop failed: {join}"))),
         }
     }
@@ -1612,6 +1924,22 @@ impl NativePolicy {
         Ok(())
     }
 
+    /// Hands the parts a higher class took back to this policy; returns
+    /// them, `robot:path`.
+    #[napi]
+    pub fn resume(&self) -> Result<Vec<String>> {
+        Ok(self.controller()?.resume())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one.
+    #[napi]
+    pub async fn health(&self, wait: bool, timeout_s: f64) -> Result<SessionHealth> {
+        let controller = self.controller()?;
+        read_health(controller.participant(), wait, timeout_s).await
+    }
+
     /// The start, skip and completion counters.
     #[napi]
     pub fn stats(&self) -> Result<RunStats> {
@@ -1635,6 +1963,8 @@ impl NativePolicy {
                     cause: None,
                     drifting: None,
                     pending_s: None,
+                    part: None,
+                    by: None,
                 };
                 match event {
                     RunEvent::RateDrift {
@@ -1652,6 +1982,23 @@ impl NativePolicy {
                     RunEvent::InferencePending { pending } => {
                         info.kind = "inference_pending".into();
                         info.pending_s = Some(pending.as_secs_f64());
+                    }
+                    RunEvent::RobotHeld { .. } => info.kind = "robot_held".into(),
+                    RunEvent::ClockRefused { .. } => info.kind = "clock_refused".into(),
+                    RunEvent::WaitingToArm { .. } => info.kind = "waiting_to_arm".into(),
+                    RunEvent::Shadowing { .. } => info.kind = "shadowing".into(),
+                    RunEvent::Commanding { .. } => info.kind = "commanding".into(),
+                    RunEvent::InputLost { .. } => info.kind = "input_lost".into(),
+                    RunEvent::Rebound { .. } => info.kind = "rebound".into(),
+                    RunEvent::Parked { part, by, .. } => {
+                        info.kind = "parked".into();
+                        info.part = Some(part);
+                        info.by = Some(by);
+                    }
+                    RunEvent::HandedBack { part, by, .. } => {
+                        info.kind = "handed_back".into();
+                        info.part = Some(part);
+                        info.by = Some(by);
                     }
                 }
                 info

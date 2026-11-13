@@ -8,7 +8,7 @@
 //!   [ambiguous] input "image" (kind camera, at "*/cam") matches 2 parts:
 //!       wrist/cam   camera 640x480 @30 Hz
 //!       scene/cam   camera 1280x720 @15 Hz
-//!     fix: rlmesh.run(..., at={"image": "scene/cam"})
+//!     fix: policy.bind(at={"image": "scene/cam"})
 //! ```
 //!
 //! A binding table has one row per entry (direction, part, status, plan and
@@ -327,12 +327,7 @@ impl Binding {
                 rows.push(vec![
                     r.entry.clone(),
                     marked(format!("{} Hz", num(r.grid_hz)), r.grid_declared, "default"),
-                    format!(
-                        "{} × {} ms = {} ms",
-                        r.horizon,
-                        ms(r.dt),
-                        ms(r.dt * r.horizon)
-                    ),
+                    format!("{} × {} ms = {} ms", r.chunk, ms(r.dt), ms(r.dt * r.chunk)),
                     if r.status == Status::Dropped {
                         "-".into()
                     } else {

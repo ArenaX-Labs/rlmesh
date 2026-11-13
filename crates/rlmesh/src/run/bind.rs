@@ -127,6 +127,11 @@ impl<'a> Binding<'a> {
             ));
         }
         let context = LibraryContext::new();
+        // A local env is served on a served model's host, which it reaches.
+        let beside = match &model.0 {
+            ModelKind::Remote(model) => Some(model.address().to_string()),
+            _ => None,
+        };
         let (handler, edition, execution_horizon): (Box<dyn ModelHandler>, _, _) = match model.0 {
             ModelKind::Model(model) => {
                 let shared = model.shared();
@@ -134,14 +139,11 @@ impl<'a> Binding<'a> {
                 shared.admit()?;
                 let execution_horizon = shared.decl.resolve_horizon(execution_horizon)?;
                 check_horizon(execution_horizon, shared.decl.native_chunk)?;
-                let edition = crate::editions::resolve_native(
-                    crate::editions::EditionSources {
-                        call: workflow_edition.as_deref(),
-                        option: None,
-                        declared: shared.decl.workflow_edition.as_deref(),
-                    },
-                    shared.decl.authored,
-                )?;
+                let edition = crate::editions::resolve_native(crate::editions::EditionSources {
+                    call: workflow_edition.as_deref(),
+                    option: None,
+                    declared: shared.decl.workflow_edition.as_deref(),
+                })?;
                 if execution_horizon > 1 && !shared.decl.has_chunk() {
                     crate::warnings::warn(
                         crate::WarningCategory::UserWarning,
@@ -185,10 +187,10 @@ impl<'a> Binding<'a> {
                     .unwrap_or(1),
                 };
                 check_horizon(execution_horizon, None)?;
-                let handler = crate::lockstep::ServedModel::new(model.address(), timeout);
+                let handler = model.served(timeout);
                 (
                     Box::new(handler),
-                    unauthored(workflow_edition.as_deref())?,
+                    call_edition(workflow_edition.as_deref())?,
                     execution_horizon,
                 )
             }
@@ -199,14 +201,11 @@ impl<'a> Binding<'a> {
                     None,
                     model.native_chunk,
                 )?;
-                let edition = crate::editions::resolve_native(
-                    crate::editions::EditionSources {
-                        call: workflow_edition.as_deref(),
-                        option: None,
-                        declared: model.workflow_edition.as_deref(),
-                    },
-                    model.authored,
-                )?;
+                let edition = crate::editions::resolve_native(crate::editions::EditionSources {
+                    call: workflow_edition.as_deref(),
+                    option: None,
+                    declared: model.workflow_edition.as_deref(),
+                })?;
                 if horizon > 1 && model.has_chunk == Some(false) {
                     crate::warnings::warn(
                         crate::WarningCategory::UserWarning,
@@ -222,7 +221,7 @@ impl<'a> Binding<'a> {
                 check_horizon(execution_horizon, None)?;
                 (
                     Box::<crate::model::random::RandomSampleHandler>::default(),
-                    unauthored(workflow_edition.as_deref())?,
+                    call_edition(workflow_edition.as_deref())?,
                     execution_horizon,
                 )
             }
@@ -276,15 +275,21 @@ impl<'a> Binding<'a> {
                         .into(),
                 ));
             }
-            EnvKind::Env(env) => {
-                binding.serve(Local::Borrowed(LocalEnv::Env(env)), &port, &edition)?
-            }
-            EnvKind::Vector(env) => {
-                binding.serve(Local::Borrowed(LocalEnv::Vector(env)), &port, &edition)?
-            }
+            EnvKind::Env(env) => binding.serve(
+                Local::Borrowed(LocalEnv::Env(env)),
+                &port,
+                &edition,
+                &beside,
+            )?,
+            EnvKind::Vector(env) => binding.serve(
+                Local::Borrowed(LocalEnv::Vector(env)),
+                &port,
+                &edition,
+                &beside,
+            )?,
             EnvKind::Factory(mut factory) => {
                 let made = OwnedMadeEnv(Some(factory.make()?), false);
-                binding.serve(Local::Made(made), &port, &edition)?
+                binding.serve(Local::Made(made), &port, &edition, &beside)?
             }
         };
         let inner = binding.drive(crate::model::bind::Binding::connect(
@@ -340,12 +345,14 @@ impl<'a> Binding<'a> {
         Ok(())
     }
 
-    /// Serve `local` behind a loopback server relaying to this thread.
+    /// Serve `local` behind a loopback server relaying to this thread, on
+    /// the host of the served model at `beside` when there is one.
     fn serve(
         &mut self,
         local: Local<'a>,
         port: &CallerPort,
         edition: &Option<String>,
+        beside: &Option<String>,
     ) -> Result<String> {
         self.local = Some(local);
         let lent = match self.side().env {
@@ -357,7 +364,7 @@ impl<'a> Binding<'a> {
             }
             None => return Err(Error::Internal("no local env to serve".into())),
         };
-        let server = EnvServer::loopback(lent, edition.clone())?;
+        let server = EnvServer::loopback(lent, edition.clone(), beside.as_deref())?;
         server.start()?;
         let address = server.address().to_string();
         self.loopback = Some(server);
@@ -733,13 +740,10 @@ fn info_success(keys: &[&str], info: &InfoDict) -> Option<bool> {
 
 /// The edition a model with no declaration of its own (served, or the random
 /// baseline) binds under.
-fn unauthored(call: Option<&str>) -> Result<Option<String>> {
-    crate::editions::resolve_native(
-        crate::editions::EditionSources {
-            call,
-            option: None,
-            declared: None,
-        },
-        false,
-    )
+fn call_edition(call: Option<&str>) -> Result<Option<String>> {
+    crate::editions::resolve_native(crate::editions::EditionSources {
+        call,
+        option: None,
+        declared: None,
+    })
 }

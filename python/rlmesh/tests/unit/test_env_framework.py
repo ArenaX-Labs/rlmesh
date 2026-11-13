@@ -285,13 +285,13 @@ def test_serve_env_normalizes_framework_for_guards(
     with pytest.raises(NotImplementedError, match="num_envs>1"):
         serve.serve_env(
             lambda: object(),
-            "0.0.0.0:1",
+            "127.0.0.1:1",
             num_envs=2,
             vectorization_mode="sync",
             framework=" JAX ",
         )
 
-    serve.serve_env(lambda: object(), "0.0.0.0:1", framework="NumPy", device="cuda:0")
+    serve.serve_env(lambda: object(), "127.0.0.1:1", framework="NumPy", device="cuda:0")
     assert captured["framework"] == "numpy"
     assert captured["device"] is None
 

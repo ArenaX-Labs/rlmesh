@@ -130,6 +130,11 @@ async fn main() {
                         linked = target;
                     }
                 }
+                Action::Reconnect => {
+                    subscribers.clear();
+                    tokens.clear();
+                    transport = link(&linked, &gates).await;
+                }
                 Action::Subscribe { class: c, sub, key } => {
                     let tx = tx.clone();
                     let subscriber = transport
@@ -185,6 +190,12 @@ async fn main() {
                 } => {
                     let _ = transport.session(class(c)).put(key, payload).await;
                 }
+                // This rehearsal carries no datagram path: a host that
+                // offers one gets the board's parts over its links.
+                Action::DatagramOpen { .. } | Action::Datagram { .. } => {
+                    robot.datagram_failed(now_us());
+                }
+                Action::DatagramClose | Action::Unsubscribe { .. } => {}
             }
         }
         let event = tokio::time::timeout(Duration::from_millis(2), rx.recv()).await;

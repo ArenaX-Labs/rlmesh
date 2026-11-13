@@ -70,8 +70,7 @@ pub struct LeafStep {
 /// it steps under.
 #[async_trait]
 pub trait Keep: Send + Sync + 'static {
-    /// Releases the lease and detaches (the robot then re-arms for the next
-    /// driver).
+    /// Releases the lease and detaches (the next driver can then take it).
     async fn release(self: Box<Self>);
 }
 

@@ -560,13 +560,44 @@ fn episode_rows(root: &Path) -> Vec<(i64, usize)> {
     rows
 }
 
+/// A [`Scene`] whose every reset waits for the other lane's: lanes claim
+/// episodes first come, first served, so left to themselves a faster lane
+/// takes more of them.
+struct PairedScene {
+    scene: Scene,
+    resets: std::sync::Arc<std::sync::Barrier>,
+}
+impl Env for PairedScene {
+    fn observation_space(&self) -> Space {
+        self.scene.observation_space()
+    }
+    fn action_space(&self) -> Space {
+        self.scene.action_space()
+    }
+    fn reset(
+        &mut self,
+        seed: Option<i64>,
+        options: Option<&InfoDict>,
+    ) -> Result<(Value, InfoDict)> {
+        self.resets.wait();
+        self.scene.reset(seed, options)
+    }
+    fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
+        self.scene.step(action)
+    }
+}
+
 #[test]
 fn episodes_of_a_lane_endpoint_record_their_own_lane() {
+    let resets = std::sync::Arc::new(std::sync::Barrier::new(2));
     let server = crate::EnvServer::lanes(
         (0..2)
-            .map(|_| Scene {
-                episode: 0,
-                step: 0,
+            .map(|_| PairedScene {
+                scene: Scene {
+                    episode: 0,
+                    step: 0,
+                },
+                resets: resets.clone(),
             })
             .collect(),
         crate::EnvServerOptions {

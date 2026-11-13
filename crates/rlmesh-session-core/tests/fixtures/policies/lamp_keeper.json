@@ -1,0 +1,31 @@
+{
+  "hz": 10,
+  "inputs": {
+    "pressed": {
+      "kind": "switch",
+      "at": "button"
+    },
+    "temp": {
+      "kind": "value",
+      "at": "temp",
+      "units": {
+        "value": "degC"
+      }
+    }
+  },
+  "actions": {
+    "relay": {
+      "kind": "switch",
+      "at": "relay",
+      "command": "set"
+    },
+    "dimmer": {
+      "kind": "value",
+      "at": "dimmer",
+      "command": "set",
+      "units": {
+        "value": "percent"
+      }
+    }
+  }
+}

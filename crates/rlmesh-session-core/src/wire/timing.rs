@@ -35,3 +35,16 @@ pub fn ns(elapsed: core::time::Duration) -> Option<u64> {
     let ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
     (ns != 0).then_some(ns)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::time::Duration;
+
+    #[test]
+    fn an_unmeasured_duration_is_none_and_a_huge_one_saturates() {
+        assert_eq!(ns(Duration::ZERO), None);
+        assert_eq!(ns(Duration::from_micros(5)), Some(5_000));
+        assert_eq!(ns(Duration::MAX), Some(u64::MAX));
+    }
+}

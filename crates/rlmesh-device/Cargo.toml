@@ -33,8 +33,9 @@ bytes = { version = "1.9", default-features = false }
 
 [dev-dependencies]
 # The robot against a real host, over Zenoh on loopback.
-rlmesh-session = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+rlmesh-session = { workspace = true, features = ["record"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }
 zenoh = { workspace = true }
 
 [[example]]

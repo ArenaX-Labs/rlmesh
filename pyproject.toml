@@ -56,8 +56,12 @@ executionEnvironments = [{ root = "tools", pythonVersion = "3.11" }, { root = ".
 [tool.pytest.ini_options]
 # Wall-clock budgets fail on a busy machine whatever the code does, so the
 # default runs leave them out; `mise run test:python:perf` runs them alone.
-addopts = "-m 'not perf'"
-markers = ["perf: a wall-clock budget (mise run test:python:perf)"]
+# Tests on real containers build images: `mise run test:sandbox:docker`.
+addopts = "-m 'not perf and not docker'"
+markers = [
+  "perf: a wall-clock budget (mise run test:python:perf)",
+  "docker: runs real containers on this Docker host (mise run test:sandbox:docker)",
+]
 pythonpath = [
   ".",
   "tools/rlmesh_api_surface/src",

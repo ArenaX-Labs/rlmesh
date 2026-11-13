@@ -862,6 +862,10 @@ impl ControlSession {
             queue_depth: 0,
             health: Health::Ok,
             rejected: Vec::new(),
+            clock_refused: Vec::new(),
+            chunk_timing: Vec::new(),
+            chunks_accepted: 0,
+            datagram: None,
         };
         Some(frame::tagged(
             frame::HEARTBEAT,

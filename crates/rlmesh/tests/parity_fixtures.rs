@@ -739,23 +739,16 @@ fn warning(variant: &str) -> Json {
         }
     }
     let result = if variant == "workflow" {
-        // Binding hosts emit on the worker; delivery still belongs to the caller.
-        let mut emitted = false;
-        let model = Model::new(
-            move |_: Value| {
-                if !emitted {
-                    emitted = true;
-                    binding::emit_warning(
-                        WarningCategory::WorkflowEditionWarning,
-                        "scripted floating edition".into(),
-                    )?;
-                }
+        // An authored policy that declares no edition runs quietly (COR-7).
+        struct Authored;
+        impl Policy for Authored {
+            fn predict(&mut self, _: Value) -> Result<Value> {
                 Ok(Value::Int(0))
-            },
-            ModelOptions::default(),
-        )
-        .unwrap();
-        model.run(&mut env, RunOptions::default())
+            }
+        }
+        Model::new(Authored, ModelOptions::default())
+            .unwrap()
+            .run(&mut env, RunOptions::default())
     } else if variant.starts_with("runtime") {
         Model::new(Chunk, ModelOptions::default()).unwrap().run(
             &mut env,
@@ -798,7 +791,7 @@ fn warning(variant: &str) -> Json {
         Ok(_) => json!({}),
     };
     let warnings = seen.lock().unwrap();
-    out["category"] = json!(warnings.last().unwrap().0);
+    out["category"] = json!(warnings.last().map_or("", |w| w.0));
     out["calling_thread"] = json!(warnings.iter().all(|w| w.1));
     out["warnings"] = json!(warnings.len());
     out

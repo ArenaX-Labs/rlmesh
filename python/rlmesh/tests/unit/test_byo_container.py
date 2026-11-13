@@ -18,9 +18,9 @@ import rlmesh._sandbox.session as session_mod
 
 
 @pytest.fixture(autouse=True)
-def _session_ports(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Containers publish on 40000-40003 and serve at once."""
-    monkeypatch.setattr(session_mod, "_sandbox_session_ports", lambda: 40000)
+def _session_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Containers publish on 40000 and serve at once."""
+    monkeypatch.setattr(session_mod, "_sandbox_session_port", lambda: 40000)
     monkeypatch.setattr(session_mod, "_sandbox_host_identity", lambda: ("secret", "k"))
     monkeypatch.setattr(model_mod, "wait_serving", lambda *_args: None)
 
@@ -70,7 +70,7 @@ def test_image_source_serve_starts_a_published_container(
     assert cmd[:3] == ["docker", "run", "-d"]
     assert cmd[-1] == "my-model:latest"
     # Publishes the session's ports on loopback, and serves in it as model.
-    assert "127.0.0.1:40000-40003:40000-40003" in cmd
+    assert "127.0.0.1:40000:40000" in cmd
     assert "RLMESH_NAME=model" in cmd
     assert "--cap-drop" in cmd and "no-new-privileges" in cmd
     assert model.container_id == "container-abc"

@@ -32,3 +32,17 @@ pub(super) fn plan_custom(
         transform: transform.to_owned(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_custom_entrypoint_is_refused_unless_trusted() {
+        let at = || NodePath::root().push_key("feat");
+        let error = plan_custom("pkg.mod:fn", at(), false).expect_err("untrusted");
+        assert_eq!(error.code, ErrorCode::UntrustedEntrypoint);
+        let plan = plan_custom("pkg.mod:fn", at(), true).expect("trusted");
+        assert_eq!(plan.transform, "pkg.mod:fn");
+    }
+}

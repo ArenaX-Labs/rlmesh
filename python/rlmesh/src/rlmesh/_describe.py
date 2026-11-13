@@ -627,8 +627,11 @@ def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
     nothing is declared, exactly as the handshake spells it. A declaration
     this build cannot run is not fatal here (describe stays total); it is
     recorded as ``workflow_edition_error`` and ``rlmesh check`` fails on it.
+    ``workflow_edition_floats`` is ``true`` when nothing declares one (and an
+    empty ``RLMESH_WORKFLOW_EDITION`` does not float deliberately), so the
+    checks can say where to pin it; it is absent otherwise.
     """
-    from ._editions import resolve_workflow_edition
+    from ._editions import WORKFLOW_EDITION_ENV_VAR, resolve_declaration
     from ._load_native import load_native
 
     info = load_native("build_info")()
@@ -640,19 +643,22 @@ def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
             str(edition) for edition in info.supported_workflow_editions
         ],
     }
-    preferred: str | None
+    preferred: str | None = None
+    floats = False
     if resolved is not None:
         preferred = resolved.strip() or None
+        # A server that settled on nothing floats unless the variable says so.
+        floats = preferred is None and os.environ.get(WORKFLOW_EDITION_ENV_VAR) is None
     else:
         try:
-            preferred = resolve_workflow_edition(
-                declared=declared if isinstance(declared, str) else None,
-                authored=False,
+            preferred, floats = resolve_declaration(
+                declared=declared if isinstance(declared, str) else None, origin=cls
             )
         except ValueError as exc:
             offer["workflow_edition_error"] = str(exc)
-            preferred = None
     offer["preferred_workflow_edition"] = preferred or str(info.workflow_edition)
+    if floats:
+        offer["workflow_edition_floats"] = True
     return offer
 
 
@@ -898,7 +904,27 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
         report.failed.append(f"describe {target!r}: {exc}")
         return report
     _check_envelope(envelope, report, "", baked=False)
+    if envelope.get("kind") == "model" and _declares_no_adapter(target):
+        # The envelope carries no spec either way; the class says it on purpose.
+        report.warnings[:] = [
+            w for w in report.warnings if not w.startswith("model_spec: ")
+        ]
+        report.passed.append(
+            "model_spec: NO_ADAPTER (serves its own predict, with no adapter)"
+        )
     return report
+
+
+def _declares_no_adapter(target: object) -> bool:
+    """Whether the model ``target`` names sets ``spec = NO_ADAPTER`` on its class."""
+    from ._models._adapter_mode import NO_ADAPTER
+
+    if isinstance(target, str):
+        try:
+            target = resolve_entrypoint(target, label="check entrypoint")
+        except Exception:
+            return False
+    return getattr(target, "spec", None) is NO_ADAPTER
 
 
 def check_labels(labels: Mapping[str, str] | None) -> CheckReport:
@@ -1169,6 +1195,11 @@ def _check_runtime(
     error = runtime.get("workflow_edition_error")
     if error:
         report.failed.append(f"{where}runtime: workflow edition: {error}")
+        return
+    if runtime.get("workflow_edition_floats") is True:
+        from ._editions import float_nudge
+
+        report.warnings.append(f"{where}runtime: {float_nudge()}")
         return
     report.passed.append(
         f"{where}runtime: {runtime.get('protocol_generation')}, declares "

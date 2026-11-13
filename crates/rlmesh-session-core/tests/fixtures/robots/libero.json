@@ -21,6 +21,7 @@
     "child": "gripper_tcp",
     "hz": 20,
     "command": "delta",
+    "safe": "stop",
     "reference": "current",
     "max_action_age_ms": 1000
   },
@@ -35,6 +36,7 @@
     "kind": "gripper",
     "hz": 20,
     "command": "position",
+    "safe": "stop",
     "binary": true,
     "max_action_age_ms": 1000
   },

@@ -33,9 +33,8 @@
 //!
 //! # Features
 //!
-//! - `lockstep`: the [`lockstep`] module, Gym envs and v1 model servers
-//!   over a v2 session (participant addresses for [`EnvServer`] and
-//!   local models). Pulls in `rlmesh-session`.
+//! Sessions, serving and running are always built; the features add the
+//! optional surfaces.
 //!
 //! - `viewer` (default): the live terminal/HTTP [`viewer`] behind
 //!   [`View`]. Without it a run's `view` warns and shows nothing.
@@ -55,6 +54,30 @@
 //! (a failure your [`Policy`] raised, carrying a [`ModelErrorCode`]). Both
 //! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`],
 //! which is false for every other variant.
+//!
+//! # Logging
+//!
+//! The crate logs through `tracing` and installs no subscriber. If you
+//! install one, cap the target `zenoh::api::session` (and
+//! `zenoh::api::scouting`) at `INFO` whatever level you ask for: Zenoh logs
+//! its whole config there at `DEBUG` when a session opens, and that config
+//! holds, in plain text, the link password a session's key derives, so
+//! whoever reads the log could link to the host. A global filter does it
+//! (a target directive alone does not: a span directive enables events of
+//! any target inside it):
+//!
+//! ```no_run
+//! use tracing_subscriber::prelude::*;
+//!
+//! let capped = ["zenoh::api::session", "zenoh::api::scouting"];
+//! tracing_subscriber::registry()
+//!     .with(tracing_subscriber::filter::filter_fn(move |meta| {
+//!         *meta.level() <= tracing::Level::INFO
+//!             || !capped.iter().any(|t| meta.target().starts_with(t))
+//!     }))
+//!     .with(tracing_subscriber::fmt::layer())
+//!     .init();
+//! ```
 //!
 //! # Example: serve an environment
 //!
@@ -154,6 +177,8 @@ pub mod lockstep;
 pub mod managed;
 mod model;
 pub mod prelude;
+mod ready;
+pub mod realtime;
 pub mod recorder;
 mod run;
 pub mod serve_options;

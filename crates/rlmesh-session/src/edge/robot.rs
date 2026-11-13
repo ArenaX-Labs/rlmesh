@@ -157,8 +157,8 @@ impl Published {
                     spec.layout
                         .pack(fields)
                         .map_err(|reason| SessionError::InvalidValue {
-                            channel: spec.channel,
-                            reason: format!("{path}: {reason}"),
+                            part: spec.qualified(),
+                            reason,
                         })?;
                 publisher.publish(capture_ns, Bytes::from(packed))
             }
@@ -167,8 +167,8 @@ impl Published {
                     Offer::Queued { .. } | Offer::OverBudget | Offer::Coalesced => None,
                 }),
                 _ => Err(SessionError::InvalidValue {
-                    channel: publisher.spec().channel,
-                    reason: format!("{path}: {} fields for an image", fields.len()),
+                    part: publisher.spec().qualified(),
+                    reason: format!("{} fields for an image", fields.len()),
                 }),
             },
         }
@@ -201,8 +201,8 @@ impl Published {
         match self.outlet(path)? {
             Outlet::Image(publisher) => publisher.offer_jpeg(capture_ns, jpeg).map(|_| ()),
             Outlet::Sample(publisher) => Err(SessionError::WrongChannel {
-                channel: publisher.spec().channel,
-                reason: format!("{path} is not a camera"),
+                part: publisher.spec().qualified(),
+                reason: "not a camera".into(),
             }),
         }
     }
@@ -210,7 +210,7 @@ impl Published {
     fn outlet(&self, path: &str) -> Result<&Outlet, SessionError> {
         self.outlets
             .get(path)
-            .ok_or_else(|| SessionError::UnknownPart(format!("{}/{path}", self.owner)))
+            .ok_or_else(|| SessionError::UnknownPart(format!("{}:{path}", self.owner)))
     }
 }
 
@@ -317,10 +317,10 @@ impl Robot {
             .copied()
             .ok_or_else(|| match self.part(path) {
                 Some(part) => SessionError::WrongChannel {
-                    channel: part.channel,
-                    reason: format!("{path} is not a commandable part"),
+                    part: part.qualified(),
+                    reason: "not a commandable part".into(),
                 },
-                None => SessionError::UnknownPart(format!("{}/{path}", self.participant.id())),
+                None => SessionError::UnknownPart(format!("{}:{path}", self.participant.id())),
             })
     }
 

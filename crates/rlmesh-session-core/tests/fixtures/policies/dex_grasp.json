@@ -25,7 +25,7 @@
       "at": "{side}/hand",
       "command": "position",
       "count": 7,
-      "horizon": 8
+      "chunk": 8
     }
   },
   "allow": ["resize", "crop"]

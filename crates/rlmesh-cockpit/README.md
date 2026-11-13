@@ -17,10 +17,12 @@ uv run python examples/python/v2/ur10e_mujoco/demo.py policy --address ADDR
 Then open the cockpit on the printed address:
 
 ```sh
-rlmesh cockpit 127.0.0.1:41000/local/01a15b0a-...   # from `pip install rlmesh` on a desktop
+rlmesh cockpit 127.0.0.1:41000/local/01a15b0a-...   # from `pip install --pre rlmesh` on a desktop
 mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...   # from this repo
 # or: cargo run -p rlmesh-cockpit -- ADDRESS [--id cockpit] [--timeout 10] [--record-dir DIR]
 ```
+
+An address that carries its key (`…#KEY`) is a credential, and the command line is readable by every user of the machine: pass it as `RLMESH_COCKPIT_ADDRESS=ADDR rlmesh cockpit`, or `rlmesh cockpit --address-file FILE`, instead.
 
 `rlmesh cockpit` is in the desktop wheels (Linux x86_64, macOS, Windows); the Linux ARM wheel, for a Pi or a robot's computer, leaves the window out.
 

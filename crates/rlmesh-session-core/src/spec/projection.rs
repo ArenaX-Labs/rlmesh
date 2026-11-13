@@ -6,8 +6,6 @@ use crate::prelude::*;
 
 use core::fmt;
 
-use crate::spec::policy::Allow;
-
 /// A named projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Projection {
@@ -49,18 +47,6 @@ impl Projection {
     /// The projection `name` names.
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.name() == name)
-    }
-
-    /// The v2 consent that permits it, when v2 has one: a v2 policy names
-    /// each camera by path, so it never rebinds one.
-    pub fn allow(self) -> Option<Allow> {
-        match self {
-            Self::DropAction => Some(Allow::Drop),
-            Self::SelectState => Some(Allow::Select),
-            Self::RebindCamera => None,
-            Self::FlipGripper => Some(Allow::Rescale),
-            Self::ConvertUnits => Some(Allow::Units),
-        }
     }
 }
 

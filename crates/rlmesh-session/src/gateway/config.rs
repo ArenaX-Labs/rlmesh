@@ -10,13 +10,16 @@
 //! without it, only the origins this gateway serves its own page from.
 //! Browsers attach at `model` at most unless `--max-priority` raises it.
 //!
-//! The session is the address its host prints (`--address
-//! 127.0.0.1:7447/<session>#<key>`), or its parts: `--connect` with
+//! The session is the address its host prints
+//! (`127.0.0.1:7447/<session>#<key>`), or its parts: `--connect` with
 //! `--session` or `--session-file`, either `<session>#<key>` or the bare
 //! session of a host on this machine that left its key for this user (or
-//! that this machine paired with). The gateway's own participant attaches
-//! with that key; it joins the host as a client, as every participant
-//! does.
+//! that this machine paired with). The key is a credential, so, as the page
+//! token, it never comes from argv: an address with its key comes from
+//! `RLMESH_GATEWAY_ADDRESS` or `--address-file`, a session with its key
+//! from `--session-file`; `--address` and `--session` refuse a `#`. The
+//! gateway's own participant attaches with that key; it joins the host as a
+//! client, as every participant does.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -32,27 +35,29 @@ use crate::gateway::security::{self, Origins, Policy};
 /// Bridges browsers to an RLMesh real-time session (protocol v2): one
 /// WebSocket per traffic class (`/control`, `/state`, `/bulk`), each browser
 /// connection a session participant of its own.
-#[derive(Clone, Debug, Parser)]
+#[derive(Clone, Parser)]
 #[command(name = "rlmesh-gateway", version, about)]
 pub struct Args {
-    /// The session's address as its host prints it:
-    /// `{ip}:{port}[/{session}]#{key}`.
-    #[arg(long, conflicts_with_all = ["connect", "session", "session_file"])]
+    /// The session's address without its key, `{ip}:{port}[/{session}]`,
+    /// for a host on this machine that left its key for this user. An
+    /// address with its key (`#…`) comes from RLMESH_GATEWAY_ADDRESS or
+    /// --address-file: argv is world-readable.
+    #[arg(long, conflicts_with_all = ["address_file", "connect", "session", "session_file"])]
     pub address: Option<String>,
-    /// The session host's per-class TCP base (class i on this port + i:
-    /// control, realtime, data, bulk).
-    #[arg(long, required_unless_present = "address")]
+    /// Read the session's address as its host prints it,
+    /// `{ip}:{port}[/{session}]#{key}`, from this file.
+    #[arg(long, conflicts_with_all = ["connect", "session", "session_file"])]
+    pub address_file: Option<PathBuf>,
+    /// The session host's TCP address, which every traffic class dials.
+    #[arg(long)]
     pub connect: Option<SocketAddr>,
     /// The tenant namespace.
     #[arg(long, default_value = "local")]
     pub tenant: String,
-    /// The session: its name or UUID, and `#<key>` (its host's address
-    /// key) unless the host left it for this user.
-    #[arg(
-        long,
-        conflicts_with = "session_file",
-        required_unless_present_any = ["session_file", "address"]
-    )]
+    /// The session's name or UUID, when its host left its key for this
+    /// user. A session with its key (`#<key>`) comes from --session-file:
+    /// argv is world-readable.
+    #[arg(long, conflicts_with = "session_file")]
     pub session: Option<String>,
     /// Read the session (as `--session` takes it) from this file, as a
     /// robot's `--session-file` writes it.
@@ -102,6 +107,45 @@ pub struct Args {
     pub tls_key: Option<PathBuf>,
 }
 
+// `--address` and `--session` are refused with a key, but `Debug` may run
+// before that: it leaves any key out.
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redact = |text: &Option<String>| text.as_deref().map(crate::address::redact);
+        f.debug_struct("Args")
+            .field("address", &redact(&self.address))
+            .field("address_file", &self.address_file)
+            .field("connect", &self.connect)
+            .field("tenant", &self.tenant)
+            .field("session", &redact(&self.session))
+            .field("session_file", &self.session_file)
+            .field("bind", &self.bind)
+            .field("port", &self.port)
+            .field("static_dir", &self.static_dir)
+            .field("token_file", &self.token_file)
+            .field("browsers", &self.browsers)
+            .field("allow_origin", &self.allow_origin)
+            .field("max_message_bytes", &self.max_message_bytes)
+            .field("max_subscriptions", &self.max_subscriptions)
+            .field("max_priority", &self.max_priority)
+            .field("insecure_http", &self.insecure_http)
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .finish()
+    }
+}
+
+/// The variable a keyed session address comes from (or `--address-file`).
+pub const ADDRESS_VAR: &str = "RLMESH_GATEWAY_ADDRESS";
+
+/// The refusal of a key on the command line, naming where it goes instead.
+fn key_on_argv(flag: &str, instead: &str) -> String {
+    format!(
+        "{flag} carries the session's key (`#…`), and the command line is world-readable: \
+         {instead}"
+    )
+}
+
 /// A resolved configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -138,6 +182,31 @@ impl Config {
     /// Resolves `args`, with the page token from the environment
     /// (`env_token`) unless `--token-file` names one.
     pub fn from_args(args: Args, env_token: Option<String>) -> Result<Self, String> {
+        Self::from_args_and_env(args, env_token, None)
+    }
+
+    /// [`Self::from_args`], with the session's address from the
+    /// environment ([`ADDRESS_VAR`]: `env_address`) when no flag names the
+    /// session.
+    pub fn from_args_and_env(
+        args: Args,
+        env_token: Option<String>,
+        env_address: Option<String>,
+    ) -> Result<Self, String> {
+        if args.address.as_deref().is_some_and(|a| a.contains('#')) {
+            return Err(key_on_argv(
+                "--address",
+                &format!("set {ADDRESS_VAR} or pass --address-file"),
+            ));
+        }
+        if args.session.as_deref().is_some_and(|s| s.contains('#')) {
+            return Err(key_on_argv(
+                "--session",
+                &format!(
+                    "pass --session-file (or the whole address in {ADDRESS_VAR} or --address-file)"
+                ),
+            ));
+        }
         let token = match (&args.token_file, env_token.filter(|t| !t.is_empty())) {
             (Some(file), _) => Some(
                 std::fs::read_to_string(file)
@@ -175,13 +244,37 @@ impl Config {
             );
             Origins::List(list)
         };
-        let address = match &args.address {
-            Some(text) => SessionAddress {
+        let named = args.connect.is_some() || args.session.is_some() || args.session_file.is_some();
+        let whole = match (&args.address, &args.address_file) {
+            (Some(text), _) => Some((
+                "--address".to_string(),
+                zeroize::Zeroizing::new(text.clone()),
+            )),
+            (None, Some(file)) => Some((
+                format!("--address-file {}", file.display()),
+                zeroize::Zeroizing::new(
+                    std::fs::read_to_string(file)
+                        .map_err(|e| format!("--address-file {}: {e}", file.display()))?
+                        .trim()
+                        .to_string(),
+                ),
+            )),
+            (None, None) => env_address
+                .filter(|a| !a.trim().is_empty() && !named)
+                .map(|a| {
+                    (
+                        ADDRESS_VAR.to_string(),
+                        zeroize::Zeroizing::new(a.trim().to_string()),
+                    )
+                }),
+        };
+        let address = match whole {
+            Some((from, text)) => SessionAddress {
                 // The platform's tenant is configuration, not address.
                 tenant: TenantId::new(args.tenant.clone()).map_err(|e| e.to_string())?,
                 ..text
                     .parse::<SessionAddress>()
-                    .map_err(|e| format!("--address: {e}"))?
+                    .map_err(|e| format!("{from}: {e}"))?
             },
             None => {
                 let session = match (&args.session, &args.session_file) {
@@ -192,13 +285,13 @@ impl Config {
                         .to_string(),
                     (None, None) => {
                         return Err(
-                            "pass --address, or --connect with --session or --session-file".into(),
+                            "pass the address (RLMESH_GATEWAY_ADDRESS, --address-file or --address), or --connect with --session or --session-file".into(),
                         );
                     }
                 };
                 let base = args
                     .connect
-                    .ok_or("pass --address, or --connect with --session or --session-file")?;
+                    .ok_or("pass the address (RLMESH_GATEWAY_ADDRESS, --address-file or --address), or --connect with --session or --session-file")?;
                 let (session, key) = match session.split_once('#') {
                     Some((session, key)) => (
                         session.to_string(),
@@ -309,5 +402,63 @@ mod tests {
         let both =
             format!("rlmesh-gateway --address 10.0.0.5:7447/{SESSION} --connect 10.0.0.5:7447");
         assert!(Args::try_parse_from(both.split_whitespace()).is_err());
+    }
+
+    #[test]
+    fn a_key_never_comes_from_argv() {
+        let key = crate::address::launch_identity()
+            .expect("keys")
+            .1
+            .to_string();
+        let parse = |line: String| Args::try_parse_from(line.split_whitespace()).expect("args");
+        for (line, names) in [
+            (
+                format!("rlmesh-gateway --address 10.0.0.5:7447/{SESSION}#{key} --browsers /x"),
+                ["RLMESH_GATEWAY_ADDRESS", "--address-file"],
+            ),
+            (
+                format!("rlmesh-gateway --connect 10.0.0.5:7447 --session {SESSION}#{key}"),
+                ["--session-file", "RLMESH_GATEWAY_ADDRESS"],
+            ),
+        ] {
+            let args = parse(line);
+            let shown = format!("{args:?}");
+            assert!(!shown.contains(&key), "{shown}");
+            let err = Config::from_args(args, Some(TOKEN.into())).expect_err("a key on argv");
+            assert!(!err.contains(&key), "{err}");
+            for name in names {
+                assert!(err.contains(name), "{err}");
+            }
+        }
+        // From the environment or a file it is taken.
+        let keyed = format!("10.0.0.5:7447/{SESSION}#{key}");
+        let bare = parse("rlmesh-gateway --browsers /x".into());
+        let c = Config::from_args_and_env(bare.clone(), Some(TOKEN.into()), Some(keyed.clone()))
+            .expect("from the environment");
+        assert_eq!(
+            c.address.key.as_ref().map(ToString::to_string),
+            Some(key.clone())
+        );
+        assert!(!format!("{c:?}").contains(&key));
+        let dir = tempfile::tempdir().expect("dir");
+        let file = dir.path().join("address");
+        std::fs::write(&file, &keyed).expect("write");
+        let line = format!(
+            "rlmesh-gateway --address-file {} --browsers /x",
+            file.display()
+        );
+        let c = Config::from_args(parse(line), Some(TOKEN.into())).expect("from a file");
+        assert_eq!(
+            c.address.key.as_ref().map(ToString::to_string),
+            Some(key.clone())
+        );
+        // A malformed one is refused without repeating it.
+        let err = Config::from_args_and_env(
+            bare,
+            Some(TOKEN.into()),
+            Some(format!("10.0.0.5:x/{SESSION}#{key}")),
+        )
+        .expect_err("a bad port");
+        assert!(!err.contains(&key), "{err}");
     }
 }

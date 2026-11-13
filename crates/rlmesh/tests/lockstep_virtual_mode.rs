@@ -22,7 +22,7 @@ const TICK_NS: u64 = 1_000_000;
 const WAIT: Duration = Duration::from_secs(10);
 const ROBOT: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 1000,
-            "command": "position", "max_action_age_ms": 1000},
+            "command": "position", "safe": "stop", "max_action_age_ms": 1000},
     "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 1000}
 }"#;
 
@@ -36,13 +36,18 @@ struct World {
 impl World {
     async fn start(barrier_timeout: Duration) -> Self {
         let (transport, base) =
-            rlmesh_session::transport::open_local_listeners("127.0.0.1".parse().unwrap())
+            rlmesh_session::transport::open_local_listener("127.0.0.1".parse().unwrap())
                 .await
                 .unwrap();
         let tenant = TenantId::new("local").unwrap();
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);
         config.health_log = None;
+        // The schedule is under test, not lapses: a loaded host can starve a
+        // holder's heartbeats past the default grace, ending its lease (and
+        // its key) mid-run.
+        config.lease_grace = Duration::from_secs(5);
+        config.presence_grace = Duration::from_secs(5);
         config.virtual_clock = Some(VirtualConfig {
             tick_ns: TICK_NS,
             // d is the controller's (the seeded model below).
@@ -59,12 +64,9 @@ impl World {
     }
 
     async fn join(&self, id: &str, role: Role) -> Participant {
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(Some("127.0.0.1:0".parse().unwrap()), Some(self.base))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        let transport = Transport::open(&TransportConfig::per_class_tcp(self.base))
+            .await
+            .unwrap();
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
             self.session,

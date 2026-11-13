@@ -365,6 +365,7 @@ async fn drive_managed(
         max_episode_steps: None,
         max_episode_seconds: None,
         close_env_on_end: false,
+        close_model_on_end: false,
         limits: Default::default(),
         subset_step: false,
     };

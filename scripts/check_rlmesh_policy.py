@@ -490,6 +490,31 @@ def _validate_release_crate_order(
             f"rlmesh.toml declares cargo artifact {name} but release.py "
             f"CRATE_ORDER does not publish it"
         )
+    errors.extend(_crate_order_violations(repo_root, crate_order))
+    return errors
+
+
+def _crate_order_violations(repo_root: Path, crate_order: list[str]) -> list[str]:
+    """Each crate must publish after the published crates it depends on."""
+    position = {name: index for index, name in enumerate(crate_order)}
+    errors: list[str] = []
+    for name in crate_order:
+        manifest = repo_root / "crates" / name / "Cargo.toml"
+        if not manifest.exists():
+            continue
+        cargo = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        tables = [cargo.get("dependencies", {}), cargo.get("build-dependencies", {})]
+        tables += [
+            target.get(kind, {})
+            for target in cargo.get("target", {}).values()
+            for kind in ("dependencies", "build-dependencies")
+        ]
+        for dep in sorted({dep for table in tables for dep in table}):
+            if dep in position and position[dep] > position[name]:
+                errors.append(
+                    f"release.py CRATE_ORDER publishes {name} before {dep}, "
+                    f"which it depends on"
+                )
     return errors
 
 

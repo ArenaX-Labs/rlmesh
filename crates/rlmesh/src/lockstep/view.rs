@@ -7,13 +7,18 @@
 //! - the observation space is keyed by the policy's input names, or by part
 //!   path (`/` → `.`) without a policy: a single-field part is its field, a
 //!   multi-field part a dict of fields;
-//! - the action space is keyed by action names (`[horizon, ...]`, squeezed
-//!   when the horizon is 1), or by commandable part path without a policy;
-//! - one view step with horizon H is H lockstep steps (stopping at the end
+//! - the action space is keyed by action names (`[chunk, ...]`, squeezed
+//!   when the chunk is 1), or by commandable part path without a policy;
+//! - one view step with chunk H is H lockstep steps (stopping at the end
 //!   of the episode), rewards summed;
-//! - `info` carries each input's age (in session time: steps × `tick_ns`),
-//!   the stale inputs, and each action's edge mode (`driving` for a part
-//!   commanded this step, else `idle`; lockstep has no hold or safe).
+//! - `info` carries each input's age (in session time: steps × `tick_ns`,
+//!   one action period of the policy per step, 1 ms without one),
+//!   the stale inputs, each action's edge mode (`driving` for a part
+//!   commanded this step, else `idle`; lockstep has no hold or safe), and
+//!   how many of each action's commands the part's limits changed
+//!   (`clamped`: the robot applies them, as a wall-clock edge would);
+//! - without a policy, an action's `Box` carries its command field's
+//!   declared limits, and an observation's its part's declared `range`.
 //!
 //! With a policy, the binder's plans run on the replies' packed payloads
 //! (conversions, history windows, blanks), exactly as for a v2 policy in
@@ -29,20 +34,25 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use bytes::Bytes;
+use rlmesh_session::controller::StepAction;
+use rlmesh_session::edge::command::CommandCheck;
 use rlmesh_session::spec::apply::{Tensor, Value};
-use rlmesh_session::spec::bind::{ActionRow, InputRow};
+use rlmesh_session::spec::bind::{ActionRow, Binding, InputRow};
+use rlmesh_session::spec::normalise::attrs;
 use rlmesh_session::spec::plan::Delivery;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::wire::{
     ChannelId, DType, Epoch, FieldSpec, Layout, LeaseToken, LockstepReply, LockstepReset,
     LockstepStep, PartSpec, PartValues, ParticipantId,
 };
+use serde_json::Value as Json;
 
 use rlmesh_spaces::{
-    BoxBounds, BoxSpec, DictSpec, MetaMap, MetaValue, Scalar, SpaceKind, SpaceSpec, SpaceValue,
-    TextSpec, TypedUniformBounds, UniformBounds,
+    BoxBounds, BoxSpec, DictSpec, ElementwiseBounds, MetaMap, MetaValue, Scalar, SpaceKind,
+    SpaceSpec, SpaceValue, TextSpec, TypedUniformBounds, UniformBounds,
 };
 
+use crate::lockstep::client::Keep;
 use crate::lockstep::error::GymError;
 use crate::lockstep::exchange::{LockstepLink, Request};
 use crate::lockstep::meta_json;
@@ -258,6 +268,17 @@ pub struct ViewStep {
     pub stale: Vec<String>,
     /// Each action's edge mode this step.
     pub edge_modes: Vec<(String, &'static str)>,
+    /// Per action, how many of the commands sent this step its part's
+    /// limits, norm bounds or binary snap changed.
+    pub clamped: Vec<(String, u32)>,
+    /// Per input, the window slots padded with its oldest sample (only
+    /// those padded).
+    pub padded: Vec<(String, u32)>,
+    /// The inputs bound to no part (blank).
+    pub blank: Vec<String>,
+    /// Per commanding action, the actions played this step, packed back to
+    /// back at the command's stride.
+    pub played: Vec<(String, Bytes)>,
     /// The robot's own `info` (JSON; empty: none).
     pub info_json: String,
 }
@@ -295,13 +316,33 @@ pub struct GymView {
     link: Arc<dyn LockstepLink>,
     inputs: Vec<Input>,
     outputs: Vec<Output>,
+    /// Each output's command checks, as the robot runs them: to count what
+    /// its limits change.
+    checks: Vec<Option<CommandCheck>>,
     tick_ns: u64,
     epoch: AtomicU64,
     token: AtomicU64,
     step: AtomicU64,
     history: Mutex<History>,
-    table: Option<String>,
-    _keep: Option<Box<dyn std::any::Any + Send + Sync>>,
+    binding: Option<Box<Binding>>,
+    /// The driver's participant, released (its lease freed) on close or
+    /// drop.
+    keep: Mutex<Option<Box<dyn Keep>>>,
+}
+
+impl Drop for GymView {
+    /// A view dropped without [`GymView::close`] still detaches, in the
+    /// background, so the next driver can take the lease at once.
+    fn drop(&mut self) {
+        let keep = self
+            .keep
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(keep) = keep {
+            crate::run::drive::runtime().spawn(keep.release());
+        }
+    }
 }
 
 impl GymView {
@@ -313,9 +354,9 @@ impl GymView {
         policy: Option<(&Policy, RunOptions)>,
         epoch: Epoch,
         token: LeaseToken,
-        keep: Option<Box<dyn std::any::Any + Send + Sync>>,
+        keep: Option<Box<dyn Keep>>,
     ) -> Result<Self, GymError> {
-        let (inputs, outputs, table, depth) = match policy {
+        let (inputs, outputs, binding, depth): (Vec<Input>, Vec<Output>, _, _) = match policy {
             None => {
                 let inputs = parts
                     .iter()
@@ -344,28 +385,32 @@ impl GymView {
                         *d = (*d).max(row.history.max(1) as usize);
                     }
                 }
-                let table = binding.table_text();
                 (
                     binding
                         .inputs
-                        .into_iter()
-                        .map(|r| Input::Bound(Box::new(r)))
+                        .iter()
+                        .map(|r| Input::Bound(Box::new(r.clone())))
                         .collect(),
                     binding
                         .actions
-                        .into_iter()
-                        .map(|r| Output::Bound(Box::new(r)))
+                        .iter()
+                        .map(|r| Output::Bound(Box::new(r.clone())))
                         .collect(),
-                    Some(table),
+                    Some(Box::new(binding)),
                     depth,
                 )
             }
         };
-        let tick_ns = 1_000_000;
+        let tick_ns = binding.as_deref().map_or(1_000_000, tick_of);
+        let checks = outputs
+            .iter()
+            .map(|o| CommandCheck::new(o.part()?.command.as_ref()?))
+            .collect();
         Ok(Self {
             link,
             inputs,
             outputs,
+            checks,
             tick_ns,
             epoch: AtomicU64::new(epoch.0),
             token: AtomicU64::new(token.0),
@@ -374,14 +419,70 @@ impl GymView {
                 samples: BTreeMap::new(),
                 depth,
             }),
-            table,
-            _keep: keep,
+            binding,
+            keep: Mutex::new(keep),
         })
     }
 
+    /// Releases the lease and detaches; later steps fail.
+    pub async fn close(&self) {
+        let keep = self
+            .keep
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(keep) = keep {
+            keep.release().await;
+        }
+    }
+
     /// The binding table (with a policy).
-    pub fn table(&self) -> Option<&str> {
-        self.table.as_deref()
+    pub fn table(&self) -> Option<String> {
+        self.binding.as_deref().map(Binding::table_text)
+    }
+
+    /// The binding (with a policy).
+    pub fn binding(&self) -> Option<&Binding> {
+        self.binding.as_deref()
+    }
+
+    /// Session time per lockstep step, in ns.
+    pub fn tick_ns(&self) -> u64 {
+        self.tick_ns
+    }
+
+    /// Session time now: the steps taken so far, at [`Self::tick_ns`] each.
+    pub fn time_ns(&self) -> i64 {
+        let now = self
+            .step
+            .load(Ordering::Acquire)
+            .saturating_mul(self.tick_ns);
+        i64::try_from(now).unwrap_or(i64::MAX)
+    }
+
+    /// `step`'s actions as each part played them, for a [`StepAction`]
+    /// report, the chunk's first action at `t0_ns`.
+    pub fn played(&self, step: &ViewStep, t0_ns: i64) -> Vec<StepAction> {
+        self.outputs
+            .iter()
+            .map(|output| {
+                let command = output.part().and_then(|p| Some((p, p.command.as_ref()?)));
+                let packed = step
+                    .played
+                    .iter()
+                    .find(|(name, _)| name == output.name())
+                    .map(|(_, bytes)| bytes.clone())
+                    .unwrap_or_default();
+                StepAction::played(
+                    output.name().to_string(),
+                    command.map(|(part, _)| part.qualified()),
+                    t0_ns,
+                    self.tick_ns,
+                    packed,
+                    command.map(|(_, c)| c.fields.clone()).unwrap_or_default(),
+                )
+            })
+            .collect()
     }
 
     /// The observation entries, in order.
@@ -407,7 +508,7 @@ impl GymView {
                 Output::Bound(row) => row.part.as_ref().map(|_| {
                     (
                         row.entry.clone(),
-                        entry_of_delivery(&row.delivers, row.horizon == 1),
+                        entry_of_delivery(&row.delivers, row.chunk == 1),
                     )
                 }),
             })
@@ -416,19 +517,49 @@ impl GymView {
 
     /// The observation and action spaces, keyed by entry: an array entry
     /// a `Box` spanning its dtype (a float's unbounded), a text entry a
-    /// `Text`, a multi-field entry a `Dict` of its fields.
+    /// `Text`, a multi-field entry a `Dict` of its fields. Without a
+    /// policy, a float action field's `Box` is its declared limits and a
+    /// float observation field's its part's declared `range`; a policy's
+    /// entries may be converted from the part's, so they keep the dtype's
+    /// span.
     pub fn spaces(&self) -> (SpaceSpec, SpaceSpec) {
-        let space = |entries: Vec<(String, Entry)>| {
-            let (keys, spaces) = entries
-                .into_iter()
-                .map(|(name, entry)| (name, entry_space(&entry)))
-                .unzip();
+        let observation = self.inputs.iter().map(|input| match input {
+            Input::Raw { name, part } => {
+                let ranges = ranges(part);
+                let bounds = |field: &str| ranges.get(field).map(|r| vec![*r]);
+                let entry = entry_of(&part.fields);
+                (name.clone(), entry_space(&entry, &part.fields, bounds))
+            }
+            Input::Bound(row) => (
+                row.entry.clone(),
+                entry_space(&entry_of_delivery(&row.delivers, false), &[], |_| None),
+            ),
+        });
+        let action = self.outputs.iter().filter_map(|output| match output {
+            Output::Raw { name, part } => part.command.as_ref().map(|command| {
+                let bounds = |field: &str| {
+                    let limit = command.limit(field)?;
+                    let pairs: Vec<(f64, f64)> = limit
+                        .low
+                        .iter()
+                        .copied()
+                        .zip(limit.high.iter().copied())
+                        .collect();
+                    (!pairs.is_empty()).then_some(pairs)
+                };
+                let entry = entry_of(&command.fields);
+                (name.clone(), entry_space(&entry, &command.fields, bounds))
+            }),
+            Output::Bound(row) => row.part.as_ref().map(|_| {
+                let entry = entry_of_delivery(&row.delivers, row.chunk == 1);
+                (row.entry.clone(), entry_space(&entry, &[], |_| None))
+            }),
+        });
+        let space = |entries: Vec<(String, SpaceSpec)>| {
+            let (keys, spaces) = entries.into_iter().unzip();
             dict_space(keys, spaces)
         };
-        (
-            space(self.observation_entries()),
-            space(self.action_entries()),
-        )
+        (space(observation.collect()), space(action.collect()))
     }
 
     /// Lane 0's frame (PNG bytes), if the robot renders one.
@@ -458,10 +589,21 @@ impl GymView {
 
     /// One view step: `actions` by action entry name.
     pub async fn step(&self, actions: &[(String, Value)]) -> Result<ViewStep, GymError> {
-        // Every commanded part's actions, packed.
-        let mut packed: Vec<(ChannelId, usize, Vec<u8>)> = Vec::new();
-        let mut horizon = 1_usize;
-        for output in &self.outputs {
+        self.play(actions, false).await
+    }
+
+    /// [`Self::step`] with every bound action as a policy returns it:
+    /// `[chunk, ...]`, a chunk of 1 included.
+    pub async fn step_chunks(&self, actions: &[(String, Value)]) -> Result<ViewStep, GymError> {
+        self.play(actions, true).await
+    }
+
+    async fn play(&self, actions: &[(String, Value)], chunked: bool) -> Result<ViewStep, GymError> {
+        // Every commanded part's actions, packed, by action name.
+        let mut packed: Vec<(ChannelId, usize, Vec<u8>, Option<&CommandCheck>)> = Vec::new();
+        let mut names: Vec<&str> = Vec::new();
+        let mut chunk = 1_usize;
+        for (output, check) in self.outputs.iter().zip(&self.checks) {
             let Some(part) = output.part() else { continue };
             let Some(command) = &part.command else {
                 continue;
@@ -479,7 +621,7 @@ impl GymView {
             let bytes = match output {
                 Output::Raw { .. } => pack_raw(&command.fields, value)?,
                 Output::Bound(row) => {
-                    let value = if row.horizon == 1 {
+                    let value = if row.chunk == 1 && !chunked {
                         unsqueeze(value)
                     } else {
                         value.clone()
@@ -488,23 +630,33 @@ impl GymView {
                 }
             };
             let count = bytes.len() / stride.max(1);
-            horizon = horizon.max(count);
-            packed.push((part.channel, stride, bytes));
+            chunk = chunk.max(count);
+            packed.push((part.channel, stride, bytes, check.as_ref()));
+            names.push(output.name());
         }
         let mut reward = 0.0;
         let (mut terminated, mut truncated) = (false, false);
         let mut info_json = String::new();
         let mut taken = 0;
-        for k in 0..horizon {
+        let mut clamped = vec![0_u32; packed.len()];
+        for k in 0..chunk {
             let commands = packed
                 .iter()
-                .map(|(channel, stride, bytes)| {
+                .zip(&mut clamped)
+                .map(|((channel, stride, bytes, check), clamped)| {
                     // A shorter chunk holds its last action.
                     let count = bytes.len() / stride.max(&1);
                     let i = k.min(count.saturating_sub(1));
+                    let payload = Bytes::copy_from_slice(&bytes[i * stride..(i + 1) * stride]);
+                    // The robot applies its limits; this only counts what
+                    // they change (an invalid action is the robot's to
+                    // refuse).
+                    if let Some(Ok(checked)) = check.map(|c| c.check(&payload, 1)) {
+                        *clamped += checked.clamped;
+                    }
                     PartValues {
                         channel: *channel,
-                        payload: Bytes::copy_from_slice(&bytes[i * stride..(i + 1) * stride]),
+                        payload,
                     }
                 })
                 .collect();
@@ -542,7 +694,27 @@ impl GymView {
                 (o.name().to_string(), mode)
             })
             .collect();
-        self.observe(reward, terminated, truncated, taken, modes, info_json)
+        // What each part played: its first `taken` actions (a shorter chunk
+        // held its last).
+        let played = names
+            .iter()
+            .zip(&packed)
+            .map(|(name, (_, stride, bytes, _))| {
+                let count = bytes.len() / stride.max(&1);
+                let played: Vec<u8> = (0..taken as usize)
+                    .flat_map(|k| {
+                        let i = k.min(count.saturating_sub(1));
+                        bytes[i * stride..(i + 1) * stride].iter().copied()
+                    })
+                    .collect();
+                ((*name).to_string(), Bytes::from(played))
+            })
+            .collect();
+        let clamped = names.into_iter().map(str::to_string).zip(clamped).collect();
+        let mut step = self.observe(reward, terminated, truncated, taken, modes, info_json)?;
+        step.clamped = clamped;
+        step.played = played;
+        Ok(step)
     }
 
     fn observe(
@@ -559,6 +731,8 @@ impl GymView {
         let mut observation = Vec::with_capacity(self.inputs.len());
         let mut ages = Vec::with_capacity(self.inputs.len());
         let mut stale = Vec::new();
+        let mut padded = Vec::new();
+        let mut blank = Vec::new();
         for input in &self.inputs {
             let (name, channel, max_age) = match input {
                 Input::Raw { name, part } => (name.clone(), Some(part.channel), part.max_age),
@@ -585,12 +759,18 @@ impl GymView {
                     let window: Vec<&[u8]> = match held {
                         Some((ring, _)) => {
                             let pad = want.saturating_sub(ring.len());
+                            if pad > 0 {
+                                padded.push((name.clone(), pad as u32));
+                            }
                             let first = ring.front().map(|b| b.as_ref()).unwrap_or_default();
                             std::iter::repeat_n(first, pad)
                                 .chain(ring.iter().map(|b| b.as_ref()))
                                 .collect()
                         }
-                        None if row.part.is_none() => Vec::new(),
+                        None if row.part.is_none() => {
+                            blank.push(name.clone());
+                            Vec::new()
+                        }
                         None => {
                             stale.push(name.clone());
                             return Err(GymError::Map(format!(
@@ -614,9 +794,26 @@ impl GymView {
             ages_ns: ages,
             stale,
             edge_modes,
+            clamped: Vec::new(),
+            padded,
+            blank,
+            played: Vec::new(),
             info_json,
         })
     }
+}
+
+/// A bound policy's session time per step: its shortest action period, or
+/// its replan period when it commands nothing.
+fn tick_of(binding: &Binding) -> u64 {
+    let period = binding
+        .actions
+        .iter()
+        .filter(|a| a.part.is_some())
+        .map(|a| a.dt)
+        .min()
+        .unwrap_or_else(|| Duration::from_secs_f64(1.0 / binding.replan_hz.max(f64::MIN_POSITIVE)));
+    u64::try_from(period.as_nanos()).unwrap_or(u64::MAX).max(1)
 }
 
 fn first_reward(bytes: &[u8]) -> f64 {
@@ -730,8 +927,46 @@ fn dict_space(keys: Vec<String>, spaces: Vec<SpaceSpec>) -> SpaceSpec {
     }
 }
 
-fn array_space(dtype: DType, shape: &[u32]) -> SpaceSpec {
+/// A part's declared `range`: `(low, high)` by field.
+fn ranges(part: &PartSpec) -> BTreeMap<String, (f64, f64)> {
+    let Some(Ok(Json::Object(ranges))) = part
+        .attrs
+        .get(attrs::RANGE)
+        .map(|text| serde_json::from_str::<Json>(text))
+    else {
+        return BTreeMap::new();
+    };
+    ranges
+        .into_iter()
+        .filter_map(|(field, pair)| Some((field, (pair.get(0)?.as_f64()?, pair.get(1)?.as_f64()?))))
+        .collect()
+}
+
+/// Float bounds of `numel` elements from `pairs`: one pair broadcasts,
+/// else one per element (anything else is left unbounded).
+fn float_bounds(pairs: &[(f64, f64)], numel: usize) -> Option<BoxBounds> {
+    match pairs {
+        [(low, high)] => Some(BoxBounds::Uniform(UniformBounds {
+            low: *low,
+            high: *high,
+        })),
+        pairs if pairs.len() == numel => Some(BoxBounds::Elementwise(ElementwiseBounds {
+            low: pairs.iter().map(|p| p.0).collect(),
+            high: pairs.iter().map(|p| p.1).collect(),
+        })),
+        _ => None,
+    }
+}
+
+/// An array's `Box`: `bounds` (one pair, or one per element) on a
+/// `float32`/`float64` field, else its dtype's span. A `float16` keeps its
+/// span: the edge does not clamp it.
+fn array_space(dtype: DType, shape: &[u32], bounds: Option<Vec<(f64, f64)>>) -> SpaceSpec {
     let native = rlmesh_spaces::DType::from_name(dtype.name()).unwrap_or_default();
+    let numel = shape.iter().map(|d| *d as usize).product();
+    let declared = bounds
+        .filter(|_| matches!(dtype, DType::F32 | DType::F64))
+        .and_then(|pairs| float_bounds(&pairs, numel));
     let typed = |low: Scalar, high: Scalar| {
         let bytes = |s| rlmesh_spaces::encode_scalars(&[s], native).unwrap_or_default();
         BoxBounds::TypedUniform(TypedUniformBounds {
@@ -739,15 +974,16 @@ fn array_space(dtype: DType, shape: &[u32]) -> SpaceSpec {
             high: bytes(high),
         })
     };
-    let bounds = match dtype {
-        DType::F16 | DType::F32 | DType::F64 => BoxBounds::Uniform(UniformBounds {
+    let bounds = match (declared, dtype) {
+        (Some(declared), _) => declared,
+        (None, DType::F16 | DType::F32 | DType::F64) => BoxBounds::Uniform(UniformBounds {
             low: f64::NEG_INFINITY,
             high: f64::INFINITY,
         }),
-        DType::Bool => typed(Scalar::Bool(false), Scalar::Bool(true)),
+        (None, DType::Bool) => typed(Scalar::Bool(false), Scalar::Bool(true)),
         // The dtype's own range; `u64`'s top wraps to -1, as its scalars do.
-        DType::U64 => typed(Scalar::Int(0), Scalar::Int(-1)),
-        _ => {
+        (None, DType::U64) => typed(Scalar::Int(0), Scalar::Int(-1)),
+        (None, _) => {
             let bits = dtype.size() * 8;
             let signed = matches!(dtype, DType::I8 | DType::I16 | DType::I32 | DType::I64);
             let (low, high) = if signed {
@@ -767,9 +1003,21 @@ fn array_space(dtype: DType, shape: &[u32]) -> SpaceSpec {
     }
 }
 
-fn entry_space(entry: &Entry) -> SpaceSpec {
+/// An entry's space, its fields' `bounds` by field name (an array entry's
+/// field is `fields`' only one).
+fn entry_space(
+    entry: &Entry,
+    fields: &[FieldSpec],
+    bounds: impl Fn(&str) -> Option<Vec<(f64, f64)>>,
+) -> SpaceSpec {
     match entry {
-        Entry::Array { dtype, shape } => array_space(*dtype, shape),
+        Entry::Array { dtype, shape } => {
+            let field = match fields {
+                [field] => bounds(&field.name),
+                _ => None,
+            };
+            array_space(*dtype, shape, field)
+        }
         Entry::Text => SpaceSpec {
             shape: Vec::new(),
             dtype: rlmesh_spaces::DType::Uint8,
@@ -783,7 +1031,7 @@ fn entry_space(entry: &Entry) -> SpaceSpec {
             fields.iter().map(|(name, _, _)| name.clone()).collect(),
             fields
                 .iter()
-                .map(|(_, dtype, shape)| array_space(*dtype, shape))
+                .map(|(name, dtype, shape)| array_space(*dtype, shape, bounds(name)))
                 .collect(),
         ),
     }
@@ -858,8 +1106,8 @@ pub fn action_values(action: &SpaceValue) -> Result<Vec<(String, Value)>, GymErr
         .collect()
 }
 
-/// A view step's `info`: `ages_ns`, `stale`, `edge_modes` and `steps`, then
-/// the robot's own keys.
+/// A view step's `info`: `ages_ns`, `stale`, `edge_modes`, `clamped` and
+/// `steps`, then the robot's own keys.
 pub fn info(step: &ViewStep) -> Result<MetaMap, GymError> {
     let mut info = meta_json::from_json(&step.info_json).map_err(GymError::Malformed)?;
     let map = |pairs: Vec<(String, MetaValue)>| MetaValue::Map(pairs.into_iter().collect());
@@ -884,6 +1132,14 @@ pub fn info(step: &ViewStep) -> Result<MetaMap, GymError> {
             .edge_modes
             .iter()
             .map(|(name, mode)| (name.clone(), MetaValue::String((*mode).into())))
+            .collect()),
+    );
+    info.insert(
+        "clamped".into(),
+        map(step
+            .clamped
+            .iter()
+            .map(|(name, n)| (name.clone(), MetaValue::Int(i64::from(*n))))
             .collect()),
     );
     info.insert("steps".into(), MetaValue::Int(i64::from(step.steps)));

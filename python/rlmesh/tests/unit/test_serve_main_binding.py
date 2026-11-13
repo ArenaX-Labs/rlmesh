@@ -92,6 +92,7 @@ def test_model_binding_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
         name: str,
         binding: object = None,
         workflow_edition: str | None = None,
+        batching: object = None,
     ) -> None:
         captured["binding"] = binding
         captured["workflow_edition"] = workflow_edition
@@ -154,8 +155,8 @@ def test_serve_env_binding_named_address_does_not_collide(
         captured["make_kwargs"] = kw
         return object()
 
-    serve.serve_env(make_env, "0.0.0.0:1", address="from-binding")
-    assert captured["address"] == "0.0.0.0:1"
+    serve.serve_env(make_env, "127.0.0.1:1", address="from-binding")
+    assert captured["address"] == "127.0.0.1:1"
     assert captured["make_kwargs"] == {"address": "from-binding"}
 
 
@@ -229,7 +230,7 @@ def test_serve_env_serves_factory_lanes_and_keeps_tags(
             return _GymEnv()
 
     # num_envs > 1 serves lanes: one make() per lane, tags published per lane.
-    serve.serve_env(_Factory, "0.0.0.0:1", num_envs=2)
+    serve.serve_env(_Factory, "127.0.0.1:1", num_envs=2)
     assert isinstance(captured["env"], list)
     assert len(captured["env"]) == 2
     assert all(isinstance(lane, _GymEnv) for lane in captured["env"])
@@ -237,7 +238,7 @@ def test_serve_env_serves_factory_lanes_and_keeps_tags(
 
     # An explicit vectorization_mode keeps the gym fan-out, served untagged
     # (adapters resolve per lane and a gym vector env's spaces are batched).
-    serve.serve_env(_Factory, "0.0.0.0:1", num_envs=2, vectorization_mode="sync")
+    serve.serve_env(_Factory, "127.0.0.1:1", num_envs=2, vectorization_mode="sync")
     assert getattr(captured["env"], "num_envs", None) == 2
     assert captured["tags"] is None
 

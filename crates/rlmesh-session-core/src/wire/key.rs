@@ -111,3 +111,36 @@ impl KeysAck {
         self.installed.is_empty() && self.sending.is_empty() && self.retired.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_delivery_or_ack_with_anything_in_it_is_not_empty() {
+        assert!(KeyDelivery::default().is_empty() && KeysAck::default().is_empty());
+        assert!(
+            !KeyDelivery {
+                retire_through: vec![3],
+                ..KeyDelivery::default()
+            }
+            .is_empty()
+        );
+        for ack in [
+            KeysAck {
+                installed: vec![1],
+                ..KeysAck::default()
+            },
+            KeysAck {
+                sending: vec![1],
+                ..KeysAck::default()
+            },
+            KeysAck {
+                retired: vec![1],
+                ..KeysAck::default()
+            },
+        ] {
+            assert!(!ack.is_empty(), "{ack:?}");
+        }
+    }
+}

@@ -842,4 +842,168 @@ mod tests {
             Err(ApproveError::NoMatch(sas.value()))
         );
     }
+
+    fn identity() -> HostIdentity {
+        HostIdentity::from_secrets(&mut [6; 32], &mut [7; 32], &mut [8; 32])
+    }
+
+    /// Runs `laptop` through XX and the commitment at `now`: its next
+    /// request is its nonce.
+    fn to_nonce(
+        daemon: &mut Pairings,
+        host: &HostIdentity,
+        laptop: &mut Pairing,
+        rng: &mut TestRng,
+        now: i64,
+    ) {
+        for _ in 0..2 {
+            let Handled::Reply(reply) = daemon.handle(rng, host, now, laptop.request()) else {
+                panic!("an answer");
+            };
+            assert_eq!(
+                laptop.on_reply(rng, &reply).expect("progress"),
+                Progress::Next
+            );
+        }
+    }
+
+    fn status_of(handled: Handled) -> CtlStatus {
+        let Handled::Reply(reply) = handled else {
+            panic!("an answer: {handled:?}");
+        };
+        match codec::decode_pair_reply(&reply) {
+            Ok(PairReply::Error(error)) => error.status,
+            other => panic!("not a refusal: {other:?}"),
+        }
+    }
+
+    fn refused() -> CtlError {
+        CtlError::new(CtlStatus::NotAuthorized, "no")
+    }
+
+    #[test]
+    fn a_decided_exchange_no_longer_counts_as_pending() {
+        let mut rng = TestRng::new(3);
+        let host = identity();
+        let device = StaticKeypair::from_private(&mut [5; 32]);
+        let mut daemon = Pairings::new();
+        for i in 0..MAX_PENDING as u8 {
+            let mut laptop = Pairing::start(&mut rng, &device, [i; 16], "a", MACHINE).unwrap();
+            to_nonce(&mut daemon, &host, &mut laptop, &mut rng, 0);
+            assert!(daemon.decide([i; 16], Err(refused())));
+        }
+        let mut next = Pairing::start(&mut rng, &device, [9; 16], "a", MACHINE).unwrap();
+        to_nonce(&mut daemon, &host, &mut next, &mut rng, 0);
+    }
+
+    #[test]
+    fn the_handshake_limit_holds_for_a_full_minute_and_then_slides() {
+        let mut rng = TestRng::new(4);
+        let host = identity();
+        let device = StaticKeypair::from_private(&mut [5; 32]);
+        let mut daemon = Pairings::new();
+        for i in 0..HANDSHAKES_PER_MINUTE as u8 {
+            let mut laptop = Pairing::start(&mut rng, &device, [i; 16], "a", MACHINE).unwrap();
+            to_nonce(&mut daemon, &host, &mut laptop, &mut rng, 0);
+            assert!(daemon.decide([i; 16], Err(refused())));
+        }
+        let mut late = Pairing::start(&mut rng, &device, [99; 16], "a", MACHINE).unwrap();
+        let Handled::Reply(xx2) = daemon.handle(&mut rng, &host, 0, late.request()) else {
+            panic!("xx2");
+        };
+        assert_eq!(late.on_reply(&mut rng, &xx2).unwrap(), Progress::Next);
+        let early = daemon.handle(&mut rng, &host, MINUTE_NS - 1, late.request());
+        assert_eq!(status_of(early), CtlStatus::Unsupported);
+        let Handled::Reply(commit) = daemon.handle(&mut rng, &host, MINUTE_NS, late.request())
+        else {
+            panic!("the commitment");
+        };
+        assert_eq!(late.on_reply(&mut rng, &commit).unwrap(), Progress::Next);
+    }
+
+    #[test]
+    fn only_a_machine_or_browser_with_a_name_of_1_to_64_bytes_may_pair() {
+        let long = "a".repeat(MAX_NAME);
+        let over = "a".repeat(MAX_NAME + 1);
+        for (i, (name, kind, accepted)) in [
+            (long.as_str(), MACHINE, true),
+            ("a", BROWSER, true),
+            ("", MACHINE, false),
+            (over.as_str(), MACHINE, false),
+            ("a", "robot", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut rng = TestRng::new(5);
+            let host = identity();
+            let device = StaticKeypair::from_private(&mut [5; 32]);
+            let mut daemon = Pairings::new();
+            let mut laptop = Pairing::start(&mut rng, &device, [i as u8; 16], name, kind).unwrap();
+            to_nonce(&mut daemon, &host, &mut laptop, &mut rng, 0);
+            let handled = daemon.handle(&mut rng, &host, 0, laptop.request());
+            if accepted {
+                let Handled::Reply(reply) = handled else {
+                    panic!("the reveal");
+                };
+                assert!(
+                    matches!(laptop.on_reply(&mut rng, &reply), Ok(Progress::Show(_))),
+                    "{name:?} {kind}"
+                );
+            } else {
+                assert_eq!(
+                    status_of(handled),
+                    CtlStatus::InvalidRequest,
+                    "{name:?} {kind}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_wait_before_the_nonce_is_refused_rather_than_held() {
+        let mut rng = TestRng::new(6);
+        let host = identity();
+        let device = StaticKeypair::from_private(&mut [5; 32]);
+        let mut daemon = Pairings::new();
+        let mut laptop = Pairing::start(&mut rng, &device, [1; 16], "a", MACHINE).unwrap();
+        to_nonce(&mut daemon, &host, &mut laptop, &mut rng, 0);
+        let LaptopStage::Reveal(link, _) = &mut laptop.stage else {
+            panic!("waiting for the reveal");
+        };
+        let wait = link
+            .sender
+            .seal(Kind::PairWait, PAIR_KEY, &codec::encode_pair_wait())
+            .unwrap();
+        let early = codec::encode_pair_request(&PairRequest {
+            exchange: [1; 16],
+            step: PairStep::Sealed(wait),
+        });
+        let handled = daemon.handle(&mut rng, &host, 0, &early);
+        assert_eq!(status_of(handled), CtlStatus::InvalidRequest);
+    }
+
+    #[test]
+    fn a_wait_past_the_expiry_is_answered_expired() {
+        assert!(matches!(
+            codec::decode_pair_reply(&expired_reply()),
+            Ok(PairReply::Error(error)) if error.status == CtlStatus::Expired
+        ));
+    }
+
+    #[test]
+    fn pairing_state_never_prints_its_keys_or_code() {
+        let mut rng = TestRng::new(7);
+        let host = identity();
+        let device = StaticKeypair::from_private(&mut [5; 32]);
+        let mut daemon = Pairings::new();
+        let mut laptop = Pairing::start(&mut rng, &device, [1; 16], "a", MACHINE).unwrap();
+        crate::crypto::assert_redacted(&laptop, &[5; 32]);
+        let sas = to_code(&mut daemon, &host, &mut laptop, &mut rng);
+        crate::crypto::assert_redacted(&daemon, &[6; 32]);
+        crate::crypto::assert_redacted(&laptop, &[5; 32]);
+        let code = format!("{:06}", sas.value());
+        assert!(!format!("{daemon:?}").contains(&code));
+        assert!(!format!("{laptop:?}").contains(&code));
+    }
 }

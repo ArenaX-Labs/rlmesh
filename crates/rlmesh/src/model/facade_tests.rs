@@ -791,3 +791,55 @@ fn final_model_drop_is_bounded_even_when_close_is_unresponsive() {
     release.send(()).unwrap();
     out.expect("Drop must give up after its five-second bound");
 }
+
+/// The (observation, action) spaces each predict's context named.
+type SeenSpaces = Arc<Mutex<Vec<(Option<String>, Option<String>)>>>;
+
+/// A model with no adapter: it answers in the env's own action space, which
+/// its context names.
+struct Adapterless {
+    spaces: SeenSpaces,
+}
+
+impl Policy for Adapterless {
+    const CONTEXT: Corners = Corners::PREDICT;
+
+    fn spec() -> Option<SpecArg> {
+        Some(SpecArg::NoAdapter)
+    }
+
+    fn predict_with_context(
+        &mut self,
+        _observation: Value,
+        context: &mut PredictContext<'_>,
+    ) -> Result<Value> {
+        self.spaces.lock().unwrap().push((
+            context.observation_space.map(ToString::to_string),
+            context.action_space.map(ToString::to_string),
+        ));
+        Ok(context
+            .action_space
+            .map_or(Value::Int(0), |space| space.to_space().sample().unwrap()))
+    }
+}
+
+#[test]
+fn an_adapterless_policy_reads_its_envs_spaces_from_the_context() {
+    let (server, address) = served_env();
+    let spaces = SeenSpaces::default();
+    let model = Model::new(
+        Adapterless {
+            spaces: Arc::clone(&spaces),
+        },
+        ModelOptions::default(),
+    )
+    .unwrap();
+    run_model_local(&model, RunLocalOptions::parse(&address).unwrap()).unwrap();
+    let spaces = spaces.lock().unwrap();
+    assert_eq!(spaces.len(), 3);
+    for (observation, action) in spaces.iter() {
+        assert_eq!(observation.as_deref(), Some("Discrete(5)"));
+        assert_eq!(action.as_deref(), Some("Discrete(2)"));
+    }
+    drop(server);
+}

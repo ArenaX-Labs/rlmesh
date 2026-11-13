@@ -1,0 +1,29 @@
+{
+  "relay": {
+    "kind": "switch",
+    "hz": 10,
+    "command": "set",
+    "safe": "stop"
+  },
+  "button": {
+    "kind": "switch",
+    "hz": 50
+  },
+  "dimmer": {
+    "kind": "value",
+    "hz": 20,
+    "unit": "percent",
+    "range": [0, 100],
+    "command": "set",
+    "safe": "hold",
+    "limits": {
+      "value": [0, 100]
+    }
+  },
+  "temp": {
+    "kind": "value",
+    "hz": 1,
+    "unit": "degC",
+    "range": [-40, 125]
+  }
+}

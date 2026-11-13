@@ -5,6 +5,7 @@
     "fields": ["pos"],
     "hz": 50,
     "command": "position",
+    "safe": "stop",
     "max_action_age_ms": 100
   }
 }

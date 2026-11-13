@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
 #MISE description="Build the device runtime (crates/rlmesh-device) for each ESP32 the Arduino library supports (the C6 on stable Rust; the classic ESP32 with Espressif's Rust fork, when installed), stage it into integrations/esp32, merge a private zenoh-pico transport into each archive, package one RLMesh zip per chip, and compile the library's examples with arduino-cli"
 #MISE dir="{{ config_root }}"
-set -euo pipefail
+set -Eeuo pipefail
+
+# One build at a time on this machine: two at once share this checkout's
+# zenoh-pico tree (deleted, copied and patched each run), its cmake and
+# transport build directories, and arduino-cli's core cache (~/.cache/arduino),
+# which every checkout uses. A second one waits for the first, and says so.
+if [ -z "${RLMESH_MACHINE_LOCK_ESP32_FD:-}" ]; then
+  exec python3 scripts/dev/machine_lock.py esp32 "$0" "$@"
+fi
+# A step that fails says which: mise reports only "task failed".
+trap 'echo "build:esp32: failed (exit $?) at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 lib=integrations/esp32
 target_dir="${CARGO_TARGET_DIR:-target}"
 tools="$HOME/.arduino15/packages/esp32/tools"
+# ARDUINO_CLI, else the one on PATH, else the version setup:esp32 installs.
 cli="${ARDUINO_CLI:-arduino-cli}"
+if ! "$cli" version >/dev/null 2>&1 && [ -z "${ARDUINO_CLI:-}" ]; then
+  cli="$(mise where arduino-cli@1.5.1 2>/dev/null || true)/arduino-cli"
+fi
 if ! "$cli" version >/dev/null 2>&1; then
-  echo "build:esp32 needs arduino-cli and the esp32:esp32 core (set ARDUINO_CLI for a binary off PATH)" >&2
+  echo "build:esp32 needs arduino-cli and the esp32:esp32 core: run \`mise run setup:esp32\`, or set ARDUINO_CLI" >&2
   exit 1
 fi
 mkdir -p "$target_dir/esp32"
@@ -23,9 +37,10 @@ zp_src="$(.mise/tasks/build/zenoh-pico)"
 zp_version="${zp_src##*/src-}"
 zp="$target_dir/zenoh-pico"
 zp_lib="$zp/arduino/zenoh-pico"
-if ! cmake -S "$zp_src" -B "$zp/config" -DZP_PLATFORM=arduino_esp32 -DFRAG_MAX_SIZE=4096 \
-  -DBATCH_UNICAST_SIZE=2048 -DBATCH_MULTICAST_SIZE=2048 -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF \
-  >"$zp/config.log" 2>&1; then
+# shellcheck disable=SC2046 # one flag per word
+if ! cmake -S "$zp_src" -B "$zp/config" -DZP_PLATFORM=arduino_esp32 \
+  $(grep -v '^#' integrations/esp32/transport/zenoh-pico.flags) \
+  -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF >"$zp/config.log" 2>&1; then
   cat "$zp/config.log" >&2
   exit 1
 fi
@@ -47,16 +62,26 @@ cp "$zp/config/include/zenoh-pico/config.h" "$zp_lib/src/zenoh-pico/"
   mkdir -p "$zp_lib/src/zp/$(dirname "$file")"
   cp "$zp_src/$file" "$zp_lib/src/zp/$file"
 done
+# The boards' fixes to zenoh-pico: its links' bounds, its own handling of a
+# failed link, its ESP32 port's tasks (see the script).
+python3 integrations/esp32/transport/patch_zenoh_pico.py "$zp_lib/src/zp"
 printf 'name=zenoh-pico\nversion=%s\nauthor=ZettaScale\nmaintainer=ZettaScale\nsentence=Zenoh for microcontrollers\nparagraph=\ncategory=Communication\nurl=https://github.com/eclipse-zenoh/zenoh-pico\narchitectures=esp32\n' \
   "$zp_version" >"$zp_lib/library.properties"
-cp integrations/esp32/transport/rlmesh_zenoh.{c,h} "$zp_lib/src/"
+cp integrations/esp32/transport/rlmesh_zenoh.{c,h} integrations/esp32/transport/rlmesh_txq.h "$zp_lib/src/"
 cp crates/rlmesh-device/include/rlmesh_device.h "$zp_lib/src/"
 # An empty umbrella header: the sketch preprocessor uses -CC, which breaks
 # zenoh-pico's macro-expanded C declarations. Only C compiles those headers.
 touch "$zp_lib/src/RLMeshTransportBuild.h"
 mkdir -p "$zp/TransportBuild"
 printf '#include <RLMeshTransportBuild.h>\nvoid setup() {}\nvoid loop() {}\n' >"$zp/TransportBuild/TransportBuild.ino"
-zp_flags="-DZENOH_ARDUINO_ESP32 -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11"
+# RLMESH_TASK_CORE: the core of every task the transport and zenoh-pico
+# make: -1 (the default) no affinity, 0 or 1 pins them (patch_zenoh_pico.py).
+task_core="${RLMESH_TASK_CORE:--1}"
+case "$task_core" in
+  -1 | 0 | 1) ;;
+  *) echo "RLMESH_TASK_CORE is -1 (no affinity), 0 or 1, not $task_core" >&2; exit 1 ;;
+esac
+zp_flags="-DZENOH_ARDUINO_ESP32 -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11 -DRLMESH_TASK_CORE=$task_core"
 
 # One chip: build the archive, keep only the ABI's C names global, stage it
 # under the chip's `build.mcu`, and compile the examples.
@@ -164,6 +189,8 @@ chip() {
       echo "memcpy in $name for $mcu runs from flash, not ESP-IDF's IRAM or ROM copy" >&2
       exit 1
     fi
+    # The deepest call on the loop task fits the stack the library declares.
+    python3 "$lib/test/check_stack.py" --objdump "${nm%nm}objdump" --elf "$out/$name.ino.elf"
   done
   mkdir -p "$target_dir/esp32/dist"
   python3 - "$package" "$target_dir/esp32/dist/RLMesh-$mcu.zip" <<'ZIP'

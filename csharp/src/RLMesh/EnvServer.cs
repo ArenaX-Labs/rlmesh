@@ -96,6 +96,13 @@ public sealed unsafe partial class EnvServer : IDisposable
         RLMeshBytes bytes = default; Status.Check(Native.rlmesh_env_server_address(call.Server, &bytes));
         return Utf8.OwnedText(bytes);
     });
+    // What logs show: the address without its key, which Address hands over.
+    public override string ToString() => NativeGate.Call(() =>
+    {
+        using var call = Record.Acquire(this);
+        RLMeshBytes bytes = default; Status.Check(Native.rlmesh_env_server_repr(call.Server, &bytes));
+        return Utf8.OwnedText(bytes);
+    });
     public void Start() => NativeGate.Call(() => { using var call = Record.Acquire(this); Status.Check(Native.rlmesh_env_server_start(call.Server)); });
     public bool Wait(TimeSpan? timeout = null) => NativeGate.Call(() =>
     {

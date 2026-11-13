@@ -196,9 +196,6 @@ def execute(case):
                         variant = case["variant"]
                         if variant == "workflow":
                             os.environ.pop("RLMESH_WORKFLOW_EDITION", None)
-                            from rlmesh import _editions
-
-                            _editions._warned = False
 
                             class Authored(rlmesh.Model):
                                 def predict(self, observation):
@@ -235,7 +232,7 @@ def execute(case):
                     except TypeError as error:
                         observed = error_record(error)
                 observed.update(
-                    category=seen[-1],
+                    category=seen[-1] if seen else "",
                     calling_thread=all(t == caller for t in threads),
                     warnings=len(seen),
                 )

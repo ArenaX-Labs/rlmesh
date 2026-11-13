@@ -39,7 +39,7 @@ export interface Tensor {
   data: TypedArray;
 }
 
-/** What a policy sends per action entry: `[horizon, ...]` elements, row-major. The dtype follows the typed array unless given. */
+/** What a policy sends per action entry: `[chunk, ...]` elements, row-major. The dtype follows the typed array unless given. */
 export interface ActionArray {
   data: TypedArray | ArrayLike<number>;
   shape: number[];
@@ -100,6 +100,7 @@ interface NativeObservation {
   readonly blank: string[];
   readonly skewNs: bigint;
   readonly basedOn: { stream: number; seqFirst: number; seqLast: number }[];
+  readonly seqs: { entry: string; seqFirst: number; seqLast: number }[];
 }
 interface NativeField { name: string; dtype: string; shape: number[] }
 interface NativePart { path: string; kind: string; fields: NativeField[] }
@@ -117,9 +118,9 @@ interface NativeEdgeStats {
 interface NativeStats {
   alignedTo?: string | null; phaseOffsetMs: number;
   starts: number; completions: number; skipped: { reason: string; count: number }[];
-  chunksSent: number; sendErrors: number;
+  chunksSent: number; shadowPredictions: number; sendErrors: number;
   latencyP50Ms?: number | null; latencyP99Ms?: number | null; latencyMaxMs?: number | null;
-  drifting: boolean;
+  drifting: boolean; parked: string[];
 }
 interface NativeHost { readonly address: string; close(): Promise<void> }
 interface NativeRobot {
@@ -134,7 +135,25 @@ interface NativeRobot {
   reportSafe(reason: string): void;
   nowNs(): bigint;
   edgeStats(path: string): NativeEdgeStats;
+  health(wait: boolean, timeoutS: number): Promise<NativeHealth>;
   close(): Promise<void>;
+}
+interface NativeHealth {
+  epoch: number;
+  hostNs: number;
+  links: {
+    participant: string; heartbeats: number; rttMs?: number | null; jitterMs: number; heartbeatGapMaxMs: number;
+    lastHeartbeatAgeMs: number; offsetMs?: number | null; offsetErrorMs?: number | null; health: string;
+    lastChunkAccepted: number; lastChunkApplied: number; queueDepth: number;
+    rejectedBy: { reason: string; count: number }[];
+    clockRefused: { part: string; participant: string; errorMs: number; boundMs: number }[];
+    published: { part: string; published: number; coalesced: number }[];
+    run?: {
+      starts: number; completions: number; skipped: { reason: string; count: number }[]; chunksSent: number;
+      pendingMs?: number | null; latencyP50Ms?: number | null; latencyP99Ms?: number | null; drifting: boolean;
+    } | null;
+    lastSeqSeen: { part: string; seq: number }[];
+  }[];
 }
 interface NativePolicy {
   readonly name: string; readonly table: string; readonly tableJson: string; readonly fingerprint: string;
@@ -146,12 +165,25 @@ interface NativePolicy {
   acquire(): Promise<{ path: string; token: bigint }[]>;
   release(): Promise<void>;
   holds(): boolean;
-  run(predict: (obs: NativeObservation) => void, durationS?: number | null): Promise<NativeStats>;
+  run(
+    predict: (obs: NativeObservation) => void,
+    durationS?: number | null,
+    mode?: RunMode | null,
+    onStep?: ((step: NativeStep) => void) | null,
+    resume?: Resume | null,
+  ): Promise<NativeStats>;
   reply(values: NativeEntry[] | null, error: string | null): void;
   stop(): void;
+  resume(): string[];
+  health(wait: boolean, timeoutS: number): Promise<NativeHealth>;
   stats(): NativeStats;
   events(): Record<string, unknown>[];
   close(): Promise<void>;
+}
+interface NativeStep {
+  readonly shadow: boolean;
+  readonly timeNs: bigint;
+  takeActions(): { entry: string; part?: string | null; seq?: number | null; actions?: NativeEntry | null }[];
 }
 interface NativeRate { sleep(): Promise<number>; readonly missed: number }
 interface NativeRecorder { readonly path: string; close(): Promise<RecordStats | null> }
@@ -355,7 +387,7 @@ function input(e: NativeEntry): InputValue {
 
 // ---- the API --------------------------------------------------------------------------------
 
-/** A session host in this process, listening on local TCP ports. Participants connect to its `address`. */
+/** A session host in this process, listening on a local TCP port. Participants connect to its `address`. */
 export class Host implements AsyncDisposable {
   private constructor(private native: NativeHost) {}
 
@@ -416,6 +448,106 @@ export interface EdgeStats {
   modes: Record<string, [number, number]>;
 }
 
+/**
+ * The session's live link health, as the host last published it (once a second): `epoch`,
+ * `hostNs` (the host's clock when it published) and one link per attached participant, keyed by
+ * its name. Durations are in ms, as in `RunStats` and `EdgeStats`.
+ */
+export interface SessionHealth {
+  epoch: number;
+  hostNs: number;
+  links: Record<string, LinkHealth>;
+}
+
+/** One participant's link as the host measures it. */
+export interface LinkHealth {
+  heartbeats: number;
+  /** The latest heartbeat round trip (null before one). */
+  rttMs: number | null;
+  jitterMs: number;
+  heartbeatGapMaxMs: number;
+  lastHeartbeatAgeMs: number;
+  /** Its clock mapping, host minus participant, and the mapping's error bound (null until mapped). */
+  offsetMs: number | null;
+  offsetErrorMs: number | null;
+  /** What it reports of itself: `ok`, `degraded`, `unhealthy` or `unknown`. */
+  health: string;
+  /** Robots: the newest chunk seq accepted and applied (0: none), and the actions queued. */
+  lastChunkAccepted: number;
+  lastChunkApplied: number;
+  queueDepth: number;
+  /** Robots: chunks refused since it attached, in all and by reason (as `EdgeStats` names them). */
+  rejected: number;
+  rejectedBy: Record<string, number>;
+  /** Robots: each part refusing chunks for a clock error. */
+  clockRefused: { part: string; participant: string; errorMs: number; boundMs: number }[];
+  /** Per part it publishes (`robot:path`): samples published and coalesced. */
+  published: Record<string, { published: number; coalesced: number }>;
+  /** A bound policy's counters from its latest report. */
+  run: {
+    starts: number;
+    completions: number;
+    skipped: Record<string, number>;
+    chunksSent: number;
+    pendingMs: number | null;
+    latencyP50Ms: number | null;
+    latencyP99Ms: number | null;
+    drifting: boolean;
+  } | null;
+  /** The newest seq it received per part it reads (`robot:path`). */
+  lastSeqSeen: Record<string, number>;
+}
+
+/** How `health()` reads. */
+export interface HealthOptions {
+  /** Wait for the host's next publication instead of returning the newest. */
+  wait?: boolean;
+  /** Seconds to wait (default: the object's timeout). */
+  timeout?: number;
+}
+
+function sessionHealth(h: NativeHealth): SessionHealth {
+  return {
+    epoch: h.epoch,
+    hostNs: h.hostNs,
+    links: Object.fromEntries(
+      h.links.map((l) => [
+        l.participant,
+        {
+          heartbeats: l.heartbeats,
+          rttMs: l.rttMs ?? null,
+          jitterMs: l.jitterMs,
+          heartbeatGapMaxMs: l.heartbeatGapMaxMs,
+          lastHeartbeatAgeMs: l.lastHeartbeatAgeMs,
+          offsetMs: l.offsetMs ?? null,
+          offsetErrorMs: l.offsetErrorMs ?? null,
+          health: l.health,
+          lastChunkAccepted: l.lastChunkAccepted,
+          lastChunkApplied: l.lastChunkApplied,
+          queueDepth: l.queueDepth,
+          rejected: l.rejectedBy.reduce((n, r) => n + r.count, 0),
+          rejectedBy: Object.fromEntries(l.rejectedBy.map((r) => [r.reason, r.count])),
+          clockRefused: l.clockRefused,
+          published: Object.fromEntries(l.published.map((p) => [p.part, { published: p.published, coalesced: p.coalesced }])),
+          run: l.run
+            ? {
+                starts: l.run.starts,
+                completions: l.run.completions,
+                skipped: Object.fromEntries(l.run.skipped.map((k) => [k.reason, k.count])),
+                chunksSent: l.run.chunksSent,
+                pendingMs: l.run.pendingMs ?? null,
+                latencyP50Ms: l.run.latencyP50Ms ?? null,
+                latencyP99Ms: l.run.latencyP99Ms ?? null,
+                drifting: l.run.drifting,
+              }
+            : null,
+          lastSeqSeen: Object.fromEntries(l.lastSeqSeen.map((n) => [n.part, n.seq])),
+        },
+      ]),
+    ),
+  };
+}
+
 type PublishValue = TypedArray | ArrayLike<number> | number | boolean | string;
 
 /** One sample of `owner`'s part `path` as its fields' buffers, in declaration order. */
@@ -468,6 +600,7 @@ export class Robot implements AsyncDisposable {
   private constructor(
     private native: NativeRobot,
     private onHandover?: (group: string, from: string, to: string) => void,
+    private readonly timeout: number = 10,
   ) {
     for (const part of native.parts()) {
       this.kinds.set(part.path, part.kind);
@@ -482,7 +615,7 @@ export class Robot implements AsyncDisposable {
     opts: { session: Host | string; timeout?: number; onHandover?: (group: string, from: string, to: string) => void },
   ): Promise<Robot> {
     const robot = await wait(() => native().connectRobot(address(opts.session), name, JSON.stringify(parts), opts.timeout ?? 10));
-    return new Robot(robot, opts.onHandover);
+    return new Robot(robot, opts.onHandover, opts.timeout ?? 10);
   }
 
   /**
@@ -497,7 +630,7 @@ export class Robot implements AsyncDisposable {
     opts: { home?: string; timeout?: number; onHandover?: (group: string, from: string, to: string) => void } = {},
   ): Promise<Robot> {
     const robot = await wait(() => fleet('robotFromLobby')(opts.home ?? null, name, JSON.stringify(parts), opts.timeout ?? null));
-    return new Robot(robot, opts.onHandover);
+    return new Robot(robot, opts.onHandover, opts.timeout ?? 10);
   }
 
   /** The robot's participant id. */
@@ -618,6 +751,15 @@ export class Robot implements AsyncDisposable {
     return call(() => this.native.nowNs());
   }
 
+  /**
+   * The session's live link health (`SessionHealth`). The first call subscribes and waits for the
+   * host's first publication; later calls resolve to the newest at once, and `{ wait: true }` to
+   * the next one.
+   */
+  health(opts: HealthOptions = {}): Promise<SessionHealth> {
+    return wait(async () => sessionHealth(await this.native.health(opts.wait ?? false, opts.timeout ?? this.timeout)));
+  }
+
   /** The counters of the edge serving `path`. */
   edgeStats(path: string): EdgeStats {
     const s = call(() => this.native.edgeStats(path));
@@ -644,8 +786,10 @@ export class Robot implements AsyncDisposable {
 
 /** A snapshot's metadata (`obs.meta`): ages, staleness and provenance. */
 export interface Meta {
-  /** Each input's conservative age at the snapshot (null: blank). */
+  /** Each input's conservative age at the snapshot, by entry name (null: blank). */
   agesNs: Record<string, bigint | null>;
+  /** Each input's seq range delivered, `[seqFirst, seqLast]`, by entry name (absent: blank). Entry names hold across a rebind; stream ids do not. */
+  seqs: Record<string, [number, number]>;
   /** Inputs delivered stale under `allow: hold`. */
   stale: Set<string>;
   /** Window slots padded by `allow: warmup`, by entry. */
@@ -654,7 +798,7 @@ export interface Meta {
   blank: Set<string>;
   /** The newest capture minus the oldest, across inputs. */
   skewNs: bigint;
-  /** Per stream, `[streamId, seqFirst, seqLast]`: the chunk's `based_on`. */
+  /** Per stream, `[streamId, seqFirst, seqLast]`: the chunk's `based_on`, by the ids of the binding in force (`policy.binding`). */
   basedOn: [number, number, number][];
   /** The session time the snapshot was taken at. */
   timeNs: bigint;
@@ -670,6 +814,7 @@ export class Observation {
     this.inputs = Object.fromEntries(native.takeValues().map((e) => [e.entry, input(e)]));
     this.meta = {
       agesNs: Object.fromEntries(native.ages.map((a) => [a.entry, a.ageNs ?? null])),
+      seqs: Object.fromEntries(native.seqs.map((s) => [s.entry, [s.seqFirst, s.seqLast]])),
       stale: new Set(native.stale),
       padded: Object.fromEntries(native.padded.map((p) => [p.entry, p.slots])),
       blank: new Set(native.blank),
@@ -678,6 +823,47 @@ export class Observation {
       timeNs: native.timeNs,
     };
   }
+}
+
+/**
+ * What `Policy.run` does with a start it cannot command (no lease held: the session not armed,
+ * preempted, its robot held). `'command'` (the default) skips it (`no_lease`). `'shadow'` still
+ * calls `predict` and converts and checks its actions, then drops them: nothing reaches a robot.
+ * A shadow run commands from the first start whose inputs were read with a lease held.
+ */
+export type RunMode = 'command' | 'shadow';
+
+/**
+ * What `Policy.run` does once a higher class took a part from it (an operator preempting it) and
+ * let go. `'manual'` (the default): the part stays parked, and the robot's part goes to its safe
+ * behaviour, until `policy.resume()`; a robot never moves again because someone released a
+ * controller or their process died. `'auto'`: it is asked for again as soon as it is free.
+ */
+export type Resume = 'manual' | 'auto';
+
+/** A completed start, as `onStep` receives it. */
+export interface Step {
+  /** A shadow start: its actions were checked and not sent. */
+  shadow: boolean;
+  /** The session time of the start's snapshot. */
+  timeNs: bigint;
+  /** Each action entry's chunk as the part's edge receives it: one `[chunk, ...]` array per command field (null: dropped). */
+  actions: Record<string, Record<string, Tensor> | null>;
+  /** The part each action entry commands, `robot:path` (null: dropped). */
+  parts: Record<string, string | null>;
+  /** Each entry's chunk seq when it was sent (null: not sent). */
+  seqs: Record<string, number | null>;
+}
+
+function step(native: NativeStep): Step {
+  const entries = native.takeActions();
+  return {
+    shadow: native.shadow,
+    timeNs: native.timeNs,
+    actions: Object.fromEntries(entries.map((e) => [e.entry, e.actions ? (input(e.actions) as Record<string, Tensor>) : null])),
+    parts: Object.fromEntries(entries.map((e) => [e.entry, e.part ?? null])),
+    seqs: Object.fromEntries(entries.map((e) => [e.entry, e.seq ?? null])),
+  };
 }
 
 /** A binding table: what each entry is bound to and how it is delivered. */
@@ -717,11 +903,15 @@ export interface RunStats {
   completions: number;
   skipped: Record<string, number>;
   chunksSent: number;
+  /** Starts a shadow run predicted without a lease (not `no_lease` skips). */
+  shadowPredictions: number;
   sendErrors: number;
   latencyP50Ms: number | null;
   latencyP99Ms: number | null;
   latencyMaxMs: number | null;
   drifting: boolean;
+  /** The parts a higher class took, `robot:path`, kept from the policy until `resume()`. */
+  parked: string[];
 }
 
 function runStats(s: NativeStats): RunStats {
@@ -732,12 +922,26 @@ function runStats(s: NativeStats): RunStats {
     completions: s.completions,
     skipped: Object.fromEntries(s.skipped.map((k) => [k.reason, k.count])),
     chunksSent: s.chunksSent,
+    shadowPredictions: s.shadowPredictions,
     sendErrors: s.sendErrors,
     latencyP50Ms: s.latencyP50Ms ?? null,
     latencyP99Ms: s.latencyP99Ms ?? null,
     latencyMaxMs: s.latencyMaxMs ?? null,
     drifting: s.drifting,
+    parked: s.parked,
   };
+}
+
+/** How one `Policy.run` runs. */
+export interface RunOptions {
+  /** Stop after this many seconds. */
+  duration?: number;
+  /** What a start that cannot command does (default `'command'`). */
+  mode?: RunMode;
+  /** What a part a higher class took does once it is free (default `'manual'`). */
+  resume?: Resume;
+  /** Called after each completed start with its actions, marked shadow or sent. */
+  onStep?: (step: Step) => void;
 }
 
 export interface BindOptions {
@@ -759,7 +963,6 @@ export interface BindOptions {
  */
 export class Policy implements AsyncDisposable {
   private native: NativePolicy | null = null;
-  private bound: BindingTable | null = null;
   private readonly policyJson: string;
   // A true private field: the address carries the session's key, which an inspected Policy must not show.
   readonly #address: string;
@@ -819,8 +1022,7 @@ export class Policy implements AsyncDisposable {
       }),
     );
     for (const part of this.native.publishedParts()) this.fields.set(part.path, part.fields);
-    this.bound = new BindingTable(this.native);
-    return this.bound;
+    return new BindingTable(this.native);
   }
 
   /**
@@ -840,10 +1042,9 @@ export class Policy implements AsyncDisposable {
     return this.native;
   }
 
-  /** The binding table (after `bind`). */
+  /** The binding table in force (after `bind`): after a `rebound` event, the new one. */
   get binding(): BindingTable {
-    this.nat();
-    return this.bound!;
+    return new BindingTable(this.nat());
   }
 
   /** A policy start now; throws `StartSkipped` when one is skipped. */
@@ -860,7 +1061,7 @@ export class Policy implements AsyncDisposable {
     return Object.fromEntries(sent.map((s) => [s.entry, s.seq ?? null]));
   }
 
-  /** Take the binding's leases now (preempting a lower class), then keep them. Resolves to the token per part. */
+  /** Take the binding's leases now (preempting a lower class), then keep them. Resolves to the token per part, keyed `robot:path`. */
   async acquire(): Promise<Record<string, bigint>> {
     const leases = await wait(() => this.nat().acquire());
     return Object.fromEntries(leases.map((l) => [l.path, l.token]));
@@ -882,10 +1083,36 @@ export class Policy implements AsyncDisposable {
    * with one inference in flight (a start that falls while it runs is skipped, never queued). If
    * `predict` throws or rejects, the policy stops sending, releases its leases (the robot holds,
    * then goes safe) and the run rejects with that error.
+   *
+   * With `mode: 'shadow'` a start that cannot command still calls `predict` (its own published
+   * parts keep flowing) and checks its actions, sending nothing until the policy holds a lease
+   * (`shadowing` and `commanding` events). `onStep(step)` is called after each completed start with
+   * its actions as the edges receive them, marked `shadow`; if it throws, the run stops and
+   * rejects with that error.
    */
-  async run(predict: Predict, opts: { duration?: number } = {}): Promise<RunStats> {
+  async run(predict: Predict, opts: RunOptions = {}): Promise<RunStats> {
     const nat = this.nat();
+    const mode = opts.mode ?? 'command';
+    if (mode !== 'command' && mode !== 'shadow') throw new RangeError(`mode ${String(mode)}: 'command' or 'shadow'`);
+    const resume = opts.resume ?? 'manual';
+    if (resume !== 'manual' && resume !== 'auto') throw new RangeError(`resume ${String(resume)}: 'manual' or 'auto'`);
     let failure: { error: unknown } | null = null;
+    const onStep = opts.onStep;
+    const stepped = onStep
+      ? (raw: NativeStep) => {
+          if (failure) return;
+          try {
+            onStep(step(raw));
+          } catch (error) {
+            failure = { error };
+            try {
+              nat.stop();
+            } catch {
+              // The run already ended.
+            }
+          }
+        }
+      : null;
     const start = (raw: NativeObservation) => {
       void (async () => {
         try {
@@ -902,7 +1129,9 @@ export class Policy implements AsyncDisposable {
       })();
     };
     try {
-      return runStats(await nat.run(start, opts.duration ?? null));
+      const stats = runStats(await nat.run(start, opts.duration ?? null, mode, stepped, resume));
+      if (failure) throw (failure as { error: unknown }).error;
+      return stats;
     } catch (e) {
       if (failure) throw (failure as { error: unknown }).error;
       return rethrow(e);
@@ -914,12 +1143,29 @@ export class Policy implements AsyncDisposable {
     call(() => this.nat().stop());
   }
 
+  /**
+   * Hand the parts a higher class took back to this policy (a `run()` in progress asks for them
+   * again, once their holder lets go); returns them, `robot:path`.
+   */
+  resume(): string[] {
+    return call(() => this.nat().resume());
+  }
+
+  /**
+   * The session's live link health (`SessionHealth`). The first call subscribes and waits for the
+   * host's first publication; later calls resolve to the newest at once, and `{ wait: true }` to
+   * the next one. A policy that only reads reads it too.
+   */
+  health(opts: HealthOptions = {}): Promise<SessionHealth> {
+    return wait(async () => sessionHealth(await this.nat().health(opts.wait ?? false, opts.timeout ?? this.timeout)));
+  }
+
   /** Starts, completions, skips by reason, chunks sent and latency. */
   stats(): RunStats {
     return runStats(call(() => this.nat().stats()));
   }
 
-  /** Take the events reported so far: `rate_drift`, `inference_pending`. */
+  /** Take the events reported so far: `rate_drift`, `inference_pending`, `robot_held`, `clock_refused`, `waiting_to_arm`, `shadowing`, `commanding`, `input_lost`, `rebound`, `parked` (with `part` and `by`). */
   events(): Record<string, unknown>[] {
     return call(() => this.nat().events()).map((e) => Object.fromEntries(Object.entries(e).filter(([, v]) => v != null)));
   }
@@ -1127,11 +1373,10 @@ export async function drive(
   policy: Record<string, unknown>,
   robot: string | null,
   predict: Predict,
-  opts: BindOptions & {
+  opts: BindOptions & RunOptions & {
     session: Host | string;
     name?: string;
     priority?: Priority;
-    duration?: number;
     timeout?: number;
     publishes?: Record<string, unknown>;
   },

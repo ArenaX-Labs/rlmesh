@@ -94,3 +94,31 @@ pub(crate) fn f32_tensor(shape: Vec<u32>, values: &[f32]) -> Tensor {
         data: values.iter().flat_map(|v| v.to_le_bytes()).collect(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_casts_take_exactly_their_dtypes_range_and_refuse_fractions() {
+        for (dtype, low, high) in [
+            (DType::Bool, 0.0, 1.0),
+            (DType::U8, 0.0, 255.0),
+            (DType::I8, -128.0, 127.0),
+            (DType::U16, 0.0, 65_535.0),
+            (DType::I16, -32_768.0, 32_767.0),
+            (DType::U32, 0.0, 4_294_967_295.0),
+            (DType::I32, -2_147_483_648.0, 2_147_483_647.0),
+            (DType::I64, -(2_f64.powi(63)), 2_f64.powi(62)),
+            (DType::U64, 0.0, 2_f64.powi(62)),
+        ] {
+            assert!(cast(&[low, high], vec![2], dtype).is_ok(), "{dtype:?}");
+            let below = if low == 0.0 { -1.0 } else { low * 2.0 };
+            for out in [below, high * 4.0] {
+                assert!(cast(&[out], vec![1], dtype).is_err(), "{dtype:?} {out}");
+            }
+        }
+        assert!(cast(&[0.5], vec![1], DType::I32).is_err(), "a fraction");
+        assert!(cast(&[0.5, 1e300], vec![2], DType::F32).is_ok());
+    }
+}

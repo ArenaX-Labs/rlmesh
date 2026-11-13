@@ -57,6 +57,7 @@ pub mod action;
 pub mod authority;
 pub mod codec;
 pub mod contract;
+pub mod datagram;
 pub mod error;
 pub mod health;
 pub mod heartbeat;
@@ -79,14 +80,19 @@ pub mod view;
 pub use action::{ActionChunk, ChunkRef, InputRange};
 pub use authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
-    CtlStatus, EstopSignal, FenceError, HandshakeAccept, HandshakeRequest, LastStop, Lease,
-    LeaseEnd, Mode, ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, Watermark,
+    CtlStatus, EstopSignal, FenceError, HandshakeAccept, HandshakeRequest, HeldRobot, LastStop,
+    Lease, LeaseEnd, Mode, ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, RobotClock,
+    Role, Watermark,
 };
 pub use codec::Encoded;
 pub use contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
-pub use error::WireError;
-pub use health::{HostHealth, LinkHealth};
-pub use heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
+pub use datagram::{DatagramOffer, DatagramRoute, DatagramRoutes};
+pub use error::{Unread, WireError};
+pub use health::{DataPath, HostHealth, LinkHealth};
+pub use heartbeat::{
+    ChunkTiming, ClockRefusal, DatagramStats, Health, Heartbeat, HeartbeatEcho, LATE_BUCKETS,
+    TimingSample,
+};
 pub use ids::{
     ChannelId, Epoch, Fingerprint, IdError, LeaseToken, ParticipantId, SessionId, TenantId,
 };

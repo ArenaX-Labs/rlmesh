@@ -30,8 +30,9 @@ use crate::devices::{DEVICES, Entry, Pin, edit};
 
 /// How long one try waits for the board's answer.
 const TRY: Duration = Duration::from_millis(200);
-/// Tries before giving up.
-const TRIES: u32 = 10;
+/// Tries before giving up: 10 s in all, since opening the port resets many
+/// boards, and a sketch may join Wi-Fi before it listens.
+const TRIES: u32 = 50;
 /// A board's default cap.
 const BOARD_CAP: &str = "model";
 
@@ -121,8 +122,8 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
     })?;
     let Some((device_key, previous)) = info else {
         bail!(
-            "the board never answered: is it running an RLMesh sketch, at 115200 baud, and is \
-             the port right?"
+            "the board never answered in 10 s: is it running an RLMesh sketch, at 115200 baud, \
+             is the port right, and is the serial monitor closed?"
         );
     };
     // As many addresses as fit the payload.
@@ -149,10 +150,15 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
         }
     }
     let Some((record, n)) = fitted else {
+        if usable.is_empty() {
+            bail!(
+                "the host has no address to give the board (no default route to pick one \
+                 from): run rlmesh host with --listen <LAN IP>:<port>"
+            );
+        }
         bail!(
             "no host address fits the board record with this name (252 bytes total; host:port, \
-             at most 63 bytes per address): run rlmeshd with \
-             --listen <LAN IP>:<port>"
+             at most 63 bytes per address): run rlmesh host with --listen <LAN IP>:<port>"
         );
     };
     let crc = record_crc(&payload[..n]);
@@ -184,15 +190,31 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
             "the board confirmed another record than the one sent (CRC mismatch); nothing was \
              enrolled"
         ),
-        None => bail!("the board never confirmed the record; nothing was enrolled"),
+        None => bail!(
+            "the board never confirmed the record; nothing was enrolled. It may have stored \
+             the record: run this again to finish"
+        ),
     }
 }
 
+/// What enrolling a board did to its device.
+#[derive(Debug, PartialEq, Eq)]
+enum Enrolled {
+    /// A new device.
+    New,
+    /// The device it had.
+    Kept,
+    /// The device it had, renamed from this id with the board's new name.
+    Renamed(String),
+}
+
 /// Enrolls `board`'s key in the table in `dir` as robot `name`'s board,
-/// and pins `name` to it: its device id, and whether it is new. A key
-/// already there keeps its device (id, cap, parts and verbs), unless `max`
-/// changes the cap.
-fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(String, bool)> {
+/// and pins `name` to it: its device id, and what happened to the device.
+/// A key already there keeps its device (cap, parts and verbs), unless
+/// `max` changes the cap. A board's device is named after its robot, so a
+/// board given a new name has its device renamed too, and the pins that
+/// named the old id name the new one.
+fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(String, Enrolled)> {
     let public_key = base32(key);
     edit(dir, |table| {
         let known = table
@@ -200,9 +222,26 @@ fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(
             .iter()
             .find(|(_, entry)| entry.public_key == public_key)
             .map(|(id, _)| id.clone());
-        let (id, new) = match known {
-            Some(id) => (id, false),
-            None => (table.free_id(name, "board"), true),
+        let (id, mut enrolled) = match known {
+            Some(id) => (id, Enrolled::Kept),
+            None => (table.free_id(name, "board"), Enrolled::New),
+        };
+        let renamed = table.devices.get(&id).is_some_and(|entry| {
+            entry.kind.as_deref() == Some("board")
+                && entry.name.as_deref().is_some_and(|old| old != name)
+        });
+        let id = if renamed {
+            let entry = table.devices.remove(&id).context("the device")?;
+            let new_id = table.free_id(name, "board");
+            // Its pins follow it (the old name's goes below).
+            for pin in table.robots.values_mut().filter(|pin| pin.device == id) {
+                pin.device.clone_from(&new_id);
+            }
+            table.devices.insert(new_id.clone(), entry);
+            enrolled = Enrolled::Renamed(id);
+            new_id
+        } else {
+            id
         };
         let entry = table.devices.entry(id.clone()).or_insert_with(|| Entry {
             public_key,
@@ -234,7 +273,7 @@ fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(
                 board_id: None,
             },
         );
-        Ok((id, new))
+        Ok((id, enrolled))
     })
 }
 
@@ -281,13 +320,23 @@ fn provision_on(
             "the board was provisioned for {previous}; revoke it there (rlmesh devices revoke)"
         )?;
     }
-    let (id, new) = enroll(dir, &board.device_key, name, max)?;
-    let verb = if new { "enrolled" } else { "kept" };
+    let (id, enrolled) = enroll(dir, &board.device_key, name, max)?;
+    let device = match enrolled {
+        Enrolled::New => format!("enrolled as device {id}"),
+        Enrolled::Kept => format!("kept as device {id}"),
+        Enrolled::Renamed(old) => format!("device {old} renamed {id}"),
+    };
     writeln!(
         stdout,
-        "board {name} provisioned for {}: {verb} as device {id} in {DEVICES}, robot {name} pinned to it",
+        "board {name} provisioned for {}: {device} in {DEVICES}, robot {name} pinned to it",
         home.host_id
     )?;
+    if let Some(address) = home.addresses.first() {
+        writeln!(
+            stdout,
+            "it joins the host at {address}; provision it again if that address changes"
+        )?;
+    }
     Ok(())
 }
 
@@ -443,7 +492,9 @@ mod tests {
             }
         );
 
-        // Provisioned with a new name and cap: the same device, old pin dropped.
+        // Provisioned with a new name and cap: the same device, renamed with
+        // it, the old pin dropped.
+        let mut out = Vec::new();
         provision_on(
             &mut FakeBoard::new(|c| c),
             dir.path(),
@@ -453,12 +504,82 @@ mod tests {
             &mut out,
         )
         .expect("again");
+        let said = String::from_utf8(out).expect("utf-8");
+        assert!(said.contains("device eye-3 renamed eye-4"), "{said}");
         let table = Table::read(dir.path()).expect("table");
         assert_eq!(table.devices.len(), 1);
-        assert_eq!(table.devices["eye-3"].max_priority, "operator");
-        assert_eq!(table.devices["eye-3"].name.as_deref(), Some("eye-4"));
+        let entry = &table.devices["eye-4"];
+        assert_eq!(entry.public_key, base32(&board_key));
+        assert_eq!(entry.max_priority, "operator");
+        assert_eq!(entry.name.as_deref(), Some("eye-4"));
         assert!(!table.robots.contains_key("eye-3"));
-        assert_eq!(table.robots["eye-4"].device, "eye-3");
+        assert_eq!(table.robots["eye-4"].device, "eye-4");
+
+        // The same name again keeps the device as it is.
+        let mut out = Vec::new();
+        provision_on(
+            &mut FakeBoard::new(|c| c),
+            dir.path(),
+            "eye-4",
+            None,
+            &home(),
+            &mut out,
+        )
+        .expect("once more");
+        assert!(
+            String::from_utf8(out)
+                .expect("utf-8")
+                .contains("kept as device eye-4")
+        );
+        let again = Table::read(dir.path()).expect("table");
+        assert_eq!(again, table);
+    }
+
+    /// A board enrolled as `eye-1` and provisioned as `gimbal-left` is device
+    /// `gimbal-left` from then on, with what its entry allowed, and every
+    /// pin that named it follows; an id it can't take gets the next free one.
+    #[test]
+    fn a_board_given_a_new_name_has_its_device_renamed() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [9; 32];
+        assert_eq!(
+            enroll(dir.path(), &key, "eye-1", None).unwrap(),
+            ("eye-1".into(), Enrolled::New)
+        );
+        edit(dir.path(), |table| {
+            table.devices.get_mut("eye-1").unwrap().expires = Some("2030-01-01".into());
+            // A second robot name pinned to the board by hand.
+            table.robots.insert(
+                "spare".into(),
+                Pin {
+                    device: "eye-1".into(),
+                    board_id: None,
+                },
+            );
+            // The new name's own id was revoked once: never given out again.
+            table.revoked.insert("gimbal-left".into());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            enroll(dir.path(), &key, "gimbal-left", None).unwrap(),
+            ("gimbal-left-2".into(), Enrolled::Renamed("eye-1".into()))
+        );
+        let table = Table::read(dir.path()).unwrap();
+        assert_eq!(table.devices.keys().collect::<Vec<_>>(), ["gimbal-left-2"]);
+        let entry = &table.devices["gimbal-left-2"];
+        assert_eq!(entry.public_key, base32(&key));
+        assert_eq!(entry.name.as_deref(), Some("gimbal-left"));
+        assert_eq!(entry.expires.as_deref(), Some("2030-01-01"));
+        assert!(!table.robots.contains_key("eye-1"));
+        assert_eq!(table.robots["gimbal-left"].device, "gimbal-left-2");
+        assert_eq!(table.robots["spare"].device, "gimbal-left-2");
+        // The table the host reads admits the key under its new id alone.
+        let (devices, _) = table.host().unwrap();
+        assert_eq!(
+            devices.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+            ["gimbal-left-2"]
+        );
     }
 
     #[test]
@@ -480,12 +601,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             enroll(dir.path(), &key, "new-eye", None).unwrap(),
-            (id.clone(), false)
+            ("new-eye".into(), Enrolled::Renamed(id))
         );
         let table = Table::read(dir.path()).unwrap();
         assert_eq!(table.robots["old-eye"].device, "other");
-        assert_eq!(table.robots["new-eye"].device, id);
-        let entry = &table.devices[&id];
+        assert_eq!(table.robots["new-eye"].device, "new-eye");
+        let entry = &table.devices["new-eye"];
         assert_eq!(entry.parts.as_ref().unwrap(), &["**/pos"]);
         assert_eq!(entry.verbs.as_ref().unwrap(), &["arm"]);
         assert_eq!(entry.roles.as_ref().unwrap(), &["embodiment"]);

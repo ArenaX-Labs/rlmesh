@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
-#MISE description="Fetch zenoh-pico, the boards' network, at the version of the host's zenoh, into target/zenoh-pico (once), and print its path. build:esp32 and test:esp32:host use it"
+#MISE description="Fetch zenoh-pico, the boards' network, at the version of the host's zenoh, into target/zenoh-pico (once), check it is the pinned commit, and print its path. build:esp32 and test:esp32:host use it"
 #MISE dir="{{ config_root }}"
 set -euo pipefail
 
 # The host's zenoh is pinned in Cargo.toml; zenoh-pico follows its version.
 version=1.10.1
+# The commit the tag names: a tag can move, and the boards' patches fit this tree.
+commit=e1ab223a28aaebb5dec1e70d98eab152332f777a
 src="${CARGO_TARGET_DIR:-target}/zenoh-pico/src-$version"
-# A directory without the sources is not a checkout: an interrupted clone,
-# or a CI cache that restored target/ with the tree pruned. Fetch it again.
-if [ ! -f "$src/CMakeLists.txt" ]; then
+# A directory without the sources or its .git is not a checkout: an
+# interrupted clone, or a CI cache that restored target/ with the tree pruned.
+# Fetch it again.
+if [ ! -f "$src/CMakeLists.txt" ] || [ ! -d "$src/.git" ]; then
   rm -rf "$src"
   git clone -q -c advice.detachedHead=false --depth 1 --branch "$version" \
     https://github.com/eclipse-zenoh/zenoh-pico.git "$src" >&2
+fi
+head="$(git -C "$src" rev-parse HEAD)"
+if [ "$head" != "$commit" ]; then
+  echo "zenoh-pico $version in $src is at $head, not the pinned $commit:" \
+    "the tag has moved or the checkout was changed. Delete $src to fetch it again;" \
+    "if the tag moved upstream, review its changes before updating the pin." >&2
+  exit 1
 fi
 echo "$src"

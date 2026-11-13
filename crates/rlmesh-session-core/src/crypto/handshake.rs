@@ -67,11 +67,11 @@ pub enum HandshakeError {
 }
 
 /// The kinds the participant sends under `k_up`: ctl requests,
-/// heartbeats, participant reports and history queries.
-pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15]);
+/// heartbeats, participant reports, history queries and datagram probes.
+pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15, 21]);
 /// The kinds the host sends under `k_down`: ctl replies, heartbeat
-/// echoes, key deliveries and history pages.
-pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10]);
+/// echoes, key deliveries, history pages and sealed device views.
+pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10, 20]);
 
 /// The participant's result of an IK handshake ([`IkInitiator::finish`]):
 /// `k_up`, `k_down` and `h`. The keys leave only as the participant's
@@ -147,7 +147,8 @@ fn split(hs: &mut snow::HandshakeState) -> Result<([u8; 32], Key, Key), Handshak
 
 /// The participant's side, after sending msg 1.
 pub struct IkInitiator {
-    hs: snow::HandshakeState,
+    // Boxed: it is held across a round trip and moved through the callers.
+    hs: Box<snow::HandshakeState>,
 }
 
 impl core::fmt::Debug for IkInitiator {
@@ -176,7 +177,7 @@ impl IkInitiator {
             .and_then(|b| b.build_initiator())
             .map_err(|_| HandshakeError::Internal)?;
         let msg1 = noise::write(&mut hs, &[], MSG1_LEN)?;
-        Ok((Self { hs }, msg1))
+        Ok((Self { hs: Box::new(hs) }, msg1))
     }
 
     /// Read msg 2: the `HandshakeAccept` bytes and the keys.
@@ -468,5 +469,16 @@ mod tests {
             resp.accept(&vec![0; 65_535]).unwrap_err(),
             HandshakeError::PayloadTooLong
         );
+    }
+
+    #[test]
+    fn handshake_state_never_prints_a_static_secret() {
+        let (participant, host) = keys();
+        let p = prologue_for("arm");
+        let (init, msg1) =
+            IkInitiator::start(&mut TestRng::new(1), &participant, host.public(), &p).unwrap();
+        let resp = IkResponder::read_request(&mut TestRng::new(2), &host, &p, &msg1).unwrap();
+        crate::crypto::assert_redacted(&init, &[1; 32]);
+        crate::crypto::assert_redacted(&resp, &[2; 32]);
     }
 }

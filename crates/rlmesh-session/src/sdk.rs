@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
-use crate::address::{Address, Placed, SessionAddress, place};
+use crate::address::{Address, HostingOptions, Placed, SessionAddress, place_with};
 use crate::controller::{Controller, ControllerConfig, ControllerError};
 use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Published, Rejection, Robot};
 use crate::error::SessionError;
@@ -220,7 +220,7 @@ impl BindOptions<'_> {
 }
 
 /// A session placed by the hosting rule (`address::place`): hosted in
-/// this process, on local per-class TCP ports and this process's
+/// this process, on a local TCP port and this process's
 /// `CLOCK_MONOTONIC`, or joined when another process holds it.
 pub struct EmbeddedHost {
     address: SessionAddress,
@@ -232,7 +232,17 @@ impl EmbeddedHost {
     /// OS-assigned port); leases in a session hosted here lapse
     /// `lease_grace` after their holder's last heartbeat.
     pub async fn start(address: &Address, lease_grace: Duration) -> Result<Self, SessionError> {
-        let placed = place(address, lease_grace).await?;
+        Self::start_with(address, lease_grace, &HostingOptions::default()).await
+    }
+
+    /// [`Self::start`], a session hosted here run with `options` (its board
+    /// data path).
+    pub async fn start_with(
+        address: &Address,
+        lease_grace: Duration,
+        options: &HostingOptions,
+    ) -> Result<Self, SessionError> {
+        let placed = place_with(address, lease_grace, options).await?;
         Ok(Self {
             address: placed.address.clone(),
             placed: tokio::sync::Mutex::new(Some(placed)),
@@ -241,6 +251,7 @@ impl EmbeddedHost {
 
     /// A session another process hosts, joined at `address` (a run's,
     /// from the lobby): closing it stops nothing.
+    #[cfg(feature = "fleet")]
     pub fn joined(address: SessionAddress) -> Self {
         Self {
             address,
@@ -251,6 +262,15 @@ impl EmbeddedHost {
     /// What participants join.
     pub fn address(&self) -> &SessionAddress {
         &self.address
+    }
+
+    /// Its participants' link health, when this process hosts the session
+    /// (empty otherwise): as of the host's last health interval.
+    pub async fn health(&self) -> Vec<crate::ParticipantHealth> {
+        match self.placed.lock().await.as_ref() {
+            Some(placed) => placed.health().await,
+            None => Vec::new(),
+        }
     }
 
     /// Stops the host, if this process runs it (participants see it leave).
@@ -606,6 +626,14 @@ impl SceneRun {
         self.client.arm(&self.run).await
     }
 
+    /// Re-arms `robot` in the run: see [`LobbyClient::rearm`].
+    ///
+    /// # Errors
+    /// The re-arm's refusal, or what the call failed with.
+    pub async fn rearm(&self, robot: &ParticipantId) -> Result<RunState, SessionError> {
+        self.client.rearm(&self.run, robot).await
+    }
+
     /// Stops the run and waits up to `timeout` for it to end.
     ///
     /// # Errors
@@ -781,6 +809,29 @@ async fn bind_policy_with(
 ) -> Result<(Controller, Option<Published>), BindPolicyError> {
     let policy = Policy::parse(policy_json)
         .map_err(|why| BindPolicyError::Policy(format!("{name}: {why}")))?;
+    bind_built_policy(
+        address,
+        name,
+        &policy,
+        publishes_json,
+        options,
+        priority,
+        timeout,
+    )
+    .await
+}
+
+/// [`bind_policy`] (with `publishes_json`, [`bind_policy_publishing`]) for
+/// a policy already built.
+pub async fn bind_built_policy(
+    address: &SessionAddress,
+    name: &str,
+    policy: &Policy,
+    publishes_json: Option<&str>,
+    options: &RunOptions,
+    priority: PriorityClass,
+    timeout: Duration,
+) -> Result<(Controller, Option<Published>), BindPolicyError> {
     if let Some(json) = publishes_json {
         let commandable = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
             .map_err(|why| BindPolicyError::Policy(format!("{name}: publishes: {why}")))?
@@ -813,12 +864,17 @@ async fn bind_policy_with(
         },
         None => None,
     };
+    if let Some(robot) = lockstep_robot_named(address, &participant).await {
+        drop(published);
+        let _ = participant.detach().await;
+        return Err(ControllerError::from(BindError::Options(robot)).into());
+    }
     let config = ControllerConfig {
         bind_timeout: timeout,
         ..ControllerConfig::default()
     };
     let participant = Arc::new(participant);
-    match Controller::bind(participant.clone(), &policy, options, config).await {
+    match Controller::bind(participant.clone(), policy, options, config).await {
         Ok(controller) => Ok((controller, published)),
         Err(err) => {
             drop(published);
@@ -828,6 +884,42 @@ async fn bind_policy_with(
             Err(err.into())
         }
     }
+}
+
+/// The refusal for a session address that is a lockstep robot's
+/// participant address: `host:port/cartpole` names session `cartpole`, which
+/// holds nothing, when it meant robot `cartpole` of the default session. Only
+/// asked of a session with no robot yet, so a policy waiting for its robot
+/// pays nothing more. This participant cannot read the default session's
+/// roster, so it asks the robot's lockstep key there instead.
+async fn lockstep_robot_named(
+    address: &SessionAddress,
+    participant: &crate::participant::Participant,
+) -> Option<String> {
+    if address.name == crate::address::DEFAULT_SESSION {
+        return None;
+    }
+    let me = participant.id();
+    let robots = participant
+        .authority()
+        .is_some_and(|view| view.parts.iter().any(|p| &p.owner != me));
+    if robots {
+        return None;
+    }
+    let robot = crate::wire::ParticipantId::new(&address.name).ok()?;
+    let keys = crate::wire::SessionKeys::new(
+        &address.tenant,
+        crate::address::session_id(crate::address::DEFAULT_SESSION),
+    );
+    if !crate::controller::serves_lockstep(participant, &keys.lockstep(&robot)).await {
+        return None;
+    }
+    Some(format!(
+        "{address} is robot {robot}'s participant address, not a session: session {} \
+         holds nothing, and {robot} runs in lockstep in the host's default session; pass \
+         session=\"{}\" and bind(\"{robot}\")",
+        address.name, address.base,
+    ))
 }
 
 /// Stops a policy's run, gives its leases back and detaches, once no other
@@ -951,4 +1043,174 @@ mod tests {
         let (next, late) = rate.next(55_000_000);
         assert_eq!((next, late, rate.missed()), (50_000_000, 5_000_000, 3));
     }
+}
+
+/// One participant's link in the host's health
+/// ([`Participant::health`](crate::participant::Participant::health)),
+/// as bindings show it: durations in ms, parts by name (`robot:path`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthLink {
+    /// Whose link.
+    pub participant: String,
+    /// Heartbeats the host received from it.
+    pub heartbeats: u64,
+    /// The latest heartbeat round trip (`None`: none measured yet).
+    pub rtt_ms: Option<f64>,
+    /// Smoothed round-trip jitter.
+    pub jitter_ms: f64,
+    /// The largest gap between its heartbeats in the host's window.
+    pub heartbeat_gap_max_ms: f64,
+    /// Since its last heartbeat, when the host published.
+    pub last_heartbeat_age_ms: f64,
+    /// Its clock mapping, host minus participant, and the mapping's error
+    /// bound (`None`: not mapped yet).
+    pub offset_ms: Option<(f64, f64)>,
+    /// Its self-reported health: `ok`, `degraded`, `unhealthy` or `unknown`.
+    pub health: &'static str,
+    /// Edges: the newest chunk seq accepted (0: none).
+    pub last_chunk_accepted: u64,
+    /// Edges: the newest chunk seq applied (0: none).
+    pub last_chunk_applied: u64,
+    /// Edges: the actions queued.
+    pub queue_depth: u32,
+    /// Edges: chunks refused since it attached, by reason (nonzero only).
+    pub rejected_by: Vec<(String, u64)>,
+    /// Edges: each part whose edge refuses chunks for a clock error.
+    pub clock_refused: Vec<HealthClockRefusal>,
+    /// Each stream it publishes: the part, samples published and samples
+    /// its publication plan coalesced.
+    pub published: Vec<(String, u64, u64)>,
+    /// A bound controller's run counters, from its latest report.
+    pub run: Option<HealthRun>,
+    /// The newest seq it received per part it subscribes to.
+    pub last_seq_seen: Vec<(String, u64)>,
+}
+
+/// A part whose edge refuses chunks for a clock error.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthClockRefusal {
+    /// The part, `robot:path`.
+    pub part: String,
+    /// Whose clock mapping is over the bound.
+    pub participant: String,
+    /// The mapping's error.
+    pub error_ms: f64,
+    /// The bound the edge holds it to.
+    pub bound_ms: f64,
+}
+
+/// A controller's run counters as its latest report gave them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthRun {
+    /// `predict` calls started.
+    pub starts: u64,
+    /// `predict` calls completed.
+    pub completions: u64,
+    /// Skipped starts by reason (`busy_skip`, `waiting_for`, `stale_input`,
+    /// `window_gap`, `decode`, `no_lease`).
+    pub skipped: Vec<(&'static str, u64)>,
+    /// Chunks sent.
+    pub chunks_sent: u64,
+    /// The inference in flight's age (`None`: none).
+    pub pending_ms: Option<f64>,
+    /// Completion latency, median (`None`: none yet).
+    pub latency_p50_ms: Option<f64>,
+    /// Completion latency, 99th percentile (`None`: none yet).
+    pub latency_p99_ms: Option<f64>,
+    /// The completion rate is drifting (`rate_drift`).
+    pub drifting: bool,
+}
+
+fn ms(ns: u64) -> f64 {
+    ns as f64 * 1e-6
+}
+
+/// The links of `health`, by participant, with the parts `participant`'s
+/// authority view names.
+pub fn health_links(
+    participant: &crate::participant::Participant,
+    health: &crate::wire::HostHealth,
+) -> Vec<HealthLink> {
+    use crate::wire::Health;
+    let name = |channel: crate::wire::ChannelId| {
+        participant
+            .authority_view()
+            .with(|view| view.map_or_else(|| channel.to_string(), |v| v.part_name(channel)))
+    };
+    let nonzero = |ns: u64| (ns > 0).then(|| ms(ns));
+    health
+        .links
+        .iter()
+        .filter_map(|link| {
+            let id = link.participant.as_ref()?;
+            Some(HealthLink {
+                participant: id.to_string(),
+                heartbeats: link.heartbeats,
+                rtt_ms: nonzero(link.rtt_ns),
+                jitter_ms: ms(link.jitter_ns),
+                heartbeat_gap_max_ms: ms(link.heartbeat_gap_max_ns),
+                last_heartbeat_age_ms: ms(link.last_heartbeat_age_ns),
+                offset_ms: link
+                    .offset
+                    .map(|(offset, error)| (offset as f64 * 1e-6, ms(error))),
+                health: match link.health {
+                    Health::Unknown => "unknown",
+                    Health::Ok => "ok",
+                    Health::Degraded => "degraded",
+                    Health::Unhealthy => "unhealthy",
+                },
+                last_chunk_accepted: link.last_chunk_accepted,
+                last_chunk_applied: link.last_chunk_applied,
+                queue_depth: link.queue_depth,
+                rejected_by: link
+                    .rejected
+                    .iter()
+                    .filter(|(_, n)| *n > 0)
+                    .map(|(reason, n)| (rejection_name(*reason), *n))
+                    .collect(),
+                clock_refused: link
+                    .clock_refused
+                    .iter()
+                    .map(|r| HealthClockRefusal {
+                        part: name(r.channel),
+                        participant: r.participant.to_string(),
+                        error_ms: ms(r.error_ns),
+                        bound_ms: ms(r.bound_ns),
+                    })
+                    .collect(),
+                published: link
+                    .report
+                    .iter()
+                    .flat_map(|r| &r.streams)
+                    .map(|s| (name(s.channel), s.published, s.coalesced))
+                    .collect(),
+                run: link
+                    .report
+                    .as_ref()
+                    .and_then(|r| r.run)
+                    .map(|run| HealthRun {
+                        starts: run.starts,
+                        completions: run.completions,
+                        skipped: vec![
+                            ("busy_skip", run.busy_skips),
+                            ("waiting_for", run.waiting_for),
+                            ("stale_input", run.stale_input),
+                            ("window_gap", run.window_gap),
+                            ("decode", run.decode),
+                            ("no_lease", run.no_lease),
+                        ],
+                        chunks_sent: run.chunks_sent,
+                        pending_ms: nonzero(run.pending_ns),
+                        latency_p50_ms: nonzero(run.latency_p50_ns),
+                        latency_p99_ms: nonzero(run.latency_p99_ns),
+                        drifting: run.drifting,
+                    }),
+                last_seq_seen: link
+                    .last_seq_seen
+                    .iter()
+                    .map(|(channel, seq)| (name(*channel), *seq))
+                    .collect(),
+            })
+        })
+        .collect()
 }

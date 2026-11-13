@@ -49,6 +49,7 @@ use rlmesh_session::discovery;
 use rlmesh_session::pairing::PairService;
 use rlmesh_session::record::Rolling;
 use rlmesh_session::server::SessionServer;
+use rlmesh_session::transport::TransportTuning;
 use rlmesh_session::wire::{PairInfo, Role, TenantId};
 use rlmesh_session::{HostConfig, SystemMonotonicClock};
 use zeroize::Zeroizing;
@@ -62,6 +63,24 @@ use crate::lobby::Home;
 pub const HOST_KEY: &str = "host.key";
 /// How often `devices.toml` is read again.
 const RELOAD: Duration = Duration::from_millis(500);
+
+/// The host's own warnings, on stderr: `RUST_LOG` filters them,
+/// [`rlmesh_session::DEFAULT_LOG_FILTER`] when unset. A process that already
+/// has a logger (the Python package's) keeps it.
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(rlmesh_session::DEFAULT_LOG_FILTER));
+    use tracing_subscriber::prelude::*;
+    // Zenoh logs its config, link password included, below INFO.
+    let capped = tracing_subscriber::filter::filter_fn(rlmesh_session::logging::may_record);
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .finish()
+        .with(capped)
+        .try_init();
+}
 
 /// The state directory: `dir`, else [`address::daemon_dir`].
 pub fn state_dir(dir: Option<&Path>) -> Result<PathBuf> {
@@ -158,6 +177,7 @@ pub fn advertised(base: SocketAddr) -> Vec<String> {
 
 /// `rlmesh host`: hosts until SIGINT or SIGTERM.
 pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Write) -> Result<()> {
+    init_logging();
     let dir = state_dir(args.state_dir.as_deref())?;
     let identity = Arc::new(identity(&dir)?);
     let table = Table::read(&dir)?;
@@ -182,9 +202,17 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
         config.seal = SealPolicy::All;
     }
     config.health_log = None;
-    let (transport, base) = address::open_listeners(base, None)
+    let tuning = TransportTuning {
+        notsent_lowat: args.tcp_notsent_lowat,
+        ..TransportTuning::default()
+    };
+    let (transport, base) = address::open_listener_with(base, None, tuning)
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
+    let board_data = rlmesh_session::host::BoardData::from(args.board_data);
+    config.datagram = board_data.open(base).await?;
+    config.datagram_strict = board_data.strict();
+    let udp = config.datagram.as_ref().map(|relay| relay.port());
     let recordings = recordings(args)?;
     let server = Arc::new(match &recordings {
         Some(dir) => {
@@ -222,9 +250,33 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     })?;
     #[cfg(not(unix))]
     drop((apply, service));
+    // One line: a reader that takes it and closes the pipe must not fail a
+    // second write.
+    let reach = match advertised(base).first() {
+        Some(address) if base.ip().is_unspecified() => format!(", reachable at {address}"),
+        Some(_) => String::new(),
+        None => {
+            writeln!(
+                stderr,
+                "no network route to pick an address from: boards can't be provisioned until \
+                 rlmesh host runs with --listen <LAN IP>:<port>"
+            )?;
+            String::new()
+        }
+    };
+    let udp = match udp {
+        Some(port) if board_data.strict() => format!(
+            "; boards' realtime parts over UDP port {port} (open it in the firewall), never \
+             back to TCP: a measurement setting"
+        ),
+        Some(port) => format!(
+            "; boards' realtime parts over UDP port {port} (open it in the firewall), else TCP"
+        ),
+        None => String::new(),
+    };
     writeln!(
         stdout,
-        "rlmesh host on {base} as {}, state in {}",
+        "rlmesh host on {base} as {}, state in {}{reach}{udp}",
         identity.host_id(),
         dir.display()
     )?;

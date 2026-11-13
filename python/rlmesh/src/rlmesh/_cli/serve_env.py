@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from rlmesh._client._endpoint import redact_address
 from rlmesh._serving import load_env as _serving_load_env
 from rlmesh._serving import load_env_entrypoint as _serving_load_env_entrypoint
 
@@ -175,6 +176,7 @@ def serve_from_args(args: ServeArgs) -> int:
             # here; RLMESH_WORKFLOW_EDITION / [tool.rlmesh] / --workflow-edition
             # cover the rest.
             declared=getattr(type(env), "workflow_edition", None),
+            origin=type(env),
         )
         # EnvServer auto-detects the vectorized shape from the env, so there is one
         # construction path for both scalar and vector envs.
@@ -184,7 +186,15 @@ def serve_from_args(args: ServeArgs) -> int:
             print(f"✓ Environment entrypoint: {args.entrypoint}")
         else:
             print(f"✓ Environment: {args.env}")
-        print(f"✓ Server address: {server.address}")
+        # The keyed address is the invite for whoever runs this at a
+        # terminal; a process its launcher started under a host identity
+        # already gave the launcher the key, and its stdout is a log.
+        shown = (
+            redact_address(server.address)
+            if os.environ.get("RLMESH_HOST_IDENTITY")
+            else server.address
+        )
+        print(f"✓ Server address: {shown}")
         if args.entrypoint is None or served_num_envs > 1:
             print(f"✓ Num envs: {served_num_envs}")
         print()

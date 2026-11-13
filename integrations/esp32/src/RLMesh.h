@@ -13,6 +13,7 @@
 #error "RLMesh runs on the classic ESP32 (ESP32-WROOM-32) ESP32-C6 and ESP32-S3"
 #endif
 
+#include <Print.h>
 #include <Stream.h>
 
 #include "rlmesh_device.h"
@@ -132,6 +133,49 @@ class Robot {
   bool running() const { return status().phase == 4; }
   // Actions the transport failed to carry out.
   uint32_t transportFailures() const;
+  // Network tasks running now (the transport's and zenoh-pico's, one per
+  // open session): flat across re-attaches, or each one is leaking a stack.
+  uint32_t transportTasks() const;
+  // Why the edges last refused a command chunk ("stale_token"), or nullptr
+  // while none has been refused this attach. status().chunks_refused counts
+  // them.
+  const char* lastRefusal() const;
+  // Chunks refused this attach for one reason, by its code (1 to
+  // RLMESH_DEVICE_REFUSALS; rlmesh_device_refusal_name names them).
+  uint64_t refusals(uint8_t code) const;
+  // Prints the refusals on one line, with a count per reason.
+  void printRefusals(Print& out) const;
+  // What the robot received and dropped over every attach, keeping what it
+  // held: `what` 0 its views, 1 replies, 2 chunks that did not open, 3
+  // anything else; `code` 1 to RLMESH_DEVICE_DROPPED
+  // (rlmesh_device_dropped_name names them).
+  uint64_t dropped(uint8_t what, uint8_t code) const;
+  // Prints what was dropped on one line, by what and why.
+  void printDropped(Print& out) const;
+  // Sealed views taken, signed views taken, and views dropped, over every
+  // attach.
+  void viewCounts(uint64_t& sealed, uint64_t& signedViews, uint64_t& droppedViews) const;
+  // Chunks refused for one reason over every attach, this one included
+  // (code 0: every reason).
+  uint64_t refusalsTotal(uint8_t code) const;
+  // Attaches the host accepted: one more each time the robot joined again.
+  uint32_t attaches() const;
+  // How `part`'s command chunks arrived this attach (received, accepted,
+  // lost, lateness on arrival by bucket, the longest gap): false before the
+  // robot runs or for a part that takes no commands.
+  bool chunkTiming(int part, rlmesh_device_chunk_timing_t& out) const;
+  // Prints one part's chunk timing on one line.
+  void printChunkTiming(Print& out, int part) const;
+  // Whether the robot takes the host's datagram path (UDP) when the host
+  // offers it (as `rlmesh host` does by default): true, the default, follows
+  // the host; false keeps every part on TCP. Call it after begin(), before
+  // the first poll(); it holds from the next attach on.
+  void useDatagram(bool on);
+  // The datagram path this attach (active, sent, received, lost, reordered,
+  // unopened, fallbacks): false when the host offered none.
+  bool datagramStats(rlmesh_device_datagram_stats_t& out) const;
+  // Prints the datagram path's counters on one line, or the path in use.
+  void printDatagram(Print& out) const;
 
  private:
   bool start(const rlmesh_device_robot_config_t& config);
