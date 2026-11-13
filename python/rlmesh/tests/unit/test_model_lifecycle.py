@@ -329,3 +329,34 @@ def test_a_wrapped_policy_declarations_are_the_models() -> None:
         True,
         None,
     )
+
+
+def test_load_parameters_as_constructor_keywords_name_from_config() -> None:
+    class Noop(rlmesh.Model):
+        def load(self, variant: str = "a") -> None:
+            self.variant = variant
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    with pytest.raises(TypeError, match=r"Noop.from_config\(variant=\.\.\.\)"):
+        Noop(variant="b")  # pyright: ignore[reportCallIssue]
+    assert Noop.from_config(variant="b").variant == "b"
+    # A keyword neither takes is Python's own refusal.
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        Noop(nonsense=1)  # pyright: ignore[reportCallIssue]
+
+    class Sized(rlmesh.Model):
+        def __init__(self, size: int = 1) -> None:
+            self.size = size
+
+        def load(self, size: int = 1, variant: str = "a") -> None:
+            self.variant = variant
+
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+    # A keyword the authored __init__ takes is its own.
+    assert Sized(size=3).size == 3
+    with pytest.raises(TypeError, match=r"Sized.from_config\(variant=\.\.\.\)"):
+        Sized(variant="b")  # pyright: ignore[reportCallIssue]

@@ -983,7 +983,9 @@ class ModelBase(Generic[ObsT, ActT]):
         Optional subclass hook; a no-op by default. Runs exactly once per
         instance, before any predict: with its own defaults from ``MyModel()``,
         or with the keywords :meth:`from_config` / a served binding resolved
-        against the signature and :attr:`params`.
+        against the signature and :attr:`params`. Its parameters are not
+        constructor keywords: ``MyModel(variant="b")`` is refused, naming
+        ``MyModel.from_config(variant="b")``.
 
         It runs once construction completes: a subclass's own ``__init__``
         runs to its end first, wherever it calls ``super().__init__()`` (or if
@@ -1095,6 +1097,11 @@ class ModelBase(Generic[ObsT, ActT]):
             "this model does not define a batched predict_chunk_batch(); use "
             "predict_chunk() (per lane) or predict_batch()."
         )
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if kwargs and cls is not ModelBase:
+            _refuse_load_keywords(cls, kwargs)
+        return super().__new__(cls)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -1985,6 +1992,37 @@ class ModelBase(Generic[ObsT, ActT]):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
+
+
+def _refuse_load_keywords(
+    cls: type[ModelBase[Any, Any]], kwargs: Mapping[str, Any]
+) -> None:
+    """Name ``from_config`` when ``MyModel(x=...)`` passes keywords only ``load`` takes.
+
+    The constructor would refuse them anyway, with Python's bare "unexpected
+    keyword argument"; this says where load parameters go instead.
+    """
+    if getattr(cls, "load") is getattr(ModelBase, "load"):  # noqa: B009
+        return
+
+    def accepts(fn: Callable[..., object], name: str) -> bool:
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return True
+        return name in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+
+    unexpected = [name for name in kwargs if not accepts(cls.__init__, name)]
+    if not unexpected or not all(accepts(cls.load, name) for name in unexpected):
+        return
+    given = ", ".join(f"{name}=..." for name in sorted(unexpected))
+    raise TypeError(
+        f"{cls.__name__}() does not take {', '.join(sorted(unexpected))}: "
+        f"load() parameters reach a model through {cls.__name__}.from_config({given}), "
+        f"which validates them and runs load() with them once"
+    )
 
 
 def as_model(model: object) -> ModelBase[Any, Any]:
