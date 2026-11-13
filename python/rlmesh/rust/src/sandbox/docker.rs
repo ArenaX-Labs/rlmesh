@@ -150,7 +150,10 @@ pub async fn run_container_async(
     if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
         let hint = spec.rlmesh_package.skew_hint();
         let report = startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
-        let _ = stop_container(&container_id);
+        // Killed, not stopped: a container that never became ready has
+        // nothing to drain, and `docker stop` would wait out its grace period
+        // (its entrypoint, PID 1, ignores SIGTERM) before the error surfaces.
+        let _ = discard_container(&container_id);
         return Err(report);
     }
 
@@ -216,6 +219,22 @@ fn stop_running_container(container_id: &str) -> Result<()> {
             return Ok(());
         }
         bail!("docker stop failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+/// Kills and removes a container at once (`docker rm -f`).
+fn discard_container(container_id: &str) -> Result<()> {
+    let output = Command::new("docker")
+        .args(["rm", "-f", container_id])
+        .output()
+        .context("failed to remove docker container")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such container") {
+            return Ok(());
+        }
+        bail!("docker rm -f failed: {}", stderr.trim());
     }
     Ok(())
 }
