@@ -6,7 +6,8 @@ experimental = ["setup-scripts"]
 # A loopback host writes its key (and its link gate) to the runtime
 # directory; tests get one of their own instead of the user's.
 [scripts.setup.runtime-dir]
-command = { command-line = "scripts/dev/nextest-runtime-dir.sh", relative-to = "workspace-root" }
+# Through sh: a copied tree (cargo-mutants) may not keep the exec bit.
+command = "sh scripts/dev/nextest-runtime-dir.sh"
 
 [profile.default]
 # Report every failure in one run instead of stopping at the first.
