@@ -273,6 +273,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A `realtime.Policy` bound to a lockstep robot, or given a lockstep robot's participant address as its session, raises `BindingRefused` at once naming `RemoteEnv` instead of waiting out its timeout.
 - A `SandboxEnv` or `SandboxModel` whose container fails to become ready reports it at once: the container is killed rather than given Docker's 10-second stop grace.
 - A sandbox built from source reports a key its container refuses at once instead of retrying it for 30 seconds.
+- A `realtime.Policy` preempted while it was asking for its lease again (its view of the lease had gone stale) is parked like any preempted policy, instead of taking the part back on its own when the operator lets go.
 - A `realtime.Policy` binding before any robot has joined names the robots its entries name in its waiting line and timeout, as it does once one joins.
 - A `Model` subclass whose `__init__` calls `super().__init__()` before setting its attributes runs `load()` once that `__init__` returns, not inside the `super().__init__()` call.
 - `MyModel(x=...)` with a keyword only `load()` takes raises `TypeError` naming `MyModel.from_config(x=...)`, the way load parameters reach a model, instead of Python's bare unexpected-keyword error.

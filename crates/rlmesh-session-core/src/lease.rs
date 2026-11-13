@@ -123,6 +123,10 @@ enum State {
     Idle,
     Requested {
         sent_ns: i64,
+        /// The lease asked for again (it expired here, or is renewed), which
+        /// the host may still hold for this client: a higher class taking it
+        /// before the answer is a preemption.
+        previous: Option<(Lease, Epoch)>,
     },
     Held(Held),
     Expired {
@@ -255,7 +259,15 @@ impl LeaseClient {
     /// `binding`, sent at `now_ns`. Any lease held before is dropped
     /// locally (release it first to tell the host).
     pub fn request(&mut self, binding: Fingerprint, ttl_ns: Option<u64>, now_ns: i64) -> Command {
-        self.state = State::Requested { sent_ns: now_ns };
+        let previous = match &self.state {
+            State::Held(held) => Some((held.lease.clone(), held.epoch)),
+            State::Expired { lease, epoch } => Some((lease.clone(), *epoch)),
+            _ => None,
+        };
+        self.state = State::Requested {
+            sent_ns: now_ns,
+            previous,
+        };
         Command::GrantLease {
             channels: vec![self.channel],
             release: Vec::new(),
@@ -272,13 +284,17 @@ impl LeaseClient {
         clock: Option<&OffsetEstimate>,
         now_ns: i64,
     ) -> bool {
-        let State::Requested { sent_ns } = self.state else {
+        let State::Requested { sent_ns, previous } = &self.state else {
             return false;
         };
+        let (sent_ns, previous) = (*sent_ns, previous.clone());
         self.observe(&reply.state);
         if let Err(error) = &reply.result {
-            self.state = State::Refused {
-                error: error.clone(),
+            self.state = match self.preempted(&reply.state, previous) {
+                Some(revoked) => revoked,
+                None => State::Refused {
+                    error: error.clone(),
+                },
             };
             return false;
         }
@@ -311,6 +327,22 @@ impl LeaseClient {
         }
         self.seen = Some(order);
         true
+    }
+
+    /// The revoked state when `snapshot` shows `previous`, the lease a
+    /// pending request asks for again, taken by a higher class.
+    fn preempted(
+        &self,
+        snapshot: &AuthoritySnapshot,
+        previous: Option<(Lease, Epoch)>,
+    ) -> Option<State> {
+        let (lease, epoch) = previous?;
+        let (reason, by) = self.loss(snapshot, epoch, &lease)?;
+        Some(State::Revoked {
+            lease: Some(lease),
+            reason,
+            by: Some(by?),
+        })
     }
 
     /// Why `snapshot` shows this holder's `lease` (of `epoch`) gone, and
@@ -393,6 +425,15 @@ impl LeaseClient {
                 }
             },
             State::Expired { lease, epoch } => (lease.clone(), self.loss(snapshot, *epoch, lease)?),
+            State::Requested { previous, .. } => {
+                let revoked = self.preempted(snapshot, previous.clone())?;
+                let State::Revoked { reason, .. } = &revoked else {
+                    return None;
+                };
+                let reason = reason.clone();
+                self.state = revoked;
+                return Some(LeaseChange::Revoked(reason));
+            }
             _ => return None,
         };
         self.state = State::Revoked {
@@ -1122,6 +1163,68 @@ mod tests {
         client.on_snapshot(&taken, None, 10 * MS);
         assert!(client.preempted_by().is_some());
         client.request(Fingerprint::from(7), None, 20 * MS);
+        assert!(client.preempted_by().is_none());
+    }
+
+    /// A lease that expired here (a stale view) and is asked for again is
+    /// still this client's at the host until the view says otherwise: a
+    /// higher class taking it meanwhile is a preemption, whether the
+    /// snapshot or the refused request's reply shows it first.
+    #[test]
+    fn a_preemption_during_a_re_request_after_a_local_expiry_is_one() {
+        let supervisor = Lease {
+            priority: PriorityClass::Safety,
+            ..lease("supervisor", 10, 2_000 * MS)
+        };
+        let mut taken = snapshot(6, 1, Mode::Active, vec![supervisor.clone()]);
+        taken.ended.push(LeaseEnd {
+            lease: lease("web-1", 9, 1_000 * MS),
+            reason: Reason {
+                code: ReasonCode::Preempted,
+                by: "supervisor".into(),
+                ..Reason::default()
+            },
+            by: Some(supervisor.clone()),
+            to: None,
+        });
+        let refused = CtlReply {
+            request_id: 0,
+            result: Err(CtlError::new(CtlStatus::LeaseBusy, "held by supervisor")),
+            state: taken.clone(),
+            leases: Vec::new(),
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        };
+        let expired_and_asked_again = || {
+            let mut client = LeaseClient::new(me(), ChannelId(3), 0);
+            granted(&mut client, None);
+            client.tick(300 * MS);
+            assert!(client.lease().is_none(), "expired locally");
+            client.request(Fingerprint::from(7), None, 300 * MS);
+            client
+        };
+        // The snapshot first.
+        let mut client = expired_and_asked_again();
+        assert!(matches!(
+            client.on_snapshot(&taken, None, 310 * MS),
+            Some(LeaseChange::Revoked(_))
+        ));
+        assert_eq!(client.preempted_by(), Some(&supervisor));
+        assert!(!client.on_reply(&refused, None, 320 * MS));
+        assert_eq!(
+            client.preempted_by(),
+            Some(&supervisor),
+            "the reply keeps it"
+        );
+        // The refusal first.
+        let mut client = expired_and_asked_again();
+        assert!(!client.on_reply(&refused, None, 310 * MS));
+        assert_eq!(client.preempted_by(), Some(&supervisor));
+        // A plain re-request the host renews stays a request.
+        let mut client = expired_and_asked_again();
+        let still = snapshot(6, 1, Mode::Active, vec![lease("web-1", 9, 2_000 * MS)]);
+        assert_eq!(client.on_snapshot(&still, None, 310 * MS), None);
         assert!(client.preempted_by().is_none());
     }
 

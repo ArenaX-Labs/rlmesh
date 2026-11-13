@@ -645,30 +645,43 @@ impl Leases {
                 .on_snapshot(&snapshot, participant.clock_estimate().as_ref(), now);
         for (channel, change) in changes {
             if let LeaseChange::Revoked(reason) = change {
-                let part = snapshot.part_name(channel);
-                info!(participant = %participant.id(), %part, %reason, "lease lost");
-                self.taken().remove(&channel);
-                let by = self.group().preempted_by(channel).cloned();
-                if let Some(by) = by
-                    && !self.auto_resume.load(Ordering::Relaxed)
-                {
-                    self.park(&snapshot, channel, &by);
-                }
-                // A rebind may have taken the part over under a new token
-                // meanwhile: only a sender of no held token goes.
-                let held = self.group().lease(channel, now).map(|l| l.token);
-                let mut publishers = self.publishers();
-                if publishers
-                    .get(&channel)
-                    .is_some_and(|p| Some(p.token()) != held)
-                {
-                    publishers.remove(&channel);
-                }
+                self.lost(participant, &snapshot, channel, &reason, now);
             }
         }
         // After parking: one snapshot may show both the preemption and the
         // hand-back.
         self.take_hand_backs(&snapshot, participant.id());
+    }
+
+    /// `channel`'s lease is gone for `reason`: parked when a higher class
+    /// took it, and its sender dropped.
+    fn lost(
+        &self,
+        participant: &Participant,
+        snapshot: &AuthoritySnapshot,
+        channel: ChannelId,
+        reason: &str,
+        now: i64,
+    ) {
+        let part = snapshot.part_name(channel);
+        info!(participant = %participant.id(), %part, %reason, "lease lost");
+        self.taken().remove(&channel);
+        let by = self.group().preempted_by(channel).cloned();
+        if let Some(by) = by
+            && !self.auto_resume.load(Ordering::Relaxed)
+        {
+            self.park(snapshot, channel, &by);
+        }
+        // A rebind may have taken the part over under a new token
+        // meanwhile: only a sender of no held token goes.
+        let held = self.group().lease(channel, now).map(|l| l.token);
+        let mut publishers = self.publishers();
+        if publishers
+            .get(&channel)
+            .is_some_and(|p| Some(p.token()) != held)
+        {
+            publishers.remove(&channel);
+        }
     }
 
     /// Takes over the leases the host re-issued for `binding` when it was
@@ -857,12 +870,24 @@ impl Leases {
                     continue;
                 }
             };
+            let now = participant.clock().now_ns();
             self.group().on_reply_some(
                 &channels,
                 &reply,
                 participant.clock_estimate().as_ref(),
-                participant.clock().now_ns(),
+                now,
             );
+            // A part asked for again that a higher class took meanwhile (the
+            // refusal shows it before any snapshot did) is lost as a
+            // preemption, not merely refused.
+            if reply.result.is_err() {
+                for channel in &channels {
+                    if self.group().preempted_by(*channel).is_some() {
+                        let why = "preempted while asked for again";
+                        self.lost(participant, &reply.state, *channel, why, now);
+                    }
+                }
+            }
             match &reply.result {
                 Ok(()) => {
                     self.note_taken(participant.id(), &reply);
