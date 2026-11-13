@@ -593,7 +593,7 @@ fn every_shared_case_gives_its_entry_and_its_policy() {
 fn builders_and_json_mix_in_one_policy() {
     let mixed = Policy::builder()
         .hz(30)
-        .input("cam", inputs::camera().at("hallo-cam:cam").size(224))
+        .input("cam", inputs::camera().at("front-cam:cam").size(224))
         .input("task", json!("text"))
         .action(
             "left",
@@ -609,7 +609,7 @@ fn builders_and_json_mix_in_one_policy() {
         )
         .allow([Allow::Resize]);
     let json = r#"{"hz": 30,
-        "inputs": {"cam": {"kind": "camera", "at": "hallo-cam:cam", "size": [224, 224]},
+        "inputs": {"cam": {"kind": "camera", "at": "front-cam:cam", "size": [224, 224]},
                    "task": "text"},
         "actions": {"left": {"kind": "joints", "at": "gimbal-left:servos",
                              "command": "position", "hz": 50, "chunk": 4},

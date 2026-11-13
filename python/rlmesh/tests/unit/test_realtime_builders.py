@@ -94,7 +94,7 @@ def test_the_shared_cases_cover_every_builder_and_argument(
 @pytest.mark.parametrize(
     ("built", "expected"),
     [
-        (inputs.camera("hallo-cam:cam"), {"kind": "camera", "at": "hallo-cam:cam"}),
+        (inputs.camera("front-cam:cam"), {"kind": "camera", "at": "front-cam:cam"}),
         (
             inputs.camera(
                 "cam",
@@ -627,7 +627,7 @@ def test_of_copies_a_core_parts_fields_and_takes_its_builders_options() -> None:
 def test_a_policy_takes_its_map_by_keyword() -> None:
     by_keyword = realtime.Policy(
         hz=30,
-        inputs={"cam": inputs.camera("hallo-cam:cam")},
+        inputs={"cam": inputs.camera("front-cam:cam")},
         actions={"left": actions.joints("gimbal-left:servos", command="position")},
         allow=["resize"],
         session=":0",
@@ -635,7 +635,7 @@ def test_a_policy_takes_its_map_by_keyword() -> None:
     one_dict = realtime.Policy(
         {
             "hz": 30,
-            "inputs": {"cam": {"kind": "camera", "at": "hallo-cam:cam"}},
+            "inputs": {"cam": {"kind": "camera", "at": "front-cam:cam"}},
             "actions": {
                 "left": {
                     "kind": "joints",

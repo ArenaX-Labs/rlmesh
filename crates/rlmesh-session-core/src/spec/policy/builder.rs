@@ -366,7 +366,7 @@ impl From<Value> for ActionEntry {
 ///
 /// let policy = Policy::builder()
 ///     .hz(30)
-///     .input("cam", inputs::camera().at("hallo-cam:cam").size(224))
+///     .input("cam", inputs::camera().at("front-cam:cam").size(224))
 ///     .input("task", serde_json::json!("text"))
 ///     .action(
 ///         "left",

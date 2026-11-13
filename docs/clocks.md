@@ -112,7 +112,7 @@ from rlmesh.realtime import actions, inputs
 
 tracker = realtime.Policy(
     hz=30,
-    inputs={"cam": inputs.camera("hallo-cam:cam")},
+    inputs={"cam": inputs.camera("front-cam:cam")},
     actions={
         "left": actions.joints("gimbal-left:servos", command="position", hz=50, chunk=4),
         "right": actions.joints("gimbal-right:servos", command="position", hz=50, chunk=4),

@@ -21,7 +21,7 @@
 //!     .input(
 //!         "image",
 //!         inputs::camera()
-//!             .at("hallo-cam:cam")
+//!             .at("front-cam:cam")
 //!             .size(224)
 //!             .dtype(DType::F32)
 //!             .range(0, 1)

@@ -5,8 +5,8 @@ so a map can mix them with dicts and the host still checks every rule::
 
     from rlmesh.realtime import inputs
 
-    inputs.camera("hallo-cam:cam", size=224, allow=["resize"])
-    # {"kind": "camera", "at": "hallo-cam:cam", "size": [224, 224], "allow": ["resize"]}
+    inputs.camera("front-cam:cam", size=224, allow=["resize"])
+    # {"kind": "camera", "at": "front-cam:cam", "size": [224, 224], "allow": ["resize"]}
 
 The first argument is the part's address, the entry's ``at``: ``robot:path``,
 a path below the scope (``wrist/cam``), or ``/path`` from the robot's root;

@@ -4,11 +4,11 @@
     {
       "builder": "inputs.camera",
       "args": {
-        "at": "hallo-cam:cam"
+        "at": "front-cam:cam"
       },
       "entry": {
         "kind": "camera",
-        "at": "hallo-cam:cam"
+        "at": "front-cam:cam"
       }
     },
     {
