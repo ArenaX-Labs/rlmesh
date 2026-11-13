@@ -215,6 +215,12 @@ lean = lambda obs: {"push": np.array([int(obs["x"][2] > 0)])}  # chunk 1: shape 
 balance.bind("cartpole").run(lean, episodes=10)
 ```
 
+Its resets are a model run's: besides the seeds, an env that declared the
+`trial_index` reset option (`EnvFactory.reset_options`) gets each episode's
+0-based ordinal in it, numbered as `Model.run` numbers them, so it sweeps
+the same initial states or goals either way. An env that did not declare it
+is never handed the key.
+
 In Rust, `rlmesh::realtime::bind` returns a `BoundPolicy`, `Wall` (the
 session's `Controller`) or `Lockstep`, and `BoundPolicy::run` takes the same
 `Predictor` on either with `RunSettings` (`duration`, `mode` and `resume`

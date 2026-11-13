@@ -437,3 +437,165 @@ async fn a_policy_bound_before_its_lockstep_robot_serves_runs_it_in_lockstep() {
     bound.close().await;
     cancel.cancel();
 }
+
+/// A Gym env of two steps an episode that records the `trial_index` each
+/// reset carried; it names the option among its reset options when
+/// `declares`.
+struct Trials {
+    declares: bool,
+    t: AtomicU64,
+    seen: Arc<Mutex<Vec<Option<rlmesh_spaces::MetaValue>>>>,
+}
+
+impl Trials {
+    fn zeros() -> rlmesh_spaces::SpaceValue {
+        let data = f32s(&[0.0; 2]);
+        rlmesh_spaces::SpaceValue::Box(
+            rlmesh_spaces::Tensor::from_vec(data, vec![2], rlmesh_spaces::DType::Float32).unwrap(),
+        )
+    }
+}
+
+#[async_trait]
+impl rlmesh::lockstep::Served for Trials {
+    fn contract(&self) -> rlmesh_spaces::EnvContract {
+        let space = rlmesh_spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![2])
+            .dtype(rlmesh_spaces::DType::Float32)
+            .build()
+            .unwrap();
+        let declared = rlmesh_spaces::MetaValue::List(vec![rlmesh_spaces::MetaValue::String(
+            "trial_index".into(),
+        )]);
+        rlmesh_spaces::EnvContract {
+            id: "Trials-v0".into(),
+            observation_space: Some(space.clone()),
+            action_space: Some(space),
+            metadata: self
+                .declares
+                .then(|| [(rlmesh::ENV_RESET_OPTIONS_KEY.to_string(), declared)].into()),
+            render_mode: String::new(),
+            num_envs: 1,
+            autoreset_mode: rlmesh_spaces::AutoresetMode::Disabled,
+        }
+    }
+
+    fn subset_step(&self) -> bool {
+        false
+    }
+
+    async fn reset(
+        &self,
+        _: &[u32],
+        _: Vec<i64>,
+        options: Option<rlmesh_spaces::MetaMap>,
+    ) -> Result<rlmesh::lockstep::Reset, rlmesh::EnvironmentError> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(options.and_then(|o| o.get("trial_index").cloned()));
+        self.t.store(0, Ordering::SeqCst);
+        Ok(rlmesh::lockstep::Reset {
+            observations: vec![Self::zeros()],
+            info: None,
+        })
+    }
+
+    async fn step(
+        &self,
+        _: &[u32],
+        _: Vec<rlmesh_spaces::SpaceValue>,
+    ) -> Result<rlmesh::lockstep::Step, rlmesh::EnvironmentError> {
+        let t = self.t.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(rlmesh::lockstep::Step {
+            observations: vec![Self::zeros()],
+            rewards: vec![1.0],
+            terminated: vec![t >= 2],
+            truncated: vec![false],
+            info: None,
+        })
+    }
+
+    async fn render(&self, _: u32) -> Result<Option<Vec<u8>>, rlmesh::EnvironmentError> {
+        Ok(None)
+    }
+
+    async fn close(&self) -> Result<(), rlmesh::EnvironmentError> {
+        Ok(())
+    }
+}
+
+/// Acts zeros on a Gym env's box.
+struct Still;
+
+impl Predictor for Still {
+    type Error = String;
+
+    fn predict(&mut self, _: Observation, _: i64) -> Result<Vec<(String, Value)>, String> {
+        let chunk = Tensor {
+            dtype: DType::F32,
+            shape: vec![1, 2],
+            data: f32s(&[0.0; 2]),
+        };
+        Ok(vec![("a".into(), Value::Tensor(chunk))])
+    }
+}
+
+/// The `trial_index` each of three episodes' resets carried, on a Gym env
+/// that declares the option or not.
+async fn trials_seen(declares: bool) -> Vec<Option<rlmesh_spaces::MetaValue>> {
+    let binding = rlmesh::lockstep::bind(":0/trials").await.unwrap();
+    let session = rlmesh_session::address::Address::participant(&binding.address())
+        .unwrap()
+        .joining()
+        .unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Trials {
+        declares,
+        t: AtomicU64::new(0),
+        seen: seen.clone(),
+    };
+    tokio::spawn(binding.serve(
+        Arc::new(env),
+        rlmesh::lockstep::ServeOptions::default(),
+        cancel.clone(),
+    ));
+    let policy = Policy::parse(
+        r#"{"hz": 10,
+            "inputs": {"x": {"kind": "gym/box", "at": "obs",
+                             "fields": {"value": ["float32", [2]]}}},
+            "actions": {"a": {"kind": "gym/box", "at": "action",
+                              "fields": {"value": ["float32", [2]]}}}}"#,
+    )
+    .unwrap();
+    let options = RunOptions::named("p").robot("trials").unwrap();
+    let bound = realtime::bind(&session, "p", &policy, &options, PriorityClass::Model, WAIT)
+        .await
+        .unwrap();
+    assert_eq!(bound.clock(), Clock::Lockstep);
+    let settings = RunSettings {
+        episodes: Some(3),
+        seed: Some(5),
+        ..RunSettings::default()
+    };
+    let ran = std::thread::scope(|s| s.spawn(|| bound.run(&mut Still, settings)).join().unwrap());
+    let Ok(RunOutcome::Lockstep(stats)) = ran else {
+        panic!("a lockstep run: {ran:?}");
+    };
+    assert_eq!(stats.episodes.len(), 3);
+    bound.close().await;
+    cancel.cancel();
+    seen.lock().unwrap().clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gym_env_declaring_trial_index_gets_each_episode_s_ordinal_as_a_model_run_sends_it() {
+    use rlmesh_spaces::MetaValue::Int;
+    // Numbered from 0, one a reset, as `Model::run` numbers them.
+    assert_eq!(
+        trials_seen(true).await,
+        [Some(Int(0)), Some(Int(1)), Some(Int(2))]
+    );
+    // An env that did not declare it is never handed the key.
+    assert_eq!(trials_seen(false).await, [None, None, None]);
+}

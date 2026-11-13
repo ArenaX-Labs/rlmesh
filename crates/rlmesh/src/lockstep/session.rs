@@ -1052,19 +1052,36 @@ pub async fn connect_view(
     view_of(attached, robot, policy, options).await
 }
 
+/// A lockstep robot's view through a policy, and how a run of it resets
+/// the robot as a run of its env would ([`connect_policy_view`]).
+pub struct PolicyView {
+    /// The view.
+    pub view: GymView,
+    /// The key its episodes' seeds derive from: a Gym env's contract id,
+    /// else the robot's name, as a run of the env takes it.
+    pub seed_key: String,
+    /// The reset option an episode's ordinal travels under, when the
+    /// robot is a Gym env that declared it (`trial_index`, under its
+    /// edition's key); `None` sends none.
+    pub trial_option: Option<String>,
+}
+
 /// [`connect_view`] through `policy` bound with `run` (its robot set to the
-/// one at `address`), and the key its episodes' seeds derive from: a Gym
-/// env's contract id, else the robot's name, as a run of the env takes it.
+/// one at `address`), with what its resets take ([`PolicyView`]).
 pub async fn connect_policy_view(
     address: &str,
     policy: &rlmesh_session::spec::Policy,
     run: RunOptions,
     options: ConnectOptions,
-) -> Result<(GymView, String), GymError> {
+) -> Result<PolicyView, GymError> {
     let (attached, robot) = attach_robot(address, &options).await?;
-    let seed_key = match gym_env_info(&attached.parts) {
-        Some(info) => info?.contract.id,
-        None => robot.to_string(),
+    let (seed_key, trial_option) = match gym_env_info(&attached.parts) {
+        Some(info) => {
+            let info = info?;
+            let trial_option = trial_option(&info);
+            (info.contract.id, trial_option)
+        }
+        None => (robot.to_string(), None),
     };
     let run = RunOptions {
         robot: Some(robot.clone()),
@@ -1072,7 +1089,23 @@ pub async fn connect_policy_view(
         ..run
     };
     let view = view_of(attached, robot, Some((policy, run)), options).await?;
-    Ok((view, seed_key))
+    Ok(PolicyView {
+        view,
+        seed_key,
+        trial_option,
+    })
+}
+
+/// The key a Gym env's resets carry their episode's ordinal under, as a
+/// run of the env sends it: its edition's `trial_index` key, only to an env
+/// whose contract declared it.
+fn trial_option(info: &GymEnvInfo) -> Option<String> {
+    let key = rlmesh_proto::parse_retained_edition(&info.workflow_edition)
+        .map_or(crate::run::runtime::TRIAL_INDEX_OPTION, |edition| {
+            rlmesh_proto::defaults(edition).trial_index_option_key
+        });
+    let contract = crate::data::env_contract_to_proto(&info.contract);
+    crate::run::runtime::declares_reset_option(&contract, key).then(|| key.to_string())
 }
 
 /// The Gym env a robot's parts declare, if it is one.

@@ -1383,7 +1383,9 @@ class Policy:
         :meth:`stop`. ``seed`` is a base seed: each episode's reset seed is
         derived from it, the robot and the episode's number exactly as
         ``Model.run(..., seed=)`` derives it, so the same seed runs the same
-        episodes through either. One ``predict`` per chunk: a chunk of H
+        episodes through either. An env that declared the ``trial_index``
+        reset option gets each episode's 0-based ordinal in it, as
+        ``Model.run`` sends it. One ``predict`` per chunk: a chunk of H
         actions is H steps, their rewards summed. The policy's action rate
         sets the session time a step stands for, so ``obs.age_ms`` and
         history windows keep their meaning; nothing waits on real time, and

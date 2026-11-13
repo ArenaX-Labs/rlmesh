@@ -8,14 +8,14 @@
 - Each clock refuses the other's settings at once, and a policy binding a
   lockstep robot among others is refused.
 - A Gym env served with ``EnvServer`` is a lockstep robot: a policy binds it
-  by kind.
+  by kind, and resets it as a model run does (seeds, ``trial_index``).
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pytest
@@ -212,6 +212,61 @@ def test_a_seed_draws_the_episodes_a_model_run_draws(session_port: int) -> None:
         assert not isinstance(result, Exception), result
         assert env.seeds == by_policy
         assert len(set(by_policy)) == 3
+    finally:
+        server.shutdown()
+
+
+class _Trials:
+    """A local env of two steps an episode that records each reset's ``trial_index``."""
+
+    metadata: ClassVar[dict[str, Any]] = {rlmesh.ENV_RESET_OPTIONS_KEY: ["trial_index"]}
+
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Box(-1.0, 1.0, (2,), np.float32)
+        self.action_space = spaces.Box(-1.0, 1.0, (2,), np.float32)
+        self.trials: list[int | None] = []
+        self.t = 0
+
+    def reset(self, *, seed: int | None = None, options: Any = None) -> Any:
+        self.trials.append(rlmesh.trial_index(options))
+        self.t = 0
+        return np.zeros(2, np.float32), {}
+
+    def step(self, action: Any) -> Any:
+        self.t += 1
+        return np.zeros(2, np.float32), 1.0, self.t >= 2, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+def test_an_env_declaring_trial_index_gets_the_ordinals_a_model_run_sends(
+    session_port: int,
+) -> None:
+    env = _Trials()
+    base = f"127.0.0.1:{session_port}"
+    server = rlmesh.EnvServer(env, f"{base}/trials")
+    server.start()
+    try:
+        box = {"kind": "gym/box", "fields": {"value": ["float32", [2]]}}
+        with v2.Policy(
+            hz=10,
+            inputs={"x": {**box, "at": "obs"}},
+            actions={"a": {**box, "at": "action"}},
+            session=base,
+            name="p",
+        ) as policy:
+            policy.bind("trials").run(
+                lambda obs: {"a": np.zeros((1, 2), np.float32)}, episodes=3, seed=5
+            )
+        by_policy, env.trials = env.trials, []
+        assert by_policy == [0, 1, 2]
+        model = rlmesh.numpy.Model(lambda obs: np.zeros(2, np.float32))
+        [result] = model.run_routes([server], episodes=3, base_seed=5)
+        assert not isinstance(result, Exception), result
+        assert env.trials == by_policy
     finally:
         server.shutdown()
 

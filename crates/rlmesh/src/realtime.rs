@@ -24,7 +24,9 @@
 //! `mode: Shadow` and `resume` are the wall clock's, `episodes` and `seed`
 //! lockstep's. A lockstep run resets the robot at the start of each episode,
 //! each episode's seed derived from `seed` as [`crate::Model::run`] derives
-//! it, so one seed draws the same episodes through either.
+//! it, so one seed draws the same episodes through either. A Gym env that
+//! declared the `trial_index` reset option gets each episode's 0-based
+//! ordinal in it, as a run of the env sends it.
 //!
 //! One lockstep robot per run: a policy that binds several robots, any of
 //! them in lockstep, is refused.
@@ -67,6 +69,7 @@ use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::wire::RobotClock as Clock;
 use rlmesh_session::wire::{ParticipantId, PriorityClass};
 use rlmesh_session::{RunStats, SessionAddress};
+use rlmesh_spaces::MetaValue;
 
 use crate::lockstep::view::ViewStep;
 use crate::lockstep::{ConnectOptions, GymError, GymView};
@@ -313,10 +316,12 @@ pub struct LockstepStats {
 
 /// A policy bound to one lockstep robot (see the module docs).
 pub struct LockstepPolicy {
-    view: GymView,
+    /// Boxed, so [`BoundPolicy`]'s variants stay close in size.
+    view: Box<GymView>,
     robot: ParticipantId,
     binding: Arc<Binding>,
     seed_key: String,
+    trial_option: Option<String>,
     stop: AtomicBool,
     stats: Mutex<LockstepStats>,
 }
@@ -338,7 +343,11 @@ impl LockstepPolicy {
             timeout,
             ..ConnectOptions::default()
         };
-        let (view, seed_key) = crate::lockstep::session::connect_policy_view(
+        let crate::lockstep::session::PolicyView {
+            view,
+            seed_key,
+            trial_option,
+        } = crate::lockstep::session::connect_policy_view(
             address,
             policy,
             options.clone(),
@@ -352,10 +361,11 @@ impl LockstepPolicy {
             .ok_or_else(|| GymError::Map("the view has no binding".into()))?;
         let robot = binding.robot.clone();
         Ok(Self {
-            view,
+            view: Box::new(view),
             robot,
             binding,
             seed_key,
+            trial_option,
             stop: AtomicBool::new(false),
             stats: Mutex::default(),
         })
@@ -417,8 +427,9 @@ impl LockstepPolicy {
             let seed = settings
                 .seed
                 .map(|base| self.episode_seed(base, episode) as u64);
+            let options = self.reset_options(episode);
             let mut last = runtime
-                .block_on(self.view.reset(seed, ""))
+                .block_on(self.view.reset(seed, &options))
                 .map_err(LockstepRunError::Robot)?;
             self.update(|stats| stats.episodes.push(Episode::default()));
             loop {
@@ -457,6 +468,17 @@ impl LockstepPolicy {
             }
         }
         Ok(self.stats())
+    }
+
+    /// The options the reset starting episode `episode` (0-based) carries:
+    /// its ordinal as `trial_index` to a Gym env that declared it, as
+    /// [`crate::Model::run`] numbers it; none otherwise.
+    fn reset_options(&self, episode: u64) -> String {
+        let Some(key) = &self.trial_option else {
+            return String::new();
+        };
+        let options = [(key.clone(), MetaValue::Int(episode as i64))].into();
+        crate::lockstep::meta_json::to_json(&options)
     }
 
     fn update(&self, change: impl FnOnce(&mut LockstepStats)) {
