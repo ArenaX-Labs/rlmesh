@@ -1668,7 +1668,7 @@ fn a_view_waits_for_a_placed_robot_that_has_declared_nothing() {
 }
 
 #[test]
-fn an_optional_entry_on_an_absent_robot_without_blank_waits_for_it() {
+fn an_optional_entry_on_an_absent_robot_without_blank_is_refused_not_waited_for() {
     let policy = Policy::parse(
         r#"{"hz": 20, "inputs": {"target": {"kind": "joints", "at": "tracker:target",
             "fields": ["pos"], "count": 2, "optional": true}}}"#,
@@ -1676,11 +1676,11 @@ fn an_optional_entry_on_an_absent_robot_without_blank_waits_for_it() {
     .expect("policy");
     let options = RunOptions::named("reader").robot("ur10e").expect("robot");
     let err = bind(&policy, &robot("ur10e"), &options).expect_err("refused");
-    assert_eq!(
-        err.waiting_for().as_deref(),
-        Some(
-            "robot tracker to declare its parts; input \"target\" (kind joints, at \"tracker:target\") needs it"
-        )
+    assert_eq!(err.waiting_for(), None);
+    let text = err.to_string();
+    assert!(
+        text.contains("is optional, but nothing allows it to read blank"),
+        "{text}"
     );
 }
 
