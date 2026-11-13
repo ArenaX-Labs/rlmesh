@@ -1211,6 +1211,54 @@ async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
     assert_eq!(robot.edge_stats("arm").expect("stats").rejected_total(), 0);
 }
 
+/// The host grants no lease before a robot's publishers install the
+/// delivery plans of the streams a binding reads. An acquire right after
+/// the bind waits for them, as for the clocks, instead of being refused;
+/// past the wait timeout it says whose publishers it waited for.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_acquire_waits_for_the_robots_publishers_to_install_its_plans() {
+    let world = World::start().await;
+    // A robot that declared its parts but publishes none of them yet.
+    let robot = world
+        .join("ur10e", Role::Embodiment, PriorityClass::Scripted)
+        .await;
+    robot.declare_parts(UR10E).await.expect("declare");
+    robot.arm().await.expect("arm");
+    let p = world
+        .join("operator", Role::Controller, PriorityClass::Operator)
+        .await;
+    let mut controller = Controller::bind(
+        Arc::new(p),
+        &Policy::parse(POLICY).expect("policy"),
+        &RunOptions::named("operator").robot("ur10e").expect("robot"),
+        ControllerConfig::default(),
+    )
+    .await
+    .expect("bind");
+    // The clocks first, so only the plans are waited for below.
+    let ids = [robot.id().clone(), controller.participant().id().clone()];
+    wait_until("both clocks mapped", || {
+        let view = world.host.snapshot();
+        ids.iter().all(|id| view.clock(id).is_some())
+    })
+    .await;
+    controller.set_wait_timeout(Duration::from_millis(300));
+    let err = controller.acquire().await.expect_err("no publisher yet");
+    assert!(
+        matches!(&err, SessionError::Timeout(..)) && err.to_string().contains("ur10e:wrist/ft"),
+        "{err}"
+    );
+    assert!(!controller.holds_any());
+
+    let _publishers = (
+        robot.publisher("arm").await.expect("arm"),
+        robot.publisher("wrist/ft").await.expect("ft"),
+    );
+    controller.set_wait_timeout(WAIT);
+    let leases = controller.acquire().await.expect("installed: granted");
+    assert_eq!(leases.len(), 1);
+}
+
 /// `Duration::MAX` is a wait with no limit, for the bind and its later
 /// waits alike, not an overflow.
 #[tokio::test(flavor = "multi_thread")]

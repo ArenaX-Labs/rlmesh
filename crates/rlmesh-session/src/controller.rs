@@ -931,6 +931,43 @@ impl Leases {
         }
     }
 
+    /// Waits until the publisher of every stream this binding has a
+    /// contract on has installed its delivery plan (the host grants no lease
+    /// before), or the session stops being armed (the grant then says why).
+    async fn wait_for_plans(
+        &self,
+        participant: &Participant,
+        timeout: Duration,
+    ) -> Result<(), SessionError> {
+        let me = participant.id().clone();
+        let what = "the robots' publishers to install this binding's delivery plans";
+        let waited = participant
+            .wait_for(what, timeout, |view| {
+                !matches!(view.mode, Mode::Armed | Mode::Active)
+                    || uninstalled_plans(view, &me).is_empty()
+            })
+            .await;
+        match waited {
+            Err(SessionError::Timeout(timeout, _)) => {
+                let parts = participant.authority().map_or_else(Vec::new, |view| {
+                    uninstalled_plans(&view, &me)
+                        .into_iter()
+                        .map(|c| view.part_name(c))
+                        .collect()
+                });
+                Err(SessionError::Timeout(
+                    timeout,
+                    format!(
+                        "the publishers of {} to install this binding's delivery plans: the \
+                         host grants no lease until they have",
+                        parts.join(", ")
+                    ),
+                ))
+            }
+            other => other.map(|_| ()),
+        }
+    }
+
     /// Requests the leases not held, robot by robot, so a robot that is
     /// gone or stopped on its own never keeps the others from moving, and
     /// declares a sender per new token. Fails only when no robot granted
@@ -1217,6 +1254,30 @@ fn unmapped_clocks<'a>(
         }
     }
     unmapped
+}
+
+/// The streams `me`'s binding has a contract on whose present publisher has
+/// not installed the current delivery plan: the host grants `me` no lease
+/// until it has. A robot that is gone keeps nobody waiting: the grant says
+/// why.
+fn uninstalled_plans(view: &AuthoritySnapshot, me: &ParticipantId) -> Vec<ChannelId> {
+    let Some(binding) = view.binding(me) else {
+        return Vec::new();
+    };
+    let present = |channel: ChannelId| {
+        view.parts
+            .iter()
+            .find(|p| p.channel == channel || p.applied_channel == Some(channel))
+            .and_then(|p| view.participant(&p.owner))
+            .is_some_and(|p| p.present)
+    };
+    binding
+        .contracts
+        .iter()
+        .map(|c| c.channel)
+        .filter(|c| present(*c))
+        .filter(|c| !view.demand(*c).is_some_and(|d| d.installed(d.revision)))
+        .collect()
 }
 
 /// Keeps the leases while they are wanted (see the module docs).
@@ -2305,15 +2366,20 @@ impl Controller {
 
     /// Takes the binding's leases now (all or none), preempting a lower
     /// class; from then on the keeper holds them, parked or not. First
-    /// waits for the host to map the clocks an edge needs (a
-    /// [`SessionError::Timeout`] naming whose is missing, past the wait
-    /// timeout), so a chunk sent right after is not rejected. A refusal
+    /// waits for the host to map the clocks an edge needs, so a chunk sent
+    /// right after is not rejected, and for the robots' publishers to
+    /// install the delivery plans of the streams it reads, which the host
+    /// needs before any grant (each a [`SessionError::Timeout`] naming what
+    /// is missing, past the wait timeout). A refusal
     /// (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) leaves the keeper as
     /// it was, parked parts too.
     pub async fn acquire(&self) -> Result<Vec<Lease>, SessionError> {
+        let started = std::time::Instant::now();
         self.leases
             .wait_for_clocks(&self.participant, self.wait_timeout)
             .await?;
+        let left = self.wait_timeout.saturating_sub(started.elapsed());
+        self.leases.wait_for_plans(&self.participant, left).await?;
         let parked = std::mem::take(&mut *self.leases.parked());
         let leases = match self.leases.grant(&self.participant, false).await {
             Ok(leases) => leases,
