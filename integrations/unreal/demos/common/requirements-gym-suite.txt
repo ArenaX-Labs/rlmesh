@@ -1,0 +1,7 @@
+# Optional deps for Unreal primitive gym suite learned agents.
+# Scripted agents only need the in-tree rlmesh install (mise run setup:python).
+#
+#   pip install -r integrations/unreal/demos/common/requirements-gym-suite.txt
+#
+gymnasium>=1.0.0
+stable-baselines3>=2.3.0

@@ -21,14 +21,22 @@ It runs on Win64 and Linux and uses the prebuilt RLMesh C/C++ library. The `.upl
 
 Add an **RLMesh Reach Target** component to any actor and press Play. The log shows `Serving … on 127.0.0.1:7447#…/env`: the env `env` in a session the game hosts on port 7447. **Steps move that component’s owner** (if its root was Static, BeginPlay upgrades it to Movable). Each episode moves the owner in world XYZ toward a target: a hidden random offset in a cube by default, or set **Target Actor** to a level actor. Observation is the remaining XYZ gap (`Box[3]`); action is `Box([-1, 1]^3)` × **Step Size**; reward is minus normalized Euclidean distance. Reset/step `info` also carries `agent_xyz`, `target_xyz`, `distance`, and `steps`.
 
-This is an **RLMesh env in Unreal (Gym-style API)** — not a Gymnasium registry id. Drive it with `rlmesh.run` or `rlmesh.numpy.RemoteEnv` (`integrations/unreal/reach_target_gym.py`).
+**Chase Point** (`URLMeshChasePointComponent`, env id `Unreal-ChasePoint-v0`) is the planar sibling: obs/action `Box[2]` (XY), Z locked, optional **Goal Actor**. The goal wanders on the floor for **Goal Move Steps** (not toward the agent, inside **Goal Wander Radius**), then freezes. Python demos live under `integrations/unreal/demos/chase_point/`.
+
+**Avoid Hazards** (`URLMeshAvoidHazardsComponent`, env id `Unreal-AvoidHazards-v0`): XY reach with `NumHazards` cubes; obs `Box[2+2N]`; collision terminates (`hit_hazard`). Demos: `integrations/unreal/demos/avoid_hazards/`.
+
+**Collect Coins** (`URLMeshCollectCoinsComponent`, env id `Unreal-CollectCoins-v0`): XY collect `NumCoins` gold spheres; obs `Box[3]` (nearest coin + coins left); terminates when all collected (`success`). Demos: `integrations/unreal/demos/collect_coins/`.
+
+**Demo Arena** (`URLMeshDemoArenaComponent`, env id `Unreal-DemoArena-v0`): level-driven arena — collect all Coins and the Goal (goal acts like a coin; both hide on overlap), fail on Obstacles, walls block via sweep. Obs `Box[2+2C+2O+W]` (defaults → `Box[18]` with 8 wall rays). Demos: `integrations/unreal/demos/demo_arena/`.
+
+This is an **RLMesh env in Unreal (Gym-style API)** — not a Gymnasium registry id. Drive it with `rlmesh.run` or `rlmesh.numpy.RemoteEnv` (`integrations/unreal/demos/reach_target/gym.py`).
 
 Loopback invites include `#keys` from the session **HostIdentity**. Generate one static identity once (from the rlmesh checkout, with `mise run setup:python`):
 
 ```bash
-python integrations/unreal/reach_target_app.py --init-identity   # once per machine
-# rebuild the plugin once, then Play
-python integrations/unreal/reach_target_app.py                   # uses integrations/unreal/.env
+python integrations/unreal/demos/reach_target/app.py --init-identity   # once per machine
+# rebuild the plugin once, open the editor
+python integrations/unreal/demos/reach_target/app.py                  # uses integrations/unreal/.env
 ```
 
 The plugin loads that identity into `RLMESH_HOST_IDENTITY` at module startup (and again at BeginPlay), so Serving `#keys` stay stable across Play.
@@ -68,7 +76,7 @@ protected:
 };
 ```
 
-`ResetEnv` and `StepEnv` run on the game thread, from the component's tick, so they may read and change actors freely. A step takes at least one frame; for faster episodes, lower the frame time or run with a fixed time step. Set **Address** on the component to serve elsewhere (port 0 picks a free port, which `GetServedAddress` returns) and **Env Id** to name the env.
+`ResetEnv` and `StepEnv` run on the game thread, from the component's tick, so they may read and change actors freely. A step takes at least one engine tick; raise **Serving Max FPS** (default 120) or pass reset option `serving_max_fps` / env `RLMESH_UNREAL_MAX_FPS` so lockstep can run faster than the editor default. Demo Arena also has **Interpolate Movement** (logical pose updates immediately; the mesh eases over **Movement Interp Time**). Set **Address** on the component to serve elsewhere (port 0 picks a free port, which `GetServedAddress` returns) and **Env Id** to name the env.
 
 Throw `rlmesh::RecoverableEnvironmentException` from `ResetEnv` or `StepEnv` to fail one request while the client keeps its session; any other exception ends the session. The component catches every RLMesh exception at the Unreal boundary and logs it under `LogRLMesh`.
 
@@ -80,7 +88,11 @@ See the [C++ guide](../../../crates/rlmesh-capi/README-cpp.md) for spaces, value
 RLMesh.uplugin
 Source/RLMeshUnreal/              the RLMeshUnreal runtime module
   Public/RLMeshEnvComponent.h     serve an env from an actor component
-  Public/RLMeshReachTargetComponent.h   the example env
+  Public/RLMeshReachTargetComponent.h   3D reach example env
+  Public/RLMeshChasePointComponent.h    2D chase-point example env
+  Public/RLMeshAvoidHazardsComponent.h  2D avoid-hazards example env
+  Public/RLMeshCollectCoinsComponent.h  2D collect-coins example env
+  Public/RLMeshDemoArenaComponent.h     level-driven arena (goal+coins+obstacles+walls)
   Public/RLMeshGameThreadEnv.h    hands server calls to the game thread (no Unreal headers)
   Public/RLMeshIncludes.h         includes rlmesh.hpp as a third-party header
 Source/ThirdParty/rlmesh/         the unpacked RLMesh package (not committed)
