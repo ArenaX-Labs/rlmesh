@@ -383,7 +383,9 @@ class SandboxLifecycle:
             )
         except BaseException:
             try:
-                _sandbox_stop_env(container_id=sandbox.container_id)
+                # Killed: a container that never served has nothing to drain,
+                # and a stop would wait out Docker's grace period first.
+                _sandbox_stop_env(container_id=sandbox.container_id, kill=True)
             except BaseException:
                 pass
             else:

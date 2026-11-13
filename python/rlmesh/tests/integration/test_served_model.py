@@ -326,7 +326,9 @@ def _sandbox_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
             "container_id": "container-1",
         },
     )
-    monkeypatch.setattr(sandbox, "_sandbox_stop_env", lambda *, container_id: None)
+    monkeypatch.setattr(
+        sandbox, "_sandbox_stop_env", lambda *, container_id, kill=False: None
+    )
     try:
         with rlmesh.SandboxEnv("CartPole-v1") as env:
             yield env

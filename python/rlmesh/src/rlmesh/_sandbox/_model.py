@@ -162,7 +162,8 @@ class SandboxModel:
                 lambda attempt: model_answers(info.address, attempt),
             )
         except BaseException:
-            sandbox_stop_env(container_id=info.container_id)
+            # Killed: it never answered, so there is nothing to drain.
+            sandbox_stop_env(container_id=info.container_id, kill=True)
             raise
         self._container_id = info.container_id
         self._address = info.address

@@ -224,7 +224,7 @@ fn stop_running_container(container_id: &str) -> Result<()> {
 }
 
 /// Kills and removes a container at once (`docker rm -f`).
-fn discard_container(container_id: &str) -> Result<()> {
+pub fn discard_container(container_id: &str) -> Result<()> {
     let output = Command::new("docker")
         .args(["rm", "-f", container_id])
         .output()

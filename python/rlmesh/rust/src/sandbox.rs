@@ -379,6 +379,12 @@ pub fn stop_container(container_id: &str) -> std::result::Result<(), SandboxErro
         .map_err(|err| SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m }))
 }
 
+/// Kill and remove a sandbox container by id, with no stop grace period.
+pub fn discard_container(container_id: &str) -> std::result::Result<(), SandboxError> {
+    docker::discard_container(container_id)
+        .map_err(|err| SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m }))
+}
+
 /// Best-effort reap of orphaned rlmesh-owned sandbox containers.
 ///
 /// Only containers whose owner process has exited are removed, so this is safe

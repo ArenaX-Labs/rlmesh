@@ -102,17 +102,24 @@ pub fn sandbox_start_env(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def sandbox_stop_env(*, container_id: str) -> None: ...
+def sandbox_stop_env(*, container_id: str, kill: bool = False) -> None: ...
 "#
     )
 )]
 #[pyfunction]
-#[pyo3(signature = (*, container_id))]
-pub fn sandbox_stop_env(py: Python<'_>, container_id: &str) -> PyResult<()> {
+#[pyo3(signature = (*, container_id, kill=false))]
+/// Stops and removes a sandbox container; `kill` skips the stop's grace
+/// period, for one that never became ready.
+pub fn sandbox_stop_env(py: Python<'_>, container_id: &str, kill: bool) -> PyResult<()> {
     let container_id = container_id.to_string();
 
     let result = py.detach(move || {
-        super::stop_container(&container_id).map_err(|err| err.to_string())?;
+        let stopped = if kill {
+            super::discard_container(&container_id)
+        } else {
+            super::stop_container(&container_id)
+        };
+        stopped.map_err(|err| err.to_string())?;
         Ok::<(), String>(())
     });
     result.map_err(PyRuntimeError::new_err)?;
