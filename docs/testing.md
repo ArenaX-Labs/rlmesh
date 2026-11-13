@@ -67,6 +67,8 @@ install dotnet.
 
 Rust tests run under [cargo-nextest](https://nexte.st) (configured in `.config/nextest.toml`); doctests still run through `cargo test --doc`.
 
+A loopback host leaves its key and link-gate files in the runtime directory. On Unix, nextest (every repo task, and a bare `cargo nextest run`) points `RLMESH_RUNTIME_DIR` at `target/rlmesh-test-runtime` unless it is already set; the Python suites use a temporary one. A bare `cargo test` does not: its hosts write to your real runtime directory and remove their files when they close.
+
 Rerun a task whenever a file changes:
 
 ```bash

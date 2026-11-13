@@ -1,5 +1,13 @@
 # cargo-nextest configuration (https://nexte.st/docs/configuration/).
 
+# Setup scripts are the one place that reaches a bare `cargo nextest run` too.
+experimental = ["setup-scripts"]
+
+# A loopback host writes its key (and its link gate) to the runtime
+# directory; tests get one of their own instead of the user's.
+[scripts.setup.runtime-dir]
+command = { command-line = "scripts/dev/nextest-runtime-dir.sh", relative-to = "workspace-root" }
+
 [profile.default]
 # Report every failure in one run instead of stopping at the first.
 fail-fast = false
@@ -22,3 +30,8 @@ test-group = 'realtime'
 # answer. A retried test that then passes is reported as FLAKY rather than
 # failing the run; one that fails every try still fails it.
 retries = 2
+
+[[profile.default.scripts]]
+platform = 'cfg(unix)'
+filter = 'all()'
+setup = 'runtime-dir'
