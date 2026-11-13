@@ -1772,10 +1772,12 @@ impl Controller {
         let robot: Option<ParticipantId> = options.robot.clone();
         let me = participant.id().clone();
         let deadline = crate::clock::deadline_after(config.bind_timeout);
-        let first = robot.as_ref().map_or_else(
-            || "a robot to declare its parts".to_string(),
-            |r| format!("robot {r} to declare its parts"),
-        );
+        // Entries that name their robots name them from the start.
+        let first = match &robot {
+            Some(r) => format!("robot {r} to declare its parts"),
+            None => crate::spec::bind::waiting_before_any(policy, options)
+                .unwrap_or_else(|| "a robot to declare its parts".to_string()),
+        };
         let mut view = participant.watch();
         let mut waits = BindWait::new(&me);
         let appeared = |view: &Option<AuthoritySnapshot>| {

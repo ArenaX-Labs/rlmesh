@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status};
+use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status, waiting_before_any};
 use rlmesh_session_core::spec::policy::Allow;
 use rlmesh_session_core::spec::{Policy, RunOptions, Target, bind, bind_in, normalise};
 use rlmesh_session_core::wire::version::SPEC_VERSION;
@@ -1039,6 +1039,59 @@ fn a_views_refusal_names_a_part_as_its_robot_declared_it() {
         text.contains("the model has 7 joints; eye-l:gaze has 2."),
         "{text}"
     );
+}
+
+#[test]
+fn before_any_robot_the_robots_entries_name_are_what_a_bind_waits_for() {
+    let named = RunOptions::named("tracker");
+    let cases: [(&str, Option<&RunOptions>, Option<&str>); 4] = [
+        (
+            // Every required entry names its robot: they are known at once.
+            r#"{"hz": 20,
+                "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}},
+                "actions": {"arm": {"kind": "joints", "at": "a:arm", "command": "position"}}}"#,
+            None,
+            Some(
+                "robots b, a to declare their parts; input \"target\" (kind joints, at \
+                 \"b:target\"), action \"arm\" (kind joints, at \"a:arm\") need them",
+            ),
+        ),
+        (
+            // An entry naming no robot may be any robot's.
+            r#"{"hz": 20,
+                "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}},
+                "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position"}}}"#,
+            None,
+            None,
+        ),
+        (
+            // An optional entry's robot is not waited for.
+            r#"{"hz": 20, "allow": ["blank"],
+                "inputs": {"cam": {"kind": "joints", "at": "c:cam", "fields": ["pos"],
+                                   "count": 2, "optional": true},
+                           "target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}}}"#,
+            None,
+            Some(
+                "robot b to declare its parts; input \"target\" (kind joints, at \
+                 \"b:target\") needs it",
+            ),
+        ),
+        (
+            // A named robot is the caller's to say.
+            r#"{"hz": 20,
+                "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}}}"#,
+            Some(&RunOptions::named("tracker").robot("a").expect("robot")),
+            None,
+        ),
+    ];
+    for (json, options, want) in cases {
+        let policy = Policy::parse(json).expect("policy");
+        assert_eq!(
+            waiting_before_any(&policy, options.unwrap_or(&named)).as_deref(),
+            want,
+            "{json}"
+        );
+    }
 }
 
 #[test]

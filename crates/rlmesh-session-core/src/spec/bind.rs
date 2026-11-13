@@ -317,6 +317,22 @@ pub fn refuse_regardless(policy: &Policy, options: &RunOptions) -> Result<(), Bi
     Binder::new(policy, options, robot).check_optionals()
 }
 
+/// What a bind of `policy` with `options` waits for while no robot has
+/// declared parts, in [`BindError::waiting_for`]'s words: the robots its
+/// required entries name, when `options` names no robot and every one of
+/// those entries names its robot. `None` otherwise (an entry that names no
+/// robot may be served by whichever robot comes).
+pub fn waiting_before_any(policy: &Policy, options: &RunOptions) -> Option<String> {
+    if options.robot.is_some() {
+        return None;
+    }
+    let view = ParticipantId::new(VIEW).ok()?;
+    Binder::new(policy, options, view)
+        .bind()
+        .err()
+        .and_then(|err| err.waiting_for())
+}
+
 /// Binds `policy` against `target` with the run-time `options`: against
 /// its view when it has places and `options` names no robot, else against
 /// one robot.

@@ -1303,6 +1303,37 @@ async fn binding_to_a_robot_that_never_appears_names_it() {
         "{err}"
     );
 }
+/// With no robot in the session, a policy whose entries name their robots
+/// says which from its first wait, as one reading them beside it does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bind_with_no_robot_yet_names_the_robots_its_entries_name() {
+    let world = World::start().await;
+    let policy = r#"{"hz": 50,
+        "inputs": {"q": {"kind": "joints", "at": "b:arm", "fields": ["pos"]}},
+        "actions": {"arm": {"kind": "joints", "at": "a:arm", "command": "position"}}}"#;
+    let p = world
+        .join("tracker", Role::Controller, PriorityClass::Model)
+        .await;
+    let Err(err) = Controller::bind(
+        Arc::new(p),
+        &Policy::parse(policy).expect("policy"),
+        &RunOptions::named("tracker"),
+        ControllerConfig {
+            bind_timeout: Duration::from_millis(100),
+            ..ControllerConfig::default()
+        },
+    )
+    .await
+    else {
+        panic!("bound");
+    };
+    let text = err.to_string();
+    assert!(
+        text.contains("waiting for robots b, a to declare their parts; input \"q\""),
+        "{text}"
+    );
+}
+
 /// Reads the arm, and a part of a robot that may not have started.
 const READS_TRACKER: &str = r#"{
     "hz": 50,
