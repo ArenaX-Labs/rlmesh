@@ -341,6 +341,40 @@ mod tests {
         assert!((values[0] + 1.0).abs() < 1e-6, "{values:?}");
         assert!(values[1].abs() < 1e-6, "{values:?}");
         assert!((values[2] - 1.0).abs() < 1e-6, "{values:?}");
+        // Padding to exactly the state's width is allowed; to less is not.
+        let padded = StatePlan {
+            pad_to: Some(3),
+            ..plan.clone()
+        };
+        assert_eq!(state(&padded, &[0.0, 0.0, 255.0]).len(), 3);
+        let short = StatePlan {
+            pad_to: Some(2),
+            ..plan
+        };
+        assert!(short.apply(&mut |_| Ok(vec![0.0; 3]), None).is_err());
+    }
+
+    #[test]
+    fn reshape_infers_one_dimension_and_refuses_what_does_not_fit() {
+        assert_eq!(reshape(&[-1, 2], 6).expect("inferred"), [3, 2]);
+        assert_eq!(reshape(&[2, 3], 6).expect("exact"), [2, 3]);
+        assert_eq!(reshape(&[0, 3], 0).expect("empty"), [0, 3]);
+        for (spec, len) in [
+            (&[-1, -1][..], 6),
+            (&[4, -1], 6),
+            (&[0, -1], 0),
+            (&[2, 2], 6),
+        ] {
+            assert!(reshape(spec, len).is_err(), "{spec:?} of {len}");
+        }
+    }
+
+    #[test]
+    fn a_range_map_is_affine_from_low_to_high() {
+        let mut values = [5.0_f32, 6.0, 7.0];
+        map_range(&mut values, (5.0, 7.0), (2.0, 4.0)).expect("map");
+        assert_eq!(values, [2.0, 3.0, 4.0]);
+        assert!(map_range(&mut values, (1.0, 1.0), (0.0, 1.0)).is_err());
     }
 
     #[test]
