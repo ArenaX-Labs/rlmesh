@@ -221,11 +221,12 @@ pub(super) fn connect(
         .metric("connectMs", connect_ms),
     );
     // The report names the env the model was checked against, so a reader
-    // can tell a reference env's numbers from a synthesized one's.
+    // can tell a reference env's numbers from a synthesized one's. The report
+    // is written to a file and printed: the reference's key stays out.
     let env = ProbeEnv {
         repo: String::new(),
         env_id: match &options.reference_env {
-            Some(reference) if adapter_less => reference.clone(),
+            Some(reference) if adapter_less => rlmesh_session::address::redact(reference),
             _ => synth::SYNTHETIC_ENV_ID.to_string(),
         },
         digest: String::new(),

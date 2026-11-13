@@ -180,7 +180,7 @@ macro_rules! client_common {
         impl std::fmt::Debug for $Client {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct($name)
-                    .field("address", &self.shared.address)
+                    .field("address", &crate::address::redact(&self.shared.address))
                     .field("env_id", &self.shared.env_id)
                     .finish_non_exhaustive()
             }
@@ -228,7 +228,10 @@ pub struct RemoteEnvOptions {
 impl std::fmt::Debug for RemoteEnvOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteEnvOptions")
-            .field("address", &self.address)
+            .field(
+                "address",
+                &self.address.as_deref().map(crate::address::redact),
+            )
             .field("connect_timeout", &self.connect_timeout)
             .field("request_timeout", &self.request_timeout)
             .field("workflow_edition", &self.workflow_edition)

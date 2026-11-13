@@ -52,9 +52,11 @@ pub fn new_model(
 /// (`"lab:7447/openpi"`), as Python's `Model(address)` takes it: a v1
 /// endpoint or an address naming no model is the ValueError class.
 pub fn served_model(address: &str) -> Result<crate::RemoteModel> {
+    // The address may carry a key: errors show it without.
+    let shown = crate::address::redact(address);
     if !crate::address::is_v2(address) {
         return Err(Error::invalid_argument(format!(
-            "Model({address:?}): a served model is reached by its participant address (e.g. \
+            "Model({shown:?}): a served model is reached by its participant address (e.g. \
              'lab:7447/openpi'); 0.2 no longer dials a v1 model endpoint"
         )));
     }
@@ -62,7 +64,7 @@ pub fn served_model(address: &str) -> Result<crate::RemoteModel> {
         .map_err(|err| Error::invalid_argument(err.to_string()))?;
     if parsed.participant.is_none() {
         return Err(Error::invalid_argument(format!(
-            "Model({address:?}) names no model: end the address with the model's name, e.g. \
+            "Model({shown:?}) names no model: end the address with the model's name, e.g. \
              'lab:7447/openpi'"
         )));
     }

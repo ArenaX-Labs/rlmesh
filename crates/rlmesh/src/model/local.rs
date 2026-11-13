@@ -53,7 +53,7 @@ where
         return Ok(empty_report());
     }
     let run = LocalRun {
-        address: options.env_address.to_string(),
+        address: options.env_address.as_str(),
         episodes,
         base_seed: options.base_seed,
         seed_key: None,
@@ -251,7 +251,7 @@ async fn connect_env(options: &LocalRun) -> Result<ConnectedEnv> {
                 "Model.run({:?}): a v1 env endpoint, which rlmesh 0.2 no longer dials; \
                  serve the env at a session address (EnvServer(env, \":0/name\")) and run \
                  against that, or pass the env object itself",
-                options.address
+                crate::address::redact(&options.address)
             )));
         }
         if options.close_env {

@@ -271,7 +271,7 @@ fn a_model_is_checked_against_its_spec_or_its_reference_env() {
             Some(adapter_less.clone()),
             Some(server.address().to_string()),
             CheckStatus::Pass,
-            server.address().to_string(),
+            rlmesh_session::address::redact(server.address()),
         ),
         (Some(adapter_less), None, CheckStatus::Warn, String::new()),
         // Nothing to synthesize from: no label, and this model describes nothing.

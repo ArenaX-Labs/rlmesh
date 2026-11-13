@@ -19,7 +19,10 @@ pub struct RemoteModelOptions {
 impl std::fmt::Debug for RemoteModelOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteModelOptions")
-            .field("address", &self.address)
+            .field(
+                "address",
+                &self.address.as_deref().map(crate::address::redact),
+            )
             .field("connect_timeout", &self.connect_timeout)
             .field("request_timeout", &self.request_timeout)
             .finish()
@@ -96,7 +99,8 @@ impl RemoteModel {
 
 impl std::fmt::Display for RemoteModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RemoteModel(address='{}')", self.0.address)
+        let address = crate::address::redact(&self.0.address);
+        write!(f, "RemoteModel(address='{address}')")
     }
 }
 

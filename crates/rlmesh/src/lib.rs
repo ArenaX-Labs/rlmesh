@@ -55,6 +55,30 @@
 //! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`],
 //! which is false for every other variant.
 //!
+//! # Logging
+//!
+//! The crate logs through `tracing` and installs no subscriber. If you
+//! install one, cap the target `zenoh::api::session` (and
+//! `zenoh::api::scouting`) at `INFO` whatever level you ask for: Zenoh logs
+//! its whole config there at `DEBUG` when a session opens, and that config
+//! holds, in plain text, the link password a session's key derives, so
+//! whoever reads the log could link to the host. A global filter does it
+//! (a target directive alone does not: a span directive enables events of
+//! any target inside it):
+//!
+//! ```no_run
+//! use tracing_subscriber::prelude::*;
+//!
+//! let capped = ["zenoh::api::session", "zenoh::api::scouting"];
+//! tracing_subscriber::registry()
+//!     .with(tracing_subscriber::filter::filter_fn(move |meta| {
+//!         *meta.level() <= tracing::Level::INFO
+//!             || !capped.iter().any(|t| meta.target().starts_with(t))
+//!     }))
+//!     .with(tracing_subscriber::fmt::layer())
+//!     .init();
+//! ```
+//!
 //! # Example: serve an environment
 //!
 //! ```no_run

@@ -16,7 +16,10 @@ fn a_started_server_serves_the_gymnasium_shape_and_closes_the_env() {
     assert_eq!(server.env_contract().num_envs(), 1);
     assert_eq!(
         server.to_string(),
-        format!("EnvServer(address='{}')", server.address())
+        format!(
+            "EnvServer(address='{}')",
+            rlmesh_session::address::redact(server.address())
+        )
     );
     let err = server.wait(Some(Duration::ZERO)).unwrap_err();
     assert_eq!(err.class(), ErrorClass::RuntimeError);

@@ -32,7 +32,7 @@ const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// Defaults: the session address `:0/env`, no serve options or tags, and
 /// `close_env_on_shutdown` true. Build one with `..Default::default()`;
 /// appending a field is a minor change by project policy.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EnvServerOptions {
     /// Session participant address; `None` binds `:0/env`.
     pub address: Option<String>,
@@ -46,6 +46,22 @@ pub struct EnvServerOptions {
     pub close_env_on_shutdown: bool,
     /// Rust-only fields.
     pub ext: Option<crate::ext::EnvServerOptions>,
+}
+
+// The address may carry a key: `Debug` leaves it out.
+impl fmt::Debug for EnvServerOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EnvServerOptions")
+            .field(
+                "address",
+                &self.address.as_deref().map(crate::address::redact),
+            )
+            .field("options", &self.options)
+            .field("tags", &self.tags)
+            .field("close_env_on_shutdown", &self.close_env_on_shutdown)
+            .field("ext", &self.ext)
+            .finish()
+    }
 }
 
 impl Default for EnvServerOptions {
@@ -659,7 +675,9 @@ impl Drop for EnvServer {
 
 impl fmt::Display for EnvServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "EnvServer(address='{}')", self.shared.address)
+        // `address()` hands over the key; what prints leaves it out.
+        let address = crate::address::redact(&self.shared.address);
+        write!(f, "EnvServer(address='{address}')")
     }
 }
 

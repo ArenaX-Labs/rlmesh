@@ -37,6 +37,7 @@ pub(super) fn serve_blocking(
     };
     let address = participant.as_str();
     if !crate::address::is_v2(address) {
+        let address = crate::address::redact(address);
         return Err(Error::invalid_argument(format!(
             "serve: {address:?} is a v1 model endpoint, which rlmesh 0.2 no longer serves; \
              serve on a participant address (e.g. 'lab:7447/policy')"
@@ -102,7 +103,7 @@ fn serve_session(
     );
     let binding = crate::run::drive::block_on_library(crate::lockstep::ModelBinding::bind(address))
         .map_err(crate::env::client::lockstep_error)?;
-    tracing::info!(address = %binding.address(), "model serving");
+    tracing::info!(address = %crate::address::redact(&binding.address()), "model serving");
     let trigger = ShutdownTrigger::new();
     let stopped = trigger.clone();
     let serve = async move {

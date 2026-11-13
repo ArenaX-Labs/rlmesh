@@ -81,6 +81,7 @@ impl Binding {
         workflow_edition: Option<&str>,
     ) -> Result<Self> {
         if !crate::address::is_v2(address) {
+            let address = crate::address::redact(address);
             return Err(Error::invalid_argument(format!(
                 "Model.bind({address:?}): a v1 env endpoint, which rlmesh 0.2 no longer dials; \
                  serve the env at a session address (EnvServer(env, \":0/name\")), or pass the \
