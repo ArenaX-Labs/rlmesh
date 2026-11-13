@@ -19,15 +19,19 @@ use crate::{CockpitApp, Feed, Model, ModelConfig, Replay};
 /// The RLMesh cockpit: live channels, declared vs measured rates, why each
 /// robot is or isn't moving, the lease and mode timeline, and arm and
 /// e-stop, for one session.
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Clone)]
 pub struct CockpitArgs {
     /// The session address, `[host/][session]` (what `rlmesh host` and
-    /// `rlmesh.realtime.Host.address` print).
-    #[arg(required_unless_present = "replay")]
-    pub address: Option<SessionAddress>,
+    /// `rlmesh.realtime.Host.address` print). Its key (`#…`) is a
+    /// credential and the command line is world-readable: prefer
+    /// RLMESH_COCKPIT_ADDRESS or --address-file.
+    pub address: Option<String>,
+    /// Read the session address from this file.
+    #[arg(long, value_name = "FILE", conflicts_with = "address")]
+    pub address_file: Option<PathBuf>,
     /// Replay a recording instead of joining a session: an MCAP file, or a
     /// directory of a session's rolling segments.
-    #[arg(long, value_name = "FILE", conflicts_with = "address")]
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["address", "address_file"])]
     pub replay: Option<PathBuf>,
     /// This observer's participant id.
     #[arg(long, default_value = "cockpit")]
@@ -46,17 +50,69 @@ pub struct CockpitArgs {
     pub dataset: String,
 }
 
+// The address may carry its key: `Debug` leaves it out.
+impl std::fmt::Debug for CockpitArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("CockpitArgs");
+        debug
+            .field(
+                "address",
+                &self.address.as_deref().map(rlmesh_session::address::redact),
+            )
+            .field("address_file", &self.address_file)
+            .field("replay", &self.replay)
+            .field("id", &self.id)
+            .field("timeout", &self.timeout)
+            .field("record_dir", &self.record_dir);
+        #[cfg(feature = "collect")]
+        debug.field("dataset", &self.dataset);
+        debug.finish()
+    }
+}
+
+/// The variable the session address comes from when neither the argument
+/// nor `--address-file` gives it.
+pub const ADDRESS_VAR: &str = "RLMESH_COCKPIT_ADDRESS";
+
 /// The cockpit's error.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Opens the cockpit window for `args` and returns when it closes. Call it
 /// on a multi-threaded Tokio runtime, from the process's main thread.
 pub async fn run(args: CockpitArgs) -> Result<(), Error> {
-    match (&args.address, &args.replay) {
-        (_, Some(path)) => replay(path),
-        (Some(address), None) => live(&args, address).await,
-        (None, None) => Err("a session address or --replay FILE".into()),
+    if let Some(path) = &args.replay {
+        return replay(path);
     }
+    let address = session_address(&args, std::env::var(ADDRESS_VAR).ok())?;
+    live(&args, &address).await
+}
+
+/// The session address from the argument, `--address-file` or
+/// [`ADDRESS_VAR`] (`env`), in that order. Parsed here rather than by clap,
+/// whose error would repeat the text, key and all.
+pub fn session_address(args: &CockpitArgs, env: Option<String>) -> Result<SessionAddress, Error> {
+    let (from, text) = match (&args.address, &args.address_file) {
+        (Some(text), _) => ("ADDRESS".to_string(), text.clone()),
+        (None, Some(file)) => (
+            format!("--address-file {}", file.display()),
+            std::fs::read_to_string(file)
+                .map_err(|e| format!("--address-file {}: {e}", file.display()))?
+                .trim()
+                .to_string(),
+        ),
+        (None, None) => match env.filter(|text| !text.trim().is_empty()) {
+            Some(text) => (ADDRESS_VAR.to_string(), text.trim().to_string()),
+            None => {
+                return Err(format!(
+                    "a session address (ADDRESS, --address-file or {ADDRESS_VAR}) or --replay FILE"
+                )
+                .into());
+            }
+        },
+    };
+    // The session's own parse error already leaves the key out.
+    text.parse::<SessionAddress>()
+        .map_err(|e| format!("{from}: {e}").into())
 }
 
 fn options(title: String) -> eframe::NativeOptions {
@@ -139,4 +195,46 @@ async fn live(args: &CockpitArgs, address: &SessionAddress) -> Result<(), Error>
             dataset,
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: CockpitArgs,
+    }
+
+    #[test]
+    fn a_keyed_address_is_never_echoed() {
+        let key = rlmesh_session::address::launch_identity()
+            .expect("keys")
+            .1
+            .to_string();
+        let parse = |line: &str| {
+            Cli::try_parse_from(line.split_whitespace())
+                .expect("args")
+                .args
+        };
+        // Positional, malformed: our parse refuses it, not clap's echo.
+        let args = parse(&format!("cockpit 127.0.0.1:x/s#{key}"));
+        assert!(!format!("{args:?}").contains(&key));
+        let err = session_address(&args, None)
+            .expect_err("a bad port")
+            .to_string();
+        assert!(!err.contains(&key), "{err}");
+        // From the environment, when nothing else names it.
+        let keyed = format!("127.0.0.1:17600/s#{key}");
+        let address =
+            session_address(&parse("cockpit"), Some(keyed)).expect("from the environment");
+        assert_eq!(address.key.map(|k| k.to_string()), Some(key.clone()));
+        let err = session_address(&parse("cockpit"), Some(format!("127.0.0.1:x/s#{key}")))
+            .expect_err("a bad port")
+            .to_string();
+        assert!(!err.contains(&key) && err.contains(ADDRESS_VAR), "{err}");
+        assert!(session_address(&parse("cockpit"), None).is_err());
+    }
 }

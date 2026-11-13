@@ -70,10 +70,15 @@ const RELOAD: Duration = Duration::from_millis(500);
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(rlmesh_session::DEFAULT_LOG_FILTER));
+    use tracing_subscriber::prelude::*;
+    // Zenoh logs its config, link password included, below INFO.
+    let capped = tracing_subscriber::filter::filter_fn(rlmesh_session::logging::may_record);
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .finish()
+        .with(capped)
         .try_init();
 }
 
