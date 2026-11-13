@@ -43,6 +43,11 @@ impl World {
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);
         config.health_log = None;
+        // The schedule is under test, not lapses: a loaded host can starve a
+        // holder's heartbeats past the default grace, ending its lease (and
+        // its key) mid-run.
+        config.lease_grace = Duration::from_secs(5);
+        config.presence_grace = Duration::from_secs(5);
         config.virtual_clock = Some(VirtualConfig {
             tick_ns: TICK_NS,
             // d is the controller's (the seeded model below).
