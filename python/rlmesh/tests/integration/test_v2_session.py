@@ -395,8 +395,13 @@ def test_an_operator_preempts_the_model_which_stays_stopped_until_resumed(
             },
         )
         assert ur.log[-1].lease_token == tokens["ur10e:arm"]
-        assert model.stats()["skipped"]["parked"] > 0, (
-            "a preempted model stays warm, skips its starts"
+        # A preempted model stays warm and skips its starts. Under load the
+        # operator can drive before the model's loop next ticks, so wait for
+        # one skipped start.
+        wait_until(
+            "the preempted model skipping a start",
+            lambda: raised(result) or model.stats()["skipped"]["parked"] > 0,
+            lambda: {"stats": model.stats(), "holds": model.holds},
         )
         assert model.stats()["parked"] == ["ur10e:arm"]
 
