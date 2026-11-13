@@ -449,6 +449,76 @@ mod tests {
         }
     }
 
+    const CAPPED: Shape = Shape {
+        message: "capped",
+        fields: &[
+            (1, Field::Text { max: 2, len: 4 }),
+            (2, Field::Scalars { max: 3, width: 0 }),
+            (3, Field::Scalars { max: 2, width: 8 }),
+        ],
+    };
+
+    /// Field `tag`, length-delimited, holding `bytes`.
+    fn delimited(tag: u8, bytes: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag << 3 | 2, u8::try_from(bytes.len()).expect("short")];
+        out.extend_from_slice(bytes);
+        out
+    }
+
+    #[test]
+    fn caps_are_inclusive_for_texts_and_packed_or_unpacked_scalars() {
+        let ok = |buf: Vec<u8>| check(&buf, &CAPPED).is_ok();
+        assert!(ok([delimited(1, b"abcd"), delimited(1, b"wxyz")].concat()));
+        assert!(!ok(delimited(1, b"abcde")), "a text over its length");
+        assert!(!ok([b"a", b"b", b"c"].map(|t| delimited(1, t)).concat()));
+        assert!(
+            ok(delimited(2, &[1, 0xac, 0x02, 3])),
+            "three packed varints"
+        );
+        assert!(!ok(delimited(2, &[1, 2, 3, 4])));
+        assert!(ok(vec![0x10, 1, 0x10, 2, 0x10, 3]), "three unpacked");
+        assert!(!ok(vec![0x10, 1, 0x10, 2, 0x10, 3, 0x10, 4]));
+        assert!(ok(delimited(3, &[0; 16])), "two packed doubles");
+        assert!(!ok(delimited(3, &[0; 24])));
+    }
+
+    #[test]
+    fn repeated_fields_take_up_to_their_cap_and_packed_varints_decode_in_full() {
+        let two = [
+            delimited(1, b"ab"),
+            delimited(1, b"cd"),
+            delimited(4, b"other"),
+        ]
+        .concat();
+        let lens = |max| each(&two, "t", (1, max, 0), |b| Ok(b.len()));
+        assert_eq!(lens(2).expect("at the cap"), [2, 2]);
+        assert!(lens(1).is_err());
+        // 1, 300, 70000 and u32::MAX, packed beside an unrelated field.
+        let packed = [
+            delimited(1, b"x"),
+            delimited(
+                2,
+                &[
+                    1, 0xac, 0x02, 0xf0, 0xa2, 0x04, 0xff, 0xff, 0xff, 0xff, 0x0f,
+                ],
+            ),
+        ]
+        .concat();
+        assert_eq!(
+            each_u32(&packed, "t", (2, 4)).expect("at the cap"),
+            [1, 300, 70_000, u32::MAX]
+        );
+        assert!(each_u32(&packed, "t", (2, 3)).is_err());
+        // A ten-byte varint (a sign-extending encoder's) truncates to u32;
+        // one past 64 bits is malformed.
+        let ten = |last: u8| delimited(2, &[[0xff; 9].as_slice(), &[last]].concat());
+        assert_eq!(
+            each_u32(&ten(0x01), "t", (2, 1)).expect("ten bytes"),
+            [u32::MAX]
+        );
+        assert!(each_u32(&ten(0x02), "t", (2, 1)).is_err());
+    }
+
     #[test]
     fn every_repeated_field_a_board_decodes_is_capped() {
         let all = messages();

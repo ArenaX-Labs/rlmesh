@@ -158,3 +158,58 @@ fn chunks_round_trip_through_plain_protobuf_without_copying_the_actions() {
     assert!(decode_chunk(Bytes::from(no_binding.encode_to_vec())).is_err());
     g.check();
 }
+
+#[test]
+fn every_edge_mode_rides_an_applied_sample_and_an_encoding_knows_its_length() {
+    for mode in EdgeMode::ALL {
+        let mut sample = applied_sample();
+        sample.applied.as_mut().expect("applied").mode = mode;
+        let encoded = encode_sample(&sample);
+        assert!(!encoded.is_empty() && encoded.len() == encoded.to_vec().len());
+        let decoded = decode_sample(Bytes::from(encoded.to_vec())).expect("decode");
+        assert_eq!(decoded, sample, "{mode}");
+    }
+    assert!(
+        Encoded {
+            segments: Vec::new()
+        }
+        .is_empty()
+    );
+}
+
+#[test]
+fn batches_and_chunks_take_exactly_their_caps() {
+    let meta = SampleMeta {
+        seq: 1,
+        capture_ns: 1,
+        tick: 0,
+        applied: None,
+    };
+    let batch = SampleBatch {
+        channel: ChannelId(2),
+        epoch: Epoch(3),
+        publish_ns: 5,
+        samples: vec![meta; 256],
+        payload: Bytes::from(vec![1_u8; 8]),
+        truncated: false,
+        gaps: Vec::new(),
+        request_id: 0,
+    };
+    let buf = Bytes::from(encode_batch(&batch).expect("256 samples").to_vec());
+    assert_eq!(decode_batch(buf.clone()).expect("decode"), batch);
+    let mut over = pb::SampleBatch::decode(&buf[..]).expect("plain");
+    over.samples.push(over.samples[0]);
+    assert!(decode_batch(Bytes::from(over.encode_to_vec())).is_err());
+    // 1024 actions, 4 MiB of them; one more byte is over.
+    let full = ActionChunk {
+        count: 1024,
+        actions: Bytes::from(vec![0_u8; 4 << 20]),
+        ..chunk()
+    };
+    assert!(encode_chunk(&full).is_ok());
+    let over = ActionChunk {
+        actions: Bytes::from(vec![0_u8; (4 << 20) + 1]),
+        ..full
+    };
+    assert!(encode_chunk(&over).is_err());
+}

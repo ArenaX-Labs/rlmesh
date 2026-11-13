@@ -1115,3 +1115,331 @@ fn datagram_stats() -> DatagramStats {
         fallbacks: 0,
     }
 }
+
+#[test]
+fn key_deliveries_and_a_boards_view_reply_carry_every_key_order_and_route() {
+    use crate::wire::{IssuedKey, KeyBytes, KeyDelivery, KeyPurpose, Security};
+    let key = |key_id: u32, purpose, security, sender: Option<&str>| IssuedKey {
+        key_id,
+        purpose,
+        sender: sender.map(pid),
+        robot: Some(pid("ur10e")),
+        channels: vec![ChannelId(1), ChannelId(300)],
+        token: LeaseToken(70_000),
+        version: 2,
+        key: KeyBytes([u8::try_from(key_id).expect("small"); 32]),
+        send: key_id.is_multiple_of(2),
+        security,
+        generation: 3,
+    };
+    let keys = vec![
+        key(1, KeyPurpose::Command, Security::Mac, Some("policy")),
+        key(2, KeyPurpose::LockstepReply, Security::Seal, Some("ur10e")),
+        key(3, KeyPurpose::Stream, Security::Mac, None),
+        key(4, KeyPurpose::Estop, Security::Seal, Some("op")),
+    ];
+    let delivery = KeyDelivery {
+        keys: keys.clone(),
+        retire_through: vec![1, 300, 70_000, u32::MAX],
+    };
+    assert_eq!(
+        decode_key_delivery(&encode_key_delivery(&delivery)).expect("decode"),
+        delivery
+    );
+    let state = snapshot();
+    let view = DeviceView {
+        datagram: Some(DatagramRoutes {
+            probe: 9,
+            routes: [(10, 1, false), (11, 1, true)]
+                .map(|(route, channel, up)| DatagramRoute {
+                    route,
+                    channel: ChannelId(channel),
+                    up,
+                })
+                .to_vec(),
+        }),
+        ..DeviceView::of(&state, &pid("ur10e"))
+    };
+    let reply = ViewReply {
+        result: Err(CtlError::new(CtlStatus::LeaseBusy, "x".repeat(1024))),
+        view: Some(view),
+        leases: state.leases.clone(),
+        request_id: 21,
+        keys,
+        assignment: Some(Assignment::Stop(StopOrder {
+            run: "r-1".into(),
+            reason: Reason::new(ReasonCode::SceneEnded),
+        })),
+        run: Some(RunState {
+            run: "r-1".into(),
+            version: 1,
+            stage: RunStage::Checking,
+            members: Vec::new(),
+            error: None,
+            session: None,
+            addresses: Vec::new(),
+            host_key: None,
+            scene_fingerprint: None,
+        }),
+    };
+    assert_eq!(
+        decode_view_reply(&encode_view_reply(&reply)).expect("decode"),
+        reply
+    );
+    let over = ViewReply {
+        result: Err(CtlError::new(CtlStatus::LeaseBusy, "x".repeat(1025))),
+        ..reply
+    };
+    assert!(
+        decode_view_reply(&encode_view_reply(&over)).is_err(),
+        "a message over 1 KiB"
+    );
+    assert!(
+        encode_pair_wait().is_empty(),
+        "PairWait is an empty message"
+    );
+}
+
+#[test]
+fn an_unauthenticated_hint_is_cut_at_a_character_boundary() {
+    let mut message = "x".repeat(255);
+    message.push('é');
+    message.push_str(&"y".repeat(10));
+    let refusal = encode_view_reply(&ViewReply {
+        result: Err(CtlError::new(CtlStatus::Unauthenticated, message)),
+        view: None,
+        leases: Vec::new(),
+        request_id: 0,
+        keys: Vec::new(),
+        assignment: None,
+        run: None,
+    });
+    let hint = decode_unauthenticated(&refusal).expect("a hint");
+    assert_eq!(hint.message, "x".repeat(255));
+}
+
+#[test]
+fn enums_decode_every_value_and_zero_epochs_and_norms_mean_none() {
+    use crate::wire::codec::convert::mode_to_pb;
+    use crate::wire::codec::convert::{priority_from_pb, priority_to_pb};
+    use crate::wire::part::{ChannelPriority, FieldLimit};
+    for mode in [
+        Mode::Disarmed,
+        Mode::Armed,
+        Mode::Active,
+        Mode::Safe,
+        Mode::Estop,
+    ] {
+        assert_eq!(mode_from_pb(mode_to_pb(mode) as i32).ok(), Some(mode));
+    }
+    for class in [
+        PriorityClass::Scripted,
+        PriorityClass::Model,
+        PriorityClass::Operator,
+        PriorityClass::Safety,
+    ] {
+        assert_eq!(
+            priority_from_pb(priority_to_pb(class) as i32).ok(),
+            Some(class)
+        );
+    }
+    // A part's traffic class and a delta limit's norm.
+    let mut state = snapshot();
+    let arm = state
+        .parts
+        .iter()
+        .position(|p| p.command.is_some())
+        .expect("a commandable part");
+    let command = state.parts[arm].command.as_mut().expect("commands");
+    command.limits.push(FieldLimit {
+        field: "pos".into(),
+        low: Vec::new(),
+        high: Vec::new(),
+        max_norm: Some(0.5),
+    });
+    for priority in [
+        ChannelPriority::Control,
+        ChannelPriority::Realtime,
+        ChannelPriority::Data,
+        ChannelPriority::Bulk,
+    ] {
+        state.parts[arm].priority = priority;
+        assert_eq!(decode_state(&encode_state(&state)).expect("decode"), state);
+    }
+    // An unchecked request carries epoch 0.
+    let request = Request {
+        from: pid("op"),
+        epoch: None,
+        request_id: 1,
+        command: Command::Arm,
+    };
+    assert_eq!(
+        decode_request(&encode_request(&request)).expect("decode"),
+        request
+    );
+}
+
+#[test]
+fn health_values_decode_and_a_newer_senders_late_buckets_fold_into_the_last() {
+    use super::super::pb;
+    let link = |participant: &str, health: pb::Health, data_path: pb::DataPath| pb::LinkHealth {
+        participant: participant.into(),
+        health: health as i32,
+        data_path: data_path as i32,
+        ..Default::default()
+    };
+    let bytes = pb::HostHealth {
+        epoch: 1,
+        host_ns: 5,
+        links: vec![
+            link("a", pb::Health::Ok, pb::DataPath::Session),
+            link("b", pb::Health::Degraded, pb::DataPath::Datagram),
+            link("c", pb::Health::Unhealthy, pb::DataPath::Unspecified),
+        ],
+    }
+    .encode_to_vec();
+    let read: Vec<(Health, DataPath)> = decode_health(&bytes)
+        .expect("decode")
+        .links
+        .iter()
+        .map(|l| (l.health, l.data_path))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (Health::Ok, DataPath::Session),
+            (Health::Degraded, DataPath::Datagram),
+            (Health::Unhealthy, DataPath::Unknown)
+        ]
+    );
+    let bytes = pb::Heartbeat {
+        participant: "op".into(),
+        epoch: 3,
+        mode: pb::Mode::Armed as i32,
+        chunk_timing: vec![pb::ChunkTiming {
+            channel: 2,
+            late_ms: vec![1; 10],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let hb = decode_heartbeat(&bytes).expect("decode");
+    assert_eq!(hb.chunk_timing[0].late_ms, [1, 1, 1, 1, 1, 1, 1, 3]);
+}
+
+#[test]
+fn a_view_at_every_cap_a_board_holds_decodes() {
+    let base = full_view();
+    let mut view = base.clone();
+    view.parts = (1..=32)
+        .map(|c| {
+            let mut part = arm();
+            part.channel = ChannelId(c);
+            part.applied_channel = None;
+            part.path = crate::wire::PartPath::new(format!("p{c}")).expect("path");
+            part
+        })
+        .collect();
+    view.leases = (1..=32)
+        .map(|c| Lease {
+            channel: ChannelId(c),
+            ..base.leases[0].clone()
+        })
+        .collect();
+    view.clocks = (0..33)
+        .map(|i| ClockMapping {
+            participant: pid(&format!("c{i}")),
+            ..base.clocks[0].clone()
+        })
+        .collect();
+    view.grids = (1..=32)
+        .map(|c| ViewGrid {
+            channel: ChannelId(c),
+            ..base.grids[0]
+        })
+        .collect();
+    view.demands = (1..=64)
+        .map(|c| Demand {
+            channel: ChannelId(c),
+            ..base.demands[1].clone()
+        })
+        .collect();
+    view.members = (0..64)
+        .map(|i| Member {
+            id: pid(&format!("m{i}")),
+            generation: 1,
+        })
+        .collect();
+    view.datagram = Some(DatagramRoutes {
+        probe: 1,
+        routes: (0..96)
+            .map(|i| DatagramRoute {
+                route: i,
+                channel: ChannelId(1),
+                up: i.is_multiple_of(2),
+            })
+            .collect(),
+    });
+    view.closing.as_mut().expect("closing").detail = "x".repeat(1024);
+    assert_eq!(
+        decode_view(&encode_view(&view)).expect("at every cap"),
+        view
+    );
+    // Every mode and lease class a board reads.
+    let mut view = base;
+    for mode in [
+        Mode::Disarmed,
+        Mode::Armed,
+        Mode::Active,
+        Mode::Safe,
+        Mode::Estop,
+    ] {
+        view.mode = mode;
+        assert_eq!(decode_view(&encode_view(&view)).expect("decode"), view);
+    }
+    for class in [
+        PriorityClass::Scripted,
+        PriorityClass::Model,
+        PriorityClass::Operator,
+        PriorityClass::Safety,
+    ] {
+        view.leases[0].priority = class;
+        assert_eq!(decode_view(&encode_view(&view)).expect("decode"), view);
+    }
+}
+
+#[test]
+fn a_history_query_without_an_end_or_limit_reads_back_none() {
+    for (until_seq, limit) in [(None, None), (Some(20), Some(5))] {
+        let query = HistoryQuery {
+            epoch: Epoch(2),
+            after_seq: 10,
+            until_seq,
+            limit,
+            request_id: 1,
+        };
+        assert_eq!(
+            decode_history_query(&encode_history_query(&query)).expect("decode"),
+            query
+        );
+    }
+}
+
+#[test]
+fn an_every_contract_round_trips() {
+    let state = snapshot();
+    let mut binding = state.bindings[0].clone();
+    binding.contracts.push(StreamContract {
+        channel: ChannelId(2),
+        mode: ContractMode::Every,
+        delivery_hz: 10.0,
+        history: 1,
+        max_age: None,
+        max_age_explicit: false,
+    });
+    assert_eq!(
+        decode_binding(&encode_binding(&binding)).expect("decode"),
+        binding
+    );
+}
