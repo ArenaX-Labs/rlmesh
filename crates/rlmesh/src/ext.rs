@@ -33,6 +33,30 @@ use crate::tensor::{dims_i64, tensor_error};
 use crate::value::space_codec;
 use crate::{DType, Error, Result, Tensor, Value};
 
+/// The tracing filter a runner that embeds rlmesh installs, without a
+/// dependency of its own on the session crate.
+///
+/// Start from [`DEFAULT_LOG_FILTER`](logging::DEFAULT_LOG_FILTER) when
+/// `RUST_LOG` is unset, and add [`may_record`](logging::may_record) as a
+/// global filter layer whatever the level: below `INFO`, Zenoh logs a
+/// session's config, which holds a gated host's link password.
+///
+/// ```no_run
+/// use rlmesh::ext::logging::{DEFAULT_LOG_FILTER, may_record};
+/// use tracing_subscriber::prelude::*;
+/// let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+///     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
+/// tracing_subscriber::registry()
+///     .with(filter)
+///     .with(tracing_subscriber::filter::filter_fn(may_record))
+///     .with(tracing_subscriber::fmt::layer())
+///     .init();
+/// ```
+pub mod logging {
+    pub use rlmesh_session::DEFAULT_LOG_FILTER;
+    pub use rlmesh_session::logging::may_record;
+}
+
 /// Raw DLPack interoperability and owned exports.
 pub mod dlpack {
     pub use crate::dlpack::{

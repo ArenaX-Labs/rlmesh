@@ -180,6 +180,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - Experimental: `rlmesh::managed` (feature `managed`, on by default) is a client for the managed API, sharing the CLI's sign-in.
 - Experimental: the `rlmesh-session` crate runs real-time sessions from Rust; `Controller::release_to` hands parts back to the model an operator preempted.
 - Experimental: `rlmesh_session::spec::inputs` and `spec::actions` build a policy's entries, one constructor per kind with a setter per key and enums for every closed set (`inputs::camera().at("webcam:cam").size(224)`, `actions::joints().command(JointCommand::Position).chunk(4)`); `Policy::builder()` assembles them, mixed with entries written as JSON, into the `Policy` that `Policy::parse` gives for the same map.
+- `rlmesh::ext::logging::{DEFAULT_LOG_FILTER, may_record}` give a runner that embeds rlmesh its tracing filter without a dependency on `rlmesh-session`.
 - In the hidden `rlmesh::binding` module: `RuntimeSessionSpec::close_model_on_end` has the driver close a model the run alone owns when the run ends, and the runtime hooks can transform observations, actions and the episode's instruction.
 
 #### C and C++ (not published)
