@@ -1,4 +1,4 @@
-"""Minimal .env read/write for the Reach Target app (stdlib only)."""
+"""Minimal .env read/write for Unreal demos (stdlib only)."""
 
 from __future__ import annotations
 

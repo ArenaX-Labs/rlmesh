@@ -3,16 +3,15 @@
 
 One-time setup (stable host identity)::
 
-  python integrations/unreal/reach_target_app.py --init-identity
+  python integrations/unreal/demos/reach_target/app.py --init-identity
 
-Rebuild the RLMesh plugin once so it loads the identity file, press Play, then::
+Rebuild the RLMesh plugin once so it loads the identity file, open the editor,
+then::
 
-  python integrations/unreal/reach_target_app.py
+  # Unreal: add RLMesh Reach Target component, Press Play
+  python integrations/unreal/demos/reach_target/app.py
 
-The plugin loads ``%LOCALAPPDATA%/rlmesh/unreal_host_identity`` into
-``RLMESH_HOST_IDENTITY`` at module startup (and again at BeginPlay) so Serving
-``#keys`` stay fixed. This app reads ``RLMESH_UNREAL_ADDR`` from
-``integrations/unreal/.env``.
+Reads ``RLMESH_UNREAL_ADDR`` from ``integrations/unreal/.env``.
 """
 
 from __future__ import annotations
@@ -23,12 +22,14 @@ import stat
 import sys
 from pathlib import Path
 
-_UNREAL_DIR = Path(__file__).resolve().parent
-if str(_UNREAL_DIR) not in sys.path:
-    sys.path.insert(0, str(_UNREAL_DIR))
+_DEMO_DIR = Path(__file__).resolve().parent
+_COMMON_DIR = _DEMO_DIR.parent / "common"
+for _p in (_COMMON_DIR, _DEMO_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-from reach_target_dotenv import apply_dotenv, upsert_dotenv
-from reach_target_paths import (
+from dotenv import apply_dotenv, upsert_dotenv
+from paths import (
     DOTENV_EXAMPLE_PATH,
     DOTENV_PATH,
     EPISODES_VAR,
@@ -36,7 +37,7 @@ from reach_target_paths import (
     host_identity_path,
     make_address,
 )
-from reach_target_policy import gap_xyz, toward_target
+from policy import gap_xyz, toward_target
 
 
 def _write_secret_file(path: Path, contents: str) -> None:
@@ -82,7 +83,8 @@ def init_identity(*, force: bool) -> int:
     )
     if not DOTENV_EXAMPLE_PATH.is_file():
         DOTENV_EXAMPLE_PATH.write_text(
-            "# Copy to .env or run: python integrations/unreal/reach_target_app.py --init-identity\n"
+            "# Copy to .env or run: "
+            "python integrations/unreal/demos/reach_target/app.py --init-identity\n"
             f"{UNREAL_ADDR_VAR}=127.0.0.1:7447#<address_key>/env\n"
             f"{EPISODES_VAR}=1\n",
             encoding="utf-8",
@@ -92,7 +94,7 @@ def init_identity(*, force: bool) -> int:
     print(f"  identity file: {identity_path}")
     print(f"  dotenv:        {DOTENV_PATH}")
     print(f"  address:       {address}")
-    print("Rebuild the RLMesh plugin, press Play, then re-run this app.")
+    print("Rebuild the RLMesh plugin, open the Unreal editor, then re-run this app.")
     return 0
 
 
@@ -124,8 +126,8 @@ def run_reach_target(
     if not address:
         print(
             "ERROR: no Serving address.\n"
-            "  1) python integrations/unreal/reach_target_app.py --init-identity\n"
-            "  2) Rebuild the RLMesh plugin and press Play\n"
+            "  1) python integrations/unreal/demos/reach_target/app.py --init-identity\n"
+            "  2) Rebuild the RLMesh plugin and open the Unreal editor\n"
             "  3) Re-run this app\n"
             "Or pass --address / set RLMESH_UNREAL_ADDR.",
             file=sys.stderr,
@@ -148,7 +150,7 @@ def run_reach_target(
 
     if verbose:
 
-        def policy(obs: object):
+        def policy_fn(obs: object):
             action = toward_target(obs)
             gap = gap_xyz(obs)
             print(
@@ -157,7 +159,7 @@ def run_reach_target(
             )
             return action
 
-        predict = policy
+        predict = policy_fn
     else:
         predict = toward_target
 
@@ -170,7 +172,8 @@ def run_reach_target(
         print(f"ERROR: run failed: {exc}", file=sys.stderr)
         print(
             "Checks:\n"
-            "  - Unreal is in Play and LogRLMesh shows Serving\n"
+            "  - Unreal editor is open with Reach Target Serving\n"
+            "  - LogRLMesh shows Serving Unreal-ReachTarget-v0\n"
             "  - LogRLMesh shows Loaded RLMESH_HOST_IDENTITY (rebuild plugin if missing)\n"
             "  - RLMESH_UNREAL_ADDR in integrations/unreal/.env matches the Serving #keys\n"
             "  - plugin rlmesh_capi matches this Python's workflow edition "
@@ -180,7 +183,7 @@ def run_reach_target(
         return 1
 
     print(result)
-    print("reach_target_app.py finished successfully.")
+    print("reach_target app finished successfully.")
     return 0
 
 
