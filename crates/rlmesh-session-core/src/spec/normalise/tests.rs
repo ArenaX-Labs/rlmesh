@@ -597,3 +597,90 @@ fn an_explicit_clock_bound_is_kept_up_to_half_the_age() {
         );
     }
 }
+
+#[test]
+fn declarations_at_their_limits_bind_and_past_them_are_refused() {
+    let long = |n: usize| "a".repeat(n);
+    let camera = |extra: &str| {
+        format!(
+            r#"{{"c": {{"kind": "camera", "width": 4, "height": 4, "hz": 1, "frame": "f"{extra}}}}}"#
+        )
+    };
+    let tactile = |layout: &str| {
+        format!(r#"{{"t": {{"kind": "tactile", "shape": [2], "hz": 1, "layout": "{layout}"}}}}"#)
+    };
+    let tcp = |max_norm: &str| {
+        format!(
+            r#"{{"tcp": {{"kind": "pose", "frame": "b", "child": "t", "hz": 1, "command": "delta",
+                "safe": "stop", "limits": {{"pos": {{"max_norm": {max_norm}}}}}}}}}"#
+        )
+    };
+    for ok in [
+        format!(
+            r#"{{"arm": {{"kind": "joints", "names": ["{}"], "hz": 1}}}}"#,
+            long(128)
+        ),
+        format!(r#"{{"t": {{"kind": "text", "doc": "{}"}}}}"#, long(4096)),
+        tactile(&long(4096)),
+        camera(r#", "fov_deg": 90, "intrinsics": [500, 500, 2, 2]"#),
+        tcp("0.01"),
+        r#"{"a": {"kind": "joints", "count": 1, "hz": 1, "command": "position", "safe": "hold",
+            "hold_max_ms": 0}}"#
+            .to_string(),
+        r#"{"x": {"kind": "x/box", "hz": 1, "fields": {"v": ["float32", [1]]}, "x_vendor": 7}}"#
+            .to_string(),
+    ] {
+        normalise(&robot(), SPEC_VERSION, &ok).unwrap_or_else(|err| panic!("{ok}: {err}"));
+    }
+    for (bad, needle) in [
+        (
+            r#"{"arm": {"kind": "joints", "names": [""], "hz": 1}}"#.to_string(),
+            "is empty",
+        ),
+        (
+            format!(
+                r#"{{"arm": {{"kind": "joints", "names": ["{}"], "hz": 1}}}}"#,
+                long(129)
+            ),
+            "longer than 128",
+        ),
+        (
+            format!(r#"{{"t": {{"kind": "text", "doc": "{}"}}}}"#, long(4097)),
+            "doc is longer",
+        ),
+        (tactile(&long(4097)), "layout is longer"),
+        (camera(r#", "fov_deg": 0"#), "fov_deg 0"),
+        (camera(r#", "fov_deg": 360"#), "fov_deg 360"),
+        (tcp("0"), "max_norm 0"),
+        (
+            r#"{"arm": {"kind": "joints", "count": 1, "hz": 0}}"#.to_string(),
+            "hz",
+        ),
+    ] {
+        let err = refused(&bad);
+        assert!(err.message.contains(needle), "{bad}: {}", err.message);
+    }
+}
+
+#[test]
+fn a_wrench_takes_wrench_commands_and_an_imu_publishes_acceleration() {
+    let robot = parts(
+        r#"{"ft": {"kind": "wrench", "frame": "tool0", "hz": 100, "command": "wrench", "safe": "stop"},
+            "sensor": {"kind": "wrench", "frame": "tool0", "hz": 100},
+            "imu": {"kind": "imu", "frame": "base", "hz": 100, "fields": ["lin_acc"]}}"#,
+    );
+    let command: Vec<&str> = robot[0]
+        .command
+        .as_ref()
+        .expect("commandable")
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(command, ["force", "torque"]);
+    assert!(robot[1].command.is_none());
+    assert_eq!(
+        shapes(&robot[2]),
+        [("lin_acc".into(), DType::F32, vec![3], "m/s^2".into())]
+    );
+}

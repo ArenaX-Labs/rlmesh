@@ -12,7 +12,10 @@ use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status};
 use rlmesh_session_core::spec::policy::Allow;
 use rlmesh_session_core::spec::{Policy, RunOptions, Target, bind, bind_in, normalise};
 use rlmesh_session_core::wire::version::SPEC_VERSION;
-use rlmesh_session_core::wire::{ChannelId, ContractMode, PartSpec, ParticipantId, Place, Pose};
+use rlmesh_session_core::wire::{
+    ChannelId, ContractMode, PartSpec, ParticipantId, ParticipantInfo, Place, Pose, PriorityClass,
+    Role,
+};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
@@ -548,6 +551,19 @@ fn two_actions_on_one_command_group_are_refused() {
         "ur10e",
     );
     assert!(text.contains("[duplicate_target] actions \"joints\" and \"cartesian\" command ur10e:arm and ur10e:arm/tcp, members of one command group \"arm\"."), "{text}");
+    let Err(BindError::Refused(refusal)) = inline(
+        r#"{"hz": 10, "actions": {
+            "joints": {"kind": "joints", "at": "arm", "chunk": 1},
+            "cartesian": {"kind": "pose", "at": "arm/tcp", "command": "delta", "chunk": 1}}}"#,
+        "ur10e",
+    ) else {
+        panic!("bound");
+    };
+    assert_eq!(
+        codes(&refusal),
+        [(Code::DuplicateTarget, "cartesian".into())],
+        "the later action carries it"
+    );
 }
 
 #[test]
@@ -1470,4 +1486,213 @@ fn an_absent_optional_input_blanks_to_its_declared_shape_and_preprocessing() {
         text.contains("cannot blank it without a shape and a dtype"),
         "{text}"
     );
+}
+
+#[test]
+fn a_bindings_leased_channels_and_wire_table_follow_its_actions() {
+    let b = bound("pi0_single", "ur10e", RunOptions::named("pi0_single"));
+    let parts = robot("ur10e");
+    let channel = |path: &str| {
+        parts
+            .iter()
+            .find(|p| p.path.as_str() == path)
+            .map(|p| p.channel)
+            .expect(path)
+    };
+    assert_eq!(b.channels(), [channel("arm"), channel("gripper")]);
+    let text: serde_json::Value = serde_json::from_str(&b.table_text()).expect("json");
+    assert_eq!(
+        rlmesh_session_core::spec::canonical::fingerprint(&text),
+        b.fingerprint,
+        "the table text sent on the wire is what the fingerprint covers"
+    );
+}
+
+#[test]
+fn units_name_their_conversion_and_gripper_metres_need_a_width() {
+    let b = inline(
+        r#"{"hz": 10, "inputs": {"p": {"kind": "pose", "at": "arm/tcp", "fields": ["pos"],
+            "units": {"pos": "mm"}}}, "allow": ["units"]}"#,
+        "ur10e",
+    )
+    .expect("allowed");
+    assert_eq!(plan(&b, "p"), "fields pos → units(pos m → mm)");
+    // A robot publishing millimetres on a pose converts as plain units.
+    let b = on_inline(
+        r#"{"tcp": {"kind": "pose", "frame": "b", "child": "t", "hz": 10, "units": {"pos": "mm"}}}"#,
+        r#"{"hz": 10, "inputs": {"p": {"kind": "pose", "at": "tcp", "fields": ["pos"]}},
+            "allow": ["units"]}"#,
+    )
+    .expect("allowed");
+    assert_eq!(plan(&b, "p"), "fields pos → units(pos mm → m)");
+    let gripper = |allow: &str| {
+        inline(
+            &format!(
+                r#"{{"hz": 10, "inputs": {{"g": {{"kind": "gripper", "at": "gripper",
+                    "units": {{"pos": "m"}}}}}}, "allow": [{allow}]}}"#
+            ),
+            "ur10e",
+        )
+    };
+    let err = gripper("").expect_err("needs units");
+    assert!(err.to_string().contains("needs: units"), "{err}");
+    let b = gripper(r#""units""#).expect("allowed");
+    assert_eq!(plan(&b, "g"), "units(pos 0…1 → 0…0.085 m)");
+}
+
+#[test]
+fn a_joint_count_must_match_the_robots() {
+    let text = refusal_text(
+        r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "count": 7}}}"#,
+        "ur10e",
+    );
+    assert!(
+        text.contains("the model has 7 joints; ur10e:arm has 6."),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_given_capture_narrows_the_others_candidates() {
+    let parts = inline_robot(r#"{"l/x": {"kind": "text"}, "r/y": {"kind": "text"}}"#);
+    let policy = Policy::parse(r#"{"hz": 10, "inputs": {"t": {"kind": "text", "at": "{s}/{t}"}}}"#)
+        .expect("policy");
+    for (name, value) in [("s", "l"), ("t", "x")] {
+        let options = RunOptions::named("inline")
+            .capture(name, value)
+            .expect("capture");
+        let b = bind(&policy, &parts, &options).unwrap_or_else(|e| panic!("{name}={value}: {e}"));
+        assert_eq!(
+            b.input("t")
+                .and_then(|r| r.part.as_ref())
+                .map(|p| p.path.as_str()),
+            Some("l/x"),
+            "{name}={value}"
+        );
+    }
+}
+
+#[test]
+fn a_capture_only_optional_entries_use_is_not_inferred() {
+    let text = refusal_text(
+        r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "{a}", "fields": ["pos"]},
+            "c": {"kind": "camera", "at": "{side}/cam", "optional": true, "size": [480, 640]}},
+            "allow": ["blank"]}"#,
+        "ur10e",
+    );
+    assert!(
+        text.contains("{side} is used only by optional entries, so it is not inferred."),
+        "{text}"
+    );
+}
+
+fn member(id: &str, present: bool) -> ParticipantInfo {
+    ParticipantInfo {
+        id: ParticipantId::new(id).expect("id"),
+        name: id.into(),
+        roles: vec![Role::Embodiment],
+        priority: PriorityClass::Scripted,
+        attached_ns: 0,
+        protocol_minor: 0,
+        supports: Vec::new(),
+        requires: Vec::new(),
+        workflow_edition: String::new(),
+        workflow_editions: Vec::new(),
+        present,
+        left: None,
+        device: "local".into(),
+        generation: 1,
+    }
+}
+
+#[test]
+fn an_optional_entry_blanks_instead_of_binding_a_departed_robots_part() {
+    let parts = robot("ur10e");
+    let policy = Policy::parse(
+        r#"{"hz": 10, "inputs": {"c": {"kind": "camera", "at": "wrist/cam", "optional": true,
+            "size": [480, 640]}}, "allow": ["blank"]}"#,
+    )
+    .expect("policy");
+    let options = RunOptions::named("inline").robot("ur10e").expect("robot");
+    for (present, status) in [(true, Status::Bound), (false, Status::Blank)] {
+        let roster = [member("ur10e", present)];
+        let target = Target {
+            parts: &parts,
+            roster: &roster,
+            ..Target::default()
+        };
+        let b = bind_in(&policy, &target, &options).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(b.input("c").expect("c").status, status, "present {present}");
+    }
+    // A required entry keeps its part through the robot's absence, even
+    // where blank is allowed.
+    let required = Policy::parse(
+        r#"{"hz": 10, "inputs": {"c": {"kind": "camera", "at": "wrist/cam"}},
+            "allow": ["blank"]}"#,
+    )
+    .expect("policy");
+    let roster = [member("ur10e", false)];
+    let target = Target {
+        parts: &parts,
+        roster: &roster,
+        ..Target::default()
+    };
+    let b = bind_in(&required, &target, &options).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(b.input("c").expect("c").status, Status::Bound);
+}
+
+#[test]
+fn a_view_waits_for_a_placed_robot_that_has_declared_nothing() {
+    let (parts, mut places) = eyeball_rig(&[]);
+    places.push(Place {
+        robot: ParticipantId::new("eye-x").expect("id"),
+        at: "eyes/extra".into(),
+        ..places[0].clone()
+    });
+    let target = Target {
+        parts: &parts,
+        places: &places,
+        ..Target::default()
+    };
+    let policy = Policy::parse(
+        r#"{"hz": 30, "actions": {"gaze": {"kind": "joints", "at": "eyes/extra/gaze"}}}"#,
+    )
+    .expect("policy");
+    let err = bind_in(&policy, &target, &RunOptions::named("extra")).expect_err("waits");
+    assert_eq!(
+        err.waiting_for().as_deref(),
+        Some(
+            "robot eye-x to declare its parts; action \"gaze\" (kind joints, at \"eyes/extra/gaze\") needs it"
+        )
+    );
+}
+
+#[test]
+fn an_optional_entry_on_an_absent_robot_without_blank_waits_for_it() {
+    let policy = Policy::parse(
+        r#"{"hz": 20, "inputs": {"target": {"kind": "joints", "at": "tracker:target",
+            "fields": ["pos"], "count": 2, "optional": true}}}"#,
+    )
+    .expect("policy");
+    let options = RunOptions::named("reader").robot("ur10e").expect("robot");
+    let err = bind(&policy, &robot("ur10e"), &options).expect_err("refused");
+    assert_eq!(
+        err.waiting_for().as_deref(),
+        Some(
+            "robot tracker to declare its parts; input \"target\" (kind joints, at \"tracker:target\") needs it"
+        )
+    );
+}
+
+#[test]
+fn windows_over_the_ring_budget_are_refused() {
+    let text = match on_inline(
+        r#"{"cam": {"kind": "camera", "width": 1920, "height": 1080, "hz": 30, "frame": "f",
+            "send": "every"}}"#,
+        r#"{"hz": 10, "inputs": {"c": {"kind": "camera", "at": "cam", "history": 300}}}"#,
+    ) {
+        Ok(b) => panic!("bound:\n{b}"),
+        Err(err) => err.to_string(),
+    };
+    assert!(text.contains("at most 512 MiB per controller"), "{text}");
 }
