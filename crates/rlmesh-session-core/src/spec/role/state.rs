@@ -885,3 +885,285 @@ mod encoding_selection_tests {
         assert_eq!(dst, None);
     }
 }
+
+#[cfg(test)]
+mod plan_state_tests {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
+
+    use crate::spec::projection::Projection;
+    use crate::spec::role::bind::bind;
+    use crate::spec::role::error::ErrorCode;
+    use crate::spec::role::input::{
+        Accept, CustomArms, Env, EnvState, Leaf, LeafKind, Piece, Spec, State,
+    };
+    use crate::spec::role::path::NodePath;
+    use crate::spec::role::plan::{ObsPlan, StatePiece};
+    use crate::spec::rotation::Rotation;
+    use crate::wire::part::DType;
+
+    const ROLE: &str = "proprio/eef_rot";
+
+    /// A bound part's width, or the refusal's code.
+    type Width = Result<Option<u32>, ErrorCode>;
+
+    fn accept(rotation: Rotation) -> Accept<Rotation> {
+        Accept {
+            names: vec![rotation.to_string()],
+            known: vec![rotation],
+        }
+    }
+
+    fn piece() -> Piece {
+        Piece {
+            role: Some(ROLE.into()),
+            previous: false,
+            encoding: None,
+            custom: None,
+            dim: None,
+            index: None,
+            range: None,
+            optional: false,
+            fill: 0.0,
+            post_rotate: None,
+            scale: None,
+            offset: None,
+            axis_scale: None,
+            axis_offset: None,
+            frame: None,
+            provenance: None,
+            part: None,
+            labels: None,
+            polarity: None,
+        }
+    }
+
+    fn feature(dim: Option<u32>, encoding: Option<Rotation>) -> EnvState {
+        EnvState {
+            source: NodePath::root().push_key("rot"),
+            role: ROLE.into(),
+            part: None,
+            slice_offset: None,
+            dim,
+            encoding: encoding.map(accept),
+            range: None,
+            frame: None,
+            provenance: None,
+            labels: None,
+            polarity: None,
+        }
+    }
+
+    /// The one state piece `model` reads from an env offering `env`, or the
+    /// refusal's code; `allow` lists the projections the spec allows.
+    fn plan(
+        model: Piece,
+        env: Option<EnvState>,
+        allow: &[Projection],
+    ) -> Result<StatePiece, ErrorCode> {
+        let spec = Spec {
+            inputs: vec![Leaf {
+                at: NodePath::root().push_key("state"),
+                kind: LeafKind::State(State {
+                    pieces: vec![model],
+                    pad_to: None,
+                    dtype: DType::F32,
+                    reshape: None,
+                    clip: None,
+                    list: false,
+                }),
+            }],
+            output: Vec::new(),
+            allow: allow.to_vec(),
+        };
+        let env = Env {
+            states: env.into_iter().collect(),
+            ..Env::default()
+        };
+        let bound = bind(&spec, &env, false).map_err(|e| e.code)?;
+        match bound.obs_plans.into_iter().next() {
+            Some(ObsPlan::State(mut state)) => Ok(state.pieces.remove(0)),
+            other => panic!("not a state plan: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_absent_optional_part_fills_with_its_affine_folded_in() {
+        let model = Piece {
+            optional: true,
+            dim: Some(2),
+            fill: 2.0,
+            scale: Some(3.0),
+            offset: Some(0.5),
+            ..piece()
+        };
+        let filled = plan(model, None, &[]).expect("filled");
+        assert_eq!(filled.fill, Some(6.5));
+        assert_eq!(filled.absent_role.as_deref(), Some(ROLE));
+        assert_eq!(filled.width, Some(2));
+        // Not optional: missing.
+        let required = Piece {
+            dim: Some(2),
+            ..piece()
+        };
+        assert_eq!(
+            plan(required, None, &[]).err(),
+            Some(ErrorCode::MissingRole)
+        );
+    }
+
+    /// Every rule a state part's encoding, custom arms and post-rotation
+    /// meet: `Ok` with the part's width, or the refusal's code.
+    #[test]
+    fn encodings_customs_and_post_rotations_bind_per_rule() {
+        let quat = Some(Rotation::QuatXyzw);
+        let custom = |from_base: bool, dim: Option<u32>, index: Option<u32>| Piece {
+            encoding: Some(accept(Rotation::QuatXyzw)),
+            custom: Some(CustomArms {
+                from_base,
+                to_base: false,
+            }),
+            dim,
+            index,
+            ..piece()
+        };
+        let reads = |encoding: Rotation| Piece {
+            encoding: Some(accept(encoding)),
+            ..piece()
+        };
+        let rotated = |encoding: Rotation| Piece {
+            post_rotate: Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            ..reads(encoding)
+        };
+        let gravity = Some(Rotation::GravityXyz);
+        let cases: Vec<(&str, Piece, EnvState, Width)> = vec![
+            (
+                "a custom from its base",
+                custom(true, None, None),
+                feature(Some(4), quat),
+                Ok(Some(4)),
+            ),
+            (
+                "a custom restating its base width",
+                custom(true, Some(4), None),
+                feature(Some(4), quat),
+                Ok(Some(4)),
+            ),
+            (
+                "a custom with no from_base",
+                custom(false, None, None),
+                feature(Some(4), quat),
+                Err(ErrorCode::Unsupported),
+            ),
+            (
+                "a custom off its base width",
+                custom(true, Some(3), None),
+                feature(Some(4), quat),
+                Err(ErrorCode::Unsupported),
+            ),
+            (
+                "a custom keeping one element",
+                custom(true, None, Some(0)),
+                feature(Some(4), quat),
+                Err(ErrorCode::Unsupported),
+            ),
+            (
+                "an optional custom",
+                Piece {
+                    optional: true,
+                    ..custom(true, None, None)
+                },
+                feature(Some(4), quat),
+                Err(ErrorCode::Unsupported),
+            ),
+            (
+                "a conversion from a native of its width",
+                reads(Rotation::Rot6d),
+                feature(Some(4), quat),
+                Ok(Some(6)),
+            ),
+            (
+                "a conversion from a native off its width",
+                reads(Rotation::Rot6d),
+                feature(Some(3), quat),
+                Err(ErrorCode::DimMismatch),
+            ),
+            (
+                "no conversion, whatever the env's width",
+                reads(Rotation::QuatXyzw),
+                feature(Some(3), quat),
+                Ok(Some(3)),
+            ),
+            (
+                "a post-rotation of a rotation",
+                rotated(Rotation::QuatXyzw),
+                feature(Some(4), quat),
+                Ok(Some(4)),
+            ),
+            (
+                "a post-rotation of a direction",
+                rotated(Rotation::GravityXyz),
+                feature(Some(3), gravity),
+                Err(ErrorCode::EncodingMismatch),
+            ),
+        ];
+        for (what, model, env, want) in cases {
+            let got = plan(model, Some(env), &[]).map(|piece| piece.width);
+            assert_eq!(got, want, "{what}");
+        }
+    }
+
+    /// An index or a dim against the source's width: kept, refused out of
+    /// range, or (a leading slice) the `select_state` projection.
+    #[test]
+    fn slices_are_checked_against_the_source_width() {
+        let wide = || {
+            let mut env = feature(Some(3), None);
+            env.labels = Some(vec!["x".into(), "y".into(), "z".into()]);
+            env
+        };
+        let sliced = |dim: Option<u32>, index: Option<u32>| Piece {
+            dim,
+            index,
+            ..piece()
+        };
+        let select = [Projection::SelectState];
+        let cases: Vec<(&str, Piece, &[Projection], Width)> = vec![
+            ("the last index", sliced(None, Some(2)), &[], Ok(Some(1))),
+            (
+                "an index past the end",
+                sliced(None, Some(3)),
+                &[],
+                Err(ErrorCode::SliceOutOfRange),
+            ),
+            ("every dim", sliced(Some(3), None), &[], Ok(Some(3))),
+            (
+                "more dims than there are",
+                sliced(Some(4), None),
+                &select,
+                Err(ErrorCode::SliceOutOfRange),
+            ),
+            (
+                "a leading slice, not allowed",
+                sliced(Some(2), None),
+                &[],
+                Err(ErrorCode::DimMismatch),
+            ),
+            (
+                "a leading slice, allowed",
+                sliced(Some(2), None),
+                &select,
+                Ok(Some(2)),
+            ),
+        ];
+        for (what, model, allow, want) in cases {
+            let got = plan(model, Some(wide()), allow).map(|piece| piece.width);
+            assert_eq!(got, want, "{what}");
+        }
+        // The env's axis names carry over only at their own width.
+        let whole = plan(sliced(None, None), Some(wide()), &[]).expect("whole");
+        assert_eq!(whole.labels.map(|l| l.len()), Some(3));
+        let leading = plan(sliced(Some(2), None), Some(wide()), &select).expect("leading");
+        assert_eq!(leading.labels, None);
+    }
+}
