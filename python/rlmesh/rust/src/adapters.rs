@@ -164,6 +164,7 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_REQUIRES_EPISODE_CAP_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_SCHEMA_VERSION", u32);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "SESSION_WIRE_REVISION", u32);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_PRIMARY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_SECONDARY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "INSTRUCTION", String);
@@ -230,6 +231,11 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "DESCRIBE_SCHEMA_VERSION",
         rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION,
+    )?;
+    // The session wire revision a describe envelope's `runtime` carries.
+    m.add(
+        "SESSION_WIRE_REVISION",
+        rlmesh_session::wire::version::WIRE_REVISION,
     )?;
     Ok(())
 }

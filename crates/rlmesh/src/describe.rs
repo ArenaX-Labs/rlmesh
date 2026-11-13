@@ -373,6 +373,7 @@ pub(crate) fn runtime_json(host: &Host, offer: Offer) -> Json {
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "protocol_generation": rlmesh_proto::PROTOCOL_GENERATION,
+        "session_wire_revision": rlmesh_session::wire::version::WIRE_REVISION,
         "supported_workflow_editions": rlmesh_proto::supported_workflow_editions(),
         "preferred_workflow_edition": preferred,
     });

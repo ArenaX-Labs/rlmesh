@@ -458,6 +458,31 @@ fn edition_table() {
         legacy.failed.iter().any(|m| m.contains("0.1 runner")),
         "{legacy:?}"
     );
+    // The session wire revision: this build's passes, another fails by
+    // name, and none (an earlier 0.2 pre-release) is a warning.
+    let on = |revision| RuntimeOffer {
+        session_wire_revision: revision,
+        ..offer(Some(PROTOCOL_GENERATION), &["2026.06"], None)
+    };
+    let report = check_editions(&on(Some(WIRE_REVISION)), None, &platform);
+    assert!(report.ok() && report.warnings.is_empty(), "{report:?}");
+    let report = check_editions(&on(Some(WIRE_REVISION + 1)), None, &platform);
+    assert!(
+        report.failed.iter().any(|m| m.contains(&format!(
+            "the image speaks session wire revision {} (a later pre-release)",
+            WIRE_REVISION + 1
+        ))),
+        "{report:?}"
+    );
+    let report = check_editions(&on(None), None, &platform);
+    assert!(report.ok(), "{report:?}");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|m| m.contains("no session_wire_revision")),
+        "{report:?}"
+    );
     // No fields at all: not checked, twice (generation and editions).
     let report = check_editions(&offer(None, &[], None), None, &platform);
     assert!(report.ok());

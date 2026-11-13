@@ -72,6 +72,7 @@ __all__ = [
     "RIGHT_ARM",
     "RIGHT_LEG",
     "ROTATION_DIMS",
+    "SESSION_WIRE_REVISION",
     "ServeOptions",
     "Space",
     "SpaceSpec",
@@ -172,6 +173,7 @@ RESAMPLES: builtins.list[builtins.str]
 RIGHT_ARM: builtins.str
 RIGHT_LEG: builtins.str
 ROTATION_DIMS: builtins.dict[builtins.str, builtins.int]
+SESSION_WIRE_REVISION: builtins.int
 TORSO: builtins.str
 __version__: builtins.str
 

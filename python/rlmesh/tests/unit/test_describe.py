@@ -644,7 +644,7 @@ def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> No
 def test_runtime_carries_the_edition_handshake(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    from rlmesh._rlmesh import build_info
+    from rlmesh._rlmesh import SESSION_WIRE_REVISION, build_info
 
     monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
     monkeypatch.chdir(tmp_path)  # no [tool.rlmesh] in reach
@@ -652,6 +652,7 @@ def test_runtime_carries_the_edition_handshake(
     runtime = rlmesh.describe(_TinyModel)["runtime"]
     # Same names and values as the wire HandshakeRequest, from the native build.
     assert runtime["protocol_generation"] == info.protocol_generation
+    assert runtime["session_wire_revision"] == SESSION_WIRE_REVISION >= 1
     assert runtime["supported_workflow_editions"] == list(
         info.supported_workflow_editions
     )

@@ -36,10 +36,12 @@ Emitted shape (env)::
 
 ``runtime`` carries what the served peer's handshake will advertise, under the
 handshake's own field names: ``protocol_generation`` (the wire generation),
+``session_wire_revision`` (the 0.2 pre-release wire revision: two builds on
+different revisions cannot talk; absent before the field),
 ``supported_workflow_editions`` (every edition this build can drive, newest
 first) and ``preferred_workflow_edition`` (the edition the class declares, or
 this build's newest). A platform reads them to decide, before it runs the
-image, whether its runtime shares an edition with it.
+image, whether its runtime can talk to it and shares an edition with it.
 
 A model envelope drops ``env_spec``/``env_tags`` and carries ``model_spec``
 plus ``corners`` (the predict corners the class defines, e.g.
@@ -616,9 +618,9 @@ def _collect_peer_info() -> Mapping[str, Any]:
 def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
     """The edition handshake a peer serving ``obj`` will send, by its wire names.
 
-    ``protocol_generation`` and ``supported_workflow_editions`` come from the
-    native build the same way the Rust handshake builder reads them (there is
-    no second list). ``preferred_workflow_edition`` is the declaration the
+    ``protocol_generation``, ``session_wire_revision`` and
+    ``supported_workflow_editions`` come from the native build the same way
+    the Rust handshake builder reads them (there is no second list). ``preferred_workflow_edition`` is the declaration the
     server hosting ``obj`` sends: ``resolved`` when a server already settled it
     (``""`` when it settled on none), else what
     :func:`rlmesh._editions.resolve_workflow_edition` settles on for the class
@@ -639,6 +641,7 @@ def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
     declared = getattr(cls, "workflow_edition", None)
     offer: dict[str, Any] = {
         "protocol_generation": str(info.protocol_generation),
+        "session_wire_revision": int(load_native("SESSION_WIRE_REVISION")),
         "supported_workflow_editions": [
             str(edition) for edition in info.supported_workflow_editions
         ],

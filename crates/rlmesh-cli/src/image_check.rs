@@ -25,6 +25,7 @@ use rlmesh_proto::{
     EditionRefusal, PROTOCOL_GENERATION, SessionFloor, SessionOffer, negotiate_session_floor,
     supported_workflow_editions,
 };
+use rlmesh_session::wire::version::{WIRE_REVISION, wire_revision_name};
 use serde::{Deserialize, Serialize};
 
 /// OCI config label carrying the describe envelope (`python -m rlmesh._describe`).
@@ -258,6 +259,13 @@ pub struct RuntimeOffer {
     /// The wire generation the image speaks (`rlmesh-realtime-v1`).
     #[serde(default)]
     pub protocol_generation: Option<String>,
+    /// The session wire revision the image's rlmesh speaks
+    /// (`rlmesh_session::wire::version::WIRE_REVISION`, 1 for one port):
+    /// a 0.2 pre-release bumps it on a wire break, so two builds of one
+    /// generation that cannot talk differ here. Absent from an envelope an
+    /// earlier pre-release described.
+    #[serde(default)]
+    pub session_wire_revision: Option<u32>,
     /// Every edition the image's rlmesh can drive a session at.
     #[serde(default)]
     pub supported_workflow_editions: Vec<String>,
@@ -589,9 +597,12 @@ pub fn check_editions(
             "editions: image speaks protocol generation {generation}, the platform speaks \
              {PROTOCOL_GENERATION}; rebuild against the platform's rlmesh"
         )),
-        Some(_) => report.passed.push(format!(
-            "editions: protocol generation {PROTOCOL_GENERATION}"
-        )),
+        Some(_) => {
+            report.passed.push(format!(
+                "editions: protocol generation {PROTOCOL_GENERATION}"
+            ));
+            check_wire_revision(runtime.session_wire_revision, &mut report);
+        }
     }
     if let Some(error) = runtime
         .workflow_edition_error
@@ -627,6 +638,28 @@ pub fn check_editions(
         )),
     }
     report
+}
+
+/// Check that an image of this protocol generation speaks this rlmesh's
+/// session wire revision: a 0.2 pre-release's wire may break before 0.2.0
+/// freezes it, and a pair on two revisions cannot talk.
+fn check_wire_revision(image: Option<u32>, report: &mut CheckReport) {
+    match image {
+        None => report.warnings.push(format!(
+            "editions: describe carries no session_wire_revision (an rlmesh 0.2 pre-release \
+             from before the field, whose session host listened on four ports); this rlmesh \
+             speaks revision {WIRE_REVISION}: rebuild the image against it"
+        )),
+        Some(revision) if revision != WIRE_REVISION => report.failed.push(format!(
+            "editions: the image speaks session wire revision {revision} ({}), this rlmesh \
+             speaks revision {WIRE_REVISION} ({}); rebuild both from the same release",
+            wire_revision_name(revision),
+            wire_revision_name(WIRE_REVISION),
+        )),
+        Some(_) => report
+            .passed
+            .push(format!("editions: session wire revision {WIRE_REVISION}")),
+    }
 }
 
 /// The workflow edition the image's serve command declares above whatever the
