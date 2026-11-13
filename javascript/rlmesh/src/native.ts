@@ -116,11 +116,17 @@ interface NativeEdgeStats {
   modes: { mode: string; ticks: number; entries: number }[];
 }
 interface NativeStats {
+  clock: 'wall';
   alignedTo?: string | null; phaseOffsetMs: number;
   starts: number; completions: number; skipped: { reason: string; count: number }[];
   chunksSent: number; shadowPredictions: number; sendErrors: number;
   latencyP50Ms?: number | null; latencyP99Ms?: number | null; latencyMaxMs?: number | null;
   drifting: boolean; parked: string[];
+}
+interface NativeLockstepStats {
+  clock: 'lockstep';
+  starts: number; chunksSent: number;
+  episodes: { reward: number; steps: number; terminated: boolean; truncated: boolean }[];
 }
 interface NativeHost { readonly address: string; close(): Promise<void> }
 interface NativeRobot {
@@ -156,7 +162,7 @@ interface NativeHealth {
   }[];
 }
 interface NativePolicy {
-  readonly name: string; readonly table: string; readonly tableJson: string; readonly fingerprint: string;
+  readonly name: string; readonly clock: string; readonly table: string; readonly tableJson: string; readonly fingerprint: string;
   publishedParts(): NativePart[];
   publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
   readonly warnings: string[]; readonly replanHz: number;
@@ -171,12 +177,14 @@ interface NativePolicy {
     mode?: RunMode | null,
     onStep?: ((step: NativeStep) => void) | null,
     resume?: Resume | null,
-  ): Promise<NativeStats>;
+    episodes?: number | null,
+    seed?: number | null,
+  ): Promise<NativeStats | NativeLockstepStats>;
   reply(values: NativeEntry[] | null, error: string | null): void;
   stop(): void;
   resume(): string[];
   health(wait: boolean, timeoutS: number): Promise<NativeHealth>;
-  stats(): NativeStats;
+  stats(): NativeStats | NativeLockstepStats;
   events(): Record<string, unknown>[];
   close(): Promise<void>;
 }
@@ -451,7 +459,7 @@ export interface EdgeStats {
 /**
  * The session's live link health, as the host last published it (once a second): `epoch`,
  * `hostNs` (the host's clock when it published) and one link per attached participant, keyed by
- * its name. Durations are in ms, as in `RunStats` and `EdgeStats`.
+ * its name. Durations are in ms, as in `PolicyStats` and `EdgeStats`.
  */
 export interface SessionHealth {
   epoch: number;
@@ -841,6 +849,15 @@ export type RunMode = 'command' | 'shadow';
  */
 export type Resume = 'manual' | 'auto';
 
+/**
+ * Who owns a robot's time. `'wall'`: the world runs whether anyone acts or not, and a `Policy` drives
+ * the robot for a `duration`. `'lockstep'`: time advances one step per action and waits for it, and
+ * a `Policy` runs the robot by `episodes`. The robot chooses, and says so when it joins the session;
+ * a policy learns it at `bind` (`Policy.clock`). Python's `rlmesh.realtime.Clock` (`Clock` here is a
+ * gateway session's clock estimate).
+ */
+export type RobotClock = 'wall' | 'lockstep';
+
 /** A completed start, as `onStep` receives it. */
 export interface Step {
   /** A shadow start: its actions were checked and not sent. */
@@ -893,8 +910,9 @@ export class BindingTable {
   }
 }
 
-/** Starts, completions, skips by reason, chunks sent and latency. */
-export interface RunStats {
+/** A wall-clock run's counters: starts, completions, skips by reason, chunks sent and latency. */
+export interface PolicyStats {
+  clock: 'wall';
   /** The input whose publication the starts are phased just after (wall clock). */
   alignedTo: string | null;
   /** How far after it, in ms. */
@@ -914,8 +932,41 @@ export interface RunStats {
   parked: string[];
 }
 
-function runStats(s: NativeStats): RunStats {
+/** One episode of a lockstep run. */
+export interface Episode {
+  /** Its rewards, summed. */
+  return: number;
+  /** Lockstep steps taken. */
+  steps: number;
+  terminated: boolean;
+  truncated: boolean;
+}
+
+/** A lockstep run's counters (`Policy.run` on a lockstep robot). */
+export interface LockstepStats {
+  clock: 'lockstep';
+  /** Calls of `predict`. */
+  starts: number;
+  /** Chunks played, one per start (a chunk of H actions is H steps). */
+  chunksSent: number;
+  /** Every episode, in order; the last is unfinished when the run was stopped. */
+  episodes: Episode[];
+}
+
+/** What `Policy.run` and `Policy.stats` return: told apart by `clock`. */
+export type RunStats = PolicyStats | LockstepStats;
+
+function runStats(s: NativeStats | NativeLockstepStats): RunStats {
+  if (s.clock === 'lockstep') {
+    return {
+      clock: 'lockstep',
+      starts: s.starts,
+      chunksSent: s.chunksSent,
+      episodes: s.episodes.map((e) => ({ return: e.reward, steps: e.steps, terminated: e.terminated, truncated: e.truncated })),
+    };
+  }
   return {
+    clock: 'wall',
     alignedTo: s.alignedTo ?? null,
     phaseOffsetMs: s.phaseOffsetMs,
     starts: s.starts,
@@ -932,14 +983,22 @@ function runStats(s: NativeStats): RunStats {
   };
 }
 
-/** How one `Policy.run` runs. */
+/**
+ * How one `Policy.run` runs. Each setting belongs to one clock, and the other clock's throw a
+ * `RangeError` at once: `duration`, `mode` and `resume` are the wall clock's, `episodes` and `seed`
+ * lockstep's.
+ */
 export interface RunOptions {
-  /** Stop after this many seconds. */
+  /** Wall clock: stop after this many seconds. */
   duration?: number;
-  /** What a start that cannot command does (default `'command'`). */
+  /** Wall clock: what a start that cannot command does (default `'command'`; lockstep refuses `'shadow'`). */
   mode?: RunMode;
-  /** What a part a higher class took does once it is free (default `'manual'`). */
+  /** Wall clock: what a part a higher class took does once it is free (default `'manual'`). */
   resume?: Resume;
+  /** Lockstep: episodes to run (default 1). */
+  episodes?: number;
+  /** Lockstep: the base seed each episode's reset seed derives from, as a model run's does (default: unseeded resets). */
+  seed?: number;
   /** Called after each completed start with its actions, marked shadow or sent. */
   onStep?: (step: Step) => void;
 }
@@ -1000,6 +1059,11 @@ export class Policy implements AsyncDisposable {
    * Attach, bind to `robot`'s parts and declare the binding. Rejects with `BindingRefused`.
    * With no robot it binds the session's view of every robot, each under its name, so one policy
    * drives several: its actions name their robot (`eye-1:eyes`).
+   *
+   * The robot's clock, as it declared it on joining, is the policy's (`clock`): a lockstep robot (a
+   * Gym env served with Python's `rlmesh.EnvServer`, say) is bound alone, and a binding that names
+   * several robots, any of them lockstep, rejects with `BindingRefused`, as does a lockstep robot
+   * for a policy that `publishes`.
    */
   async bind(robot?: string | null, opts: BindOptions = {}): Promise<BindingTable> {
     if (this.native) throw new SessionException(`policy ${this.name} is already bound`);
@@ -1047,6 +1111,11 @@ export class Policy implements AsyncDisposable {
     return new BindingTable(this.nat());
   }
 
+  /** The bound robot's clock (after `bind`), which `run` follows. */
+  get clock(): RobotClock {
+    return call(() => this.nat().clock) as RobotClock;
+  }
+
   /** A policy start now; throws `StartSkipped` when one is skipped. */
   observe(): Observation {
     return new Observation(call(() => this.nat().observe()));
@@ -1078,24 +1147,37 @@ export class Policy implements AsyncDisposable {
   }
 
   /**
-   * Run the policy loop until `duration` seconds or `stop()`; resolves to the run's counters.
-   * The loop runs on a native thread; `predict(obs)` runs on this one, at most at the replan rate
-   * with one inference in flight (a start that falls while it runs is skipped, never queued). If
-   * `predict` throws or rejects, the policy stops sending, releases its leases (the robot holds,
-   * then goes safe) and the run rejects with that error.
+   * Run the policy on its robot's clock (`clock`); resolves to the run's counters, their `clock`
+   * saying which. The loop runs on a native thread; `predict(obs)` runs on this one. If `predict`
+   * throws or rejects, the policy stops commanding, releases its leases and the run rejects with
+   * that error. `onStep(step)` is called after each completed start with its actions as the robot
+   * receives them, marked `shadow`; if it throws, the run stops and rejects with that error. The two
+   * clocks take different settings, and each throws a `RangeError` at once for the other's.
    *
-   * With `mode: 'shadow'` a start that cannot command still calls `predict` (its own published
-   * parts keep flowing) and checks its actions, sending nothing until the policy holds a lease
-   * (`shadowing` and `commanding` events). `onStep(step)` is called after each completed start with
-   * its actions as the edges receive them, marked `shadow`; if it throws, the run stops and
-   * rejects with that error.
+   * **Lockstep**: runs `episodes` episodes (default 1), each from the robot's reset, until it ends or
+   * `stop()`. `seed` is a base seed: each episode's reset seed is derived from it, the robot and the
+   * episode's number exactly as a model run derives it, so the same seed runs the same episodes
+   * through either; an env that declared the `trial_index` reset option gets each episode's 0-based
+   * ordinal in it. One `predict` per chunk: a chunk of H actions is H steps, their rewards summed.
+   * The policy's action rate sets the session time a step stands for; nothing waits on real time,
+   * and no input is ever stale or missing. Resolves to `LockstepStats`.
+   *
+   * **Wall clock**: until `duration` seconds or `stop()`, `predict` at most at the replan rate with
+   * one inference in flight (a start that falls while it runs is skipped, never queued); the robot
+   * holds, then goes safe, when the policy stops sending. With `mode: 'shadow'` a start that cannot
+   * command still calls `predict` (its own published parts keep flowing) and checks its actions,
+   * sending nothing until the policy holds a lease (`shadowing` and `commanding` events). Resolves
+   * to `PolicyStats`.
    */
   async run(predict: Predict, opts: RunOptions = {}): Promise<RunStats> {
     const nat = this.nat();
     const mode = opts.mode ?? 'command';
     if (mode !== 'command' && mode !== 'shadow') throw new RangeError(`mode ${String(mode)}: 'command' or 'shadow'`);
-    const resume = opts.resume ?? 'manual';
-    if (resume !== 'manual' && resume !== 'auto') throw new RangeError(`resume ${String(resume)}: 'manual' or 'auto'`);
+    const resume = opts.resume ?? null;
+    if (resume !== null && resume !== 'manual' && resume !== 'auto') throw new RangeError(`resume ${String(resume)}: 'manual' or 'auto'`);
+    for (const [name, value] of [['episodes', opts.episodes], ['seed', opts.seed]] as const) {
+      if (value !== undefined && !Number.isSafeInteger(value)) throw new RangeError(`${name}=${String(value)}: an integer`);
+    }
     let failure: { error: unknown } | null = null;
     const onStep = opts.onStep;
     const stepped = onStep
@@ -1129,7 +1211,9 @@ export class Policy implements AsyncDisposable {
       })();
     };
     try {
-      const stats = runStats(await nat.run(start, opts.duration ?? null, mode, stepped, resume));
+      const stats = runStats(
+        await nat.run(start, opts.duration ?? null, mode, stepped, resume, opts.episodes ?? null, opts.seed ?? null),
+      );
       if (failure) throw (failure as { error: unknown }).error;
       return stats;
     } catch (e) {
@@ -1160,7 +1244,11 @@ export class Policy implements AsyncDisposable {
     return wait(async () => sessionHealth(await this.nat().health(opts.wait ?? false, opts.timeout ?? this.timeout)));
   }
 
-  /** Starts, completions, skips by reason, chunks sent and latency. */
+  /**
+   * The latest run's counters, their `clock` saying which: on the wall clock starts, completions,
+   * skips by reason, chunks sent and latency (`PolicyStats`); in lockstep starts, chunks and the
+   * episodes (`LockstepStats`).
+   */
   stats(): RunStats {
     return runStats(call(() => this.nat().stats()));
   }
@@ -1368,7 +1456,10 @@ export function readRecording(path: string): Promise<RecordingSummary> {
   });
 }
 
-/** Bind `policy` to `robot` (`null`: every robot's view) and drive it with `predict` until `duration`. Shorthand for `Policy` + `bind` + `run`. */
+/**
+ * Bind `policy` to `robot` (`null`: every robot's view) and drive it with `predict` on its clock:
+ * until `duration`, or for `episodes` in lockstep. Shorthand for `Policy` + `bind` + `run`.
+ */
 export async function drive(
   policy: Record<string, unknown>,
   robot: string | null,

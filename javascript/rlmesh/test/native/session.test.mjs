@@ -2,7 +2,8 @@
 // python/rlmesh/tests/integration/test_v2_session.py. The robot is the UR10e (the conformance
 // fixture), faked: its control loop publishes joints, wrench, gripper and two cameras, and applies
 // whatever its edge says is due. The policies bind to it by kind and path, lease its parts and
-// stream timed chunks. Needs dist/node.js and the addon (`mise run test:js:native`).
+// stream timed chunks. A lockstep env, served by Python (`trials_env.py`, through `uv run`), is run
+// by episodes. Needs dist/node.js and the addon (`mise run test:js:native`).
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -142,6 +143,8 @@ test('a Node policy drives a Node robot on loopback', async () => {
   await using ur = await FakeUR10e.start(host);
   await using policy = new rlmesh.Policy(SINE, { session: host, name: 'sine' });
   const binding = await policy.bind('ur10e');
+  assert.equal(policy.clock, 'wall');
+  await assert.rejects(policy.run(() => ({}), { episodes: 2 }), (e) => e instanceof RangeError && /episodes= is for a lockstep robot/.test(e.message));
   assert.match(String(binding), /wrist +in +wrist\/cam +bound +decode\(jpeg\) → crop\(640x480 → 96x96, bilinear\)/);
   assert.equal(binding.json.actions[0].chunk, 10);
   assert.equal(binding.fingerprint.length, 16);
@@ -162,6 +165,7 @@ test('a Node policy drives a Node robot on loopback', async () => {
   await waitUntil('the gripper commanded', () => Math.abs(ur.gripper - 0.5) < 1e-6, state);
   policy.stop();
   const stats = await running;
+  assert.equal(stats.clock, 'wall');
   assert.ok(stats.completions > 0 && stats.chunksSent > 0, JSON.stringify(stats));
   assert.equal(stats.sendErrors, 0);
   assert.equal(policy.holds, false, 'a stopped run releases its leases');
@@ -546,6 +550,84 @@ test("the session's key is in the host's address, never in what inspecting shows
   assert.ok(key && key.length > 52);
   const policy = new rlmesh.Policy(HOLD, { session: host });
   for (const shown of [inspect(host), inspect(policy), String(host), String(policy)]) assert.ok(!shown.includes(key), shown);
+});
+
+/**
+ * A local env served as a lockstep robot by Python's `rlmesh.EnvServer` (`trials_env.py`), in a
+ * session of its own: its session's address and the resets it saw (`{ seed, trial }`), in order.
+ */
+async function serveTrials() {
+  const { spawn } = await import('node:child_process');
+  const { createInterface } = await import('node:readline');
+  const base = `127.0.0.1:${await freeBase()}`;
+  const repo = new URL('../../../../', import.meta.url).pathname;
+  const script = new URL('trials_env.py', import.meta.url).pathname;
+  const proc = spawn('uv', ['run', '--no-sync', 'python', script, `${base}/trials`], {
+    cwd: repo,
+    env: process.env,
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  const exited = new Promise((resolve) => proc.once('exit', resolve));
+  const resets = [];
+  await new Promise((resolve, reject) => {
+    createInterface({ input: proc.stdout }).on('line', (line) => {
+      const message = JSON.parse(line);
+      if (message.serving) resolve();
+      else resets.push(message);
+    });
+    exited.then((code) => reject(new Error(`trials_env.py exited with ${code}`)));
+  });
+  return {
+    base,
+    resets,
+    async [Symbol.asyncDispose]() {
+      proc.stdin.end();
+      await exited;
+    },
+  };
+}
+
+test('a Node policy runs a lockstep env by episodes, each reset as a model run resets it', async () => {
+  await using env = await serveTrials();
+  const box = { kind: 'gym/box', fields: { value: ['float32', [2]] } };
+  await using policy = new rlmesh.Policy({ hz: 10, inputs: { x: { ...box, at: 'obs' } }, actions: { a: { ...box, at: 'action' } } }, { session: env.base, name: 'p' });
+  await policy.bind('trials');
+  assert.equal(policy.clock, 'lockstep');
+  assert.equal(policy.holds, true, 'its lease is taken at bind');
+  const still = () => ({ a: { data: new Float32Array(2), shape: [1, 2] } });
+  const played = [];
+  const stats = await policy.run(still, { episodes: 3, seed: 5, onStep: (step) => played.push(step.actions.a) });
+  // Two steps an episode, one action a chunk: a predict a step, a reward of 1 each.
+  assert.deepEqual(stats, {
+    clock: 'lockstep',
+    starts: 6,
+    chunksSent: 6,
+    episodes: Array(3).fill({ return: 2, steps: 2, terminated: true, truncated: false }),
+  });
+  assert.deepEqual(policy.stats(), stats);
+  assert.equal(played.length, 6);
+  // Each episode's reset is seeded from the base and carries its trial_index, numbered from 0.
+  await waitUntil('three resets', () => env.resets.length === 3);
+  const first = env.resets.splice(0);
+  assert.deepEqual(first.map((r) => r.trial), [0, 1, 2]);
+  assert.equal(new Set(first.map((r) => r.seed)).size, 3, JSON.stringify(first));
+  // The same seed runs the same episodes again.
+  assert.deepEqual(await policy.run(still, { episodes: 3, seed: 5 }), stats);
+  await waitUntil('three resets again', () => env.resets.length === 3);
+  assert.deepEqual(env.resets.splice(0), first);
+
+  // The wall clock's settings throw at once, as do its verbs.
+  for (const [opts, says] of [
+    [{ duration: 1 }, /duration= is for a wall-clock robot/],
+    [{ mode: 'shadow' }, /mode=shadow is for a wall-clock robot/],
+    [{ resume: 'auto' }, /resume= is for a wall-clock robot/],
+    [{ episodes: 0 }, /episodes=0/],
+  ]) {
+    await assert.rejects(policy.run(still, opts), (e) => e instanceof RangeError && says.test(e.message));
+  }
+  await assert.rejects(policy.acquire(), (e) => e instanceof rlmesh.SessionException && /runs in lockstep/.test(e.message));
+  assert.deepEqual(policy.events(), []);
+  assert.equal(env.resets.length, 0, 'nothing was reset');
 });
 
 /** A free loopback port (a daemon listens on it). */

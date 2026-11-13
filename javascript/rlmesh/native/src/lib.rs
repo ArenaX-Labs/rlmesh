@@ -1,6 +1,7 @@
 //! Node-API bindings for real-time sessions (protocol v2): an
 //! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound policy
-//! ([`rlmesh_session::Controller`]) and an MCAP recorder
+//! on its robot's clock ([`rlmesh::realtime`]: the session's
+//! [`rlmesh_session::Controller`], or a lockstep robot's exchange) and an MCAP recorder
 //! ([`rlmesh_session::record::Recorder`]), the Node and Electron twin of the PyO3
 //! binding. The `rlmesh` npm package wraps them (`src/native.ts`);
 //! every rule (packing, binding, the edge, leases, the run loop) stays in
@@ -26,18 +27,20 @@ use napi::bindgen_prelude::{BigInt, Either, Uint8Array, create_custom_tokio_runt
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Error, Result, Status, tokio};
 use napi_derive::napi;
+use rlmesh::lockstep::GymError;
+use rlmesh::realtime::{self, BoundPolicy, LockstepPolicy, LockstepRunError, RunSettings};
 use rlmesh_session::address::Address;
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::edge::{Due, Rejection, Robot};
 use rlmesh_session::record::{RecordError, Recorder};
 use rlmesh_session::sdk::{self, BindPolicyError, EmbeddedHost, ErrorKind};
 use rlmesh_session::spec::apply::{Tensor, Value};
-use rlmesh_session::spec::{BindError, RunOptions};
-use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, ReasonCode};
+use rlmesh_session::spec::{BindError, Policy, RunOptions};
+use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, ReasonCode, RobotClock};
 use rlmesh_session::{
-    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, Resume, RunConfig,
-    RunError, RunEvent, RunMode, SendError, Sent, SessionAddress, SessionError, SkipReason,
-    Snapshot, Step, SystemMonotonicClock,
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, Resume, RunError,
+    RunEvent, RunMode, SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, Step,
+    SystemMonotonicClock,
 };
 
 /// The first line of an error's message, naming its kind for the wrapper.
@@ -127,11 +130,37 @@ fn controller_err(err: ControllerError) -> Error {
     match err {
         ControllerError::Bind(err) => bind_err(err),
         ControllerError::Session(err) => session_err(err),
-        // This binding runs wall-clock robots only.
+        // Annotations ride the wall clock's session streams; a policy
+        // without them is bound through `realtime::bind`.
         ControllerError::Lockstep(robot) => binding_refused(format!(
-            "robot {robot} runs in lockstep, and a policy here drives wall-clock robots only: \
-             run it with Python's realtime.Policy or Rust's rlmesh::realtime"
+            "binding refused: robot {robot} runs in lockstep, and a policy that publishes \
+             (publishes) runs on the wall clock only"
         )),
+    }
+}
+
+/// A lockstep robot's failure: the binder's refusal of its parts is a
+/// `BindingRefused`.
+fn lockstep_bind_err(err: GymError) -> Error {
+    match err {
+        GymError::Map(why) => binding_refused(why),
+        other => lockstep_err(other),
+    }
+}
+
+fn lockstep_err(err: GymError) -> Error {
+    match err {
+        GymError::Session(err) => session_err(err),
+        GymError::Malformed(why) | GymError::Value(why) => invalid(why),
+        GymError::Timeout(_) => error("TimeoutError", &[], err.to_string()),
+        other => exception(other.to_string()),
+    }
+}
+
+fn realtime_bind_err(err: realtime::BindError) -> Error {
+    match err {
+        realtime::BindError::Policy(err) => bind_policy_err(err),
+        realtime::BindError::Lockstep(err) => lockstep_bind_err(err),
     }
 }
 
@@ -1411,9 +1440,11 @@ pub struct SkipCount {
 }
 
 /// The start, skip and completion counters, and the input the
-/// starts are phased after.
+/// starts are phased after: a wall-clock run's.
 #[napi(object)]
 pub struct RunStats {
+    /// `wall`.
+    pub clock: String,
     /// The input whose publication the starts are phased just after.
     pub aligned_to: Option<String>,
     /// How far after it, in ms.
@@ -1433,6 +1464,52 @@ pub struct RunStats {
     /// until `resume()`.
     pub parked: Vec<String>,
 }
+
+/// One episode of a lockstep run.
+#[napi(object)]
+pub struct EpisodeStats {
+    /// Its return: every step's reward, summed.
+    pub reward: f64,
+    /// Lockstep steps taken.
+    pub steps: i64,
+    pub terminated: bool,
+    pub truncated: bool,
+}
+
+/// A lockstep run's counters.
+#[napi(object)]
+pub struct LockstepStats {
+    /// `lockstep`.
+    pub clock: String,
+    /// Calls of `predict`.
+    pub starts: i64,
+    /// Chunks played, one per start.
+    pub chunks_sent: i64,
+    /// Every episode, in order; the last is unfinished when the run was
+    /// stopped.
+    pub episodes: Vec<EpisodeStats>,
+}
+
+fn lockstep_stats(stats: &realtime::LockstepStats) -> LockstepStats {
+    LockstepStats {
+        clock: "lockstep".into(),
+        starts: seq(stats.starts),
+        chunks_sent: seq(stats.chunks_sent),
+        episodes: stats
+            .episodes
+            .iter()
+            .map(|e| EpisodeStats {
+                reward: e.reward,
+                steps: seq(e.steps),
+                terminated: e.terminated,
+                truncated: e.truncated,
+            })
+            .collect(),
+    }
+}
+
+/// A run's counters, on its robot's clock.
+type AnyStats = Either<RunStats, LockstepStats>;
 
 /// An event the run loop reported.
 #[napi(object)]
@@ -1455,6 +1532,7 @@ fn run_stats(controller: &Controller) -> RunStats {
     let stats = controller.stats();
     let ms = |d: Option<Duration>| d.map(|d| d.as_secs_f64() * 1e3);
     RunStats {
+        clock: "wall".into(),
         aligned_to: controller.aligned_input(),
         phase_offset_ms: controller.phase_offset().as_secs_f64() * 1e3,
         starts: seq(stats.starts),
@@ -1552,6 +1630,12 @@ impl NativeStep {
     }
 }
 
+/// How a run on either clock ended.
+enum Ran {
+    Wall(std::result::Result<RunStats, RunError<String>>),
+    Lockstep(std::result::Result<LockstepStats, LockstepRunError<String>>),
+}
+
 /// `predict`, called from the run loop's thread: the observation goes to JS
 /// and the thread waits for [`NativePolicy::reply`]. Each completed start
 /// goes to `on_step`, without waiting.
@@ -1600,11 +1684,20 @@ impl Predictor for JsPredictor {
     }
 }
 
-/// A policy bound to a robot: inputs, leases, chunks and the run loop.
+/// What a policy is bound through: the controller of wall-clock robots,
+/// or one lockstep robot's exchange.
+#[derive(Clone)]
+enum Driving {
+    Wall(Arc<Controller>),
+    Lockstep(Arc<LockstepPolicy>),
+}
+
+/// A policy bound to a robot: inputs, leases, chunks and the run loop, on
+/// the robot's clock.
 #[napi]
 pub struct NativePolicy {
     name: String,
-    controller: Mutex<Option<Arc<Controller>>>,
+    controller: Mutex<Option<Driving>>,
     published: Option<Arc<rlmesh_session::edge::Published>>,
     replies: Mutex<Option<SyncSender<Reply>>>,
     closing: Arc<AtomicBool>,
@@ -1613,7 +1706,8 @@ pub struct NativePolicy {
 /// Attaches as `name` at `options.priority`, waits for `robot`'s parts
 /// (`null`: the session's view of every robot, each under its name), binds
 /// `policy_json` (the policy map) with the run-time options, and
-/// declares the binding.
+/// declares the binding, on the robot's clock as it declared it: a
+/// lockstep robot is bound alone, through its exchange.
 #[napi]
 pub async fn bind_policy(
     address: String,
@@ -1627,26 +1721,41 @@ pub async fn bind_policy(
     let class = priority(options.priority.as_deref().unwrap_or("model"))?;
     let run_options = run_options(&name, robot.as_deref(), &options)
         .map_err(|why| binding_refused(format!("binding refused: {why}")))?;
-    let (controller, published) = match options.publishes_json.as_deref() {
-        Some(publishes) => sdk::bind_policy_publishing(
-            &address,
-            &name,
-            &policy_json,
-            publishes,
-            &run_options,
-            class,
-            wait,
-        )
-        .await
-        .map(|(controller, published)| (controller, Some(Arc::new(published)))),
-        None => sdk::bind_policy(&address, &name, &policy_json, &run_options, class, wait)
+    let (driving, published) = match options.publishes_json.as_deref() {
+        Some(publishes) => {
+            let (controller, published) = sdk::bind_policy_publishing(
+                &address,
+                &name,
+                &policy_json,
+                publishes,
+                &run_options,
+                class,
+                wait,
+            )
             .await
-            .map(|controller| (controller, None)),
-    }
-    .map_err(bind_policy_err)?;
+            .map_err(bind_policy_err)?;
+            (
+                Driving::Wall(Arc::new(controller)),
+                Some(Arc::new(published)),
+            )
+        }
+        None => {
+            let policy = Policy::parse(&policy_json).map_err(|why| {
+                bind_policy_err(BindPolicyError::Policy(format!("{name}: {why}")))
+            })?;
+            let bound = realtime::bind(&address, &name, &policy, &run_options, class, wait)
+                .await
+                .map_err(realtime_bind_err)?;
+            let driving = match bound {
+                BoundPolicy::Wall(controller) => Driving::Wall(Arc::new(controller)),
+                BoundPolicy::Lockstep(policy) => Driving::Lockstep(Arc::new(policy)),
+            };
+            (driving, None)
+        }
+    };
     Ok(NativePolicy {
         name,
-        controller: Mutex::new(Some(Arc::new(controller))),
+        controller: Mutex::new(Some(driving)),
         published,
         replies: Mutex::new(None),
         closing: Arc::new(AtomicBool::new(false)),
@@ -1654,12 +1763,33 @@ pub async fn bind_policy(
 }
 
 impl NativePolicy {
-    fn controller(&self) -> Result<Arc<Controller>> {
+    fn bound(&self) -> Result<Driving> {
         self.controller
             .lock()
             .ok()
             .and_then(|c| c.clone())
             .ok_or_else(|| exception(format!("policy {} is closed", self.name)))
+    }
+
+    /// The wall clock's controller: a verb only it has (leases, sends,
+    /// health) is refused for a lockstep robot.
+    fn controller(&self) -> Result<Arc<Controller>> {
+        match self.bound()? {
+            Driving::Wall(controller) => Ok(controller),
+            Driving::Lockstep(policy) => Err(exception(format!(
+                "policy {} drives robot {}, which runs in lockstep: this call is for \
+                 wall-clock robots (run() steps a lockstep robot, its lease held for it)",
+                self.name,
+                policy.robot()
+            ))),
+        }
+    }
+
+    fn binding(&self) -> Result<Arc<rlmesh_session::spec::bind::Binding>> {
+        Ok(match self.bound()? {
+            Driving::Wall(controller) => controller.binding(),
+            Driving::Lockstep(policy) => policy.binding(),
+        })
     }
 }
 
@@ -1669,6 +1799,17 @@ impl NativePolicy {
     #[napi(getter)]
     pub fn name(&self) -> String {
         self.name.clone()
+    }
+
+    /// The bound robot's clock: `wall`, or `lockstep` (one robot that
+    /// declared it).
+    #[napi(getter)]
+    pub fn clock(&self) -> Result<String> {
+        Ok(match self.bound()? {
+            Driving::Wall(_) => "wall",
+            Driving::Lockstep(_) => "lockstep",
+        }
+        .into())
     }
 
     /// The parts this policy publishes, as the host normalised them, in
@@ -1717,39 +1858,38 @@ impl NativePolicy {
     /// The binding table, as the cockpit shows it.
     #[napi(getter)]
     pub fn table(&self) -> Result<String> {
-        Ok(self.controller()?.binding().table())
+        Ok(self.binding()?.table())
     }
 
     /// The binding table as canonical JSON (what the fingerprint is over).
     #[napi(getter)]
     pub fn table_json(&self) -> Result<String> {
-        Ok(self.controller()?.binding().table_text())
+        Ok(self.binding()?.table_text())
     }
 
     /// The binding fingerprint, 16 hex digits.
     #[napi(getter)]
     pub fn fingerprint(&self) -> Result<String> {
-        Ok(self.controller()?.binding().fingerprint.to_string())
+        Ok(self.binding()?.fingerprint.to_string())
     }
 
     /// Warnings the binder accepted the binding with.
     #[napi(getter)]
     pub fn warnings(&self) -> Result<Vec<String>> {
-        Ok(self.controller()?.binding().warnings.clone())
+        Ok(self.binding()?.warnings.clone())
     }
 
     /// The replan rate R.
     #[napi(getter)]
     pub fn replan_hz(&self) -> Result<f64> {
-        Ok(self.controller()?.binding().replan_hz)
+        Ok(self.binding()?.replan_hz)
     }
 
     /// Each bound action.
     #[napi]
     pub fn actions(&self) -> Result<Vec<ActionInfo>> {
         Ok(self
-            .controller()?
-            .binding()
+            .binding()?
             .actions
             .iter()
             .map(|a| ActionInfo {
@@ -1819,23 +1959,36 @@ impl NativePolicy {
         controller.release().await.map_err(session_err)
     }
 
-    /// Whether this policy holds every lease its binding commands.
+    /// Whether this policy holds every lease its binding commands (a
+    /// lockstep robot's, always: it is taken at bind).
     #[napi]
     pub fn holds(&self) -> Result<bool> {
-        Ok(self.controller()?.holds())
+        Ok(match self.bound()? {
+            Driving::Wall(controller) => controller.holds(),
+            Driving::Lockstep(_) => true,
+        })
     }
 
-    /// Runs the policy loop on a thread of its own until `stop()`,
-    /// `duration_s`, or a failure, calling `predict(observation)` on the JS
-    /// thread at the replan rate with one inference in flight; each call is
-    /// answered with `reply`. `mode` is `command` (default) or `shadow`;
-    /// `on_step` gets each completed start. `resume` is `manual` (default:
-    /// a part a higher class took stays parked until `resume()`) or `auto`.
-    /// If a reply is an error, the
-    /// leases are released and the run rejects with code `Predict`.
-    /// Resolves to the run's counters (taken as it returns, so a `close`
-    /// racing the resolution cannot lose them).
+    /// Runs the policy on a thread of its own, on its robot's clock,
+    /// calling `predict(observation)` on the JS thread; each call is
+    /// answered with `reply`. `on_step` gets each completed start. If a
+    /// reply is an error, the leases are released and the run rejects with
+    /// code `Predict`. Resolves to the run's counters, with its `clock`
+    /// (taken as it returns, so a `close` racing the resolution cannot lose
+    /// them).
+    ///
+    /// Wall clock: until `stop()`, `duration_s`, or a failure, at the
+    /// replan rate with one inference in flight. `mode` is `command`
+    /// (default) or `shadow`; `resume` is `manual` (default: a part a
+    /// higher class took stays parked until `resume()`) or `auto`.
+    ///
+    /// Lockstep: `episodes` episodes (default 1), each from a reset seeded
+    /// from `seed` as a model run seeds it, one `predict` per chunk, until
+    /// each ends or `stop()`. `duration_s`, `mode: shadow` and `resume`
+    /// throw `ValueError` here, as `episodes` and `seed` do on the wall
+    /// clock.
     #[napi]
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &self,
         predict: PredictFn,
@@ -1843,20 +1996,40 @@ impl NativePolicy {
         mode: Option<String>,
         on_step: Option<StepFn>,
         resume: Option<String>,
-    ) -> Result<RunStats> {
-        let controller = self.controller()?;
+        episodes: Option<i64>,
+        seed: Option<i64>,
+    ) -> Result<AnyStats> {
+        let bound = self.bound()?;
         let mode = match mode.as_deref() {
             None => RunMode::Command,
             Some(name) => RunMode::from_name(name)
                 .ok_or_else(|| invalid(format!("mode {name:?}: 'command' or 'shadow'")))?,
         };
-        let resume = match resume.as_deref() {
-            None => Resume::Manual,
-            Some(name) => Resume::from_name(name)
-                .ok_or_else(|| invalid(format!("resume {name:?}: 'manual' or 'auto'")))?,
+        let resume = resume
+            .as_deref()
+            .map(|name| {
+                Resume::from_name(name)
+                    .ok_or_else(|| invalid(format!("resume {name:?}: 'manual' or 'auto'")))
+            })
+            .transpose()?;
+        let episodes = episodes
+            .map(|n| {
+                u64::try_from(n)
+                    .map_err(|_| invalid(format!("episodes={n}: a count, not negative")))
+            })
+            .transpose()?;
+        let settings = RunSettings {
+            duration: duration_s.map(timeout).transpose()?,
+            mode,
+            resume,
+            episodes,
+            seed,
         };
-        let mut config = RunConfig::default().mode(mode).resume(resume);
-        config.duration = duration_s.map(timeout).transpose()?;
+        let clock = match &bound {
+            Driving::Wall(_) => RobotClock::Wall,
+            Driving::Lockstep(_) => RobotClock::Lockstep,
+        };
+        settings.check(clock).map_err(invalid)?;
         let (tx, rx) = mpsc::sync_channel(1);
         {
             let mut slot = self.replies.lock().map_err(|_| exception("poisoned"))?;
@@ -1874,26 +2047,38 @@ impl NativePolicy {
             replies: rx,
             closing: self.closing.clone(),
         };
-        let result = tokio::task::spawn_blocking(move || {
-            controller
-                .run(&mut predictor, config)
-                .map(|()| run_stats(&controller))
+        let ran = tokio::task::spawn_blocking(move || match bound {
+            Driving::Wall(controller) => Ran::Wall(
+                controller
+                    .run(&mut predictor, settings.wall())
+                    .map(|()| run_stats(&controller)),
+            ),
+            Driving::Lockstep(policy) => Ran::Lockstep(
+                policy
+                    .run(&mut predictor, &settings)
+                    .map(|stats| lockstep_stats(&stats)),
+            ),
         })
         .await;
         if let Ok(mut slot) = self.replies.lock() {
             *slot = None;
         }
-        match result {
-            Ok(Ok(stats)) => Ok(stats),
-            Ok(Err(RunError::Predict(message))) => Err(error("Predict", &[], message)),
-            Ok(Err(RunError::Send(err))) => Err(send_err(err)),
-            Ok(Err(RunError::Lost(reason))) => Err(error(
+        match ran.map_err(|join| exception(format!("the run loop failed: {join}")))? {
+            Ran::Wall(Ok(stats)) => Ok(Either::A(stats)),
+            Ran::Wall(Err(RunError::Predict(message))) => Err(error("Predict", &[], message)),
+            Ran::Wall(Err(RunError::Send(err))) => Err(send_err(err)),
+            Ran::Wall(Err(RunError::Lost(reason))) => Err(error(
                 "SessionLost",
                 &[("reason", format!("{:?}", sdk::reason_name(reason.code)))],
                 format!("the session was lost: {reason}"),
             )),
-            Ok(Err(RunError::Rebind(why))) => Err(binding_refused(why)),
-            Err(join) => Err(exception(format!("the run loop failed: {join}"))),
+            Ran::Wall(Err(RunError::Rebind(why))) => Err(binding_refused(why)),
+            Ran::Lockstep(Ok(stats)) => Ok(Either::B(stats)),
+            Ran::Lockstep(Err(LockstepRunError::Predict(message))) => {
+                Err(error("Predict", &[], message))
+            }
+            Ran::Lockstep(Err(LockstepRunError::Settings(why))) => Err(invalid(why)),
+            Ran::Lockstep(Err(LockstepRunError::Robot(err))) => Err(lockstep_err(err)),
         }
     }
 
@@ -1920,7 +2105,10 @@ impl NativePolicy {
     /// Asks a `run` in progress to return.
     #[napi]
     pub fn stop(&self) -> Result<()> {
-        self.controller()?.stop();
+        match self.bound()? {
+            Driving::Wall(controller) => controller.stop(),
+            Driving::Lockstep(policy) => policy.stop(),
+        }
         Ok(())
     }
 
@@ -1940,19 +2128,26 @@ impl NativePolicy {
         read_health(controller.participant(), wait, timeout_s).await
     }
 
-    /// The start, skip and completion counters.
+    /// The latest run's counters, with its `clock`. Wall: starts, skips
+    /// and completions. Lockstep: starts, chunks and one entry per episode.
     #[napi]
-    pub fn stats(&self) -> Result<RunStats> {
-        let controller = self.controller()?;
-        Ok(run_stats(&controller))
+    pub fn stats(&self) -> Result<AnyStats> {
+        Ok(match self.bound()? {
+            Driving::Wall(controller) => Either::A(run_stats(&controller)),
+            Driving::Lockstep(policy) => Either::B(lockstep_stats(&policy.stats())),
+        })
     }
 
-    /// Takes the events reported so far, oldest first.
+    /// Takes the events reported so far, oldest first (none for a
+    /// lockstep robot: its run waits on nothing and nobody takes its
+    /// lease).
     #[napi]
     pub fn events(&self) -> Result<Vec<RunEventInfo>> {
-        Ok(self
-            .controller()?
-            .drain_events()
+        let events = match self.bound()? {
+            Driving::Wall(controller) => controller.drain_events(),
+            Driving::Lockstep(_) => Vec::new(),
+        };
+        Ok(events
             .into_iter()
             .map(|event| {
                 let mut info = RunEventInfo {
@@ -2010,12 +2205,19 @@ impl NativePolicy {
     #[napi]
     pub async fn close(&self) -> Result<()> {
         let taken = self.controller.lock().map(|mut c| c.take()).unwrap_or(None);
-        let Some(controller) = taken else {
+        let Some(driving) = taken else {
             return Ok(());
         };
         // A `predict` waiting on JS gives up, so the run can return.
         self.closing.store(true, Ordering::Relaxed);
-        sdk::close_policy(controller).await.map_err(session_err)
+        match driving {
+            Driving::Wall(controller) => sdk::close_policy(controller).await.map_err(session_err),
+            Driving::Lockstep(policy) => {
+                policy.stop();
+                policy.close().await;
+                Ok(())
+            }
+        }
     }
 }
 

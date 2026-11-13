@@ -200,6 +200,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - C#: an Experimental `RLMesh` package for serving envs, and a `com.rlmesh.unity` integration, not yet verified on IL2CPP.
 - Unreal Engine 5: an `RLMesh` plugin that serves game state as an env.
 - JavaScript: the `rlmesh` npm package joins a session from a browser through `rlmesh-gateway`, or runs a session in-process in Node 22+; `rlmesh/managed` is a client for the managed API. See [the browser binding](docs/browser.md) and [the Node binding](docs/node.md).
+- JavaScript: a Node `Policy` runs a lockstep robot or a served Gym env as Python's does, by `episodes` and `seed` (with `trial_index` to an env that declared it), learning the robot's clock at `bind` (`policy.clock`); `run` and `stats` resolve to `LockstepStats` or `PolicyStats`, told apart by `clock`. See [lockstep robots](docs/node.md#lockstep-robots).
 - `examples/web` runs a session in the browser (`mise run demo:web`), and `examples/chrono` serves a Project Chrono robot arm from C++17.
 
 ### Changed

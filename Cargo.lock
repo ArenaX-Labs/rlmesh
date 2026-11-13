@@ -5571,6 +5571,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "rlmesh",
  "rlmesh-session",
  "tokio",
 ]

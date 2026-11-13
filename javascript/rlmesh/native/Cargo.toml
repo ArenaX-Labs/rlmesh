@@ -29,6 +29,9 @@ fleet = ["rlmesh-session/fleet"]
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt"] }
 napi-derive = "3"
 bytes = { workspace = true }
+# The real-time policy on either clock (`rlmesh::realtime`), as the PyO3
+# binding runs it.
+rlmesh = { workspace = true, default-features = false }
 rlmesh-session = { workspace = true, features = ["record"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 

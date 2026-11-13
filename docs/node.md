@@ -10,7 +10,7 @@ in-process: a session host, robots with their edges, and bound policies, on
 the session's own transport (Zenoh, one session per traffic class). It is
 Python's `rlmesh.realtime`, one to one, over a Node-API addon
 (`javascript/rlmesh/native`, napi-rs) that binds `rlmesh-session`
-(its edge included) directly, as PyO3 does. Every rule (normalisation, binding,
+(its edge included) and `rlmesh::realtime` directly, as PyO3 does. Every rule (normalisation, binding,
 conversions, leases, the edge, the run loop) runs in Rust.
 
 A page cannot do this: it has no raw TCP or UDP. Browsers join through
@@ -76,6 +76,9 @@ block instead of the `finally`.
 | `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                       |
 | `policy.run(predict, mode=RunMode.SHADOW)`         | `await policy.run(predict, { mode: 'shadow' })`                    |
 | `policy.run(predict, resume=Resume.AUTO)`          | `await policy.run(predict, { resume: 'auto' })`                    |
+| `policy.clock` (`Clock.LOCKSTEP`)                  | `policy.clock` (`'lockstep'`)                                      |
+| `policy.run(predict, episodes=20, seed=7)`         | `await policy.run(predict, { episodes: 20, seed: 7 })`             |
+| `stats["episodes"][0]["return"]`                   | `stats.episodes[0].return`                                         |
 | `policy.resume()` → `["ur10e:arm"]`                | `policy.resume()` → `['ur10e:arm']`                                |
 | `policy.health(wait=True)["links"]["ur10e"]`       | `(await policy.health({ wait: true })).links['ur10e']`             |
 | `on_step=f` (`step.shadow`, `step.actions`)        | `onStep: f` (`step.shadow`, `step.actions`)                        |
@@ -86,6 +89,30 @@ block instead of the `finally`.
 | `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                     |
 
 The rules are R-30 in the [parity spec](specs/language-parity/rules.md).
+
+## Lockstep robots
+
+A policy follows its robot's clock, as in Python ([one policy on both
+clocks](clocks.md#one-policy-on-both-clocks)): `bind` learns it from what the
+robot declared on joining (`policy.clock`, `'wall'` or `'lockstep'`), and
+`run` follows it. A lockstep robot (a Gym env served with Python's
+`rlmesh.EnvServer`, or a Python `Robot(..., clock=Clock.LOCKSTEP)`) runs by
+episodes, each from a reset seeded from `seed` as a model run seeds it, and
+an env that declared the `trial_index` reset option gets each episode's
+ordinal in it:
+
+```js
+const policy = new Policy(BALANCE, { session: "127.0.0.1:5555", name: "balance" });
+await policy.bind("cartpole");
+const stats = await policy.run(lean, { episodes: 10, seed: 7 }); // stats.clock === 'lockstep'
+for (const episode of stats.episodes) console.log(episode.return, episode.steps);
+```
+
+`duration`, `mode: 'shadow'` and `resume` throw a `RangeError` on a lockstep
+robot, as `episodes` and `seed` do on the wall clock; `run` and `stats`
+resolve to `LockstepStats` or `PolicyStats`, told apart by `clock`. A Node
+`Robot` runs on the wall clock: serving a lockstep robot from Node is future
+work.
 
 ## Threads
 
@@ -185,5 +212,5 @@ mise run test:js:native    # the twin of test_v2_session.py, in Node
 mise run bench:js:native   # the same 1 kHz robot and 50 Hz policy, in Node and in Python
 ```
 
-The addon has no npm dependencies. On linux-x64 it is 9.3 MB stripped (4.1
+The addon has no npm dependencies. On linux-x64 it is 15.3 MB stripped (6.8
 MB gzipped). Publishing per-platform prebuilds is future work.
