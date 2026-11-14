@@ -83,6 +83,7 @@ class GateImages:
     env: str
     model: str
     exits: str
+    raises: str
 
 
 def _wheel() -> Path:
@@ -110,15 +111,18 @@ def _image_exists(tag: str) -> bool:
 
 
 def build_images(run: str) -> GateImages:
-    """Build the env, model and failing-env images from this checkout's wheel."""
+    """Build the env, model, failing-env and failing-model images from this
+    checkout's wheel."""
     images = GateImages(
         run=run,
         env=f"{run}-env:gate",
         model=f"{run}-model:gate",
         exits=f"{run}-exits:gate",
+        raises=f"{run}-raises:gate",
     )
     if os.environ.get("RLMESH_DOCKER_GATE_KEEP_IMAGES") == "1" and all(
-        _image_exists(tag) for tag in (images.env, images.model, images.exits)
+        _image_exists(tag)
+        for tag in (images.env, images.model, images.exits, images.raises)
     ):
         return images
     wheel = _wheel()
@@ -129,11 +133,13 @@ def build_images(run: str) -> GateImages:
         shutil.copy2(examples / "env/entrypoint.py", ctx / "env_entrypoint.py")
         shutil.copy2(examples / "model/entrypoint.py", ctx / "model_entrypoint.py")
         shutil.copy2(IMAGES / "exits.py", ctx / "exits.py")
+        shutil.copy2(IMAGES / "raises.py", ctx / "raises.py")
         base = os.environ.get("RLMESH_DOCKER_GATE_BASE", "python:3.12-slim")
         for target, tag in (
             ("env", images.env),
             ("model", images.model),
             ("exits", images.exits),
+            ("raises", images.raises),
         ):
             docker(
                 "build",

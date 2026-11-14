@@ -15,6 +15,7 @@ from os import PathLike, fspath
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from .._client._endpoint import redact_address
+from .._rlmesh import redact_secrets as _redact_secrets
 from .._rlmesh import sandbox_host_identity as _sandbox_host_identity
 from .._rlmesh import sandbox_session_port as _sandbox_session_port
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
@@ -291,17 +292,47 @@ def _container_running(container_id: str) -> bool | None:
     return proc.stdout.strip() == "true"
 
 
-def _container_logs(container_id: str, tail: int = 50) -> str:
+def container_stopped(container_id: str) -> bool:
+    """Whether the container is known to have stopped (not when unknowable)."""
+    return _container_running(container_id) is False
+
+
+#: The most log lines an error quotes from a container.
+CONTAINER_LOG_TAIL = 40
+
+
+def _container_logs(container_id: str, tail: int = CONTAINER_LOG_TAIL) -> str:
     """Recent container logs for error messages, degrading instead of raising.
 
     Only ever called while building a failure message, so a stalled daemon
-    yields a placeholder rather than masking the original error.
+    yields a placeholder rather than masking the original error. A secret
+    the container printed (its address key, its host identity) reads ``…``.
     """
     try:
         proc = run_docker(["docker", "logs", "--tail", str(tail), container_id])
     except RuntimeError as exc:
         return f"<no logs: {exc}>"
-    return (proc.stdout + proc.stderr).strip()
+    return _redact_secrets((proc.stdout + proc.stderr).strip())
+
+
+def with_container_logs(exc: BaseException, container_id: str, role: str) -> None:
+    """Add the last lines ``role``'s container logged to ``exc``, in place.
+
+    For a failure the container caused (a model's predict raised), read
+    before the container goes, since its logs go with it. The lines join
+    the exception's message when it has one (so ``str(exc)`` shows them),
+    else its notes.
+    """
+    logs = _container_logs(container_id)
+    if not logs:
+        return
+    text = f"the {role} container's last log lines:\n{logs}"
+    args = exc.args
+    add_note: Callable[[str], None] | None = getattr(exc, "add_note", None)
+    if len(args) == 1 and isinstance(args[0], str):
+        exc.args = (f"{args[0]}\n{text}",)
+    elif add_note is not None:  # Python 3.11+
+        add_note(text)
 
 
 class SandboxLifecycle:

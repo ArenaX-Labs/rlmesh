@@ -19,3 +19,8 @@ ENTRYPOINT ["python", "entrypoint.py"]
 FROM base AS exits
 COPY exits.py entrypoint.py
 ENTRYPOINT ["python", "entrypoint.py"]
+
+# A model whose predict raises an empty AssertionError: its run fails.
+FROM base AS raises
+COPY raises.py entrypoint.py
+ENTRYPOINT ["python", "entrypoint.py"]

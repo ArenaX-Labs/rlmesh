@@ -115,6 +115,7 @@ __all__ = [
     "normalize_connect_address",
     "parse_address",
     "predict_seed",
+    "redact_secrets",
     "resolve_execution_horizon",
     "resolve_workflow_edition_rungs",
     "run_cli",
@@ -1442,6 +1443,8 @@ def normalize_connect_address(address: typing.Optional[builtins.str] = None) -> 
 def parse_address(text: str, session: bool = False) -> dict[str, typing.Any]: ...
 
 def predict_seed(episode_seed: int, predict_index: int) -> int: ...
+
+def redact_secrets(text: str) -> str: ...
 
 def resolve_execution_horizon(explicit: typing.Optional[builtins.int] = None, loaded: typing.Optional[builtins.int] = None, timing: typing.Optional[builtins.int] = None, native_chunk: typing.Optional[builtins.int] = None) -> builtins.int: ...
 

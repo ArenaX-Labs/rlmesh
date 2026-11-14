@@ -259,6 +259,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `describe_json(..., served_env=[])` raises `ValueError` (it raised `IndexError`).
 - `Model.serve(..., options=ServeOptions(workflow_edition=X))` declares `X` even when `RLMESH_WORKFLOW_EDITION` is set.
 - Batch and chunk-batch model failures keep their `ModelException` class, recoverability and message.
+- An exception a served model's predict raises reaches the driver with its type, message and traceback tail (`[INTERNAL] AssertionError` and the failing line, not an empty `[INTERNAL] `), and `SandboxModel.run` and `rlmesh doctor` add the model container's last 40 log lines, secrets redacted, before the container goes.
 - `EnvServer.shutdown()` from inside one of the server's own callbacks under `start()` drains and returns instead of timing out.
 - A vector env served with `start()` runs every call on one thread, so a thread-bound env works.
 - A foreground `EnvServer.serve()` restores the process's SIGTERM handler when it returns.

@@ -295,7 +295,9 @@ fn container_logs(container_id: &str) -> Result<String> {
         }
         logs.push_str(&String::from_utf8_lossy(&output.stderr));
     }
-    Ok(logs)
+    // A secret the container printed (its address key, its identity) is
+    // left out of the report that quotes it.
+    Ok(rlmesh_session::address::redact_text(&logs))
 }
 
 fn write_build_context(spec: &EffectiveSandboxSpec, tempdir: &TempDir) -> Result<()> {

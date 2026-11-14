@@ -24,6 +24,22 @@ pub fn launch_identity() -> PyResult<(String, String)> {
     Ok((identity.to_string(), key.to_string()))
 }
 
+/// `text` (a container's log lines) with every launch secret in it, an
+/// address key or a host identity, left out (`…`).
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def redact_secrets(text: str) -> str: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn redact_secrets(text: &str) -> String {
+    rlmesh_session::address::redact_text(text)
+}
+
 /// The address key of a host identity.
 #[cfg_attr(
     feature = "stub-gen",

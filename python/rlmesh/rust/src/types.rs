@@ -273,9 +273,87 @@ pub(crate) fn resolve_callback_error(err: &PyErr) -> Error {
     })
 }
 
+/// The traceback frames a served model's failure carries at most: the ones
+/// nearest the raise, where the model's own code failed.
+const SERVED_TRACEBACK_FRAMES: usize = 8;
+/// The most traceback text a served model's failure carries, in bytes.
+const SERVED_TRACEBACK_BYTES: usize = 4096;
+
+/// The formatted frames of `tb` from the model's own code on: the leading
+/// frames inside the `rlmesh` package (the glue that called the model) are
+/// left out, the ones under the model's code (a library it called, rlmesh's
+/// included) kept.
+fn model_frames(py: Python<'_>, tb: &Bound<'_, pyo3::types::PyTraceback>) -> PyResult<Vec<String>> {
+    let traceback = py.import("traceback")?;
+    let package = py
+        .import("rlmesh")?
+        .getattr("__file__")?
+        .extract::<String>()?;
+    let package = std::path::Path::new(&package)
+        .parent()
+        .map(|dir| format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR))
+        .unwrap_or_default();
+    let summary = traceback.call_method1("extract_tb", (tb,))?;
+    let frames: Vec<Bound<'_, PyAny>> = summary.try_iter()?.collect::<PyResult<_>>()?;
+    let first = frames
+        .iter()
+        .position(|frame| {
+            frame
+                .getattr("filename")
+                .and_then(|name| name.extract::<String>())
+                .map_or(true, |name| {
+                    package.is_empty() || !name.starts_with(&package)
+                })
+        })
+        .unwrap_or(0);
+    let kept = pyo3::types::PyList::new(py, &frames[first..])?;
+    traceback.call_method1("format_list", (kept,))?.extract()
+}
+
+/// What a model's callback raised outside the RLMesh error tree, as the
+/// driver reads it once the model is served elsewhere: `Type: message`
+/// (just `Type` for an `assert`, whose message is empty), then the last
+/// frames of its traceback, so the cause survives the model's process.
+/// Secrets in it read `…` ([`rlmesh_session::address::redact_text`]).
+fn foreign_exception_text(err: &PyErr) -> String {
+    Python::attach(|py| {
+        let value = err.value(py);
+        let headline = py
+            .import("traceback")
+            .and_then(|traceback| traceback.call_method1("format_exception_only", (value,)))
+            .and_then(|lines| lines.extract::<Vec<String>>())
+            .map(|lines| lines.concat().trim_end().to_string())
+            .unwrap_or_else(|_| err.to_string());
+        let frames = err
+            .traceback(py)
+            .and_then(|tb| model_frames(py, &tb).ok())
+            .unwrap_or_default();
+        let mut text = headline;
+        if !frames.is_empty() {
+            let kept = &frames[frames.len().saturating_sub(SERVED_TRACEBACK_FRAMES)..];
+            let mut tail = kept.concat();
+            if tail.len() > SERVED_TRACEBACK_BYTES {
+                let mut start = tail.len() - SERVED_TRACEBACK_BYTES;
+                while !tail.is_char_boundary(start) {
+                    start += 1;
+                }
+                tail = format!("  …\n{}", &tail[start..]);
+            } else if kept.len() < frames.len() {
+                tail = format!("  …\n{tail}");
+            }
+            text.push_str("\nTraceback (most recent call last):\n");
+            text.push_str(tail.trim_end());
+        }
+        rlmesh_session::address::redact_text(&text)
+    })
+}
+
 /// The facade error a Python exception raised by a model callback becomes:
 /// a `ModelException` keeps its recoverable flag as a model failure with code
-/// `INTERNAL`; anything else is an internal failure with the exception's text.
+/// `INTERNAL`; anything else is an internal failure naming the exception's
+/// type, with its message and its traceback's tail
+/// ([`foreign_exception_text`]). In process, the exception itself is
+/// raised; this text is what a model served elsewhere sends.
 pub(crate) fn model_callback_error(err: &PyErr) -> Error {
     Python::attach(|py| {
         let value = err.value(py);
@@ -291,7 +369,7 @@ pub(crate) fn model_callback_error(err: &PyErr) -> Error {
                 is_recoverable,
             })
         } else {
-            Error::Internal(raw_exception_text(value))
+            Error::Internal(foreign_exception_text(err))
         }
     })
 }

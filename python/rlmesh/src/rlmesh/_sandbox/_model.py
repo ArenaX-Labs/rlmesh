@@ -17,12 +17,14 @@ from ._sources import looks_like_gym_id
 from .session import (
     SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
     SandboxRuntime,
+    container_stopped,
     normalize_gpus,
     normalize_user,
     reject_sandbox_option_params,
     start_prebuilt_container,
     string_sequence,
     wait_serving,
+    with_container_logs,
 )
 
 if TYPE_CHECKING:
@@ -176,7 +178,12 @@ class SandboxModel:
         Serves the container first; a local env is served in its session, and
         a :class:`~rlmesh.SandboxEnv`'s session is joined from the container.
         """
-        return self._served().run(env, **options)
+        model = self._served()
+        try:
+            return model.run(env, **options)
+        except Exception as exc:
+            self._explain(exc)
+            raise
 
     def run_routes(
         self, envs: Sequence[LocalEnvTarget], **options: Any
@@ -186,7 +193,31 @@ class SandboxModel:
         Experimental. Serves the container first; see
         :meth:`Model.run_routes <rlmesh.Model.run_routes>`.
         """
-        return self._served().run_routes(envs, **options)
+        model = self._served()
+        try:
+            results = model.run_routes(envs, **options)
+        except Exception as exc:
+            self._explain(exc)
+            raise
+        for result in results:
+            if isinstance(result, Exception):
+                self._explain(result)
+        return results
+
+    def _explain(self, exc: Exception) -> None:
+        """Add the container's last log lines to a failure the model caused.
+
+        A model failure (its predict raised: a ``ModelException``) or any
+        failure once the container stopped carries what the container
+        logged, a traceback included, which is gone once it is removed.
+        """
+        from .._rlmesh import ModelException
+
+        container_id = self._container_id
+        if container_id is None:
+            return
+        if isinstance(exc, ModelException) or container_stopped(container_id):
+            with_container_logs(exc, container_id, "model")
 
     def bind(self, env: LocalEnvTarget, **options: Any) -> Binding[Any, Any]:
         """Bind the served model to ``env``, as :meth:`rlmesh.Model.bind` does.

@@ -157,7 +157,7 @@ fn probe_env(
         Ok(env) => env,
         Err(error) => return Ok(doctor::failed_handshake(ProbeSubject::Environment, &error)),
     };
-    Ok(doctor::probe_env(
+    let mut report = doctor::probe_env(
         &env.address,
         &EnvProbeOptions {
             describe,
@@ -165,7 +165,9 @@ fn probe_env(
             connect_timeout: Duration::from_secs(image.timeout),
             name,
         },
-    ))
+    );
+    with_container_logs(&mut report, &env, "env");
+    Ok(report)
 }
 
 /// The probe of a model image, beside its reference env when one is given.
@@ -186,7 +188,28 @@ fn probe_model(image: &ProbeImageArgs, describe: Option<serde_json::Value>) -> R
     if reference.is_some() {
         report.env.repo = image.env.clone().unwrap_or_default();
     }
+    with_container_logs(&mut report, &model, "model");
     Ok(report)
+}
+
+/// The first failed check, once the image served, carries the last lines
+/// its container logged (a model's traceback, say): the container, and its
+/// logs with it, is removed once the probe ends.
+fn with_container_logs(report: &mut ProbeReport, container: &Container, role: &str) {
+    let Some(check) = report
+        .checks
+        .iter_mut()
+        .find(|check| check.status == CheckStatus::Fail)
+    else {
+        return;
+    };
+    let logs = container.logs();
+    let logs = logs.trim_end();
+    if !logs.is_empty() {
+        check
+            .detail
+            .push_str(&format!("\nthe {role} container's last log lines:\n{logs}"));
+    }
 }
 
 /// The model container and, with `--env`, its reference env's. A model that

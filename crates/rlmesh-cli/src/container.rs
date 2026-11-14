@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use rlmesh_session::address::{
-    AddressKey, DEFAULT_SESSION, HOST_IDENTITY_VAR, SessionAddress, launch_identity,
+    AddressKey, DEFAULT_SESSION, HOST_IDENTITY_VAR, SessionAddress, launch_identity, redact_text,
 };
 
 /// The longest one readiness attempt waits, so an image that died is told
@@ -104,17 +104,18 @@ impl Container {
             .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "true")
     }
 
-    /// The last lines the container wrote.
+    /// The last lines the container wrote, any secret in them (its address
+    /// key, its host identity) left out.
     pub fn logs(&self) -> String {
         Command::new("docker")
             .args(["logs", "--tail", "40", &self.id])
             .output()
             .map(|output| {
-                format!(
+                redact_text(&format!(
                     "{}{}",
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
-                )
+                ))
             })
             .unwrap_or_default()
     }

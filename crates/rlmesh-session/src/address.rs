@@ -241,6 +241,45 @@ pub fn redact(text: &str) -> String {
     }
 }
 
+/// Free text (a container's log lines, a traceback) with every secret this
+/// crate makes left out, wherever it appears: an address key, a host
+/// identity ([`HOST_IDENTITY_VAR`]'s text) and a link password are made of
+/// runs of 52 or more base32 characters, so each such run, or a dotted
+/// group of them, reads `…` (`127.0.0.1:7447#…/env`, as [`redact`] shows an
+/// address). What an error that quotes text a process printed shows.
+pub fn redact_text(text: &str) -> String {
+    /// The shortest secret: 32 bytes of base32.
+    const SECRET_LEN: usize = 52;
+    let secret = |run: &str| {
+        run.len() >= SECRET_LEN
+            && run
+                .chars()
+                .all(|c| c.is_ascii_alphabetic() || ('2'..='7').contains(&c))
+    };
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '.';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(word) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let end = rest.find(|c: char| !word(c)).unwrap_or(rest.len());
+        let token = &rest[..end];
+        let runs: Vec<&str> = token.split('.').collect();
+        if runs.iter().all(|run| secret(run)) {
+            out.push('…');
+        } else {
+            let shown: Vec<&str> = runs
+                .into_iter()
+                .map(|run| if secret(run) { "…" } else { run })
+                .collect();
+            out.push_str(&shown.join("."));
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Whether a segment names a host rather than a session.
 fn is_host(segment: &str) -> bool {
     segment == "localhost"

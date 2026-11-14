@@ -287,3 +287,64 @@ def test_dockers_proxy_drops_an_unserved_link_fast(gate_images: GateImages) -> N
         docker("rm", "-f", container)
     TIMINGS["proxy holds an unserved link"].extend(held)
     assert max(held) < HOLD_PROBE / 2, f"proxy held a link {max(held):.3f}s"
+
+
+#: What the raises image's predict prints before it raises.
+RAISES_MARKER = "rlmesh-docker-gate: predict failed on purpose"
+
+
+def test_a_model_whose_predict_raises_reports_its_cause(
+    gate_images: GateImages,
+) -> None:
+    """The model's empty AssertionError arrives named, with its traceback
+    and the container's last log lines, which go with the container."""
+    with rlmesh.SandboxModel(gate_images.raises) as model:
+        env = rlmesh.SandboxEnv(gate_images.env)
+        try:
+            with pytest.raises(rlmesh.ModelException) as failed:
+                model.run(env, episodes=1, max_episode_steps=5)
+        finally:
+            env.close()
+    text = str(failed.value)
+    assert text.startswith("[INTERNAL] AssertionError\nTraceback"), text
+    assert "raise AssertionError" in text, text
+    assert "the model container's last log lines:" in text, text
+    assert RAISES_MARKER in text, text
+
+
+def test_doctor_shows_a_failed_predicts_cause(
+    gate_images: GateImages, tmp_path: Any
+) -> None:
+    """``rlmesh doctor`` reports the model's exception and its container's
+    last log lines on the failed check, before it removes the container."""
+    import json
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "rlmesh",
+            "doctor",
+            gate_images.raises,
+            "--kind",
+            "model",
+            "--env",
+            gate_images.env,
+            "--json",
+            "--output",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    report = json.loads(proc.stdout)
+    failed = [check for check in report["checks"] if check["status"] == "fail"]
+    assert failed, report["checks"]
+    detail = failed[0]["detail"]
+    assert "AssertionError" in detail, detail
+    assert "the model container's last log lines:" in detail, detail
+    assert RAISES_MARKER in detail, detail

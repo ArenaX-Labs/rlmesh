@@ -625,3 +625,43 @@ def test_many_routes_of_one_process_drive_a_model_another_process_hosts(
     finally:
         host.kill()
         host.wait(10)
+
+
+def test_a_served_models_failure_names_its_exception_and_where_it_raised(
+    session_port: int,
+) -> None:
+    """A served model's exception crosses the wire as its type, message and
+    the tail of its traceback from the model's own code: an ``assert``,
+    whose message is empty, no longer arrives as a bare ``[INTERNAL] ``."""
+    import rlmesh
+
+    class Asserting(rlmesh.Model):
+        def predict(self, observation: object, context: dict[str, Any]) -> int:
+            _ = observation, context
+            # A failed `assert` (pytest rewrites the ones in this file).
+            raise AssertionError
+
+    class Raising(rlmesh.Model):
+        def predict(self, observation: object, context: dict[str, Any]) -> int:
+            _ = observation, context
+            raise KeyError("camera")
+
+    with _served(Asserting(), session_port) as address:
+        with pytest.raises(rlmesh.ModelException) as failed:
+            rlmesh.Model(address).run(ThreeStepEnv(), episodes=1)
+    text = str(failed.value)
+    head, _, traceback = text.partition("\n")
+    assert head == "[INTERNAL] AssertionError", text
+    assert traceback.startswith("Traceback (most recent call last):\n  File "), text
+    assert __file__ in traceback and "raise AssertionError" in traceback, text
+    # The glue that called the model is not the model's traceback.
+    assert "_models" not in traceback, text
+
+    with _served(Raising(), session_port) as address:
+        with pytest.raises(rlmesh.ModelException) as failed:
+            rlmesh.Model(address).run(ThreeStepEnv(), episodes=1)
+    assert str(failed.value).startswith("[INTERNAL] KeyError: 'camera'\n"), failed.value
+
+    # In process, the model's own exception is raised, as before.
+    with pytest.raises(AssertionError):
+        Asserting().run(ThreeStepEnv(), episodes=1)

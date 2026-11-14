@@ -812,3 +812,30 @@ fn no_parse_error_repeats_the_key() {
         assert!(!shown.contains(&key), "{}", shown.replace(&key, "<KEY>"));
     }
 }
+
+#[test]
+fn redact_text_leaves_every_launch_secret_out_of_log_lines() {
+    let (identity, key) = launch_identity().unwrap();
+    let address = format!("127.0.0.1:7447#{key}/env");
+    let log = format!(
+        "serving at {address}\n{HOST_IDENTITY_VAR}={}\nimport error: libvulkan.so.1 not found",
+        identity.as_str()
+    );
+    let shown = redact_text(&log);
+    assert!(!shown.contains(&key.to_string()), "{shown}");
+    for part in identity.split('.') {
+        assert!(!shown.contains(part), "{shown}");
+    }
+    assert!(shown.contains("serving at 127.0.0.1:7447#…/env"), "{shown}");
+    assert!(
+        shown.contains(&format!("{HOST_IDENTITY_VAR}=…\n")),
+        "{shown}"
+    );
+    // Ordinary text, hashes and paths survive.
+    assert!(
+        shown.ends_with("import error: libvulkan.so.1 not found"),
+        "{shown}"
+    );
+    let sha = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    assert_eq!(redact_text(sha), sha);
+}

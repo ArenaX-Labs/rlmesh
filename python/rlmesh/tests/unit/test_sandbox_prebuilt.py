@@ -7,7 +7,7 @@ These mock Docker (``subprocess``/image probes) so the resolution table and the
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import rlmesh
@@ -440,3 +440,52 @@ def test_start_prebuilt_container_pre_pulls_missing_image(
     assert pulls == [["docker", "pull", "img:9"]]
     assert info.container_id == "container-9"
     assert "pulling image 'img:9'" in capsys.readouterr().err
+
+
+# --- A failed run carries the model container's last log lines ---------------
+
+
+def test_a_model_failure_carries_the_containers_log_lines_without_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    key = "a" * 26 + "b2c3d4e5f6g7" + "z" * 14  # an address key's 52 base32 characters
+    logs: list[list[str]] = []
+
+    def docker(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[1] == "inspect":  # still running
+            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+        logs.append(cmd)
+        out = f"serving at 0.0.0.0:7447#{key}/model\nloading weights\n"
+        return subprocess.CompletedProcess(cmd, 0, out, "Traceback: boom\n")
+
+    monkeypatch.setattr(sandbox, "run_docker", docker)
+
+    class Failing:
+        def run(self, env: object, **options: object) -> object:
+            raise rlmesh.ModelException("AssertionError")
+
+        def run_routes(self, envs: object, **options: object) -> list[object]:
+            return [rlmesh.ModelException("AssertionError"), ValueError("not mine")]
+
+    model = rlmesh.SandboxModel("policy:latest")
+    model._address = "127.0.0.1:40000#k/model"  # pyright: ignore[reportPrivateUsage]
+    model._container_id = "c1"  # pyright: ignore[reportPrivateUsage]
+    model._model = Failing()  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+    model._closed = True  # pyright: ignore[reportPrivateUsage]
+
+    with pytest.raises(rlmesh.ModelException) as failed:
+        model.run(cast(Any, object()))
+    text = str(failed.value)
+    assert text.startswith(
+        "[INTERNAL] AssertionError\nthe model container's last log lines:\n"
+    )
+    assert "loading weights" in text and "Traceback: boom" in text
+    assert key not in text and "0.0.0.0:7447#…/model" in text
+    assert logs[-1] == ["docker", "logs", "--tail", "40", "c1"]
+
+    first, other = model.run_routes(cast(Any, [object(), object()]))
+    assert "the model container's last log lines" in str(first)
+    # A failure that is not the model's, with the container still up, is left as is.
+    assert str(other) == "not mine"
