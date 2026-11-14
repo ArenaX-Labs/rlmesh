@@ -6,7 +6,7 @@ Install the Python package. 0.2 is an alpha, so pip needs `--pre` to pick it; wi
 pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
-To pin the alpha exactly (in a Dockerfile, say), name its version: `pip install "rlmesh[gymnasium,numpy]==0.2.0a0"`.
+To pin the alpha exactly (in a Dockerfile, say), name its version: `pip install "rlmesh[gymnasium,numpy]==0.2.0a1"`.
 
 RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend for examples and notebooks, then follow the [quickstart](https://rlmesh.dev/docs/start/quickstart/).
 

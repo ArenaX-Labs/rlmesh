@@ -45,7 +45,9 @@ A breaking change to a stable symbol gets a `### Breaking` entry with a before/a
 mise run bump X.Y.Z
 ```
 
-It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort (`YYYY.MM-X.Y.Z-beta.N`); a stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See [workflow editions](editions/index.md).
+It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort (`YYYY.MM-X.Y.Z-{alpha,beta,rc}.N`), which replaces the previous prerelease's: a provisional cohort is not retained, so builds of two prereleases share no edition unless both offer an older sealed one. A stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See [workflow editions](editions/index.md).
+
+**Before 0.2.0, a push that breaks the session wire bumps the version.** Until 0.2.0 freezes the realtime protocol, any change that stops a build from talking to the previous one (an encoding, a key, the transport) bumps, in the same push, both the prerelease number (`mise run bump 0.2.0-alpha.N+1`) and `WIRE_REVISION` in `crates/rlmesh-session-core/src/wire/version.rs` (with a line in its `REVISIONS` naming what changed). The revision lets two builds that cannot talk refuse each other by name instead of timing out; the version keeps those builds from sharing a number. A change that keeps the wire compatible needs neither.
 
 ## Freeze a wire protocol
 

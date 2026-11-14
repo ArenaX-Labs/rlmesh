@@ -83,10 +83,10 @@ def current_workflow_edition() -> str:
     The same value on every build of that edition (``"2026.10"``): a declaration
     names the contract a participant was authored against, and a bare base
     selects whichever spelling of it both sides offer -- the sealed name on a
-    release, this build's cohort (``"2026.10-0.2.0-alpha.0"``,
-    ``"2026.10-dev.<sha>"``, what ``rlmesh.build_info().workflow_edition``
-    reports) on a
-    prerelease or local build. That cohort spelling is also accepted as a
+    release, this build's cohort (``"2026.10-<version>"`` on a prerelease,
+    ``"2026.10-dev.<sha>"`` on a local build: what
+    ``rlmesh.build_info().workflow_edition`` reports) on a prerelease or local
+    build. That cohort spelling is also accepted as a
     declaration, and pins to that exact moving build.
     """
     return str(load_native("current_workflow_edition")())

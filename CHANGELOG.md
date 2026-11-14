@@ -69,7 +69,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `RemoteEnv` and `RemoteVectorEnv` are built from `RemoteEnvOptions` and connect in `new`.
 - `Error` has one variant per error class and is `#[non_exhaustive]`: `Address` is `InvalidArgument`, `Server` is `Internal`, and `Protocol`, `Type`, `Runtime`, `Os` and `Cancelled` are new. `Error::class()` returns the `ErrorClass`.
 - `BindOptions` borrows its `hooks` and so carries a lifetime and is no longer `Clone`.
-- The crates are consolidated: `rlmesh-grpc`, `rlmesh-runtime`, `rlmesh-sandbox` and `rlmesh-viewer` are gone. Lockstep sessions live in the facade, the live viewer is `rlmesh::viewer` (feature `viewer`, on by default), and the workspace is versioned `0.2.0-alpha.0`.
+- The crates are consolidated: `rlmesh-grpc`, `rlmesh-runtime`, `rlmesh-sandbox` and `rlmesh-viewer` are gone. Lockstep sessions live in the facade, the live viewer is `rlmesh::viewer` (feature `viewer`, on by default), and the workspace is versioned `0.2.0-alpha.1`.
 
 #### C and C++ (not published)
 

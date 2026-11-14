@@ -224,9 +224,10 @@ def current_version() -> str:
 
 def prose_version_files(root: Path) -> list[Path]:
     """Prose whose literal version mentions track the current release: docs
-    (except the history docs and the version-stamped edition specs) plus example
-    READMEs. The top-level README is version-neutral by design; crate READMEs
-    carry precise Cargo install snippets bumped separately.
+    (except the history docs and the version-stamped edition specs), example
+    READMEs and the Python package's README (its PyPI page). The top-level
+    README is version-neutral by design; crate READMEs carry precise Cargo
+    install snippets bumped separately.
     """
     files = [
         md
@@ -235,7 +236,18 @@ def prose_version_files(root: Path) -> list[Path]:
         and not md.relative_to(root).as_posix().startswith("docs/editions/")
     ]
     files += sorted((root / "examples").rglob("README.md"))
+    files.append(root / "python/rlmesh/README.md")
     return files
+
+
+def member_manifests(root: Path) -> list[Path]:
+    """The workspace members' own Cargo.toml files."""
+    members = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["members"]
+    return sorted(
+        manifest
+        for pattern in members
+        for manifest in root.glob(f"{pattern}/Cargo.toml")
+    )
 
 
 def sub_file(path: Path, pairs: list[tuple[str, str]]) -> None:
@@ -253,11 +265,10 @@ def bump(old: str, new: str) -> None:
     o, op = re.escape(old), re.escape(old_pep)
     print(f"bump {old} -> {new}  (PEP 440 {old_pep} -> {new_pep})")
 
-    # Cargo workspace version + the "=X" path-dependency pins.
-    sub_file(
-        ROOT / "Cargo.toml",
-        [(rf'version = "(=?){o}"', rf'version = "\g<1>{new}"')],
-    )
+    # Cargo workspace version + the "=X" path-dependency pins, in the root
+    # manifest and in any member that pins a sibling itself (rlmesh-device).
+    for manifest in [ROOT / "Cargo.toml", *member_manifests(ROOT)]:
+        sub_file(manifest, [(rf'version = "(=?){o}"', rf'version = "\g<1>{new}"')])
 
     # The C header's hand-written RLMESH_VERSION (policy:check keeps it equal).
     sub_file(
@@ -268,6 +279,19 @@ def bump(old: str, new: str) -> None:
     # Python package manifests use the PEP 440 spelling.
     for py in ("pyproject.toml", "python/rlmesh/pyproject.toml"):
         sub_file(ROOT / py, [(rf'version = "{op}"', f'version = "{new_pep}"')])
+
+    # The C# package (fenced, but versioned with the workspace).
+    sub_file(
+        ROOT / "csharp/src/RLMesh/RLMesh.csproj",
+        [(rf"<Version>{o}</Version>", f"<Version>{new}</Version>")],
+    )
+
+    # Example Dockerfiles install the published wheel by its PEP 440 version.
+    for dockerfile in sorted((ROOT / "examples").rglob("Dockerfile")):
+        sub_file(
+            dockerfile,
+            [(rf"(?m)^ARG RLMESH_VERSION={op}$", f"ARG RLMESH_VERSION={new_pep}")],
+        )
 
     # The npm package (release:js:package also stamps the workspace version at pack time).
     for npm in (
@@ -366,6 +390,9 @@ def selfcheck() -> None:
     assert not (prose & HISTORY_DOCS), sorted(prose & HISTORY_DOCS)
     assert not any(name.startswith("docs/editions/") for name in prose)
     assert "docs/installation.md" in prose
+    assert "python/rlmesh/README.md" in prose
+    members = {path.relative_to(ROOT).as_posix() for path in member_manifests(ROOT)}
+    assert "crates/rlmesh-device/Cargo.toml" in members
 
     sealed_manifest = """[release]
 status = "stable"
@@ -432,7 +459,9 @@ def main() -> None:
         sync_packaged_supported_editions()
         return
     if not SEMVER.match(arg):
-        sys.exit(f"not a SemVer version: {arg!r} (expected X.Y.Z or X.Y.Z-beta.N)")
+        sys.exit(
+            f"not a SemVer version: {arg!r} (expected X.Y.Z or X.Y.Z-{{alpha,beta,rc}}.N)"
+        )
     bump(current_version(), arg)
 
 

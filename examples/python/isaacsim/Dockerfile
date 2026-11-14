@@ -1,6 +1,6 @@
 FROM nvcr.io/nvidia/isaac-sim:6.1.0
 
-ARG RLMESH_VERSION=0.2.0a0
+ARG RLMESH_VERSION=0.2.0a1
 RUN /isaac-sim/python.sh -m pip install --no-cache-dir "rlmesh[numpy]==${RLMESH_VERSION}" gymnasium
 
 ENV ACCEPT_EULA=Y PRIVACY_CONSENT=Y PYTHONUNBUFFERED=1 PYTHONPATH=/app RLMESH_ADDRESS=127.0.0.1:7447

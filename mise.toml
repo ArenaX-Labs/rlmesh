@@ -629,7 +629,7 @@ run = [
 # Versioning + release driver
 # ──────────────────────────────────────────────
 [tasks.bump]
-description = "Bump the version across every manifest (X.Y.Z or X.Y.Z-beta.N)"
+description = "Bump the version across every manifest (X.Y.Z or X.Y.Z-{alpha,beta,rc}.N)"
 run = 'python scripts/bump_version.py {{arg(name="version")}}'
 
 [tasks."changelog:draft"]
