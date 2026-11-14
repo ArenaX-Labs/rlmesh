@@ -157,7 +157,7 @@ pub fn check_variant(config: &ImageConfig) -> CheckReport {
     for profile in &blocks.profiles {
         if profile.resources {
             report.not_checked.push(format!(
-                "profiles: {}: resources are validated by the platform against its ceilings",
+                "profiles: {}: resources are validated against the ceilings of whatever schedules the image",
                 profile.key
             ));
         }
@@ -382,7 +382,7 @@ mod tests {
             ],
         );
         assert_eq!(report.not_checked.len(), 1, "{report:#?}");
-        assert!(report.not_checked[0].contains("resources are validated by the platform"));
+        assert!(report.not_checked[0].contains("resources are validated against the ceilings"));
 
         // Resources are noted whether or not the profile overrides requires.
         let package = json!({
@@ -394,7 +394,9 @@ mod tests {
         assert_buckets(&report, &[], &[]);
         assert_eq!(
             report.not_checked,
-            ["profiles: big: resources are validated by the platform against its ceilings"]
+            [
+                "profiles: big: resources are validated against the ceilings of whatever schedules the image"
+            ]
         );
     }
 

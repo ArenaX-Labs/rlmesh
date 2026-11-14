@@ -310,8 +310,8 @@ fn parse_env_vars(scope: &str, vars: &Value, report: &mut CheckReport) -> BTreeM
         }
         if name == ADDRESS_ENV {
             report.warnings.push(format!(
-                "{scope} envVars sets {ADDRESS_ENV}; the platform assigns it per pod, so it \
-                 has no effect there"
+                "{scope} envVars sets {ADDRESS_ENV}; a launcher assigns it per container, so a value \
+                 here has no effect"
             ));
         }
         env_vars.insert(name.clone(), value.to_owned());

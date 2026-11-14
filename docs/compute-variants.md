@@ -231,7 +231,7 @@ Each block is optional. A `variant` block needs a `key`, and `rlmesh registry pu
 | `profiles[].key`       | Required. Same pattern as `variant.key`, and unique within the image.                                                                                              |
 | `profiles[].default`   | At most one profile is the default. When none is marked, the first one is the default. A request that names no profile runs it.                                    |
 | `profiles[].facets`    | Override the variant's facets, key by key.                                                                                                                         |
-| `profiles[].envVars`   | String environment variables the profile sets on the container. `RLMESH_ADDRESS` has no effect, since the platform assigns it per pod.                             |
+| `profiles[].envVars`   | String environment variables the profile sets on the container. `RLMESH_ADDRESS` has no effect, since a launcher assigns it per container.                         |
 | `profiles[].gpu.count` | GPUs the profile needs, 0 to 8.                                                                                                                                    |
 | `profiles[].requires`  | Override the variant's `requires`, key by key: a profile's `accel.cuda` replaces the variant's rather than narrowing it.                                           |
 | `profiles[].resources` | Runtime resources, as in the rest of the package label. The platform validates them against its ceilings.                                                          |

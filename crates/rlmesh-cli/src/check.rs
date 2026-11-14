@@ -7,11 +7,12 @@
 //! own), else `python3`, else `python`.
 
 use crate::cli::{CheckArgs, CheckImageArgs, DescribeArgs};
-use crate::image_check::{self, CheckReport, DESCRIBE_LABEL, ImageConfig, PACKAGE_LABEL};
+use crate::image_check::{
+    self, CheckReport, DESCRIBE_LABEL, EditionTarget, ImageConfig, PACKAGE_LABEL,
+};
 use crate::render::Style;
 
 use anyhow::{Context, Result, bail};
-use rlmesh_proto::SessionOffer;
 use std::ffi::OsString;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -24,8 +25,8 @@ pub(crate) fn check_image(
     style: Style,
 ) -> Result<i32> {
     let config = docker_inspect(&args.image)?;
-    let (platform, against) = platform_offer(args)?;
-    let mut report = image_check::check_image(&config, platform.as_ref());
+    let (target, against) = edition_target(args)?;
+    let mut report = image_check::check_image(&config, target.as_ref());
     // The deep label checks (the envelope's class-level checks, the package
     // label's checkpoints) live in rlmesh._describe; run them whenever either
     // label is present, and say which validation was skipped when no Python
@@ -65,7 +66,7 @@ pub(crate) fn check_image(
 /// twice: Python re-reports the label wrappers (JSON, `schema_version`,
 /// `kind`, the package label's shape), so the Rust findings on those go; the
 /// Rust side owns the edition verdict in `check-image` (it applies the
-/// image's own `--workflow-edition` and the platform offer), so Python's
+/// image's own `--workflow-edition` and the edition target), so Python's
 /// `runtime:` lines go. Everything else from both sides is kept.
 fn merge_deep(report: &mut CheckReport, mut deep: CheckReport) {
     let rust_wrapper = |message: &String| message.starts_with("labels: dev.rlmesh.");
@@ -125,20 +126,20 @@ fn describe_with(
     Ok(output.status.code().unwrap_or(1))
 }
 
-/// The platform offer to check editions against: `--platform-editions`, else
+/// What to check editions against: `--platform-editions`, else
 /// `--platform-version` (only this CLI's own version is known; any other is
 /// `None`, reported as not checked), else the rlmesh this CLI was built with.
-fn platform_offer(args: &CheckImageArgs) -> Result<(Option<SessionOffer>, String)> {
+fn edition_target(args: &CheckImageArgs) -> Result<(Option<EditionTarget>, String)> {
     if !args.platform_editions.is_empty() {
         let offer = image_check::platform_offer(&args.platform_editions);
         if offer.editions.is_empty() {
             bail!("--platform-editions names no edition");
         }
         let against = format!("platform editions {:?}", offer.editions);
-        return Ok((Some(offer), against));
+        return Ok((Some(EditionTarget::platform(offer)), against));
     }
     if let Some(version) = &args.platform_version {
-        let offer = image_check::platform_offer_for_version(version);
+        let offer = image_check::platform_offer_for_version(version).map(EditionTarget::platform);
         let against = match &offer {
             Some(_) => format!("a platform on rlmesh {} (this CLI's build)", version.trim()),
             None => format!(
@@ -150,8 +151,8 @@ fn platform_offer(args: &CheckImageArgs) -> Result<(Option<SessionOffer>, String
         return Ok((offer, against));
     }
     Ok((
-        Some(SessionOffer::this_build(None)),
-        format!("this CLI's rlmesh {}", env!("CARGO_PKG_VERSION")),
+        Some(EditionTarget::this_build()),
+        format!("this rlmesh build ({})", env!("CARGO_PKG_VERSION")),
     ))
 }
 
@@ -385,25 +386,37 @@ mod tests {
     }
 
     #[test]
-    fn platform_offer_defaults_to_this_build() {
+    fn edition_target_defaults_to_this_build() {
         let args = |editions: &[&str], version: Option<&str>| CheckImageArgs {
             image: "img:tag".to_owned(),
             platform_editions: editions.iter().map(|e| (*e).to_owned()).collect(),
             platform_version: version.map(str::to_owned),
             json: false,
         };
-        let (offer, against) = platform_offer(&args(&[], None)).unwrap();
-        assert_eq!(offer, Some(SessionOffer::this_build(None)));
-        assert!(against.contains(env!("CARGO_PKG_VERSION")), "{against}");
-        let (offer, _) = platform_offer(&args(&["2026.06", " "], None)).unwrap();
-        assert_eq!(offer, Some(SessionOffer::new(&["2026.06"])));
-        assert!(platform_offer(&args(&[" "], None)).is_err());
-        let (offer, against) = platform_offer(&args(&[], Some("0.0.1"))).unwrap();
-        assert_eq!(offer, None);
-        assert!(against.contains("editions unknown"), "{against}");
-        let (offer, _) = platform_offer(&args(&[], Some(env!("CARGO_PKG_VERSION")))).unwrap();
+        // With no flag, the target is this build, named as one: no platform
+        // is involved.
+        let (target, against) = edition_target(&args(&[], None)).unwrap();
+        assert_eq!(target, Some(EditionTarget::this_build()));
         assert_eq!(
-            offer.map(|o| o.editions),
+            target.unwrap().offer,
+            rlmesh_proto::SessionOffer::this_build(None)
+        );
+        assert_eq!(
+            against,
+            format!("this rlmesh build ({})", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(!against.contains("platform"), "{against}");
+        let (target, _) = edition_target(&args(&["2026.06", " "], None)).unwrap();
+        let target = target.unwrap();
+        assert_eq!(target.offer, rlmesh_proto::SessionOffer::new(&["2026.06"]));
+        assert_eq!(target.name, "the target platform");
+        assert!(edition_target(&args(&[" "], None)).is_err());
+        let (target, against) = edition_target(&args(&[], Some("0.0.1"))).unwrap();
+        assert_eq!(target, None);
+        assert!(against.contains("editions unknown"), "{against}");
+        let (target, _) = edition_target(&args(&[], Some(env!("CARGO_PKG_VERSION")))).unwrap();
+        assert_eq!(
+            target.map(|t| t.offer.editions),
             Some(rlmesh_proto::supported_workflow_editions())
         );
     }
@@ -431,7 +444,7 @@ mod tests {
             ],
             not_checked: vec![
                 "dev.rlmesh.describe runtime: describe carries no workflow editions".to_owned(),
-                "no dev.rlmesh.describe label: the platform reads describe off the handshake"
+                "no dev.rlmesh.describe label: a runner reads describe off the handshake"
                     .to_owned(),
             ],
             passed: vec!["dev.rlmesh.describe runtime: rlmesh-realtime-v1".to_owned()],

@@ -290,6 +290,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A `Model` subclass whose `__init__` calls `super().__init__()` before setting its attributes runs `load()` once that `__init__` returns, not inside the `super().__init__()` call.
 - `MyModel(x=...)` with a keyword only `load()` takes raises `TypeError` naming `MyModel.from_config(x=...)`, the way load parameters reach a model, instead of Python's bare unexpected-keyword error.
 
+#### CLI
+
+- `rlmesh check-image` run without `--platform-editions` or `--platform-version` says it compares the image with this rlmesh build, not a platform, and an edition refusal lists both sides' editions; its other notes no longer assume a managed platform.
+
 ## [0.1.0] - 2026-09-23
 
 RLMesh connects models to environments across process, dependency, and machine boundaries with a Gymnasium-style API. RLMesh 0.1.0 ships the sealed `2026.06` edition and retains `rlmesh-wire-v1`. Declare the edition a model or environment was authored against to keep its behavior across package upgrades. The runtime selects a shared edition and refuses interactions a peer cannot express; see the compatibility policy for the contract and its current test coverage.

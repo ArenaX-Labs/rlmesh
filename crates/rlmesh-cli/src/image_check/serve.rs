@@ -225,7 +225,7 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     if command.argv.is_empty() {
         // A workload can still supply a command, so this is a warning.
         report.warnings.push(
-            "entrypoint: image declares no Entrypoint/Cmd; the platform cannot see what it \
+            "entrypoint: image declares no Entrypoint/Cmd; a runner cannot see what it \
              serves"
                 .to_owned(),
         );
@@ -234,7 +234,7 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     let Some(serve) = command.serve else {
         report.not_checked.push(format!(
             "entrypoint: command `{}` does not run -m rlmesh.serve (custom entrypoint, e.g. \
-             a native C/C++ host); the managed platform checks it when you onboard the image",
+             a native C/C++ host); the session handshake checks it when the image runs",
             command.argv.join(" ")
         ));
         return report;

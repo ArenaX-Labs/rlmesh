@@ -2,7 +2,9 @@
 //! binds, the port it
 //! exposes, its platform, its rlmesh labels (including the package label's
 //! `variant` / `profiles` blocks, see [`crate::variant`]), and whether the
-//! rlmesh it was built with can meet a platform's workflow editions.
+//! rlmesh it was built with shares a workflow edition with an [`EditionTarget`]:
+//! the rlmesh this CLI was built with, or a platform's editions named on the
+//! command line.
 //!
 //! Nothing here touches docker, the network, or Python: the caller hands in an
 //! [`ImageConfig`] (parsed from `docker image inspect`, a registry manifest, ...)
@@ -227,7 +229,8 @@ struct InspectConfig {
     labels: Option<BTreeMap<String, String>>,
 }
 
-/// Check the image's OS/architecture against supported deployment targets.
+/// Check the image's OS/architecture against the one RLMesh deploys images
+/// to (linux/amd64).
 pub fn check_platform(config: &ImageConfig) -> CheckReport {
     let mut report = CheckReport::default();
     if config.os.is_empty() || config.architecture.is_empty() {
@@ -236,7 +239,7 @@ pub fn check_platform(config: &ImageConfig) -> CheckReport {
             .push("platform: the image config names no os/architecture".to_owned());
     } else if config.os != "linux" || config.architecture != "amd64" {
         report.failed.push(format!(
-            "platform: image is {}/{}; the platform runs linux/amd64 (build with \
+            "platform: image is {}/{}; RLMesh deploys linux/amd64 images (build with \
              --platform linux/amd64)",
             config.os, config.architecture
         ));
@@ -292,8 +295,8 @@ pub struct RuntimeOffer {
 
 impl RuntimeOffer {
     /// The image's bind-time offer, or `None` when the envelope advertises no
-    /// editions (an older rlmesh); the managed platform checks the handshake
-    /// when the image is onboarded.
+    /// editions (an older rlmesh); the session handshake checks it when the
+    /// image runs.
     pub fn session_offer(&self) -> Option<SessionOffer> {
         if self.supported_workflow_editions.is_empty() {
             return None;
@@ -403,13 +406,13 @@ fn missing_describe_note(config: &ImageConfig) -> String {
     let command = parse_serve_command(config);
     if command.serve.is_some() || command.argv.is_empty() {
         return format!(
-            "labels: no {DESCRIBE_LABEL} label; the platform reads describe off the \
+            "labels: no {DESCRIBE_LABEL} label; a runner reads describe off the \
              rlmesh.serve handshake instead (run `rlmesh check <module:Class>` for the \
              class-level checks)"
         );
     }
     format!(
-        "labels: no {DESCRIBE_LABEL} label; the platform reads describe off the served \
+        "labels: no {DESCRIBE_LABEL} label; a runner reads describe off the served \
          peer's handshake, which a native (C/C++) env publishes through the C ABI when it \
          binds (a native model publishes none). To describe the image before it runs, bake \
          {DESCRIBE_LABEL} with the env's describe JSON (`rlmesh_env_describe_json`, C++ \
@@ -453,7 +456,7 @@ pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>
                 {
                     report.failed.push(format!(
                         "labels: {PACKAGE_LABEL} schemaVersion {} is not the supported \
-                         version 1 (the platform will ignore the label)",
+                         version 1 (readers ignore the label)",
                         package
                             .get("schemaVersion")
                             .unwrap_or(&serde_json::Value::Null)
@@ -483,19 +486,48 @@ pub fn check_label_runtime(runtime: &RuntimeOffer) -> CheckReport {
             .passed
             .push("labels: describe label generated on linux".to_owned()),
         Some(os) => report.failed.push(format!(
-            "labels: the describe label was generated on {os}; the platform fails a label \
-             whose runtime.os is not linux. Bake it inside the image (docker run ... rlmesh \
+            "labels: the describe label was generated on {os}; a label whose runtime.os \
+             is not linux is rejected when the image is admitted. Bake it inside the image (docker run ... rlmesh \
              describe --label), not on the host"
         )),
     }
     match runtime.arch.as_deref().map(str::trim) {
         None | Some("") | Some("x86_64") | Some("amd64") => {}
         Some(arch) => report.warnings.push(format!(
-            "labels: the describe label was generated on {arch}; the platform runs amd64, \
+            "labels: the describe label was generated on {arch}; the image runs on amd64, \
              so what the host could build may not be what the image builds"
         )),
     }
     report
+}
+
+/// What `check-image` checks an image's editions against, and how its
+/// messages name it: this rlmesh build (the default), or a target platform's
+/// editions given on the command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditionTarget {
+    /// The editions the target can drive.
+    pub offer: SessionOffer,
+    /// The target as messages name it (`this rlmesh build`).
+    pub name: String,
+}
+
+impl EditionTarget {
+    /// The rlmesh this CLI was built with.
+    pub fn this_build() -> Self {
+        Self {
+            offer: SessionOffer::this_build(None),
+            name: "this rlmesh build".to_owned(),
+        }
+    }
+
+    /// A target platform's offer.
+    pub fn platform(offer: SessionOffer) -> Self {
+        Self {
+            offer,
+            name: "the target platform".to_owned(),
+        }
+    }
 }
 
 /// A platform's offer from the editions it says it can drive (undeclared
@@ -559,43 +591,43 @@ pub fn normalize_version(version: &str) -> String {
     format!("{base}-{tag}.{number}")
 }
 
-/// Reconcile an image's offer with a platform's the way the runtime will at
+/// Reconcile an image's offer with a target's the way the runtime will at
 /// bind time: the image sits in its own tier (env or model; an unknown kind
-/// takes the env tier, the rule is symmetric), the platform stands in for the
-/// runtime and for the peer on the other side, which it also supplies.
+/// takes the env tier, the rule is symmetric), the target stands in for the
+/// runtime and for the peer on the other side.
 pub fn negotiate_image(
     image: &SessionOffer,
     kind: Option<Kind>,
-    platform: &SessionOffer,
+    target: &SessionOffer,
 ) -> Result<SessionFloor, EditionRefusal> {
     match kind {
-        Some(Kind::Model) => negotiate_session_floor(platform, image, platform),
-        _ => negotiate_session_floor(image, platform, platform),
+        Some(Kind::Model) => negotiate_session_floor(target, image, target),
+        _ => negotiate_session_floor(image, target, target),
     }
 }
 
-/// Check that the image's rlmesh speaks the platform's protocol generation and
+/// Check that the image's rlmesh speaks the target's protocol generation and
 /// shares a workflow edition with it. An envelope without the fields is
-/// `not_checked`: the managed platform checks the handshake when the image is
-/// onboarded.
+/// `not_checked`: the session handshake checks them when the image runs.
 pub fn check_editions(
     runtime: &RuntimeOffer,
     kind: Option<Kind>,
-    platform: &SessionOffer,
+    target: &EditionTarget,
 ) -> CheckReport {
     let mut report = CheckReport::default();
+    let name = &target.name;
     match runtime.protocol_generation.as_deref().map(str::trim) {
         None | Some("") => report.not_checked.push(
             "editions: describe carries no protocol_generation (built with an rlmesh before \
-             the field); the managed platform checks the handshake when you onboard it"
+             the field); the session handshake checks it when the image runs"
                 .to_owned(),
         ),
         Some("rlmesh-wire-v1") => report.failed.push(
             "editions: this rlmesh-wire-v1 image needs a RLMesh 0.1 runner; rebuild it with RLMesh 0.2 to use realtime sessions".to_owned(),
         ),
         Some(generation) if generation != PROTOCOL_GENERATION => report.failed.push(format!(
-            "editions: image speaks protocol generation {generation}, the platform speaks \
-             {PROTOCOL_GENERATION}; rebuild against the platform's rlmesh"
+            "editions: the image speaks protocol generation {generation}; {name} speaks \
+             {PROTOCOL_GENERATION}; rebuild the image with an rlmesh of that generation"
         )),
         Some(_) => {
             report.passed.push(format!(
@@ -619,23 +651,35 @@ pub fn check_editions(
     let Some(image) = runtime.session_offer() else {
         report.not_checked.push(
             "editions: describe carries no supported_workflow_editions (built with an rlmesh \
-             before the field); the managed platform checks the handshake when you onboard it"
+             before the field); the session handshake checks them when the image runs"
                 .to_owned(),
         );
         return report;
     };
-    match negotiate_image(&image, kind, platform) {
+    let speaks = |offer: &SessionOffer| match offer.preferred.as_deref() {
+        Some(preferred) => format!("{:?}, preferring {preferred}", offer.editions),
+        None => format!("{:?}", offer.editions),
+    };
+    match negotiate_image(&image, kind, &target.offer) {
         Ok(floor) => report.passed.push(format!(
-            "editions: a session would run at {} (image can {:?}, wants {}; platform can {:?})",
+            "editions: a session would run at {} (the image speaks {}; {name} speaks {:?})",
             floor.selected_workflow_edition,
-            image.editions,
-            image.preferred.as_deref().unwrap_or("its newest"),
-            platform.editions,
+            speaks(&image),
+            target.offer.editions,
         )),
-        Err(refusal) => report.failed.push(format!(
-            "editions: the image and the platform share no workflow edition ({refusal}); \
-             rebuild with an rlmesh that offers one of the platform's editions"
-        )),
+        Err(refusal) => {
+            let remedy = if refusal.involves_dev_build() {
+                rlmesh_proto::DEV_BUILD_HINT.to_owned()
+            } else {
+                format!("rebuild the image with an rlmesh that offers one of {name}'s editions")
+            };
+            report.failed.push(format!(
+                "editions: the image speaks {}; {name} speaks {:?}; no edition satisfies \
+                 both, so a session would be refused: {remedy}",
+                speaks(&image),
+                target.offer.editions,
+            ));
+        }
     }
     report
 }
@@ -681,11 +725,11 @@ pub fn declared_workflow_edition(config: &ImageConfig) -> Option<Option<String>>
 /// Run every image-config check: platform, serve command, labels, the compute
 /// variant ([`crate::variant::check_variant`]: declared or inferred), and (when
 /// the describe label advertises editions) edition compatibility with
-/// `platform`, or a `not_checked` note when the caller has no platform offer
-/// to check against. A `--workflow-edition` or `ENV RLMESH_WORKFLOW_EDITION`
+/// `target`, or a `not_checked` note when the caller has no target to check
+/// against. A `--workflow-edition` or `ENV RLMESH_WORKFLOW_EDITION`
 /// on the image overrides the label's `preferred_workflow_edition`, as it
 /// does for the served peer.
-pub fn check_image(config: &ImageConfig, platform: Option<&SessionOffer>) -> CheckReport {
+pub fn check_image(config: &ImageConfig, target: Option<&EditionTarget>) -> CheckReport {
     let mut report = check_platform(config);
     let (labels, describe) = check_labels(config);
     let kind = describe.as_ref().and_then(|label| label.kind);
@@ -721,21 +765,20 @@ pub fn check_image(config: &ImageConfig, platform: Option<&SessionOffer>) -> Che
             report
                 .warnings
                 .extend(edition_float_warning(&label.runtime));
-            match platform {
-                Some(platform) => {
-                    report.extend(check_editions(&label.runtime, label.kind, platform));
+            match target {
+                Some(target) => {
+                    report.extend(check_editions(&label.runtime, label.kind, target));
                 }
                 None => report.not_checked.push(
-                    "editions: no platform editions to check against; pass \
-                     --platform-editions with the list `rlmesh version` prints on the \
-                     platform's rlmesh"
+                    "editions: no editions to check against; pass --platform-editions \
+                     with the list `rlmesh version` prints on the target's rlmesh"
                         .to_owned(),
                 ),
             }
         }
         None => report.not_checked.push(
-            "editions: not checked without a describe label; the managed platform checks \
-             the handshake when you onboard the image"
+            "editions: not checked without a describe label; the session handshake checks \
+             them when the image runs"
                 .to_owned(),
         ),
     }

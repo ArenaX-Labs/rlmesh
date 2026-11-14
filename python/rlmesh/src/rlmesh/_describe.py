@@ -947,7 +947,7 @@ def check_labels(labels: Mapping[str, str] | None) -> CheckReport:
     raw = labels.get(DESCRIBE_LABEL, "")
     if not raw:
         report.not_checked.append(
-            f"no {DESCRIBE_LABEL} label: the platform reads describe off the "
+            f"no {DESCRIBE_LABEL} label: a runner reads describe off the "
             "rlmesh.serve handshake instead; run `rlmesh check <module:Class>` "
             "for the class-level checks"
         )
@@ -1028,7 +1028,7 @@ def _check_envelope(
         elif tags is None:
             report.warnings.append(
                 f"{where}env_tags: {name} declares no tags; it runs against "
-                "spec-less models, but the platform cannot adapt a spec'd model to "
+                "spec-less models, but rlmesh cannot adapt a spec'd model to "
                 "it without EnvTags (set `tags = EnvTags(...)` on the class)"
             )
         elif isinstance(tags, Mapping) and "error" in tags:
@@ -1044,8 +1044,8 @@ def _check_envelope(
             error_type = str(badge_map.get("error_type") or "")
             if baked:
                 report.failed.append(
-                    f"{where}env_spec: {badge} (the platform fails a label that "
-                    "carries this badge; bake the label inside the image, where "
+                    f"{where}env_spec: {badge} (a label that carries this badge fails "
+                    "admission; bake the label inside the image, where "
                     "the env builds)"
                 )
             elif _needs_local_resources(error_type, badge):
@@ -1191,8 +1191,8 @@ def _check_runtime(
     if not runtime.get("supported_workflow_editions"):
         report.not_checked.append(
             f"{where}runtime: describe carries no workflow editions (built with an "
-            "older rlmesh); the managed platform checks the handshake when you "
-            "onboard the image"
+            "older rlmesh); the session handshake checks them when the image "
+            "runs"
         )
         return
     error = runtime.get("workflow_edition_error")
@@ -1282,7 +1282,7 @@ def _check_package(raw: str, report: CheckReport) -> None:
     if package.get("schemaVersion") != 1:
         failures.append(
             f"{PACKAGE_LABEL} schemaVersion {package.get('schemaVersion')!r} is "
-            "not the supported version 1 (the platform will ignore the label)"
+            "not the supported version 1 (readers ignore the label)"
         )
     checkpoints = package.get("checkpoints")
     if isinstance(checkpoints, list):
@@ -1300,12 +1300,11 @@ def _check_package(raw: str, report: CheckReport) -> None:
             ):
                 failures.append(
                     f"{PACKAGE_LABEL} checkpoint name {name!r} is not a DNS label; "
-                    "the platform will drop it"
+                    "readers drop it"
                 )
             if not entry_map.get("uri"):
                 failures.append(
-                    f"{PACKAGE_LABEL} checkpoint {name!r} has no uri; "
-                    "the platform will drop it"
+                    f"{PACKAGE_LABEL} checkpoint {name!r} has no uri; readers drop it"
                 )
             entrypoint = entry_map.get("entrypoint")
             if entrypoint is not None and (
@@ -1320,7 +1319,7 @@ def _check_package(raw: str, report: CheckReport) -> None:
         if defaults > 1:
             warnings.append(
                 f"{PACKAGE_LABEL} declares {defaults} default checkpoints; "
-                "the platform uses the first"
+                "readers use the first"
             )
 
 
@@ -1497,8 +1496,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         host = str(runtime.get("runtime", {}).get("os", ""))
         if host and host != "linux":
             print(
-                f"RLMesh: this label was generated on {host}; the platform fails a "
-                "label whose runtime.os is not linux. Run this inside the image "
+                f"RLMesh: this label was generated on {host}; a label whose "
+                "runtime.os is not linux is rejected when the image is admitted. Run this inside the image "
                 "(docker run --rm --entrypoint rlmesh IMAGE describe ... --label).",
                 file=sys.stderr,
                 flush=True,

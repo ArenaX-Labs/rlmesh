@@ -411,7 +411,10 @@ fn missing_describe_label_on_a_custom_entrypoint_points_at_the_native_describe()
 
 #[test]
 fn edition_table() {
-    let platform = platform_offer(&["2026.06-0.1.0-rc.13".to_owned(), "2026.06".to_owned()]);
+    let platform = EditionTarget::platform(platform_offer(&[
+        "2026.06-0.1.0-rc.13".to_owned(),
+        "2026.06".to_owned(),
+    ]));
     let offer =
         |generation: Option<&str>, editions: &[&str], preferred: Option<&str>| RuntimeOffer {
             protocol_generation: generation.map(str::to_owned),
@@ -438,7 +441,13 @@ fn edition_table() {
         &platform,
     );
     assert_eq!(report.failed.len(), 1, "{report:?}");
-    assert!(report.failed[0].contains("share no workflow edition"));
+    assert_eq!(
+        report.failed[0],
+        "editions: the image speaks [\"2031.01\"]; the target platform speaks \
+         [\"2026.06-0.1.0-rc.13\", \"2026.06\"]; no edition satisfies both, so a session \
+         would be refused: rebuild the image with an rlmesh that offers one of the target \
+         platform's editions"
+    );
     // Wrong generation is a failure even when editions agree.
     let report = check_editions(
         &offer(Some("rlmesh-wire-v2"), &["2026.06"], None),
@@ -601,7 +610,7 @@ fn image_declared_edition_overrides_the_label() {
             }),
         ),
     );
-    let platform = platform_offer(&["2026.06".to_owned()]);
+    let platform = EditionTarget::platform(platform_offer(&["2026.06".to_owned()]));
     // The flag is a ceiling below the one edition both can drive: refused,
     // even though the label alone would have passed.
     assert_eq!(
@@ -613,7 +622,7 @@ fn image_declared_edition_overrides_the_label() {
         report
             .failed
             .iter()
-            .any(|m| m.contains("share no workflow edition")),
+            .any(|m| m.contains("no edition satisfies both")),
         "{report:?}"
     );
     // An empty ENV declares none: the peer floats to its newest, and a
@@ -658,12 +667,12 @@ fn check_image_ties_the_label_to_the_command() {
             }),
         ),
     );
-    let report = check_image(&config, Some(&SessionOffer::this_build(None)));
+    let report = check_image(&config, Some(&EditionTarget::this_build()));
     assert_eq!(report.failed.len(), 1, "{report:?}");
     assert!(report.failed[0].contains("serves \"pkg:Other\""));
     config.cmd.clear();
     config.entrypoint[3] = "pkg:Policy".to_owned();
-    let report = check_image(&config, Some(&SessionOffer::this_build(None)));
+    let report = check_image(&config, Some(&EditionTarget::this_build()));
     assert!(report.ok(), "{report:?}");
     assert!(report.not_checked.is_empty(), "{report:?}");
 }
@@ -703,4 +712,74 @@ fn an_undeclared_image_is_told_where_to_pin_its_edition() {
         .env
         .push(format!("{WORKFLOW_EDITION_ENV}={CURRENT_WORKFLOW_EDITION}"));
     assert!(!floats(&config));
+}
+
+#[test]
+fn a_local_check_names_this_build_and_no_platform() {
+    // An image built by another dev build of rlmesh, checked with no
+    // platform in play: the report compares it with this build, by name.
+    let mut config = image(
+        &["python", "-m", "rlmesh.serve", "pkg:Policy"],
+        &[],
+        &[],
+        &[],
+    );
+    config.architecture = "arm64".to_owned();
+    config.labels.insert(
+        DESCRIBE_LABEL.to_owned(),
+        label(
+            "model",
+            serde_json::json!({
+                "protocol_generation": PROTOCOL_GENERATION,
+                "session_wire_revision": WIRE_REVISION,
+                "supported_workflow_editions": ["2026.10-dev.1a2b3c4d5e6f"],
+                "os": "macos",
+                "arch": "arm64",
+            }),
+        ),
+    );
+    config.labels.insert(
+        PACKAGE_LABEL.to_owned(),
+        r#"{"schemaVersion": 2}"#.to_owned(),
+    );
+    let this_build = EditionTarget {
+        offer: SessionOffer::new(&["2026.10-dev.ffffffffffff"]),
+        ..EditionTarget::this_build()
+    };
+    let report = check_image(&config, Some(&this_build));
+    let refused = report
+        .failed
+        .iter()
+        .find(|m| m.starts_with("editions:"))
+        .unwrap_or_else(|| panic!("{report:?}"));
+    assert_eq!(
+        refused,
+        &format!(
+            "editions: the image speaks [\"2026.10-dev.1a2b3c4d5e6f\"]; this rlmesh build \
+             speaks [\"2026.10-dev.ffffffffffff\"]; no edition satisfies both, so a session \
+             would be refused: {}",
+            rlmesh_proto::DEV_BUILD_HINT
+        )
+    );
+    let every = report
+        .failed
+        .iter()
+        .chain(&report.warnings)
+        .chain(&report.not_checked)
+        .chain(&report.passed);
+    for message in every {
+        assert!(!message.contains("the platform"), "{message}");
+        assert!(!message.contains("managed platform"), "{message}");
+    }
+    // Without a describe label, or with one carrying no editions, the
+    // handshake is what checks them.
+    config.labels.clear();
+    let report = check_image(&config, Some(&this_build));
+    assert!(
+        report
+            .not_checked
+            .iter()
+            .any(|m| m.contains("the session handshake checks them when the image runs")),
+        "{report:?}"
+    );
 }
