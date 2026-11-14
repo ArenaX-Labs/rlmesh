@@ -5023,6 +5023,7 @@
       "HostLink",
       "InferencePendingEvent",
       "InputLostEvent",
+      "InputStats",
       "Link",
       "LinkRun",
       "LockstepStats",
@@ -5378,6 +5379,28 @@
         },
         "stability": "Experimental"
       },
+      "InputStats": {
+        "kind": "class",
+        "members": {
+          "entry": {
+            "kind": "attribute",
+            "signature": "entry: str"
+          },
+          "lost": {
+            "kind": "attribute",
+            "signature": "lost: int"
+          },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str"
+          },
+          "received": {
+            "kind": "attribute",
+            "signature": "received: int"
+          }
+        },
+        "stability": "Experimental"
+      },
       "Link": {
         "kind": "class",
         "members": {
@@ -5596,6 +5619,10 @@
           "drifting": {
             "kind": "attribute",
             "signature": "drifting: bool"
+          },
+          "inputs": {
+            "kind": "attribute",
+            "signature": "inputs: list[InputStats]"
           },
           "latency_max_ms": {
             "kind": "attribute",

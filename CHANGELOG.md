@@ -113,6 +113,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `Robot.command(path)` (and `part.command()`) returns the value to apply now, or `None` when nothing is due or what is due carries none; `due()` still gives the mode and timing.
 - `rlmesh.realtime.results` types what `health()`, `stats()`, `run()`, `events()`, `held`, `edge_stats()` and `release(to=...)` return as `TypedDict`s; they stay plain dicts.
 - A robot the host dropped joins again on its own.
+- `Policy.stats()` (and `run()`) counts each input's samples `received` and `lost` (seq gaps) under `inputs` (`results.InputStats`), and an input that takes every sample (a window) logs a warning naming the part when it loses some, at most once every 5 s; Node's `stats()` and Rust's `RunStats::inputs` carry the same.
 
 #### Sessions, hosts and devices
 

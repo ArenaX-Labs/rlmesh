@@ -930,8 +930,9 @@ class V2Controller:
     def stats(self) -> builtins.dict[builtins.str, typing.Any]:
         r"""
         The run's counters, with its `clock`. Wall: starts, skips and
-        completions, and the input the starts are phased after
-        (`aligned_to`, `phase_offset_ms`). Lockstep: starts, chunks and one
+        completions, the input the starts are phased after (`aligned_to`,
+        `phase_offset_ms`), and per input bound to a part its samples
+        `received` and `lost` (`inputs`). Lockstep: starts, chunks and one
         dict per episode (`return`, `steps`, `terminated`, `truncated`).
         """
     def events(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:

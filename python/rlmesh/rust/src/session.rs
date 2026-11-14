@@ -2106,8 +2106,9 @@ impl PyController {
     }
 
     /// The run's counters, with its `clock`. Wall: starts, skips and
-    /// completions, and the input the starts are phased after
-    /// (`aligned_to`, `phase_offset_ms`). Lockstep: starts, chunks and one
+    /// completions, the input the starts are phased after (`aligned_to`,
+    /// `phase_offset_ms`), and per input bound to a part its samples
+    /// `received` and `lost` (`inputs`). Lockstep: starts, chunks and one
     /// dict per episode (`return`, `steps`, `terminated`, `truncated`).
     #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -2147,6 +2148,16 @@ impl PyController {
         d.set_item("waiting", controller.waiting())?;
         let parked: Vec<String> = controller.parked().into_iter().map(|p| p.part).collect();
         d.set_item("parked", parked)?;
+        let inputs = PyList::empty(py);
+        for input in &stats.inputs {
+            let row = PyDict::new(py);
+            row.set_item("entry", &input.entry)?;
+            row.set_item("part", &input.part)?;
+            row.set_item("received", input.received)?;
+            row.set_item("lost", input.lost)?;
+            inputs.append(row)?;
+        }
+        d.set_item("inputs", inputs)?;
         Ok(d)
     }
 

@@ -140,7 +140,7 @@ pub use participant::{
 pub use sample::{
     Fresh, Received, SamplePublisher, SampleStats, SampleSubscriber, SubscribeOptions,
 };
-pub use schedule::{PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
+pub use schedule::{InputStats, PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
 pub use server::SessionServer;
 pub use transport::{ClassQos, TrafficClass, Transport, TransportConfig, TransportTuning};
 pub use virtual_clock::VirtualConfig;

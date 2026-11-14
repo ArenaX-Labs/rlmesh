@@ -144,6 +144,6 @@ pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, Id
 pub use cache::{Cached, InputCache, InputSnapshot, Skip, Snapshot};
 pub use clock::{OffsetEstimate, OffsetEstimator, OffsetEstimatorConfig};
 pub use lease::{LeaseChange, LeaseClient, LeaseError, LeaseGroup, LeaseState};
-pub use schedule::{PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
+pub use schedule::{InputStats, PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
 pub use stream::SampleStats;
 pub use virtual_clock::VirtualConfig;

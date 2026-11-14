@@ -168,6 +168,9 @@ test('a Node policy drives a Node robot on loopback', async () => {
   assert.equal(stats.clock, 'wall');
   assert.ok(stats.completions > 0 && stats.chunksSent > 0, JSON.stringify(stats));
   assert.equal(stats.sendErrors, 0);
+  const q = stats.inputs.find((i) => i.entry === 'q');
+  assert.equal(q.part, 'ur10e:arm');
+  assert.ok(q.received > 0 && q.lost >= 0, JSON.stringify(stats.inputs));
   assert.equal(policy.holds, false, 'a stopped run releases its leases');
 
   // predict saw what the binding table promises.

@@ -1533,7 +1533,11 @@ class Policy:
         counts the starts a shadow run predicted without a lease; they are
         not ``no_lease`` skips. ``parked`` lists the parts a higher class
         took, ``robot:path``, kept from the policy until :meth:`resume` or a
-        hand-back.
+        hand-back. ``inputs`` has one row per input bound to a part:
+        ``entry``, ``part``, and the samples ``received`` and ``lost`` (seq
+        gaps: dropped on the way) since the policy was last bound. An input
+        that takes every sample (a window) also logs a warning when it
+        loses some, at most every few seconds.
         """
         return cast("RunStats", self._bound().stats())
 

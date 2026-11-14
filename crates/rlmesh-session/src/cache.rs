@@ -42,14 +42,20 @@
 //! the publishers' clock mappings. [`Inputs::observe`] is a policy start:
 //! the snapshot, each sample it uses decoded (JPEG) and each entry's plan
 //! applied, so the values are what `predict` receives and the snapshot is
-//! `obs.meta`.
+//! `obs.meta`. [`Inputs::stats`] counts each input's samples received and
+//! lost (seq gaps), and a snapshot warns, at most once per input every
+//! [`LOSS_WARNING_GAP`], when an input that takes every sample (a window, or
+//! `every`) lost some.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use crate::schedule::InputStats;
 use crate::spec::Binding;
 use crate::spec::apply::{ApplyError, Value};
-use crate::wire::{ChannelId, Epoch, HistoryQuery, StreamSpec};
+use crate::wire::{ChannelId, ContractMode, Epoch, HistoryQuery, StreamSpec};
 use bytes::Bytes;
+use tracing::warn;
 
 use crate::error::SessionError;
 use crate::media::decode_payload;
@@ -57,6 +63,33 @@ use crate::participant::{AuthorityView, Participant};
 use crate::sample::{Received, SampleSubscriber, SubscribeOptions};
 
 pub use rlmesh_session_core::cache::{Cached, InputCache, InputSnapshot, Skip, Snapshot};
+
+/// The least time between two warnings of one input's lost samples.
+pub const LOSS_WARNING_GAP: Duration = Duration::from_secs(5);
+
+/// When one input's lost samples were last warned of.
+#[derive(Clone, Copy, Debug, Default)]
+struct LossWarning {
+    /// The input's `lost` at the last warning.
+    warned: u64,
+    /// When, in session ns.
+    at: Option<i64>,
+}
+
+impl LossWarning {
+    /// The samples lost since the last warning, when the input has lost
+    /// `lost` so far and a warning is due at `now_ns`.
+    fn due(&mut self, lost: u64, now_ns: i64) -> Option<u64> {
+        let gap = i64::try_from(LOSS_WARNING_GAP.as_nanos()).unwrap_or(i64::MAX);
+        if lost <= self.warned || self.at.is_some_and(|at| now_ns.saturating_sub(at) < gap) {
+            return None;
+        }
+        let since = lost - self.warned;
+        self.warned = lost;
+        self.at = Some(now_ns);
+        Some(since)
+    }
+}
 
 /// A policy start: each input as `predict` receives it, and the snapshot it
 /// came from (ages, staleness, padding, provenance: `obs.meta`).
@@ -107,6 +140,10 @@ pub struct Inputs {
     view: AuthorityView,
     me: crate::wire::ParticipantId,
     streams: Vec<SampleSubscriber>,
+    /// Per stream (as `streams`), when its losses were last warned of;
+    /// `None` for a stream the binding reads only the latest of, whose
+    /// losses are counted and never warned of.
+    losses: Mutex<Vec<Option<LossWarning>>>,
     /// Per input, the last decoded value of an encoded stream and the
     /// samples it came from: a 30 fps JPEG camera read by a 100 Hz policy
     /// is decoded and converted once per frame, not once per start.
@@ -172,8 +209,24 @@ impl Inputs {
             };
             streams.push(participant.subscribe_stream(stream, options).await?);
         }
+        // Only an input that takes every sample is short of one it lost.
+        let losses = streams
+            .iter()
+            .map(|s| {
+                let channel = s.spec().channel;
+                binding
+                    .contracts
+                    .iter()
+                    .any(|c| {
+                        c.channel == channel
+                            && matches!(c.mode, ContractMode::Every | ContractMode::History)
+                    })
+                    .then(LossWarning::default)
+            })
+            .collect();
         Ok(Self {
             decoded: Mutex::new(vec![None; binding.inputs.len()]),
+            losses: Mutex::new(losses),
             binding: binding.clone(),
             cache,
             view,
@@ -237,9 +290,55 @@ impl Inputs {
         Ok(Observation { values, meta })
     }
 
+    /// Each input bound to a part, in policy order: the samples its
+    /// subscription received and lost.
+    pub fn stats(&self) -> Vec<InputStats> {
+        self.binding
+            .inputs
+            .iter()
+            .filter_map(|row| {
+                let stream = self
+                    .streams
+                    .iter()
+                    .find(|s| Some(s.spec().channel) == row.channel)?;
+                let stats = stream.stats();
+                Some(InputStats {
+                    entry: row.entry.clone(),
+                    part: stream.spec().qualified(),
+                    received: stats.received,
+                    lost: stats.lost,
+                })
+            })
+            .collect()
+    }
+
+    /// Warns of the samples each input that takes every sample lost since
+    /// its last warning, at most once every [`LOSS_WARNING_GAP`].
+    fn warn_losses(&self, now_session_ns: i64) {
+        let Ok(mut losses) = self.losses.lock() else {
+            return;
+        };
+        for (stream, loss) in self.streams.iter().zip(losses.iter_mut()) {
+            let Some(loss) = loss else {
+                continue;
+            };
+            if let Some(lost) = loss.due(stream.stats().lost, now_session_ns) {
+                let part = stream.spec().qualified();
+                warn!(
+                    policy = %self.me,
+                    %part,
+                    lost,
+                    "{part}: {lost} samples never arrived (seq gaps); \
+                     a congested link drops best-effort samples"
+                );
+            }
+        }
+    }
+
     /// The snapshot at a policy start now (session time, this controller's
     /// clock mapping).
     pub fn snapshot(&self, now_session_ns: i64) -> Result<Snapshot, Skip> {
+        self.warn_losses(now_session_ns);
         let self_error = self
             .view
             .with(|v| v.and_then(|v| v.clock(&self.me)).map_or(0, |c| c.error_ns));
@@ -313,5 +412,28 @@ impl Inputs {
             }
         }
         Ok(filled)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const S: i64 = 1_000_000_000;
+
+    #[test]
+    fn losses_are_warned_of_at_most_once_per_gap_with_what_was_lost_since() {
+        let mut loss = LossWarning::default();
+        assert_eq!(loss.due(0, 0), None, "nothing lost");
+        assert_eq!(loss.due(3, S), Some(3), "the first loss at once");
+        assert_eq!(loss.due(5, 2 * S), None, "within the gap");
+        assert_eq!(loss.due(9, 5 * S), None, "still within it");
+        assert_eq!(loss.due(9, 6 * S), Some(6), "what was lost since, once due");
+        assert_eq!(loss.due(9, 20 * S), None, "nothing new");
+        assert_eq!(
+            loss.due(10, 20 * S),
+            Some(1),
+            "a new loss after a quiet spell"
+        );
     }
 }

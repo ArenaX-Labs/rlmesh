@@ -2941,9 +2941,12 @@ impl Controller {
         PhaseAlign::input(&binding).map(|i| binding.inputs[i].entry.clone())
     }
 
-    /// The start and completion counters.
+    /// The start and completion counters, with each input's samples
+    /// received and lost.
     pub fn stats(&self) -> RunStats {
-        self.schedule().stats()
+        let mut stats = self.schedule().stats();
+        stats.inputs = self.rebinder.bound().inputs.stats();
+        stats
     }
 
     /// Takes the events reported so far (`rate_drift`, inference pending),

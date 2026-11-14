@@ -1463,6 +1463,19 @@ pub struct RunStats {
     /// The parts a higher class took, `robot:path`, kept from the policy
     /// until `resume()`.
     pub parked: Vec<String>,
+    /// Each input bound to a part, in policy order.
+    pub inputs: Vec<InputStats>,
+}
+
+/// One input bound to a part: the samples its subscription received and
+/// lost (seq gaps).
+#[napi(object)]
+pub struct InputStats {
+    pub entry: String,
+    /// `robot:path`.
+    pub part: String,
+    pub received: i64,
+    pub lost: i64,
 }
 
 /// One episode of a lockstep run.
@@ -1552,6 +1565,16 @@ fn run_stats(controller: &Controller) -> RunStats {
         latency_max_ms: ms(stats.latency_max),
         drifting: stats.drifting,
         parked: controller.parked().into_iter().map(|p| p.part).collect(),
+        inputs: stats
+            .inputs
+            .iter()
+            .map(|i| InputStats {
+                entry: i.entry.clone(),
+                part: i.part.clone(),
+                received: seq(i.received),
+                lost: seq(i.lost),
+            })
+            .collect(),
     }
 }
 

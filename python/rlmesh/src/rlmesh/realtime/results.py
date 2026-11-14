@@ -25,6 +25,7 @@ __all__ = [
     "HostLink",
     "InferencePendingEvent",
     "InputLostEvent",
+    "InputStats",
     "Link",
     "LinkRun",
     "LockstepStats",
@@ -221,6 +222,17 @@ class EdgeStats(TypedDict):
     gap_max_ms: float
 
 
+class InputStats(TypedDict):
+    """One input bound to a part: the samples its subscription received and lost."""
+
+    entry: str
+    #: ``robot:path``.
+    part: str
+    received: int
+    #: Samples missing between those received (seq gaps), dropped on the way.
+    lost: int
+
+
 class PolicyStats(TypedDict):
     """A wall-clock policy's run counters (:meth:`Policy.stats`, and what :meth:`Policy.run` returns)."""
 
@@ -246,6 +258,8 @@ class PolicyStats(TypedDict):
     waiting: str | None
     #: Parts a higher class took, ``robot:path``.
     parked: list[str]
+    #: Each input bound to a part, in policy order, since it was last bound.
+    inputs: list[InputStats]
 
 
 #: One episode of a lockstep run. A ``TypedDict`` written as a call, since

@@ -122,6 +122,7 @@ interface NativeStats {
   chunksSent: number; shadowPredictions: number; sendErrors: number;
   latencyP50Ms?: number | null; latencyP99Ms?: number | null; latencyMaxMs?: number | null;
   drifting: boolean; parked: string[];
+  inputs: { entry: string; part: string; received: number; lost: number }[];
 }
 interface NativeLockstepStats {
   clock: 'lockstep';
@@ -930,6 +931,18 @@ export interface PolicyStats {
   drifting: boolean;
   /** The parts a higher class took, `robot:path`, kept from the policy until `resume()`. */
   parked: string[];
+  /** Each input bound to a part, in policy order, since the policy was last bound. */
+  inputs: InputStats[];
+}
+
+/** One input bound to a part: the samples its subscription received and lost. */
+export interface InputStats {
+  entry: string;
+  /** `robot:path`. */
+  part: string;
+  received: number;
+  /** Samples missing between those received (seq gaps), dropped on the way. */
+  lost: number;
 }
 
 /** One episode of a lockstep run. */
@@ -980,6 +993,7 @@ function runStats(s: NativeStats | NativeLockstepStats): RunStats {
     latencyMaxMs: s.latencyMaxMs ?? null,
     drifting: s.drifting,
     parked: s.parked,
+    inputs: s.inputs.map((i) => ({ entry: i.entry, part: i.part, received: i.received, lost: i.lost })),
   };
 }
 

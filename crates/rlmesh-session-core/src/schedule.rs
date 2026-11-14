@@ -271,6 +271,28 @@ pub struct RunStats {
     pub latency_max: Option<Duration>,
     /// Whether the completion rate is drifting now.
     pub drifting: bool,
+    /// Each input bound to a part, in policy order: the samples its
+    /// subscription received and the seqs it found missing. The controller
+    /// runtime fills it (`Controller::stats` in `rlmesh-session`); a
+    /// [`StartSchedule`] alone leaves it empty.
+    pub inputs: Vec<InputStats>,
+}
+
+/// One bound input's samples as its subscription received them, since the
+/// inputs were last opened (at bind, and again at each rebind).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InputStats {
+    /// The entry.
+    pub entry: String,
+    /// The part it reads, `robot:path`.
+    pub part: String,
+    /// Samples received.
+    pub received: u64,
+    /// Samples missing between those received (seq gaps): dropped on the
+    /// way, as a congested link drops best-effort samples. A window may
+    /// still fill a gap from the host's history store; it counts here all
+    /// the same.
+    pub lost: u64,
 }
 
 impl RunStats {

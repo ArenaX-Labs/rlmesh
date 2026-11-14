@@ -253,6 +253,10 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
         assert isinstance(stats, dict), stats
         assert stats["completions"] > 0 and stats["chunks_sent"] > 0
         assert stats["send_errors"] == 0
+        inputs = {i["entry"]: i for i in stats["inputs"]}
+        assert inputs["q"]["part"] == "ur10e:arm"
+        assert inputs["q"]["received"] > 0
+        assert inputs["ft"]["lost"] >= 0, "counted, whatever the link dropped"
         assert not policy.holds, "a stopped run releases its leases"
 
         # predict saw what the binding table promises.

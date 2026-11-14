@@ -13,12 +13,13 @@ use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listener;
 use rlmesh_session::wire::version::LEASE_HANDBACK;
 use rlmesh_session::wire::{
-    CtlStatus, DType, LeaseToken, Mode, PriorityClass, ReasonCode, Role, SessionId, TenantId,
+    CtlStatus, DType, LeaseToken, Mode, PriorityClass, ReasonCode, Role, Sample, SessionId,
+    TenantId,
 };
 use rlmesh_session::{
-    AuthorityEvent, Controller, ControllerConfig, HandBack, HostConfig, Observation, Parked,
-    Participant, ParticipantConfig, Predictor, RunConfig, RunError, RunEvent, SessionError,
-    SessionHost, SkipReason, SystemMonotonicClock, Transport, TransportConfig,
+    AuthorityEvent, Controller, ControllerConfig, HandBack, HostConfig, InputStats, Observation,
+    Parked, Participant, ParticipantConfig, Predictor, RunConfig, RunError, RunEvent, SessionError,
+    SessionHost, SkipReason, SystemMonotonicClock, TrafficClass, Transport, TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -36,6 +37,15 @@ const POLICY: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
                "ft": {"kind": "wrench", "at": "wrist/ft", "frame": "tool0"}},
+    "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
+                        "hz": 100, "chunk": 5}}
+}"#;
+
+/// [`POLICY`] with the wrench as a window of 4: every sample, by seq.
+const WINDOW_POLICY: &str = r#"{
+    "hz": 50,
+    "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
+               "ft": {"kind": "wrench", "at": "wrist/ft", "frame": "tool0", "history": 4}},
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
                         "hz": 100, "chunk": 5}}
 }"#;
@@ -1893,4 +1903,99 @@ async fn a_hand_back_that_cannot_take_is_refused_and_the_operator_keeps_the_arm(
         stop.store(true, Ordering::Relaxed);
         robot_loop.join().expect("robot loop");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_input_counts_the_samples_its_link_lost() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let model = world
+        .join("model", Role::Controller, PriorityClass::Model)
+        .await;
+    let controller = Controller::bind(
+        Arc::new(model),
+        &Policy::parse(WINDOW_POLICY).expect("policy"),
+        &RunOptions::named("model").robot("ur10e").expect("robot"),
+        ControllerConfig::default(),
+    )
+    .await
+    .expect("bind");
+    let ft = |c: &Controller| -> InputStats {
+        c.stats()
+            .inputs
+            .into_iter()
+            .find(|i| i.entry == "ft")
+            .expect("ft is counted")
+    };
+
+    // The wrench's samples put raw on its key, so seqs can go missing.
+    let stream = controller
+        .binding()
+        .inputs
+        .iter()
+        .find(|i| i.entry == "ft")
+        .and_then(|i| i.part.as_ref())
+        .expect("ft bound")
+        .stream()
+        .expect("stream");
+    let owner = robot.participant();
+    let key = owner.keys().data(owner.id(), "wrist/ft");
+    let raw = Transport::open(&TransportConfig::per_class_tcp(world.base))
+        .await
+        .expect("raw transport");
+    let epoch = world.host.snapshot().epoch;
+    let stride = stream.layout.stride().expect("a fixed layout");
+    let put = |seq: u64| {
+        let now = owner.clock().now_ns();
+        let sample = Sample {
+            channel: stream.channel,
+            epoch,
+            seq,
+            capture_ns: now,
+            publish_ns: now,
+            tick: 0,
+            payload: vec![0_u8; stride].into(),
+            applied: None,
+        };
+        let frame = owner
+            .sealer()
+            .seal_sample(&key, &sample, false)
+            .expect("seal");
+        let session = raw.session(TrafficClass::of(stream.priority)).clone();
+        let key = key.clone();
+        async move { session.put(&key, frame).await.expect("put") }
+    };
+    // Seq 1 until the subscription is routed (a repeat is out of order,
+    // not lost), then 3 and 4, and 6 to 8, go missing.
+    let started = Instant::now();
+    while ft(&controller).received == 0 {
+        assert!(started.elapsed() < WAIT, "seq 1 never arrived");
+        put(1).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for seq in [2, 5, 9, 10] {
+        put(seq).await;
+    }
+    wait_until("seq 10", || ft(&controller).received == 5).await;
+    let stats = controller.stats();
+    let entries: Vec<&str> = stats.inputs.iter().map(|i| i.entry.as_str()).collect();
+    assert_eq!(
+        entries,
+        ["q", "ft"],
+        "every input bound to a part, in order"
+    );
+    assert_eq!(
+        ft(&controller),
+        InputStats {
+            entry: "ft".into(),
+            part: "ur10e:wrist/ft".into(),
+            received: 5,
+            lost: 5,
+        }
+    );
+    let q = &stats.inputs[0];
+    assert_eq!((q.part.as_str(), q.received, q.lost), ("ur10e:arm", 0, 0));
+    // A start reads the window, and warns of the 5 the link lost.
+    let _ = controller.observe();
+    raw.close().await.expect("close");
 }

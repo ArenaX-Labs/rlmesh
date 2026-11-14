@@ -336,6 +336,13 @@ publishes and reads, and a policy's run counters. In Node it is
 `await policy.health()` and `await policy.health({ wait: true })`; in Rust
 `participant.health(timeout)` and `participant.next_health(timeout)`.
 
+A policy also counts what reached it: `policy.stats()["inputs"]` has a row
+per input bound to a part, with the samples `received` and `lost` (gaps in
+their seqs: realtime samples a congested link dropped). An input that takes
+every sample, a window (`history`), logs a warning naming the part and how
+many it lost, at most once every 5 s. In Node it is `policy.stats().inputs`;
+in Rust `RunStats::inputs`, from `Controller::stats`.
+
 ## 7. Record and export
 
 The host records every session, always: one-minute MCAP segments under
