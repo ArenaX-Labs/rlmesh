@@ -535,6 +535,7 @@ pub struct RLMeshState {
     pub has_clip: bool,
     pub _reserved9: [u8; 3],
     pub clip: [f64; 2],
+    pub polarity: *const c_char,
 }
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -591,6 +592,8 @@ pub struct RLMeshState {
     pub has_clip: bool,
     pub _reserved8: [u8; 7],
     pub clip: [f64; 2],
+    pub polarity: *const c_char,
+    pub _reserved9: [u8; 4],
 }
 #[cfg(target_pointer_width = "64")]
 #[repr(C)]
@@ -731,6 +734,10 @@ pub struct RLMeshActuator {
     pub axis_offset_len: usize,
     pub labels: *const *const c_char,
     pub labels_len: usize,
+    pub polarity: *const c_char,
+    pub has_unit: bool,
+    pub _reserved9: [u8; 7],
+    pub unit: f64,
 }
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -776,6 +783,10 @@ pub struct RLMeshActuator {
     pub axis_offset_len: usize,
     pub labels: *const *const c_char,
     pub labels_len: usize,
+    pub polarity: *const c_char,
+    pub has_unit: bool,
+    pub _reserved8: [u8; 3],
+    pub unit: f64,
 }
 #[cfg(target_pointer_width = "64")]
 #[repr(C)]
@@ -844,6 +855,7 @@ pub struct RLMeshStateTag {
     pub part: *const c_char,
     pub labels: *const *const c_char,
     pub labels_len: usize,
+    pub polarity: *const c_char,
 }
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -869,6 +881,8 @@ pub struct RLMeshStateTag {
     pub labels: *const *const c_char,
     pub labels_len: usize,
     pub _reserved3: [u8; 4],
+    pub polarity: *const c_char,
+    pub _reserved4: [u8; 4],
 }
 #[cfg(target_pointer_width = "64")]
 #[repr(C)]
@@ -909,6 +923,7 @@ pub struct RLMeshField {
     pub part: *const c_char,
     pub labels: *const *const c_char,
     pub labels_len: usize,
+    pub polarity: *const c_char,
 }
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -935,6 +950,8 @@ pub struct RLMeshField {
     pub labels: *const *const c_char,
     pub labels_len: usize,
     pub _reserved3: [u8; 4],
+    pub polarity: *const c_char,
+    pub _reserved4: [u8; 4],
 }
 #[cfg(target_pointer_width = "64")]
 #[repr(C)]

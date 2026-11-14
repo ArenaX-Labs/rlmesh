@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+import rlmesh
 import rlmesh.adapters as adapt
 from rlmesh.numpy import Model, RemoteEnv
 
@@ -60,6 +61,15 @@ def make_policy(
     return predict
 
 
+class KeepResult(rlmesh.RunHooks):
+    """Keeps the result a binding reports when it closes."""
+
+    result = rlmesh.RunResult()
+
+    def on_run_end(self, result: rlmesh.RunResult) -> None:
+        self.result = result
+
+
 def main() -> None:
     """Connect, print the resolved adapter, run the episodes, report."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -80,8 +90,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    env = RemoteEnv(args.address)
-    contract = env.env_contract
+    with RemoteEnv(args.address) as env:
+        contract = env.env_contract
     print(f"connected to {contract.id} at {args.address}")
     print(f"  {contract.metadata.get('simulator')} / {contract.metadata.get('robot')}")
     print("\nresolved adapter (env tags x model spec):")
@@ -92,12 +102,18 @@ def main() -> None:
     seeds = [args.seed + i for i in range(args.episodes)]
     print(f"\nrunning {args.episodes} episodes, {args.policy} policy ...")
     if args.view:
-        with model.session(env, view=args.view) as session:
-            result = session.run(seeds=seeds)
+        # The viewer watches a binding: step each episode by hand.
+        kept = KeepResult()
+        with model.bind(args.address, view=args.view, hooks=kept) as binding:
+            for seed in seeds:
+                binding.reset(seed=seed)
+                while not binding.done:
+                    binding.step()
             if sys.stdin.isatty():
                 input("\nrun finished; press Enter to close the viewer ")
+        result = kept.result
     else:
-        result = model.run(env, seeds=seeds)
+        result = model.run(args.address, seeds=seeds)
 
     for episode in result.episodes:
         print(

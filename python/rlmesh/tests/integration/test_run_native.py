@@ -1,12 +1,13 @@
 """The unified native ``Model.run``: seeds, caps, and the hook contract.
 
 ``run()`` drives every env shape through the native runtime loop. These pin
-the Session-parity features the runtime enforces itself: explicit per-episode
-seeds (``episode_seeds``, echoed on the ``RunResult``), the step cap
+the features the runtime enforces itself: explicit per-episode seeds
+(``episode_seeds``, echoed on the ``RunResult``), the step cap
 (runtime-truncated episodes), and ``hooks`` firing the same callbacks in the
-same per-episode order as ``Session.run`` -- with the terminal flags the
-runtime knows at each step, exceptions aborting the run with their own type,
-and ``on_run_end`` firing exactly once. Only the live viewer stays session-only.
+same per-episode order as a :class:`~rlmesh.Binding` stepped by hand -- with
+the terminal flags the runtime knows at each step, exceptions aborting the run
+with their own type, and ``on_run_end`` firing exactly once. Only the live
+viewer stays binding-only.
 """
 
 from __future__ import annotations
@@ -59,14 +60,41 @@ class CountEnv:
         return None
 
 
+class _PosEnv(CountEnv):
+    """``CountEnv`` whose observation is a ``pos`` Dict leaf."""
+
+    def __init__(self) -> None:
+        import gymnasium as gym
+
+        super().__init__(episode_len=1)
+        self.observation_space = gym.spaces.Dict(
+            {"pos": gym.spaces.Box(-1.0, 1.0, (3,), np.float32)}
+        )
+        self.action_space = gym.spaces.Box(-1.0, 1.0, (3,), np.float32)
+
+    def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+        super().reset(seed=seed, options=options)
+        return {"pos": np.array([0.25, -0.5, 0.75], np.float32)}, {}
+
+    def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+        _, reward, done, truncated, info = super().step(action)
+        return (
+            {"pos": np.array([0.25, -0.5, 0.75], np.float32)},
+            reward,
+            done,
+            truncated,
+            info,
+        )
+
+
 def _model() -> Any:
     from rlmesh.numpy import Model
 
     return Model(lambda obs: np.zeros(2, np.float32))
 
 
-def test_back_to_back_sessions_release_the_join_slot() -> None:
-    server = rlmesh.EnvServer(CountEnv(), "127.0.0.1:0")
+def test_back_to_back_bindings_release_the_join_slot() -> None:
+    server = rlmesh.EnvServer(CountEnv(), ":0/env")
     server.start()
     model = _model()
     try:
@@ -76,8 +104,8 @@ def test_back_to_back_sessions_release_the_join_slot() -> None:
             if iteration % 2 == 0:
                 env.close()
             del env
-            with model.session(server.address) as session:
-                session.reset()
+            with model.bind(server.address) as binding:
+                binding.reset()
             assert model.run(server.address, episodes=1).num_episodes == 1
     finally:
         model.close()
@@ -297,19 +325,15 @@ def test_run_warns_once_per_episode_for_an_undeclared_short_chunk() -> None:
 def test_close_stops_a_running_serve_which_then_returns() -> None:
     """``close()`` is terminal: it stops a running serve (drain) and fires the
     hook once (MDL-P2)."""
-    import socket
     import threading
 
     closes: list[str] = []
     model = rlmesh.Model(lambda obs: 0, on_close=lambda: closes.append("closed"))
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
     errors: list[BaseException] = []
 
     def serve() -> None:
         try:
-            model.serve(f"127.0.0.1:{port}")
+            model.serve(":0", name="model")
         except BaseException as error:  # pragma: no cover - surfaced below
             errors.append(error)
 
@@ -322,13 +346,13 @@ def test_close_stops_a_running_serve_which_then_returns() -> None:
     assert errors == []
     assert closes == ["closed"]
     with pytest.raises(RuntimeError, match="the model is closed"):
-        model.serve(f"127.0.0.1:{port}")
+        model.serve(":0", name="model")
 
 
 def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
     """The native path carries replayed steps to the model as observation
     history, so a frame-stacked model sees the same windows under ``run`` as
-    under a Session, at execution_horizon 1 and above."""
+    under a binding, at execution_horizon 1 and above."""
     import rlmesh.adapters as adapt
     from rlmesh.numpy import Model
 
@@ -373,15 +397,11 @@ def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
     def windows(path: str, horizon: int) -> list[tuple[int, ...]]:
         model = Stacked()
         env = adapt.tag(CameraEnv(), tags)
-        try:
-            if path == "session":
-                model.session(env, execution_horizon=horizon).run(episodes=1)
-            else:
-                model.run(env, episodes=1, execution_horizon=horizon)
-        except ConnectionError as exc:
-            if "Operation not permitted" in str(exc):
-                pytest.skip("local tcp bind is not permitted in this environment")
-            raise
+        if path == "bind":
+            with model.bind(env, execution_horizon=horizon) as binding:
+                _by_hand(binding, [None])
+        else:
+            model.run(env, episodes=1, execution_horizon=horizon)
         return model.windows
 
     every_step = windows("native", 1)
@@ -389,7 +409,7 @@ def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
     # Re-plans at steps 0, 3 and 6: the window at each holds the consecutive
     # frames, not the decision points, on both paths.
     assert windows("native", 3) == [every_step[0], every_step[3], every_step[6]]
-    assert windows("session", 3) == windows("native", 3)
+    assert windows("bind", 3) == windows("native", 3)
 
 
 def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
@@ -412,33 +432,114 @@ def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
     assert len(env.seen_seeds) == 2
 
 
-def test_run_on_a_driven_handle_explains_the_session_conflict() -> None:
-    """A RemoteEnv handle that was driven holds the env's single session slot;
-    run() (which dials the handle's address) surfaces a clear pointer instead
-    of the raw wire error."""
-    try:
-        server = rlmesh.EnvServer(CountEnv(), "127.0.0.1:0")
-    except ConnectionError as exc:
-        if "Operation not permitted" in str(exc):
-            pytest.skip("local tcp bind is not permitted in this environment")
-        raise
+def test_an_env_failure_names_the_step_it_happened_at() -> None:
+    class FailsOnFourthStep(CountEnv):
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            if self._t == 3:
+                raise ValueError("scripted step failure")
+            return super().step(action)
+
+    with pytest.raises(Exception, match=r"env\.step failed at runtime step 4:"):
+        _model().run(FailsOnFourthStep(episode_len=0), episodes=1)
+
+
+def test_run_on_an_open_handle_explains_the_lease_conflict() -> None:
+    """An open RemoteEnv holds its env's lease: run() refuses the handle,
+    naming the address form, and a run on the address points at the holder."""
+    server = rlmesh.EnvServer(CountEnv(), ":0/env")
     server.start()
     try:
         handle = rlmesh.numpy.RemoteEnv(server.address)
-        handle.reset()
-        with pytest.raises(RuntimeError, match=r"close\(\) the handle"):
+        with pytest.raises(TypeError, match=r"run\(address\)"):
             _model().run(handle, episodes=1)
+        with pytest.raises(RuntimeError, match=r"close\(\) it before run"):
+            _model().run(server.address, episodes=1)
         handle.close()
+        assert _model().run(server.address, episodes=1).num_episodes == 1
     finally:
         server.shutdown()
 
 
-def test_the_viewer_stays_a_session_option() -> None:
-    import inspect
+class _ScriptedViewer:
+    """A stand-in ViewerDriver: skips after the steps in ``skip_after``
+    (counted across the run), quits after step ``quit_after``."""
 
-    assert "view" not in inspect.signature(rlmesh.Model.run).parameters
-    with pytest.raises(TypeError, match=r"session\(\) option"):
-        rlmesh.run(_model(), CountEnv(), view="terminal")
+    def __init__(self, skip_after: tuple[int, ...] = (), quit_after: int = 0) -> None:
+        self.skip_after, self.quit_after = skip_after, quit_after
+        self.steps = 0
+        self.feeds: list[tuple[int, int]] = []
+        self.held: list[bool] = []
+
+    def feed(self, *, obs: Any, steps: int, episode: int, **_hud: Any) -> None:
+        assert obs.shape == (2,)
+        self.feeds.append((episode, steps))
+
+    def pace(self) -> float:
+        self.steps += 1
+        return 0.0
+
+    def consume_skip(self) -> bool:
+        return self.steps in self.skip_after
+
+    def quit_requested(self) -> bool:
+        return self.steps == self.quit_after
+
+    def close(self, *, hold: bool = True) -> None:
+        self.held.append(hold)
+
+
+def _watch(monkeypatch: pytest.MonkeyPatch, viewer: _ScriptedViewer) -> None:
+    import rlmesh._models._view as view_mod
+
+    monkeypatch.setattr(view_mod, "ViewerDriver", lambda _view: viewer)
+
+
+def test_a_viewer_skip_truncates_the_episode_and_the_run_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer = _ScriptedViewer(skip_after=(2, 5))
+    _watch(monkeypatch, viewer)
+    result = rlmesh.run(_model(), CountEnv(episode_len=0), episodes=2, view=True)
+    # A skip lands on the step after it was asked for.
+    assert [(e.steps, e.truncated) for e in result.episodes] == [(3, True), (3, True)]
+    assert viewer.feeds[:3] == [(0, 0), (0, 1), (0, 2)]
+    assert viewer.held == [True]
+
+
+def test_a_viewer_quit_returns_the_partial_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer = _ScriptedViewer(quit_after=2)
+    _watch(monkeypatch, viewer)
+    result = _model().run(CountEnv(episode_len=0), episodes=3, view="terminal")
+    assert [(e.steps, e.truncated) for e in result.episodes] == [(3, True)]
+    assert viewer.held == [True]
+
+
+def test_a_viewer_quit_ends_every_lane_of_a_driver_reset_lane_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Quit truncates both live lane episodes and starts no more, however much
+    # of the budget is left.
+    viewer = _ScriptedViewer(quit_after=4)
+    _watch(monkeypatch, viewer)
+    lanes = [CountEnv(episode_len=0), CountEnv(episode_len=0)]
+    server = rlmesh.EnvServer(cast("Any", lanes), ":0/env")
+    try:
+        server.start()
+    except (OSError, ConnectionError) as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    try:
+        result = _model().run(server.address, episodes=6, view="terminal")
+    finally:
+        server.shutdown()
+    assert result.num_episodes == 2
+    # The lanes step independently, so the quit finds each wherever it got
+    # to: one may have taken every step before it.
+    assert all(e.truncated for e in result.episodes)
+    assert sum(e.steps for e in result.episodes) >= 4
 
 
 # ---------------------------------------------------------------------------
@@ -498,19 +599,33 @@ def _raising(hook: str, error: BaseException) -> _Recorder:
     return recorder
 
 
-def _drive(model: Any, env: Any, path: str, **kwargs: Any) -> rlmesh.RunResult:
-    try:
-        if path == "session":
-            with model.session(env) as sess:
-                return sess.run(**kwargs)
-        return model.run(env, **kwargs)
-    except ConnectionError as exc:
-        if "Operation not permitted" in str(exc):
-            pytest.skip("local tcp bind is not permitted in this environment")
-        raise
+def _by_hand(binding: rlmesh.Binding[Any, Any], seeds: list[int | None]) -> None:
+    """Each episode of ``seeds`` stepped to its end under the model's actions."""
+    for seed in seeds:
+        binding.reset(seed=seed)
+        while not binding.done:
+            binding.step()
 
 
-PATHS = ["session", "native"]
+def _drive(
+    model: Any,
+    env: Any,
+    path: str,
+    *,
+    seeds: list[int] | None = None,
+    episodes: int | None = None,
+    hooks: _Recorder | None = None,
+    **kwargs: Any,
+) -> rlmesh.RunResult:
+    if path == "native":
+        return model.run(env, seeds=seeds, episodes=episodes, hooks=hooks, **kwargs)
+    assert hooks is not None and not kwargs
+    with model.bind(env, hooks=hooks) as binding:
+        _by_hand(binding, list(seeds) if seeds else [None] * (episodes or 0))
+    return hooks.run_results[-1]
+
+
+PATHS = ["bind", "native"]
 
 
 @pytest.mark.parametrize("path", PATHS)
@@ -555,13 +670,12 @@ def test_hooks_carry_the_terminal_flag_on_the_terminal_step_only(path: str) -> N
     assert flags == [(0, False, False), (1, False, False), (2, True, False)]
 
 
-@pytest.mark.parametrize("path", PATHS)
-def test_hooks_carry_the_truncation_on_the_capped_step(path: str) -> None:
+def test_hooks_carry_the_truncation_on_the_capped_step() -> None:
     recorder = _Recorder()
     _drive(
         _model(),
         CountEnv(episode_len=0),
-        path,
+        "native",
         episodes=1,
         max_episode_steps=3,
         hooks=recorder,
@@ -621,6 +735,62 @@ def test_hooks_read_a_role_off_the_observation(path: str) -> None:
     )
     assert recorder.values[0].shape == (3,)
     assert recorder.seen == (1, ())
+
+
+def test_hooks_read_roles_off_an_env_at_an_address() -> None:
+    """A served or random model resolves no route here, so the run context
+    takes the contract from the runtime's connection to the env itself."""
+    tags = adapt.EnvTags(
+        observation={"pos": adapt.StateTag(role=adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    server = rlmesh.EnvServer(adapt.tag(_PosEnv(), tags), ":0/env")
+    server.start()
+
+    class _Reading(rlmesh.RunHooks):
+        def on_episode_start(self, *, episode: int, seed: int | None) -> None:
+            self.contract = self.context.contract
+
+        def on_run_start(self, context: Any) -> None:
+            self.context = context
+
+        def on_step(self, event: rlmesh.StepEvent) -> None:
+            self.value = event.read(adapt.EEF_POS)
+
+    try:
+        hooks = _Reading()
+        rlmesh.Model(rlmesh.RANDOM_SAMPLE).run(server.address, episodes=1, hooks=hooks)
+    finally:
+        server.shutdown()
+    assert hooks.contract is not None
+    assert np.allclose(hooks.value, [0.25, -0.5, 0.75])
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_a_list_of_hooks_each_sees_every_event_in_order(path: str) -> None:
+    first, second = _Recorder(), _Recorder()
+    model = _model()
+    if path == "native":
+        model.run(CountEnv(episode_len=1), seeds=[7], hooks=[first, second])
+    else:
+        with model.bind(CountEnv(episode_len=1), hooks=[first, second]) as binding:
+            _by_hand(binding, [7])
+    expected = [
+        ("run_start",),
+        ("start", 0, 7),
+        ("step", 0, 0),
+        ("end", 0),
+        ("run_end", 1),
+    ]
+    assert first.calls == expected
+    assert second.calls == expected
+
+
+def test_every_listed_hook_sees_the_run_end_when_one_raises() -> None:
+    raising, after = _raising("on_run_end", _BoomError("end")), _Recorder()
+    with pytest.raises(_BoomError):
+        _model().run(CountEnv(episode_len=1), episodes=1, hooks=[raising, after])
+    assert after.calls[-1] == ("run_end", 1)
 
 
 @pytest.mark.parametrize(
@@ -789,7 +959,7 @@ def test_an_uneven_budget_is_exact_on_a_lockstep_vector_env(
 
 def test_an_uneven_budget_is_exact_on_driver_reset_lanes() -> None:
     lanes = [CountEnv(episode_len=1), CountEnv(episode_len=3)]
-    server = rlmesh.EnvServer(cast("Any", lanes), host="127.0.0.1", port=0)
+    server = rlmesh.EnvServer(cast("Any", lanes), ":0/env")
     try:
         server.start()
     except (OSError, ConnectionError) as exc:
@@ -904,7 +1074,7 @@ def test_hooks_on_a_next_step_vector_env_whose_lanes_roll_apart() -> None:
 
 def test_hooks_on_driver_reset_lanes() -> None:
     lanes = [CountEnv(episode_len=2), CountEnv(episode_len=2)]
-    server = rlmesh.EnvServer(cast("Any", lanes), host="127.0.0.1", port=0)
+    server = rlmesh.EnvServer(cast("Any", lanes), ":0/env")
     try:
         server.start()
     except (OSError, ConnectionError) as exc:
@@ -922,7 +1092,7 @@ def test_hooks_on_driver_reset_lanes() -> None:
     assert sorted(c[2] for c in recorder.calls if c[0] == "start") == [3, 4]
 
 
-def test_session_served_env_context_carries_stable_episode_identity() -> None:
+def test_a_served_env_binding_carries_stable_episode_identity() -> None:
     from rlmesh.numpy import Model
 
     seen: list[dict[str, Any]] = []
@@ -932,15 +1102,15 @@ def test_session_served_env_context_carries_stable_episode_identity() -> None:
         return np.zeros(2, np.float32)
 
     try:
-        server = rlmesh.EnvServer(CountEnv(episode_len=3), host="127.0.0.1", port=0)
+        server = rlmesh.EnvServer(CountEnv(episode_len=3), ":0/env")
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
         raise
     server.start()
     try:
-        with Model(predict).session(server.address) as sess:
-            sess.run(seeds=[7], episodes=1)
+        with Model(predict).bind(server.address) as binding:
+            _by_hand(binding, [7])
     finally:
         server.shutdown()
 
@@ -955,7 +1125,7 @@ def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -
     """A Go2-style policy reading its own last command sees, at every re-plan,
     the raw chunk frame the runtime executed at the step before: the last frame
     of the previous chunk at execution_horizon 7, the only one at 1, and the
-    fill at step 0, on the native and the session paths alike."""
+    fill at step 0, run and bound alike."""
     import gymnasium as gym
     import rlmesh.adapters as adapt
     from rlmesh.numpy import Model
@@ -1065,25 +1235,21 @@ def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -
     def previous(path: str, horizon: int) -> list[float]:
         model = Walk()
         env = adapt.tag(Go2Env(), tags)
-        try:
-            if path == "session":
-                model.session(env, execution_horizon=horizon).run(episodes=1)
-            else:
-                model.run(env, episodes=1, execution_horizon=horizon)
-        except ConnectionError as exc:
-            if "Operation not permitted" in str(exc):
-                pytest.skip("local tcp bind is not permitted in this environment")
-            raise
+        if path == "bind":
+            with model.bind(env, execution_horizon=horizon) as binding:
+                _by_hand(binding, [None])
+        else:
+            model.run(env, episodes=1, execution_horizon=horizon)
         return model.previous
 
     # Horizon 1: predict k+1 sees frame 0 of call k (5k + 1).
     every_step = [0.0] + [5.0 * call + 1 for call in range(14)]
     assert previous("native", 1) == every_step
-    assert previous("session", 1) == every_step
+    assert previous("bind", 1) == every_step
     # Horizon 7: re-plans at 0, 7 and 14 see the fill, then frame 6 of the
     # chunk executed before (7 and 12), never frame 0 of it (1 and 6).
     assert previous("native", 7) == [0.0, 7.0, 12.0]
-    assert previous("session", 7) == [0.0, 7.0, 12.0]
+    assert previous("bind", 7) == [0.0, 7.0, 12.0]
 
 
 # ---------------------------------------------------------------------------
@@ -1117,13 +1283,47 @@ def test_a_model_is_reusable_after_a_predict_failure_and_an_interrupt() -> None:
             hooks=_raising("on_step", KeyboardInterrupt()),
         )
     assert _drive(model, env, "native", episodes=2).num_episodes == 2
-    # A session on the same model, then a run on it again: nothing was closed.
-    with model.session(env) as sess:
-        assert sess.run(episodes=1).num_episodes == 1
+    # A binding on the same model, then a run on it again: nothing was closed.
+    with model.bind(env) as binding:
+        _by_hand(binding, [None])
     assert _drive(model, env, "native", episodes=1).num_episodes == 1
     assert closes == []
     model.close()
     assert closes == [1]
+
+
+def test_an_open_remote_env_serves_and_runs_as_a_local_env() -> None:
+    """A client is an env: serve it, or run it in a wrapper, and its sync calls
+    block on its own runtime from the serving lane."""
+
+    class Relay:
+        def __init__(self, env: Any) -> None:
+            self.env = env
+            self.observation_space = env.observation_space
+            self.action_space = env.action_space
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> Any:
+            return self.env.reset(seed=seed, options=options)
+
+        def step(self, action: Any) -> Any:
+            return self.env.step(action)
+
+        def close(self) -> None:
+            return None
+
+    inner = rlmesh.EnvServer(CountEnv(episode_len=2), ":0/env")
+    inner.start()
+    try:
+        with rlmesh.numpy.RemoteEnv(inner.address) as remote:
+            assert _model().run(Relay(remote), episodes=2).total_steps == 4
+            relay = rlmesh.EnvServer(remote, ":0/relay")
+            relay.start()
+            try:
+                assert _model().run(relay.address, episodes=2).total_steps == 4
+            finally:
+                relay.shutdown()
+    finally:
+        inner.shutdown()
 
 
 def test_a_borrowed_env_is_left_open_by_the_native_run() -> None:

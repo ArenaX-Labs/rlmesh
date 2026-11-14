@@ -4,16 +4,92 @@
 
 use std::collections::BTreeMap;
 
-use rlmesh_spaces::Tensor;
+use rlmesh_session_core::spec::role::apply::Array;
+use rlmesh_spaces::{DType, Tensor};
 
-use super::CustomTransform;
-use super::image::apply_image;
-use super::state::apply_state;
+use super::lookup::{numeric_vector, resolve_in_obs};
 use super::text::apply_text;
-use super::value::Value;
+use super::value::{self, Value};
+use super::{CustomTransform, Jpeg, from_array, from_core, to_core};
 use crate::error::ApplyError;
 use crate::path::{NodePath, PathSeg};
-use crate::plans::{ObsPlan, StackedPlacement};
+use crate::plans::{ImagePlan, ObsPlan, StackedPlacement, StatePlan};
+
+/// One model image input from a raw observation.
+pub(crate) fn apply_image(
+    plan: &ImagePlan,
+    raw_obs: &BTreeMap<String, Value>,
+) -> Result<Value, ApplyError> {
+    if plan.zero_fill.is_some() {
+        let image = plan.apply(None, &Jpeg).map_err(from_core)?;
+        return Ok(Value::Tensor(from_array(image)?));
+    }
+    let frame = decode_frame(resolve_in_obs(raw_obs, &plan.source)?)?;
+    let shape = value::shape_usize(&frame);
+    let bytes = frame.to_contiguous_bytes();
+    let dtype = rlmesh_session_core::wire::DType::from_code(frame.dtype() as u32)
+        .ok_or_else(|| ApplyError::new(format!("an image of dtype {:?}", frame.dtype())))?;
+    let array = Array {
+        dtype,
+        shape: &shape,
+        data: &bytes,
+    };
+    let image = plan.apply(Some(array), &Jpeg).map_err(from_core)?;
+    Ok(Value::Tensor(from_array(image)?))
+}
+
+/// A camera value as a tensor: an array as is, encoded image bytes decoded
+/// with their own channel count (grayscale → 1, luma+alpha → 2, RGB → 3,
+/// RGBA → 4), so a declared-channel check sees what the env sent.
+fn decode_frame(value: &Value) -> Result<Tensor, ApplyError> {
+    match value {
+        Value::Tensor(tensor) => Ok(tensor.clone()),
+        Value::Bytes(raw) => {
+            let decoded = image::load_from_memory(raw)
+                .map_err(|err| ApplyError::new(format!("could not decode image bytes: {err}")))?;
+            let (width, height) = (decoded.width(), decoded.height());
+            let (pixels, channels) = match decoded.color().channel_count() {
+                1 => (decoded.to_luma8().into_raw(), 1i64),
+                2 => (decoded.to_luma_alpha8().into_raw(), 2i64),
+                4 => (decoded.to_rgba8().into_raw(), 4i64),
+                _ => (decoded.to_rgb8().into_raw(), 3i64),
+            };
+            Tensor::from_vec(
+                pixels,
+                vec![i64::from(height), i64::from(width), channels],
+                DType::Uint8,
+            )
+            .map_err(|err| ApplyError::new(err.to_string()))
+        }
+        _ => Err(ApplyError::new(
+            "expected an image array observation value or encoded image bytes".to_owned(),
+        )),
+    }
+}
+
+/// One model state input from a raw observation; `previous` is the raw
+/// action executed at the previous step, for an action-source part.
+pub(crate) fn apply_state(
+    plan: &StatePlan,
+    raw_obs: &BTreeMap<String, Value>,
+    previous: Option<&[f32]>,
+) -> Result<Value, ApplyError> {
+    let mut read = |piece: &rlmesh_session_core::spec::role::plan::StatePiece| {
+        resolve_in_obs(raw_obs, &piece.source)
+            .and_then(numeric_vector)
+            .map_err(to_core)
+    };
+    let state = from_array(plan.apply(&mut read, previous).map_err(from_core)?)?;
+    if plan.list {
+        return Ok(Value::List(
+            value::to_f64_vec(&state)
+                .into_iter()
+                .map(Value::Number)
+                .collect(),
+        ));
+    }
+    Ok(Value::Tensor(state))
+}
 
 /// Convert a raw env observation into the model input payload `Value` tree.
 ///
@@ -181,7 +257,9 @@ fn insert_at(node: &mut Value, segments: &[PathSeg], value: Value) -> Result<(),
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{NodeBuilder, transform_obs};
+    use image::ImageEncoder;
+
+    use super::{NodeBuilder, decode_frame, transform_obs};
     use crate::apply::{CustomTransform, Value};
     use crate::error::ApplyError;
     use crate::path::NodePath;
@@ -243,5 +321,26 @@ mod tests {
         });
         let payload = transform_obs(&[plan], &BTreeMap::new(), &Constant, None).unwrap();
         assert_eq!(payload, Value::List(vec![Value::Number(7.0)]));
+    }
+
+    #[test]
+    fn encoded_image_bytes_decode_with_their_own_channel_count() {
+        // A grayscale or RGBA image must not be silently expanded or cut to 3
+        // channels: a declared-channel check has to see what the env sent.
+        for (pixels, color, channels) in [
+            (vec![10_u8, 20, 30], image::ColorType::Rgb8, 3),
+            (vec![42], image::ColorType::L8, 1),
+            (vec![10, 20, 30, 128], image::ColorType::Rgba8, 4),
+        ] {
+            let mut encoded = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut encoded)
+                .write_image(&pixels, 1, 1, color.into())
+                .expect("encode png");
+            let decoded = decode_frame(&Value::Bytes(encoded)).expect("decode");
+            assert_eq!(decoded.shape(), &[1, 1, channels]);
+            assert_eq!(decoded.to_contiguous_bytes().as_ref(), pixels.as_slice());
+        }
+        let error = decode_frame(&Value::Bytes(b"not an image".to_vec())).unwrap_err();
+        assert!(error.message.contains("could not decode image bytes"));
     }
 }

@@ -40,7 +40,7 @@ const PROFILE_FIELDS: [&str; 7] = [
 pub struct Variant {
     pub key: Option<String>,
     pub facets: BTreeMap<String, String>,
-    /// `None` when the block has no `requires`, so the platform infers them.
+    /// `None` when the block has no `requires`, so inference supplies them.
     pub requires: Option<Requires>,
     /// Defaults to 0.
     pub priority: i64,
@@ -82,7 +82,7 @@ impl ComputeBlocks {
         Some(self.profiles.iter().position(|p| p.default).unwrap_or(0))
     }
 
-    /// The rows the platform derives from this image, given its variant key
+    /// The rows the parser derives from this image, given its variant key
     /// (declared, or synthesized by [`synth_key`](super::synth_key)): one per profile, named
     /// `<variant.key>-<profile.key>` (the bare profile key without a variant
     /// block), else the one key.
@@ -101,8 +101,8 @@ impl ComputeBlocks {
 }
 
 /// Parse the `variant` and `profiles` blocks out of a package label object,
-/// reporting what the platform's `variant_requires_schema` fails on into the
-/// returned report. Whatever parsed cleanly is kept, so one bad field does not
+/// reporting invalid declarations in the returned report. Whatever parsed cleanly is
+/// kept, so one bad field does not
 /// hide the rest.
 pub fn parse_compute_blocks(package: &Map<String, Value>) -> (ComputeBlocks, CheckReport) {
     let mut report = CheckReport::default();
@@ -287,7 +287,7 @@ fn profile_key(index: usize, raw: &Map<String, Value>, report: &mut CheckReport)
 }
 
 /// `envVars` is an object of strings; names should be portable, and the
-/// platform's own address variable has no effect.
+/// serve address variable has no effect.
 fn parse_env_vars(scope: &str, vars: &Value, report: &mut CheckReport) -> BTreeMap<String, String> {
     let mut env_vars = BTreeMap::new();
     let Value::Object(vars) = vars else {
@@ -348,7 +348,7 @@ fn is_env_name(name: &str) -> bool {
 
 /// Check an index annotation's `dev.rlmesh.package` object: it may carry only
 /// the version-level keys ([`VERSION_PACKAGE_KEYS`], plus `schemaVersion` and
-/// `rev`); the platform ignores anything else, which belongs on the child
+/// `rev`); the parser ignores anything else, which belongs on the child
 /// images. Returns the warnings.
 pub fn index_annotation_warnings(package: &Map<String, Value>) -> Vec<String> {
     let ignored: Vec<&str> = package

@@ -15,6 +15,7 @@ keywords = { workspace = true }
 publish = { workspace = true }
 
 [dependencies]
+rlmesh-session-core = { workspace = true }
 rlmesh-spaces = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg"] }
 jpeg-encoder = { workspace = true }

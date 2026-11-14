@@ -46,11 +46,8 @@ fn served_env() -> (EnvServer, String) {
     let server = EnvServer::new(
         Steps { step: 0 },
         EnvServerOptions {
-            address: Some("tcp://127.0.0.1:0".into()),
-            options: Some(crate::ServeOptions {
-                drain_timeout: Some(Duration::from_millis(100)),
-                ..Default::default()
-            }),
+            address: Some(crate::tests::ENV_ADDRESS.into()),
+            options: Some(crate::tests::env_serve_options()),
             ..Default::default()
         },
     )
@@ -450,12 +447,9 @@ fn served_gripper() -> (EnvServer, String) {
     let server = EnvServer::new(
         Gripper { step: 0 },
         EnvServerOptions {
-            address: Some("tcp://127.0.0.1:0".into()),
+            address: Some(crate::tests::ENV_ADDRESS.into()),
             tags: Some(crate::ext::env_tags_from_json(GRIPPER_TAGS).unwrap()),
-            options: Some(crate::ServeOptions {
-                drain_timeout: Some(Duration::from_millis(100)),
-                ..Default::default()
-            }),
+            options: Some(crate::tests::env_serve_options()),
             ..Default::default()
         },
     )
@@ -585,21 +579,16 @@ fn a_chunk_of_the_wrong_length_is_a_value_error() {
     drop(server);
 }
 
-/// A free loopback port.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// A session hosted by a served env, and the participant address a model
+/// serves at in it.
+fn session_host() -> (EnvServer, String) {
+    let (host, address) = served_env();
+    let policy = format!("{}/policy", address.rsplit_once('/').unwrap().0);
+    (host, policy)
 }
 
 fn quick_serve(cancel: Option<crate::ext::CancelToken>) -> ModelServeOptions {
     ModelServeOptions {
-        options: Some(crate::ServeOptions {
-            drain_timeout: Some(Duration::from_millis(100)),
-            ..Default::default()
-        }),
         cancel,
         ..Default::default()
     }
@@ -618,7 +607,7 @@ fn a_cancelled_serve_closes_the_model_and_fails_with_the_cancellation_class() {
     // A token cancelled before serve fails it at once and closes nothing.
     let cancel = crate::ext::CancelToken::new();
     cancel.cancel();
-    let address = format!("tcp://127.0.0.1:{}", free_port());
+    let (_host, address) = session_host();
     let error = model
         .serve(&address, quick_serve(Some(cancel.clone())))
         .unwrap_err();
@@ -634,10 +623,7 @@ fn a_cancelled_serve_closes_the_model_and_fails_with_the_cancellation_class() {
     assert_eq!(result.unwrap_err(), crate::Error::Cancelled);
     assert_eq!(log.lock().unwrap().closes, 1, "the serve-stop close ran");
     let error = model
-        .serve(
-            &format!("tcp://127.0.0.1:{}", free_port()),
-            quick_serve(None),
-        )
+        .serve(&session_host().1, quick_serve(None))
         .unwrap_err();
     assert_eq!(error.class(), ErrorClass::RuntimeError);
 }
@@ -653,7 +639,7 @@ fn close_stops_a_running_serve_which_then_returns_ok() {
     )
     .unwrap();
     let serving = model.clone();
-    let address = format!("tcp://127.0.0.1:{}", free_port());
+    let (_host, address) = session_host();
     let thread = std::thread::spawn(move || serving.serve(&address, quick_serve(None)));
     std::thread::sleep(Duration::from_millis(300));
     model.close().unwrap();
@@ -662,15 +648,19 @@ fn close_stops_a_running_serve_which_then_returns_ok() {
 }
 
 #[test]
-fn serve_refuses_a_zero_predict_concurrency() {
+fn serve_refuses_a_v1_address_and_a_zero_predict_concurrency() {
     let model = Model::new(|_obs: Value| Ok(Value::Int(0)), ModelOptions::default()).unwrap();
     let error = model
+        .serve("tcp://127.0.0.1:0", ModelServeOptions::default())
+        .unwrap_err();
+    assert_eq!(error.class(), ErrorClass::ValueError);
+    assert!(error.to_string().contains("v1 model endpoint"), "{error}");
+    let error = model
         .serve(
-            "tcp://127.0.0.1:0",
+            ":0/policy",
             ModelServeOptions {
                 ext: Some(crate::ext::ModelServeOptions {
                     predict_concurrency: Some(0),
-                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -685,7 +675,7 @@ async fn sync_calls_from_async_code_name_their_twin() {
     tokio::spawn(async {
         let model = Model::new(|_obs: Value| Ok(Value::Int(0)), ModelOptions::default()).unwrap();
         let error = model
-            .serve("tcp://127.0.0.1:0", ModelServeOptions::default())
+            .serve(":0/policy", ModelServeOptions::default())
             .unwrap_err();
         assert!(error.to_string().contains("serve_async"), "{error}");
         let error = model.close().unwrap_err();
@@ -711,7 +701,7 @@ async fn dropping_a_polled_serve_async_future_closes_the_model() {
         },
     )
     .unwrap();
-    let address = format!("tcp://127.0.0.1:{}", free_port());
+    let (_host, address) = session_host();
     let serve = model.serve_async(&address, quick_serve(None));
     let _ = tokio::time::timeout(Duration::from_millis(300), serve).await;
     model.close_async().await.unwrap();
@@ -757,7 +747,8 @@ fn serving_from_a_callers_runtime_root_does_not_nest_runtimes() {
         .enable_all()
         .build()
         .unwrap();
-    let out = runtime.block_on(async { model.serve("127.0.0.1:0", quick_serve(Some(cancel))) });
+    let (_host, address) = session_host();
+    let out = runtime.block_on(async { model.serve(&address, quick_serve(Some(cancel))) });
     stop.join().unwrap();
     assert_eq!(out.unwrap_err(), crate::Error::Cancelled);
 }
@@ -765,7 +756,7 @@ fn serving_from_a_callers_runtime_root_does_not_nest_runtimes() {
 #[test]
 fn dropping_a_cancel_watcher_stops_consuming_the_token() {
     let token = crate::ext::CancelToken::new();
-    let trigger = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
+    let trigger = crate::lifecycle::ShutdownTrigger::new();
     let watcher = super::facade::CancelWatcher::start(vec![token.clone()], trigger.clone());
     drop(watcher);
     token.cancel();
@@ -799,4 +790,56 @@ fn final_model_drop_is_bounded_even_when_close_is_unresponsive() {
     let out = finished.recv_timeout(Duration::from_secs(6));
     release.send(()).unwrap();
     out.expect("Drop must give up after its five-second bound");
+}
+
+/// The (observation, action) spaces each predict's context named.
+type SeenSpaces = Arc<Mutex<Vec<(Option<String>, Option<String>)>>>;
+
+/// A model with no adapter: it answers in the env's own action space, which
+/// its context names.
+struct Adapterless {
+    spaces: SeenSpaces,
+}
+
+impl Policy for Adapterless {
+    const CONTEXT: Corners = Corners::PREDICT;
+
+    fn spec() -> Option<SpecArg> {
+        Some(SpecArg::NoAdapter)
+    }
+
+    fn predict_with_context(
+        &mut self,
+        _observation: Value,
+        context: &mut PredictContext<'_>,
+    ) -> Result<Value> {
+        self.spaces.lock().unwrap().push((
+            context.observation_space.map(ToString::to_string),
+            context.action_space.map(ToString::to_string),
+        ));
+        Ok(context
+            .action_space
+            .map_or(Value::Int(0), |space| space.to_space().sample().unwrap()))
+    }
+}
+
+#[test]
+fn an_adapterless_policy_reads_its_envs_spaces_from_the_context() {
+    let (server, address) = served_env();
+    let spaces = SeenSpaces::default();
+    let model = Model::new(
+        Adapterless {
+            spaces: Arc::clone(&spaces),
+        },
+        ModelOptions::default(),
+    )
+    .unwrap();
+    run_model_local(&model, RunLocalOptions::parse(&address).unwrap()).unwrap();
+    let spaces = spaces.lock().unwrap();
+    assert_eq!(spaces.len(), 3);
+    for (observation, action) in spaces.iter() {
+        assert_eq!(observation.as_deref(), Some("Discrete(5)"));
+        assert_eq!(action.as_deref(), Some("Discrete(2)"));
+    }
+    drop(server);
 }

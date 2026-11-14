@@ -33,6 +33,30 @@ use crate::tensor::{dims_i64, tensor_error};
 use crate::value::space_codec;
 use crate::{DType, Error, Result, Tensor, Value};
 
+/// The tracing filter a runner that embeds rlmesh installs, without a
+/// dependency of its own on the session crate.
+///
+/// Start from [`DEFAULT_LOG_FILTER`](logging::DEFAULT_LOG_FILTER) when
+/// `RUST_LOG` is unset, and add [`may_record`](logging::may_record) as a
+/// global filter layer whatever the level: below `INFO`, Zenoh logs a
+/// session's config, which holds a gated host's link password.
+///
+/// ```no_run
+/// use rlmesh::ext::logging::{DEFAULT_LOG_FILTER, may_record};
+/// use tracing_subscriber::prelude::*;
+/// let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+///     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
+/// tracing_subscriber::registry()
+///     .with(filter)
+///     .with(tracing_subscriber::filter::filter_fn(may_record))
+///     .with(tracing_subscriber::fmt::layer())
+///     .init();
+/// ```
+pub mod logging {
+    pub use rlmesh_session::DEFAULT_LOG_FILTER;
+    pub use rlmesh_session::logging::may_record;
+}
+
 /// Raw DLPack interoperability and owned exports.
 pub mod dlpack {
     pub use crate::dlpack::{
@@ -162,15 +186,33 @@ impl SpaceExt for Space {
     }
 }
 
+/// Whether a failed call can succeed when retried: what Python answers by
+/// class (`ConnectionError`, `TimeoutError`, a recoverable failure).
+pub trait ErrorExt {
+    /// Whether retrying the same call can succeed: a recoverable failure
+    /// ([`Error::is_recoverable`]), a transport failure
+    /// ([`Error::Connection`]) or a deadline ([`Error::Timeout`]). Every
+    /// other class is final: the same call meets it again (a key the host
+    /// refuses, an edition the env does not run, a malformed address).
+    ///
+    /// The runtime records a model or env failure as recoverable when this
+    /// holds, and a run's env connect retries while it does. A model
+    /// handler signals a failure worth retrying with
+    /// [`Error::model_recoverable`], or [`Error::Connection`] /
+    /// [`Error::Timeout`] for its own transport; any other error is final.
+    fn is_transient(&self) -> bool;
+}
+
+impl ErrorExt for Error {
+    fn is_transient(&self) -> bool {
+        Error::is_transient(self)
+    }
+}
+
 /// The Rust- and C-only fields of an env server's options, reached through
 /// [`EnvServerOptions::ext`](crate::EnvServerOptions::ext).
 #[derive(Clone, Debug, Default)]
 pub struct EnvServerOptions {
-    /// Bearer token every request must carry. `RLMESH_ENV_ENDPOINT_TOKEN`,
-    /// when set, replaces it. `None` or empty disables authentication.
-    pub token: Option<String>,
-    /// Advisory entries this endpoint adds to its handshake `PeerInfo.extra`.
-    pub peer_info_extra: std::collections::BTreeMap<String, String>,
     /// Publish the served env's describe envelope on the handshake, as a
     /// factory serve does.
     pub publish_describe: bool,
@@ -180,9 +222,6 @@ pub struct EnvServerOptions {
 /// [`ModelServeOptions::ext`](crate::ModelServeOptions::ext).
 #[derive(Clone, Debug, Default)]
 pub struct ModelServeOptions {
-    /// Bearer token every model RPC must carry. `RLMESH_MODEL_ENDPOINT_TOKEN`,
-    /// when set, replaces it. `None` or empty disables authentication.
-    pub token: Option<String>,
     /// How many Join-stream requests the served model processes at once per
     /// connection; `None` is the build's default cap. `Some(0)` is the
     /// ValueError class. Corner calls stay serialized either way.
@@ -350,14 +389,8 @@ pub fn unregister_entrypoint(
     crate::adapters::unregister(name, expected)
 }
 
-#[cfg(unix)]
-pub use crate::address::remove_stale_socket;
-/// Native endpoint parsing and stale Unix socket cleanup.
-pub use crate::address::{BindAddress, ConnectAddress};
-/// Environment variable names for native endpoint authentication.
-pub const ENV_ENDPOINT_TOKEN_ENV: &str = "RLMESH_ENV_ENDPOINT_TOKEN";
-/// Environment variable name for model endpoint authentication.
-pub const MODEL_ENDPOINT_TOKEN_ENV: &str = "RLMESH_MODEL_ENDPOINT_TOKEN";
+/// Native session endpoint parsing.
+pub use crate::address::ConnectAddress;
 
 #[cfg(test)]
 mod cancellation_regressions {

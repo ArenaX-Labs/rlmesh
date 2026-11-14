@@ -223,10 +223,7 @@ class AdapterBase(ABC, Generic[ActionT]):
 
         The execution horizon is a runtime decision (``execution_horizon`` on
         ``ResolveAdapter``, owned by the runtime driver) and the served engine
-        emits the chunk. This direct wrapper applies one action per step;
-        in-process chunk replay lives in
-        :class:`rlmesh._models._chunk.ChunkReplay`, driven by ``run`` with a
-        locally chosen horizon.
+        emits the chunk. This direct wrapper applies one action per step.
         """
 
         def predict(raw_obs: Any) -> ActionT:

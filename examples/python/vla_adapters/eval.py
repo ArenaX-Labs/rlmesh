@@ -7,12 +7,17 @@ Run as a module from ``examples/python`` (no server needed):
 
 Against a live env endpoint:
 
-    uv run python -m vla_adapters.eval --model smolvla --env libero --address 127.0.0.1:5555
+    RLMESH_ENV_ADDRESS='127.0.0.1:7447#<key>/libero' \
+        uv run python -m vla_adapters.eval --model smolvla --env libero
+
+The address carries the session's key, so it comes from the environment
+rather than the command line, which every user of the machine can read.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -40,13 +45,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--address",
-        help="env endpoint address (requires --model and --env); "
+        default=os.environ.get("RLMESH_ENV_ADDRESS"),
+        help="env session participant address (requires --model and --env; "
+        "default: RLMESH_ENV_ADDRESS, the better place for its key); "
         "omit to do offline dry runs instead",
     )
     parser.add_argument("--episodes", type=int, default=1)
     args = parser.parse_args()
     if args.address and not (args.model and args.env):
-        parser.error("--address requires both --model and --env")
+        parser.error(
+            "--address (or RLMESH_ENV_ADDRESS) requires both --model and --env"
+        )
     return args
 
 
@@ -101,37 +110,40 @@ def run_remote(address: str, model_name: str, env_name: str, episodes: int) -> N
 
     For a plain spec pairing this uses the zero-config path: the env
     publishes its tags in the contract, so ``Model(spec=...)``
-    resolves the adapter from the handshake alone. Escape-hatch pairings
+    resolves the adapter from the session contract alone. Escape-hatch pairings
     (a stateful model adapter or a pair override) build the adapter
     explicitly and wrap the predict function.
     """
+    from rlmesh import NO_ADAPTER
     from rlmesh.numpy import Model, RemoteEnv
 
-    env = RemoteEnv(address)
-    try:
-        model_entry = MODELS[model_name]
-        is_plain = (
-            OVERRIDES.get((model_name, env_name)) is None
-            and model_entry.make_adapter is None
-        )
-        if is_plain:
+    model_entry = MODELS[model_name]
+    is_plain = (
+        OVERRIDES.get((model_name, env_name)) is None
+        and model_entry.make_adapter is None
+    )
+    if is_plain:
+        # A RemoteEnv holds the env's lease. Inspect its contract, then close
+        # it before run(address) acquires that lease for the model.
+        with RemoteEnv(address) as env:
             print(
                 adapt.resolve_from_contract(
                     env.env_contract, model_entry.spec
                 ).explain()
             )
-            model = Model(model_entry.load_predict_fn(), spec=model_entry.spec)
-            model.run(env, episodes=episodes)
-        else:
-            adapter = build_adapter(model_name, env_name, ENVS[env_name])
-            print(adapter.explain())
-            model = Model(
-                adapter.wrap_predict(model_entry.load_predict_fn()),
-                on_episode_end=adapter.reset,
-            )
-            model.run(env, episodes=episodes)
+        model = Model(model_entry.load_predict_fn(), spec=model_entry.spec)
+    else:
+        adapter = build_adapter(model_name, env_name, ENVS[env_name])
+        print(adapter.explain())
+        model = Model(
+            adapter.wrap_predict(model_entry.load_predict_fn()),
+            spec=NO_ADAPTER,
+            on_episode_end=adapter.reset,
+        )
+    try:
+        model.run(address, episodes=episodes)
     finally:
-        env.close()
+        model.close()
 
 
 def main() -> None:

@@ -9,7 +9,10 @@
 //! restores. SIGINT stops a server (it drains and closes its env, then
 //! `serve()` fails with the cancellation class); a second SIGINT while the
 //! stop runs restores the default SIGINT disposition and re-raises it.
-//! SIGTERM stops a server gracefully.
+//! SIGTERM stops a server gracefully: it waits for the env or model call in
+//! progress, then closes. A second SIGTERM while the stop runs (a call that
+//! will not return) restores the default SIGTERM disposition and re-raises
+//! it, so the process ends at once.
 //!
 //! Windows has no SIGTERM; its console-control form is not implemented yet,
 //! so a native foreground serve there installs nothing.
@@ -17,7 +20,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rlmesh_grpc::lifecycle::ShutdownTrigger;
+use crate::lifecycle::ShutdownTrigger;
 
 /// One foreground serve's registration; dropping it unregisters and, for the
 /// last one of a signal, restores that signal's saved disposition.
@@ -55,6 +58,14 @@ pub(crate) fn enter_with(trigger: ShutdownTrigger, sigint: bool) -> SignalScope 
     }
 }
 
+/// Ends the process as an unhandled SIGINT does (status 128 + 2 where a
+/// shell reports it): the default SIGINT disposition, re-raised.
+pub(crate) fn end_by_interrupt() -> ! {
+    #[cfg(unix)]
+    unix::raise_default(libc::SIGINT);
+    std::process::exit(130)
+}
+
 impl Drop for SignalScope {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -70,13 +81,15 @@ mod unix {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use rlmesh_grpc::lifecycle::ShutdownTrigger;
+    use crate::lifecycle::ShutdownTrigger;
 
     /// Monotonic delivery generations, independent of handler installations.
     static SIGINTS: AtomicUsize = AtomicUsize::new(0);
     static SIGTERMS: AtomicUsize = AtomicUsize::new(0);
     /// SIGINTs since this installation: the second forces termination.
     static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
+    /// SIGTERMs since this installation: the second forces termination.
+    static TERMINATIONS: AtomicUsize = AtomicUsize::new(0);
 
     struct Server {
         trigger: ShutdownTrigger,
@@ -111,6 +124,13 @@ mod unix {
             }
         } else {
             SIGTERMS.fetch_add(1, Ordering::SeqCst);
+            if TERMINATIONS.fetch_add(1, Ordering::SeqCst) >= 1 {
+                // SAFETY: async-signal-safe calls only (`signal`, `raise`).
+                unsafe {
+                    libc::signal(libc::SIGTERM, libc::SIG_DFL);
+                    libc::raise(libc::SIGTERM);
+                }
+            }
         }
     }
 
@@ -125,6 +145,15 @@ mod unix {
             let mut saved: libc::sigaction = std::mem::zeroed();
             libc::sigaction(signal, &action, &mut saved);
             saved
+        }
+    }
+
+    /// Restores `signal`'s default disposition and raises it.
+    pub(super) fn raise_default(signal: libc::c_int) {
+        // SAFETY: plain libc calls with a valid signal number.
+        unsafe {
+            libc::signal(signal, libc::SIG_DFL);
+            libc::raise(signal);
         }
     }
 
@@ -154,6 +183,7 @@ mod unix {
             registry.stop_watcher = Some(stop);
         }
         if registry.saved_term.is_none() {
+            TERMINATIONS.store(0, Ordering::SeqCst);
             registry.saved_term = Some(install(libc::SIGTERM));
         }
         if sigint && registry.saved_int.is_none() {

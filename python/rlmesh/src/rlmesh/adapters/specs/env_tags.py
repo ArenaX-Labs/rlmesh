@@ -27,6 +27,7 @@ from ..constants import ENV_METADATA_KEY
 from ._codec import (
     check_accept_set,
     check_labels,
+    check_polarity,
     hashable_node,
     normalize_spec,
     one_or_many,
@@ -35,7 +36,7 @@ from ._codec import (
 from .action import Action
 from .action_serialization import action_from_dict, action_to_dict
 from .model_serialization import COMMON_LEAF_TYPES, decode_node, encode_node
-from .vocabularies import Frame, ImageLayout, Provenance, RotationEncoding
+from .vocabularies import Frame, ImageLayout, Polarity, Provenance, RotationEncoding
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,11 @@ class StateTag:
             that names labels must name this same set; another order is
             gathered by name.
             Keyword-only and omitted from the wire when unset.
+        polarity: Openness (``"open"``: a higher reading is more open) or
+            closedness (``"close"``) of a gripper reading
+            (``proprio/gripper_pos``). A model that reads the other one is
+            refused unless it allows ``"flip_gripper"``. Keyword-only and
+            omitted from the wire when unset.
     """
 
     role: str
@@ -107,6 +113,7 @@ class StateTag:
     provenance: Provenance | None = field(default=None, kw_only=True)
     part: str | None = field(default=None, kw_only=True)
     labels: Sequence[str] | None = field(default=None, kw_only=True)
+    polarity: Polarity | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
@@ -114,6 +121,7 @@ class StateTag:
         object.__setattr__(
             self, "labels", check_labels("StateTag", self.role, self.labels)
         )
+        check_polarity("StateTag", self.role, self.polarity)
 
 
 @dataclass(frozen=True)
@@ -155,6 +163,8 @@ class Field:
             A role-less skip may not carry one.
         labels: The axis names of this field, ``dim`` of them; see
             :attr:`StateTag.labels`. A role-less skip may not carry them.
+        polarity: Openness or closedness of a gripper reading; see
+            :attr:`StateTag.polarity`. A role-less skip may not carry one.
     """
 
     role: str | None = None
@@ -165,6 +175,7 @@ class Field:
     provenance: Provenance | None = field(default=None, kw_only=True)
     part: str | None = field(default=None, kw_only=True)
     labels: Sequence[str] | None = field(default=None, kw_only=True)
+    polarity: Polarity | None = field(default=None, kw_only=True)
     # The `dim = 0` default only satisfies dataclass field ordering (the optional
     # `role` precedes it); 0 is never a valid width, so it is rejected at
     # construction below (matching the Rust Field codec's `dim >= 1` guard).
@@ -178,6 +189,7 @@ class Field:
         object.__setattr__(
             self, "labels", check_labels("Field", self.role, self.labels)
         )
+        check_polarity("Field", self.role, self.polarity)
         if self.labels is not None and len(self.labels) != self.dim:
             raise ValueError(
                 f"Field {self.role!r}: dim {self.dim} disagrees with the "
@@ -250,6 +262,8 @@ def _field_to_dict(field: Field) -> dict[str, Any]:
         out["part"] = field.part
     if field.labels is not None:
         out["labels"] = list(field.labels)
+    if field.polarity is not None:
+        out["polarity"] = field.polarity
     return out
 
 
@@ -264,6 +278,7 @@ def _field_from_dict(item: Mapping[str, Any]) -> Field:
         provenance=item.get("provenance"),
         part=item.get("part"),
         labels=item.get("labels"),
+        polarity=item.get("polarity"),
     )
 
 
@@ -294,6 +309,8 @@ def _leaf_to_dict(tag: ObsLeaf) -> dict[str, Any]:
             state["part"] = tag.part
         if tag.labels is not None:
             state["labels"] = list(tag.labels)
+        if tag.polarity is not None:
+            state["polarity"] = tag.polarity
         return state
     if isinstance(tag, Split):
         return {
@@ -342,6 +359,7 @@ def _leaf_from_dict(item: Mapping[str, Any]) -> ObsLeaf:
             provenance=item.get("provenance"),
             part=item.get("part"),
             labels=item.get("labels"),
+            polarity=item.get("polarity"),
         )
     if kind == "split":
         return Split(*(_field_from_dict(field) for field in item["fields"]))
@@ -367,9 +385,8 @@ def obs_node_from_dict(node: object) -> ObsNode:
 class ObservationRoles:
     """The observation roles an environment declares, grouped by kind.
 
-    Returned by :attr:`EnvTags.observation_roles` and
-    :meth:`rlmesh.Session.observation_roles`. Each group lists role strings in
-    declaration order; an env that declares no tags yields empty groups.
+    Returned by :attr:`EnvTags.observation_roles`. Each group lists role strings
+    in declaration order; an env that declares no tags yields empty groups.
 
     Attributes:
         images: Roles of :class:`ImageTag` leaves.

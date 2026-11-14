@@ -238,5 +238,6 @@ fn meta_to_json(value: &rlmesh_spaces::MetaValue) -> serde_json::Value {
                 .map(|(key, value)| (key.clone(), meta_to_json(value)))
                 .collect(),
         ),
+        array @ (MetaValue::Tensor(_) | MetaValue::Array { .. }) => meta_to_json(&array.lowered()),
     }
 }

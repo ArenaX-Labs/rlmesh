@@ -21,9 +21,11 @@ from typing import Any
 import rlmesh.adapters as adapt
 
 SPEC = adapt.ModelSpec(
+    # This study deliberately permits the projections described in README.md.
+    allow=("select_state", "drop_action"),
     input={
-        "image": adapt.Image(adapt.IMAGE_PRIMARY, size=256),
-        "image2": adapt.Image(adapt.IMAGE_WRIST, size=256),
+        "image": adapt.Image(adapt.IMAGE_PRIMARY, size=256, fit="stretch"),
+        "image2": adapt.Image(adapt.IMAGE_WRIST, size=256, fit="stretch"),
         "state": adapt.Concat(
             adapt.State(adapt.EEF_POS, dim=3),
             adapt.State(adapt.EEF_ROT, encoding="rot6d_rowmajor"),

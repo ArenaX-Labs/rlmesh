@@ -1,48 +1,44 @@
 [release]
-status = "stable"
-package_family = "0.1"
+status = "alpha"
+package_family = "0.2"
 
 [workflow]
-base_edition = "2026.06"
-current_edition = "2026.06"
-supported_editions = ["2026.06"]
+# TODO: 2026.10 is provisional; the 0.2.0 release seals the bare `2026.10`
+# (sealed_in, spec_sha256) and freezes docs/editions/2026.10.md.
+base_edition = "2026.10"
+current_edition = "2026.10-0.2.0-alpha.1"
+supported_editions = ["2026.10-0.2.0-alpha.1"]
+
+[workflow.dropped_editions]
+# Sealed editions this release deliberately stops offering, each with its
+# reason; policy:check exempts only these from the retention rule
+# (docs/editions/index.md, "Support Window").
+"2026.06" = "0.2 replaces the 0.1 gRPC protocol with realtime sessions"
 
 [workflow.editions."2026.06"]
 status = "sealed"
 spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
-spec_sha256 = "f05f788382a5b4cfaa482811d52a24ade9ee5d9ed9f9544bc39b291d84b2c8c5"
+# Canonical spec hash sealed at v0.1.0; policy:check also pins this record
+# against the previous reachable release tag, even though 0.2 drops the offer.
+spec_sha256 = "a3dcf2195f6b35819c91192396e94a445c039278d99e20db81fa2a2fe43664a2"
 
-[protocol]
-# Single generation, equality-only: there is no support window, so no
-# minimum_generation. A bump is a deliberate public major break (v2 won't talk
-# to v1), gated by plain equality at the handshake.
-current_generation = "rlmesh-wire-v1"
+[workflow.editions."2026.10-0.2.0-alpha.1"]
+status = "provisional"
+spec = "docs/editions/2026.10.md"
 
-[wire]
-# The additive-forever contract of rlmesh-wire-v1, pinned by policy:check. A
-# number here changes only in the same change as the constant, enum value, or
-# oneof arm it counts, and a new value or arm is emitted only when the target
-# leg's edition covers it: docs/editions/index.md, "Additive-forever rules".
-max_message_bytes = 268_435_456 # 256 MiB, rlmesh_grpc::MAX_MESSAGE_SIZE
-
-[wire.enums]
-# Value count of every enum under crates/rlmesh-proto/proto. A 0.1.0 peer folds
-# an unknown *ErrorCode to UNSPECIFIED silently, so those two vocabularies are
-# frozen for wire-v1; the others are decode errors on an old peer, except
-# RenderFormat, whose unknown value drops the frame.
-"rlmesh.core.v1.AutoresetMode" = 4
-"rlmesh.env.v1.EnvErrorCode" = 10
-"rlmesh.env.v1.RenderFormat" = 2
-"rlmesh.model.v1.ModelErrorCode" = 8
-"rlmesh.spaces.v1.DataType" = 13
-
-[wire.oneofs]
-# Arm counts pinned by name: an unknown MetaValue.kind arm reads as null on a
-# 0.1.0 peer (silently), an unknown SpaceSpec.spec arm as an unset spec (a
-# decode error).
-"rlmesh.spaces.v1.MetaValue.kind" = 8
-"rlmesh.spaces.v1.SpaceSpec.spec" = 7
+[protocols."rlmesh-realtime-v1"]
+# The real-time session protocol (`rlmesh.session.v2`: robots, policies,
+# leases, chunks and the edge), the governed wire contract. Provisional
+# until the 0.2.0 release freezes it: that release snapshots the baseline
+# (`protocol:baseline-regen`, into `baseline`) and records its tag in
+# `frozen_in`; from then on `protocol:baseline-verify` keeps the live tree
+# byte-identical and `protocol:breaking` checks it against that tag. Until
+# then buf lint and the byte goldens (tests/vectors/wire) guard it.
+proto = "crates/rlmesh-session-core/proto"
+baseline = "crates/rlmesh-session-core/baselines/rlmesh-realtime-v1"
+status = "provisional"
+frozen_in = ""
 
 [api_surface]
 stability_policy = "stable-labels"
@@ -64,6 +60,7 @@ manifest_kind = "rlmesh.rust-api-surface-manifest"
 package_artifact = "cargo:rlmesh"
 package_name = "rlmesh"
 crate = "rlmesh"
+features = []
 skipped_modules = ["prelude"]
 access = "early-access"
 stability = "Preview"
@@ -97,7 +94,7 @@ id = "pypi:rlmesh"
 ecosystem = "pypi"
 name = "rlmesh"
 manifest = "python/rlmesh/pyproject.toml"
-version = "0.1.0"
+version = "0.2.0a1"
 role = "core"
 publish = true
 
@@ -106,7 +103,7 @@ id = "cargo:rlmesh"
 ecosystem = "cargo"
 name = "rlmesh"
 manifest = "crates/rlmesh/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 role = "core"
 publish = true
 
@@ -115,7 +112,7 @@ id = "cargo:rlmesh-adapters"
 ecosystem = "cargo"
 name = "rlmesh-adapters"
 manifest = "crates/rlmesh-adapters/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 role = "core"
 publish = true
 
@@ -124,17 +121,17 @@ id = "cargo:rlmesh-cli"
 ecosystem = "cargo"
 name = "rlmesh-cli"
 manifest = "crates/rlmesh-cli/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 role = "core"
 publish = true
 
 [[artifact]]
-id = "cargo:rlmesh-grpc"
+id = "cargo:rlmesh-cockpit"
 ecosystem = "cargo"
-name = "rlmesh-grpc"
-manifest = "crates/rlmesh-grpc/Cargo.toml"
-version = "0.1.0"
-role = "core"
+name = "rlmesh-cockpit"
+manifest = "crates/rlmesh-cockpit/Cargo.toml"
+version = "0.2.0-alpha.1"
+role = "internal"
 publish = true
 
 [[artifact]]
@@ -142,25 +139,25 @@ id = "cargo:rlmesh-proto"
 ecosystem = "cargo"
 name = "rlmesh-proto"
 manifest = "crates/rlmesh-proto/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
+role = "internal"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-session-core"
+ecosystem = "cargo"
+name = "rlmesh-session-core"
+manifest = "crates/rlmesh-session-core/Cargo.toml"
+version = "0.2.0-alpha.1"
 role = "core"
 publish = true
 
 [[artifact]]
-id = "cargo:rlmesh-runtime"
+id = "cargo:rlmesh-session"
 ecosystem = "cargo"
-name = "rlmesh-runtime"
-manifest = "crates/rlmesh-runtime/Cargo.toml"
-version = "0.1.0"
-role = "core"
-publish = true
-
-[[artifact]]
-id = "cargo:rlmesh-sandbox"
-ecosystem = "cargo"
-name = "rlmesh-sandbox"
-manifest = "crates/rlmesh-sandbox/Cargo.toml"
-version = "0.1.0"
+name = "rlmesh-session"
+manifest = "crates/rlmesh-session/Cargo.toml"
+version = "0.2.0-alpha.1"
 role = "core"
 publish = true
 
@@ -169,15 +166,16 @@ id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"
 manifest = "crates/rlmesh-spaces/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 role = "core"
 publish = true
 
 [[artifact]]
-id = "cargo:rlmesh-viewer"
+id = "cargo:rlmesh-tether"
 ecosystem = "cargo"
-name = "rlmesh-viewer"
-manifest = "crates/rlmesh-viewer/Cargo.toml"
-version = "0.1.0"
+name = "rlmesh-tether"
+manifest = "crates/rlmesh-tether/Cargo.toml"
+version = "0.2.0-alpha.1"
 role = "core"
 publish = true
+

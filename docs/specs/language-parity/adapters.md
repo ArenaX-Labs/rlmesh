@@ -3,7 +3,10 @@
 Part of the [language parity spec](../language-parity.md). Status: Draft —
 reviewed round 4. Draft: C# column pending review. Rules: [rules.md](rules.md). Paths use the prefixes defined
 there, plus `pyad/` = `python/rlmesh/src/rlmesh/adapters/` and `core/` =
-`crates/rlmesh-adapters/src/`.
+`crates/rlmesh-adapters/src/`. The resolver, plans, apply and describe
+references (`core/resolver/`, `core/plans/`, `core/apply/{image,state,action}`)
+predate their move into the binder's Gym door,
+`crates/rlmesh-session-core/src/spec/role/` (`bind.rs`, `plan/`, `apply/`).
 
 `rlmesh.adapters` is Stable. Its counterpart is `rlmesh::adapters` in Rust and
 C++, the `RLMesh*` / `rlmesh_*` / `RLMESH_ADAPTERS_*` names of D-6 in C, and
@@ -258,6 +261,12 @@ C's `_len` / `_get` (D-2) instead of hard-coding the list.
 | `to_dict()` / `from_dict(data)`             | `to_dict() -> Result<Metadata>` / `from_dict(&Metadata) -> Result<Self>`                                                                   | `rlmesh_model_spec_to_dict(…, RLMeshValue** out)` / `rlmesh_model_spec_from_dict(const RLMeshValue*, RLMeshModelSpec**)`                                                                                   | `Metadata to_dict() const` / `static ModelSpec from_dict(const Metadata&)`                        | `Metadata ToDict()` / `static ModelSpec FromDict(Metadata data)`                                                               |
 | `to_json()` / `from_json(payload)`          | `to_json() -> Result<String>` (text fixed by ADP-5) / `from_json(&str) -> Result<Self>`                                                    | `rlmesh_model_spec_to_json(…, RLMeshBytes* out)` / `_from_json(const char*, RLMeshModelSpec**)`                                                                                                            | `std::string to_json() const` / `static ModelSpec from_json(std::string_view)`                    | `string ToJson()` / `static ModelSpec FromJson(string payload)`                                                                |
 | `to_metadata()` / `from_metadata(metadata)` | `to_metadata() -> Result<Metadata>` / `from_metadata(&Metadata) -> Result<Option<Self>>` (a non-Dict value: AdapterResolutionError, below) | `_to_metadata(…, RLMeshValue**)` / `_from_metadata(const RLMeshValue*, RLMeshModelSpec**)`, `*out` NULL when absent                                                                                        | `Metadata to_metadata() const` / `static std::optional<ModelSpec> from_metadata(const Metadata&)` | `Metadata ToMetadata()` / `static ModelSpec? FromMetadata(Metadata metadata)` (`null` when absent)                             |
+
+A spec may also carry `allow`, the named projections (lossy fits) it accepts, today only
+`drop_action`: discard a model output no env actuator reads, which resolve otherwise refuses
+(MissingRole) and records on the adapter when allowed. Python takes it as
+`ModelSpec(..., allow=("drop_action",))`, the wire key `allow`. TODO: `allow` on the Rust facade,
+C, C++ and C# `ModelSpec`.
 
 `to_dict` / `to_metadata` refuse a custom input with ValueError
 (`pyad/specs/model.py:60-62`). `from_metadata` returns None when the key is

@@ -1,0 +1,17 @@
+[[scenario]]
+id = "served_model_local_env"
+family = "Served models"
+rules = ["R-17"]
+operation = "served_model"
+languages = ["rust", "c", "cpp"]
+why = "Python's runner serves no model; Python reaches one as Model(address) the same way."
+expect = { episodes = 1, steps = 2, env_closes = 0 }
+
+[[scenario]]
+id = "local_model_https_env"
+family = "Remote auth"
+rules = ["R-22"]
+operation = "https_env"
+languages = ["rust", "c", "cpp"]
+why = "A run dials only session addresses: an https:// env endpoint is v1, refused before any dial (TLS is the session's security config, safety step 6)."
+expect = { error = "ValueError", text = "Model.run(\"https://127.0.0.1:PORT\"): a v1 env endpoint, which rlmesh 0.2 no longer dials; serve the env at a session address (EnvServer(env, \":0/name\")) and run against that, or pass the env object itself" }

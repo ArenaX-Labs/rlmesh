@@ -92,7 +92,8 @@ pub struct Image {
     pub channel_order: Tolerant<ChannelOrder>,
     /// The camera resolution this model was trained against, as a square `int` or an `(height,
     /// width)` pair (each axis 1-4096). An *assertion*, not a request: the adapter never resizes a
-    /// camera to reach it. The platform binds the environment's camera dial from it before the run;
+    /// camera to reach it. Callers can set the environment's camera dial from it before
+    /// the run;
     /// resolution then fails with `RenderMismatch` if the camera it bound does not actually render
     /// at this size. Declare it instead of pinning the env's camera width/height by hand.
     pub render: Option<(u32, u32)>,
@@ -277,6 +278,10 @@ pub struct State {
     /// Clamp the assembled vector to `(low, high)` after every part's own transforms and before
     /// `pad_to` (legged_gym's `clip_obs`). Omitted from the wire when unset.
     pub clip: Option<(f64, f64)>,
+    /// The gripper polarity the checkpoint reads (`proprio/gripper_pos`): openness (`"open"`)
+    /// or closedness (`"close"`), after this part's own `scale`. An env reading of the other one
+    /// is refused unless the spec allows `"flip_gripper"`. Omitted from the wire when unset.
+    pub polarity: Option<String>,
 }
 impl State {
     fn empty() -> Self {
@@ -301,6 +306,7 @@ impl State {
             labels: None,
             source: StateSource::Observation,
             clip: None,
+            polarity: None,
         }
     }
     /// Construct a required observation input producing float32 tensors.
@@ -332,6 +338,7 @@ impl std::fmt::Display for State {
                 ("part", super::repr::Repr::repr(&self.part)),
                 ("labels", super::repr::Repr::repr(&self.labels)),
                 ("source", super::repr::Repr::repr(&self.source)),
+                ("polarity", super::repr::Repr::repr(&self.polarity)),
                 ("pad_to", super::repr::Repr::repr(&self.pad_to)),
                 ("dtype", super::repr::Repr::repr(&self.dtype)),
                 ("reshape", super::repr::Repr::repr(&self.reshape)),
@@ -538,6 +545,17 @@ pub struct Actuator {
     /// reordered onto the env's axes by name. Omitted from the wire when unset; an opaque
     /// actuator may not carry them.
     pub labels: Option<Vec<String>>,
+    /// Which way the gripper moves as this command rises (`action/gripper`): `"open"` or
+    /// `"close"`. On a model, the convention its raw output speaks; on an env, the one its
+    /// simulator takes. When both sides declare one, the command must arrive the right way round
+    /// through both sides' `invert` and `scale`, or resolution is refused unless the model allows
+    /// `"flip_gripper"`. Omitted from the wire when unset.
+    pub polarity: Option<String>,
+    /// The SI size (metres, or radians for a rotation) of one unit of this delta command
+    /// (`action/delta_eef_*`). When both sides declare one, a model unit must be the same step
+    /// through the range map and both scales, or resolution is refused unless the model allows
+    /// `"convert_units"`. Omitted from the wire when unset.
+    pub unit: Option<f64>,
 }
 impl Actuator {
     fn empty() -> Self {
@@ -558,6 +576,8 @@ impl Actuator {
             part: None,
             offset: None,
             labels: None,
+            polarity: None,
+            unit: None,
         }
     }
 }
@@ -588,6 +608,8 @@ impl std::fmt::Display for Actuator {
                 ("part", super::repr::Repr::repr(&self.part)),
                 ("offset", super::repr::Repr::repr(&self.offset)),
                 ("labels", super::repr::Repr::repr(&self.labels)),
+                ("polarity", super::repr::Repr::repr(&self.polarity)),
+                ("unit", super::repr::Repr::repr(&self.unit)),
             ],
         )
     }
@@ -709,6 +731,10 @@ pub struct StateTag {
     /// space leaf (checked at `join`). A model that names labels must name this same set;
     /// another order is gathered by name. Omitted from the wire when unset.
     pub labels: Option<Vec<String>>,
+    /// Openness (`"open"`) or closedness (`"close"`) of a gripper reading
+    /// (`proprio/gripper_pos`). A side reading the other one is refused unless the model allows
+    /// `"flip_gripper"`. Omitted from the wire when unset.
+    pub polarity: Option<String>,
 }
 impl StateTag {
     fn empty() -> Self {
@@ -720,6 +746,7 @@ impl StateTag {
             provenance: None,
             part: None,
             labels: None,
+            polarity: None,
         }
     }
     /// Construct a state tag with only its role declared.
@@ -743,6 +770,7 @@ impl std::fmt::Display for StateTag {
                 ("provenance", super::repr::Repr::repr(&self.provenance)),
                 ("part", super::repr::Repr::repr(&self.part)),
                 ("labels", super::repr::Repr::repr(&self.labels)),
+                ("polarity", super::repr::Repr::repr(&self.polarity)),
             ],
         )
     }
@@ -802,6 +830,10 @@ pub struct Field {
     /// The axis names of this field, `dim` of them; see :attr:`StateTag.labels`. A role-less skip
     /// may not carry them.
     pub labels: Option<Vec<String>>,
+    /// Openness (`"open"`) or closedness (`"close"`) of a gripper reading
+    /// (`proprio/gripper_pos`). A side reading the other one is refused unless the model allows
+    /// `"flip_gripper"`. Omitted from the wire when unset.
+    pub polarity: Option<String>,
 }
 impl Field {
     fn empty() -> Self {
@@ -814,6 +846,7 @@ impl Field {
             provenance: None,
             part: None,
             labels: None,
+            polarity: None,
         }
     }
 }
@@ -836,6 +869,7 @@ impl std::fmt::Display for Field {
                 ("provenance", super::repr::Repr::repr(&self.provenance)),
                 ("part", super::repr::Repr::repr(&self.part)),
                 ("labels", super::repr::Repr::repr(&self.labels)),
+                ("polarity", super::repr::Repr::repr(&self.polarity)),
             ],
         )
     }

@@ -1,0 +1,74 @@
+{
+  "declared_env": {
+    "delivered_ordinals": [
+      100,
+      101,
+      102
+    ],
+    "reported_ordinals": [
+      100,
+      101,
+      102
+    ]
+  },
+  "deterministic_seeds": {
+    "hook_seeds": [
+      {
+        "completed": [
+          2459853855,
+          2276399614
+        ],
+        "started": [
+          2459853855,
+          2276399614
+        ]
+      },
+      {
+        "completed": [
+          2459853855,
+          2276399614
+        ],
+        "started": [
+          2459853855,
+          2276399614
+        ]
+      }
+    ],
+    "reset_seeds": [
+      [
+        [
+          2459853855
+        ],
+        [
+          2276399614
+        ]
+      ],
+      [
+        [
+          2459853855
+        ],
+        [
+          2276399614
+        ]
+      ]
+    ]
+  },
+  "minted_episode_ids": [
+    {
+      "hyphens": 4,
+      "len": 36,
+      "version_nibble": "7"
+    }
+  ],
+  "reset_adapter_calls": 1,
+  "undeclared_env": {
+    "reported_ordinals": [
+      0,
+      1
+    ],
+    "reset_options": [
+      null,
+      null
+    ]
+  }
+}

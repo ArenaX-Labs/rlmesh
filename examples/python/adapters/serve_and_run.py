@@ -128,20 +128,20 @@ def main() -> None:
     env = CubePickEnv()
     # Publish the tags in the served contract (validated against the
     # env's spaces up front).
-    server = rlmesh.EnvServer(env, "127.0.0.1:0", tags=ENV_TAGS)
+    server = rlmesh.EnvServer(env, ":0/env", tags=ENV_TAGS)
     server.start()
     try:
-        client = RemoteEnv(server.address)
-
-        # The adapter the model would get against this env, for illustration:
+        # The adapter the model would get against this env, for illustration
+        # (the client closes first: an open RemoteEnv holds the env's lease).
+        with RemoteEnv(server.address) as client:
+            contract = client.env_contract
         print("Resolved adapter:")
-        print(adapt.resolve_from_contract(client.env_contract, MODEL_SPEC).explain())
+        print(adapt.resolve_from_contract(contract, MODEL_SPEC).explain())
         print("\nRunning one episode:")
 
         # No glue: the adapter is resolved from the env's published tags.
-        Model(predict, spec=MODEL_SPEC).run(client, episodes=1)
+        Model(predict, spec=MODEL_SPEC).run(server.address, episodes=1)
 
-        client.close()
         print("\nDone.")
     finally:
         server.shutdown()

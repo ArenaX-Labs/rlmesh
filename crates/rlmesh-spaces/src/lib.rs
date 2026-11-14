@@ -8,6 +8,9 @@
 //! [`flatten_leaves`]/[`assemble_value`] move between a composite value and its
 //! ordered fundamental leaves.
 //!
+//! [`leaves`] is the thin-bytes value codec: each fundamental leaf as raw
+//! little-endian bytes, one value or a lane slab at a time.
+//!
 //! Tensor payloads use [`Tensor`], an immutable n-dimensional view over shared
 //! [`Storage`] with DLPack-compatible dtype, shape, and strides. [`dlpack_type`]
 //! maps the [`DType`] table to and from DLPack data-type codes for zero-copy
@@ -15,7 +18,7 @@
 //!
 //! This crate carries no `rlmesh-proto` dependency: the [`DType`] and
 //! [`SpaceType`] discriminants are kept byte-identical to the proto enums and
-//! cross-checked in `rlmesh-grpc`. Sampling and the scalar byte codec are the
+//! cross-checked in `rlmesh`. Sampling and the scalar byte codec are the
 //! single cross-language implementations, so a given seed or value encodes to
 //! identical bytes in Rust and the Python bindings.
 
@@ -24,6 +27,7 @@ pub mod errors;
 pub mod advisory;
 mod display;
 pub mod dtype;
+pub mod leaves;
 pub mod meta;
 pub mod render;
 pub mod request;

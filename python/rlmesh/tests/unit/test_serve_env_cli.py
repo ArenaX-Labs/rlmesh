@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -79,7 +79,6 @@ def test_serve_env_dispatches_entrypoint_loader(
         serve_env.ServeArgs(
             env=None,
             entrypoint="rlmesh_system_fixtures.registry:make_env",
-            transport="tcp",
             address="127.0.0.1:0",
             num_envs=1,
             vectorization_mode=None,
@@ -129,7 +128,6 @@ def test_serve_env_passes_vector_entrypoint_to_env_server(
         serve_env.ServeArgs(
             env=None,
             entrypoint="rlmesh_system_fixtures.registry:make_vector_env",
-            transport="tcp",
             address="127.0.0.1:0",
             num_envs=1,
             vectorization_mode=None,
@@ -172,7 +170,6 @@ def test_serve_env_dispatches_gym_loader(monkeypatch: pytest.MonkeyPatch) -> Non
         serve_env.ServeArgs(
             env="CartPole-v1",
             entrypoint=None,
-            transport="tcp",
             address=None,
             num_envs=2,
             vectorization_mode="sync",
@@ -190,7 +187,7 @@ def test_serve_env_dispatches_gym_loader(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["kwargs"] == {"render_mode": "rgb_array"}
     assert captured["server_class"] == "EnvServer"
     assert captured["server_env"] is fake_env
-    assert captured["server_args"] == ()
+    assert captured["server_args"] == (None,)
     assert captured["served"] is True
 
 
@@ -201,7 +198,6 @@ def test_serve_env_rejects_entrypoint_vectorization_options() -> None:
         serve_env.ServeArgs(
             env=None,
             entrypoint="rlmesh_system_fixtures.registry:make_env",
-            transport="tcp",
             address=None,
             num_envs=2,
             vectorization_mode=None,
@@ -278,7 +274,6 @@ def test_serve_from_args_shuts_down_server_even_when_serve_raises(
         serve_env.ServeArgs(
             env="CartPole-v1",
             entrypoint=None,
-            transport="tcp",
             address=None,
             num_envs=1,
             vectorization_mode=None,
@@ -305,7 +300,6 @@ def test_serve_from_args_shuts_down_server_after_clean_serve(
         serve_env.ServeArgs(
             env="CartPole-v1",
             entrypoint=None,
-            transport="tcp",
             address=None,
             num_envs=1,
             vectorization_mode=None,
@@ -378,7 +372,6 @@ def test_serve_from_args_writes_ready_fd(monkeypatch: pytest.MonkeyPatch) -> Non
             serve_env.ServeArgs(
                 env="CartPole-v1",
                 entrypoint=None,
-                transport="tcp",
                 address=None,
                 num_envs=1,
                 vectorization_mode=None,
@@ -395,73 +388,3 @@ def test_serve_from_args_writes_ready_fd(monkeypatch: pytest.MonkeyPatch) -> Non
     finally:
         if read_fd != -1:
             os.close(read_fd)
-
-
-def test_default_unix_socket_path_uses_xdg_runtime_dir(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
-    import os
-
-    from rlmesh._cli import serve_env
-
-    runtime_dir = tmp_path / "run"
-    runtime_dir.mkdir()
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
-
-    path = serve_env._default_unix_socket_path("CartPole-v1")
-
-    assert path.startswith(str(runtime_dir))
-    assert path.endswith("rlmesh-cartpole-v1.sock")
-    parent = os.path.dirname(path)
-    assert os.path.isdir(parent)
-    assert (os.stat(parent).st_mode & 0o777) == 0o700
-
-
-def test_default_unix_socket_path_avoids_shared_tmp(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import os
-    import stat
-
-    from rlmesh._cli import serve_env
-
-    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-
-    path = serve_env._default_unix_socket_path("CartPole-v1")
-
-    parent = os.path.dirname(path)
-    # Must not be the predictable, world-readable /tmp/rlmesh-*.sock path.
-    assert path != "/tmp/rlmesh-cartpole-v1.sock"
-    assert parent != "/tmp"
-    mode = stat.S_IMODE(os.stat(parent).st_mode)
-    assert mode == 0o700
-
-
-def test_default_unix_socket_fallback_dir_is_cleaned_at_exit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The mkdtemp fallback registers an atexit rmtree so invocations do not
-    leak one temp directory each."""
-    import atexit
-    import os
-
-    from rlmesh._cli import serve_env
-
-    registered: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
-
-    def fake_register(func: object, *args: object, **kwargs: object) -> object:
-        registered.append((func, args, kwargs))
-        return func
-
-    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-    monkeypatch.setattr(atexit, "register", fake_register)
-
-    path = serve_env._default_unix_socket_path("CartPole-v1")
-
-    parent = os.path.dirname(path)
-    assert len(registered) == 1
-    func, args, kwargs = registered[0]
-    assert args == (parent,)
-    assert kwargs == {"ignore_errors": True}
-    cast("Any", func)(*args, **kwargs)
-    assert not os.path.isdir(parent)

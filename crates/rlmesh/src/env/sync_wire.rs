@@ -25,7 +25,7 @@ use crate::binding::spaces::{
 use crate::ext::TensorExt;
 use crate::specs::EnvContract;
 use crate::value::{meta_codec, space_codec};
-use crate::{Error, InfoDict, Metadata, Result, Value};
+use crate::{Error, ErrorClass, InfoDict, Metadata, Result, Value};
 
 /// The id an env with none serves.
 pub(crate) const UNKNOWN_ENV_ID: &str = "UnknownEnv-v1";
@@ -46,10 +46,8 @@ pub(crate) fn autoreset_mode(metadata: Option<&Metadata>) -> Result<AutoresetMod
         Value::Text(mode) => match mode.as_str() {
             "NextStep" => Ok(AutoresetMode::NextStep),
             "Disabled" => Ok(AutoresetMode::Disabled),
-            "SameStep" => Err(Error::invalid_argument(
-                "SAME_STEP autoreset mode is not yet supported by the rlmesh runtime; \
-                 construct the environment with NEXT_STEP or DISABLED autoreset",
-            )),
+            // Served on a v2 session (the v1 wire and `Model.run` refuse it).
+            "SameStep" => Ok(AutoresetMode::SameStep),
             other => Err(Error::invalid_argument(format!(
                 "unrecognized metadata[\"autoreset_mode\"] {other:?}; expected a gymnasium \
                  AutoresetMode enum or one of \"NextStep\"/\"SameStep\"/\"Disabled\""
@@ -98,7 +96,8 @@ pub(crate) fn vector_contract_of(env: &dyn VectorEnv) -> Result<EnvContract> {
 
 /// An authored `{op}` failure as the client receives it, code `INTERNAL` and
 /// the text `"{op} failed: {message}"`, recoverable only for a recoverable
-/// Environment-class error.
+/// Environment-class error. A builtin class (`ValueError`) rides along, so
+/// the client raises it beside the Environment class, as for a Python env.
 pub(crate) fn authored_failure(op: &str, err: &Error) -> EnvRuntimeError {
     // Binding payloads preserve local exception identity, but do not change
     // the authored error's wire classification or its raw environment text.
@@ -111,6 +110,22 @@ pub(crate) fn authored_failure(op: &str, err: &Error) -> EnvRuntimeError {
         _ => (err.to_string(), false),
     };
     let text = format!("{op} failed: {message}");
+    let class = source.class();
+    if matches!(
+        class,
+        ErrorClass::ValueError
+            | ErrorClass::TypeError
+            | ErrorClass::RuntimeError
+            | ErrorClass::OSError
+            | ErrorClass::ConnectionError
+            | ErrorClass::TimeoutError
+    ) {
+        return EnvRuntimeError::Raised {
+            class: class.name().to_string(),
+            message: text,
+            recoverable,
+        };
+    }
     if recoverable {
         EnvRuntimeError::Recoverable(text)
     } else {

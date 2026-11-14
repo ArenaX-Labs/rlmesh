@@ -1,0 +1,76 @@
+{
+  "legs": {
+    "kind": "joints",
+    "names": [
+      "FR_hip_joint",
+      "FR_thigh_joint",
+      "FR_calf_joint",
+      "FL_hip_joint",
+      "FL_thigh_joint",
+      "FL_calf_joint",
+      "RR_hip_joint",
+      "RR_thigh_joint",
+      "RR_calf_joint",
+      "RL_hip_joint",
+      "RL_thigh_joint",
+      "RL_calf_joint"
+    ],
+    "fields": ["pos", "vel", "effort"],
+    "hz": 500,
+    "command": "position",
+    "safe": "damp",
+    "hold_max_ms": 50,
+    "gains": {
+      "kp": 20.0,
+      "kd": 0.5
+    },
+    "group": "locomotion"
+  },
+  "base/imu": {
+    "kind": "imu",
+    "frame": "base",
+    "hz": 500,
+    "fields": ["orientation", "ang_vel", "lin_acc"],
+    "rotation": "quat_wxyz"
+  },
+  "base/twist": {
+    "kind": "velocity",
+    "frame": "base",
+    "hz": 50,
+    "command": "velocity",
+    "safe": "damp",
+    "hold_max_ms": 50,
+    "group": "locomotion",
+    "limits": {
+      "linear": [
+        [-1.5, 1.5],
+        [-0.8, 0.8]
+      ],
+      "angular": [-2.0, 2.0]
+    }
+  },
+  "feet/force": {
+    "kind": "unitree/foot_force",
+    "hz": 500,
+    "fields": {
+      "force": ["int16", [4]]
+    },
+    "units": {
+      "force": "raw"
+    }
+  },
+  "goal/cmd_vel": {
+    "kind": "velocity",
+    "frame": "base",
+    "hz": 50
+  },
+  "front/cam": {
+    "kind": "camera",
+    "width": 1280,
+    "height": 720,
+    "hz": 15,
+    "frame": "front_cam_optical",
+    "encoding": "jpeg",
+    "send": "latest(max_mbps=8)"
+  }
+}

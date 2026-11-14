@@ -155,7 +155,7 @@ fn platform_offer(args: &CheckImageArgs) -> Result<(Option<SessionOffer>, String
     ))
 }
 
-fn docker_inspect(image: &str) -> Result<ImageConfig> {
+pub(crate) fn docker_inspect(image: &str) -> Result<ImageConfig> {
     let output = Command::new("docker")
         .args(["image", "inspect", image])
         .stdin(Stdio::null())
@@ -233,7 +233,7 @@ fn tail(stderr: &str) -> String {
 
 /// The interpreter carrying the rlmesh package: `RLMESH_PYTHON`, else the
 /// first of `python3` / `python` that imports `rlmesh`.
-fn python_command() -> Result<Command> {
+pub(crate) fn python_command() -> Result<Command> {
     python_command_from(std::env::var_os("RLMESH_PYTHON"), imports_rlmesh)
 }
 
@@ -434,7 +434,7 @@ mod tests {
                 "no dev.rlmesh.describe label: the platform reads describe off the handshake"
                     .to_owned(),
             ],
-            passed: vec!["dev.rlmesh.describe runtime: rlmesh-wire-v1".to_owned()],
+            passed: vec!["dev.rlmesh.describe runtime: rlmesh-realtime-v1".to_owned()],
         };
         merge_deep(&mut report, deep);
         assert_eq!(

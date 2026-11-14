@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ._models._view import View as _View
     from ._rlmesh import Tensor as _Tensor
     from .adapters import ModelSpec as _ModelSpec
+    from .spaces import Space as _Space
     from .specs import EnvContract as _EnvContract
 
 PrimitiveValue: TypeAlias = None | bool | int | float | str | bytes
@@ -76,6 +77,12 @@ class PredictContext(TypedDict):
         state: A dict that lives as long as the episode does, for whatever the
             model wants to carry across its predicts. Dropped when the episode
             ends.
+        observation_space: The observation space of the env this episode runs
+            in, as its ``observation_space`` reads in the model's framework.
+            ``None`` when no env is known (a direct ``predict`` call).
+        action_space: That env's action space, likewise: what a model with
+            ``spec = NO_ADAPTER`` answers in, since no adapter converts its
+            actions.
     """
 
     episode_id: str
@@ -83,6 +90,8 @@ class PredictContext(TypedDict):
     predict_index: int
     predict_seed: int | None
     state: dict[str, Any]
+    observation_space: _Space[Any] | None
+    action_space: _Space[Any] | None
 
 
 BatchPredictContext: TypeAlias = list[PredictContext]
@@ -157,15 +166,14 @@ class SupportsMake(Protocol):
 LocalEnvTarget: TypeAlias = Union[
     "SupportsResetStep", "SupportsMake", "HasAddress", str
 ]
-"""What the local drive paths (``run()``/``session()``/``Model.run``) accept as an
+"""What the local drive paths (``run()``/``Model.run``/``Model.bind``) accept as an
 env: a live env object, an :class:`~rlmesh.EnvFactory`, an object exposing an
 ``address``, or an address string to dial. Matched structurally, exactly like the
 runtime's own checks. A contract-only handle (``env_contract`` without
 ``reset``/``step``) cannot be stepped locally, so it is deliberately absent."""
 
 EnvTarget: TypeAlias = Union["LocalEnvTarget", "HasEnvContract"]
-"""What a served-model ``session()`` (:class:`~rlmesh.RemoteModel` /
-:class:`~rlmesh.SandboxModel`) accepts as an env: everything in
+"""What a served model (:class:`~rlmesh.SandboxModel`) accepts as an env: everything in
 :data:`LocalEnvTarget`, plus an env client exposing a published ``env_contract``
 (the contract is sent to the served model at bind)."""
 

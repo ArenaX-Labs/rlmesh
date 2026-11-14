@@ -77,6 +77,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // prost-build emits no rerun-if-changed for its inputs; watch the tree.
     println!("cargo:rerun-if-changed={}", spec.display());
     tonic_prost_build::configure()
+        .build_client(false)
+        .build_server(false)
         .enum_attribute(
             "rlmesh.model.v1.JoinRequest.kind",
             "#[allow(clippy::large_enum_variant)]",
@@ -92,7 +94,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 spec.join("rlmesh/core/v1/handshake.proto"),
                 // Env
                 spec.join("rlmesh/env/v1/interaction.proto"),
-                spec.join("rlmesh/env/v1/service.proto"),
                 // Spaces
                 spec.join("rlmesh/spaces/v1/meta.proto"),
                 spec.join("rlmesh/spaces/v1/spaces.proto"),
@@ -100,7 +101,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 spec.join("rlmesh/spaces/v1/value.proto"),
                 // Model
                 spec.join("rlmesh/model/v1/interaction.proto"),
-                spec.join("rlmesh/model/v1/service.proto"),
             ],
             &[spec],
         )?;

@@ -40,7 +40,7 @@ fn split_quantity(raw: &str) -> Option<(&str, &str, u64)> {
         .then_some((whole, fraction, multiplier))
 }
 
-/// The exact byte count of `whole.fraction × multiplier`, in the platform's
+/// The exact byte count of `whole.fraction × multiplier`, bounded to the
 /// signed 64-bit range.
 fn quantity_bytes(whole: &str, fraction: &str, multiplier: u64) -> Result<u64, QuantityError> {
     let fraction = fraction.trim_end_matches('0');

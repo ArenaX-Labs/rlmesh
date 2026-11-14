@@ -1,10 +1,9 @@
-"""Write a :class:`~rlmesh.recorder.schema.ResultSet` to a bundle (folder or zip).
+"""Write an ``rlmesh.result.v1`` document to a bundle (folder or zip).
 
 A bundle is ``result.json`` (the ``rlmesh.result.v1`` document) plus a ``media/``
 tree of the referenced assets. A folder is the working form (inspect/iterate
 locally); a zip is the shipping form (the single file a human uploads). Neither
-computes a manifest or per-file hashes -- that is the closed-side mapper's job, so
-the SDK stays decoupled from the platform's storage layout.
+computes a manifest or per-file hashes; asset paths remain bundle-relative.
 """
 
 from __future__ import annotations
@@ -14,12 +13,9 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 from .constants import MEDIA_DIR, RESULT_FILENAME
-
-if TYPE_CHECKING:
-    from .schema import ResultSet
 
 
 def _use_zip(archive: bool | str | None, path: Path) -> bool:
@@ -36,19 +32,18 @@ def _use_zip(archive: bool | str | None, path: Path) -> bool:
 
 
 def write_bundle(
-    result_set: ResultSet,
+    document: dict[str, Any],
     path: Path,
     *,
     assets: list[tuple[str, str]],
-    recorded_at: str,
     archive: bool | str | None = None,
 ) -> Path:
-    """Serialize ``result_set`` and its ``assets`` to ``path``; return the path.
+    """Serialize ``document`` and its ``assets`` to ``path``; return the path.
 
     ``assets`` are ``(source, bundle-relative destination)`` pairs; a missing source
     is skipped (the media manifest row still points at where it should have been).
     """
-    payload = json.dumps(result_set.to_dict(recorded_at=recorded_at), indent=2)
+    payload = json.dumps(document, indent=2)
 
     if _use_zip(archive, path):
         path.parent.mkdir(parents=True, exist_ok=True)

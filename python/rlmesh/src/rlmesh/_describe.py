@@ -36,10 +36,12 @@ Emitted shape (env)::
 
 ``runtime`` carries what the served peer's handshake will advertise, under the
 handshake's own field names: ``protocol_generation`` (the wire generation),
+``session_wire_revision`` (the 0.2 pre-release wire revision: two builds on
+different revisions cannot talk; absent before the field),
 ``supported_workflow_editions`` (every edition this build can drive, newest
 first) and ``preferred_workflow_edition`` (the edition the class declares, or
 this build's newest). A platform reads them to decide, before it runs the
-image, whether its runtime shares an edition with it.
+image, whether its runtime can talk to it and shares an edition with it.
 
 A model envelope drops ``env_spec``/``env_tags`` and carries ``model_spec``
 plus ``corners`` (the predict corners the class defines, e.g.
@@ -210,6 +212,10 @@ def _gather(
         native_chunk = _declared_native_chunk(obj, corners)
         if native_chunk is not None:
             pieces["native_chunk"] = native_chunk
+        built = obj if spec_of is None else spec_of
+        loaded = getattr(built, "_loaded_execution_horizon", None)
+        if loaded is not None:
+            pieces["execution_horizon"] = loaded
     return pieces
 
 
@@ -612,9 +618,9 @@ def _collect_peer_info() -> Mapping[str, Any]:
 def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
     """The edition handshake a peer serving ``obj`` will send, by its wire names.
 
-    ``protocol_generation`` and ``supported_workflow_editions`` come from the
-    native build the same way the Rust handshake builder reads them (there is
-    no second list). ``preferred_workflow_edition`` is the declaration the
+    ``protocol_generation``, ``session_wire_revision`` and
+    ``supported_workflow_editions`` come from the native build the same way
+    the Rust handshake builder reads them (there is no second list). ``preferred_workflow_edition`` is the declaration the
     server hosting ``obj`` sends: ``resolved`` when a server already settled it
     (``""`` when it settled on none), else what
     :func:`rlmesh._editions.resolve_workflow_edition` settles on for the class
@@ -623,8 +629,11 @@ def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
     nothing is declared, exactly as the handshake spells it. A declaration
     this build cannot run is not fatal here (describe stays total); it is
     recorded as ``workflow_edition_error`` and ``rlmesh check`` fails on it.
+    ``workflow_edition_floats`` is ``true`` when nothing declares one (and an
+    empty ``RLMESH_WORKFLOW_EDITION`` does not float deliberately), so the
+    checks can say where to pin it; it is absent otherwise.
     """
-    from ._editions import resolve_workflow_edition
+    from ._editions import WORKFLOW_EDITION_ENV_VAR, resolve_declaration
     from ._load_native import load_native
 
     info = load_native("build_info")()
@@ -632,23 +641,27 @@ def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
     declared = getattr(cls, "workflow_edition", None)
     offer: dict[str, Any] = {
         "protocol_generation": str(info.protocol_generation),
+        "session_wire_revision": int(load_native("SESSION_WIRE_REVISION")),
         "supported_workflow_editions": [
             str(edition) for edition in info.supported_workflow_editions
         ],
     }
-    preferred: str | None
+    preferred: str | None = None
+    floats = False
     if resolved is not None:
         preferred = resolved.strip() or None
+        # A server that settled on nothing floats unless the variable says so.
+        floats = preferred is None and os.environ.get(WORKFLOW_EDITION_ENV_VAR) is None
     else:
         try:
-            preferred = resolve_workflow_edition(
-                declared=declared if isinstance(declared, str) else None,
-                authored=False,
+            preferred, floats = resolve_declaration(
+                declared=declared if isinstance(declared, str) else None, origin=cls
             )
         except ValueError as exc:
             offer["workflow_edition_error"] = str(exc)
-            preferred = None
     offer["preferred_workflow_edition"] = preferred or str(info.workflow_edition)
+    if floats:
+        offer["workflow_edition_floats"] = True
     return offer
 
 
@@ -798,11 +811,11 @@ def _as_callable(obj: object) -> Callable[..., object]:
 
 # ---- pre-push checks (rlmesh check / check-image) --------------------------
 
-#: OCI config labels the managed platform's probe reads off a pushed image.
+#: OCI config labels used to validate a built image.
 DESCRIBE_LABEL = "dev.rlmesh.describe"
 PACKAGE_LABEL = "dev.rlmesh.package"
 
-#: The platform drops checkpoints whose name can't be a workload reference
+#: Checkpoint names must be valid workload references
 #: (DNS label); mirror its pattern so the failure happens before the push.
 _CHECKPOINT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
@@ -872,7 +885,7 @@ class CheckReport:
 
 
 def check_target(target: object, *, kind: str | None = None) -> CheckReport:
-    """Check an env/model class the way the platform will, before it is built.
+    """Check an env/model class before it is built.
 
     ``target`` is a ``"module:Class"`` entrypoint, a class, or an instance
     (see :func:`describe`). Fails on: a spec/tags that does not resolve, tags
@@ -880,8 +893,8 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
     without tags, a broken ``model_spec`` / ``env_tags``, an edition
     declaration this build cannot run, or a target that does not import. Warns
     on an untagged env (it runs, but only against spec-less models), on a model with no class-level ``spec`` (one set in ``load()`` serves fine
-    and rides the handshake, but a baked label will not carry it; the managed
-    probe cannot synthesize inputs without a ``ModelSpec``), on ad hoc roles a
+    and rides the handshake, but a baked label will not carry it;
+    ``rlmesh doctor`` needs a ``ModelSpec`` to synthesize inputs without a reference env), on ad hoc roles a
     curated publish gate would refuse, and on best-effort badges elsewhere in
     the envelope (variants, a non-default contract branch's spaces). ``not_checked``
     when building the env for its spaces needed a GPU, a display, or assets
@@ -894,20 +907,38 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
         report.failed.append(f"describe {target!r}: {exc}")
         return report
     _check_envelope(envelope, report, "", baked=False)
+    if envelope.get("kind") == "model" and _declares_no_adapter(target):
+        # The envelope carries no spec either way; the class says it on purpose.
+        report.warnings[:] = [
+            w for w in report.warnings if not w.startswith("model_spec: ")
+        ]
+        report.passed.append(
+            "model_spec: NO_ADAPTER (serves its own predict, with no adapter)"
+        )
     return report
 
 
-def check_labels(labels: Mapping[str, str] | None) -> CheckReport:
-    """Validate a built image's rlmesh labels the way the platform probe will.
+def _declares_no_adapter(target: object) -> bool:
+    """Whether the model ``target`` names sets ``spec = NO_ADAPTER`` on its class."""
+    from ._models._adapter_mode import NO_ADAPTER
 
-    A missing ``dev.rlmesh.describe`` label is a note, not a failure: the
-    platform reads describe off the ``rlmesh.serve`` handshake, so a plain
-    ``python -m rlmesh.serve`` image with no labels probes fine (run
-    :func:`check_target` on the class for the class-level checks). A present
-    label gets the same checks as :func:`check_target` with the platform's
-    verdicts for a baked envelope: an ``env_spec`` / ``model_spec`` error
-    badge fails (the platform fails it, whatever caused it), an ``env_tags``
-    badge warns. A ``dev.rlmesh.package`` label is checked for well-formed
+    if isinstance(target, str):
+        try:
+            target = resolve_entrypoint(target, label="check entrypoint")
+        except Exception:
+            return False
+    return getattr(target, "spec", None) is NO_ADAPTER
+
+
+def check_labels(labels: Mapping[str, str] | None) -> CheckReport:
+    """Validate a built image's rlmesh labels.
+
+    A missing ``dev.rlmesh.describe`` label is a note, not a failure:
+    ``rlmesh.serve`` also exposes describe during the handshake. Run
+    :func:`check_target` on the class for the class-level checks. A present
+    label gets the same checks as :func:`check_target`, with stricter checks
+    for a baked envelope: an ``env_spec`` / ``model_spec`` error badge fails,
+    and an ``env_tags`` badge warns. A ``dev.rlmesh.package`` label is checked for well-formed
     checkpoints.
     """
     report = CheckReport()
@@ -947,8 +978,8 @@ def _check_envelope(
     """The class-level checks, shared by a fresh envelope and a baked label.
 
     ``where`` prefixes every message (the label name for a label check, empty
-    for a class check). ``baked`` selects the platform's verdict for an
-    ``env_spec`` badge: in a label it fails admission whatever caused it; on
+    for a class check). ``baked`` selects the verdict for an
+    ``env_spec`` badge: in a label it fails validation whatever caused it; on
     a class checked before the build, a badge that only says this machine
     lacks a GPU, a driver, or an in-image dependency is ``not_checked``.
     """
@@ -977,8 +1008,8 @@ def _check_envelope(
             report.warnings.append(
                 f"{where}model_spec: {name} declares no class-level spec. Set in "
                 "load()? Fine for a label-less image (the handshake carries it); "
-                "a baked label will not carry it, and the managed probe cannot "
-                "synthesize inputs without a ModelSpec"
+                "a baked label will not carry it, and the managed platform cannot "
+                "test a model without a ModelSpec when you onboard it"
             )
         elif isinstance(spec, Mapping) and "error" in spec:
             badge = cast("Mapping[str, object]", spec)["error"]
@@ -991,8 +1022,8 @@ def _check_envelope(
         if tags is None and branched:
             report.failed.append(
                 f"{where}env_tags: {name} declares tag_params but its default "
-                "branch has no tags; the platform probe fails a contract branch "
-                "without EnvTags"
+                "branch has no tags; the managed platform rejects a contract branch "
+                "without EnvTags when you onboard the image"
             )
         elif tags is None:
             report.warnings.append(
@@ -1001,7 +1032,7 @@ def _check_envelope(
                 "it without EnvTags (set `tags = EnvTags(...)` on the class)"
             )
         elif isinstance(tags, Mapping) and "error" in tags:
-            # The platform warns on a tags badge (it can still read the spaces).
+            # A tags badge warns because the spaces can still be read.
             badge = cast("Mapping[str, object]", tags)["error"]
             report.warnings.append(f"{where}env_tags: {badge}")
         else:
@@ -1020,8 +1051,8 @@ def _check_envelope(
             elif _needs_local_resources(error_type, badge):
                 report.not_checked.append(
                     f"{where}env_spec: could not build the env on this machine "
-                    f"({error_type}: {badge}); the platform probe builds it in the "
-                    "container. Do not bake a describe label from this machine: it "
+                    f"({error_type}: {badge}); the managed platform builds it in the "
+                    "container when you onboard the image. Do not bake a describe label from this machine: it "
                     "would carry this badge and fail admission"
                 )
             else:
@@ -1044,8 +1075,7 @@ def _needs_local_resources(error_type: str, message: str) -> bool:
     Decided by the exception type first (see :data:`_NEVER_SOFTENED` and
     :data:`_SOFTENED_TYPES`), then by a CUDA-named type, then by whole-word
     GPU/driver/display hints in the message. Only ``rlmesh check`` on a class
-    consults this; a badge baked into a label always fails, as it does on the
-    platform.
+    consults this; a badge baked into a label always fails validation.
     """
     if error_type in _NEVER_SOFTENED:
         return False
@@ -1087,8 +1117,7 @@ def _check_branches(
 ) -> None:
     """Each non-default contract branch needs tags that fit its own spaces.
 
-    A branch without tags, or whose tags are an error badge, fails: the platform
-    probe fails a branch without EnvTags.
+    A branch without tags, or whose tags are an error badge, fails validation.
 
     The default branch is the top-level ``env_tags``/``env_spec`` pair, checked
     by :func:`_check_specs`.
@@ -1107,14 +1136,15 @@ def _check_branches(
         tags = branch_map.get("env_tags")
         if tags is None:
             report.failed.append(
-                f"{where}{key}: this contract branch has no tags; the platform "
-                "probe fails a branch without EnvTags"
+                f"{where}{key}: this contract branch has no tags; the managed "
+                "platform rejects a branch without EnvTags when you onboard the image"
             )
         elif isinstance(tags, Mapping) and "error" in tags:
             badge = cast("Mapping[str, object]", tags)["error"]
             report.failed.append(
                 f"{where}{key}: this contract branch's tags could not be read "
-                f"({badge}); the platform probe fails a branch without EnvTags"
+                f"({badge}); the managed platform rejects a branch without EnvTags when "
+                "you onboard the image"
             )
         elif isinstance(tags, Mapping):
             _check_join(
@@ -1161,12 +1191,18 @@ def _check_runtime(
     if not runtime.get("supported_workflow_editions"):
         report.not_checked.append(
             f"{where}runtime: describe carries no workflow editions (built with an "
-            "older rlmesh); the runtime probe verifies the handshake"
+            "older rlmesh); the managed platform checks the handshake when you "
+            "onboard the image"
         )
         return
     error = runtime.get("workflow_edition_error")
     if error:
         report.failed.append(f"{where}runtime: workflow edition: {error}")
+        return
+    if runtime.get("workflow_edition_floats") is True:
+        from ._editions import float_nudge
+
+        report.warnings.append(f"{where}runtime: {float_nudge()}")
         return
     report.passed.append(
         f"{where}runtime: {runtime.get('protocol_generation')}, declares "
@@ -1392,8 +1428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         metavar="IMAGE",
-        help="validate a built image's rlmesh labels the way the platform probe "
-        "will, before pushing",
+        help="validate a built image's rlmesh labels before pushing",
     )
     parser.add_argument(
         "--check-labels",

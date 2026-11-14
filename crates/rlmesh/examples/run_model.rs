@@ -28,7 +28,7 @@ impl Policy for ConstantPolicy {
 fn main() -> rlmesh::Result<()> {
     let address = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:5555".to_string());
+        .unwrap_or_else(|| ":5555/env".to_string());
 
     let model = Model::new(ConstantPolicy, ModelOptions::default())?;
 
@@ -64,7 +64,8 @@ mod tests {
         let server = rlmesh::EnvServer::new(
             serve_env::CounterEnv::new()?,
             rlmesh::EnvServerOptions {
-                address: Some("tcp://127.0.0.1:0".into()),
+                // The v2 build dials sessions, not v1 endpoints.
+                address: Some(":0/counter".into()),
                 ..Default::default()
             },
         )?;

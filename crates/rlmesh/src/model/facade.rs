@@ -3,20 +3,30 @@
 //! call serialized through one FIFO queue run on a plain library thread.
 
 use std::fmt;
-use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::thread::ThreadId;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use rlmesh_grpc::lifecycle::ShutdownTrigger;
+use crate::lifecycle::ShutdownTrigger;
 
-use super::context::{BatchPredictContext, EpisodeStore, OwnedContext, PredictContext};
-use super::policy::{Corners, LoadKey, Policy, SpecArg};
-use super::types::EpisodeInfo;
-use crate::editions::EditionSources;
-use crate::{BindAddress, Error, Kwargs, Result, ServeOptions, Value};
+use super::policy::{Policy, SpecArg};
+use crate::{Error, Kwargs, Result, ServeOptions};
+
+mod calls;
+mod erased;
+mod queue;
+mod serve;
+
+pub(crate) use calls::Row;
+pub use erased::{DynPolicy, PolicyDecl};
+pub use queue::RunSlot;
+pub(crate) use queue::Shared;
+pub(crate) use serve::run_local;
+
+use calls::Resolved;
+use erased::{Erased, check_native_chunk};
+use serve::serve_blocking;
 
 /// The cap on a `None` drain or close timeout, which a model serve takes
 /// too.
@@ -50,6 +60,10 @@ impl fmt::Debug for ModelOptions {
 /// Options for [`Model::serve`], including cancellation and native extras.
 #[derive(Clone, Debug, Default)]
 pub struct ModelServeOptions {
+    /// The participant the model joins the session at `address` as:
+    /// `serve("lab:7447", name: "policy")` is reached at `lab:7447/policy`.
+    /// `None` reads it off `address` (`"lab:7447/policy"`).
+    pub name: Option<String>,
     /// The transport lifecycle policy; `None` drain and close timeouts take
     /// a 5 s cap.
     pub options: Option<ServeOptions>,
@@ -58,6 +72,10 @@ pub struct ModelServeOptions {
     pub cancel: Option<crate::ext::CancelToken>,
     /// The Rust- and C-only extras.
     pub ext: Option<crate::ext::ModelServeOptions>,
+    /// How a session-served model coalesces predicts; `None` is
+    /// [`BatchOptions::default`](crate::BatchOptions). Only a session
+    /// address batches.
+    pub batching: Option<crate::BatchOptions>,
 }
 
 /// A loaded model built from a [`Policy`] or predict closure. A shared
@@ -109,777 +127,6 @@ impl fmt::Debug for Model {
     }
 }
 
-/// A policy's declarations as the library reads them: the policy type's
-/// consts, or a binding's runtime declarations.
-#[derive(Clone, Debug)]
-pub struct PolicyDecl {
-    /// The corners the policy defines.
-    pub corners: Corners,
-    /// The corners that receive a context.
-    pub context: Corners,
-    /// The static native chunk length.
-    pub native_chunk: Option<u32>,
-    /// The keywords `load` accepts (`None`: every key).
-    pub load_keys: Option<Vec<(String, bool)>>,
-    /// The policy's spec.
-    pub spec: Option<SpecArg>,
-    /// The policy's edition declaration.
-    pub workflow_edition: Option<String>,
-    /// Whether the policy is an authored participant.
-    pub authored: bool,
-    /// The describe qualname's type part.
-    pub type_name: String,
-}
-
-impl PolicyDecl {
-    /// The declarations of policy type `P`.
-    pub fn of<P: Policy>() -> PolicyDecl {
-        PolicyDecl {
-            corners: P::CORNERS,
-            context: P::CONTEXT,
-            native_chunk: P::NATIVE_CHUNK,
-            load_keys: P::LOAD_KEYS.map(|keys| {
-                keys.iter()
-                    .map(|LoadKey { name, required }| (name.to_string(), *required))
-                    .collect()
-            }),
-            spec: P::spec(),
-            workflow_edition: P::workflow_edition(),
-            authored: P::AUTHORED,
-            type_name: std::any::type_name::<P>().to_string(),
-        }
-    }
-
-    /// Refuse a declaration construction refuses (TypeError class, or the
-    /// ValueError class for a native chunk below 1).
-    pub fn validate(&self) -> Result<()> {
-        let all = Corners::PREDICT
-            .union(Corners::PREDICT_CHUNK)
-            .union(Corners::PREDICT_BATCH)
-            .union(Corners::PREDICT_CHUNK_BATCH);
-        if !all.contains(self.corners) || !all.contains(self.context) {
-            return Err(Error::Type(
-                "corner declarations hold bits outside the four corners".to_string(),
-            ));
-        }
-        if !self.corners.contains(self.context) {
-            let extra = Corners::from_bits(self.context.bits() & !self.corners.bits());
-            return Err(Error::Type(format!(
-                "CONTEXT lists {} but CORNERS does not: a context corner must be one the \
-                 policy defines",
-                extra.names().join(", ")
-            )));
-        }
-        if !self.corners.contains(Corners::PREDICT)
-            && !self.corners.contains(Corners::PREDICT_BATCH)
-        {
-            return Err(Error::Type(
-                "could not derive predict(): define predict(), or a corner it can be derived \
-                 from (a chunk-only model on the raw Value bridge needs an explicit predict())."
-                    .to_string(),
-            ));
-        }
-        check_native_chunk(self.native_chunk, self.corners)?;
-        if let Some(keys) = &self.load_keys {
-            let mut seen = std::collections::HashSet::new();
-            for (name, _) in keys {
-                if name.is_empty() {
-                    return Err(Error::Type("a load key name must not be empty".to_string()));
-                }
-                if !seen.insert(name.as_str()) {
-                    return Err(Error::Type(format!("load key '{name}' is declared twice")));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Corners {
-    pub(crate) const fn from_bits(bits: u32) -> Corners {
-        // Only the four corner bits are meaningful; others are refused by
-        // `PolicyDecl::validate`.
-        let mut corners = Corners::NONE;
-        if bits & 1 != 0 {
-            corners = corners.union(Corners::PREDICT);
-        }
-        if bits & 2 != 0 {
-            corners = corners.union(Corners::PREDICT_CHUNK);
-        }
-        if bits & 4 != 0 {
-            corners = corners.union(Corners::PREDICT_BATCH);
-        }
-        if bits & 8 != 0 {
-            corners = corners.union(Corners::PREDICT_CHUNK_BATCH);
-        }
-        corners
-    }
-}
-
-/// A native chunk declaration: one with no chunk corner is the TypeError
-/// class (checked first), one below 1 the ValueError class.
-pub(crate) fn check_native_chunk(native_chunk: Option<u32>, corners: Corners) -> Result<()> {
-    let Some(native) = native_chunk else {
-        return Ok(());
-    };
-    if !corners.has_chunk() {
-        return Err(Error::Type(
-            "native_chunk declares how long ONE action chunk is, but this model defines no \
-             predict_chunk() / predict_chunk_batch(). Add a chunk corner, or drop native_chunk."
-                .to_string(),
-        ));
-    }
-    if native < 1 {
-        return Err(Error::invalid_argument(format!(
-            "native_chunk must be >= 1 (or None when undeclared), got {native}"
-        )));
-    }
-    Ok(())
-}
-
-/// A policy behind the library's erased seam: the [`Policy`] members with
-/// the context passed only to the corners that declared it. A binding with
-/// runtime declarations implements it directly.
-pub trait DynPolicy: Send {
-    /// [`Policy::load`].
-    fn load(&mut self, config: &Kwargs) -> Result<()>;
-    /// [`Policy::allow_fusion`].
-    fn allow_fusion(&self) -> bool;
-    /// [`Policy::native_chunk`].
-    fn native_chunk(&self) -> Option<u32>;
-    /// `predict`, with a context when the corner reads one.
-    fn predict(
-        &mut self,
-        observation: Value,
-        context: Option<&mut PredictContext<'_>>,
-    ) -> Result<Value>;
-    /// `predict_batch`, with the row contexts when the corner reads them.
-    fn predict_batch(
-        &mut self,
-        observations: Vec<Value>,
-        context: Option<&mut BatchPredictContext<'_>>,
-    ) -> Result<Vec<Value>>;
-    /// `predict_chunk`, with a context when the corner reads one.
-    fn predict_chunk(
-        &mut self,
-        observation: Value,
-        execution_horizon: u32,
-        context: Option<&mut PredictContext<'_>>,
-    ) -> Result<Value>;
-    /// `predict_chunk_batch`, with the row contexts when the corner reads them.
-    fn predict_chunk_batch(
-        &mut self,
-        observations: Vec<Value>,
-        execution_horizon: u32,
-        context: Option<&mut BatchPredictContext<'_>>,
-    ) -> Result<Vec<Value>>;
-    /// [`Policy::on_episode_end`].
-    fn on_episode_end(&mut self, episode_id: &str) -> Result<()>;
-    /// [`Policy::close`].
-    fn close(&mut self) -> Result<()>;
-}
-
-/// A [`Policy`] on the erased seam: the `_with_context` twin for a corner in
-/// `P::CONTEXT`, the plain method otherwise.
-struct Erased<P>(P);
-
-impl<P: Policy> DynPolicy for Erased<P> {
-    fn load(&mut self, config: &Kwargs) -> Result<()> {
-        self.0.load(config)
-    }
-
-    fn allow_fusion(&self) -> bool {
-        self.0.allow_fusion()
-    }
-
-    fn native_chunk(&self) -> Option<u32> {
-        self.0.native_chunk()
-    }
-
-    fn predict(
-        &mut self,
-        observation: Value,
-        context: Option<&mut PredictContext<'_>>,
-    ) -> Result<Value> {
-        match context {
-            Some(context) if P::CONTEXT.contains(Corners::PREDICT) => {
-                self.0.predict_with_context(observation, context)
-            }
-            _ => self.0.predict(observation),
-        }
-    }
-
-    fn predict_batch(
-        &mut self,
-        observations: Vec<Value>,
-        context: Option<&mut BatchPredictContext<'_>>,
-    ) -> Result<Vec<Value>> {
-        match context {
-            Some(context) if P::CONTEXT.contains(Corners::PREDICT_BATCH) => {
-                self.0.predict_batch_with_context(observations, context)
-            }
-            _ => self.0.predict_batch(observations),
-        }
-    }
-
-    fn predict_chunk(
-        &mut self,
-        observation: Value,
-        execution_horizon: u32,
-        context: Option<&mut PredictContext<'_>>,
-    ) -> Result<Value> {
-        match context {
-            Some(context) if P::CONTEXT.contains(Corners::PREDICT_CHUNK) => self
-                .0
-                .predict_chunk_with_context(observation, execution_horizon, context),
-            _ => self.0.predict_chunk(observation, execution_horizon),
-        }
-    }
-
-    fn predict_chunk_batch(
-        &mut self,
-        observations: Vec<Value>,
-        execution_horizon: u32,
-        context: Option<&mut BatchPredictContext<'_>>,
-    ) -> Result<Vec<Value>> {
-        match context {
-            Some(context) if P::CONTEXT.contains(Corners::PREDICT_CHUNK_BATCH) => self
-                .0
-                .predict_chunk_batch_with_context(observations, execution_horizon, context),
-            _ => self.0.predict_chunk_batch(observations, execution_horizon),
-        }
-    }
-
-    fn on_episode_end(&mut self, episode_id: &str) -> Result<()> {
-        self.0.on_episode_end(episode_id)
-    }
-
-    fn close(&mut self) -> Result<()> {
-        self.0.close()
-    }
-}
-
-/// One row's identity, owned for a queued call.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Row {
-    pub(crate) episode_id: String,
-    pub(crate) env_id: String,
-    pub(crate) seed: Option<i64>,
-}
-
-impl Row {
-    pub(crate) fn of(episode: Option<&EpisodeInfo>) -> Row {
-        episode.map_or_else(Row::default, |episode| Row {
-            episode_id: episode.episode_id.clone(),
-            env_id: episode.env_id.clone(),
-            seed: episode.seed,
-        })
-    }
-}
-
-/// The model's resolved declarations, read once after `load`.
-#[derive(Debug)]
-pub(crate) struct Resolved {
-    pub(crate) corners: Corners,
-    pub(crate) context: Corners,
-    pub(crate) static_native_chunk: Option<u32>,
-    pub(crate) native_chunk: Option<u32>,
-    pub(crate) allow_fusion: bool,
-    pub(crate) spec: Option<SpecArg>,
-    pub(crate) workflow_edition: Option<String>,
-    pub(crate) authored: bool,
-    pub(crate) type_name: String,
-    pub(crate) load_keys: Option<Vec<(String, bool)>>,
-    pub(crate) trust_entrypoints: bool,
-}
-
-impl Resolved {
-    /// Whether a chunk corner exists, written or derived (`predict_chunk`
-    /// from `predict_chunk_batch`).
-    pub(crate) fn has_chunk(&self) -> bool {
-        self.corners.has_chunk()
-    }
-}
-
-/// What runs on the model's library thread: the policy, its store and
-/// hooks.
-#[allow(clippy::type_complexity)]
-pub(crate) struct Core {
-    policy: Box<dyn DynPolicy>,
-    corners: Corners,
-    context: Corners,
-    store: EpisodeStore,
-    on_episode_end: Option<Box<dyn FnMut(&str) -> Result<()> + Send>>,
-    on_close: Option<Box<dyn FnOnce() -> Result<()> + Send>>,
-    closed: bool,
-}
-
-fn batch_len_error(corner: &str, got: usize, want: usize) -> Error {
-    Error::model(format!("{corner} returned {got} actions for {want} lanes"))
-}
-
-impl Core {
-    fn begin_all(&mut self, rows: &[Row]) -> Result<Vec<OwnedContext>> {
-        let mut contexts = Vec::with_capacity(rows.len());
-        for row in rows {
-            match self.store.begin(&row.episode_id, &row.env_id, row.seed) {
-                Ok(context) => contexts.push(context),
-                Err(err) => {
-                    for context in contexts {
-                        self.store.finish(context);
-                    }
-                    return Err(err);
-                }
-            }
-        }
-        Ok(contexts)
-    }
-
-    fn finish_all(&mut self, contexts: Vec<OwnedContext>) {
-        for context in contexts {
-            self.store.finish(context);
-        }
-    }
-
-    /// `predict` for one row: the policy's own, or a batch of one of
-    /// `predict_batch` (row 0).
-    pub(crate) fn predict(&mut self, observation: Value, row: &Row) -> Result<Value> {
-        if !self.corners.contains(Corners::PREDICT) {
-            let mut actions = self.predict_batch(vec![observation], std::slice::from_ref(row))?;
-            if actions.len() != 1 {
-                return Err(batch_len_error("predict_batch", actions.len(), 1));
-            }
-            return Ok(actions.remove(0));
-        }
-        if !self.context.contains(Corners::PREDICT) {
-            return self.policy.predict(observation, None);
-        }
-        let mut context = self.store.begin(&row.episode_id, &row.env_id, row.seed)?;
-        let result = self.policy.predict(observation, Some(&mut context.view()));
-        self.store.finish(context);
-        result
-    }
-
-    /// The policy's own `predict_batch`.
-    pub(crate) fn predict_batch(
-        &mut self,
-        observations: Vec<Value>,
-        rows: &[Row],
-    ) -> Result<Vec<Value>> {
-        if !self.context.contains(Corners::PREDICT_BATCH) {
-            return self.policy.predict_batch(observations, None);
-        }
-        let mut contexts = self.begin_all(rows)?;
-        let result = {
-            let mut views: Vec<PredictContext<'_>> =
-                contexts.iter_mut().map(OwnedContext::view).collect();
-            self.policy
-                .predict_batch(observations, Some(views.as_mut_slice()))
-        };
-        self.finish_all(contexts);
-        result
-    }
-
-    /// `predict_chunk` for one row: the policy's own, or a batch of one of
-    /// `predict_chunk_batch`.
-    pub(crate) fn predict_chunk(
-        &mut self,
-        observation: Value,
-        execution_horizon: u32,
-        row: &Row,
-    ) -> Result<Value> {
-        if !self.corners.contains(Corners::PREDICT_CHUNK) {
-            let mut chunks = self.predict_chunk_batch(
-                vec![observation],
-                execution_horizon,
-                std::slice::from_ref(row),
-            )?;
-            if chunks.len() != 1 {
-                return Err(batch_len_error("predict_chunk_batch", chunks.len(), 1));
-            }
-            return Ok(chunks.remove(0));
-        }
-        if !self.context.contains(Corners::PREDICT_CHUNK) {
-            return self
-                .policy
-                .predict_chunk(observation, execution_horizon, None);
-        }
-        let mut context = self.store.begin(&row.episode_id, &row.env_id, row.seed)?;
-        let result =
-            self.policy
-                .predict_chunk(observation, execution_horizon, Some(&mut context.view()));
-        self.store.finish(context);
-        result
-    }
-
-    /// The policy's own `predict_chunk_batch`.
-    pub(crate) fn predict_chunk_batch(
-        &mut self,
-        observations: Vec<Value>,
-        execution_horizon: u32,
-        rows: &[Row],
-    ) -> Result<Vec<Value>> {
-        if !self.context.contains(Corners::PREDICT_CHUNK_BATCH) {
-            return self
-                .policy
-                .predict_chunk_batch(observations, execution_horizon, None);
-        }
-        let mut contexts = self.begin_all(rows)?;
-        let result = {
-            let mut views: Vec<PredictContext<'_>> =
-                contexts.iter_mut().map(OwnedContext::view).collect();
-            self.policy.predict_chunk_batch(
-                observations,
-                execution_horizon,
-                Some(views.as_mut_slice()),
-            )
-        };
-        self.finish_all(contexts);
-        result
-    }
-
-    /// An episode ended: drop its entry, then fire the hook.
-    pub(crate) fn episode_end(&mut self, episode_id: &str) -> Result<()> {
-        self.store.end(episode_id);
-        match self.on_episode_end.as_mut() {
-            Some(hook) => hook(episode_id),
-            None => self.policy.on_episode_end(episode_id),
-        }
-    }
-
-    /// An env's teardown: drop its entries, firing no hook.
-    pub(crate) fn drop_env(&mut self, env_id: &str) {
-        self.store.drop_env(env_id);
-    }
-
-    fn close_hook(&mut self) -> Result<()> {
-        if self.closed {
-            return Ok(());
-        }
-        self.closed = true;
-        self.store.clear();
-        match self.on_close.take() {
-            Some(hook) => hook(),
-            None => self.policy.close(),
-        }
-    }
-}
-
-type Job = Box<dyn FnOnce(&mut Core) + Send>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase {
-    Open,
-    Closing,
-    Closed,
-}
-
-struct LifeState {
-    phase: Phase,
-    serves: std::collections::HashMap<u64, ShutdownTrigger>,
-    next_serve: u64,
-}
-
-/// The model's lifecycle, shared with its library thread (which marks it
-/// closed once the close hook returned).
-struct Life {
-    state: Mutex<LifeState>,
-    changed: Condvar,
-}
-
-impl Life {
-    fn lock(&self) -> MutexGuard<'_, LifeState> {
-        self.state.lock().unwrap_or_else(|err| err.into_inner())
-    }
-
-    fn is_closed(&self) -> bool {
-        self.lock().phase == Phase::Closed
-    }
-
-    fn set_closed(&self) {
-        self.lock().phase = Phase::Closed;
-        self.changed.notify_all();
-    }
-
-    /// Wait until `done` holds, or `timeout` passes; whether it held.
-    fn wait_until(
-        &self,
-        timeout: Option<Duration>,
-        mut done: impl FnMut(&LifeState) -> bool,
-    ) -> bool {
-        let deadline = timeout.map(|timeout| Instant::now() + timeout);
-        let mut state = self.lock();
-        while !done(&state) {
-            match deadline {
-                None => {
-                    state = self
-                        .changed
-                        .wait(state)
-                        .unwrap_or_else(|err| err.into_inner());
-                }
-                Some(deadline) => {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return false;
-                    }
-                    state = self
-                        .changed
-                        .wait_timeout(state, deadline - now)
-                        .unwrap_or_else(|err| err.into_inner())
-                        .0;
-                }
-            }
-        }
-        true
-    }
-}
-
-/// The model's shared internals: declarations, queue and lifecycle.
-pub(crate) struct Shared {
-    pub(crate) decl: Resolved,
-    queue: mpsc::Sender<Job>,
-    worker: ThreadId,
-    life: Arc<Life>,
-    refuse: AtomicBool,
-    /// Set while a run drives this model.
-    running: AtomicBool,
-}
-
-/// Holds a model's run slot; released on drop.
-pub(crate) struct RunSlot(Arc<Shared>);
-
-impl Drop for RunSlot {
-    fn drop(&mut self) {
-        self.0.running.store(false, Ordering::SeqCst);
-    }
-}
-
-fn closed_error() -> Error {
-    Error::Runtime("the model is closed".to_string())
-}
-
-fn panic_error(payload: Box<dyn std::any::Any + Send>) -> Error {
-    let message = payload
-        .downcast_ref::<&str>()
-        .map(|text| text.to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a model call panicked".to_string());
-    Error::Internal(format!("model call panicked: {message}"))
-}
-
-impl Shared {
-    #[allow(clippy::type_complexity)]
-    fn start(
-        policy: Box<dyn DynPolicy>,
-        decl: Resolved,
-        on_episode_end: Option<Box<dyn FnMut(&str) -> Result<()> + Send>>,
-        on_close: Option<Box<dyn FnOnce() -> Result<()> + Send>>,
-    ) -> Result<Arc<Shared>> {
-        let mut core = Core {
-            policy,
-            corners: decl.corners,
-            context: decl.context,
-            store: EpisodeStore::from_env(),
-            on_episode_end,
-            on_close,
-            closed: false,
-        };
-        let (queue, jobs) = mpsc::channel::<Job>();
-        let worker = std::thread::Builder::new()
-            .name("rlmesh-model".to_string())
-            .spawn(move || {
-                for job in jobs {
-                    job(&mut core);
-                }
-            })
-            .map_err(|err| Error::Internal(format!("failed to spawn the model thread: {err}")))?;
-        let worker = worker.thread().id();
-        Ok(Arc::new(Shared {
-            decl,
-            queue,
-            worker,
-            life: Arc::new(Life {
-                state: Mutex::new(LifeState {
-                    phase: Phase::Open,
-                    serves: std::collections::HashMap::new(),
-                    next_serve: 0,
-                }),
-                changed: Condvar::new(),
-            }),
-            refuse: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        }))
-    }
-
-    pub(crate) fn on_worker(&self) -> bool {
-        std::thread::current().id() == self.worker
-    }
-
-    /// Refuse a call from inside this model's own corner or hook.
-    pub(crate) fn check_not_reentrant(&self, what: &str) -> Result<()> {
-        if self.on_worker() {
-            return Err(Error::Runtime(format!(
-                "{what} re-entered its own Model from inside a corner or hook; a model's \
-                 calls are serialized, so this would deadlock"
-            )));
-        }
-        Ok(())
-    }
-
-    fn submit<R: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut Core) -> Result<R> + Send + 'static,
-    ) -> Result<mpsc::Receiver<Result<R>>> {
-        let (tx, rx) = mpsc::sync_channel(1);
-        let work = crate::warnings::work_context();
-        let job: Job = Box::new(move |core: &mut Core| {
-            let out = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                crate::warnings::with_work(work, || {
-                    crate::warnings::check_cancelled()?;
-                    f(core)
-                })
-            }))
-            .unwrap_or_else(|payload| Err(panic_error(payload)));
-            let _ = tx.send(out);
-        });
-        self.queue
-            .send(job)
-            .map_err(|_| Error::Runtime("the model's call queue has stopped".to_string()))?;
-        Ok(rx)
-    }
-
-    /// Run `f` on the model's thread, behind every call queued before it.
-    pub(crate) fn call<R: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut Core) -> Result<R> + Send + 'static,
-    ) -> Result<R> {
-        self.check_not_reentrant("a corner call")?;
-        let admission = self.life.lock();
-        if self.refuse.load(Ordering::SeqCst) {
-            return Err(closed_error());
-        }
-        let rx = self.submit(move |core| {
-            if core.closed {
-                return Err(closed_error());
-            }
-            f(core)
-        })?;
-        drop(admission);
-        rx.recv()
-            .map_err(|_| Error::Internal("the model call was dropped".to_string()))?
-    }
-
-    /// Owned Drop cleanup is enqueued immediately; only the wait may detach.
-    pub(crate) fn queue_episode_end(&self, episode_id: String) -> Result<()> {
-        let _admission = self.life.lock();
-        if self.refuse.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        crate::warnings::with_work(None, || {
-            self.submit(move |core| core.episode_end(&episode_id))
-        })?;
-        Ok(())
-    }
-
-    /// Claim the model's one run slot: a second run while one is in progress
-    /// fails at once with the `RuntimeError` class.
-    pub(crate) fn claim_run(self: &Arc<Self>) -> Result<RunSlot> {
-        if self.running.swap(true, Ordering::SeqCst) {
-            return Err(Error::Runtime(
-                "run() is already in progress on this model; a model runs one run at a time"
-                    .to_string(),
-            ));
-        }
-        Ok(RunSlot(Arc::clone(self)))
-    }
-
-    /// Refuse a new run or serve once `close()` has begun.
-    pub(crate) fn admit(&self) -> Result<()> {
-        if self.life.lock().phase != Phase::Open {
-            return Err(closed_error());
-        }
-        Ok(())
-    }
-
-    fn register_serve(&self, trigger: ShutdownTrigger) -> Result<u64> {
-        let mut state = self.life.lock();
-        if state.phase != Phase::Open {
-            return Err(closed_error());
-        }
-        let id = state.next_serve;
-        state.next_serve += 1;
-        state.serves.insert(id, trigger);
-        Ok(id)
-    }
-
-    fn deregister_serve(&self, id: u64) {
-        self.life.lock().serves.remove(&id);
-        self.life.changed.notify_all();
-    }
-
-    /// `close()`: stop every serve, wait for queued calls, fire the hook
-    /// once. A second or concurrent close waits for the first and succeeds.
-    pub(crate) fn close(&self, timeout: Option<Duration>) -> Result<()> {
-        self.check_not_reentrant("close()")?;
-        let triggers: Vec<ShutdownTrigger> = {
-            let mut state = self.life.lock();
-            match state.phase {
-                Phase::Closed => return Ok(()),
-                Phase::Closing => {
-                    // Another close is running (a user close stopping this
-                    // serve, or a detached Drop close): it owns the hook and
-                    // its errors, so wait for it and succeed.
-                    drop(state);
-                    self.life
-                        .wait_until(None, |state| state.phase == Phase::Closed);
-                    return Ok(());
-                }
-                Phase::Open => {
-                    state.phase = Phase::Closing;
-                    state.serves.values().cloned().collect()
-                }
-            }
-        };
-        for trigger in triggers {
-            trigger.trigger("model closed");
-        }
-        self.life.wait_until(None, |state| state.serves.is_empty());
-        let admission = self.life.lock();
-        self.refuse.store(true, Ordering::SeqCst);
-        let life = Arc::clone(&self.life);
-        let rx = match self.submit(move |core| {
-            struct Complete(Arc<Life>);
-            impl Drop for Complete {
-                fn drop(&mut self) {
-                    self.0.set_closed();
-                }
-            }
-            let _complete = Complete(life);
-            core.close_hook()
-        }) {
-            Ok(rx) => rx,
-            Err(err) => {
-                drop(admission);
-                self.life.set_closed();
-                return Err(err);
-            }
-        };
-        drop(admission);
-        match timeout {
-            None => rx
-                .recv()
-                .map_err(|_| Error::Internal("the model close was dropped".to_string()))?,
-            Some(timeout) => match rx.recv_timeout(timeout) {
-                Ok(result) => result,
-                Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::Timeout(timeout)),
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    Err(Error::Internal("the model close was dropped".to_string()))
-                }
-            },
-        }
-    }
-}
-
 /// Check a config against `load`'s declared keys: a missing required key,
 /// then the unlisted keys.
 fn check_config(keys: Option<&[(String, bool)]>, config: &Kwargs, from_config: bool) -> Result<()> {
@@ -926,6 +173,11 @@ pub(crate) fn construct(
     let native_chunk = policy.native_chunk();
     check_native_chunk(native_chunk, decl.corners)?;
     let allow_fusion = policy.allow_fusion();
+    let reset_options = policy.has_reset_options();
+    let execution_horizon = policy.execution_horizon();
+    if let Some(horizon) = execution_horizon {
+        crate::run::check_horizon(horizon, native_chunk)?;
+    }
     let ModelOptions {
         spec,
         on_episode_end,
@@ -940,10 +192,11 @@ pub(crate) fn construct(
         allow_fusion,
         spec: spec.or(decl.spec),
         workflow_edition: decl.workflow_edition,
-        authored: decl.authored,
         type_name: decl.type_name,
         load_keys: decl.load_keys,
         trust_entrypoints,
+        reset_options,
+        execution_horizon,
     };
     let shared = Shared::start(policy, resolved, on_episode_end, on_close)?;
     Ok(Model {
@@ -991,6 +244,11 @@ impl Model {
     /// The native chunk length, read after `load`.
     pub fn native_chunk(&self) -> Option<u32> {
         self.shared().decl.native_chunk
+    }
+
+    /// The checkpoint's execution horizon, read once after `load`.
+    pub fn execution_horizon(&self) -> Option<u32> {
+        self.shared().decl.execution_horizon
     }
 
     /// The policy's workflow edition declaration.
@@ -1162,100 +420,6 @@ impl CancelWatcher {
         }
         self.fired.load(Ordering::SeqCst)
     }
-}
-
-/// One serve, blocking the calling thread: validate, resolve the edition,
-/// bind, serve until stopped, then close the model.
-fn serve_blocking(
-    shared: &Arc<Shared>,
-    address: &str,
-    options: ModelServeOptions,
-    foreground: bool,
-    dropped: Option<crate::ext::CancelToken>,
-) -> Result<()> {
-    let ModelServeOptions {
-        options,
-        cancel,
-        ext,
-    } = options;
-    if cancel.as_ref().is_some_and(crate::ext::CancelToken::take) {
-        return Err(Error::Cancelled);
-    }
-    shared.admit()?;
-    let mut serve = options.unwrap_or_default();
-    serve.validate()?;
-    let ext = ext.unwrap_or_default();
-    if ext.predict_concurrency == Some(0) {
-        return Err(Error::invalid_argument(
-            "predict_concurrency must be at least 1",
-        ));
-    }
-    let token = crate::serve_options::model_endpoint_token(ext.token)?.unwrap_or_default();
-    let address = BindAddress::parse(address)?;
-    // The call's edition wins over the environment variable; a served peer
-    // is authored, so a floating one warns (COR-6, COR-7).
-    serve.workflow_edition = crate::editions::resolve_native(
-        EditionSources {
-            call: serve.workflow_edition.as_deref(),
-            option: None,
-            declared: shared.decl.workflow_edition.as_deref(),
-        },
-        true,
-    )?;
-    serve.drain_timeout = Some(serve.drain_timeout.unwrap_or(SERVE_GRACE));
-    let close_timeout = serve.close_timeout.unwrap_or(SERVE_GRACE);
-    serve.close_timeout = Some(close_timeout);
-    let handler = super::bridge::engine_handler(Arc::clone(shared));
-    let bound = crate::run::drive::block_on_library(super::server::bind_model_with_options(
-        handler,
-        address,
-        &token,
-        ext.predict_concurrency,
-        serve,
-    ))?;
-    let trigger = bound.shutdown_trigger();
-    let serve_id = shared.register_serve(trigger.clone())?;
-    let signals = foreground.then(|| crate::env::signals::enter(trigger.clone()));
-    let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
-    let watcher = CancelWatcher::start(tokens, trigger);
-    let result = crate::run::drive::block_on_library(bound.serve());
-    shared.deregister_serve(serve_id);
-    let cancelled = watcher.stop();
-    let interrupted = signals.as_ref().is_some_and(|scope| scope.interrupted());
-    drop(signals);
-    let close = shared.close(Some(close_timeout));
-    match (result, close) {
-        (Err(err), _) => Err(err),
-        (Ok(()), Err(err)) => Err(err),
-        (Ok(()), Ok(())) if cancelled || interrupted => Err(Error::Cancelled),
-        (Ok(()), Ok(())) => Ok(()),
-    }
-}
-
-/// Drive `model` in-process against a remote env (the binding's run path
-/// until `run` lands): the run borrows the model and never closes it.
-pub(crate) async fn run_local(
-    model: &Model,
-    options: super::worker::RunLocalOptions,
-    cancellation: tokio_util::sync::CancellationToken,
-    hooks: Arc<dyn rlmesh_runtime::RuntimeHooks>,
-) -> Result<rlmesh_runtime::RuntimeReport> {
-    let shared = model.shared();
-    shared.check_not_reentrant("run")?;
-    shared.admit()?;
-    let _slot = shared.claim_run()?;
-    if options.execution_horizon > 1 && !shared.decl.has_chunk() {
-        crate::warnings::warn(
-            crate::WarningCategory::UserWarning,
-            format!(
-                "execution_horizon={} was requested but the model defines no predict_chunk(); \
-                 running un-chunked.",
-                options.execution_horizon
-            ),
-        )?;
-    }
-    let mut handler = super::bridge::engine_handler(Arc::clone(shared));
-    super::local::run_local(&mut handler, options, cancellation, hooks).await
 }
 
 impl Drop for CancelWatcher {

@@ -1,6 +1,7 @@
 version: v2
 modules:
   - path: crates/rlmesh-proto/proto
+  - path: crates/rlmesh-session-core/proto
 lint:
   use:
     - STANDARD

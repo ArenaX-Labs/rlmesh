@@ -1,8 +1,9 @@
-"""BYO env container entrypoint: serve a Gymnasium env over the RLMesh protocol.
+"""BYO env container entrypoint: serve a Gymnasium env on an RLMesh session.
 
 You write a Dockerfile (see the sibling ``Dockerfile``) and this entrypoint, and
-RLMesh runs the image. The container serves the env on
-``RLMESH_ADDRESS`` (default ``0.0.0.0:50051``); a client dials it with
+RLMesh runs the image. The container hosts a session on ``RLMESH_ADDRESS``
+(default ``0.0.0.0:7447``) and serves the env in it as ``RLMESH_NAME``
+(default ``env``); a client dials the address its launcher made with
 ``rlmesh.RemoteEnv(address)``, and the RLMesh Managed platform runs the same
 image.
 
@@ -34,10 +35,11 @@ class MyEnv(EnvFactory):
 
 
 def main() -> None:
-    address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
-    print(f"RLMesh BYO env serving {address}", flush=True)
-    # Equivalent one-liner: `python -m rlmesh.serve --env <this_module>:MyEnv`.
-    MyEnv().serve(address)
+    address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:7447")
+    name = os.environ.get("RLMESH_NAME", "env")
+    # Prints "RLMesh serving env on ..." once the env answers. Equivalent
+    # one-liner: `python -m rlmesh.serve --env <this_module>:MyEnv`.
+    MyEnv().serve(f"{address}/{name}")
 
 
 if __name__ == "__main__":

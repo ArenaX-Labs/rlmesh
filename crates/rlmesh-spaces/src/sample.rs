@@ -356,14 +356,15 @@ fn sample_multi_discrete<R: rand::Rng + ?Sized>(
 ) -> Result<Vec<i64>, SpaceError> {
     spec.nvec
         .iter()
-        .map(|n| {
+        .enumerate()
+        .map(|(i, n)| {
             if *n <= 0 {
                 return Err(SpaceError::invalid(
                     "$",
                     "cannot sample MultiDiscrete space with a non-positive dimension",
                 ));
             }
-            Ok(rng.random_range(0..*n))
+            Ok(spec.start(i) + rng.random_range(0..*n))
         })
         .collect()
 }

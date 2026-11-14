@@ -179,6 +179,35 @@ enum Segment<T> {
     Job(Job),
 }
 
+thread_local! {
+    static CALLER_POLL: std::cell::RefCell<Option<Arc<dyn Fn() + Send + Sync>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn with_caller_poll<R>(
+    poll: Arc<dyn Fn() + Send + Sync>,
+    call: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<Arc<dyn Fn() + Send + Sync>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CALLER_POLL.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(CALLER_POLL.with(|slot| slot.replace(Some(poll))));
+    call()
+}
+
+/// Run the caller's signal poll, if one is set; whether one is.
+pub(crate) fn caller_poll() -> bool {
+    let poll = CALLER_POLL.with(|slot| slot.borrow().clone());
+    if let Some(poll) = poll {
+        as_caller(|| poll());
+        true
+    } else {
+        false
+    }
+}
+
 /// Drive `future` on this thread in segments, running each job the future
 /// sends between segments with the driving flag clear (the sync entry
 /// points). The caller has checked it is not in an async context.
@@ -192,6 +221,7 @@ pub(crate) fn block_on_caller<F: Future>(
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
     loop {
+        let polling = caller_poll();
         let segment = {
             let _driving = Driving::set();
             match future.as_mut().poll(&mut cx) {
@@ -205,6 +235,7 @@ pub(crate) fn block_on_caller<F: Future>(
         match segment {
             Some(Segment::Done(out)) => return out,
             Some(Segment::Job(job)) => job(side),
+            None if polling => std::thread::park_timeout(Duration::from_millis(10)),
             None => std::thread::park(),
         }
     }
@@ -365,10 +396,6 @@ impl CancelWatch {
         })
     }
 
-    pub(crate) fn subscriptions(&self) -> Arc<Vec<crate::ext::CancelSubscription>> {
-        Arc::clone(&self.tokens)
-    }
-
     /// Complete only after output processing. Checking and detaching each
     /// subscription is atomic with cancel(), so a last-moment firing cannot
     /// fall between the final check and unsubscribe.
@@ -378,15 +405,6 @@ impl CancelWatch {
             |fired, token| token.finish() || fired,
         );
         if fired { Err(Error::Cancelled) } else { result }
-    }
-
-    /// Whether a token fired during the call.
-    pub(crate) fn fired(&self) -> bool {
-        self.fired.load(std::sync::atomic::Ordering::SeqCst)
-            || self
-                .tokens
-                .iter()
-                .any(crate::ext::CancelSubscription::fired)
     }
 }
 

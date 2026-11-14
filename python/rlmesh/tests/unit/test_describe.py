@@ -11,7 +11,7 @@ from typing import Any, ClassVar, cast
 
 import pytest
 import rlmesh
-from rlmesh._describe import _catalog, _gather, _variations
+from rlmesh._describe import _catalog, _gather, _variations, check_target
 
 # --- pure helpers: variations + catalog --------------------------------------
 
@@ -467,7 +467,7 @@ def test_importing_the_describe_module_path_no_longer_shadows_the_function() -> 
 
 
 class _SpeccedModel(rlmesh.Model):
-    """A model the managed probe can drive: it declares a ModelSpec."""
+    """A model with a ModelSpec for automated input synthesis."""
 
     @staticmethod
     def _spec() -> Any:
@@ -644,7 +644,7 @@ def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> No
 def test_runtime_carries_the_edition_handshake(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    from rlmesh._rlmesh import build_info
+    from rlmesh._rlmesh import SESSION_WIRE_REVISION, build_info
 
     monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
     monkeypatch.chdir(tmp_path)  # no [tool.rlmesh] in reach
@@ -652,6 +652,7 @@ def test_runtime_carries_the_edition_handshake(
     runtime = rlmesh.describe(_TinyModel)["runtime"]
     # Same names and values as the wire HandshakeRequest, from the native build.
     assert runtime["protocol_generation"] == info.protocol_generation
+    assert runtime["session_wire_revision"] == SESSION_WIRE_REVISION >= 1
     assert runtime["supported_workflow_editions"] == list(
         info.supported_workflow_editions
     )
@@ -659,12 +660,14 @@ def test_runtime_carries_the_edition_handshake(
     # Undeclared floats to this build's newest edition, as serve declares it.
     assert runtime["preferred_workflow_edition"] == info.workflow_edition
     assert "workflow_edition_error" not in runtime
+    assert runtime["workflow_edition_floats"] is True
 
     class Declared(_TinyModel):
         workflow_edition = rlmesh.current_workflow_edition()
 
     runtime = rlmesh.describe(Declared)["runtime"]
     assert runtime["preferred_workflow_edition"] == rlmesh.current_workflow_edition()
+    assert "workflow_edition_floats" not in runtime
 
     class Impossible(_TinyModel):
         workflow_edition = "1999.01"
@@ -674,6 +677,20 @@ def test_runtime_carries_the_edition_handshake(
     assert runtime["preferred_workflow_edition"] == info.workflow_edition
     # The same envelope stays byte-stable across calls.
     assert rlmesh.describe_json(Declared) == rlmesh.describe_json(Declared)
+
+
+def test_check_says_where_to_pin_an_undeclared_edition(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
+    monkeypatch.chdir(tmp_path)
+    nudge = [w for w in check_target(_TinyModel).warnings if "Pin it" in w]
+    assert len(nudge) == 1, check_target(_TinyModel)
+    assert f'workflow_edition = "{rlmesh.current_workflow_edition()}"' in nudge[0]
+    # Floating deliberately is not reported.
+    monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", "")
+    assert not [w for w in check_target(_TinyModel).warnings if "Pin it" in w]
+    assert "workflow_edition_floats" not in rlmesh.describe(_TinyModel)["runtime"]
 
 
 # --- rlmesh check: the class-level checks ---------------------------------------
@@ -718,6 +735,15 @@ def test_check_target_buckets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) ->
     report = check_target(_TinyModel)
     assert report.ok, report
     assert any("no class-level spec" in m for m in report.warnings), report
+
+    # Saying NO_ADAPTER on purpose is not a missing spec.
+    class _Raw(_TinyModel):
+        spec = rlmesh.NO_ADAPTER
+
+    report = check_target(_Raw)
+    assert report.ok, report
+    assert not any("no class-level spec" in m for m in report.warnings), report
+    assert any("NO_ADAPTER" in m for m in report.passed), report
 
     # The tagless env runs; the platform just cannot adapt a spec'd model to it.
     report = check_target(_UntaggedFactory)
@@ -1023,7 +1049,7 @@ class _BadBranchFactory(_BranchedFactory):
 
 
 class _UntaggedBranchFactory(_BranchedFactory):
-    """Generic on every branch: authoring allows it, the platform probe does not."""
+    """Generic on every branch: authoring allows it, image validation does not."""
 
     tags = None
 

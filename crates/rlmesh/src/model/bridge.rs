@@ -40,16 +40,19 @@ pub(crate) fn engine_handler_configured(
     instruction: Option<String>,
     context: Option<Arc<crate::run::hooks::LibraryContext>>,
 ) -> AdaptedModelHandler {
+    let envs = RouteEnvs::default();
     let resolver = Arc::new(SpecResolver {
         spec: shared.decl.spec.clone(),
         trust_entrypoints,
         context,
+        envs: envs.clone(),
     });
     AdaptedModelHandler::new(
         Arc::new(ModelPredict {
             shared,
             warned: ShortChunkWarned::default(),
             instruction,
+            envs,
         }),
         Some(resolver),
     )
@@ -308,17 +311,58 @@ pub(crate) fn unstack_value(value: Value, n: usize) -> Result<Vec<Value>> {
 /// model's thread.
 struct ModelPredict {
     instruction: Option<String>,
+    envs: RouteEnvs,
     shared: Arc<Shared>,
     /// The spec-less route's short-chunk once-set (the spec'd routes use the
     /// engine's).
     warned: ShortChunkWarned,
 }
 
-fn rows(episodes: &[EpisodeInfo]) -> Vec<Row> {
-    episodes
-        .iter()
-        .map(|episode| Row::of(Some(episode)))
-        .collect()
+/// Each route's env contract, by env id: kept from the route's resolve (or
+/// its first spec-less predict) to its release, so every row's context names
+/// its env's spaces.
+#[derive(Clone, Default)]
+struct RouteEnvs(Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<crate::EnvContract>>>>);
+
+impl RouteEnvs {
+    fn map(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Arc<crate::EnvContract>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, env_id: &str) -> Option<Arc<crate::EnvContract>> {
+        self.map().get(env_id).cloned()
+    }
+
+    /// Keeps `contract` for `env_id` unless one is kept already.
+    fn remember(&self, env_id: &str, contract: Option<&EnvContract>) {
+        let Some(contract) = contract else {
+            return;
+        };
+        if env_id.is_empty() || self.map().contains_key(env_id) {
+            return;
+        }
+        if let Ok(contract) = crate::EnvContract::from_wire(contract) {
+            self.map().insert(env_id.to_string(), Arc::new(contract));
+        }
+    }
+
+    /// `episode`'s row, on its env.
+    fn row(&self, episode: Option<&EpisodeInfo>) -> Row {
+        let mut row = Row::of(episode);
+        row.env = self.get(&row.env_id);
+        row
+    }
+
+    fn rows(&self, episodes: &[EpisodeInfo]) -> Vec<Row> {
+        episodes
+            .iter()
+            .map(|episode| self.row(Some(episode)))
+            .collect()
+    }
 }
 
 impl ModelPredict {
@@ -355,7 +399,7 @@ impl PredictFn for ModelPredict {
         episode: Option<&EpisodeInfo>,
     ) -> Result<AdapterValue> {
         let input = self.input(model_input)?;
-        let row = Row::of(episode);
+        let row = self.envs.row(episode);
         let action = self.shared.call(move |core| core.predict(input, &row))?;
         to_adapter(&action)
     }
@@ -370,7 +414,7 @@ impl PredictFn for ModelPredict {
             return Ok(None);
         }
         let input = self.input(model_input)?;
-        let row = Row::of(episode);
+        let row = self.envs.row(episode);
         let chunk = self
             .shared
             .call(move |core| core.predict_chunk(input, execution_horizon, &row))?;
@@ -390,7 +434,7 @@ impl PredictFn for ModelPredict {
             .into_iter()
             .map(|v| self.input(v))
             .collect::<Result<Vec<_>>>()?;
-        let rows = rows(episodes);
+        let rows = self.envs.rows(episodes);
         let actions = self
             .shared
             .call(move |core| core.predict_batch(inputs, &rows))?;
@@ -411,7 +455,7 @@ impl PredictFn for ModelPredict {
             .into_iter()
             .map(|v| self.input(v))
             .collect::<Result<Vec<_>>>()?;
-        let rows = rows(episodes);
+        let rows = self.envs.rows(episodes);
         let chunks = self
             .shared
             .call(move |core| core.predict_chunk_batch(inputs, execution_horizon, &rows))?;
@@ -462,6 +506,8 @@ impl PredictFn for ModelPredict {
         } else {
             Vec::new()
         };
+        let route = &observation.route.env_id;
+        self.envs.remember(route, contract.as_deref());
         let rows: Vec<Row> = observation
             .route
             .episodes
@@ -469,8 +515,9 @@ impl PredictFn for ModelPredict {
             .map(|episode| {
                 let mut row = Row::of(Some(episode));
                 if row.env_id.is_empty() {
-                    row.env_id = observation.route.env_id.clone();
+                    row.env_id = route.clone();
                 }
+                row.env = self.envs.get(&row.env_id);
                 row
             })
             .collect();
@@ -549,9 +596,12 @@ impl PredictFn for ModelPredict {
 
         // N > 1 otherwise: one batched value, an anonymous context.
         let batched = stack_values(lanes)?;
-        let action = self
-            .shared
-            .call(move |core| core.predict(batched, &Row::default()))?;
+        // Anonymous, yet still on its route's env.
+        let row = Row {
+            env: self.envs.get(&observation.route.env_id),
+            ..Row::default()
+        };
+        let action = self.shared.call(move |core| core.predict(batched, &row))?;
         let actions = unstack_value(action, num_envs)?;
         Ok(PredictFrames {
             actions: actions.iter().map(encode).collect::<Result<_>>()?,
@@ -574,7 +624,33 @@ impl PredictFn for ModelPredict {
     }
 
     fn on_route_release(&self, env_id: &str) -> Result<()> {
+        self.envs.map().remove(env_id);
         self.on_route_reset(env_id)
+    }
+
+    fn has_reset_options(&self) -> bool {
+        self.shared.decl.reset_options
+    }
+
+    fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> Result<Option<rlmesh_spaces::MetaMap>> {
+        if !self.shared.decl.reset_options {
+            return Ok(None);
+        }
+        let mut start = Metadata::new();
+        start.insert("episode_id", Value::Text(episode.episode_id.clone()));
+        start.insert("seed", episode.seed.map_or(Value::None, Value::Int));
+        start.insert(
+            "trial_index",
+            trial_index.map_or(Value::None, |trial| Value::Int(trial as i64)),
+        );
+        let options = self.shared.call(move |core| core.reset_options(&start))?;
+        options
+            .map(|options| crate::value::meta_codec::metadata_to_wire(&options))
+            .transpose()
     }
 }
 
@@ -585,15 +661,19 @@ struct SpecResolver {
     context: Option<Arc<crate::run::hooks::LibraryContext>>,
     spec: Option<SpecArg>,
     trust_entrypoints: bool,
+    envs: RouteEnvs,
 }
 
 #[async_trait]
 impl RouteResolver for SpecResolver {
     async fn resolve(
         &self,
-        _route_key: &str,
+        route_key: &str,
         env_contract: &EnvContract,
     ) -> Result<Option<RouteConfig>> {
+        // Every route, spec'd or not, so each row's context names its env.
+        self.envs.map().remove(route_key);
+        self.envs.remember(route_key, Some(env_contract));
         if matches!(self.spec, Some(SpecArg::NoAdapter)) {
             return Ok(None);
         }
@@ -637,9 +717,7 @@ impl RouteResolver for SpecResolver {
         )?;
         if let Some(context) = &self.context {
             context.set_advisories(
-                parts
-                    .plan
-                    .advisories()
+                rlmesh_adapters::v1::advisories(&parts.plan)
                     .into_iter()
                     .map(crate::adapters::Advisory::from_core)
                     .collect(),

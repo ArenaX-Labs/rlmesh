@@ -18,7 +18,7 @@ namespace RLMesh.Unity.Verification
             episodes = int.Parse(Argument("--rlmesh-episodes", "3"));
             started = Time.realtimeSinceStartup;
             env = gameObject.AddComponent<RLMeshReachTargetBehaviour>();
-            env.Address = "tcp://127.0.0.1:0";
+            env.Address = ":0/env";
             env.EnvId = "Unity-ReachTarget-v0";
         }
         private void Update()

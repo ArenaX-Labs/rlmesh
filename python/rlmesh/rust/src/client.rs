@@ -22,7 +22,18 @@ use crate::telemetry::{ProfileCollector, init_tracing, profiling_enabled};
 use crate::types::{space_value_size, to_py_err};
 
 /// Interval for polling Python signals during blocked RPCs.
-pub(crate) const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The signal poll for a blocked call, first due one interval from now. A plain
+/// `interval` ticks at once, and that tick waits for the timer wheel's next
+/// millisecond: awaited before the call is first polled, it delayed every
+/// request by about 1 ms.
+pub(crate) fn signal_poll() -> tokio::time::Interval {
+    tokio::time::interval_at(
+        tokio::time::Instant::now() + SIGNAL_POLL_INTERVAL,
+        SIGNAL_POLL_INTERVAL,
+    )
+}
 
 /// Poll for a pending Python signal from a thread blocked in native code.
 /// A daemon thread can outlive the interpreter; once it has finalized there is
@@ -89,14 +100,17 @@ impl ClientCore {
         connect_timeout_seconds: Option<f64>,
         request_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
-        api_key: Option<&str>,
-        tls_ca_file: Option<&std::path::Path>,
+        runtime_info: bool,
     ) -> PyResult<Self> {
         init_tracing(role);
         let profiler = ProfileCollector::new(role);
 
-        let connect_span = profiling_enabled()
-            .then(|| tracing::info_span!("rlmesh.client.connect", address = address));
+        let connect_span = profiling_enabled().then(|| {
+            tracing::info_span!(
+                "rlmesh.client.connect",
+                address = %rlmesh_session::address::redact(address)
+            )
+        });
         let _connect_enter = connect_span.as_ref().map(|span| span.enter());
         let connect_guard = profiler.start("client.connect");
 
@@ -114,16 +128,11 @@ impl ClientCore {
         )
         .map_err(to_py_err)?;
         let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-        let auth =
-            rlmesh::binding::client_auth(address, api_key, tls_ca_file, true).map_err(to_py_err)?;
-
         let mut client = Python::attach(|py| {
             py.detach(|| {
                 runtime.block_on(EnvClientCore::connect_with(
                     address,
                     CoreConnect {
-                        token: auth.token(),
-                        trust: auth.trust().clone(),
                         declared: declared.as_deref(),
                         connect_timeout,
                         request_timeout,
@@ -138,6 +147,9 @@ impl ClientCore {
             client.require_vector().map_err(to_py_err)?;
         }
         client.set_name(public);
+        if !runtime_info {
+            client.without_runtime_info();
+        }
         let _ = connect_guard.finish(0);
 
         Ok(Self {
@@ -162,7 +174,13 @@ impl ClientCore {
 
     fn span(&self, name: &'static str) -> Option<tracing::span::EnteredSpan> {
         profiling_enabled()
-            .then(|| tracing::info_span!("rlmesh.client", op = name, address = %self.address))
+            .then(|| {
+                tracing::info_span!(
+                    "rlmesh.client",
+                    op = name,
+                    address = %rlmesh_session::address::redact(&self.address)
+                )
+            })
             .map(|span| span.entered())
     }
 
@@ -188,8 +206,7 @@ impl ClientCore {
             runtime.block_on(async move {
                 let mut rpc = make(client);
 
-                let mut poll = tokio::time::interval(SIGNAL_POLL_INTERVAL);
-                poll.tick().await; // first tick fires immediately; consume it.
+                let mut poll = signal_poll();
 
                 loop {
                     tokio::select! {
@@ -259,14 +276,6 @@ impl ClientCore {
         self.profiler.log_summary_once();
         Ok(())
     }
-
-    fn shutdown_rpc(&mut self, py: Python<'_>, reason: String) -> PyResult<bool> {
-        let accepted = self.run_rpc(py, move |client| {
-            Box::pin(async move { client.shutdown(reason.as_str()).await })
-        })?;
-        self.profiler.log_summary_once();
-        Ok(accepted)
-    }
 }
 
 enum RpcOutcome<T> {
@@ -289,14 +298,14 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, api_key=None, tls_ca_file=None))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, runtime_info=true))]
+            #[allow(clippy::too_many_arguments)]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
                 request_timeout_seconds: Option<f64>,
                 workflow_edition: Option<String>,
-                api_key: Option<String>,
-                tls_ca_file: Option<String>,
+                runtime_info: bool,
             ) -> PyResult<Self> {
                 Ok(Self {
                     core: ClientCore::connect(
@@ -306,8 +315,7 @@ macro_rules! client_class {
                         connect_timeout_seconds,
                         request_timeout_seconds,
                         workflow_edition,
-                        api_key.as_deref(),
-                        tls_ca_file.as_deref().map(std::path::Path::new),
+                        runtime_info,
                     )?,
                 })
             }
@@ -322,6 +330,12 @@ macro_rules! client_class {
                 self.core.client.env_id().to_string()
             }
 
+            /// Whether the endpoint is a v2-native robot driven through its
+            /// Gym view (not a served Gym env).
+            fn drives_view(&self) -> bool {
+                self.core.client.drives_view()
+            }
+
             /// The workflow edition this connection negotiated with the env.
             fn selected_workflow_edition(&self) -> String {
                 self.core.client.selected_workflow_edition().to_string()
@@ -333,29 +347,6 @@ macro_rules! client_class {
                 PyEditionCell {
                     cell: self.core.client.edition_cell(),
                 }
-            }
-
-            /// The env's handshake offer, `(CAN, WANT)`: the editions it
-            /// advertised and the one it declared (`None` when it declared
-            /// none). A served-model session hands this to `PyModelClient` so
-            /// the three-way floor sees the env's real offer.
-            fn session_offer(&self) -> (Vec<String>, Option<String>) {
-                let offer = self.core.client.session_offer();
-                (offer.editions.clone(), offer.preferred.clone())
-            }
-
-            /// Pin the env to the session edition a served-model session
-            /// settled on (its three-way floor), sent as the first Join
-            /// message. Call before the first reset.
-            fn pin_workflow_edition(
-                slf: &Bound<'_, Self>,
-                selected_workflow_edition: &str,
-            ) -> PyResult<()> {
-                let mut this = Self::lock(slf)?;
-                this.core
-                    .client
-                    .pin_workflow_edition(selected_workflow_edition);
-                Ok(())
             }
 
             fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -394,12 +385,6 @@ macro_rules! client_class {
                 this.core.close_rpc(py)
             }
 
-            #[pyo3(signature = (reason="owner shutdown"))]
-            fn shutdown(slf: &Bound<'_, Self>, py: Python<'_>, reason: &str) -> PyResult<bool> {
-                let mut this = Self::lock(slf)?;
-                let _span = this.core.span("shutdown");
-                this.core.shutdown_rpc(py, reason.to_string())
-            }
 
             $($extra)*
         }
@@ -574,13 +559,11 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
     def edition_cell(self) -> PyEditionCell: ...
-    def session_offer(self) -> tuple[list[str], str | None]: ...
-    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -588,7 +571,6 @@ class PyEnvClient:
     def step(self, actions: Value) -> tuple[Value, float, bool, bool, StepInfo]: ...
     def render(self, env_index: int = 0) -> Value | None: ...
     def close(self) -> None: ...
-    def shutdown(self, reason: str = "owner shutdown") -> bool: ...
 "#
     }
 }
@@ -598,13 +580,11 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
     def edition_cell(self) -> PyEditionCell: ...
-    def session_offer(self) -> tuple[list[str], str | None]: ...
-    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -613,7 +593,6 @@ class PyVectorEnvClient:
     def step(self, actions: object) -> tuple[Value, Value, Value, Value, StepInfo]: ...
     def render(self, env_index: int = 0) -> Value | None: ...
     def close(self) -> None: ...
-    def shutdown(self, reason: str = "owner shutdown") -> bool: ...
 "#
     }
 }
@@ -633,35 +612,9 @@ class PyEditionCell:
 /// has checked `port`'s type and range and `transport`'s spelling.
 #[cfg_attr(feature = "stub-gen", pyo3_stub_gen::derive::gen_stub_pyfunction)]
 #[pyfunction]
-#[pyo3(signature = (address=None, *, host=None, port=None, path=None, transport=None))]
-pub fn normalize_connect_address(
-    address: Option<&str>,
-    host: Option<&str>,
-    port: Option<u16>,
-    path: Option<&str>,
-    transport: Option<&str>,
-) -> PyResult<String> {
-    let transport = match transport {
-        None => None,
-        Some("tcp") => Some(rlmesh::Transport::Tcp),
-        Some("unix") => Some(rlmesh::Transport::Unix),
-        Some(_) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "transport must be 'tcp', 'unix', or None",
-            ));
-        }
-    };
-    rlmesh::binding::env::normalize_connect_address(address, host, port, path, transport)
-        .map_err(to_py_err)
-}
-
-/// Parse a client timeout given in seconds: `None` and zero are no timeout;
-/// negative or non-finite is ValueError (RMT-4).
-pub(crate) fn optional_timeout(
-    value: Option<f64>,
-    field: &'static str,
-) -> PyResult<Option<Duration>> {
-    rlmesh::binding::env::client_timeout_from_secs(value, field).map_err(to_py_err)
+#[pyo3(signature = (address=None))]
+pub fn normalize_connect_address(address: Option<&str>) -> PyResult<String> {
+    rlmesh::binding::env::normalize_connect_address(address).map_err(to_py_err)
 }
 
 fn decode_options(
@@ -693,7 +646,7 @@ fn info_to_pydict<'py>(
 
 /// A wire PNG frame as a uint8 tensor; an undecodable frame is
 /// `ProtocolException` (RMT-P3).
-fn decode_render_frame<'py>(py: Python<'py>, png: &[u8]) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn decode_render_frame<'py>(py: Python<'py>, png: &[u8]) -> PyResult<Bound<'py, PyAny>> {
     let (shape, raw) = rlmesh::binding::env::decode_render_frame(png).map_err(to_py_err)?;
     tensor_from_shape(py, raw, shape, "uint8")
 }

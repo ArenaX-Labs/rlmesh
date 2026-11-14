@@ -28,10 +28,10 @@
 
 mod accept_set;
 mod action;
+mod conventions;
 mod custom_encoding;
 mod env;
 mod env_tags;
-mod frames;
 pub(crate) mod labels;
 mod layouts;
 mod leaf_codec;
@@ -43,17 +43,18 @@ pub(crate) mod strict;
 
 pub use accept_set::AcceptSet;
 pub use action::{Action, Actuator};
+pub use conventions::Polarity;
 pub use custom_encoding::{ActionEncoding, CustomEncoding, StateEncoding};
 pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeature};
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};
-pub use frames::{
-    Attr, FRAMES, FrameLaw, FrameRef, PROVENANCES, Provenance, REFERENCES, ReferenceLaw,
-};
 pub use layouts::{FitMode, ImageLayout};
-pub(crate) use model::MAX_STACK_SPAN;
 pub use model::{
     CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec,
-    Normalize, PartSource, StackPad, State, StateContainer, Text, TextContainer, render_requests,
+    Normalize, PartSource, StackPad, State, StateContainer, Text, TextContainer, Timing,
+    render_requests,
+};
+pub use rlmesh_session_core::spec::role::frames::{
+    Attr, FRAMES, FrameLaw, FrameRef, PROVENANCES, Provenance, REFERENCES, ReferenceLaw,
 };
 pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;

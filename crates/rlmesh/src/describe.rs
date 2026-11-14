@@ -80,6 +80,8 @@ enum Target<'a> {
     Model {
         decl: PolicyDecl,
         spec: Option<SpecArg>,
+        /// A built model's: the horizon its `load()` chose.
+        execution_horizon: Option<u32>,
     },
     Factory(Box<dyn FactoryForm + 'a>),
 }
@@ -98,14 +100,22 @@ impl Describable<'static> {
     pub(crate) fn from_declaration(decl: PolicyDecl) -> Result<Describable<'static>> {
         decl.validate()?;
         let spec = decl.spec.clone();
-        Ok(Describable(Target::Model { decl, spec }))
+        Ok(Describable(Target::Model {
+            decl,
+            spec,
+            execution_horizon: None,
+        }))
     }
 
     /// The model type form: `P`'s declarations only, no user code run.
     pub fn model<P: Policy>() -> Describable<'static> {
         let decl = PolicyDecl::of::<P>();
         let spec = decl.spec.clone();
-        Describable(Target::Model { decl, spec })
+        Describable(Target::Model {
+            decl,
+            spec,
+            execution_horizon: None,
+        })
     }
 }
 
@@ -122,7 +132,14 @@ impl<'a> Describable<'a> {
 /// A built model: its policy's type-level items plus the model's own spec.
 impl<'a> From<&'a Model> for Describable<'a> {
     fn from(model: &'a Model) -> Describable<'a> {
-        let decl = &model.shared().decl;
+        Describable::built(model.shared())
+    }
+}
+
+impl Describable<'static> {
+    /// A built model's envelope target, from its resolved declarations.
+    pub(crate) fn built(shared: &crate::model::facade::Shared) -> Describable<'static> {
+        let decl = &shared.decl;
         Describable(Target::Model {
             decl: PolicyDecl {
                 corners: decl.corners,
@@ -131,10 +148,10 @@ impl<'a> From<&'a Model> for Describable<'a> {
                 load_keys: decl.load_keys.clone(),
                 spec: None,
                 workflow_edition: decl.workflow_edition.clone(),
-                authored: decl.authored,
                 type_name: decl.type_name.clone(),
             },
-            spec: model.spec().cloned(),
+            spec: decl.spec.clone(),
+            execution_horizon: decl.execution_horizon,
         })
     }
 }
@@ -336,9 +353,16 @@ impl Host {
 }
 
 /// The envelope's `runtime`: the host's `PeerInfo` plus the edition offer.
-/// `preferred` is the declared edition (`None`: this build's cohort).
-pub(crate) fn runtime_json(host: &Host, preferred: Option<&str>, error: Option<String>) -> Json {
+/// `preferred` is the declared edition (`None`: this build's cohort);
+/// `workflow_edition_floats` marks an undeclared float for the checks.
+pub(crate) fn runtime_json(host: &Host, offer: Offer) -> Json {
+    let Offer {
+        preferred,
+        error,
+        floats,
+    } = offer;
     let preferred = preferred
+        .as_deref()
         .map(str::trim)
         .filter(|edition| !edition.is_empty())
         .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
@@ -349,12 +373,16 @@ pub(crate) fn runtime_json(host: &Host, preferred: Option<&str>, error: Option<S
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "protocol_generation": rlmesh_proto::PROTOCOL_GENERATION,
+        "session_wire_revision": rlmesh_session::wire::version::WIRE_REVISION,
         "supported_workflow_editions": rlmesh_proto::supported_workflow_editions(),
         "preferred_workflow_edition": preferred,
     });
     if let Some(object) = runtime.as_object_mut() {
         if let Some(error) = error {
             object.insert("workflow_edition_error".to_string(), Json::String(error));
+        }
+        if floats {
+            object.insert("workflow_edition_floats".to_string(), Json::Bool(true));
         }
         for (key, value) in &host.extra {
             object.insert(key.clone(), value.clone());
@@ -363,21 +391,43 @@ pub(crate) fn runtime_json(host: &Host, preferred: Option<&str>, error: Option<S
     runtime
 }
 
+/// The edition half of an envelope's `runtime`.
+pub(crate) struct Offer {
+    preferred: Option<String>,
+    error: Option<String>,
+    /// Nothing declares an edition and the environment variable does not
+    /// float deliberately.
+    floats: bool,
+}
+
 /// A given edition is used as given (blank: none); `None` runs the
 /// environment variable and the declaration, never warning, and records a
 /// refusal instead of failing.
-fn offer(declared: Option<&str>, given: Option<&str>) -> (Option<String>, Option<String>) {
+fn offer(declared: Option<&str>, given: Option<&str>) -> Offer {
     if let Some(given) = given {
         let given = given.trim();
-        return ((!given.is_empty()).then(|| given.to_string()), None);
+        return Offer {
+            preferred: (!given.is_empty()).then(|| given.to_string()),
+            error: None,
+            floats: given.is_empty()
+                && std::env::var_os(crate::editions::WORKFLOW_EDITION_ENV_VAR).is_none(),
+        };
     }
     match crate::editions::resolve_rungs(crate::editions::EditionSources {
         call: None,
         option: None,
         declared,
     }) {
-        Ok(resolution) => (resolution.into_declared(), None),
-        Err(err) => (None, Some(err.to_string())),
+        Ok(resolution) => Offer {
+            floats: resolution == crate::editions::EditionResolution::Undeclared,
+            preferred: resolution.into_declared(),
+            error: None,
+        },
+        Err(err) => Offer {
+            preferred: None,
+            error: Some(err.to_string()),
+            floats: false,
+        },
     }
 }
 
@@ -426,7 +476,7 @@ fn model_pieces(
             )));
         }
     }
-    let (preferred, error) = offer(decl.workflow_edition.as_deref(), edition);
+    let offer = offer(decl.workflow_edition.as_deref(), edition);
     let signature_tier: Vec<Json> = decl
         .load_keys
         .iter()
@@ -438,7 +488,7 @@ fn model_pieces(
     let mut pieces = json!({
         "target": { "entrypoint": null, "qualname": if host.language == "rust" {format!("rust:{}", decl.type_name)} else {"native:model".into()} },
         "params": { "param_spec": null, "signature_tier": signature_tier },
-        "runtime": runtime_json(host, preferred.as_deref(), error),
+        "runtime": runtime_json(host, offer),
         "model_spec": match spec {
             Some(SpecArg::ModelSpec(spec)) => spec.wire_json().unwrap_or(Json::Null),
             _ => Json::Null,
@@ -462,7 +512,7 @@ fn factory_pieces(
 ) -> Result<Json> {
     let served = served.map(ServedEnv::read).transpose()?;
     let declared = form.workflow_edition();
-    let (preferred, error) = offer(declared.as_deref(), edition);
+    let offer = offer(declared.as_deref(), edition);
     let tag_params = form.tag_params();
     let signature_tier = tag_params
         .iter()
@@ -498,7 +548,7 @@ fn factory_pieces(
     let mut pieces = json!({
         "target": { "entrypoint": null, "qualname": qualname },
         "params": { "param_spec": null, "signature_tier": signature_tier },
-        "runtime": runtime_json(host, preferred.as_deref(), error),
+        "runtime": runtime_json(host, offer),
         "env_tags": env_tags,
         "env_spec": built.spec,
     });
@@ -565,8 +615,16 @@ pub(crate) fn envelope(
         served.read()?;
     }
     let pieces = match &mut target {
-        Target::Model { decl, spec } => {
-            model_pieces(decl, spec.as_ref(), workflow_edition.as_deref(), host)?
+        Target::Model {
+            decl,
+            spec,
+            execution_horizon,
+        } => {
+            let mut pieces = model_pieces(decl, spec.as_ref(), workflow_edition.as_deref(), host)?;
+            if let Some(horizon) = execution_horizon {
+                pieces["execution_horizon"] = json!(horizon);
+            }
+            pieces
         }
         Target::Factory(form) => factory_pieces(
             form.as_mut(),

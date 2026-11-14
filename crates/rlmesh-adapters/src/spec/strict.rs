@@ -10,7 +10,7 @@
 //!
 //! - **Unknown FIELD on a recognized kind.** A *bare* (unprefixed) unknown field
 //!   is "must-understand": fail-closed, because an old core silently applying its
-//!   own default for a modifier it never parsed is worse than failing (§8). A
+//!   own default for a modifier it never parsed is worse than failing. A
 //!   field in the reserved [`x-`/`ext.`](is_reserved_ext) namespace is the
 //!   producer's opt-in "safe to ignore" and passes. This rule runs at **both**
 //!   doors: PUBLISH (a typo dies at the trust boundary) and READ (a newer peer's
@@ -28,8 +28,8 @@ use crate::path::NodePath;
 
 use super::action::Action;
 use super::env_tags::{EnvTags, ObsLeaf, ObsNode};
-use super::frames::{Attr, FrameLaw, FrameRef, ReferenceLaw};
 use super::model::{InputNode, ModelLeaf, ModelSpec};
+use super::{Attr, FrameLaw, FrameRef, ReferenceLaw};
 
 /// Reject any bare unknown field **or** unknown leaf kind in an env spec (the
 /// PUBLISH gate: an author's own core must understand every kind and bare field).
@@ -43,6 +43,7 @@ pub fn reject_unknowns_env(tags: &EnvTags) -> Result<(), String> {
 
 /// Reject any bare unknown field **or** unknown leaf kind in a model spec.
 pub fn reject_unknowns_model(spec: &ModelSpec) -> Result<(), String> {
+    spec.timing.check()?;
     walk_input(&spec.input, &NodePath::root(), true)?;
     reject_action(&spec.output)?;
     reject_unsanctioned_roles_model(spec, RolePolicy::Passthrough)
@@ -525,7 +526,7 @@ mod tests {
     fn inner_leaf_unknown_field_fails_the_gate() {
         // The growable *inner* leaves: a split layout's `Field` and a state
         // input's `ConcatPart`. Both parse leniently (this is where `frame`
-        // landed before PR-11 typed it) and both are named by the publish gate.
+        // was previously untyped) and both are named by the publish gate.
         let dirty: EnvTags = serde_json::from_str(
             r#"{"observation": {"s": {"type": "split",
                     "fields": [{"role": "r", "dim": 1, "wobble": 1}]}},

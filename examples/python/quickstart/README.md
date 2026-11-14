@@ -23,8 +23,8 @@ The files:
 - `model.py`: run a tiny model worker against an endpoint.
 - `seeded_model.py`: run a local loop and print per-episode seed context.
 
-To copy outside the repo, install the published package:
+To copy outside the repo, install the published alpha (`--pre`):
 
 ```bash
-pip install "rlmesh[gymnasium,numpy]"
+pip install --pre "rlmesh[gymnasium,numpy]"
 ```

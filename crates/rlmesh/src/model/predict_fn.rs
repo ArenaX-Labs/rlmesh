@@ -180,6 +180,22 @@ pub trait PredictFn: Send + Sync {
         Ok(())
     }
 
+    /// Whether the model adds reset options per episode
+    /// ([`reset_options`](Self::reset_options)); the runtime asks only then.
+    fn has_reset_options(&self) -> bool {
+        false
+    }
+
+    /// The reset options the model adds for `episode`, which a reset is about
+    /// to start as trial `trial_index`; `None` adds none.
+    fn reset_options(
+        &self,
+        _episode: &EpisodeInfo,
+        _trial_index: Option<u64>,
+    ) -> Result<Option<rlmesh_spaces::MetaMap>> {
+        Ok(None)
+    }
+
     /// A `ReleaseAdapter` for `env_id`: drop that env's per-episode model
     /// state silently.
     fn on_route_release(&self, _env_id: &str) -> Result<()> {

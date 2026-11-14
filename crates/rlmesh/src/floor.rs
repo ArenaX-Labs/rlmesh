@@ -1,0 +1,74 @@
+//! Route edition reconciliation (the session floor) for the layer that binds a
+//! route. It takes the env and model offers learned at their handshakes, adds this
+//! runtime build's own supported window, and returns the floor all three speak.
+//!
+//! Lives here — not in the `RemoteModel` facade — so the production runtime, which
+//! drives the env and model clients directly, computes and sets the same pin
+//! instead of leaving the workflow edition unset.
+
+use rlmesh_proto::{RuntimeCap, SessionFloor, SessionOffer, negotiate_session_floor};
+
+use crate::Error;
+
+/// Reconcile the env, model and runtime edition offers.
+pub fn env_floor(
+    env_offer: &SessionOffer,
+    model_offer: &SessionOffer,
+    declared: Option<&str>,
+) -> Result<SessionFloor, Error> {
+    let runtime_offer = SessionOffer::this_build(declared);
+    let floor =
+        negotiate_session_floor(env_offer, model_offer, &runtime_offer).map_err(|refusal| {
+            Error::Protocol(format!(
+                "no mutual workflow edition across env, model, and runtime: {refusal}; the \
+             runtime re-frames env<->model traffic, so a session can only run at an edition all \
+             three support{}",
+                refusal.hint()
+            ))
+        })?;
+    match floor.runtime_cap {
+        // A CAN-set limit: the runtime genuinely cannot do what its peers can.
+        Some(RuntimeCap::Capability) => tracing::warn!(
+            selected_workflow_edition = %floor.selected_workflow_edition,
+            desired_workflow_edition = %floor.desired_workflow_edition,
+            "runtime is the limiting tier: env and model support workflow edition {} but this \
+             runtime caps the session to {} — upgrade the runtime to run at the newer edition",
+            floor.desired_workflow_edition,
+            floor.selected_workflow_edition,
+        ),
+        // An explicit declaration: sticky editions working as intended, not a defect.
+        Some(RuntimeCap::Declaration) => tracing::info!(
+            selected_workflow_edition = %floor.selected_workflow_edition,
+            desired_workflow_edition = %floor.desired_workflow_edition,
+            "runtime declares workflow edition {}, so the session runs there even though env and \
+             model both support {}",
+            floor.selected_workflow_edition,
+            floor.desired_workflow_edition,
+        ),
+        None => {}
+    }
+    Ok(floor)
+}
+
+#[cfg(test)]
+mod tests {
+    use rlmesh_proto::{DEV_BUILD_HINT, SessionOffer};
+
+    use super::env_floor;
+
+    #[test]
+    fn a_floor_refused_by_a_dev_cohort_names_the_rebuild_remedy() {
+        // Two dev artifacts built from different tree states: neither shares an
+        // edition with the other, nor with this runtime.
+        let env = SessionOffer::new(&["2026.06-dev.aaaaaaaaaaaa"]);
+        let model = SessionOffer::new(&["2026.06-dev.bbbbbbbbbbbb.dirty.0123456789abcdef"]);
+        let message = env_floor(&env, &model, None)
+            .expect_err("differing dev cohorts share no edition")
+            .to_string();
+        assert!(
+            message.contains("no mutual workflow edition across env, model, and runtime"),
+            "{message}"
+        );
+        assert!(message.contains(DEV_BUILD_HINT), "{message}");
+    }
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import signal
@@ -11,9 +12,11 @@ from collections.abc import Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
-from ._client import Transport, normalize_bind_address
+from ._client import normalize_bind_address
+from ._client._endpoint import redact_address
 from ._editions import serve_options_declaring
 from ._load_native import load_native
+from ._upgrade import refuse_v1_address
 from ._value_conversion import resolve_bridge
 from .specs import EnvContract
 from .types import EnvLike, VectorEnvLike
@@ -69,6 +72,12 @@ def _stop_server(server: PyEnvServer | PyVectorEnvServer) -> None:
     server.shutdown()
     server.wait(_FINALIZE_JOIN_SECONDS)
 
+
+#: Set while a run stands up its own server in front of a local env: that
+#: server is no participant a launcher waits on, so it announces nothing.
+loopback: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rlmesh_env_server_loopback", default=False
+)
 
 #: Env var the platform sets to the contract branch it expects this env to serve,
 #: as a JSON object of discriminant bindings. Unset asserts nothing.
@@ -131,20 +140,16 @@ class EnvServer:
             flight), so a slow lane never holds the others; a single env is the
             one-lane case of the same server. A natively vectorized env (the
             ``VectorEnvLike`` shape) is served by the vector server instead.
-        address: Optional bind address. Supports ``"tcp://host:port"``,
-            ``"host:port"``, ``"port"``, and ``"unix:///path/to/socket.sock"``.
-            Defaults to ``"tcp://127.0.0.1:0"`` when omitted.
-        host: TCP host helper used when ``address`` is omitted.
-        port: TCP port helper used when ``address`` is omitted.
-        path: Unix socket path helper used when ``address`` is omitted.
-        transport: Explicit transport selector.
-        options: Optional serve lifecycle options controlling remote shutdown,
-            idle shutdown, drain timeout, close timeout, and the workflow
-            edition this endpoint declares (see :doc:`/editions/index`). An
-            edition set here is declared verbatim; options without one take
-            ``RLMESH_WORKFLOW_EDITION``, then ``[tool.rlmesh]``.
-            ``RLMESH_ENV_ENDPOINT_TOKEN``, when set, requires that token on
-            every env RPC; an empty or whitespace-only value fails construction.
+        address: The env's participant address in a session:
+            ``"host:port/name"``, ``":0/name"`` (an OS-assigned local port) or
+            ``"session/name"``. Defaults to ``":0/env"``. A v1 endpoint
+            (``"host:port"``, ``"tcp://..."`` or ``"unix://..."``) raises a
+            ``ValueError`` naming the session form.
+        options: Optional serve lifecycle options: the close timeout and the
+            workflow edition this endpoint declares (see
+            :doc:`/editions/index`). An edition set here is declared verbatim;
+            options without one take ``RLMESH_WORKFLOW_EDITION``, then
+            ``[tool.rlmesh]``.
         tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
@@ -179,8 +184,12 @@ class EnvServer:
         ...
         ...     def close(self):
         ...         return None
-        >>> server = EnvServer(TinyEnv(), "localhost:5555")  # doctest: +SKIP
+        >>> server = EnvServer(TinyEnv(), "localhost:5555/tiny")  # doctest: +SKIP
         >>> server.serve()  # doctest: +SKIP
+
+    With ``RLMESH_READY_FILE`` set, the server writes that file once the env
+    can answer and removes it when it stops (see ``python -m rlmesh.serve
+    --help``).
 
     ``close_env_on_shutdown`` (default ``True``) calls the env's ``close()`` when
     the server stops; pass ``False`` for a server standing in front of an env
@@ -192,10 +201,6 @@ class EnvServer:
         env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]],
         address: str | None = None,
         *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
         options: ServeOptions | None = None,
         tags: EnvTags | None = None,
         framework: str | ValueBridge | None = None,
@@ -291,18 +296,14 @@ class EnvServer:
         else:
             env = prepare(env)
 
-        normalized_address = normalize_bind_address(
-            address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
-        )
+        normalized_address = normalize_bind_address(address)
+        refuse_v1_address("EnvServer", normalized_address)
         server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
         if options is None or options.workflow_edition is None:
             # A served env declares an edition like any other participant.
             # There is no class here to read one off -- the env is an object --
-            # so this picks up the process and project surfaces. Options that
+            # so this picks up the process and working directory's project
+            # surfaces, quietly. Options that
             # already carry a declaration are the caller's resolved answer
             # (`serve_env`, the loopback server `run()` stands up) and are
             # adopted verbatim.
@@ -313,6 +314,7 @@ class EnvServer:
             options=options,
             native_values=native_values,
             close_env_on_shutdown=close_env_on_shutdown,
+            announce=not loopback.get(),
         )
         # A server still running when CPython finalizes is fatal: its serve and
         # lane threads call into the interpreter as it tears down. Stop it from
@@ -381,7 +383,7 @@ class EnvServer:
         self._server.shutdown()
 
     def __repr__(self) -> str:
-        return f"EnvServer(address={self.address!r})"
+        return f"EnvServer(address={redact_address(self.address)!r})"
 
     def __enter__(self) -> EnvServer:
         return self

@@ -13,9 +13,15 @@ from typing import Any
 import rlmesh.adapters as adapt
 
 SPEC = adapt.ModelSpec(
+    # This study deliberately permits the projections described in README.md.
+    allow=("rebind_camera", "drop_action"),
     input={
-        "observation.images.image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
-        "observation.images.image2": adapt.Image(adapt.IMAGE_WRIST, size=224),
+        "observation.images.image": adapt.Image(
+            adapt.IMAGE_PRIMARY, size=224, fit="stretch"
+        ),
+        "observation.images.image2": adapt.Image(
+            adapt.IMAGE_WRIST, size=224, fit="stretch"
+        ),
         "observation.state": adapt.Concat(
             adapt.EEF_POS,
             adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
