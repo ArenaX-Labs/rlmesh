@@ -175,8 +175,8 @@ pub trait ModelHandler: Send {
 
     /// Produce action frames for a batch of routed observations in one call.
     ///
-    /// The server calls this for a `GroupedPredictRequest` — a control-plane-
-    /// grouped batch where each observation belongs to a *different* configured
+    /// The server calls this for a `GroupedPredictRequest` — a caller-grouped
+    /// batch where each observation belongs to a *different* configured
     /// route (and so a different env spec/adapter). The default fans out to
     /// [`predict_chunked`](ModelHandler::predict_chunked) per group,
     /// sequentially, which is behaviorally identical to handling each group as

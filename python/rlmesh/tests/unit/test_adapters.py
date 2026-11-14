@@ -1137,8 +1137,8 @@ def test_crop_and_channel_order_serialize_omit_when_default():
 def test_render_asserts_the_bound_cameras_size():
     """`render` is an assertion about the camera, not a resize request.
 
-    The platform binds the env's camera dial from it before the run; this is
-    the check that the dial actually moved. A camera that renders at the
+    A caller sets the env's camera dial from it before the run; this is the
+    check that the dial actually moved. A camera that renders at the
     asserted size resolves, one that does not fails loudly rather than feeding
     the model frames at the wrong scale.
     """

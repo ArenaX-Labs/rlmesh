@@ -159,7 +159,7 @@ message PredictResponse {
   repeated rlmesh.spaces.v1.SpaceValue actions = 2;
 }
 
-// One request carrying N independent predict groups (control-plane-decided
+// One request carrying N independent predict groups (caller-decided
 // grouping). Each group is a complete, already-routed `PredictRequest` the
 // server processes against its OWN env's spec — like a DB GROUP BY: the model
 // keeps every resolved EnvSpec/adapter and demuxes each group by its `env_id`,

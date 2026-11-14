@@ -62,8 +62,8 @@ pub struct ProbePeer {
     pub language_version: String,
     pub capabilities: Vec<String>,
     /// The describe envelope the SDK stamps on its handshake `PeerInfo.extra`.
-    /// An image pushed without a describe label is completed from this: the
-    /// control plane stores it on the digest and runs the static tier on it.
+    /// A registry that receives an image without a describe label can complete
+    /// it from this, as the label would have carried it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub describe: Option<serde_json::Value>,
 }
@@ -160,7 +160,7 @@ pub struct Observed {
     pub native_chunk_declared: Option<bool>,
     /// The camera resolutions the model's image inputs assert, in spec document
     /// order. Read straight off the model spec, so it survives a resolve
-    /// failure; the control plane binds the env's camera dial from it.
+    /// failure; a caller can set the env's camera dial from it before a run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub render_requests: Vec<RenderRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -421,8 +421,8 @@ mod tests {
         assert!(json.get("actionHorizon").is_none(), "{json}");
     }
 
-    /// The render requests are carried verbatim into the recommendation the
-    /// control plane reads to move the env's camera dial.
+    /// The render requests are carried verbatim into the recommendation, which
+    /// a caller reads to set the env's camera dial.
     #[test]
     fn render_requests_reach_the_recommendation() {
         let observed = Observed {

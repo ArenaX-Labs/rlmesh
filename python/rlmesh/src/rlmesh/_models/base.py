@@ -578,7 +578,7 @@ class ModelBase(Generic[ObsT, ActT]):
     #: Whether the runtime may FUSE this model's batched corner across routes: a
     #: grouped predict then concatenates lanes from *different* envs into one
     #: :meth:`predict_batch` / :meth:`predict_chunk_batch` call (one forward for
-    #: the whole group), so the batch size varies with what the control plane
+    #: the whole group), so the batch size varies with what the caller
     #: grouped. On (the default) suits any row-independent forward. Set ``False``
     #: when your batched forward assumes same-route, fixed-size batches -- a
     #: shape-pinned jit/compile trace, per-batch statistics, batch-position
