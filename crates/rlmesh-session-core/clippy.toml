@@ -1,0 +1,26 @@
+# Clippy reads the nearest clippy.toml and does not merge files, so this
+# repeats the workspace's settings before the sans-IO bans.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# Sans-IO: time is always injected (`now_ns`), and nothing spawns or sleeps.
+# `std::time::Instant::now` compiles for wasm32-unknown-unknown and panics
+# at run time ("time not implemented on this platform").
+disallowed-methods = [
+  { path = "std::time::Instant::now", reason = "sans-IO: take the time as a `now_ns` argument" },
+  { path = "std::time::SystemTime::now", reason = "sans-IO: take the time as a `now_ns` argument" },
+  { path = "std::thread::spawn", reason = "sans-IO: no threads" },
+  { path = "std::thread::sleep", reason = "sans-IO: never block" },
+  # Host and device must agree bit for bit: transcendentals come from libm.
+  { path = "f64::sin", reason = "use crate::math (libm), the same in every build" },
+  { path = "f64::cos", reason = "use crate::math (libm), the same in every build" },
+  { path = "f64::tan", reason = "use crate::math (libm), the same in every build" },
+  { path = "f64::sin_cos", reason = "use crate::math (libm), the same in every build" },
+  { path = "f64::atan2", reason = "use crate::math (libm), the same in every build" },
+  { path = "f64::hypot", reason = "use crate::math (libm), the same in every build" },
+  { path = "f64::exp", reason = "use crate::math (libm), the same in every build" },
+  { path = "f64::ln", reason = "use crate::math (libm), the same in every build" },
+  { path = "f64::powf", reason = "use crate::math (libm), the same in every build" },
+]
