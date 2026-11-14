@@ -32,7 +32,8 @@ pub enum RuntimeError {
     },
 
     #[error(
-        "environment {operation} failed at runtime step {step}: {message}. If the source is 'transport error: connection closed', the env session's stream ended without a reply (an env error that ended the session is reported as itself, not as a closed connection), so the environment server most likely exited, crashed, or received SIGTERM; inspect the environment container logs immediately before the runtime error timestamp"
+        "environment {operation} failed at runtime step {step}: {message}{}",
+        closed_hint(message)
     )]
     EnvRpc {
         operation: &'static str,
@@ -71,6 +72,16 @@ pub enum RuntimeError {
 
     #[error("runtime hook failed: {0}")]
     Hook(HookError),
+}
+
+/// What a closed connection means, for an env failure that is one: the
+/// hint would mislead on any other (an env that raised, say).
+fn closed_hint(message: &str) -> &'static str {
+    if message.contains("connection closed") {
+        ". The env session's stream ended without a reply (an env error that ended the session is reported as itself, not as a closed connection), so the environment server most likely exited, crashed, or received SIGTERM; inspect the environment container logs immediately before the runtime error timestamp"
+    } else {
+        ""
+    }
 }
 
 impl RuntimeError {

@@ -120,6 +120,42 @@ pub struct PyEnvironment {
     /// The server this env is served by (0 before one is built), so a
     /// `shutdown()` from inside its own callback only triggers the drain.
     server_id: u64,
+    /// What errors call the env ([`env_name`]).
+    name: Arc<str>,
+}
+
+/// What errors call `env`: its gym id (`CartPole-v1`), else the class of
+/// the env it wraps (`unwrapped`), else its own class.
+fn env_name(env: &Bound<'_, PyAny>) -> String {
+    let id = env
+        .getattr("spec")
+        .and_then(|spec| spec.getattr("id"))
+        .and_then(|id| id.extract::<String>());
+    if let Ok(id) = id
+        && !id.is_empty()
+    {
+        return id;
+    }
+    let inner = env.getattr("unwrapped").unwrap_or_else(|_| env.clone());
+    inner
+        .get_type()
+        .qualname()
+        .and_then(|name| name.extract::<String>())
+        .unwrap_or_else(|_| "env".to_owned())
+}
+
+/// The env's contract failure for an observation (`err` encoding it) that
+/// does not fit its declared observation space: a `ValueError` naming the
+/// env and the space.
+fn observation_misfit(name: &str, space: &SpaceSpec, err: &PyErr) -> PyErr {
+    let detail = crate::types::py_err_text(err);
+    let detail = detail
+        .strip_prefix("invalid box value: ")
+        .unwrap_or(&detail);
+    pyo3::exceptions::PyValueError::new_err(format!(
+        "env {name:?} returned an observation that doesn't fit its declared observation \
+         space {space}: {detail}"
+    ))
 }
 
 thread_local! {
@@ -310,6 +346,7 @@ impl PyEnvironment {
 
             let (env_contract, uses_vector_api) = derive_env_contract(env_ref)?;
             let num_envs = env_contract.num_envs as usize;
+            let name: Arc<str> = env_name(env_ref).into();
             let observation_space = env_contract.observation_space.clone().unwrap_or_default();
             let action_space = env_contract.action_space.clone().unwrap_or_default();
 
@@ -335,6 +372,7 @@ impl PyEnvironment {
                 } else {
                     ValueBackend::Auto
                 },
+                name,
             })
         })
     }
@@ -704,6 +742,7 @@ impl PyEnvironment {
         let options = req.options;
         let profiler = Arc::clone(&self.profiler);
         let value_backend = self.value_backend;
+        let name = Arc::clone(&self.name);
 
         let (observation, mut info, phases) = spawn_py(
             self.dispatch.clone(),
@@ -726,12 +765,9 @@ impl PyEnvironment {
                 let (obs, info) = normalize_reset_result(py, result, &observation_space)?;
 
                 let encode_guard = profiler.start("server.reset.encode_obs");
-                let observation = py_any_to_space_value_with_backend(
-                    py,
-                    &obs,
-                    &observation_space,
-                    value_backend,
-                )?;
+                let observation =
+                    py_any_to_space_value_with_backend(py, &obs, &observation_space, value_backend)
+                        .map_err(|err| observation_misfit(&name, &observation_space, &err))?;
                 let encode = encode_guard.finish(native_value_size(&observation));
 
                 let info = if info.is_none() {
@@ -795,6 +831,7 @@ impl PyEnvironment {
         let action_size = action.as_ref().map(native_value_size).unwrap_or(0);
         let profiler = Arc::clone(&self.profiler);
         let value_backend = self.value_backend;
+        let name = Arc::clone(&self.name);
 
         let (observation, reward, terminated, truncated, mut info, phases) = spawn_py(
             self.dispatch.clone(),
@@ -821,12 +858,9 @@ impl PyEnvironment {
                     normalize_single_step_result(result)?;
 
                 let encode_guard = profiler.start("server.step.encode_obs");
-                let observation = py_any_to_space_value_with_backend(
-                    py,
-                    &obs,
-                    &observation_space,
-                    value_backend,
-                )?;
+                let observation =
+                    py_any_to_space_value_with_backend(py, &obs, &observation_space, value_backend)
+                        .map_err(|err| observation_misfit(&name, &observation_space, &err))?;
                 let encode = encode_guard.finish(native_value_size(&observation));
 
                 let info = if info.is_none() {
@@ -970,6 +1004,7 @@ impl PyEnvironment {
         let num_envs = self.num_envs;
         let profiler = Arc::clone(&self.profiler);
         let value_backend = self.value_backend;
+        let name = Arc::clone(&self.name);
 
         let (observations, mut info, obs_bytes, phases) = spawn_py(
             self.dispatch.clone(),
@@ -1002,7 +1037,8 @@ impl PyEnvironment {
                     &observation_space,
                     num_envs,
                     value_backend,
-                )?;
+                )
+                .map_err(|err| observation_misfit(&name, &observation_space, &err))?;
                 let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
                 let encode = encode_guard.finish(obs_bytes);
 
@@ -1077,6 +1113,7 @@ impl PyEnvironment {
         let num_envs = self.num_envs;
         let profiler = Arc::clone(&self.profiler);
         let value_backend = self.value_backend;
+        let name = Arc::clone(&self.name);
 
         let (
             observations,
@@ -1128,7 +1165,8 @@ impl PyEnvironment {
                     &observation_space,
                     num_envs,
                     value_backend,
-                )?;
+                )
+                .map_err(|err| observation_misfit(&name, &observation_space, &err))?;
                 let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
                 let encode = encode_guard.finish(obs_bytes);
 

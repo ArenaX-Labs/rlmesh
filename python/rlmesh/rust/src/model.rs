@@ -86,6 +86,8 @@ struct PyPredict {
     nested: Option<Arc<crate::nested::Nested>>,
     /// Each route's env contract, for the contexts of its rows.
     envs: RouteEnvs,
+    /// What errors call the model (its class, or the callable it wraps).
+    name: Option<String>,
 }
 
 /// Each route's env contract as a Python `EnvContract`, by env id: kept from
@@ -154,6 +156,36 @@ impl PyPredict {
         let error = crate::types::model_callback_error(&err);
         *self.last_error.lock().expect("last_error lock poisoned") = Some(err);
         error
+    }
+
+    /// The model's contract failure for an `action` (or chunk) that does not
+    /// fit the route's action space: a `ValueError` naming the model and the
+    /// space, sent as `INVALID_REQUEST`, not an internal failure of the
+    /// model's code.
+    fn misfit(&self, what: &str, space: &rlmesh_spaces::SpaceSpec, err: &PyErr) -> RLMeshError {
+        let detail = crate::types::py_err_text(err);
+        let detail = detail
+            .strip_prefix("invalid box value: ")
+            .unwrap_or(&detail);
+        let model = match &self.name {
+            Some(name) => format!("model {name:?}"),
+            None => "the model".to_owned(),
+        };
+        RLMeshError::invalid_argument(format!(
+            "{model} returned {what} that doesn't fit the action space {space}: {detail}"
+        ))
+    }
+
+    /// The model's `action` as a value of `space`, or its contract failure
+    /// ([`misfit`](Self::misfit)).
+    fn encode_action(
+        &self,
+        py: Python<'_>,
+        action: &Bound<'_, PyAny>,
+        space: &rlmesh_spaces::SpaceSpec,
+    ) -> rlmesh::Result<SpaceValue> {
+        py_any_to_space_value_with_backend(py, action, space, ValueBackend::Native)
+            .map_err(|err| self.misfit("an action", space, &err))
     }
 
     fn fire(callback: &Option<Py<PyAny>>) -> rlmesh::Result<()> {
@@ -268,7 +300,9 @@ impl PredictFn for PyPredict {
         } else {
             Vec::new()
         };
-        Python::attach(|py| -> PyResult<Vec<SpaceValue>> {
+        // The inner result is the model's action failing its contract; the
+        // outer one an exception the model (or this glue) raised.
+        Python::attach(|py| -> PyResult<rlmesh::Result<Vec<SpaceValue>>> {
             self.envs.remember(
                 py,
                 &observation.route.env_id,
@@ -307,14 +341,12 @@ impl PredictFn for PyPredict {
                 let result = batch_fn.call1(py, (inputs, contexts))?;
                 let mut actions = Vec::with_capacity(lanes.len());
                 for item in result.bind(py).try_iter()? {
-                    actions.push(py_any_to_space_value_with_backend(
-                        py,
-                        &item?,
-                        action_space,
-                        ValueBackend::Native,
-                    )?);
+                    match self.encode_action(py, &item?, action_space) {
+                        Ok(action) => actions.push(action),
+                        Err(misfit) => return Ok(Err(misfit)),
+                    }
                 }
-                return Ok(actions);
+                return Ok(Ok(actions));
             }
             let obs = match (observation_space, lanes.len()) {
                 (_, 0) => py.None().bind(py).clone(),
@@ -356,12 +388,9 @@ impl PredictFn for PyPredict {
                     )
                 })?;
             if observation.num_envs == 1 {
-                Ok(vec![py_any_to_space_value_with_backend(
-                    py,
-                    action.bind(py),
-                    action_space,
-                    ValueBackend::Native,
-                )?])
+                Ok(self
+                    .encode_action(py, action.bind(py), action_space)
+                    .map(|action| vec![action]))
             } else {
                 py_any_to_batched_space_values_with_backend(
                     py,
@@ -379,9 +408,10 @@ impl PredictFn for PyPredict {
                         observation.num_envs, observation.num_envs
                     ))
                 })
+                .map(Ok)
             }
         })
-        .map_err(|err| self.internal(err))
+        .map_err(|err| self.internal(err))?
     }
 
     fn predict_spec_less_chunked(
@@ -404,7 +434,7 @@ impl PredictFn for PyPredict {
         let lanes = observation
             .decoded_lanes()
             .map_err(|err| RLMeshError::Internal(err.to_string()))?;
-        Python::attach(|py| -> PyResult<PredictFrames> {
+        Python::attach(|py| -> PyResult<rlmesh::Result<PredictFrames>> {
             self.envs.remember(
                 py,
                 &observation.route.env_id,
@@ -439,13 +469,16 @@ impl PredictFn for PyPredict {
             })?;
             let chunk = chunk.bind(py);
             let frames_len = leading_axis_len(chunk).unwrap_or(horizon);
-            let frames = py_any_to_batched_space_values_with_backend(
+            let frames = match py_any_to_batched_space_values_with_backend(
                 py,
                 chunk,
                 action_space,
                 frames_len,
                 ValueBackend::Native,
-            )?;
+            ) {
+                Ok(frames) => frames,
+                Err(err) => return Ok(Err(self.misfit("an action chunk", action_space, &err))),
+            };
             if let Some(native) = self.native_chunk
                 && frames.len() != native as usize
             {
@@ -493,12 +526,12 @@ impl PredictFn for PyPredict {
                     "predict_chunk returned an empty chunk; return at least one action",
                 )
             })?;
-            Ok(PredictFrames {
+            Ok(Ok(PredictFrames {
                 actions: vec![first],
                 replay: frames.map(|frame| vec![frame]).collect(),
-            })
+            }))
         })
-        .map_err(|err| self.internal(err))
+        .map_err(|err| self.internal(err))?
     }
 
     fn on_episode_end(&self, episode_id: &str) -> rlmesh::Result<()> {
@@ -859,6 +892,8 @@ pub struct PyModel {
     /// The random baseline (`RANDOM_SAMPLE`) rather than the callbacks.
     random: bool,
     run_gate: Arc<std::sync::atomic::AtomicBool>,
+    /// What errors call the model (its class, or the callable it wraps).
+    name: Option<String>,
 }
 
 #[derive(Default)]
@@ -911,6 +946,7 @@ impl PyModel {
             reset_options_fn: self.reset_options_fn.as_ref().map(|cb| cb.clone_ref(py)),
             nested: nested.clone(),
             envs: envs.clone(),
+            name: self.name.clone(),
         });
         let resolver: Option<Arc<dyn RouteResolver>> =
             self.configure_fn.as_ref().map(|configure| {
@@ -1126,7 +1162,7 @@ pub fn resolve_execution_horizon(
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None, reset_options_fn=None))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None, reset_options_fn=None, name=None))]
     #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
@@ -1140,6 +1176,7 @@ impl PyModel {
         native_chunk: Option<u32>,
         on_route_drop: Option<Py<PyAny>>,
         reset_options_fn: Option<Py<PyAny>>,
+        name: Option<String>,
     ) -> PyResult<Self> {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
@@ -1163,6 +1200,7 @@ impl PyModel {
             inners: Default::default(),
             random: false,
             run_gate: Arc::default(),
+            name,
         })
     }
 
@@ -1191,6 +1229,7 @@ impl PyModel {
             inners: Default::default(),
             random: false,
             run_gate: Arc::default(),
+            name: None,
         })
     }
 
@@ -1217,6 +1256,7 @@ impl PyModel {
             inners: Default::default(),
             random: true,
             run_gate: Arc::default(),
+            name: None,
         }
     }
 
@@ -1742,6 +1782,7 @@ mod review_regressions {
                 nested: None,
                 last_error: Default::default(),
                 envs: RouteEnvs::default(),
+                name: None,
             };
             {
                 let error = if chunked {

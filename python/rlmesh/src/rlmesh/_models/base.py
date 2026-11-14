@@ -1392,6 +1392,7 @@ class ModelBase(Generic[ObsT, ActT]):
             allow_fusion=self._loaded_allow_fusion,
             native_chunk=self._native_chunk(),
             on_route_drop=self._drop_env_entries,
+            name=self._error_name(),
         )
         # The models this one holds as parts predict through their own
         # workers on the episodes this one answers.
@@ -1993,6 +1994,12 @@ class ModelBase(Generic[ObsT, ActT]):
         if self._policy is not None:
             return type(self._policy)
         return self._edition_source
+
+    def _error_name(self) -> str:
+        """What errors call this model: the type or callable it was authored as."""
+        origin = self._edition_origin()
+        name = getattr(origin, "__qualname__", None)
+        return name if isinstance(name, str) else type(self).__qualname__
 
     def _class_workflow_edition(self) -> str | None:
         """The type-level edition declaration this model carries (see :meth:`_edition_origin`)."""
