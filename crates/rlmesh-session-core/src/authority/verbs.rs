@@ -500,6 +500,21 @@ impl Authority {
         Ok(())
     }
 
+    /// An embodiment's edge fell back to safe on its own (`QUEUE_DRY`,
+    /// `EDGE_LEASE_LAPSED`, `HANDOVER_TIMEOUT`, `DEVICE_WATCHDOG`): that
+    /// robot's leases end and it is held until a `Rearm` names it (unless
+    /// `rearm_robots`), whatever the cause.
+    ///
+    /// The hold is deliberate, also for a lapse caused by the holder going
+    /// silent: the edge cannot tell a crashed controller from a hung or
+    /// cut-off one, and a robot whose commands stopped is a fault for an
+    /// operator to look at before it moves again. Whether a silent holder
+    /// holds its robot depends on timing: when this host's lease grace runs
+    /// out first, the lease ends as a lost holder and the edge, seeing a
+    /// release, reports nothing, so no hold; when the edge's `hold_max` or
+    /// its own lease clock runs out first, its report lands here and holds
+    /// the robot. Both leave the robot safe; the race is accepted rather
+    /// than resolved to one outcome.
     fn on_enter_safe(
         &mut self,
         from: ParticipantId,

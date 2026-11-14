@@ -236,10 +236,13 @@ reads blank until it is back (`input_lost` says so), whether or not it
 allows `hold`; any other input's starts are skipped as `publisher_gone`.
 
 **When a policy drops off** (a crash, a lost link, or a new process
-joining under its name), the host ends only the leases it held. Those
-parts go to their declared safe behaviour, as after a release; the session
-stays armed, every other policy keeps driving, and nothing needs re-arming.
-The host logs who was lost and which `robot:part`s were released.
+joining under its name), the host ends only the leases it held, once its
+heartbeats have stopped for the host's `--lease-grace`. Those parts go to
+their declared safe behaviour, as after a release; the session stays armed
+and every other policy keeps driving. The host logs who was lost and which
+`robot:part`s were released. The robot it drove may also be held until
+someone re-arms it, depending on who notices first: see [held
+robots](#held-robots).
 
 **When an operator takes a robot over** from a running model (a policy of
 a higher priority class, `priority="operator"`, acquires its parts), the
@@ -522,6 +525,62 @@ paths with are the same on both:
   measured against which bound, in the cockpit and in `edge_stats`.
 - Beyond loopback the host encrypts every sample and command; see the
   [threat model](threat-model.md) for what it does and doesn't defend.
+
+### Held robots
+
+A robot whose own edge falls back to safe stops alone: its leases end,
+the session and every other robot go on, and it takes no lease until
+someone re-arms it by name. The edge falls back, and reports why to the
+host, when:
+
+- no valid action arrives within a part's `hold_max` (100 ms by default):
+  the holder's chunks stopped, or kept arriving too late or refused
+  (`QUEUE_DRY`);
+- the lease expires by the edge's own clock, because the holder's renewals
+  stopped reaching it (`EDGE_LEASE_LAPSED`);
+- a command group's handover between its members takes longer than
+  `hold_max` (`HANDOVER_TIMEOUT`);
+- a tethered board's link watchdog fires (`DEVICE_WATCHDOG`).
+
+In an armed session a robot is held the same way when it restarts, comes
+back after it was lost, or declares commandable parts.
+
+This is deliberate. The robot cannot tell a controller that crashed from
+one that hung, lost its link or fell behind: all it sees is that its
+commands stopped. A controller that goes silent is a fault someone should
+look at before the robot moves again, so the robot waits for a person (or
+a program acting for one) rather than for whichever policy asks next.
+
+**A silent controller can go either way.** When the holder stops (its
+process dies, or its chunks and heartbeats stop together), the host and the
+robot's edge both notice, each on its own timer. If the host's lease grace
+runs out first, it ends the lease as a lost holder: the edge sees a
+release, the part goes to its safe behaviour, and the robot is not held.
+If the edge's `hold_max` or its own view of the lease runs out first, it
+reports `QUEUE_DRY` or `EDGE_LEASE_LAPSED` and the robot is held. Which
+comes first depends on the grace, `hold_max`, how much of the last chunk
+was left and the network, so the same failure may hold the robot one time
+and not the next. Plan for the hold: check `held` before driving again, or
+host with `--rearm-robots` where an automatic restart is what you want.
+
+To see and clear a hold:
+
+- `robot.held` and `policy.held` (Python) list every robot held, with
+  `reason` (the code above), `detail`, `at_ns` and a `message` that says
+  how to re-arm it; a running policy reports `robot_held` in
+  `policy.events()`, and its starts are skipped as `no_lease`.
+  A lease asked for on a held robot is refused with the same message.
+- Re-arm it from any robot's program: `robot.rearm("ur10e")` in Python,
+  or `robot.participant().rearm(&id)` in Rust. The session must be armed;
+  a robot that is not held is left as it is. Node has no `rearm` yet.
+- In a scene's run: `rlmesh scene arm RUN ROBOT`, or `rearm("ur10e")` on
+  the `Scene` that `run_scene` returned.
+- `arm()` never clears a hold, nor does a disarm, a session-wide SAFE or an
+  operator's hand-back.
+- `rlmesh host --rearm-robots` (`HostConfig::rearm_robots` when you host a
+  session from Rust, as the repository's tests do) holds no robot: one that
+  falls back, restarts or rejoins can be leased again at once. Use it for
+  unattended rigs and tests, not where a person should look first.
 
 ## Next
 
