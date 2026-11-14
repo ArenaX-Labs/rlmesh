@@ -1,6 +1,6 @@
 use crate::cli::ProfileListArgs;
-use crate::config::ProfileStore;
 use crate::render::{Style, render_profiles};
+use rlmesh::binding::managed::ProfileStore;
 
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
