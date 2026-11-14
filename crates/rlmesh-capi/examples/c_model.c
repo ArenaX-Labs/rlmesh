@@ -2,7 +2,7 @@
  * the C ABI without the C++ wrapper.
  *
  *   zig cc -std=c11 -I<include> c_model.c -lrlmesh_capi -o c_model
- *   ./c_model tcp://127.0.0.1:5555 [episodes]
+ *   ./c_model localhost:7447/env [episodes]
  */
 #include <rlmesh.h>
 #include <stdint.h>
@@ -67,19 +67,20 @@ static RLMeshStatus predict(void* user_data, const RLMeshValue* observation,
   return *output ? RLMESH_OK : RLMESH_ERR_MODEL;
 }
 int main(int argc, char** argv) {
-  const char* address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
+  const char* address = argc > 1 ? argv[1] : "localhost:7447/env";
   const uint64_t count = argc > 2 ? strtoull(argv[2], NULL, 10) : 3;
   RLMeshRemoteEnvOptions connection = RLMESH_REMOTE_ENV_OPTIONS_INIT;
   connection.address = address;
   RLMeshRemoteEnv* env = NULL;
   if (rlmesh_remote_env_new(&connection, &env) != RLMESH_OK) goto fail;
+  /* The run drives the env itself: keep its action space, release the lease. */
+  RLMeshSpaceSpec* action_space = rlmesh_space_spec_clone(rlmesh_remote_env_action_space_spec(env));
+  rlmesh_remote_env_free(env);
   RLMeshModelVtable vt = RLMESH_MODEL_VTABLE_INIT;
   vt.predict = predict;
   vt.context_corners = RLMESH_CORNER_PREDICT;
   RLMeshModel* model = NULL;
-  if (rlmesh_model_new(&vt, (void*)rlmesh_remote_env_action_space_spec(env), NULL, &model) !=
-      RLMESH_OK)
-    goto fail;
+  if (rlmesh_model_new(&vt, action_space, NULL, &model) != RLMESH_OK) goto fail;
   RLMeshRunOptions options = RLMESH_RUN_OPTIONS_INIT;
   options.has_episodes = true;
   options.episodes = count;
@@ -88,19 +89,19 @@ int main(int argc, char** argv) {
   options.seeds = seeds;
   options.seeds_len = (size_t)count;
   RLMeshRunResult* result = NULL;
-  RLMeshStatus status = rlmesh_model_run(model, rlmesh_remote_env_target(env), &options, &result);
+  RLMeshStatus status = rlmesh_model_run(model, rlmesh_address_target(address), &options, &result);
   free(seeds);
   if (status != RLMESH_OK) {
     fprintf(stderr, "%s\n", rlmesh_last_error_message());
     rlmesh_model_free(model);
-    rlmesh_remote_env_free(env);
+    rlmesh_space_spec_free(action_space);
     return 1;
   }
   printf("run report: episodes=%zu steps=%lld mean=%.1f\n", rlmesh_run_result_num_episodes(result),
          (long long)rlmesh_run_result_total_steps(result), rlmesh_run_result_mean_reward(result));
   rlmesh_run_result_free(result);
   rlmesh_model_free(model);
-  rlmesh_remote_env_free(env);
+  rlmesh_space_spec_free(action_space);
   return 0;
 fail:
   fprintf(stderr, "%s\n", rlmesh_last_error_message());

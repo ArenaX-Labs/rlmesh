@@ -31,7 +31,7 @@ struct Planner {
 };
 void planner_shape(const rlmesh::Kwargs& config) {
   auto model = rlmesh::Model::from_config<Planner>(config);
-  model.serve("tcp://0.0.0.0:50051");
+  model.serve(":50051/model");
 }
 
 struct Greedy {
@@ -43,9 +43,9 @@ struct Greedy {
 void shapes(rlmesh::Env& env, rlmesh::SpecArg spec) {
   auto model = rlmesh::Model(Greedy{}, rlmesh::ModelOptions{}.with_spec(spec));
   auto result = model.run(env, rlmesh::RunOptions{}.with_episodes(2).with_seeds({0, 1}));
-  auto s = rlmesh::session(model, env);
-  auto [obs, info] = s.reset(0);
-  auto [obs2, reward, terminated, truncated, info2] = s.step(s.predict(obs));
+  auto b = model.bind(env);
+  auto [obs, info] = b.reset(0);
+  auto [obs2, reward, terminated, truncated, info2] = b.step();
   (void)result;
   (void)obs2;
   (void)reward;

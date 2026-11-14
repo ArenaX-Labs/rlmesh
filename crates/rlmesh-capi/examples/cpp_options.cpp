@@ -50,60 +50,40 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::ServeOptions>);
   {
     rlmesh::ServeOptions options;
-    options.with_allow_remote_shutdown(options.allow_remote_shutdown)
-        .with_idle_timeout(options.idle_timeout)
-        .with_drain_timeout(options.drain_timeout)
-        .with_close_timeout(options.close_timeout)
-        .with_compress_responses(options.compress_responses)
+    options.with_close_timeout(options.close_timeout)
         .with_workflow_edition(options.workflow_edition);
     std::move(options)
-        .with_allow_remote_shutdown(options.allow_remote_shutdown)
-        .with_idle_timeout(options.idle_timeout)
-        .with_drain_timeout(options.drain_timeout)
         .with_close_timeout(options.close_timeout)
-        .with_compress_responses(options.compress_responses)
         .with_workflow_edition(options.workflow_edition);
   }
   static_assert(std::is_aggregate_v<rlmesh::ext::EnvServerOptions>);
   {
     rlmesh::ext::EnvServerOptions options;
-    options.with_token(options.token)
-        .with_peer_info_extra(options.peer_info_extra)
-        .with_publish_describe(options.publish_describe);
-    std::move(options)
-        .with_token(options.token)
-        .with_peer_info_extra(options.peer_info_extra)
-        .with_publish_describe(options.publish_describe);
+    options.with_publish_describe(options.publish_describe);
+    std::move(options).with_publish_describe(options.publish_describe);
   }
   static_assert(std::is_aggregate_v<rlmesh::ext::ModelServeOptions>);
   {
     rlmesh::ext::ModelServeOptions options;
-    options.with_token(options.token)
-        .with_predict_concurrency(options.predict_concurrency)
+    options.with_predict_concurrency(options.predict_concurrency)
         .with_no_signal_handlers(options.no_signal_handlers);
     std::move(options)
-        .with_token(options.token)
         .with_predict_concurrency(options.predict_concurrency)
         .with_no_signal_handlers(options.no_signal_handlers);
   }
   static_assert(std::is_aggregate_v<rlmesh::EnvServerOptions>);
   {
     rlmesh::EnvServerOptions options;
-    options.with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
+    options
+        .with_address(options.address)
+
         .with_options(options.options)
         .with_tags(options.tags)
         .with_close_env_on_shutdown(options.close_env_on_shutdown)
         .with_ext(options.ext);
     std::move(options)
         .with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
+
         .with_options(options.options)
         .with_tags(options.tags)
         .with_close_env_on_shutdown(options.close_env_on_shutdown)
@@ -153,42 +133,18 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::RemoteEnvOptions>);
   {
     rlmesh::RemoteEnvOptions options;
-    options.with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
+    options
+        .with_address(options.address)
+
         .with_connect_timeout(options.connect_timeout)
         .with_request_timeout(options.request_timeout)
         .with_workflow_edition(options.workflow_edition);
     std::move(options)
         .with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
+
         .with_connect_timeout(options.connect_timeout)
         .with_request_timeout(options.request_timeout)
         .with_workflow_edition(options.workflow_edition);
-  }
-  static_assert(std::is_aggregate_v<rlmesh::RemoteModelOptions>);
-  {
-    rlmesh::RemoteModelOptions options;
-    options.with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
-        .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout);
-    std::move(options)
-        .with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
-        .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout);
   }
   static_assert(std::is_aggregate_v<rlmesh::View>);
   {
@@ -211,24 +167,16 @@ void options_setters() {
         .with_hold(options.hold)
         .with_step_hz(options.step_hz);
   }
-  static_assert(std::is_aggregate_v<rlmesh::RemoteModelOptions>);
+  static_assert(std::is_aggregate_v<rlmesh::BindOptions>);
   {
-    rlmesh::RemoteModelOptions options;
-    options.with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
-        .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout);
+    rlmesh::BindOptions options;
+    options.with_close_env(options.close_env)
+        .with_execution_horizon(options.execution_horizon)
+        .with_workflow_edition(options.workflow_edition);
     std::move(options)
-        .with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
-        .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout);
+        .with_close_env(options.close_env)
+        .with_execution_horizon(options.execution_horizon)
+        .with_workflow_edition(options.workflow_edition);
   }
   static_assert(std::is_aggregate_v<rlmesh::RunOptions>);
   {
@@ -260,44 +208,6 @@ void options_setters() {
         .with_prefetch_lead(options.prefetch_lead)
         .with_view(options.view)
         .with_workflow_edition(options.workflow_edition)
-        .with_trial_index_base(options.trial_index_base)
-        .with_cancel(options.cancel);
-  }
-  static_assert(std::is_aggregate_v<rlmesh::SessionOptions>);
-  {
-    rlmesh::SessionOptions options;
-    options.with_instruction(options.instruction)
-        .with_close_env(options.close_env)
-        .with_trust_entrypoints(options.trust_entrypoints)
-        .with_execution_horizon(options.execution_horizon)
-        .with_view(options.view)
-        .with_workflow_edition(options.workflow_edition)
-        .with_cancel(options.cancel);
-    std::move(options)
-        .with_instruction(options.instruction)
-        .with_close_env(options.close_env)
-        .with_trust_entrypoints(options.trust_entrypoints)
-        .with_execution_horizon(options.execution_horizon)
-        .with_view(options.view)
-        .with_workflow_edition(options.workflow_edition)
-        .with_cancel(options.cancel);
-  }
-  static_assert(std::is_aggregate_v<rlmesh::SessionRunOptions>);
-  {
-    rlmesh::SessionRunOptions options;
-    options.with_episodes(options.episodes)
-        .with_seeds(options.seeds)
-        .with_max_episode_steps(options.max_episode_steps)
-        .with_max_episode(options.max_episode)
-        .with_hooks(options.hooks)
-        .with_trial_index_base(options.trial_index_base)
-        .with_cancel(options.cancel);
-    std::move(options)
-        .with_episodes(options.episodes)
-        .with_seeds(options.seeds)
-        .with_max_episode_steps(options.max_episode_steps)
-        .with_max_episode(options.max_episode)
-        .with_hooks(options.hooks)
         .with_trial_index_base(options.trial_index_base)
         .with_cancel(options.cancel);
   }
@@ -333,14 +243,14 @@ void options_setters() {
     options.with_task(options.task)
         .with_config(options.config)
         .with_cameras(options.cameras)
-        .with_session(options.session)
+        .with_binding(options.binding)
         .with_video_info_keys(options.video_info_keys)
         .with_included_in_metrics(options.included_in_metrics);
     std::move(options)
         .with_task(options.task)
         .with_config(options.config)
         .with_cameras(options.cameras)
-        .with_session(options.session)
+        .with_binding(options.binding)
         .with_video_info_keys(options.video_info_keys)
         .with_included_in_metrics(options.included_in_metrics);
   }

@@ -36,8 +36,8 @@ fn int(n: i64) -> *mut RLMeshValue {
 #[test]
 fn abi5_header_kinds_and_removed_symbols() {
     let header = include_str!("../../include/rlmesh.h");
-    assert!(header.contains("#define RLMESH_ABI_VERSION 5\n"));
-    assert_eq!(crate::abi::rlmesh_abi_version(), 5);
+    assert!(header.contains("#define RLMESH_ABI_VERSION 6\n"));
+    assert_eq!(crate::abi::rlmesh_abi_version(), 6);
     for name in [
         "ABI_VERSION_MAJOR",
         "ABI_VERSION_MINOR",

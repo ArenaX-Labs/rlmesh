@@ -448,6 +448,43 @@ impl RunHooks for Hooks {
         Ok(())
     }
 }
+/// A binding's hooks: the caller's handle, which must outlive the binding,
+/// locked for each call so a run cannot use it at the same moment.
+pub(crate) struct BoundHooks(*mut RLMeshRunHooks);
+// SAFETY: every use goes through the handle's mutex.
+unsafe impl Send for BoundHooks {}
+impl BoundHooks {
+    /// Borrow `p` (non-null) for a binding's life.
+    pub(crate) unsafe fn new(p: *mut RLMeshRunHooks) -> Self {
+        Self(p)
+    }
+    fn call(&mut self, f: impl FnOnce(&mut Hooks) -> rlmesh::Result<()>) -> rlmesh::Result<()> {
+        // SAFETY: the caller keeps the handle alive while the binding lives.
+        let hooks = unsafe { &*self.0 };
+        let mut hooks = hooks
+            .0
+            .try_lock()
+            .map_err(|_| rlmesh::Error::Runtime("run hooks are already active".into()))?;
+        f(&mut hooks)
+    }
+}
+impl RunHooks for BoundHooks {
+    fn on_run_start(&mut self, context: Arc<dyn RunContext>) -> rlmesh::Result<()> {
+        self.call(|h| h.on_run_start(context))
+    }
+    fn on_episode_start(&mut self, episode: i64, seed: Option<i64>) -> rlmesh::Result<()> {
+        self.call(|h| h.on_episode_start(episode, seed))
+    }
+    fn on_step(&mut self, event: &StepEvent) -> rlmesh::Result<()> {
+        self.call(|h| h.on_step(event))
+    }
+    fn on_episode_end(&mut self, result: &rlmesh::EpisodeResult) -> rlmesh::Result<()> {
+        self.call(|h| h.on_episode_end(result))
+    }
+    fn on_run_end(&mut self, result: &rlmesh::RunResult) -> rlmesh::Result<()> {
+        self.call(|h| h.on_run_end(result))
+    }
+}
 pub(crate) unsafe fn borrow<'a>(
     p: *mut RLMeshRunHooks,
 ) -> Result<Option<MutexGuard<'a, Hooks>>, CapiError> {

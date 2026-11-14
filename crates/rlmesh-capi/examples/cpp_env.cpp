@@ -75,7 +75,7 @@ class PointReach {
 };
 }  // namespace
 int main(int argc, char** argv) try {
-  const std::string address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
+  const std::string address = argc > 1 ? argv[1] : ":5555/env";
   const bool describe = address == "--describe";
   using namespace rlmesh::adapters;
   ImageTag camera_tag{};
@@ -89,10 +89,9 @@ int main(int argc, char** argv) try {
   action.components = {actuator};
   action.clip = std::pair<double, double>{-1, 1};
   EnvTags tags(ObsNode::dict({{"camera", camera_tag}, {"eef_pos", position_tag}}), action);
-  rlmesh::EnvServer server(PointReach(!describe),
-                           rlmesh::EnvServerOptions{}
-                               .with_address(describe ? "tcp://127.0.0.1:0" : address)
-                               .with_tags(tags));
+  rlmesh::EnvServer server(
+      PointReach(!describe),
+      rlmesh::EnvServerOptions{}.with_address(describe ? ":0/env" : address).with_tags(tags));
   if (describe) {
     std::puts(rlmesh::ext::env_server_describe_json(server).c_str());
     return 0;

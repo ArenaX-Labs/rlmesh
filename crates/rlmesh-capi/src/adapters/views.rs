@@ -169,6 +169,7 @@ pub(crate) fn view_state(arena: &mut Arena, f: &a::State) -> RLMeshState {
     v.has_clip = f.clip.is_some();
     let pair = f.clip.unwrap_or_default();
     v.clip = [pair.0, pair.1];
+    v.polarity = arena.optional_text(f.polarity.as_deref());
     v
 }
 pub(crate) fn view_concat(arena: &mut Arena, f: &a::Concat) -> RLMeshConcat {
@@ -295,6 +296,9 @@ pub(crate) fn view_actuator(arena: &mut Arena, f: &a::Actuator) -> RLMeshActuato
         v.labels_len = items.len();
         v.labels = arena.strings(items);
     }
+    v.polarity = arena.optional_text(f.polarity.as_deref());
+    v.has_unit = f.unit.is_some();
+    v.unit = f.unit.unwrap_or_default();
     v
 }
 pub(crate) fn view_action(arena: &mut Arena, f: &a::Action) -> RLMeshAction {
@@ -358,6 +362,7 @@ pub(crate) fn view_state_tag(arena: &mut Arena, f: &a::StateTag) -> RLMeshStateT
         v.labels_len = items.len();
         v.labels = arena.strings(items);
     }
+    v.polarity = arena.optional_text(f.polarity.as_deref());
     v
 }
 pub(crate) fn view_text_tag(arena: &mut Arena, f: &a::TextTag) -> RLMeshTextTag {
@@ -401,6 +406,7 @@ pub(crate) fn view_field(arena: &mut Arena, f: &a::Field) -> RLMeshField {
         v.labels_len = items.len();
         v.labels = arena.strings(items);
     }
+    v.polarity = arena.optional_text(f.polarity.as_deref());
     v
 }
 pub(crate) fn view_split(arena: &mut Arena, f: &a::Split) -> RLMeshSplit {
@@ -518,6 +524,8 @@ unsafe impl Sync for TagsView {}
 pub(crate) struct SpecView {
     pub input: *const RLMeshInputNode,
     pub action: *const RLMeshAction,
+    pub allow: *const *const c_char,
+    pub allow_len: usize,
     _arena: Arena,
 }
 impl SpecView {
@@ -527,9 +535,12 @@ impl SpecView {
         let input = arena.keep(input);
         let action = view_action(&mut arena, value.output());
         let action = arena.keep(action);
+        let allow = arena.strings(value.allow());
         Self {
             input,
             action,
+            allow,
+            allow_len: value.allow().len(),
             _arena: arena,
         }
     }

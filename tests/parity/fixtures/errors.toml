@@ -1,4 +1,4 @@
-# Each failure crosses a real policy call and the session error channel.
+# Each failure crosses a real policy call and a binding's step.
 
 [[scenario]]
 id = "error_RLMeshException"
@@ -206,5 +206,5 @@ rules = ["R-21", "R-22"]
 operation = "model_callback"
 variant = "timeout"
 languages = ["rust"]
-why = "Exercises the model wire encoder over loopback using a binding-authored structured timeout."
+why = "Exercises the session model wire with a binding-authored structured timeout."
 expect = { error = "ModelException", text = "[INTERNAL] authored timeout: checkpoint shard violet" }

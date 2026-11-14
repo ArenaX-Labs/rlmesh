@@ -132,6 +132,55 @@ int main(void) {
   parsed = (RLMeshModelSpec*)1;
   CHECK(rlmesh_model_spec_from_metadata(metadata, &parsed) == RLMESH_OK && !parsed);
   rlmesh_value_free(metadata);
+  /* Gripper polarity, command units and allowed projections cross both ways. */
+  {
+    RLMeshActuator gripper = RLMESH_ACTUATOR_INIT;
+    gripper.role = RLMESH_ADAPTERS_ACTION_GRIPPER;
+    gripper.dim = 1;
+    gripper.polarity = "close";
+    gripper.has_unit = true;
+    gripper.unit = 0.01;
+    const RLMeshActuator* parts[] = {&gripper};
+    RLMeshAction gripper_action = RLMESH_ACTION_INIT;
+    gripper_action.components = parts;
+    gripper_action.components_len = 1;
+    RLMeshState reading = state;
+    reading.polarity = "open";
+    RLMeshInputNode reading_node = rlmesh_input_node_state(&reading);
+    RLMeshModelSpec* plain = NULL;
+    CHECK(rlmesh_model_spec_new(&reading_node, &gripper_action, &plain) == RLMESH_OK);
+    const RLMeshActuator* lent_gripper = rlmesh_model_spec_output(plain)->components[0];
+    CHECK(strcmp(lent_gripper->polarity, "close") == 0 && lent_gripper->has_unit &&
+          lent_gripper->unit == 0.01);
+    CHECK(strcmp(((const RLMeshState*)rlmesh_model_spec_input(plain)->leaf)->polarity, "open") ==
+          0);
+    size_t allowed = 99;
+    CHECK(rlmesh_model_spec_allow(plain, &allowed) && allowed == 0);
+    const char* names[] = {"flip_gripper"};
+    RLMeshModelSpec* flipping = NULL;
+    CHECK(rlmesh_model_spec_with_allow(plain, names, 1, &flipping) == RLMESH_OK);
+    const char* const* lent_names = rlmesh_model_spec_allow(flipping, &allowed);
+    CHECK(allowed == 1 && strcmp(lent_names[0], "flip_gripper") == 0);
+    CHECK(!rlmesh_model_spec_equals(plain, flipping));
+    RLMeshBytes flipped = {0};
+    CHECK(rlmesh_model_spec_to_json(flipping, &flipped) == RLMESH_OK);
+    char flipped_text[4096];
+    CHECK(flipped.len < sizeof(flipped_text));
+    memcpy(flipped_text, flipped.data, flipped.len);
+    flipped_text[flipped.len] = 0;
+    rlmesh_bytes_free(flipped);
+    RLMeshModelSpec* back = NULL;
+    CHECK(rlmesh_model_spec_from_json(flipped_text, &back) == RLMESH_OK &&
+          rlmesh_model_spec_equals(back, flipping));
+    rlmesh_model_spec_free(back);
+    /* A caller built against ABI 5 passes the shorter struct; the tail reads as unset. */
+    gripper.struct_size = RLMESH_ACTUATOR_MIN_SIZE;
+    CHECK(rlmesh_model_spec_new(&reading_node, &gripper_action, &back) == RLMESH_OK);
+    CHECK(!rlmesh_model_spec_output(back)->components[0]->polarity);
+    rlmesh_model_spec_free(back);
+    rlmesh_model_spec_free(flipping);
+    rlmesh_model_spec_free(plain);
+  }
   /* Sized leaves cover sugar, binary-safe text, composites and closed enums. */
   RLMeshImage image = RLMESH_IMAGE_INIT;
   image.role = RLMESH_ADAPTERS_IMAGE_PRIMARY;
@@ -638,7 +687,8 @@ static void layouts(void) {
               sizeof(((RLMeshState*)0)->provenance_other) + sizeof(((RLMeshState*)0)->part) +
               sizeof(((RLMeshState*)0)->labels) + sizeof(((RLMeshState*)0)->labels_len) +
               sizeof(((RLMeshState*)0)->source) + sizeof(((RLMeshState*)0)->has_clip) +
-              sizeof(((RLMeshState*)0)->_reserved9) + sizeof(((RLMeshState*)0)->clip),
+              sizeof(((RLMeshState*)0)->_reserved9) + sizeof(((RLMeshState*)0)->clip) +
+              sizeof(((RLMeshState*)0)->polarity),
       "RLMeshState must have no implicit padding");
   _Static_assert(
       sizeof(RLMeshConcat) ==
@@ -689,7 +739,9 @@ static void layouts(void) {
           sizeof(((RLMeshActuator*)0)->has_offset) + sizeof(((RLMeshActuator*)0)->_reserved8) +
           sizeof(((RLMeshActuator*)0)->offset) + sizeof(((RLMeshActuator*)0)->axis_offset) +
           sizeof(((RLMeshActuator*)0)->axis_offset_len) + sizeof(((RLMeshActuator*)0)->labels) +
-          sizeof(((RLMeshActuator*)0)->labels_len));
+          sizeof(((RLMeshActuator*)0)->labels_len) + sizeof(((RLMeshActuator*)0)->polarity) +
+          sizeof(((RLMeshActuator*)0)->has_unit) + sizeof(((RLMeshActuator*)0)->_reserved9) +
+          sizeof(((RLMeshActuator*)0)->unit));
   _Static_assert(
       sizeof(RLMeshAction) ==
           sizeof(((RLMeshAction*)0)->struct_size) + sizeof(((RLMeshAction*)0)->components) +
@@ -714,7 +766,8 @@ static void layouts(void) {
               sizeof(((RLMeshStateTag*)0)->has_provenance) +
               sizeof(((RLMeshStateTag*)0)->_reserved2) + sizeof(((RLMeshStateTag*)0)->provenance) +
               sizeof(((RLMeshStateTag*)0)->provenance_other) + sizeof(((RLMeshStateTag*)0)->part) +
-              sizeof(((RLMeshStateTag*)0)->labels) + sizeof(((RLMeshStateTag*)0)->labels_len),
+              sizeof(((RLMeshStateTag*)0)->labels) + sizeof(((RLMeshStateTag*)0)->labels_len) +
+              sizeof(((RLMeshStateTag*)0)->polarity),
       "RLMeshStateTag must have no implicit padding");
   _Static_assert(sizeof(RLMeshTextTag) ==
                      sizeof(((RLMeshTextTag*)0)->struct_size) + sizeof(((RLMeshTextTag*)0)->role),
@@ -731,7 +784,7 @@ static void layouts(void) {
               sizeof(((RLMeshField*)0)->has_provenance) + sizeof(((RLMeshField*)0)->_reserved3) +
               sizeof(((RLMeshField*)0)->provenance) + sizeof(((RLMeshField*)0)->provenance_other) +
               sizeof(((RLMeshField*)0)->part) + sizeof(((RLMeshField*)0)->labels) +
-              sizeof(((RLMeshField*)0)->labels_len),
+              sizeof(((RLMeshField*)0)->labels_len) + sizeof(((RLMeshField*)0)->polarity),
       "RLMeshField must have no implicit padding");
   _Static_assert(sizeof(RLMeshSplit) == sizeof(((RLMeshSplit*)0)->struct_size) +
                                             sizeof(((RLMeshSplit*)0)->fields) +
@@ -840,7 +893,8 @@ static void layouts(void) {
               sizeof(((RLMeshState*)0)->provenance_other) + sizeof(((RLMeshState*)0)->part) +
               sizeof(((RLMeshState*)0)->labels) + sizeof(((RLMeshState*)0)->labels_len) +
               sizeof(((RLMeshState*)0)->source) + sizeof(((RLMeshState*)0)->has_clip) +
-              sizeof(((RLMeshState*)0)->_reserved8) + sizeof(((RLMeshState*)0)->clip),
+              sizeof(((RLMeshState*)0)->_reserved8) + sizeof(((RLMeshState*)0)->clip) +
+              sizeof(((RLMeshState*)0)->polarity) + sizeof(((RLMeshState*)0)->_reserved9),
       "RLMeshState must have no implicit padding");
   _Static_assert(
       sizeof(RLMeshConcat) ==
@@ -890,7 +944,9 @@ static void layouts(void) {
               sizeof(((RLMeshActuator*)0)->has_offset) + sizeof(((RLMeshActuator*)0)->_reserved7) +
               sizeof(((RLMeshActuator*)0)->offset) + sizeof(((RLMeshActuator*)0)->axis_offset) +
               sizeof(((RLMeshActuator*)0)->axis_offset_len) + sizeof(((RLMeshActuator*)0)->labels) +
-              sizeof(((RLMeshActuator*)0)->labels_len),
+              sizeof(((RLMeshActuator*)0)->labels_len) + sizeof(((RLMeshActuator*)0)->polarity) +
+              sizeof(((RLMeshActuator*)0)->has_unit) + sizeof(((RLMeshActuator*)0)->_reserved8) +
+              sizeof(((RLMeshActuator*)0)->unit),
       "RLMeshActuator must have no implicit padding");
   _Static_assert(
       sizeof(RLMeshAction) ==
@@ -917,7 +973,8 @@ static void layouts(void) {
               sizeof(((RLMeshStateTag*)0)->_reserved2) + sizeof(((RLMeshStateTag*)0)->provenance) +
               sizeof(((RLMeshStateTag*)0)->provenance_other) + sizeof(((RLMeshStateTag*)0)->part) +
               sizeof(((RLMeshStateTag*)0)->labels) + sizeof(((RLMeshStateTag*)0)->labels_len) +
-              sizeof(((RLMeshStateTag*)0)->_reserved3),
+              sizeof(((RLMeshStateTag*)0)->_reserved3) + sizeof(((RLMeshStateTag*)0)->polarity) +
+              sizeof(((RLMeshStateTag*)0)->_reserved4),
       "RLMeshStateTag must have no implicit padding");
   _Static_assert(sizeof(RLMeshTextTag) ==
                      sizeof(((RLMeshTextTag*)0)->struct_size) + sizeof(((RLMeshTextTag*)0)->role),
@@ -934,7 +991,8 @@ static void layouts(void) {
               sizeof(((RLMeshField*)0)->_reserved2) + sizeof(((RLMeshField*)0)->provenance) +
               sizeof(((RLMeshField*)0)->provenance_other) + sizeof(((RLMeshField*)0)->part) +
               sizeof(((RLMeshField*)0)->labels) + sizeof(((RLMeshField*)0)->labels_len) +
-              sizeof(((RLMeshField*)0)->_reserved3),
+              sizeof(((RLMeshField*)0)->_reserved3) + sizeof(((RLMeshField*)0)->polarity) +
+              sizeof(((RLMeshField*)0)->_reserved4),
       "RLMeshField must have no implicit padding");
   _Static_assert(sizeof(RLMeshSplit) == sizeof(((RLMeshSplit*)0)->struct_size) +
                                             sizeof(((RLMeshSplit*)0)->fields) +

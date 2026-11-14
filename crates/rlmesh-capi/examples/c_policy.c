@@ -131,12 +131,11 @@ int main(void) {
   CHECK(rlmesh_ext_cancel_token_cancel(cancel) == RLMESH_OK);
   RLMeshModelServeOptions so = RLMESH_MODEL_SERVE_OPTIONS_INIT;
   so.cancel = cancel;
-  CHECK(rlmesh_model_serve(clone, "tcp://127.0.0.1:0", &so) == RLMESH_ERR_CANCELLED &&
-        state.closes == 0);
+  CHECK(rlmesh_model_serve(clone, ":0/env", &so) == RLMESH_ERR_CANCELLED && state.closes == 0);
   rlmesh_ext_cancel_token_free(cancel);
   CHECK(rlmesh_model_close(clone) == RLMESH_OK && state.closes == 1);
   CHECK(rlmesh_model_close(clone) == RLMESH_OK && state.closes == 1);
-  CHECK(rlmesh_model_serve(clone, "tcp://127.0.0.1:0", NULL) == RLMESH_ERR_RUNTIME);
+  CHECK(rlmesh_model_serve(clone, ":0/env", NULL) == RLMESH_ERR_RUNTIME);
   CHECK(state.frees == 0);
   rlmesh_model_free(clone);
   CHECK(state.frees == 1);

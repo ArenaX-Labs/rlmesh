@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the native examples against the INSTALLED package: a consumer that
-# knows only the unpacked tarball runs cpp_model over real gRPC and checks the
+# knows only the unpacked tarball runs cpp_model over realtime sessions and checks the
 # C and C++ env describe runtimes. Local/release check — deliberately not in the `test` /
 # `check` aggregates. The pkg-config leg always runs; the find_package and
 # FetchContent legs run if cmake is on PATH.
