@@ -4,10 +4,11 @@
 #include <rlmesh.hpp>
 
 int main(int argc, char** argv) try {
-  const std::string address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
+  const std::string address = argc > 1 ? argv[1] : "localhost:7447/env";
   const uint64_t episodes = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 3;
-  rlmesh::RemoteEnv env(rlmesh::RemoteEnvOptions{}.with_address(address));
-  auto action_space = env.action_space();
+  // The run drives the env itself: keep its action space, release the lease.
+  auto action_space =
+      rlmesh::RemoteEnv(rlmesh::RemoteEnvOptions{}.with_address(address)).action_space();
   rlmesh::Model model(
       [action_space](const rlmesh::Value&, const rlmesh::PredictContext& context) {
         std::printf("episode %.*s: predict %llu", static_cast<int>(context.episode_id.size()),
@@ -24,7 +25,7 @@ int main(int argc, char** argv) try {
   std::vector<int64_t> seeds;
   for (uint64_t i = 0; i < episodes; ++i) seeds.push_back(static_cast<int64_t>(7 + i));
   auto result =
-      model.run(env, rlmesh::RunOptions{}.with_episodes(episodes).with_seeds(std::move(seeds)));
+      model.run(address, rlmesh::RunOptions{}.with_episodes(episodes).with_seeds(std::move(seeds)));
   std::printf("run report: episodes=%zu steps=%lld mean=%.1f\n", result.num_episodes(),
               static_cast<long long>(result.total_steps()), result.mean_reward());
   return 0;

@@ -1,4 +1,4 @@
-/* ABI 5: both facade loops, hook errors, contexts, budgets and result ownership. */
+/* Runs and a binding, hook errors, contexts, budgets and result ownership. */
 #include <math.h>
 #include <rlmesh.h>
 #include <stdio.h>
@@ -13,9 +13,8 @@ static int failures;
     }                                                                                           \
   } while (0)
 typedef struct State {
-  int resets, steps, closes, starts, ends, episode_ends, hook_steps, frees;
+  int resets, steps, closes, starts, ends, episode_ends, hook_steps, frees, levels;
   bool abort_step;
-  RLMeshSession* session;
   RLMeshRunHooks* hooks;
   RLMeshRunContext* context;
   RLMeshRunResult* retained;
@@ -29,6 +28,14 @@ static RLMeshStatus reset(void* ud, const int64_t* seed, const RLMeshValue* opti
   bool has = false;
   int64_t trial = 0;
   CHECK(rlmesh_trial_index(options, NULL, &has, &trial) == RLMESH_OK && has);
+  CHECK(rlmesh_value_dict_contains_key(options, rlmesh_str("level"), &has) == RLMESH_OK);
+  if (has) {
+    const RLMeshValue* level = NULL;
+    int64_t value = 0;
+    CHECK(rlmesh_value_dict_get(options, rlmesh_str("level"), &level) == RLMESH_OK);
+    CHECK(rlmesh_value_as_int(level, &value) == RLMESH_OK && value == 9);
+    ++s->levels;
+  }
   return rlmesh_value_int(0, obs);
 }
 static RLMeshStatus step(void* ud, const RLMeshValue* action, RLMeshValue** obs, double* reward,
@@ -45,6 +52,20 @@ static RLMeshStatus step(void* ud, const RLMeshValue* action, RLMeshValue** obs,
   CHECK(rlmesh_value_dict(&key, vals, 1, info) == RLMESH_OK);
   rlmesh_value_free(success);
   return rlmesh_value_int(1, obs);
+}
+/* The model's reset options: every episode's reset carries level 9. */
+static RLMeshStatus add_level(void* ud, const RLMeshValue* episode, RLMeshValue** out) {
+  (void)ud;
+  bool has = false;
+  CHECK(rlmesh_value_dict_contains_key(episode, rlmesh_str("episode_id"), &has) == RLMESH_OK &&
+        has);
+  RLMeshValue* nine = NULL;
+  CHECK(rlmesh_value_int(9, &nine) == RLMESH_OK);
+  RLMeshStr key = rlmesh_str("level");
+  const RLMeshValue* vals[] = {nine};
+  CHECK(rlmesh_value_dict(&key, vals, 1, out) == RLMESH_OK);
+  rlmesh_value_free(nine);
+  return RLMESH_OK;
 }
 static RLMeshStatus close_env(void* ud) {
   ++((State*)ud)->closes;
@@ -86,21 +107,6 @@ static RLMeshStatus start(void* ud, const RLMeshRunContext* ctx) {
   uint64_t n = 0;
   CHECK(rlmesh_run_context_num_envs(ctx, &n) == RLMESH_OK && n == 1);
   CHECK(rlmesh_run_hooks_on_run_start(s->hooks, ctx) == RLMESH_ERR_RUNTIME);
-  if (s->session) {
-    bool done = false;
-    CHECK(rlmesh_session_done(s->session, &done) == RLMESH_ERR_RUNTIME);
-    CHECK(rlmesh_session_num_envs(s->session, &n) == RLMESH_OK && n == 1);
-    RLMeshEnvContract* contract = NULL;
-    CHECK(rlmesh_session_contract(s->session, &contract) == RLMESH_OK && contract);
-    rlmesh_env_contract_free(contract);
-    RLMeshBytes edition = {NULL, 0, 0};
-    CHECK(rlmesh_session_selected_workflow_edition(s->session, &edition) == RLMESH_ERR_RUNTIME);
-    CHECK(rlmesh_session_close(s->session) == RLMESH_ERR_RUNTIME);
-    rlmesh_session_free(s->session);
-    CHECK(rlmesh_last_error_status() == RLMESH_ERR_RUNTIME);
-    CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_RUNTIME_ERROR);
-    CHECK(strstr(rlmesh_last_error_message(), "cannot free a session") != NULL);
-  }
   return RLMESH_OK;
 }
 static RLMeshStatus on_step(void* ud, const RLMeshStepEvent* event) {
@@ -176,6 +182,7 @@ int main(void) {
   RLMeshModelVtable mv = RLMESH_MODEL_VTABLE_INIT;
   mv.predict = predict;
   mv.context_corners = RLMESH_CORNER_PREDICT;
+  mv.reset_options = add_level;
   RLMeshModel* model = NULL;
   CHECK(rlmesh_model_new(&mv, NULL, NULL, &model) == RLMESH_OK);
   RLMeshRunHooksVtable hv = RLMESH_RUN_HOOKS_VTABLE_INIT;
@@ -194,6 +201,7 @@ int main(void) {
   RLMeshRunResult* result = NULL;
   CHECK(rlmesh_model_run(model, rlmesh_env_target(env), &o, &result) == RLMESH_OK);
   CHECK(s.starts == 1 && s.ends == 1 && s.episode_ends == 2 && s.hook_steps == 2 && s.closes == 0);
+  CHECK(s.levels == 2);
   CHECK(rlmesh_run_result_num_episodes(result) == 2 && rlmesh_run_result_total_steps(result) == 2 &&
         rlmesh_run_result_mean_reward(result) == 3.0);
   double rate = 0.0;
@@ -251,52 +259,46 @@ int main(void) {
         result == NULL);
   CHECK(strcmp(rlmesh_last_error_message(), "hook abort") == 0 && s.ends == 2);
   s.abort_step = false;
-  RLMeshSessionOptions so = RLMESH_SESSION_OPTIONS_INIT;
-  so.workflow_edition = rlmesh_current_workflow_edition();
-  CHECK(rlmesh_model_session(model, rlmesh_env_target(env), &so, &s.session) == RLMESH_OK);
+  /* A binding: the model's action, then the env's; it holds the env and
+   * feeds its hooks, run_start at bind and run_end at close. */
+  RLMeshBindOptions bo = RLMESH_BIND_OPTIONS_INIT;
+  bo.workflow_edition = rlmesh_current_workflow_edition();
+  bo.hooks = s.hooks;
+  int starts = s.starts, ends = s.ends, episode_ends = s.episode_ends, hook_steps = s.hook_steps;
+  RLMeshBinding* binding = NULL;
+  CHECK(rlmesh_model_bind(model, rlmesh_env_target(env), &bo, &binding) == RLMESH_OK);
+  CHECK(s.starts == starts + 1 && s.ends == ends);
   CHECK(rlmesh_model_run(model, rlmesh_env_target(env), &o, &result) == RLMESH_ERR_RUNTIME);
-  int64_t seed = 2, trial = 7;
-  RLMeshValue *obs = NULL, *info = NULL, *action = NULL;
-  CHECK(rlmesh_session_reset(s.session, &seed, &trial, &obs, &info) == RLMESH_OK);
-  bool done = true;
-  CHECK(rlmesh_session_done(s.session, &done) == RLMESH_OK && !done);
-  CHECK(rlmesh_session_predict(s.session, obs, &action) == RLMESH_OK);
+  int64_t seed = 2;
+  RLMeshValue *obs = NULL, *info = NULL, *seven = NULL, *options = NULL;
+  CHECK(rlmesh_value_int(7, &seven) == RLMESH_OK);
+  RLMeshStr trial_key = rlmesh_str("trial_index");
+  const RLMeshValue* trial_values[] = {seven};
+  CHECK(rlmesh_value_dict(&trial_key, trial_values, 1, &options) == RLMESH_OK);
+  bool done = false;
+  CHECK(rlmesh_binding_done(binding, &done) == RLMESH_OK && done);
+  CHECK(rlmesh_binding_reset(binding, &seed, options, &obs, &info) == RLMESH_OK);
+  CHECK(rlmesh_binding_done(binding, &done) == RLMESH_OK && !done);
   rlmesh_value_free(obs);
   rlmesh_value_free(info);
   double reward = 0;
   bool terminated = false, truncated = true;
-  CHECK(rlmesh_session_step(s.session, action, &obs, &reward, &terminated, &truncated, &info) ==
+  CHECK(rlmesh_binding_step(binding, NULL, &obs, &reward, &terminated, &truncated, &info) ==
         RLMESH_OK);
   CHECK(reward == 3.0 && terminated && !truncated);
   rlmesh_value_free(obs);
   rlmesh_value_free(info);
-  rlmesh_value_free(action);
-  CHECK(rlmesh_session_done(s.session, &done) == RLMESH_OK && done);
-  RLMeshSessionRunOptions sr = RLMESH_SESSION_RUN_OPTIONS_INIT;
-  sr.hooks = s.hooks;
-  CHECK(rlmesh_session_run(s.session, &sr, &result) == RLMESH_OK);
-  CHECK(rlmesh_run_result_num_episodes(result) == 1);
-  rlmesh_run_result_free(result);
-  RLMeshRunContext* session_context = NULL;
-  CHECK(rlmesh_session_run_context(s.session, &session_context) == RLMESH_OK);
-  CHECK(rlmesh_session_close(s.session) == RLMESH_OK && s.closes == 0);
+  CHECK(rlmesh_binding_done(binding, &done) == RLMESH_OK && done);
   uint64_t lanes = 0;
-  CHECK(rlmesh_run_context_num_envs(session_context, &lanes) == RLMESH_ERR_RUNTIME);
-  rlmesh_run_context_free(session_context);
-  CHECK(rlmesh_session_close(s.session) == RLMESH_OK);
-  CHECK(rlmesh_session_reset(s.session, NULL, NULL, &obs, &info) == RLMESH_ERR_RUNTIME);
-  rlmesh_session_free(s.session);
-  s.session = NULL;
-  RLMeshExtCancelToken* cancel = NULL;
-  CHECK(rlmesh_ext_cancel_token_new(&cancel) == RLMESH_OK);
-  so.cancel = cancel;
-  CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &so, &s.session) ==
-        RLMESH_OK);
-  CHECK(rlmesh_ext_cancel_token_cancel(cancel) == RLMESH_OK);
-  rlmesh_ext_cancel_token_free(cancel);
-  CHECK(rlmesh_session_reset(s.session, NULL, NULL, &obs, &info) == RLMESH_ERR_CANCELLED);
-  rlmesh_session_free(s.session);
-  s.session = NULL;
+  CHECK(rlmesh_binding_num_envs(binding, &lanes) == RLMESH_OK && lanes == 1);
+  CHECK(rlmesh_binding_close(binding) == RLMESH_OK && s.closes == 0);
+  CHECK(rlmesh_binding_close(binding) == RLMESH_OK);
+  CHECK(s.hook_steps == hook_steps + 1 && s.episode_ends == episode_ends + 1 &&
+        s.ends == ends + 1 && rlmesh_run_result_num_episodes(s.retained) == 1);
+  CHECK(rlmesh_binding_reset(binding, NULL, options, &obs, &info) == RLMESH_ERR_RUNTIME);
+  rlmesh_binding_free(binding);
+  rlmesh_value_free(options);
+  rlmesh_value_free(seven);
   RLMeshRunHooksVtable stale_vt = RLMESH_RUN_HOOKS_VTABLE_INIT;
   stale_vt.on_run_start = poison_error;
   stale_vt.on_episode_start = silent_hook_failure;
@@ -308,33 +310,6 @@ int main(void) {
   CHECK(result == NULL && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_RLMESH_EXCEPTION);
   CHECK(strcmp(rlmesh_last_error_message(), "hook callback failed") == 0);
   rlmesh_run_hooks_free(stale_hooks);
-  /* X-12: all three C session calls, NULL equivalence and idle re-arming. */
-  so.cancel = NULL;
-  CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &so, &s.session) ==
-        RLMESH_OK);
-  CHECK(rlmesh_ext_cancel_token_new(&cancel) == RLMESH_OK);
-  CHECK(rlmesh_ext_session_reset(s.session, &seed, &trial, cancel, &obs, &info) == RLMESH_OK);
-  rlmesh_value_free(info);
-  CHECK(rlmesh_ext_session_predict(s.session, obs, cancel, &action) == RLMESH_OK);
-  rlmesh_value_free(obs);
-  CHECK(rlmesh_ext_session_step(s.session, action, cancel, &obs, &reward, &terminated, &truncated,
-                                &info) == RLMESH_OK);
-  rlmesh_value_free(obs);
-  rlmesh_value_free(info);
-  CHECK(rlmesh_ext_cancel_token_cancel(cancel) == RLMESH_OK);
-  CHECK(rlmesh_ext_session_predict(s.session, action, NULL, &obs) == RLMESH_OK);
-  rlmesh_value_free(obs);
-  CHECK(rlmesh_ext_session_predict(s.session, action, cancel, &obs) == RLMESH_ERR_CANCELLED);
-  CHECK(obs == NULL);
-  CHECK(rlmesh_ext_session_predict(s.session, action, cancel, &obs) == RLMESH_OK);
-  rlmesh_value_free(obs);
-  CHECK(rlmesh_ext_session_reset(s.session, &seed, &trial, NULL, &obs, &info) == RLMESH_OK);
-  rlmesh_value_free(obs);
-  rlmesh_value_free(info);
-  rlmesh_value_free(action);
-  rlmesh_ext_cancel_token_free(cancel);
-  rlmesh_session_free(s.session);
-  s.session = NULL;
   o.close_env = true;
   o.hooks = NULL;
   CHECK(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &o, &result) == RLMESH_OK &&

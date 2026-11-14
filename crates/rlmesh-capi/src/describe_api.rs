@@ -197,7 +197,7 @@ pub unsafe extern "C" fn rlmesh_model_describe(
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(out, std::ptr::null_mut())
         }?;
-        unsafe { metadata((&model_api::require(v)?.model).into(), o, out) }
+        unsafe { metadata(model_api::require(v)?.local("describe")?.into(), o, out) }
     })
 }
 #[unsafe(no_mangle)]
@@ -211,7 +211,7 @@ pub unsafe extern "C" fn rlmesh_model_describe_json(
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(out, RLMeshBytes::from_vec(Vec::new()))
         }?;
-        unsafe { json((&model_api::require(v)?.model).into(), o, out) }
+        unsafe { json(model_api::require(v)?.local("describe")?.into(), o, out) }
     })
 }
 #[unsafe(no_mangle)]

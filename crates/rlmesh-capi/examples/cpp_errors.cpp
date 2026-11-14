@@ -56,14 +56,14 @@ int main() {
   } catch (const rlmesh::ext::CancelledError& e) {
     assert(std::string(e.what()) == "cancelled");
   }
-  rlmesh::EnvServer server(RecoverableEnv{},
-                           rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+  rlmesh::EnvServer server(RecoverableEnv{}, rlmesh::EnvServerOptions{}.with_address(":0/env"));
   server.start();
   const std::string probe = R"PY(uv run --no-sync python -c '
 import sys
 import rlmesh
 import rlmesh.numpy
-with rlmesh.numpy.RemoteEnv(sys.argv[1]) as env:
+env = rlmesh.numpy.RemoteEnv(sys.argv[1])
+with env:
     env.reset()
     try:
         env.step(0)

@@ -98,12 +98,12 @@ static void check_values(void) {
 }
 
 int main(void) {
-  CHECK(rlmesh_abi_version() == 5 && rlmesh_abi_check());
+  CHECK(rlmesh_abi_version() == 6 && rlmesh_abi_check());
   check_values();
   RLMeshBuildInfo bi = RLMESH_BUILD_INFO_INIT;
   CHECK(rlmesh_build_info(&bi) == RLMESH_OK);
   CHECK(strcmp(bi.version, RLMESH_VERSION) == 0);
-  CHECK(strcmp(bi.protocol_generation, "rlmesh-wire-v1") == 0);
+  CHECK(strcmp(bi.protocol_generation, "rlmesh-realtime-v1") == 0);
   CHECK(strcmp(bi.workflow_edition_base, rlmesh_current_workflow_edition()) == 0);
   CHECK(strncmp(bi.workflow_edition, bi.workflow_edition_base, strlen(bi.workflow_edition_base)) ==
         0);

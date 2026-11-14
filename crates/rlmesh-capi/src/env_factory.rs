@@ -270,7 +270,7 @@ impl EnvFactory for Factory {
         };
         if (error.is_some() || (env.is_some() && vector.is_some())) && start_gates().is_some() {
             // Only background start promises close-on-rejected-output. Existing
-            // foreground/session behaviour is unchanged, and a leased env is
+            // foreground/binding behaviour is unchanged, and a leased env is
             // owned by another operation and must never be closed here.
             if let Some(env) = &env
                 && !env.leased.load(Ordering::Acquire)
@@ -818,7 +818,7 @@ impl Drop for ServeDrain {
     }
 }
 
-/// Owns exclusive factory admission while a facade run/session borrows it.
+/// Owns exclusive factory admission while a facade run/binding borrows it.
 pub(crate) struct FactoryBorrow {
     factory: Factory,
     data: Arc<Data>,
@@ -829,8 +829,9 @@ impl FactoryBorrow {
     pub(crate) fn scope(&self) -> Scope {
         Scope::new(Arc::clone(&self.data))
     }
-    // Only the factory field is lent for the session lifetime; scope() reads
-    // separate data. The binding drops the Session before this allocation.
+    // Only the factory field is lent for the binding's lifetime; scope() reads
+    // separate data. The C binding drops its facade Binding before this
+    // allocation.
     pub(crate) unsafe fn scope_static(ptr: *const Self) -> Scope {
         Scope::new(Arc::clone(unsafe { &(*ptr).data }))
     }

@@ -480,3 +480,52 @@ pub unsafe extern "C" fn rlmesh_run_result_advisories_get(
         unsafe { crate::adapters::out_struct(out, view, "RLMeshAdvisory") }
     })
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RLMeshRunResultSaveOptions {
+    pub struct_size: usize,
+    pub model: *const c_char,
+    pub env: *const c_char,
+    pub config: *const crate::value::handle::RLMeshValue,
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_run_result_save(
+    p: *const RLMeshRunResult,
+    path: *const c_char,
+    options: *const RLMeshRunResultSaveOptions,
+    out: *mut RLMeshBytes,
+) -> RLMeshStatus {
+    guard(|| {
+        // An invalid output must not create files.
+        if out.is_null() {
+            return Err(CapiError::invalid_arg("null out"));
+        }
+        let result = unsafe { require(p) }?;
+        let path =
+            unsafe { ffi::text(path) }?.ok_or_else(|| CapiError::invalid_arg("null path"))?;
+        let mut opts = rlmesh::RunResultSaveOptions::default();
+        if let Some(o) = unsafe { sizing::read(options, "RLMeshRunResultSaveOptions") }? {
+            if let Some(model) = unsafe { ffi::text(o.model) }? {
+                opts.model = model;
+            }
+            if let Some(env) = unsafe { ffi::text(o.env) }? {
+                opts.env = env;
+            }
+            opts.config = ffi::dict(o.config)?;
+        }
+        let written = result.save(path, opts)?;
+        ffi::bytes(out, written.to_string_lossy().into_owned())
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_run_result_load(
+    path: *const c_char,
+    out: *mut *mut RLMeshRunResult,
+) -> RLMeshStatus {
+    guard(|| {
+        let path =
+            unsafe { ffi::text(path) }?.ok_or_else(|| CapiError::invalid_arg("null path"))?;
+        output(out, RunResult::load(path)?)
+    })
+}

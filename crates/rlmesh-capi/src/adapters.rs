@@ -365,6 +365,109 @@ pub unsafe extern "C" fn rlmesh_model_spec_new(
         }
     })
 }
+/// How a model paces its actions, as Rust's `adapters::Timing`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RLMeshTiming {
+    pub struct_size: usize,
+    pub has_execution: bool,
+    pub _reserved: [u8; 3],
+    pub execution: u32,
+}
+/// The same spec pacing its actions by `timing` (Rust's
+/// `ModelSpec::with_timing`); a fresh handle in `*out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_with_timing(
+    spec: *const RLMeshModelSpec,
+    timing: *const RLMeshTiming,
+    out: *mut *mut RLMeshModelSpec,
+) -> RLMeshStatus {
+    guard(|| {
+        unsafe {
+            /* SAFETY: the FFI caller supplies valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let spec = unsafe { spec.as_ref() }
+            .ok_or_else(|| CapiError::invalid_arg("null RLMeshModelSpec"))?;
+        let t = unsafe { sized(timing, "RLMeshTiming") }?;
+        if t._reserved != [0; 3] {
+            return Err(CapiError::type_error(
+                "RLMeshTiming reserved bytes must be zero",
+            ));
+        }
+        let value = spec.0.clone().with_timing(a::Timing {
+            execution: t.has_execution.then_some(t.execution),
+        })?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshModelSpec::new(value))))
+        }
+    })
+}
+/// How the spec paces its actions, written into `*out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_timing(
+    spec: *const RLMeshModelSpec,
+    out: *mut RLMeshTiming,
+) -> RLMeshStatus {
+    guard(|| {
+        let spec = unsafe { spec.as_ref() }
+            .ok_or_else(|| CapiError::invalid_arg("null RLMeshModelSpec"))?;
+        let execution = spec.0.timing().execution;
+        unsafe {
+            out_struct(
+                out,
+                RLMeshTiming {
+                    struct_size: std::mem::size_of::<RLMeshTiming>(),
+                    has_execution: execution.is_some(),
+                    _reserved: [0; 3],
+                    execution: execution.unwrap_or(0),
+                },
+                "RLMeshTiming",
+            )
+        }
+    })
+}
+/// The same spec accepting the named projections in `allow` (Rust's
+/// `ModelSpec::with_allow`); a fresh handle in `*out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_with_allow(
+    spec: *const RLMeshModelSpec,
+    allow: *const *const c_char,
+    allow_len: usize,
+    out: *mut *mut RLMeshModelSpec,
+) -> RLMeshStatus {
+    guard(|| {
+        unsafe {
+            /* SAFETY: the FFI caller supplies valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let spec = unsafe { spec.as_ref() }
+            .ok_or_else(|| CapiError::invalid_arg("null RLMeshModelSpec"))?;
+        let allow = unsafe { strings(allow, allow_len) }?.unwrap_or_default();
+        let value = spec.0.clone().with_allow(allow);
+        unsafe {
+            /* SAFETY: the FFI caller supplies valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshModelSpec::new(value))))
+        }
+    })
+}
+/// The named projections the spec accepts, borrowed for the spec's lifetime;
+/// `*out_len` receives their count. NULL spec yields NULL and 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_allow(
+    p: *const RLMeshModelSpec,
+    out_len: *mut usize,
+) -> *const *const c_char {
+    guard_value(std::ptr::null(), || {
+        let (items, len) =
+            unsafe { p.as_ref() }.map_or((std::ptr::null(), 0), |p| (p.1.allow, p.1.allow_len));
+        if let Some(out_len) = unsafe { out_len.as_mut() } {
+            *out_len = len;
+        }
+        items
+    })
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_env_tags_new(
     input: *const RLMeshObsNode,

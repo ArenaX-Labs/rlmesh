@@ -63,6 +63,14 @@ static RLMeshStatus loaded(void* u, bool* has_chunk, uint32_t* n) {
   *n = 5;
   return RLMESH_OK;
 }
+static int horizon_reads;
+static RLMeshStatus loaded_horizon(void* u, bool* has, uint32_t* n) {
+  (void)u;
+  ++horizon_reads;
+  *has = true;
+  *n = 2;
+  return RLMESH_OK;
+}
 static RLMeshStatus close_model(void* u) {
   (void)u;
   ++model_closes;
@@ -78,6 +86,7 @@ static void models(void) {
   v.predict_chunk = chunk;
   v.load = load;
   v.loaded_native_chunk = loaded;
+  v.loaded_execution_horizon = loaded_horizon;
   v.close = close_model;
   v.free_user_data = free_model;
   v.has_native_chunk = true;
@@ -184,8 +193,9 @@ static void models(void) {
   CHECK(rlmesh_model_describe(model, NULL, &desc) == RLMESH_OK);
   int64_t n = 0;
   CHECK(rlmesh_value_as_int(get(desc, "native_chunk"), &n) == RLMESH_OK && n == 3);
+  CHECK(rlmesh_value_as_int(get(desc, "execution_horizon"), &n) == RLMESH_OK && n == 2);
   rlmesh_value_free(desc);
-  CHECK(loads == 1 && loaded_reads == 1 && predicts == 0);
+  CHECK(loads == 1 && loaded_reads == 1 && predicts == 0 && horizon_reads == 1);
   CHECK(rlmesh_model_close(model) == RLMESH_OK);
   CHECK(rlmesh_model_describe_json(model, NULL, &json) == RLMESH_OK && has(&json, "native:model"));
   rlmesh_bytes_free(json);
@@ -344,7 +354,7 @@ static void factories(void) {
   RLMeshServeOptions serve = RLMESH_SERVE_OPTIONS_INIT;
   serve.workflow_edition = rlmesh_current_workflow_edition();
   RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
-  so.address = "tcp://127.0.0.1:0";
+  so.address = ":0/env";
   so.options = &serve;
   so.close_env_on_shutdown = false;
   RLMeshExtEnvServerOptions ext = RLMESH_EXT_ENV_SERVER_OPTIONS_INIT;

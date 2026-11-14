@@ -19,7 +19,6 @@ typedef struct State {
   RLMeshRunContext* kept;
   RLMeshFrameSources* kept_sources;
   RLMeshReadItem* item;
-  RLMeshSession* session;
   RLMeshFrameSources* transfer_source;
 } State;
 static RLMeshValue* vector(float n) {
@@ -96,19 +95,6 @@ static RLMeshStatus on_step(void* user, const RLMeshStepEvent* event) {
   rlmesh_value_free(out);
   rlmesh_frame_sources_free(s->kept_sources);
   s->kept_sources = sources;
-  if (s->session) {
-    RLMeshReader* forbidden = NULL;
-    const RLMeshReadItem* items[] = {s->item};
-    CHECK(rlmesh_session_reader(s->session, items, 1, &forbidden) == RLMESH_ERR_RUNTIME &&
-          !forbidden);
-    RLMeshObservationRoles roles = RLMESH_OBSERVATION_ROLES_INIT;
-    CHECK(rlmesh_session_observation_roles(s->session, &roles) == RLMESH_ERR_RUNTIME);
-    out = NULL;
-    CHECK(rlmesh_session_read(s->session, event->observation, s->item, &out) == RLMESH_OK);
-    rlmesh_value_free(out);
-    CHECK(rlmesh_session_frame_sources(s->session, &sources) == RLMESH_OK);
-    rlmesh_frame_sources_free(sources);
-  }
   return RLMESH_OK;
 }
 static void free_state(void* user) { ++((State*)user)->frees; }
@@ -320,47 +306,39 @@ int main(void) {
   CHECK(rlmesh_run_context_frame_sources(state.kept, &empty) == RLMESH_OK &&
         rlmesh_frame_sources_labels_len(empty) == 0);
   rlmesh_frame_sources_free(empty);
-  RLMeshSessionOptions session_options = RLMESH_SESSION_OPTIONS_INIT;
-  char instruction[] = "override";
-  session_options.instruction = instruction;
-  session_options.workflow_edition = rlmesh_current_workflow_edition();
-  CHECK(rlmesh_model_session(model, rlmesh_env_target(env), &session_options, &state.session) ==
-        RLMESH_OK);
-  instruction[0] = 'X'; /* Session copied it at creation. */
+  /* A binding reads an observation by role and reaches the env's render. */
+  RLMeshBindOptions bind_options = RLMESH_BIND_OPTIONS_INIT;
+  bind_options.workflow_edition = rlmesh_current_workflow_edition();
+  RLMeshBinding* binding = NULL;
+  CHECK(rlmesh_model_bind(model, rlmesh_env_target(env), &bind_options, &binding) == RLMESH_OK);
   RLMeshValue* observation = NULL;
   RLMeshValue* info = NULL;
-  CHECK(rlmesh_session_reset(state.session, NULL, NULL, &observation, &info) == RLMESH_OK);
+  CHECK(rlmesh_binding_reset(binding, NULL, NULL, &observation, &info) == RLMESH_OK);
   rlmesh_value_free(info);
   RLMeshEnvContract* contract = NULL;
-  CHECK(rlmesh_session_contract(state.session, &contract) == RLMESH_OK);
+  CHECK(rlmesh_binding_contract(binding, &contract) == RLMESH_OK);
   RLMeshAdapter* resolved = NULL;
   CHECK(rlmesh_adapters_resolve_from_contract(contract, spec, NULL, &resolved) == RLMESH_OK);
   rlmesh_env_contract_free(contract);
   const char* direct_roles[] = {"state"};
-  RLMeshReader* direct_reader = NULL;
-  CHECK(rlmesh_reader_new(resolved, direct_roles, 1, &direct_reader) == RLMESH_OK);
-  rlmesh_adapter_free(resolved);
-  out = NULL;
-  CHECK(rlmesh_reader_call(direct_reader, observation, &out) == RLMESH_OK &&
-        rlmesh_value_kind(out) == RLMESH_VALUE_DICT);
-  rlmesh_value_free(out);
-  rlmesh_reader_free(direct_reader);
-  const RLMeshReadItem* items[] = {item};
   RLMeshReader* reader = NULL;
-  CHECK(rlmesh_session_reader(state.session, items, 1, &reader) == RLMESH_OK &&
+  CHECK(rlmesh_reader_new(resolved, direct_roles, 1, &reader) == RLMESH_OK &&
         rlmesh_reader_roles_len(reader) == 1);
+  rlmesh_adapter_free(resolved);
   CHECK(rlmesh_reader_roles_get(reader, 0, &bytes) == RLMESH_OK);
   rlmesh_bytes_free(bytes);
+  out = NULL;
   CHECK(rlmesh_reader_call(reader, observation, &out) == RLMESH_OK &&
         rlmesh_value_kind(out) == RLMESH_VALUE_DICT);
   rlmesh_value_free(out);
-  RLMeshObservationRoles observed = RLMESH_OBSERVATION_ROLES_INIT;
-  CHECK(rlmesh_session_observation_roles(state.session, &observed) == RLMESH_OK &&
-        observed.states_len == 1 && strcmp(observed.states[0], tag.role) == 0);
+  out = NULL;
+  CHECK(rlmesh_binding_read(binding, observation, item, &out) == RLMESH_OK &&
+        rlmesh_value_kind(out) == RLMESH_VALUE_TENSOR);
+  rlmesh_value_free(out);
   RLMeshFrameSources* direct = NULL;
-  CHECK(rlmesh_session_frame_sources(state.session, &direct) == RLMESH_OK);
+  CHECK(rlmesh_binding_frame_sources(binding, &direct) == RLMESH_OK);
   State transfer_state = {0};
-  CHECK(rlmesh_session_frame_sources(state.session, &transfer_state.transfer_source) == RLMESH_OK);
+  CHECK(rlmesh_binding_frame_sources(binding, &transfer_state.transfer_source) == RLMESH_OK);
   RLMeshRunContext* transfer_context = NULL;
   CHECK(rlmesh_run_context_new(&context_vt, &transfer_state, &transfer_context) == RLMESH_OK);
   RLMeshFrameSources* transferred = NULL;
@@ -375,29 +353,21 @@ int main(void) {
   CHECK(rlmesh_frame_sources_render(direct, &out, &has) == RLMESH_ERR_ENVIRONMENT && !out &&
         strcmp(rlmesh_last_error_message(), "[INTERNAL] render failed") == 0);
   state.render_fail = false;
-  RLMeshSessionRunOptions sr = RLMESH_SESSION_RUN_OPTIONS_INIT;
-  sr.hooks = hooks;
-  CHECK(rlmesh_session_run(state.session, &sr, &result) == RLMESH_OK && state.reads == 2);
-  rlmesh_run_result_free(result);
-  CHECK(rlmesh_session_close(state.session) == RLMESH_OK);
+  CHECK(rlmesh_binding_close(binding) == RLMESH_OK);
   out = NULL;
   CHECK(rlmesh_frame_sources_render(direct, &out, &has) == RLMESH_ERR_RUNTIME && !out);
-  CHECK(rlmesh_run_context_read(state.kept, raw, item, &out) == RLMESH_ERR_RUNTIME);
-  CHECK(rlmesh_run_context_frame_sources(state.kept, &empty) == RLMESH_ERR_RUNTIME && !empty);
-  CHECK(strcmp(observed.states[0], tag.role) == 0);
   CHECK(rlmesh_reader_call(reader, observation, &out) == RLMESH_OK);
   rlmesh_value_free(out);
   rlmesh_value_free(observation);
   rlmesh_reader_free(reader);
   rlmesh_frame_sources_free(state.kept_sources);
   rlmesh_run_context_free(state.kept);
-  rlmesh_session_free(state.session);
-  state.session = NULL;
+  rlmesh_binding_free(binding);
   out = NULL;
   CHECK(rlmesh_frame_sources_render(direct, &out, &has) == RLMESH_ERR_RUNTIME && !out);
-  CHECK(strstr(rlmesh_last_error_message(), "session has been freed") != NULL);
+  CHECK(strstr(rlmesh_last_error_message(), "binding has been freed") != NULL);
   CHECK(rlmesh_frame_sources_render(transferred, &out, &has) == RLMESH_ERR_RUNTIME && !out);
-  CHECK(strstr(rlmesh_last_error_message(), "session has been freed") != NULL);
+  CHECK(strstr(rlmesh_last_error_message(), "binding has been freed") != NULL);
   CHECK(transfer_state.frees == 0);
   rlmesh_frame_sources_free(transferred);
   CHECK(transfer_state.frees == 1);
