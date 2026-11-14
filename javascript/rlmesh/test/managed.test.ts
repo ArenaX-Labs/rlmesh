@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { claimClusterJoin, createClient as createBrowserClient, getMe, listEvaluations, ManagedError, previewEvaluation } from '../src/managed/index.js';
+import { createClient as createBrowserClient, getMe, listEvaluations, ManagedError, previewEvaluation } from '../src/managed/index.js';
 import { createClient, createEvaluation } from '../src/managed/node.js';
 
 type Call = { url: string; auth: string | null; body: string };
@@ -17,20 +17,21 @@ function fakeFetch(calls: Call[], reply: (call: Call) => Response = () => Respon
   }) as typeof fetch;
 }
 
-test('the bearer token comes from apiKey, else getAccessToken, and never replaces a cluster-join token', async () => {
+test('the bearer token comes from apiKey, else getAccessToken, and never replaces another security scheme\'s token', async () => {
   const calls: Call[] = [];
   let asked = 0;
   const getAccessToken = async () => (asked++, 'session');
   await getMe({ client: createBrowserClient({ apiKey: 'key', getAccessToken, fetch: fakeFetch(calls), baseUrl: 'https://p.example/' }) });
   const browser = createBrowserClient({ getAccessToken, fetch: fakeFetch(calls) });
   await listEvaluations({ client: browser, query: { status: 'running', tag: ['team:a', 'run:1'] } });
-  await claimClusterJoin({ client: browser, headers: { Authorization: 'Bearer join-token' }, body: {} as never });
+  // An operation under another scheme (none in the public contract today) takes its token from the caller.
+  await browser.post({ url: '/v1/other', security: [{ key: 'otherAuth', scheme: 'bearer', type: 'http' }], headers: { Authorization: 'Bearer own-token' } });
   assert.deepEqual(
     calls.map((c) => [c.url, c.auth]),
     [
       ['https://p.example/v1/me', 'Bearer key'],
       ['https://api.rlmesh.dev/v1/evaluations?status=running&tag=team%3Aa&tag=run%3A1', 'Bearer session'],
-      ['https://api.rlmesh.dev/v1/cluster-join', 'Bearer join-token'],
+      ['https://api.rlmesh.dev/v1/other', 'Bearer own-token'],
     ],
   );
   assert.equal(asked, 1);

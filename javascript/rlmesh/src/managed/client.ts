@@ -51,7 +51,8 @@ export type Fallback = (refresh: boolean) => Promise<{ token: string; baseUrl?: 
 
 /**
  * Configure a Hey API client for the platform: base URL, bearer token for the platform's own
- * `bearerAuth` operations (cluster-join tokens are passed by the caller), and `ManagedError`s.
+ * `bearerAuth` operations (an operation under another scheme takes its token from the caller),
+ * and `ManagedError`s.
  * With a `fallback`, requests carrying its token go to its base URL when none was configured,
  * and a 401 refetches the token and retries once.
  */
