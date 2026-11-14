@@ -2,7 +2,7 @@
 
 import argparse
 
-DEFAULT_ADDRESS = "127.0.0.1:5555"
+DEFAULT_ADDRESS = "127.0.0.1:5555/env"
 
 
 def parse_args() -> argparse.Namespace:
