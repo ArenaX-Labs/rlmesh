@@ -90,8 +90,14 @@
     "rlmesh.spaces",
     "rlmesh.types",
     "rlmesh.specs",
-    "rlmesh.platform",
-    "rlmesh.recorder"
+    "rlmesh.managed",
+    "rlmesh.launch",
+    "rlmesh.recorder",
+    "rlmesh.realtime",
+    "rlmesh.realtime.parts",
+    "rlmesh.realtime.inputs",
+    "rlmesh.realtime.actions",
+    "rlmesh.realtime.results"
   ],
   "modules": {
     "rlmesh": {
@@ -148,17 +154,53 @@
       "status": "Experimental.",
       "title": "rlmesh.jax"
     },
-    "rlmesh.platform": {
+    "rlmesh.managed": {
       "description": "Submit and read evaluations on a managed RLMesh platform through the signed-in CLI.",
       "stability": "Experimental",
       "status": "Experimental.",
-      "title": "rlmesh.platform"
+      "title": "rlmesh.managed"
+    },
+    "rlmesh.launch": {
+      "title": "rlmesh.launch",
+      "description": "Host identities for a session host another process runs, and the keyed addresses that dial it.",
+      "stability": "Experimental",
+      "status": "Experimental."
     },
     "rlmesh.recorder": {
       "title": "rlmesh.recorder",
       "description": "Portable evaluation bundles, recorded workloads, episodes, and media references.",
       "stability": "Stable",
       "status": "Stable recording and bundle schema."
+    },
+    "rlmesh.realtime": {
+      "title": "rlmesh.realtime",
+      "description": "Real-time sessions: robots, policies with timed action chunks, the edge, recordings.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.realtime.parts": {
+      "title": "rlmesh.realtime.parts",
+      "description": "Typed constructors for robot map parts, returning the plain dicts the map takes.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.realtime.inputs": {
+      "title": "rlmesh.realtime.inputs",
+      "description": "Typed constructors for a policy's inputs, returning the plain dicts the policy map takes.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.realtime.actions": {
+      "title": "rlmesh.realtime.actions",
+      "description": "Typed constructors for a policy's actions, returning the plain dicts the policy map takes.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.realtime.results": {
+      "title": "rlmesh.realtime.results",
+      "description": "TypedDicts for what the realtime calls return; plain dicts at run time.",
+      "stability": "Experimental",
+      "status": "Experimental."
     }
   },
   "exports": {
@@ -176,6 +218,9 @@
       "members": {
         "params": {
           "stability": "Experimental"
+        },
+        "run_routes": {
+          "stability": "Experimental"
         }
       }
     },
@@ -190,6 +235,17 @@
     "rlmesh.Vector": {
       "stability": "Experimental",
       "description": "Declared vector-valued construction parameter shape."
+    },
+    "rlmesh.Interrupted": {
+      "stability": "Experimental",
+      "description": "KeyboardInterrupt raised by Model.run on Ctrl-C, carrying the RunResult of the episodes that completed."
+    },
+    "rlmesh.BatchOptions": {
+      "stability": "Experimental"
+    },
+    "rlmesh.EvalReport": {
+      "stability": "Experimental",
+      "description": "Per-task, per-suite and overall success with Wilson 95% intervals and merged telemetry of saved result bundles; native counterparts deferred."
     },
     "rlmesh.SandboxBuild": {
       "stability": "Experimental"
@@ -593,9 +649,46 @@
     "rlmesh.params": {
       "stability": "Experimental"
     },
+    "rlmesh.Recorder": {
+      "members": {
+        "record": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.recorder.Recorder": {
+      "members": {
+        "record": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.RunHooks": {
+      "members": {
+        "transform_action": {
+          "stability": "Experimental"
+        },
+        "transform_observation": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.RunResult": {
+      "members": {
+        "merge": {
+          "stability": "Experimental"
+        }
+      }
+    },
     "rlmesh.EnvFactory": {
       "members": {
         "params": {
+          "stability": "Experimental"
+        },
+        "render_params": {
+          "stability": "Experimental"
+        },
+        "requires_episode_cap": {
           "stability": "Experimental"
         }
       }
@@ -604,12 +697,21 @@
       "members": {
         "params": {
           "stability": "Experimental"
+        },
+        "run_routes": {
+          "stability": "Experimental"
         }
       }
     },
     "rlmesh.numpy.EnvFactory": {
       "members": {
         "params": {
+          "stability": "Experimental"
+        },
+        "render_params": {
+          "stability": "Experimental"
+        },
+        "requires_episode_cap": {
           "stability": "Experimental"
         }
       }

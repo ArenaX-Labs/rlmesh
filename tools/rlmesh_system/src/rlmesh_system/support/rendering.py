@@ -75,7 +75,7 @@ class Renderer:
         scenario_table = Table(title="System Scenario Kinds", box=box.SIMPLE)
         scenario_table.add_column("Kind", style="bold")
         scenario_table.add_column("Scenarios")
-        for kind in ("trace", "artifact", "external"):
+        for kind in ("trace", "artifact"):
             names = [
                 scenario.name
                 for scenario in scenarios.values()
@@ -330,7 +330,7 @@ def print_profiles_plain(
         )
     print()
     print("Scenario Kinds:")
-    for kind in ("trace", "artifact", "external"):
+    for kind in ("trace", "artifact"):
         names = [
             scenario.name for scenario in scenarios.values() if scenario.kind == kind
         ]

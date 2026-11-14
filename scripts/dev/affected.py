@@ -27,7 +27,7 @@ import os
 import subprocess
 import sys
 import sysconfig
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import tomllib
@@ -75,6 +75,9 @@ class Plan:
 class Workspace:
     dirs: dict[str, PurePosixPath]  # package -> manifest dir, relative to root
     dependents: dict[str, set[str]]  # package -> workspace packages using it
+    # package -> the spec cargo takes for it: a bare name is ambiguous when the
+    # lockfile also holds a released version of the same crate.
+    specs: dict[str, str] = field(default_factory=dict)
 
 
 def load_workspace() -> Workspace:
@@ -102,7 +105,12 @@ def load_workspace() -> Workspace:
         for dep in node["deps"]:
             if dep["pkg"] in names:
                 dependents[names[dep["pkg"]]].add(names[node["id"]])
-    return Workspace(dirs, dependents)
+    specs = {
+        p["name"]: f"{p['name']}@{p['version']}"
+        for p in meta["packages"]
+        if p["id"] in members
+    }
+    return Workspace(dirs, dependents, specs)
 
 
 def owner(path: PurePosixPath, workspace: Workspace) -> str | None:
@@ -265,9 +273,10 @@ def main() -> None:
     args = parser.parse_args()
 
     changed = changed_files(args.base)
+    workspace = load_workspace()
     selection = plan(
         changed,
-        load_workspace(),
+        workspace,
         ci=args.ci,
         csharp_dependencies_changed=(
             not args.ci
@@ -281,13 +290,24 @@ def main() -> None:
     if args.dry_run:
         return
 
-    # Same as test:rust: tests that embed Python need the venv's site-packages.
+    # Same as test:rust: tests that embed Python need the venv's site-packages,
+    # synced (a new worktree's is empty). This task holds the heavy lock, so it
+    # syncs rather than stops.
+    embeds = selection.rust is None or EXTENSION_PACKAGE in selection.rust
+    if (embeds or selection.python) and run(
+        [sys.executable, str(ROOT / "scripts/dev/python_synced.py"), "--sync"]
+    ):
+        sys.exit(1)
     env = dict(os.environ, PYTHONPATH=sysconfig.get_path("purelib"))
     status = 0
     if selection.rust is None:
         status |= run(["cargo", "nextest", "run", "--workspace", "--all-targets"], env)
     elif selection.rust:
-        packages = [arg for name in selection.rust for arg in ("-p", name)]
+        packages = [
+            arg
+            for name in selection.rust
+            for arg in ("-p", workspace.specs.get(name, name))
+        ]
         status |= run(["cargo", "nextest", "run", "--all-targets", *packages], env)
     if selection.python:
         # The editable install loads the in-tree .so; rebuild it if Rust moved.

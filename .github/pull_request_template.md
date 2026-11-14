@@ -8,7 +8,7 @@
 
 ## Docs
 
-<!-- User-facing change? Link the rlmesh.dev docs PR in the platform repo, or write n/a. -->
+<!-- User-facing change? Link the relevant documentation, or write n/a. -->
 
 ## How tested
 

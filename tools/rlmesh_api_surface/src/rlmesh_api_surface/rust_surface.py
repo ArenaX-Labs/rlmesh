@@ -52,6 +52,8 @@ class RustSurfaceConfig:
     source_repo: str
     source_commit: str | None
     document_hidden: bool = False
+    #: The facade's cargo features to document: the surface its users build.
+    features: tuple[str, ...] = ()
 
 
 def collect_rust_api_surface(
@@ -61,7 +63,12 @@ def collect_rust_api_surface(
     json_dir: Path | None = None,
 ) -> list[ApiModule]:
     """Document the facade crate (building rustdoc JSON unless `json_dir` holds it)."""
-    loader = _CrateLoader(repo_root, json_dir, document_hidden=config.document_hidden)
+    loader = _CrateLoader(
+        repo_root,
+        json_dir,
+        document_hidden=config.document_hidden,
+        features={config.crate.replace("_", "-"): config.features},
+    )
     facade = loader.load(config.crate)
     return _FacadeWalker(loader, facade, config).collect()
 
@@ -102,10 +109,16 @@ class _Crate:
 
 class _CrateLoader:
     def __init__(
-        self, repo_root: Path, json_dir: Path | None, *, document_hidden: bool = False
+        self,
+        repo_root: Path,
+        json_dir: Path | None,
+        *,
+        document_hidden: bool = False,
+        features: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.document_hidden = document_hidden
+        self.features = features or {}
         self.json_dir = json_dir
         self.workspace, self.target_dir = _cargo_workspace(repo_root)
         self._loaded: dict[str, _Crate] = {}
@@ -137,6 +150,11 @@ class _CrateLoader:
                 "--package",
                 package,
                 "--lib",
+                *(
+                    ["--features", ",".join(self.features[package])]
+                    if self.features.get(package)
+                    else []
+                ),
                 "--",
                 "-Z",
                 "unstable-options",

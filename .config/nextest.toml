@@ -1,8 +1,38 @@
 # cargo-nextest configuration (https://nexte.st/docs/configuration/).
 
+# Setup scripts are the one place that reaches a bare `cargo nextest run` too.
+experimental = ["setup-scripts"]
+
+# A loopback host writes its key (and its link gate) to the runtime
+# directory; tests get one of their own instead of the user's.
+[scripts.setup.runtime-dir]
+# Through sh: a copied tree (cargo-mutants) may not keep the exec bit.
+command = "sh scripts/dev/nextest-runtime-dir.sh"
+
 [profile.default]
 # Report every failure in one run instead of stopping at the first.
 fail-fast = false
 # Flag tests slower than 60s, and kill any still running after 10 minutes so a
 # hung test fails instead of stalling an agent or CI job.
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The real-time integration tests each run a host, several participants and
+# 1 kHz ticker threads against wall-clock deadlines. Run side by side on
+# every core they starve each other into the stalls they assert against, so
+# only two run at once; everything else keeps the full machine.
+[test-groups]
+realtime = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = '(package(rlmesh-session) & kind(test)) | (package(rlmesh-device) & binary(robot)) | (package(rlmesh-cli) & binary(host_process))'
+test-group = 'realtime'
+# They pass on a quiet machine and each fails once in a few hundred runs on a
+# loaded one, a different test each time: a deadline missed, not a wrong
+# answer. A retried test that then passes is reported as FLAKY rather than
+# failing the run; one that fails every try still fails it.
+retries = 2
+
+[[profile.default.scripts]]
+platform = 'cfg(unix)'
+filter = 'all()'
+setup = 'runtime-dir'

@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,16 +53,70 @@ def collect_header_api_surface(
     return collector.collect(tu)
 
 
+#: The fallback header driver: zig 0.13 ships libc++ from LLVM 18, the same
+#: release as the pinned `libclang` wheel, so its headers always parse. A host
+#: toolchain newer than libclang (GCC 16's libstdc++, a newer libc++) does not.
+FALLBACK_DRIVERS = {
+    "c": ["mise", "exec", "zig@0.13.0", "--", "zig", "cc"],
+    "c++": ["mise", "exec", "zig@0.13.0", "--", "zig", "c++"],
+}
+
+
 def _parse(path: Path, config: HeaderSurfaceConfig) -> ci.TranslationUnit:
+    """Parse with the selected driver's headers, else with zig 0.13's.
+
+    A parse failure inside the system headers is libclang meeting a newer
+    toolchain, not a fault in the header; the fallback driver keeps the check
+    about the API. A failure in the header itself fails either way.
+    """
+    try:
+        return _parse_with(path, config, _driver(config.language))
+    except _ParseError as host_error:
+        if not host_error.in_system_headers:
+            raise
+        fallback = FALLBACK_DRIVERS[config.language]
+        try:
+            tu = _parse_with(path, config, fallback)
+        except (_ParseError, OSError, subprocess.CalledProcessError):
+            raise host_error from None
+        print(
+            f"note: libclang could not parse {path.name} against the host "
+            f"{shlex.join(_driver(config.language))} headers; parsed it against "
+            f"{shlex.join(fallback)} instead (set RLMESH_PARITY_HEADER_CC/CXX to choose)",
+            file=sys.stderr,
+        )
+        return tu
+
+
+class _ParseError(ValueError):
+    """libclang's errors on a header; `in_system_headers` when none is in the
+    header's own directory."""
+
+    def __init__(self, message: str, in_system_headers: bool) -> None:
+        super().__init__(message)
+        self.in_system_headers = in_system_headers
+
+
+def _driver(language: str) -> list[str]:
+    """The selected CC/CXX, or the platform default."""
+    return shlex.split(
+        os.environ.get("CXX" if language == "c++" else "CC")
+        or ("c++" if language == "c++" else "cc")
+    )
+
+
+def _parse_with(
+    path: Path, config: HeaderSurfaceConfig, compiler: list[str]
+) -> ci.TranslationUnit:
     args = [
         "-x",
         config.language,
         f"-std={config.standard}",
         f"-I{path.parent}",
-        *_library_defines(config.language),
+        *_library_defines(config.language, compiler),
         *[
             arg
-            for directory in _system_includes(config.language)
+            for directory in _system_includes(config.language, compiler)
             for arg in ("-isystem", directory)
         ],
     ]
@@ -74,16 +129,19 @@ def _parse(path: Path, config: HeaderSurfaceConfig) -> ci.TranslationUnit:
     errors = [d for d in tu.diagnostics if d.severity >= ci.Diagnostic.Error]
     if errors:
         detail = "\n".join(str(d) for d in errors[:10])
-        raise ValueError(f"{path}: libclang could not parse the header:\n{detail}")
+        own = str(path.parent)
+        raise _ParseError(
+            f"{path}: libclang could not parse the header:\n{detail}",
+            in_system_headers=not any(
+                d.location.file is not None and d.location.file.name.startswith(own)
+                for d in errors
+            ),
+        )
     return tu
 
 
-def _system_includes(language: str) -> list[str]:
-    """The selected CC/CXX's include search path, which the libclang wheel lacks."""
-    compiler = shlex.split(
-        os.environ.get("CXX" if language == "c++" else "CC")
-        or ("c++" if language == "c++" else "cc")
-    )
+def _system_includes(language: str, compiler: list[str]) -> list[str]:
+    """The driver's include search path, which the libclang wheel lacks."""
     stderr = subprocess.run(
         [*compiler, "-E", "-v", "-x", language, "/dev/null"],
         capture_output=True,
@@ -102,16 +160,12 @@ def _system_includes(language: str) -> list[str]:
     ]
 
 
-def _library_defines(language: str) -> list[str]:
+def _library_defines(language: str, compiler: list[str]) -> list[str]:
     """Preserve driver-provided libc++ configuration (not compiler builtins).
 
     Zig configures libc++ on the command line instead of in __config_site.
     Feeding only its include paths to libclang loses that configuration.
     """
-    compiler = shlex.split(
-        os.environ.get("CXX" if language == "c++" else "CC")
-        or ("c++" if language == "c++" else "cc")
-    )
     output = subprocess.run(
         [*compiler, "-dM", "-E", "-x", language, "/dev/null"],
         capture_output=True,

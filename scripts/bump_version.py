@@ -3,7 +3,7 @@
 
 SemVer is the source of truth: `Cargo.toml [workspace.package].version`. The PEP 440
 spelling for the Python package is derived from it (mirrors the Rust
-`rlmesh-sandbox::python_package_version`). `policy:check` is the backstop — it fails
+`python_package_version` in `python/rlmesh/rust/src/sandbox.rs`). `policy:check` is the backstop — it fails
 loudly if any version-bearing spot is missed.
 
 Usage:
@@ -24,9 +24,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
-SEMVER_PARTS = re.compile(
-    r"^\d+\.\d+\.\d+(?:-(?P<channel>alpha|beta|rc)\.\d+)?$"
-)
+SEMVER_PARTS = re.compile(r"^\d+\.\d+\.\d+(?:-(?P<channel>alpha|beta|rc)\.\d+)?$")
 # Docs that name past versions as history, not as the current release: the
 # changelog and the policy pages that record which release sealed the wire
 # generation and the workflow edition. A bump must not rewrite those sentences.
@@ -95,13 +93,17 @@ def _sealed_workflow_editions(text: str) -> list[str]:
     return sealed
 
 
+def _dropped_workflow_editions(text: str) -> set[str]:
+    """Sealed editions ``[workflow.dropped_editions]`` names, never re-offered."""
+    workflow = tomllib.loads(text).get("workflow", {})
+    return set(workflow.get("dropped_editions", {}))
+
+
 def _workflow_supported_value(editions: list[str]) -> str:
     return "[" + ", ".join(f'"{edition}"' for edition in editions) + "]"
 
 
-def _replace_workflow_edition_block(
-    text: str, match: re.Match[str], block: str
-) -> str:
+def _replace_workflow_edition_block(text: str, match: re.Match[str], block: str) -> str:
     return text[: match.start()] + block + text[match.end() :]
 
 
@@ -132,10 +134,11 @@ def _update_workflow_manifest(text: str, version: str) -> str:
     new_edition = base if status == "stable" else f"{base}-{version}"
     spec = f"docs/editions/{base}.md"
     supported = [new_edition]
+    dropped = _dropped_workflow_editions(text)
     supported.extend(
         edition
         for edition in _sealed_workflow_editions(text)
-        if edition != new_edition
+        if edition != new_edition and edition not in dropped
     )
 
     text = re.sub(
@@ -153,7 +156,7 @@ def _update_workflow_manifest(text: str, version: str) -> str:
         flags=re.MULTILINE,
     )
     text = re.sub(
-        r'^supported_editions = \[[^\]]*\]$',
+        r"^supported_editions = \[[^\]]*\]$",
         f"supported_editions = {_workflow_supported_value(supported)}",
         text,
         count=1,
@@ -221,9 +224,10 @@ def current_version() -> str:
 
 def prose_version_files(root: Path) -> list[Path]:
     """Prose whose literal version mentions track the current release: docs
-    (except the history docs and the version-stamped edition specs) plus example
-    READMEs. The top-level README is version-neutral by design; crate READMEs
-    carry precise Cargo install snippets bumped separately.
+    (except the history docs and the version-stamped edition specs), example
+    READMEs and the Python package's README (its PyPI page). The top-level
+    README is version-neutral by design; crate READMEs carry precise Cargo
+    install snippets bumped separately.
     """
     files = [
         md
@@ -232,7 +236,18 @@ def prose_version_files(root: Path) -> list[Path]:
         and not md.relative_to(root).as_posix().startswith("docs/editions/")
     ]
     files += sorted((root / "examples").rglob("README.md"))
+    files.append(root / "python/rlmesh/README.md")
     return files
+
+
+def member_manifests(root: Path) -> list[Path]:
+    """The workspace members' own Cargo.toml files."""
+    members = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["members"]
+    return sorted(
+        manifest
+        for pattern in members
+        for manifest in root.glob(f"{pattern}/Cargo.toml")
+    )
 
 
 def sub_file(path: Path, pairs: list[tuple[str, str]]) -> None:
@@ -250,11 +265,10 @@ def bump(old: str, new: str) -> None:
     o, op = re.escape(old), re.escape(old_pep)
     print(f"bump {old} -> {new}  (PEP 440 {old_pep} -> {new_pep})")
 
-    # Cargo workspace version + the "=X" path-dependency pins.
-    sub_file(
-        ROOT / "Cargo.toml",
-        [(rf'version = "(=?){o}"', rf'version = "\g<1>{new}"')],
-    )
+    # Cargo workspace version + the "=X" path-dependency pins, in the root
+    # manifest and in any member that pins a sibling itself (rlmesh-device).
+    for manifest in [ROOT / "Cargo.toml", *member_manifests(ROOT)]:
+        sub_file(manifest, [(rf'version = "(=?){o}"', rf'version = "\g<1>{new}"')])
 
     # The C header's hand-written RLMESH_VERSION (policy:check keeps it equal).
     sub_file(
@@ -265,6 +279,26 @@ def bump(old: str, new: str) -> None:
     # Python package manifests use the PEP 440 spelling.
     for py in ("pyproject.toml", "python/rlmesh/pyproject.toml"):
         sub_file(ROOT / py, [(rf'version = "{op}"', f'version = "{new_pep}"')])
+
+    # The C# package (fenced, but versioned with the workspace).
+    sub_file(
+        ROOT / "csharp/src/RLMesh/RLMesh.csproj",
+        [(rf"<Version>{o}</Version>", f"<Version>{new}</Version>")],
+    )
+
+    # Example Dockerfiles install the published wheel by its PEP 440 version.
+    for dockerfile in sorted((ROOT / "examples").rglob("Dockerfile")):
+        sub_file(
+            dockerfile,
+            [(rf"(?m)^ARG RLMESH_VERSION={op}$", f"ARG RLMESH_VERSION={new_pep}")],
+        )
+
+    # The npm package (release:js:package also stamps the workspace version at pack time).
+    for npm in (
+        "javascript/rlmesh/package.json",
+        "javascript/rlmesh/package-lock.json",
+    ):
+        sub_file(ROOT / npm, [(rf'"version": "{o}"', f'"version": "{new}"')])
 
     # Policy manifest: cargo artifacts use SemVer; the pypi artifact uses PEP 440.
     rlmesh_toml = ROOT / "rlmesh.toml"
@@ -290,7 +324,10 @@ def bump(old: str, new: str) -> None:
 
     # Crate README install snippets: cargo dependency + `cargo install --version`.
     for readme in sorted((ROOT / "crates").glob("*/README.md")):
-        sub_file(readme, [(rf'= "{o}"', f'= "{new}"'), (rf"--version {o}", f"--version {new}")])
+        sub_file(
+            readme,
+            [(rf'= "{o}"', f'= "{new}"'), (rf"--version {o}", f"--version {new}")],
+        )
 
     # Prose (docs + example READMEs): every literal version mention — pip specs,
     # cohort examples, "this documents X" claims — tracks the release. Both the
@@ -318,7 +355,9 @@ def bump(old: str, new: str) -> None:
     print("sync lockfiles + policy check")
     subprocess.run(["cargo", "update", "--workspace"], cwd=ROOT, check=True)
     subprocess.run(["uv", "lock"], cwd=ROOT, check=True)
-    subprocess.run([sys.executable, "scripts/check_rlmesh_policy.py"], cwd=ROOT, check=True)
+    subprocess.run(
+        [sys.executable, "scripts/check_rlmesh_policy.py"], cwd=ROOT, check=True
+    )
     print(f"done ({new}) — review the diff, then commit")
 
 
@@ -330,10 +369,13 @@ def selfcheck() -> None:
     # A stable version reads the same in both spellings: each prose site keeps
     # its own form when bumped to a prerelease, and back again.
     stable_to_rc = re.compile(r'(?P<pep>(?<===)|(?<="package_version": "))?0\.1\.0')
-    assert stable_to_rc.sub(
-        lambda m: "0.1.0rc13" if m.group("pep") is not None else "0.1.0-rc.13",
-        'rlmesh==0.1.0 "package_version": "0.1.0" 2026.06-0.1.0',
-    ) == 'rlmesh==0.1.0rc13 "package_version": "0.1.0rc13" 2026.06-0.1.0-rc.13'
+    assert (
+        stable_to_rc.sub(
+            lambda m: "0.1.0rc13" if m.group("pep") is not None else "0.1.0-rc.13",
+            'rlmesh==0.1.0 "package_version": "0.1.0" 2026.06-0.1.0',
+        )
+        == 'rlmesh==0.1.0rc13 "package_version": "0.1.0rc13" 2026.06-0.1.0-rc.13'
+    )
     assert _release_status("0.1.0-alpha.1") == "alpha"
     assert _release_status("0.1.0-beta.2") == "beta"
     assert _release_status("0.1.0-rc.3") == "rc"
@@ -348,6 +390,9 @@ def selfcheck() -> None:
     assert not (prose & HISTORY_DOCS), sorted(prose & HISTORY_DOCS)
     assert not any(name.startswith("docs/editions/") for name in prose)
     assert "docs/installation.md" in prose
+    assert "python/rlmesh/README.md" in prose
+    members = {path.relative_to(ROOT).as_posix() for path in member_manifests(ROOT)}
+    assert "crates/rlmesh-device/Cargo.toml" in members
 
     sealed_manifest = """[release]
 status = "stable"
@@ -363,8 +408,8 @@ spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
 spec_sha256 = "already-sealed"
 
-[protocol]
-current_generation = "rlmesh-wire-v1"
+[protocols."rlmesh-realtime-v1"]
+status = "provisional"
 """
     prerelease_manifest = _update_workflow_manifest(
         sealed_manifest,
@@ -377,6 +422,18 @@ current_generation = "rlmesh-wire-v1"
     assert '[workflow.editions."2026.06"]' in prerelease_manifest
     assert 'sealed_in = "0.1.0"' in prerelease_manifest
     assert '[workflow.editions."2026.09-0.2.0-alpha.1"]' in prerelease_manifest
+    # A dropped sealed edition keeps its record but is not offered again.
+    dropped_manifest = _update_workflow_manifest(
+        sealed_manifest.replace(
+            "\n[workflow.editions.",
+            '\n[workflow.dropped_editions]\n"2026.06" = "major break"\n\n'
+            "[workflow.editions.",
+            1,
+        ),
+        "0.2.0-alpha.1",
+    )
+    assert 'supported_editions = ["2026.09-0.2.0-alpha.1"]' in dropped_manifest
+    assert 'sealed_in = "0.1.0"' in dropped_manifest
 
     stable_patch_manifest = sealed_manifest.replace(
         'base_edition = "2026.09"',
@@ -402,7 +459,9 @@ def main() -> None:
         sync_packaged_supported_editions()
         return
     if not SEMVER.match(arg):
-        sys.exit(f"not a SemVer version: {arg!r} (expected X.Y.Z or X.Y.Z-beta.N)")
+        sys.exit(
+            f"not a SemVer version: {arg!r} (expected X.Y.Z or X.Y.Z-{{alpha,beta,rc}}.N)"
+        )
     bump(current_version(), arg)
 
 

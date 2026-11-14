@@ -33,6 +33,11 @@ _build/
 # Rust
 target/
 
+# Browser binding (javascript/rlmesh): npm deps, wasm-bindgen output, test bundles
+javascript/rlmesh/node_modules/
+javascript/rlmesh/pkg/
+javascript/rlmesh/.test-dist/
+
 # mise file tasks (re-include paths shadowed by build/ above)
 !.mise/tasks/
 !.mise/tasks/**

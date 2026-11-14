@@ -364,6 +364,7 @@ def _collect_native_modules(
                 stability=policy["stability"],
                 skipped_modules=tuple(policy.get("skipped_modules", [])),
                 document_hidden=bool(policy.get("document_hidden", False)),
+                features=tuple(policy.get("features", [])),
                 source_repo=SOURCE_REPO,
                 source_commit=commit,
             ),

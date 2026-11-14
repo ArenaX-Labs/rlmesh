@@ -13,7 +13,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - runner is expected on 3
     raise SystemExit("rlmesh-system requires Python 3.11 or newer") from exc
 
 
-SCENARIO_KINDS = {"trace", "artifact", "external"}
+SCENARIO_KINDS = {"trace", "artifact"}
 SpecT = TypeVar("SpecT")
 
 
@@ -29,7 +29,6 @@ class ScenarioSpec:
     steps: int
     trace: str | None
     artifact: str | None
-    command_env: str | None
     timeout_seconds: float | None
     metadata: dict[str, str]
 
@@ -160,9 +159,6 @@ def parse_scenarios(data: dict[str, object]) -> dict[str, ScenarioSpec]:
             artifact=(
                 str(raw["artifact"]) if raw.get("artifact") is not None else None
             ),
-            command_env=(
-                str(raw["command_env"]) if raw.get("command_env") is not None else None
-            ),
             timeout_seconds=optional_float(raw.get("timeout_seconds")),
             metadata=metadata,
         )
@@ -198,8 +194,6 @@ def validate_spec(spec: SystemSpec) -> None:
                 raise ValueError(f"trace scenario {scenario.name!r} needs model")
         if scenario.kind == "artifact" and scenario.artifact is None:
             raise ValueError(f"artifact scenario {scenario.name!r} needs artifact")
-        if scenario.kind == "external" and not scenario.command_env:
-            raise ValueError(f"external scenario {scenario.name!r} needs command_env")
         if scenario.steps <= 0:
             raise ValueError(f"scenario {scenario.name!r} needs positive steps")
 
