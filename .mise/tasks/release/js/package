@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Pack the npm release into target/npm-pkg: rlmesh plus one @rlmesh/{platform}-{arch} per addon in target/npm-native (after build:js and release:js:native)"
+#MISE dir="{{ config_root }}"
+#USAGE flag "--require-all" help="Fail unless all five platform addons are present"
+set -euo pipefail
+node scripts/npm-pack.mjs ${usage_require_all:+--require-all}

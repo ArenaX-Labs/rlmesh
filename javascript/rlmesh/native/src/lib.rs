@@ -1,0 +1,2425 @@
+//! Node-API bindings for real-time sessions (protocol v2): an
+//! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound policy
+//! on its robot's clock ([`rlmesh::realtime`]: the session's
+//! [`rlmesh_session::Controller`], or a lockstep robot's exchange) and an MCAP recorder
+//! ([`rlmesh_session::record::Recorder`]), the Node and Electron twin of the PyO3
+//! binding. The `rlmesh` npm package wraps them (`src/native.ts`);
+//! every rule (packing, binding, the edge, leases, the run loop) stays in
+//! the Rust crates.
+//!
+//! Nothing here blocks the JS thread on the network: verbs that wait are
+//! `async` and run on the session runtime; `publish`, `due`, `observe` and
+//! `send` never wait. The run loop has a blocking thread of its own and
+//! hands each start to JS through a threadsafe function; JS answers with
+//! [`NativePolicy::reply`].
+//!
+//! An error's message starts with a line naming its kind as JSON
+//! (`rlmesh:{"kind":"SessionRefused","status":"LEASE_BUSY"}`); the wrapper
+//! turns it into one of its error classes.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use napi::bindgen_prelude::{BigInt, Either, Uint8Array, create_custom_tokio_runtime};
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::{Error, Result, Status, tokio};
+use napi_derive::napi;
+use rlmesh::lockstep::GymError;
+use rlmesh::realtime::{self, BoundPolicy, LockstepPolicy, LockstepRunError, RunSettings};
+use rlmesh_session::address::Address;
+use rlmesh_session::controller::sleep_until;
+use rlmesh_session::edge::{Due, Rejection, Robot};
+use rlmesh_session::record::{RecordError, Recorder};
+use rlmesh_session::sdk::{self, BindPolicyError, EmbeddedHost, ErrorKind};
+use rlmesh_session::spec::apply::{Tensor, Value};
+use rlmesh_session::spec::{BindError, Policy, RunOptions};
+use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, ReasonCode, RobotClock};
+use rlmesh_session::{
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, Resume, RunError,
+    RunEvent, RunMode, SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, Step,
+    SystemMonotonicClock,
+};
+
+/// The first line of an error's message, naming its kind for the wrapper.
+const KIND_PREFIX: &str = "rlmesh:";
+
+/// `kind` plus any fields the wrapper copies onto its error, as the
+/// message's first line.
+fn error(kind: &str, extra: &[(&str, String)], message: impl Into<String>) -> Error {
+    let mut text = format!("{KIND_PREFIX}{{\"kind\":{kind:?}");
+    for (name, value) in extra {
+        text.push_str(&format!(",{name:?}:{value}"));
+    }
+    text.push_str("}\n");
+    text.push_str(&message.into());
+    Error::new(Status::GenericFailure, text)
+}
+
+/// An error's message without its kind line.
+fn message_of(err: &Error) -> String {
+    match err.reason.split_once('\n') {
+        Some((kind, message)) if kind.starts_with(KIND_PREFIX) => message.to_string(),
+        _ => err.reason.clone(),
+    }
+}
+
+fn json_list(items: &[String]) -> String {
+    let quoted: Vec<String> = items.iter().map(|s| format!("{s:?}")).collect();
+    format!("[{}]", quoted.join(","))
+}
+
+fn exception(message: impl Into<String>) -> Error {
+    error("SessionException", &[], message)
+}
+
+fn invalid(message: impl Into<String>) -> Error {
+    error("ValueError", &[], message)
+}
+
+#[napi_derive::module_init]
+fn init() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("rlmesh-session")
+        .enable_all()
+        .build()
+        .expect("failed to build the rlmesh session runtime");
+    create_custom_tokio_runtime(runtime);
+}
+
+fn session_err(err: SessionError) -> Error {
+    match ErrorKind::of(&err) {
+        ErrorKind::Refused(status) => {
+            let message = match err {
+                SessionError::Rejected(refusal) | SessionError::Unverified(refusal) => {
+                    refusal.message
+                }
+                other => other.to_string(),
+            };
+            error(
+                "SessionRefused",
+                &[("status", format!("{status:?}"))],
+                message,
+            )
+        }
+        ErrorKind::Timeout => error("TimeoutError", &[], err.to_string()),
+        ErrorKind::Value => invalid(err.to_string()),
+        ErrorKind::Session => exception(err.to_string()),
+    }
+}
+
+fn bind_err(err: BindError) -> Error {
+    let problems: Vec<String> = sdk::bind_problems(&err)
+        .into_iter()
+        .map(|(code, dir, entry)| format!("[{code:?},{dir:?},{entry:?}]"))
+        .collect();
+    error(
+        "BindingRefused",
+        &[("problems", format!("[{}]", problems.join(",")))],
+        err.to_string(),
+    )
+}
+
+fn binding_refused(message: String) -> Error {
+    error("BindingRefused", &[("problems", "[]".into())], message)
+}
+
+fn controller_err(err: ControllerError) -> Error {
+    match err {
+        ControllerError::Bind(err) => bind_err(err),
+        ControllerError::Session(err) => session_err(err),
+        // Annotations ride the wall clock's session streams; a policy
+        // without them is bound through `realtime::bind`.
+        ControllerError::Lockstep(robot) => binding_refused(format!(
+            "binding refused: robot {robot} runs in lockstep, and a policy that publishes \
+             (publishes) runs on the wall clock only"
+        )),
+    }
+}
+
+/// A lockstep robot's failure: the binder's refusal of its parts is a
+/// `BindingRefused`.
+fn lockstep_bind_err(err: GymError) -> Error {
+    match err {
+        GymError::Map(why) => binding_refused(why),
+        other => lockstep_err(other),
+    }
+}
+
+fn lockstep_err(err: GymError) -> Error {
+    match err {
+        GymError::Session(err) => session_err(err),
+        GymError::Malformed(why) | GymError::Value(why) => invalid(why),
+        GymError::Timeout(_) => error("TimeoutError", &[], err.to_string()),
+        other => exception(other.to_string()),
+    }
+}
+
+fn realtime_bind_err(err: realtime::BindError) -> Error {
+    match err {
+        realtime::BindError::Policy(err) => bind_policy_err(err),
+        realtime::BindError::Lockstep(err) => lockstep_bind_err(err),
+    }
+}
+
+fn bind_policy_err(err: BindPolicyError) -> Error {
+    match err {
+        BindPolicyError::Policy(_) => binding_refused(err.to_string()),
+        BindPolicyError::Controller(err) => controller_err(err),
+    }
+}
+
+fn send_err(err: SendError) -> Error {
+    match err {
+        SendError::Value(message) => invalid(message),
+        SendError::Session(err) => session_err(err),
+    }
+}
+
+fn observe_err(err: ObserveError) -> Error {
+    match err {
+        ObserveError::Skipped(skip) => {
+            let reason = skip.reason();
+            error(
+                "StartSkipped",
+                &[
+                    ("reason", format!("{:?}", reason.name())),
+                    ("waiting", json_list(&skip.waiting)),
+                    ("stale", json_list(&skip.stale)),
+                    ("gaps", json_list(&skip.gaps)),
+                ],
+                format!(
+                    "start skipped ({reason}): waiting for {:?}, stale {:?}, window gaps {:?}",
+                    skip.waiting, skip.stale, skip.gaps
+                ),
+            )
+        }
+        other => exception(other.to_string()),
+    }
+}
+
+/// A session address (`[host/][session]`); joining it puts
+/// capture times on `CLOCK_MONOTONIC`, `process.hrtime.bigint()`'s clock.
+fn address(text: &str) -> Result<SessionAddress> {
+    text.parse()
+        .map_err(|e: SessionError| invalid(e.to_string()))
+}
+
+fn timeout(seconds: f64) -> Result<Duration> {
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| invalid(format!("timeout {seconds} is not a duration")))
+}
+
+fn priority(name: &str) -> Result<PriorityClass> {
+    sdk::priority(name).map_err(invalid)
+}
+
+/// A `bigint` from JS as nanoseconds.
+fn ns(value: &BigInt, what: &str) -> Result<i64> {
+    match value.get_i64() {
+        (ns, true) => Ok(ns),
+        _ => Err(invalid(format!("{what}: out of range for nanoseconds"))),
+    }
+}
+
+/// A session host in this process, on a local TCP port.
+#[napi]
+pub struct NativeHost {
+    host: EmbeddedHost,
+}
+
+/// Places the session `address` names by the hosting rule (`":0"`:
+/// hosted here on an OS-assigned port).
+#[napi]
+pub async fn open_host(address: String, lease_grace_ms: u32) -> Result<NativeHost> {
+    let address = Address::session(&address).map_err(|e| invalid(e.to_string()))?;
+    let grace = Duration::from_millis(u64::from(lease_grace_ms));
+    let host = EmbeddedHost::start(&address, grace)
+        .await
+        .map_err(session_err)?;
+    Ok(NativeHost { host })
+}
+
+#[napi]
+impl NativeHost {
+    /// `{ip}:{port}[/{session}]#{key}`: what participants connect to. The
+    /// key is a credential (its holder attaches as device `local`).
+    #[napi(getter)]
+    pub fn address(&self) -> String {
+        self.host.address().invite()
+    }
+
+    /// Stops the host (participants see it leave).
+    #[napi]
+    pub async fn close(&self) -> Result<()> {
+        self.host.close().await.map_err(session_err)
+    }
+}
+
+/// One field of a part: its name, dtype and shape.
+#[napi(object)]
+pub struct FieldInfo {
+    pub name: String,
+    pub dtype: String,
+    pub shape: Vec<u32>,
+}
+
+fn fields_info(fields: &[rlmesh_session::wire::FieldSpec]) -> Vec<FieldInfo> {
+    fields
+        .iter()
+        .map(|f| FieldInfo {
+            name: f.name.clone(),
+            dtype: f.dtype.name().to_string(),
+            shape: f.shape.clone(),
+        })
+        .collect()
+}
+
+/// A commandable part's command.
+#[napi(object)]
+pub struct CommandInfo {
+    pub mode: String,
+    pub fields: Vec<FieldInfo>,
+    pub group: Option<String>,
+    pub safe: String,
+    pub control_hz: f64,
+}
+
+/// A part as the host normalised it.
+#[napi(object)]
+pub struct PartInfo {
+    pub path: String,
+    pub kind: String,
+    pub hz: f64,
+    pub event: bool,
+    pub encoding: String,
+    pub fields: Vec<FieldInfo>,
+    pub command: Option<CommandInfo>,
+}
+
+fn part_info(part: &PartSpec) -> PartInfo {
+    PartInfo {
+        path: part.path.to_string(),
+        kind: part.kind.clone(),
+        hz: part.hz,
+        event: part.event,
+        encoding: part.encoding.wire_name().to_string(),
+        fields: fields_info(&part.fields),
+        command: part.command.as_ref().map(|command| CommandInfo {
+            mode: command.mode.clone(),
+            fields: fields_info(&command.fields),
+            group: command.group.clone(),
+            safe: command.safe_behavior.clone(),
+            control_hz: part.control_hz,
+        }),
+    }
+}
+
+/// An array: its dtype and shape, and its bytes (native-endian, packed).
+#[napi(object)]
+pub struct TensorData {
+    /// The field's name, inside a dict value or a command.
+    pub name: Option<String>,
+    pub dtype: String,
+    pub shape: Vec<u32>,
+    pub data: Uint8Array,
+}
+
+fn tensor_out(name: Option<String>, tensor: Tensor) -> TensorData {
+    TensorData {
+        name,
+        dtype: tensor.dtype.name().to_string(),
+        shape: tensor.shape,
+        data: Uint8Array::new(tensor.data),
+    }
+}
+
+fn tensor_in(entry: &str, tensor: &TensorData) -> Result<Tensor> {
+    sdk::tensor(
+        entry,
+        &tensor.dtype,
+        tensor.shape.clone(),
+        tensor.data.to_vec(),
+    )
+    .map_err(invalid)
+}
+
+/// One input or action entry's value: an array, several named arrays, or
+/// text.
+#[napi(object)]
+pub struct EntryValue {
+    pub entry: String,
+    pub tensor: Option<TensorData>,
+    pub fields: Option<Vec<TensorData>>,
+    pub text: Option<String>,
+}
+
+fn value_out(entry: String, value: Value) -> EntryValue {
+    let mut out = EntryValue {
+        entry,
+        tensor: None,
+        fields: None,
+        text: None,
+    };
+    match value {
+        Value::Tensor(tensor) => out.tensor = Some(tensor_out(None, tensor)),
+        Value::Dict(fields) => {
+            out.fields = Some(
+                fields
+                    .into_iter()
+                    .map(|(name, tensor)| tensor_out(Some(name), tensor))
+                    .collect(),
+            );
+        }
+        Value::Text(text) => out.text = Some(text),
+    }
+    out
+}
+
+fn values_in(values: &[EntryValue]) -> Result<Vec<(String, Value)>> {
+    values
+        .iter()
+        .map(|v| {
+            let value = match (&v.tensor, &v.fields) {
+                (Some(tensor), None) => Value::Tensor(tensor_in(&v.entry, tensor)?),
+                (None, Some(fields)) => Value::Dict(
+                    fields
+                        .iter()
+                        .map(|t| {
+                            let name = t.name.clone().unwrap_or_default();
+                            let tensor = tensor_in(&format!("{}.{name}", v.entry), t)?;
+                            Ok((name, tensor))
+                        })
+                        .collect::<Result<_>>()?,
+                ),
+                _ => {
+                    return Err(invalid(format!(
+                        "{}: an action is an array or a dict of arrays",
+                        v.entry
+                    )));
+                }
+            };
+            Ok((v.entry.clone(), value))
+        })
+        .collect()
+}
+
+/// The inputs a chunk was computed from, by the robot's path.
+#[napi(object)]
+pub struct InputSeqs {
+    pub path: String,
+    pub seq_first: i64,
+    pub seq_last: i64,
+}
+
+/// A command-group handover starting this tick.
+#[napi(object)]
+pub struct Handover {
+    pub group: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// What the robot does this control tick.
+#[napi(object)]
+pub struct DueTick {
+    pub path: String,
+    /// `driving`, `hold`, `safe`, `estop` or `idle`.
+    pub mode: String,
+    /// The command fields (validated and clamped), or none.
+    pub fields: Option<Vec<TensorData>>,
+    pub safe: Option<String>,
+    pub handover: Option<Handover>,
+    pub lease_token: Option<BigInt>,
+    pub chunk_seq: Option<i64>,
+    pub index: Option<u32>,
+    pub received_ns: Option<BigInt>,
+    pub slot_ns: Option<BigInt>,
+    pub based_on: Vec<InputSeqs>,
+}
+
+fn seq(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn due_tick(robot: &Robot, due: Due) -> Result<DueTick> {
+    let fields = sdk::due_fields(robot, &due)
+        .map_err(exception)?
+        .map(|fields| {
+            fields
+                .into_iter()
+                .map(|(name, tensor)| tensor_out(Some(name), tensor))
+                .collect()
+        });
+    let based_on = sdk::due_based_on(robot, &due)
+        .into_iter()
+        .map(|(path, first, last)| InputSeqs {
+            path,
+            seq_first: seq(first),
+            seq_last: seq(last),
+        })
+        .collect();
+    let Due {
+        path,
+        mode,
+        action,
+        safe,
+        handover,
+    } = due;
+    let chunk = action.as_ref().map(|a| &a.chunk);
+    Ok(DueTick {
+        mode: sdk::mode_name(mode).to_string(),
+        fields,
+        safe: safe.map(|s| s.to_string()),
+        handover: handover.map(|h| Handover {
+            group: h.group,
+            from: h.from,
+            to: h.to,
+        }),
+        lease_token: chunk.map(|c| BigInt::from(c.lease_token.0)),
+        chunk_seq: chunk.map(|c| seq(c.seq)),
+        index: action.as_ref().map(|a| a.index),
+        received_ns: chunk.map(|c| BigInt::from(c.receive_ns)),
+        slot_ns: action.as_ref().map(|a| BigInt::from(a.slot_ns)),
+        based_on,
+        path,
+    })
+}
+
+/// Ticks spent in an edge mode, and how often it was entered.
+#[napi(object)]
+pub struct ModeCount {
+    pub mode: String,
+    pub ticks: i64,
+    pub entries: i64,
+}
+
+/// Chunks an edge rejected for one reason (`too_old`, `no_clock_mapping`).
+#[napi(object)]
+pub struct RejectionCount {
+    pub reason: String,
+    pub count: i64,
+}
+
+/// The counters of one edge.
+#[napi(object)]
+pub struct EdgeStats {
+    pub accepted: i64,
+    pub rejected: i64,
+    /// The rejections by reason, those that occurred.
+    pub rejected_by: Vec<RejectionCount>,
+    pub clamped: i64,
+    pub handovers: i64,
+    pub safe_reports: i64,
+    pub modes: Vec<ModeCount>,
+}
+
+/// A part whose edge refuses chunks for a clock error.
+#[napi(object)]
+pub struct HealthClockRefusal {
+    pub part: String,
+    pub participant: String,
+    pub error_ms: f64,
+    pub bound_ms: f64,
+}
+
+/// One stream a participant publishes.
+#[napi(object)]
+pub struct HealthPublished {
+    pub part: String,
+    pub published: i64,
+    pub coalesced: i64,
+}
+
+/// The newest seq a participant received of one part.
+#[napi(object)]
+pub struct HealthSeen {
+    pub part: String,
+    pub seq: i64,
+}
+
+/// A bound policy's counters from its latest report.
+#[napi(object)]
+pub struct HealthRun {
+    pub starts: i64,
+    pub completions: i64,
+    pub skipped: Vec<SkipCount>,
+    pub chunks_sent: i64,
+    pub pending_ms: Option<f64>,
+    pub latency_p50_ms: Option<f64>,
+    pub latency_p99_ms: Option<f64>,
+    pub drifting: bool,
+}
+
+/// One participant's link as the host measures it (durations in ms).
+#[napi(object)]
+pub struct HealthLink {
+    pub participant: String,
+    pub heartbeats: i64,
+    pub rtt_ms: Option<f64>,
+    pub jitter_ms: f64,
+    pub heartbeat_gap_max_ms: f64,
+    pub last_heartbeat_age_ms: f64,
+    pub offset_ms: Option<f64>,
+    pub offset_error_ms: Option<f64>,
+    pub health: String,
+    pub last_chunk_accepted: i64,
+    pub last_chunk_applied: i64,
+    pub queue_depth: u32,
+    pub rejected_by: Vec<RejectionCount>,
+    pub clock_refused: Vec<HealthClockRefusal>,
+    pub published: Vec<HealthPublished>,
+    pub run: Option<HealthRun>,
+    pub last_seq_seen: Vec<HealthSeen>,
+}
+
+/// The host's health message as a participant read it.
+#[napi(object)]
+pub struct SessionHealth {
+    pub epoch: i64,
+    /// The host's clock when it published.
+    pub host_ns: i64,
+    pub links: Vec<HealthLink>,
+}
+
+/// The host's health as `participant` reads it: the newest, or with `wait`
+/// the next.
+async fn read_health(
+    participant: &rlmesh_session::Participant,
+    wait: bool,
+    timeout_s: f64,
+) -> Result<SessionHealth> {
+    let wait_for = timeout(timeout_s)?;
+    let health = if wait {
+        participant.next_health(wait_for).await
+    } else {
+        participant.health(wait_for).await
+    }
+    .map_err(session_err)?;
+    let links = sdk::health_links(participant, &health)
+        .into_iter()
+        .map(|link| HealthLink {
+            participant: link.participant,
+            heartbeats: seq(link.heartbeats),
+            rtt_ms: link.rtt_ms,
+            jitter_ms: link.jitter_ms,
+            heartbeat_gap_max_ms: link.heartbeat_gap_max_ms,
+            last_heartbeat_age_ms: link.last_heartbeat_age_ms,
+            offset_ms: link.offset_ms.map(|(offset, _)| offset),
+            offset_error_ms: link.offset_ms.map(|(_, error)| error),
+            health: link.health.into(),
+            last_chunk_accepted: seq(link.last_chunk_accepted),
+            last_chunk_applied: seq(link.last_chunk_applied),
+            queue_depth: link.queue_depth,
+            rejected_by: link
+                .rejected_by
+                .into_iter()
+                .map(|(reason, n)| RejectionCount {
+                    reason,
+                    count: seq(n),
+                })
+                .collect(),
+            clock_refused: link
+                .clock_refused
+                .into_iter()
+                .map(|r| HealthClockRefusal {
+                    part: r.part,
+                    participant: r.participant,
+                    error_ms: r.error_ms,
+                    bound_ms: r.bound_ms,
+                })
+                .collect(),
+            published: link
+                .published
+                .into_iter()
+                .map(|(part, published, coalesced)| HealthPublished {
+                    part,
+                    published: seq(published),
+                    coalesced: seq(coalesced),
+                })
+                .collect(),
+            run: link.run.map(|run| HealthRun {
+                starts: seq(run.starts),
+                completions: seq(run.completions),
+                skipped: run
+                    .skipped
+                    .into_iter()
+                    .map(|(reason, n)| SkipCount {
+                        reason: reason.into(),
+                        count: seq(n),
+                    })
+                    .collect(),
+                chunks_sent: seq(run.chunks_sent),
+                pending_ms: run.pending_ms,
+                latency_p50_ms: run.latency_p50_ms,
+                latency_p99_ms: run.latency_p99_ms,
+                drifting: run.drifting,
+            }),
+            last_seq_seen: link
+                .last_seq_seen
+                .into_iter()
+                .map(|(part, n)| HealthSeen { part, seq: seq(n) })
+                .collect(),
+        })
+        .collect();
+    Ok(SessionHealth {
+        epoch: seq(health.epoch.0),
+        host_ns: health.host_ns,
+        links,
+    })
+}
+
+/// A robot: its map declared, a publisher per part and an edge per command
+/// group.
+#[napi]
+pub struct NativeRobot {
+    name: String,
+    /// The robot now: a rejoin swaps it ([`sdk::keep_joined`]).
+    robot: sdk::RobotSlot,
+    /// Joins it again when the host drops it.
+    keeper: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    encoder: Mutex<Option<Encoder>>,
+}
+
+/// A frame for the encoder thread: the part, its capture time, its pixels.
+type Frame = (String, i64, Vec<u8>);
+
+/// The robot's JPEG encoder thread. A JPEG part's `offer` encodes on the
+/// caller's thread (2 ms for 640x480, 6 ms for 1280x720), which in Node is
+/// the JS thread every loop shares; Python's camera thread pays it with the
+/// GIL released. Here frames queue to one thread instead, in order.
+struct Encoder {
+    frames: SyncSender<Frame>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Encoder {
+    /// Frames waiting behind the one being encoded; one more is dropped, as
+    /// the image publisher drops a frame that arrives before its slot is
+    /// sent.
+    const QUEUE: usize = 2;
+
+    fn start(slot: sdk::RobotSlot) -> std::io::Result<Self> {
+        let (frames, queued) = mpsc::sync_channel::<Frame>(Self::QUEUE);
+        let thread = std::thread::Builder::new()
+            .name("rlmesh-encoder".into())
+            .spawn(move || {
+                for (path, capture, pixels) in queued {
+                    // The robot now: a rejoin may have swapped it.
+                    let Some(robot) = slot.lock().ok().and_then(|r| r.clone()) else {
+                        break;
+                    };
+                    // Its outcome is in the publisher's own counters.
+                    let _ = robot.publish(&path, capture, &[pixels.as_slice()]);
+                }
+            })?;
+        Ok(Self { frames, thread })
+    }
+}
+
+/// Attaches as `name` (the robot's participant id), declares `robot_json`
+/// (the authored map) and starts its publishers and edges. When the
+/// host drops it (a network gap past its presence grace) it joins again on
+/// its own.
+#[napi]
+pub async fn connect_robot(
+    address: String,
+    name: String,
+    robot_json: String,
+    timeout_s: f64,
+) -> Result<NativeRobot> {
+    let address = self::address(&address)?;
+    let wait = timeout(timeout_s)?;
+    let robot = sdk::connect_robot(&address, &name, &robot_json, wait)
+        .await
+        .map_err(|err| match err {
+            rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
+            other => exception(other.to_string()),
+        })?;
+    let slot: sdk::RobotSlot = Arc::new(Mutex::new(Some(Arc::new(robot))));
+    let keeper = sdk::keep_joined(slot.clone(), address, name.clone(), robot_json);
+    Ok(NativeRobot {
+        name,
+        robot: slot,
+        keeper: Mutex::new(Some(keeper)),
+        encoder: Mutex::new(None),
+    })
+}
+
+#[cfg(feature = "fleet")]
+/// Waits in the lobby of the home daemon `home` names (`null`: this
+/// machine's rlmeshd) as robot `name` until a run assigns it, then joins the
+/// run and declares `robot_json`. A refused join (its pin, another map) is
+/// reported to the daemon by the next wait, which goes on waiting;
+/// `timeout_s` (`null`: none) bounds it all.
+#[napi]
+pub async fn robot_from_lobby(
+    home: Option<String>,
+    name: String,
+    robot_json: String,
+    timeout_s: Option<f64>,
+) -> Result<NativeRobot> {
+    let wait = timeout_s.map(timeout).transpose()?;
+    let (robot, _) = sdk::robot_from_lobby(home.as_deref(), &name, &robot_json, wait)
+        .await
+        .map_err(|err| match err {
+            rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
+            other => exception(other.to_string()),
+        })?;
+    Ok(NativeRobot {
+        name,
+        robot: Arc::new(Mutex::new(Some(Arc::new(robot)))),
+        keeper: Mutex::new(None),
+        encoder: Mutex::new(None),
+    })
+}
+
+impl NativeRobot {
+    fn robot(&self) -> Result<Arc<Robot>> {
+        self.robot
+            .lock()
+            .ok()
+            .and_then(|r| r.clone())
+            .ok_or_else(|| exception(format!("robot {} is closed", self.name)))
+    }
+}
+
+#[napi]
+impl NativeRobot {
+    /// The robot's participant id.
+    #[napi(getter)]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// The parts as the host normalised them, in authored order.
+    #[napi]
+    pub fn parts(&self) -> Result<Vec<PartInfo>> {
+        Ok(self.robot()?.parts().iter().map(part_info).collect())
+    }
+
+    /// Publishes one sample of `path` from its fields in declaration order
+    /// (packed bytes; a string for text), captured at `capture_ns` (now by
+    /// default). The values are copied before this returns. Returns the
+    /// sample's seq, or `null` when coalesced or handed to the image
+    /// encoder (a JPEG part's frame is encoded off the JS thread).
+    #[napi]
+    pub fn publish(
+        &self,
+        path: String,
+        fields: Vec<Either<String, Uint8Array>>,
+        capture_ns: Option<BigInt>,
+    ) -> Result<Option<i64>> {
+        let robot = self.robot()?;
+        let mut owned: Vec<Vec<u8>> = fields
+            .into_iter()
+            .map(|field| match field {
+                Either::A(text) => text.into_bytes(),
+                Either::B(bytes) => bytes.to_vec(),
+            })
+            .collect();
+        let capture = match capture_ns {
+            Some(at) => ns(&at, "captureNs")?,
+            None => robot.participant().clock().now_ns(),
+        };
+        if let Some(part) = robot.part(&path)
+            && matches!(part.encoding, Encoding::Jpeg { .. })
+            && let [pixels] = owned.as_mut_slice()
+        {
+            let expected: u64 = part
+                .fields
+                .iter()
+                .flat_map(|f| &f.shape)
+                .map(|d| u64::from(*d))
+                .product();
+            if u64::try_from(pixels.len()).ok() != Some(expected) {
+                return Err(invalid(format!(
+                    "{path}: frame is {} bytes, not {expected}",
+                    pixels.len()
+                )));
+            }
+            let frame = (path, capture, std::mem::take(pixels));
+            let mut encoder = self.encoder.lock().map_err(|_| exception("poisoned"))?;
+            if encoder.is_none() {
+                *encoder =
+                    Some(Encoder::start(self.robot.clone()).map_err(|e| exception(e.to_string()))?);
+            }
+            if let Some(encoder) = encoder.as_ref() {
+                // A full queue drops this frame: the encoder is behind.
+                let _ = encoder.frames.try_send(frame);
+            }
+            return Ok(None);
+        }
+        let sent = sdk::publish(robot.published(), &path, capture, owned).map_err(session_err)?;
+        Ok(sent.map(seq))
+    }
+
+    /// Publishes one frame of the camera `path` already encoded as JPEG,
+    /// sent as it is: for a part declared `encoding: jpeg`, at its declared
+    /// size. Captured at `capture_ns` (now by default); copied before this
+    /// returns.
+    #[napi]
+    pub fn publish_jpeg(
+        &self,
+        path: String,
+        jpeg: Uint8Array,
+        capture_ns: Option<BigInt>,
+    ) -> Result<()> {
+        let robot = self.robot()?;
+        let capture = match capture_ns {
+            Some(at) => ns(&at, "captureNs")?,
+            None => robot.participant().clock().now_ns(),
+        };
+        robot
+            .published()
+            .publish_jpeg(&path, capture, bytes::Bytes::copy_from_slice(&jpeg))
+            .map_err(session_err)
+    }
+
+    /// One control tick of the edge serving `path` and its command group:
+    /// what to dispatch now, or `null`. Call it once per tick per group.
+    #[napi]
+    pub fn due(&self, path: String) -> Result<Option<DueTick>> {
+        let robot = self.robot()?;
+        let due = robot.due(&path).map_err(session_err)?;
+        due.map(|due| due_tick(&robot, due)).transpose()
+    }
+
+    /// The robot switched control modes after a handover of `path`'s group:
+    /// the group may dispatch again.
+    #[napi]
+    pub fn handover_done(&self, path: String) -> Result<()> {
+        self.robot()?.handover_done(&path).map_err(session_err)
+    }
+
+    /// DISARMED or SAFE to ARMED, in a fresh epoch.
+    #[napi]
+    pub async fn arm(&self) -> Result<()> {
+        let robot = self.robot()?;
+        robot.participant().arm().await.map_err(session_err)?;
+        Ok(())
+    }
+
+    /// Back to DISARMED.
+    #[napi]
+    pub async fn disarm(&self) -> Result<()> {
+        let robot = self.robot()?;
+        robot.participant().disarm().await.map_err(session_err)?;
+        Ok(())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one.
+    #[napi]
+    pub async fn health(&self, wait: bool, timeout_s: f64) -> Result<SessionHealth> {
+        let robot = self.robot()?;
+        read_health(robot.participant(), wait, timeout_s).await
+    }
+
+    /// Asks the host to keep its recent recording as an incident named
+    /// `label` (the cockpit's Keep).
+    #[napi]
+    pub async fn keep(&self, label: String) -> Result<()> {
+        let robot = self.robot()?;
+        robot.participant().keep(&label).await.map_err(session_err)
+    }
+
+    /// Emergency stop, latched locally with no network (any thread): the
+    /// next `due` purges every queue and returns `estop`, and the host is
+    /// told in the background. Latched until `clearEstop`, then disarm and
+    /// arm.
+    #[napi]
+    pub fn estop(&self, reason: String) -> Result<()> {
+        self.robot()?.estop(reason);
+        Ok(())
+    }
+
+    /// Clears the local e-stop latch and tells the host `Clear` (after any
+    /// unsent e-stop): the session stays ESTOP, unlatched, until disarm and
+    /// arm.
+    #[napi]
+    pub fn clear_estop(&self) -> Result<()> {
+        self.robot()?.clear_estop();
+        Ok(())
+    }
+
+    /// Tells the host the robot fell back on its own account (a device
+    /// watchdog fired): the session goes SAFE. Never blocks.
+    #[napi]
+    pub fn report_safe(&self, reason: String) -> Result<()> {
+        let robot = self.robot()?;
+        let participant = robot.participant();
+        participant.report_safe(
+            participant.authority_view().epoch(),
+            ReasonCode::DeviceWatchdog,
+            reason,
+        );
+        Ok(())
+    }
+
+    /// The session mode this robot sees (`disarmed`, `armed`, `active`,
+    /// `safe`, `estop`).
+    #[napi(getter)]
+    pub fn mode(&self) -> Result<String> {
+        Ok(self
+            .robot()?
+            .participant()
+            .authority()
+            .map_or_else(|| "disarmed".into(), |v| v.mode.to_string().to_lowercase()))
+    }
+
+    /// Why the session mode is what it is (`robot_lost`, `estop_local`, ...;
+    /// `unspecified` before any change).
+    #[napi(getter)]
+    pub fn mode_reason(&self) -> Result<String> {
+        Ok(sdk::reason_name(
+            self.robot()?
+                .participant()
+                .authority_view()
+                .with(|v| v.map_or(ReasonCode::Unspecified, |v| v.mode_reason.code)),
+        ))
+    }
+
+    /// Now on this robot's clock (`process.hrtime.bigint()`).
+    #[napi]
+    pub fn now_ns(&self) -> Result<BigInt> {
+        Ok(BigInt::from(self.robot()?.participant().clock().now_ns()))
+    }
+
+    /// The counters of the edge serving `path`.
+    #[napi]
+    pub fn edge_stats(&self, path: String) -> Result<EdgeStats> {
+        let stats = self.robot()?.edge_stats(&path).map_err(session_err)?;
+        let count = |n: u64| seq(n);
+        Ok(EdgeStats {
+            accepted: count(stats.accepted),
+            rejected: count(stats.rejected_total()),
+            rejected_by: Rejection::ALL
+                .into_iter()
+                .filter(|r| stats.rejected(*r) > 0)
+                .map(|r| RejectionCount {
+                    reason: sdk::rejection_name(r),
+                    count: count(stats.rejected(r)),
+                })
+                .collect(),
+            clamped: count(stats.clamped),
+            handovers: count(stats.handovers),
+            safe_reports: count(stats.safe_reports),
+            modes: sdk::EDGE_MODES
+                .into_iter()
+                .map(|mode| {
+                    let m = stats.mode(mode);
+                    ModeCount {
+                        mode: sdk::mode_name(mode).to_string(),
+                        ticks: count(m.ticks),
+                        entries: count(m.entries),
+                    }
+                })
+                .collect(),
+        })
+    }
+
+    /// Detaches: the edges and publishers go, the host drops the parts.
+    #[napi]
+    pub async fn close(&self) -> Result<()> {
+        if let Some(keeper) = self.keeper.lock().ok().and_then(|mut k| k.take()) {
+            keeper.abort();
+        }
+        // The encoder finishes its queued frames and lets go of the robot.
+        let encoder = self.encoder.lock().map(|mut e| e.take()).unwrap_or(None);
+        if let Some(Encoder { frames, thread }) = encoder {
+            drop(frames);
+            let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+        }
+        let taken = self.robot.lock().map(|mut r| r.take()).unwrap_or(None);
+        let Some(robot) = taken else {
+            return Ok(());
+        };
+        sdk::close_robot(robot).await.map_err(session_err)
+    }
+}
+
+#[cfg(feature = "fleet")]
+#[cfg(feature = "fleet")]
+#[napi]
+impl NativeRobot {
+    /// Why this robot should leave its scene's run (`scene_ended`,
+    /// `scene_failed`, `robot_lost`, `superseded`); `null` while it is in
+    /// the run, and outside a scene.
+    #[napi(getter)]
+    pub fn leaving(&self) -> Result<Option<String>> {
+        Ok(sdk::leaving(self.robot()?.participant()).map(|l| sdk::leave_name(&l)))
+    }
+}
+
+/// A refusal: its status and message.
+#[napi(object)]
+pub struct RefusalInfo {
+    pub status: String,
+    pub message: String,
+}
+
+#[cfg(feature = "fleet")]
+/// One member of a run.
+#[napi(object)]
+pub struct MemberInfo {
+    pub name: String,
+    pub stage: String,
+    pub error: Option<RefusalInfo>,
+}
+
+#[cfg(feature = "fleet")]
+/// A run's state.
+#[napi(object)]
+pub struct RunInfo {
+    pub run: String,
+    pub version: f64,
+    pub stage: String,
+    pub members: Vec<MemberInfo>,
+    pub error: Option<RefusalInfo>,
+}
+
+#[cfg(feature = "fleet")]
+fn refusal(e: &Option<rlmesh_session::wire::CtlError>) -> Option<RefusalInfo> {
+    e.as_ref().map(|e| RefusalInfo {
+        status: sdk::status_name(e.status),
+        message: e.message.clone(),
+    })
+}
+
+#[cfg(feature = "fleet")]
+fn run_info(state: &rlmesh_session::wire::RunState) -> RunInfo {
+    RunInfo {
+        run: state.run.clone(),
+        // Exact below 2^53.
+        #[allow(clippy::cast_precision_loss)]
+        version: state.version as f64,
+        stage: sdk::run_stage_name(state.stage),
+        members: state
+            .members
+            .iter()
+            .map(|m| MemberInfo {
+                name: m.name.to_string(),
+                stage: sdk::member_stage_name(m.stage),
+                error: refusal(&m.error),
+            })
+            .collect(),
+        error: refusal(&state.error),
+    }
+}
+
+#[cfg(feature = "fleet")]
+/// A scene run started from this process on the home daemon's lobby.
+#[napi]
+pub struct NativeScene {
+    run: String,
+    scene: tokio::sync::Mutex<Option<sdk::SceneRun>>,
+}
+
+#[cfg(feature = "fleet")]
+/// Runs the scene file's text `scene_toml` on the home daemon `home` names
+/// (`null`: this machine's rlmeshd), waiting up to `timeout_s` for it
+/// (`manual_arm`: wait for `arm()`). A refused scene is `SessionRefused`
+/// with its code.
+#[napi]
+pub async fn run_scene(
+    home: Option<String>,
+    scene_toml: String,
+    manual_arm: bool,
+    timeout_s: f64,
+) -> Result<NativeScene> {
+    let wait = timeout(timeout_s)?;
+    let scene = sdk::SceneRun::start(home.as_deref(), &scene_toml, manual_arm, wait)
+        .await
+        .map_err(session_err)?;
+    Ok(NativeScene {
+        run: scene.run().to_string(),
+        scene: tokio::sync::Mutex::new(Some(scene)),
+    })
+}
+
+#[cfg(feature = "fleet")]
+impl NativeScene {
+    async fn with<T>(
+        &self,
+        f: impl AsyncFnOnce(&sdk::SceneRun) -> std::result::Result<T, SessionError>,
+    ) -> Result<T> {
+        let scene = self.scene.lock().await;
+        let scene = scene
+            .as_ref()
+            .ok_or_else(|| exception(format!("run {} is closed", self.run)))?;
+        f(scene).await.map_err(session_err)
+    }
+}
+
+#[cfg(feature = "fleet")]
+#[napi]
+impl NativeScene {
+    /// The run's id.
+    #[napi(getter)]
+    pub fn run(&self) -> String {
+        self.run.clone()
+    }
+
+    /// Where the run's members join, once its host is up.
+    #[napi]
+    pub async fn address(&self) -> Result<Option<String>> {
+        self.with(async |s| s.address().await).await
+    }
+
+    /// The run's state now.
+    #[napi]
+    pub async fn status(&self) -> Result<RunInfo> {
+        Ok(run_info(&self.with(async |s| s.status().await).await?))
+    }
+
+    /// Waits up to `timeout_s` for the run to be at `stage` (`running`).
+    #[napi]
+    pub async fn wait_until(&self, stage: String, timeout_s: f64) -> Result<RunInfo> {
+        let stage = sdk::run_stage(&stage).map_err(invalid)?;
+        let wait = timeout(timeout_s)?;
+        Ok(run_info(
+            &self
+                .with(async move |s| s.wait_until(stage, wait).await)
+                .await?,
+        ))
+    }
+
+    /// Arms the run (`manual`, or after a lost member rejoined).
+    #[napi]
+    pub async fn arm(&self) -> Result<RunInfo> {
+        Ok(run_info(&self.with(async |s| s.arm().await).await?))
+    }
+
+    /// Stops the run and waits up to `timeout_s` for it to end.
+    #[napi]
+    pub async fn stop(&self, timeout_s: f64) -> Result<RunInfo> {
+        let wait = timeout(timeout_s)?;
+        Ok(run_info(
+            &self.with(async move |s| s.stop(wait).await).await?,
+        ))
+    }
+
+    /// Stops the run unless it ended, and leaves the lobby. Idempotent.
+    #[napi]
+    pub async fn close(&self, timeout_s: f64) -> Result<()> {
+        let wait = timeout(timeout_s)?;
+        let taken = self.scene.lock().await.take();
+        match taken {
+            Some(scene) => scene.close(wait).await.map_err(session_err),
+            None => Ok(()),
+        }
+    }
+}
+
+/// An input's age at the snapshot, in ns (`null`: blank, or no clock
+/// mapping).
+#[napi(object)]
+pub struct InputAge {
+    pub entry: String,
+    pub age_ns: Option<BigInt>,
+}
+
+/// An input's window slots padded by `allow: warmup`.
+#[napi(object)]
+pub struct InputPadding {
+    pub entry: String,
+    pub slots: u32,
+}
+
+/// An input's seq range delivered, by entry.
+#[napi(object)]
+pub struct EntrySeqs {
+    pub entry: String,
+    pub seq_first: i64,
+    pub seq_last: i64,
+}
+
+/// Per stream, the seq range a start used.
+#[napi(object)]
+pub struct StreamSeqs {
+    pub stream: u32,
+    pub seq_first: i64,
+    pub seq_last: i64,
+}
+
+/// A policy start: each input as `predict` receives it, and its snapshot.
+#[napi]
+pub struct NativeObservation {
+    values: Mutex<Vec<EntryValue>>,
+    meta: Snapshot,
+    time_ns: i64,
+}
+
+impl NativeObservation {
+    fn new(observation: Observation, time_ns: i64) -> Self {
+        Self {
+            values: Mutex::new(
+                observation
+                    .values
+                    .into_iter()
+                    .map(|(entry, value)| value_out(entry, value))
+                    .collect(),
+            ),
+            meta: observation.meta,
+            time_ns,
+        }
+    }
+}
+
+#[napi]
+impl NativeObservation {
+    /// Takes the inputs by entry (the arrays move to JS: a second call
+    /// returns none).
+    #[napi]
+    pub fn take_values(&self) -> Vec<EntryValue> {
+        self.values
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+
+    /// The session time the snapshot was taken at.
+    #[napi(getter)]
+    pub fn time_ns(&self) -> BigInt {
+        BigInt::from(self.time_ns)
+    }
+
+    /// Each input's conservative age.
+    #[napi(getter)]
+    pub fn ages(&self) -> Vec<InputAge> {
+        self.meta
+            .inputs
+            .iter()
+            .map(|i| InputAge {
+                entry: i.entry.clone(),
+                age_ns: i.age_ns.map(BigInt::from),
+            })
+            .collect()
+    }
+
+    /// Inputs delivered stale under `allow: hold`.
+    #[napi(getter)]
+    pub fn stale(&self) -> Vec<String> {
+        self.meta
+            .inputs
+            .iter()
+            .filter(|i| i.stale)
+            .map(|i| i.entry.clone())
+            .collect()
+    }
+
+    /// Window slots padded by `allow: warmup`.
+    #[napi(getter)]
+    pub fn padded(&self) -> Vec<InputPadding> {
+        self.meta
+            .inputs
+            .iter()
+            .filter(|i| i.padded > 0)
+            .map(|i| InputPadding {
+                entry: i.entry.clone(),
+                slots: i.padded,
+            })
+            .collect()
+    }
+
+    /// Inputs bound to a constant (`allow: blank`).
+    #[napi(getter)]
+    pub fn blank(&self) -> Vec<String> {
+        self.meta
+            .inputs
+            .iter()
+            .filter(|i| i.blank)
+            .map(|i| i.entry.clone())
+            .collect()
+    }
+
+    /// The newest capture minus the oldest, across inputs.
+    #[napi(getter)]
+    pub fn skew_ns(&self) -> BigInt {
+        BigInt::from(self.meta.skew_ns)
+    }
+
+    /// Each input's seq range delivered, by entry (none for a blank one).
+    #[napi(getter)]
+    pub fn seqs(&self) -> Vec<EntrySeqs> {
+        self.meta
+            .inputs
+            .iter()
+            .filter_map(|i| {
+                Some(EntrySeqs {
+                    entry: i.entry.clone(),
+                    seq_first: seq(i.samples.first()?.seq),
+                    seq_last: seq(i.samples.last()?.seq),
+                })
+            })
+            .collect()
+    }
+
+    /// Per stream, the seq range used.
+    #[napi(getter)]
+    pub fn based_on(&self) -> Vec<StreamSeqs> {
+        self.meta
+            .based_on
+            .iter()
+            .map(|r| StreamSeqs {
+                stream: r.channel.0,
+                seq_first: seq(r.seq_first),
+                seq_last: seq(r.seq_last),
+            })
+            .collect()
+    }
+}
+
+/// The run-time options of a binding.
+#[napi(object)]
+pub struct BindOptions {
+    pub priority: Option<String>,
+    pub under: Option<String>,
+    pub at: Option<HashMap<String, String>>,
+    pub positional: Option<Vec<String>>,
+    pub allow: Option<Vec<String>>,
+    pub captures: Option<HashMap<String, String>>,
+    pub timeout_s: Option<f64>,
+    /// Parts of the policy's own to publish annotations on (an authored
+    /// map, none commandable).
+    pub publishes_json: Option<String>,
+}
+
+fn run_options(
+    name: &str,
+    robot: Option<&str>,
+    opts: &BindOptions,
+) -> std::result::Result<RunOptions, String> {
+    let pairs = |map: &Option<HashMap<String, String>>| {
+        map.clone().unwrap_or_default().into_iter().collect()
+    };
+    sdk::BindOptions {
+        name,
+        robot,
+        under: opts.under.as_deref(),
+        at: pairs(&opts.at),
+        positional: opts.positional.as_deref().unwrap_or_default(),
+        allow: opts.allow.as_deref().unwrap_or_default(),
+        captures: pairs(&opts.captures),
+    }
+    .run_options()
+}
+
+/// A bound action: its entry, the part it drives (none when dropped) and its
+/// chunk length.
+#[napi(object)]
+pub struct ActionInfo {
+    pub entry: String,
+    pub part: Option<String>,
+    pub chunk: u32,
+}
+
+/// An action entry's chunk seq, or none without the lease (or dropped).
+#[napi(object)]
+pub struct SentChunk {
+    pub entry: String,
+    pub seq: Option<i64>,
+}
+
+/// A lease the policy holds: the part and its token.
+#[napi(object)]
+pub struct HeldLease {
+    pub path: String,
+    pub token: BigInt,
+}
+
+/// Starts skipped by reason.
+#[napi(object)]
+pub struct SkipCount {
+    pub reason: String,
+    pub count: i64,
+}
+
+/// The start, skip and completion counters, and the input the
+/// starts are phased after: a wall-clock run's.
+#[napi(object)]
+pub struct RunStats {
+    /// `wall`.
+    pub clock: String,
+    /// The input whose publication the starts are phased just after.
+    pub aligned_to: Option<String>,
+    /// How far after it, in ms.
+    pub phase_offset_ms: f64,
+    pub starts: i64,
+    pub completions: i64,
+    pub skipped: Vec<SkipCount>,
+    pub chunks_sent: i64,
+    /// Starts a shadow run predicted without a lease.
+    pub shadow_predictions: i64,
+    pub send_errors: i64,
+    pub latency_p50_ms: Option<f64>,
+    pub latency_p99_ms: Option<f64>,
+    pub latency_max_ms: Option<f64>,
+    pub drifting: bool,
+    /// The parts a higher class took, `robot:path`, kept from the policy
+    /// until `resume()`.
+    pub parked: Vec<String>,
+    /// Each input bound to a part, in policy order.
+    pub inputs: Vec<InputStats>,
+}
+
+/// One input bound to a part: the samples its subscription received and
+/// lost (seq gaps).
+#[napi(object)]
+pub struct InputStats {
+    pub entry: String,
+    /// `robot:path`.
+    pub part: String,
+    pub received: i64,
+    pub lost: i64,
+}
+
+/// One episode of a lockstep run.
+#[napi(object)]
+pub struct EpisodeStats {
+    /// Its return: every step's reward, summed.
+    pub reward: f64,
+    /// Lockstep steps taken.
+    pub steps: i64,
+    pub terminated: bool,
+    pub truncated: bool,
+}
+
+/// A lockstep run's counters.
+#[napi(object)]
+pub struct LockstepStats {
+    /// `lockstep`.
+    pub clock: String,
+    /// Calls of `predict`.
+    pub starts: i64,
+    /// Chunks played, one per start.
+    pub chunks_sent: i64,
+    /// Every episode, in order; the last is unfinished when the run was
+    /// stopped.
+    pub episodes: Vec<EpisodeStats>,
+}
+
+fn lockstep_stats(stats: &realtime::LockstepStats) -> LockstepStats {
+    LockstepStats {
+        clock: "lockstep".into(),
+        starts: seq(stats.starts),
+        chunks_sent: seq(stats.chunks_sent),
+        episodes: stats
+            .episodes
+            .iter()
+            .map(|e| EpisodeStats {
+                reward: e.reward,
+                steps: seq(e.steps),
+                terminated: e.terminated,
+                truncated: e.truncated,
+            })
+            .collect(),
+    }
+}
+
+/// A run's counters, on its robot's clock.
+type AnyStats = Either<RunStats, LockstepStats>;
+
+/// An event the run loop reported.
+#[napi(object)]
+pub struct RunEventInfo {
+    /// `rate_drift` or `inference_pending`.
+    pub kind: String,
+    pub message: String,
+    pub measured_hz: Option<f64>,
+    pub expected_hz: Option<f64>,
+    pub cause: Option<String>,
+    pub drifting: Option<bool>,
+    pub pending_s: Option<f64>,
+    /// `parked`: the part, `robot:path`.
+    pub part: Option<String>,
+    /// `parked`: who took it.
+    pub by: Option<String>,
+}
+
+fn run_stats(controller: &Controller) -> RunStats {
+    let stats = controller.stats();
+    let ms = |d: Option<Duration>| d.map(|d| d.as_secs_f64() * 1e3);
+    RunStats {
+        clock: "wall".into(),
+        aligned_to: controller.aligned_input(),
+        phase_offset_ms: controller.phase_offset().as_secs_f64() * 1e3,
+        starts: seq(stats.starts),
+        completions: seq(stats.completions),
+        skipped: SkipReason::ALL
+            .iter()
+            .map(|reason| SkipCount {
+                reason: reason.name().to_string(),
+                count: seq(stats.skipped(*reason)),
+            })
+            .collect(),
+        chunks_sent: seq(stats.chunks_sent),
+        shadow_predictions: seq(stats.shadow_predictions),
+        send_errors: seq(stats.send_errors),
+        latency_p50_ms: ms(stats.latency_p50),
+        latency_p99_ms: ms(stats.latency_p99),
+        latency_max_ms: ms(stats.latency_max),
+        drifting: stats.drifting,
+        parked: controller.parked().into_iter().map(|p| p.part).collect(),
+        inputs: stats
+            .inputs
+            .iter()
+            .map(|i| InputStats {
+                entry: i.entry.clone(),
+                part: i.part.clone(),
+                received: seq(i.received),
+                lost: seq(i.lost),
+            })
+            .collect(),
+    }
+}
+
+/// What JS answered for one start.
+type Reply = std::result::Result<Vec<(String, Value)>, String>;
+
+/// The start handed to JS: `predict` is called with it.
+type PredictFn = ThreadsafeFunction<NativeObservation, (), NativeObservation, Status, false>;
+
+/// A completed start handed to JS: `onStep` is called with it.
+type StepFn = ThreadsafeFunction<NativeStep, (), NativeStep, Status, false>;
+
+/// A completed start: whether it was a shadow one, and each action entry's
+/// chunk as the edge receives it.
+#[napi]
+pub struct NativeStep {
+    shadow: bool,
+    time_ns: i64,
+    actions: Mutex<Vec<StepEntry>>,
+}
+
+/// One action entry of a completed start.
+#[napi(object)]
+pub struct StepEntry {
+    pub entry: String,
+    /// The part it commands, `robot:path` (none: dropped).
+    pub part: Option<String>,
+    /// Its chunk seq when sent.
+    pub seq: Option<i64>,
+    /// One `[chunk, ...]` array per command field (none: dropped).
+    pub actions: Option<EntryValue>,
+}
+
+impl NativeStep {
+    fn new(step: &Step) -> Self {
+        Self {
+            shadow: step.shadow,
+            time_ns: step.snapshot_ns,
+            actions: Mutex::new(
+                step.actions
+                    .iter()
+                    .map(|a| StepEntry {
+                        entry: a.entry.clone(),
+                        part: a.part.clone(),
+                        seq: a.seq.map(seq),
+                        actions: a.actions().map(|v| value_out(a.entry.clone(), v)),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[napi]
+impl NativeStep {
+    /// A shadow start: its actions were checked and not sent.
+    #[napi(getter)]
+    pub fn shadow(&self) -> bool {
+        self.shadow
+    }
+
+    /// The session time of the start's snapshot.
+    #[napi(getter)]
+    pub fn time_ns(&self) -> BigInt {
+        BigInt::from(self.time_ns)
+    }
+
+    /// Takes the action entries (the arrays move to JS: a second call
+    /// returns none).
+    #[napi]
+    pub fn take_actions(&self) -> Vec<StepEntry> {
+        self.actions
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+}
+
+/// How a run on either clock ended.
+enum Ran {
+    Wall(std::result::Result<RunStats, RunError<String>>),
+    Lockstep(std::result::Result<LockstepStats, LockstepRunError<String>>),
+}
+
+/// `predict`, called from the run loop's thread: the observation goes to JS
+/// and the thread waits for [`NativePolicy::reply`]. Each completed start
+/// goes to `on_step`, without waiting.
+struct JsPredictor {
+    predict: PredictFn,
+    on_step: Option<StepFn>,
+    replies: mpsc::Receiver<Reply>,
+    closing: Arc<AtomicBool>,
+}
+
+impl Predictor for JsPredictor {
+    type Error = String;
+
+    fn predict(
+        &mut self,
+        observation: Observation,
+        snapshot_ns: i64,
+    ) -> std::result::Result<Vec<(String, Value)>, String> {
+        let start = NativeObservation::new(observation, snapshot_ns);
+        let status = self
+            .predict
+            .call(start, ThreadsafeFunctionCallMode::NonBlocking);
+        if status != Status::Ok {
+            return Err(format!("predict could not be called: {status}"));
+        }
+        loop {
+            match self.replies.recv_timeout(Duration::from_millis(20)) {
+                Ok(reply) => return reply,
+                Err(RecvTimeoutError::Timeout) if !self.closing.load(Ordering::Relaxed) => {}
+                Err(_) => return Err("the policy closed while predict ran".into()),
+            }
+        }
+    }
+
+    fn step(&mut self, step: &Step) -> std::result::Result<(), String> {
+        let Some(on_step) = &self.on_step else {
+            return Ok(());
+        };
+        match on_step.call(
+            NativeStep::new(step),
+            ThreadsafeFunctionCallMode::NonBlocking,
+        ) {
+            Status::Ok => Ok(()),
+            status => Err(format!("onStep could not be called: {status}")),
+        }
+    }
+}
+
+/// What a policy is bound through: the controller of wall-clock robots,
+/// or one lockstep robot's exchange.
+#[derive(Clone)]
+enum Driving {
+    Wall(Arc<Controller>),
+    Lockstep(Arc<LockstepPolicy>),
+}
+
+/// A policy bound to a robot: inputs, leases, chunks and the run loop, on
+/// the robot's clock.
+#[napi]
+pub struct NativePolicy {
+    name: String,
+    controller: Mutex<Option<Driving>>,
+    published: Option<Arc<rlmesh_session::edge::Published>>,
+    replies: Mutex<Option<SyncSender<Reply>>>,
+    closing: Arc<AtomicBool>,
+}
+
+/// Attaches as `name` at `options.priority`, waits for `robot`'s parts
+/// (`null`: the session's view of every robot, each under its name), binds
+/// `policy_json` (the policy map) with the run-time options, and
+/// declares the binding, on the robot's clock as it declared it: a
+/// lockstep robot is bound alone, through its exchange.
+#[napi]
+pub async fn bind_policy(
+    address: String,
+    name: String,
+    policy_json: String,
+    robot: Option<String>,
+    options: BindOptions,
+) -> Result<NativePolicy> {
+    let address = self::address(&address)?;
+    let wait = timeout(options.timeout_s.unwrap_or(10.0))?;
+    let class = priority(options.priority.as_deref().unwrap_or("model"))?;
+    let run_options = run_options(&name, robot.as_deref(), &options)
+        .map_err(|why| binding_refused(format!("binding refused: {why}")))?;
+    let (driving, published) = match options.publishes_json.as_deref() {
+        Some(publishes) => {
+            let (controller, published) = sdk::bind_policy_publishing(
+                &address,
+                &name,
+                &policy_json,
+                publishes,
+                &run_options,
+                class,
+                wait,
+            )
+            .await
+            .map_err(bind_policy_err)?;
+            (
+                Driving::Wall(Arc::new(controller)),
+                Some(Arc::new(published)),
+            )
+        }
+        None => {
+            let policy = Policy::parse(&policy_json).map_err(|why| {
+                bind_policy_err(BindPolicyError::Policy(format!("{name}: {why}")))
+            })?;
+            let bound = realtime::bind(&address, &name, &policy, &run_options, class, wait)
+                .await
+                .map_err(realtime_bind_err)?;
+            let driving = match bound {
+                BoundPolicy::Wall(controller) => Driving::Wall(Arc::new(controller)),
+                BoundPolicy::Lockstep(policy) => Driving::Lockstep(Arc::new(policy)),
+            };
+            (driving, None)
+        }
+    };
+    Ok(NativePolicy {
+        name,
+        controller: Mutex::new(Some(driving)),
+        published,
+        replies: Mutex::new(None),
+        closing: Arc::new(AtomicBool::new(false)),
+    })
+}
+
+impl NativePolicy {
+    fn bound(&self) -> Result<Driving> {
+        self.controller
+            .lock()
+            .ok()
+            .and_then(|c| c.clone())
+            .ok_or_else(|| exception(format!("policy {} is closed", self.name)))
+    }
+
+    /// The wall clock's controller: a verb only it has (leases, sends,
+    /// health) is refused for a lockstep robot.
+    fn controller(&self) -> Result<Arc<Controller>> {
+        match self.bound()? {
+            Driving::Wall(controller) => Ok(controller),
+            Driving::Lockstep(policy) => Err(exception(format!(
+                "policy {} drives robot {}, which runs in lockstep: this call is for \
+                 wall-clock robots (run() steps a lockstep robot, its lease held for it)",
+                self.name,
+                policy.robot()
+            ))),
+        }
+    }
+
+    fn binding(&self) -> Result<Arc<rlmesh_session::spec::bind::Binding>> {
+        Ok(match self.bound()? {
+            Driving::Wall(controller) => controller.binding(),
+            Driving::Lockstep(policy) => policy.binding(),
+        })
+    }
+}
+
+#[napi]
+impl NativePolicy {
+    /// The policy's participant id.
+    #[napi(getter)]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// The bound robot's clock: `wall`, or `lockstep` (one robot that
+    /// declared it).
+    #[napi(getter)]
+    pub fn clock(&self) -> Result<String> {
+        Ok(match self.bound()? {
+            Driving::Wall(_) => "wall",
+            Driving::Lockstep(_) => "lockstep",
+        }
+        .into())
+    }
+
+    /// The parts this policy publishes, as the host normalised them, in
+    /// authored order (none without `publishesJson`).
+    #[napi]
+    pub fn published_parts(&self) -> Vec<PartInfo> {
+        self.published
+            .iter()
+            .flat_map(|p| p.parts())
+            .map(part_info)
+            .collect()
+    }
+
+    /// Publishes one sample of one of this policy's own parts from its
+    /// fields in declaration order (packed bytes; a string for text),
+    /// captured at `capture_ns` (now by default). Returns the sample's seq,
+    /// or `null` when coalesced.
+    #[napi]
+    pub fn publish(
+        &self,
+        path: String,
+        fields: Vec<Either<String, Uint8Array>>,
+        capture_ns: Option<BigInt>,
+    ) -> Result<Option<i64>> {
+        let published = self.published.as_ref().ok_or_else(|| {
+            invalid(format!(
+                "policy {} publishes nothing: pass publishes to Policy",
+                self.name
+            ))
+        })?;
+        let owned: Vec<Vec<u8>> = fields
+            .into_iter()
+            .map(|field| match field {
+                Either::A(text) => text.into_bytes(),
+                Either::B(bytes) => bytes.to_vec(),
+            })
+            .collect();
+        let capture = match capture_ns {
+            Some(at) => ns(&at, "captureNs")?,
+            None => self.controller()?.participant().clock().now_ns(),
+        };
+        let sent = sdk::publish(published, &path, capture, owned).map_err(session_err)?;
+        Ok(sent.map(seq))
+    }
+
+    /// The binding table, as the cockpit shows it.
+    #[napi(getter)]
+    pub fn table(&self) -> Result<String> {
+        Ok(self.binding()?.table())
+    }
+
+    /// The binding table as canonical JSON (what the fingerprint is over).
+    #[napi(getter)]
+    pub fn table_json(&self) -> Result<String> {
+        Ok(self.binding()?.table_text())
+    }
+
+    /// The binding fingerprint, 16 hex digits.
+    #[napi(getter)]
+    pub fn fingerprint(&self) -> Result<String> {
+        Ok(self.binding()?.fingerprint.to_string())
+    }
+
+    /// Warnings the binder accepted the binding with.
+    #[napi(getter)]
+    pub fn warnings(&self) -> Result<Vec<String>> {
+        Ok(self.binding()?.warnings.clone())
+    }
+
+    /// The replan rate R.
+    #[napi(getter)]
+    pub fn replan_hz(&self) -> Result<f64> {
+        Ok(self.binding()?.replan_hz)
+    }
+
+    /// Each bound action.
+    #[napi]
+    pub fn actions(&self) -> Result<Vec<ActionInfo>> {
+        Ok(self
+            .binding()?
+            .actions
+            .iter()
+            .map(|a| ActionInfo {
+                entry: a.entry.clone(),
+                part: a.part.as_ref().map(|p| p.path.to_string()),
+                chunk: a.chunk,
+            })
+            .collect())
+    }
+
+    /// A policy start now. Throws `StartSkipped` when an input is missing,
+    /// stale (without `allow: hold`) or has a window gap.
+    #[napi]
+    pub fn observe(&self) -> Result<NativeObservation> {
+        let (observation, at) = self.controller()?.observe().map_err(observe_err)?;
+        Ok(NativeObservation::new(observation, at))
+    }
+
+    /// Sends one chunk per action entry, computed from `observation`, each
+    /// `[chunk, ...]`.
+    #[napi]
+    pub fn send(
+        &self,
+        values: Vec<EntryValue>,
+        observation: &NativeObservation,
+    ) -> Result<Vec<SentChunk>> {
+        let controller = self.controller()?;
+        let values = values_in(&values)?;
+        let sent = controller
+            .send(&values, &observation.meta.based_on, observation.time_ns)
+            .map_err(send_err)?;
+        Ok(sent
+            .into_iter()
+            .map(|(entry, outcome)| SentChunk {
+                entry,
+                seq: match outcome {
+                    Sent::Seq(s) => Some(seq(s)),
+                    Sent::NoLease | Sent::Dropped => None,
+                },
+            })
+            .collect())
+    }
+
+    /// Takes the binding's leases now, preempting a lower class; from then
+    /// on they are kept.
+    #[napi]
+    pub async fn acquire(&self) -> Result<Vec<HeldLease>> {
+        let controller = self.controller()?;
+        let leases = controller.acquire().await.map_err(session_err)?;
+        Ok(leases
+            .iter()
+            .map(|l| HeldLease {
+                path: controller
+                    .participant()
+                    .part_by_id(l.channel)
+                    .map_or_else(|_| l.channel.to_string(), |p| p.qualified()),
+                token: BigInt::from(l.token.0),
+            })
+            .collect())
+    }
+
+    /// Gives the leases back; they are not re-requested until `acquire` or
+    /// `run`.
+    #[napi]
+    pub async fn release(&self) -> Result<()> {
+        let controller = self.controller()?;
+        controller.release().await.map_err(session_err)
+    }
+
+    /// Whether this policy holds every lease its binding commands (a
+    /// lockstep robot's, always: it is taken at bind).
+    #[napi]
+    pub fn holds(&self) -> Result<bool> {
+        Ok(match self.bound()? {
+            Driving::Wall(controller) => controller.holds(),
+            Driving::Lockstep(_) => true,
+        })
+    }
+
+    /// Runs the policy on a thread of its own, on its robot's clock,
+    /// calling `predict(observation)` on the JS thread; each call is
+    /// answered with `reply`. `on_step` gets each completed start. If a
+    /// reply is an error, the leases are released and the run rejects with
+    /// code `Predict`. Resolves to the run's counters, with its `clock`
+    /// (taken as it returns, so a `close` racing the resolution cannot lose
+    /// them).
+    ///
+    /// Wall clock: until `stop()`, `duration_s`, or a failure, at the
+    /// replan rate with one inference in flight. `mode` is `command`
+    /// (default) or `shadow`; `resume` is `manual` (default: a part a
+    /// higher class took stays parked until `resume()`) or `auto`.
+    ///
+    /// Lockstep: `episodes` episodes (default 1), each from a reset seeded
+    /// from `seed` as a model run seeds it, one `predict` per chunk, until
+    /// each ends or `stop()`. `duration_s`, `mode: shadow` and `resume`
+    /// throw `ValueError` here, as `episodes` and `seed` do on the wall
+    /// clock.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run(
+        &self,
+        predict: PredictFn,
+        duration_s: Option<f64>,
+        mode: Option<String>,
+        on_step: Option<StepFn>,
+        resume: Option<String>,
+        episodes: Option<i64>,
+        seed: Option<i64>,
+    ) -> Result<AnyStats> {
+        let bound = self.bound()?;
+        let mode = match mode.as_deref() {
+            None => RunMode::Command,
+            Some(name) => RunMode::from_name(name)
+                .ok_or_else(|| invalid(format!("mode {name:?}: 'command' or 'shadow'")))?,
+        };
+        let resume = resume
+            .as_deref()
+            .map(|name| {
+                Resume::from_name(name)
+                    .ok_or_else(|| invalid(format!("resume {name:?}: 'manual' or 'auto'")))
+            })
+            .transpose()?;
+        let episodes = episodes
+            .map(|n| {
+                u64::try_from(n)
+                    .map_err(|_| invalid(format!("episodes={n}: a count, not negative")))
+            })
+            .transpose()?;
+        let settings = RunSettings {
+            duration: duration_s.map(timeout).transpose()?,
+            mode,
+            resume,
+            episodes,
+            seed,
+        };
+        let clock = match &bound {
+            Driving::Wall(_) => RobotClock::Wall,
+            Driving::Lockstep(_) => RobotClock::Lockstep,
+        };
+        settings.check(clock).map_err(invalid)?;
+        let (tx, rx) = mpsc::sync_channel(1);
+        {
+            let mut slot = self.replies.lock().map_err(|_| exception("poisoned"))?;
+            if slot.is_some() {
+                return Err(exception(format!(
+                    "policy {} is already running",
+                    self.name
+                )));
+            }
+            *slot = Some(tx);
+        }
+        let mut predictor = JsPredictor {
+            predict,
+            on_step,
+            replies: rx,
+            closing: self.closing.clone(),
+        };
+        let ran = tokio::task::spawn_blocking(move || match bound {
+            Driving::Wall(controller) => Ran::Wall(
+                controller
+                    .run(&mut predictor, settings.wall())
+                    .map(|()| run_stats(&controller)),
+            ),
+            Driving::Lockstep(policy) => Ran::Lockstep(
+                policy
+                    .run(&mut predictor, &settings)
+                    .map(|stats| lockstep_stats(&stats)),
+            ),
+        })
+        .await;
+        if let Ok(mut slot) = self.replies.lock() {
+            *slot = None;
+        }
+        match ran.map_err(|join| exception(format!("the run loop failed: {join}")))? {
+            Ran::Wall(Ok(stats)) => Ok(Either::A(stats)),
+            Ran::Wall(Err(RunError::Predict(message))) => Err(error("Predict", &[], message)),
+            Ran::Wall(Err(RunError::Send(err))) => Err(send_err(err)),
+            Ran::Wall(Err(RunError::Lost(reason))) => Err(error(
+                "SessionLost",
+                &[("reason", format!("{:?}", sdk::reason_name(reason.code)))],
+                format!("the session was lost: {reason}"),
+            )),
+            Ran::Wall(Err(RunError::Rebind(why))) => Err(binding_refused(why)),
+            Ran::Lockstep(Ok(stats)) => Ok(Either::B(stats)),
+            Ran::Lockstep(Err(LockstepRunError::Predict(message))) => {
+                Err(error("Predict", &[], message))
+            }
+            Ran::Lockstep(Err(LockstepRunError::Settings(why))) => Err(invalid(why)),
+            Ran::Lockstep(Err(LockstepRunError::Robot(err))) => Err(lockstep_err(err)),
+        }
+    }
+
+    /// Answers the start `run` handed to `predict`: the actions, or (with
+    /// `error`) why `predict` failed.
+    #[napi]
+    pub fn reply(&self, values: Option<Vec<EntryValue>>, error: Option<String>) -> Result<()> {
+        let reply = match (values, error) {
+            (_, Some(message)) => Err(message),
+            (Some(values), None) => values_in(&values).map_err(|e| message_of(&e)),
+            (None, None) => Err("predict returned nothing".into()),
+        };
+        let sender = self
+            .replies
+            .lock()
+            .ok()
+            .and_then(|s| s.clone())
+            .ok_or_else(|| exception(format!("policy {} is not running", self.name)))?;
+        sender
+            .try_send(reply)
+            .map_err(|_| exception("a reply with no start waiting for it"))
+    }
+
+    /// Asks a `run` in progress to return.
+    #[napi]
+    pub fn stop(&self) -> Result<()> {
+        match self.bound()? {
+            Driving::Wall(controller) => controller.stop(),
+            Driving::Lockstep(policy) => policy.stop(),
+        }
+        Ok(())
+    }
+
+    /// Hands the parts a higher class took back to this policy; returns
+    /// them, `robot:path`.
+    #[napi]
+    pub fn resume(&self) -> Result<Vec<String>> {
+        Ok(self.controller()?.resume())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one.
+    #[napi]
+    pub async fn health(&self, wait: bool, timeout_s: f64) -> Result<SessionHealth> {
+        let controller = self.controller()?;
+        read_health(controller.participant(), wait, timeout_s).await
+    }
+
+    /// The latest run's counters, with its `clock`. Wall: starts, skips
+    /// and completions. Lockstep: starts, chunks and one entry per episode.
+    #[napi]
+    pub fn stats(&self) -> Result<AnyStats> {
+        Ok(match self.bound()? {
+            Driving::Wall(controller) => Either::A(run_stats(&controller)),
+            Driving::Lockstep(policy) => Either::B(lockstep_stats(&policy.stats())),
+        })
+    }
+
+    /// Takes the events reported so far, oldest first (none for a
+    /// lockstep robot: its run waits on nothing and nobody takes its
+    /// lease).
+    #[napi]
+    pub fn events(&self) -> Result<Vec<RunEventInfo>> {
+        let events = match self.bound()? {
+            Driving::Wall(controller) => controller.drain_events(),
+            Driving::Lockstep(_) => Vec::new(),
+        };
+        Ok(events
+            .into_iter()
+            .map(|event| {
+                let mut info = RunEventInfo {
+                    kind: String::new(),
+                    message: event.to_string(),
+                    measured_hz: None,
+                    expected_hz: None,
+                    cause: None,
+                    drifting: None,
+                    pending_s: None,
+                    part: None,
+                    by: None,
+                };
+                match event {
+                    RunEvent::RateDrift {
+                        measured_hz,
+                        expected_hz,
+                        cause,
+                        drifting,
+                    } => {
+                        info.kind = "rate_drift".into();
+                        info.measured_hz = Some(measured_hz);
+                        info.expected_hz = Some(expected_hz);
+                        info.cause = Some(cause.to_string());
+                        info.drifting = Some(drifting);
+                    }
+                    RunEvent::InferencePending { pending } => {
+                        info.kind = "inference_pending".into();
+                        info.pending_s = Some(pending.as_secs_f64());
+                    }
+                    RunEvent::RobotHeld { .. } => info.kind = "robot_held".into(),
+                    RunEvent::ClockRefused { .. } => info.kind = "clock_refused".into(),
+                    RunEvent::WaitingToArm { .. } => info.kind = "waiting_to_arm".into(),
+                    RunEvent::Shadowing { .. } => info.kind = "shadowing".into(),
+                    RunEvent::Commanding { .. } => info.kind = "commanding".into(),
+                    RunEvent::InputLost { .. } => info.kind = "input_lost".into(),
+                    RunEvent::Rebound { .. } => info.kind = "rebound".into(),
+                    RunEvent::Parked { part, by, .. } => {
+                        info.kind = "parked".into();
+                        info.part = Some(part);
+                        info.by = Some(by);
+                    }
+                    RunEvent::HandedBack { part, by, .. } => {
+                        info.kind = "handed_back".into();
+                        info.part = Some(part);
+                        info.by = Some(by);
+                    }
+                }
+                info
+            })
+            .collect())
+    }
+
+    /// Gives the leases back and detaches.
+    #[napi]
+    pub async fn close(&self) -> Result<()> {
+        let taken = self.controller.lock().map(|mut c| c.take()).unwrap_or(None);
+        let Some(driving) = taken else {
+            return Ok(());
+        };
+        // A `predict` waiting on JS gives up, so the run can return.
+        self.closing.store(true, Ordering::Relaxed);
+        match driving {
+            Driving::Wall(controller) => sdk::close_policy(controller).await.map_err(session_err),
+            Driving::Lockstep(policy) => {
+                policy.stop();
+                policy.close().await;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A fixed-rate loop timer on `process.hrtime.bigint()`: `sleep()` resolves
+/// when the next period starts (a coarse sleep, then a short spin, off the
+/// JS thread). A tick more than a period late skips the missed ones rather
+/// than bursting.
+#[napi]
+pub struct NativeRate {
+    rate: Arc<sdk::Rate>,
+}
+
+#[napi]
+impl NativeRate {
+    #[napi(constructor)]
+    pub fn new(hz: f64) -> Result<Self> {
+        Ok(Self {
+            rate: Arc::new(sdk::Rate::new(hz).map_err(invalid)?),
+        })
+    }
+
+    /// Waits until the next period starts; resolves to how late this call
+    /// was for it, in ns.
+    #[napi]
+    pub async fn sleep(&self) -> Result<i64> {
+        let clock = SystemMonotonicClock;
+        let (next, late) = self.rate.next(clock.now_ns());
+        tokio::task::spawn_blocking(move || sleep_until(|| clock.now_ns(), next))
+            .await
+            .map_err(|e| exception(e.to_string()))?;
+        Ok(late)
+    }
+
+    /// Periods skipped because a call came more than a period late.
+    #[napi(getter)]
+    pub fn missed(&self) -> i64 {
+        seq(self.rate.missed())
+    }
+}
+
+fn record_err(err: RecordError) -> Error {
+    match err {
+        RecordError::Session(err) => session_err(err),
+        other => exception(other.to_string()),
+    }
+}
+
+/// A finished recording's counters.
+#[napi(object)]
+pub struct RecordStats {
+    pub path: String,
+    pub messages: i64,
+    pub channels: u32,
+    pub bytes: i64,
+    pub log_time_clamped: i64,
+}
+
+/// An MCAP recording of a session, as an observer participant.
+#[napi]
+pub struct NativeRecorder {
+    path: String,
+    recorder: Mutex<Option<Recorder>>,
+}
+
+/// Attaches as observer `name` and starts recording every stream, chunk and
+/// authority change of the session into a new MCAP file at `path`.
+#[napi]
+pub async fn start_recorder(
+    address: String,
+    path: String,
+    name: String,
+    timeout_s: f64,
+) -> Result<NativeRecorder> {
+    let address = self::address(&address)?;
+    let wait = timeout(timeout_s)?;
+    let recorder = sdk::start_recorder(&address, &path, &name, wait)
+        .await
+        .map_err(record_err)?;
+    Ok(NativeRecorder {
+        path,
+        recorder: Mutex::new(Some(recorder)),
+    })
+}
+
+#[napi]
+impl NativeRecorder {
+    /// The MCAP file.
+    #[napi(getter)]
+    pub fn path(&self) -> String {
+        self.path.clone()
+    }
+
+    /// Stops recording and finishes the file; none when already closed.
+    #[napi]
+    pub async fn close(&self) -> Result<Option<RecordStats>> {
+        let taken = self.recorder.lock().map(|mut r| r.take()).unwrap_or(None);
+        let Some(recorder) = taken else {
+            return Ok(None);
+        };
+        let stats = sdk::finish_recorder(recorder).await.map_err(record_err)?;
+        Ok(Some(RecordStats {
+            path: stats.path.to_string_lossy().into_owned(),
+            messages: seq(stats.messages),
+            channels: stats.channels,
+            bytes: seq(stats.bytes),
+            log_time_clamped: seq(stats.log_time_clamped),
+        }))
+    }
+}
+
+/// One topic of a recording.
+#[napi(object)]
+pub struct TopicSummary {
+    pub topic: String,
+    pub schema: String,
+    pub channels: u32,
+    pub messages: i64,
+    pub first_log_ns: BigInt,
+    pub last_log_ns: BigInt,
+    pub log_time_monotonic: bool,
+    pub publish_time_monotonic: bool,
+    pub undecodable: i64,
+}
+
+/// One lease change of a recording.
+#[napi(object)]
+pub struct LeaseChange {
+    pub log_ns: BigInt,
+    pub part: String,
+    pub holder: Option<String>,
+    pub priority: Option<String>,
+    pub token: Option<BigInt>,
+}
+
+/// A recording read back.
+#[napi(object)]
+pub struct RecordingSummary {
+    pub messages: i64,
+    pub metadata: Vec<String>,
+    pub topics: Vec<TopicSummary>,
+    pub leases: Vec<LeaseChange>,
+}
+
+/// Reads a recording back (off the JS thread): messages per topic, time
+/// ordering, the lease timeline.
+#[napi]
+pub async fn read_recording(path: String) -> Result<RecordingSummary> {
+    let summary = tokio::task::spawn_blocking(move || rlmesh_session::record::summarize(&path))
+        .await
+        .map_err(|e| exception(e.to_string()))?
+        .map_err(record_err)?;
+    Ok(RecordingSummary {
+        messages: seq(summary.messages),
+        metadata: summary.metadata,
+        topics: summary
+            .topics
+            .into_iter()
+            .map(|t| TopicSummary {
+                topic: t.topic,
+                schema: t.schema,
+                channels: t.channels,
+                messages: seq(t.messages),
+                first_log_ns: BigInt::from(t.first_log_ns),
+                last_log_ns: BigInt::from(t.last_log_ns),
+                log_time_monotonic: t.log_time_monotonic,
+                publish_time_monotonic: t.publish_time_monotonic,
+                undecodable: seq(t.undecodable),
+            })
+            .collect(),
+        leases: summary
+            .leases
+            .into_iter()
+            .map(|l| LeaseChange {
+                log_ns: BigInt::from(l.log_ns),
+                part: l.part,
+                holder: l.holder,
+                priority: l.priority,
+                token: l.token.map(BigInt::from),
+            })
+            .collect(),
+    })
+}
