@@ -1,6 +1,6 @@
 [project]
 name = "rlmesh"
-version = "0.1.0"
+version = "0.2.0a1"
 description = "Python SDK for model-environment evaluation workflows"
 authors = [{ name = "ArenaX Labs, Inc.", email = "research@competesai.com" }]
 maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
@@ -16,7 +16,7 @@ keywords = [
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
@@ -48,14 +48,17 @@ gym = ["gym>=0.22.0"]
 numpy = ["numpy>=1.22"]
 torch = ["torch>=1.11"]
 jax = ["jax>=0.4.24", "jaxlib>=0.4.24"]
+# Real-time sessions (rlmesh.realtime): robots, policies, the edge,
+# recordings. NumPy is the only extra they need.
+robot = ["numpy>=1.22"]
 
 # Host-side hf:// artifact resolution (container-less local runs) needs
-# huggingface_hub. Optional so the core stays dependency-free; in a sandbox the
-# managed sidecar materializes inputs and the eval container never imports it.
+# huggingface_hub. Keep it optional so the core stays dependency-free.
 hf = ["huggingface_hub"]
 
 [project.scripts]
 rlmesh = "rlmesh.__main__:main"
+rlmeshd = "rlmesh.__main__:daemon_main"
 docker-credential-rlmesh = "rlmesh.__main__:credential_helper_main"
 
 [build-system]
@@ -78,7 +81,10 @@ exclude = [
 ]
 
 [tool.uv]
+# The extension stamps its dev workflow edition with the commit it is built
+# from (crates/rlmesh-proto/build.rs), so a commit makes it stale too.
 cache-keys = [
+  { git = { commit = true } },
   { file = "pyproject.toml" },
   { file = "rust/Cargo.toml" },
   { file = "rust/**/*.rs" },

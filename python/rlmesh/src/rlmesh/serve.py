@@ -2,21 +2,53 @@
 
 ``python -m rlmesh.serve my_pkg:Policy`` serves a model; ``--env my_pkg:Env``
 serves an environment. The target may be a ``Model`` subclass, an :class:`EnvFactory`,
-or a bare predict / make-env callable. Serves on ``RLMESH_ADDRESS``
-(default ``0.0.0.0:50051``); point your Dockerfile ``ENTRYPOINT`` here instead of
-hand-writing a serve loop.
+or a bare predict / make-env callable. Serves as ``RLMESH_NAME`` (default
+``model``, or ``env``) in the session at ``RLMESH_ADDRESS`` (default
+``0.0.0.0:7447``, hosted here); point your Dockerfile ``ENTRYPOINT`` here
+instead of hand-writing a serve loop.
+
+Hosting beyond loopback, as the default ``0.0.0.0`` does, takes a host
+identity: whoever launches the container passes one in
+``RLMESH_HOST_IDENTITY`` (a secret, through the environment, never argv) and
+dials the keyed address its key forms. ``rlmesh host-identity new --address
+HOST:PORT --participant NAME`` makes both (``rlmesh.launch`` in Python); a
+sandbox does it for you. Without one, the process refuses to start and says
+so before it loads anything; ``RLMESH_ADDRESS=127.0.0.1:7447`` serves this
+machine only, with no identity. The serving line, printed once the env or
+model answers, never shows the key; ``RLMESH_READY_FILE`` names a file
+written at the same moment, for a launcher to wait on.
+
+Every option has a command-line flag and an ``RLMESH_*`` environment variable,
+so a container is configured through its environment alone; a flag wins over
+its variable, and a value that does not parse stops the process at startup,
+naming the variable. A served model's batching (:class:`rlmesh.BatchOptions`)
+is ``--max-batch-size`` / ``RLMESH_MAX_BATCH_SIZE``, ``--batch-window-ms`` /
+``RLMESH_BATCH_WINDOW_MS``, ``--batch-byte-budget`` /
+``RLMESH_BATCH_BYTE_BUDGET``, ``--max-in-flight-batches`` /
+``RLMESH_MAX_IN_FLIGHT_BATCHES`` and ``--batch-records`` /
+``RLMESH_BATCH_RECORDS``; one left unset takes ``BatchOptions``' default.
+``python -m rlmesh.serve --help`` lists them all.
+
+Whoever launched the process ends it. SIGTERM drains: the env or model call
+in progress finishes, the env is closed, and the process exits 0; a driver
+in a call hears that the server went away. Ctrl-C (SIGINT) does the same and
+exits 130. A second signal while the drain waits on a call that will not
+return ends the process at once, by that signal (128 + its number: 143 for
+SIGTERM, 130 for SIGINT), without closing the env.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from ._authoring import render_binding
 from ._entrypoint import resolve_entrypoint
 
 # Startup phase marks. Every mark is wall-clock milliseconds since the process
@@ -68,13 +100,12 @@ def startup_marks() -> dict[str, str]:
 
 def _stamp_startup(
     kind: str,
-    address: str,
     target: object,
     served_env: object | None = None,
     *,
     options: ServeOptions | None = None,
 ) -> None:
-    """Mark the listen point, put the marks and the describe on the handshake, print them.
+    """Mark the listen point and put the marks and the describe on the handshake.
 
     ``options`` is what the server will serve with: its resolved
     ``workflow_edition`` is what the handshake declares, so the envelope is
@@ -89,6 +120,15 @@ def _stamp_startup(
     if describe := _handshake_describe(target, kind, served_env, resolved):
         extra[DESCRIBE_METADATA_KEY] = describe
     register_python_peer_info(extra=extra)
+
+
+def _print_serving_line(ready: Mapping[str, object]) -> None:
+    """The serving line, once the participant answers, at an address a peer can dial.
+
+    Stdout is a container's log, and the key a credential: the address
+    comes redacted.
+    """
+    _mark("ready")
     phases = ", ".join(
         f"{phase} {ms / 1000:.1f}s"
         for phase, ms in (
@@ -96,7 +136,23 @@ def _stamp_startup(
         )
         + list(_marks.items())
     )
-    print(f"RLMesh serving {kind} on {address} (startup: {phases})", flush=True)
+    print(
+        f"RLMesh serving {ready['kind']} on {ready['address']} (startup: {phases})",
+        flush=True,
+    )
+
+
+@contextlib.contextmanager
+def _serving_line() -> Iterator[None]:
+    """Print the serving line when the served participant becomes ready."""
+    from ._load_native import load_native
+
+    set_ready_hook = load_native("set_ready_hook")
+    set_ready_hook(_print_serving_line)
+    try:
+        yield
+    finally:
+        set_ready_hook(None)
 
 
 def _handshake_describe(
@@ -104,9 +160,8 @@ def _handshake_describe(
 ) -> str | None:
     """The served target's describe envelope, for ``PeerInfo.extra``.
 
-    The managed platform reads it off the handshake when an image carries no
-    describe label, so a plain ``python -m rlmesh.serve`` image is enough to
-    probe. ``workflow_edition`` is the declaration the server resolved (``""``
+    Clients can read it during the handshake even when an image carries no
+    describe label. ``workflow_edition`` is the declaration the server resolved (``""``
     for none), so the envelope's ``runtime.preferred_workflow_edition`` is the
     wire value. Best-effort: a target ``describe()`` cannot cover still
     serves, without the envelope, and says so once on stderr.
@@ -128,12 +183,177 @@ def _handshake_describe(
 
 
 if TYPE_CHECKING:
-    from rlmesh._models.base import ModelBase
+    from rlmesh._models.base import BatchOptions, ModelBase
     from rlmesh._rlmesh import ServeOptions
     from rlmesh._value_conversion import ValueBridge
     from rlmesh.types import EnvLike
 
 __all__ = ["main", "serve_env", "serve_model", "startup_marks"]
+
+# Where a model or env serves by default: the default session, hosted in this
+# process on the well-known port, on all interfaces (a container's published
+# ports), which takes a host identity in RLMESH_HOST_IDENTITY.
+_ADDRESS = "0.0.0.0:7447"
+_HOST_IDENTITY_VAR = "RLMESH_HOST_IDENTITY"
+_READY_FILE_VAR = "RLMESH_READY_FILE"
+
+
+class _NoHostIdentityError(ValueError):
+    """An all-interfaces address served without a launch identity."""
+
+
+def _refuse_unlaunched_wide_bind(address: str) -> None:
+    """Refuse ``address`` before anything loads when it cannot host here.
+
+    A session hosted on all interfaces needs the launch identity its
+    launcher passes; without one the native host refuses to bind, and only
+    after a model's weights loaded. This mirrors the hosting rule for an
+    unspecified host (``0.0.0.0`` / ``[::]``, a container's) only, and lets
+    the process join when another host already listens on that port here.
+    """
+    if os.environ.get(_HOST_IDENTITY_VAR):
+        return
+    first = address.removeprefix("rlmesh://").split("/", 1)[0].split("#", 1)[0]
+    if first.startswith("["):
+        host, _, port = first[1:].partition("]")
+        port = port.removeprefix(":")
+    else:
+        host, _, port = first.rpartition(":")
+    if host not in ("0.0.0.0", "::") or not port.isdigit():
+        return
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.2):
+            return
+    except OSError:
+        pass
+    raise _NoHostIdentityError(
+        f"serving on {first} (all interfaces) needs a host identity: set "
+        f"{_HOST_IDENTITY_VAR}, through the environment, to the identity "
+        "`rlmesh host-identity new --address HOST:PORT --participant NAME` makes "
+        "(rlmesh.launch in Python), and dial the keyed address it prints; or set "
+        f"RLMESH_ADDRESS=127.0.0.1:{port} to serve this machine only (in a "
+        "container, only that container: nothing outside it can reach it)"
+    )
+
+
+# A served model's batching: each integer rlmesh.BatchOptions field, the
+# environment variable behind its flag, the least value it takes and its help.
+_BATCH_INTEGERS = (
+    (
+        "max_batch_size",
+        "RLMESH_MAX_BATCH_SIZE",
+        1,
+        "The most predict groups (one route's rows each) one grouped predict "
+        "carries; 1 turns batching off.",
+    ),
+    (
+        "batch_window_ms",
+        "RLMESH_BATCH_WINDOW_MS",
+        0,
+        "The longest, in milliseconds, an idle model holds a batch open for "
+        "more requests.",
+    ),
+    (
+        "batch_byte_budget",
+        "RLMESH_BATCH_BYTE_BUDGET",
+        1,
+        "The most observation bytes one grouped predict carries.",
+    ),
+    (
+        "max_in_flight_batches",
+        "RLMESH_MAX_IN_FLIGHT_BATCHES",
+        1,
+        "Batches past assembly at once: 2 assembles the next while one runs, "
+        "1 assembles only while the model is idle.",
+    ),
+)
+_BATCH_RECORDS_VAR = "RLMESH_BATCH_RECORDS"
+# The largest value a batch setting takes (the native fields are 64-bit).
+_BATCH_MAX = 2**63 - 1
+
+
+def _batch_integer(raw: str, minimum: int) -> int:
+    """A batch setting's integer, or ``ValueError`` saying what it must be."""
+    try:
+        value = int(raw.strip(), 10)
+    except ValueError:
+        value = None
+    if value is None or not minimum <= value <= _BATCH_MAX:
+        raise ValueError(f"must be an integer from {minimum} to {_BATCH_MAX}")
+    return value
+
+
+def _batch_flag_type(minimum: int) -> Callable[[str], int]:
+    def parse(raw: str) -> int:
+        try:
+            return _batch_integer(raw, minimum)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"{exc}, got {raw!r}") from exc
+
+    return parse
+
+
+def _add_batching_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group(
+        "model batching",
+        "How a served model coalesces predicts from every session it answers "
+        "in (rlmesh.BatchOptions; experimental). Each flag defaults to its "
+        "environment variable, then to BatchOptions' default. Model only.",
+    )
+    for field, var, minimum, help_text in _BATCH_INTEGERS:
+        group.add_argument(
+            "--" + field.replace("_", "-"),
+            dest=field,
+            type=_batch_flag_type(minimum),
+            metavar="N",
+            help=f"{help_text} Defaults to {var}.",
+        )
+    group.add_argument(
+        "--batch-records",
+        metavar="PATH",
+        help=(
+            "Append one JSON line per batch here (batch size, queue wait, "
+            f"forward timing, outcome). Defaults to {_BATCH_RECORDS_VAR}."
+        ),
+    )
+
+
+def _batching(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> BatchOptions | None:
+    """The batch options the flags and their variables set, else ``None``.
+
+    A flag wins over its variable; a variable that does not parse stops
+    startup, naming it.
+    """
+    from ._models import BatchOptions
+
+    values: dict[str, int] = {}
+    for field, var, minimum, _ in _BATCH_INTEGERS:
+        value = cast("int | None", getattr(args, field))
+        raw = os.environ.get(var)
+        if value is None and raw:
+            try:
+                value = _batch_integer(raw, minimum)
+            except ValueError as exc:
+                parser.error(f"{var} {exc}, got {raw!r}")
+        if value is not None:
+            values[field] = value
+    records = cast("str | None", args.batch_records) or os.environ.get(
+        _BATCH_RECORDS_VAR
+    )
+    if not values and not records:
+        return None
+    return BatchOptions(
+        max_batch_size=values.get("max_batch_size"),
+        batch_window_ms=values.get("batch_window_ms"),
+        batch_byte_budget=values.get("batch_byte_budget"),
+        max_in_flight_batches=values.get("max_in_flight_batches"),
+        batch_records=records or None,
+    )
+
 
 # Frameworks whose obs/action seam carries device tensors. numpy and the default
 # Auto backend have no device, so a device= is meaningless (and unsupported) there.
@@ -189,7 +409,19 @@ def _reject_vectorized_framework(
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse ``[model | --env]`` and serve it on ``--address``/``RLMESH_ADDRESS``."""
-    parser = argparse.ArgumentParser(prog="python -m rlmesh.serve")
+    parser = argparse.ArgumentParser(
+        prog="python -m rlmesh.serve",
+        epilog=(
+            "For orchestrators: serving on every interface (the default "
+            f"{_ADDRESS}) takes a host identity in {_HOST_IDENTITY_VAR}, passed "
+            "through the environment, never argv: `rlmesh host-identity new "
+            "--address HOST:PORT --participant NAME` makes one and prints the "
+            "keyed address peers dial (a sandbox does this for you). "
+            f"{_READY_FILE_VAR}=PATH writes PATH, a small JSON file, once the "
+            "env or model answers, and removes it when it stops: wait on it "
+            "(HEALTHCHECK CMD test -f PATH) rather than on the log."
+        ),
+    )
     parser.add_argument(
         "model",
         nargs="?",
@@ -201,7 +433,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--env", help="module:Class for an environment")
     parser.add_argument(
-        "--address", default=os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
+        "--address",
+        default=os.environ.get("RLMESH_ADDRESS") or None,
+        help=(
+            f"Where to serve (default {_ADDRESS}, every interface; 127.0.0.1:PORT "
+            "for this machine only). Defaults to RLMESH_ADDRESS."
+        ),
+    )
+    parser.add_argument(
+        "--name",
+        default=os.environ.get("RLMESH_NAME") or None,
+        help=(
+            "The participant name in the session, reached at '<address>/<name>'. "
+            "Defaults to RLMESH_NAME, then 'model' (or 'env' with --env)."
+        ),
     )
     parser.add_argument(
         "--framework",
@@ -242,6 +487,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "the declared defaults. Validated before construction."
         ),
     )
+    _add_batching_arguments(parser)
     args = parser.parse_args(argv)
     if not args.env and (target := os.environ.get("RLMESH_SERVE_TARGET")):
         args.model = target
@@ -252,6 +498,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "--framework/--device apply only to an env (--env); unset them (and "
             "RLMESH_FRAMEWORK / RLMESH_DEVICE) when serving a model"
+        )
+    batching = _batching(args, parser)
+    if args.env and batching is not None:
+        parser.error(
+            "the batching options apply only to a model; unset them (and "
+            "RLMESH_MAX_BATCH_SIZE, RLMESH_BATCH_WINDOW_MS, "
+            "RLMESH_BATCH_BYTE_BUDGET, RLMESH_MAX_IN_FLIGHT_BATCHES, "
+            "RLMESH_BATCH_RECORDS) when serving an env"
         )
 
     # Eval shape from the container env (start_prebuilt_container injects these for a
@@ -300,9 +554,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             env = resolve_entrypoint(args.env, label="env entrypoint")
             _mark("imports")
+            # The model's Image(render=...) size, which a sandbox driver that
+            # knows the model passes in: bound on the env's own camera dial,
+            # under the explicit binding.
+            binding = render_binding(env, _render_size(parser)) | binding
             serve_env(
                 env,
-                args.address,
+                f"{(args.address or _ADDRESS).rstrip('/')}/{args.name or 'env'}",
                 num_envs=num_envs,
                 vectorization_mode=vectorization_mode,
                 framework=args.framework,
@@ -315,10 +573,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             _mark("imports")
             serve_model(
                 model,
-                args.address,
+                args.address or _ADDRESS,
+                name=args.name or "model",
                 binding=binding,
                 workflow_edition=args.workflow_edition,
+                batching=batching,
             )
+    except _NoHostIdentityError as exc:
+        parser.error(str(exc))
     except KeyboardInterrupt:
         # Ctrl-C is how an operator stops a served container: the serve loop has
         # already drained and closed by the time the interrupt surfaces here, so
@@ -326,6 +588,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         # traceback. Not 0: an interrupt during startup served nothing.
         return 130
     return 0
+
+
+def _render_size(parser: argparse.ArgumentParser) -> tuple[int, int] | None:
+    """``RLMESH_RENDER_SIZE`` (``"<height>x<width>"``) as a pair, or ``None``."""
+    raw = os.environ.get("RLMESH_RENDER_SIZE")
+    if not raw:
+        return None
+    height, sep, width = raw.partition("x")
+    if not (sep and height.isdigit() and width.isdigit()):
+        parser.error(f"RLMESH_RENDER_SIZE must be <height>x<width>, got {raw!r}")
+    return int(height), int(width)
 
 
 def _json_object(value: str) -> dict[str, Any]:
@@ -343,10 +616,12 @@ def serve_model(
     model_source: object,
     address: str,
     *,
+    name: str = "model",
     binding: dict[str, Any] | None = None,
     workflow_edition: str | None = None,
+    batching: BatchOptions | None = None,
 ) -> None:
-    """Host a model on ``address`` (blocking).
+    """Serve a model in the session at ``address`` as ``name`` (blocking).
 
     Resolves the source to a serveable ``Model``: a ``Model`` subclass class is
     instantiated, an existing ``Model`` instance is used directly, and a bare predict
@@ -355,11 +630,14 @@ def serve_model(
     model's declared ``params`` and is applied to ``load(**binding)`` on the
     bootstrap-authoritative path. Heavy imports stay inside this call so importing
     the authoring base stays cheap. A one-line serving status is printed once the
-    model is resolved and loaded, before the blocking serve, with the startup
-    phase marks (see :func:`startup_marks`), which also ride the handshake.
+    model answers, with the address a peer dials and the startup phase marks
+    (see :func:`startup_marks`), which also ride the handshake.
+    ``batching`` coalesces its predicts (:class:`rlmesh.BatchOptions`' defaults
+    when ``None``).
     """
     from ._editions import serve_options_declaring
 
+    _refuse_unlaunched_wide_bind(address)
     model = _resolve_model(model_source, binding)
     _mark("model")
     _warn_without_spec(model)
@@ -369,27 +647,30 @@ def serve_model(
     # stamped so both report the same declaration.
     options = serve_options_declaring(
         option=workflow_edition,
-        declared=getattr(type(model), "workflow_edition", None),
+        declared=model._class_workflow_edition(),  # pyright: ignore[reportPrivateUsage]
+        origin=model._edition_origin(),  # pyright: ignore[reportPrivateUsage]
     )
-    _stamp_startup("model", address, model, options=options)
-    model.serve(address, options=options)
+    _stamp_startup("model", model, options=options)
+    with _serving_line():
+        model.serve(address, name=name, options=options, batching=batching)
 
 
 def _warn_without_spec(model: object) -> None:
     """Say once, on stderr, when the served model declares no ``ModelSpec``.
 
-    Serving still works (a spec-less model serves its own predict), but the
-    managed platform's probe cannot synthesize inputs for it, so the image lands
-    as not-runnable there. ``rlmesh check <module:Class>`` fails on the same
-    condition before the build.
+    Serving still works (a spec-less model serves its own predict), but
+    ``rlmesh doctor`` cannot synthesize inputs for it without a reference
+    env. ``rlmesh check <module:Class>`` fails on the same condition before
+    the build.
     """
     from .adapters.specs import ModelSpec
 
     if isinstance(getattr(model, "spec", None), ModelSpec):
         return
     print(
-        "RLMesh: the served model declares no spec; the managed probe cannot "
-        "synthesize inputs for it. Set `spec = ModelSpec(...)` on the class.",
+        "RLMesh: the served model declares no spec, so it cannot be tested with "
+        "generated inputs (rlmesh doctor, rlmesh check) without a reference env. "
+        "Set `spec = ModelSpec(...)` on the class.",
         file=sys.stderr,
         flush=True,
     )
@@ -442,7 +723,7 @@ def serve_env(
     workflow_edition: str | None = None,
     **make_kwargs: object,
 ) -> None:
-    """Host an environment on ``address`` (blocking).
+    """Serve an environment at the participant address ``address`` (blocking).
 
     An :class:`EnvFactory` class/instance is constructed via ``prepare()`` +
     ``make(**make_kwargs)`` and its ``tags`` published; a bare make-env callable is
@@ -460,12 +741,13 @@ def serve_env(
     :attr:`EnvFactory.workflow_edition <rlmesh.EnvFactory.workflow_edition>` and
     below ``RLMESH_WORKFLOW_EDITION``. Heavy imports stay inside this call so
     importing the authoring base stays cheap. A one-line serving status is
-    printed once the server has bound its address, before the blocking serve.
+    printed once the env answers, with the address a peer dials.
     """
     from rlmesh import EnvServer
 
     from ._bootstrap.loaders import construct_authored_env
 
+    _refuse_unlaunched_wide_bind(address)
     framework = _normalize_framework(framework)
     # Lanes are the default for num_envs > 1; the gym fan-out only on request.
     gym_vectorized = num_envs > 1 and vectorization_mode is not None
@@ -529,6 +811,7 @@ def serve_env(
     options = serve_options_declaring(
         option=workflow_edition,
         declared=getattr(env_source, "workflow_edition", None),
+        origin=env_source,
     )
     server = EnvServer(
         env,
@@ -539,8 +822,9 @@ def serve_env(
         options=options,
     )
     _mark("env")
-    _stamp_startup("env", server.address, env_source, env, options=options)
-    server.serve()
+    _stamp_startup("env", env_source, env, options=options)
+    with _serving_line():
+        server.serve()
 
 
 if __name__ == "__main__":

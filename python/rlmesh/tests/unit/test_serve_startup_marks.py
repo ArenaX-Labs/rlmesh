@@ -39,9 +39,28 @@ def test_serving_a_model_stamps_the_handshake_and_prints_the_phases(
     )
 
     class Served:
-        def serve(self, address: str, *, options: object = None) -> None:
+        def _class_workflow_edition(self) -> None:
+            return None
+
+        def _edition_origin(self) -> object:
+            return type(self)
+
+        def serve(
+            self,
+            address: str,
+            *,
+            name: str,
+            options: object = None,
+            batching: object = None,
+        ) -> None:
             self.address = address
             self.options = options
+            # Nothing is printed before the model answers...
+            assert "RLMesh serving" not in capsys.readouterr().out
+            # ...which the native serve says through the ready hook.
+            serve._print_serving_line(  # pyright: ignore[reportPrivateUsage]
+                {"kind": "model", "address": "lab:7447#…/model"}
+            )
 
     served = Served()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)
@@ -51,8 +70,8 @@ def test_serving_a_model_stamps_the_handshake_and_prints_the_phases(
     assert served.address == "127.0.0.1:0"
     assert {"rlmesh.startup.model_ms", "rlmesh.startup.listen_ms"} <= stamped.keys()
     line = capsys.readouterr().out
-    assert line.startswith("RLMesh serving model on 127.0.0.1:0 (startup: ")
-    assert "listen " in line
+    assert line.startswith("RLMesh serving model on lab:7447#…/model (startup: ")
+    assert "listen " in line and "ready " in line
 
 
 def test_serving_a_model_puts_its_describe_envelope_on_the_handshake(
@@ -75,7 +94,14 @@ def test_serving_a_model_puts_its_describe_envelope_on_the_handshake(
         def predict(self, observation: object) -> int:
             return 0
 
-        def serve(self, address: str, *, options: object = None) -> None:
+        def serve(
+            self,
+            address: str,
+            *,
+            name: str,
+            options: object = None,
+            batching: object = None,
+        ) -> None:
             pass
 
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: Tiny())
@@ -85,7 +111,7 @@ def test_serving_a_model_puts_its_describe_envelope_on_the_handshake(
     envelope = json.loads(stamped[rlmesh.DESCRIBE_METADATA_KEY])
     assert envelope["kind"] == "model"
     assert envelope["target"]["qualname"].endswith("Tiny")
-    # Tiny declares no spec: the managed probe cannot drive it, and serve says so.
+    # Tiny declares no spec, and serve warns that inputs cannot be synthesized.
     err = capsys.readouterr().err
     assert err.count("\n") == 1 and "declares no spec" in err, err
 
@@ -109,7 +135,14 @@ def test_serving_a_specced_model_does_not_warn(
         def predict(self, observation: object) -> int:
             return 0
 
-        def serve(self, address: str, *, options: object = None) -> None:
+        def serve(
+            self,
+            address: str,
+            *,
+            name: str,
+            options: object = None,
+            batching: object = None,
+        ) -> None:
             pass
 
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: Specced())
@@ -133,7 +166,13 @@ def test_an_undescribable_target_still_serves(
         lambda extra=None: stamped.update(extra or {}),
     )
     served = type(
-        "Served", (), {"serve": lambda self, address, *, options=None: None}
+        "Served",
+        (),
+        {
+            "serve": lambda self, address, *, name, options=None, batching=None: None,
+            "_class_workflow_edition": lambda self: None,
+            "_edition_origin": lambda self: type(self),
+        },
     )()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)
 
@@ -151,7 +190,14 @@ class _Declared(rlmesh.Model):
     def predict(self, observation: object) -> int:
         return 0
 
-    def serve(self, address: str, *, options: object = None) -> None:
+    def serve(
+        self,
+        address: str,
+        *,
+        name: str,
+        options: object = None,
+        batching: object = None,
+    ) -> None:
         self.options = options
 
 
@@ -203,3 +249,52 @@ def test_envelope_preferred_edition_is_what_the_serve_options_declare(
     assert envelope["runtime"]["supported_workflow_editions"] == list(
         build_info().supported_workflow_editions
     )
+
+
+def test_an_env_prints_no_serving_line_before_it_answers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The line comes from the native ready hook (redacted there), never from
+    # the bound address, which is the invite with its key.
+    import rlmesh._peer_info as peer_info
+
+    monkeypatch.setattr(serve, "_marks", {})
+    monkeypatch.setattr(peer_info, "register_python_peer_info", lambda extra=None: None)
+    monkeypatch.setenv("RLMESH_HOST_IDENTITY", "launched")
+
+    class Server:
+        def __init__(self, env: object, address: str, **_: object) -> None:
+            self.address = "127.0.0.1:7610#SECRETKEY.HOSTKEY/env"
+
+        def serve(self) -> None: ...
+
+    monkeypatch.setattr(rlmesh, "EnvServer", Server)
+    serve.serve_env(lambda: object(), "0.0.0.0:7610/env")
+
+    out = capsys.readouterr().out
+    assert "RLMesh serving" not in out
+    assert "SECRET" not in out
+
+
+def test_all_interfaces_without_a_launch_identity_stops_before_loading(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    made: list[object] = []
+    monkeypatch.delenv("RLMESH_HOST_IDENTITY", raising=False)
+    monkeypatch.setattr(
+        serve, "resolve_entrypoint", lambda *a, **k: lambda: made.append(1)
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        serve.main(["--env", "pkg:Env", "--address", f"0.0.0.0:{port}"])
+
+    assert stopped.value.code == 2
+    assert made == [], "nothing is constructed before the refusal"
+    err = capsys.readouterr().err
+    assert "RLMESH_HOST_IDENTITY" in err
+    assert f"RLMESH_ADDRESS=127.0.0.1:{port}" in err

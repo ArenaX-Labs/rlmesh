@@ -12,7 +12,13 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Literal, TypeAlias
 
-from ._codec import axis_or_scalar, check_accept_set, check_labels, one_or_many
+from ._codec import (
+    axis_or_scalar,
+    check_accept_set,
+    check_labels,
+    check_polarity,
+    one_or_many,
+)
 from .custom_encoding import CustomEncoding
 from .vocabularies import (
     ChannelOrder,
@@ -20,6 +26,7 @@ from .vocabularies import (
     FitMode,
     Frame,
     ImageLayout,
+    Polarity,
     Provenance,
     Resample,
     RotationEncoding,
@@ -141,10 +148,9 @@ class Image:
         render: The camera resolution this model was trained against, as a
             square ``int`` or an ``(height, width)`` pair (each axis 1-4096).
             An *assertion*, not a request: the adapter never resizes a camera
-            to reach it. The platform binds the environment's camera dial from
-            it before the run; resolution then fails with ``RenderMismatch`` if
-            the camera it bound does not actually render at this size. Declare
-            it instead of pinning the env's camera width/height by hand.
+            to reach it. Configure the environment to render at this size
+            before the run; resolution fails with ``RenderMismatch`` if the
+            camera does not actually render at this size.
         part: The body part the wanted camera sits on, when the role repeats
             across a body (``"head"``, ``"left_arm"``, ...): an identity key
             the resolver matches on. Naming one binds only that camera; naming
@@ -436,6 +442,12 @@ class State:
             the episode's first action). :func:`Previous` is the sugar. An
             action-source part carries only ``part``, ``labels``, ``dim`` and
             ``fill``. Keyword-only and omitted from the wire when default.
+        polarity: The gripper polarity the checkpoint reads
+            (``proprio/gripper_pos``): openness (``"open"``, a higher value is
+            more open) or closedness (``"close"``), after this part's own
+            ``scale``. An env reading of the other one is refused unless the
+            spec allows ``"flip_gripper"``. Keyword-only and omitted from the
+            wire when unset.
         pad_to: Zero-pad the resulting vector to this length. Padding is the
             last step: every part is converted, ranged and scaled, the parts are
             concatenated in order, and only then is the result padded.
@@ -468,6 +480,7 @@ class State:
     source: Literal["observation", "action"] = field(
         default="observation", kw_only=True
     )
+    polarity: Polarity | None = field(default=None, kw_only=True)
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
@@ -538,6 +551,7 @@ class State:
         object.__setattr__(
             self, "labels", check_labels("State", self.role, self.labels)
         )
+        check_polarity("State", self.role, self.polarity)
         if self.labels is not None:
             if self.index is not None:
                 raise ValueError(

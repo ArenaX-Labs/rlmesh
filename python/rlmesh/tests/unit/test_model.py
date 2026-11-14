@@ -7,11 +7,11 @@ import rlmesh
 
 
 def test_episode_success_reads_gymnasium_info_keys() -> None:
-    from rlmesh._models._eval import _episode_success
+    from rlmesh._models._eval import episode_success
 
-    assert _episode_success({"is_success": True}) is True
-    assert _episode_success({"success": False}) is False
-    assert _episode_success({}) is None  # no signal -> unknown, never inferred
+    assert episode_success({"is_success": True}) is True
+    assert episode_success({"success": False}) is False
+    assert episode_success({}) is None  # no signal -> unknown, never inferred
 
 
 def test_success_rate_counts_only_the_env_reported_outcome() -> None:
@@ -27,7 +27,7 @@ def test_success_rate_counts_only_the_env_reported_outcome() -> None:
     assert RunResult(episodes).success_rate == pytest.approx(0.5)
 
 
-def test_success_rate_is_none_when_any_episode_lacks_a_signal() -> None:
+def test_success_rate_counts_a_missing_signal_as_a_failure() -> None:
     from rlmesh import RunResult
     from rlmesh._models._eval import EpisodeResult
 
@@ -36,45 +36,10 @@ def test_success_rate_is_none_when_any_episode_lacks_a_signal() -> None:
     )
     # terminated, but the env never said whether that was a success
     unknown = EpisodeResult(1, None, 5, 1.0, terminated=True, truncated=False)
-    assert RunResult((reported, unknown)).success_rate is None
+    assert RunResult((reported, unknown)).success_rate == pytest.approx(0.5)
     assert RunResult((unknown,)).success_rate is None
     assert RunResult(()).success_rate is None
     assert RunResult((reported,)).success_rate == 1.0
-
-
-def test_connect_uses_an_env_like_object_directly() -> None:
-    from rlmesh._models._eval import connect_env
-
-    class Env:
-        env_contract = "contract"
-
-        def reset(self) -> None: ...
-        def step(self, action: object) -> None: ...
-
-    env = Env()
-    client, contract, owns = connect_env(env, None)
-    assert client is env
-    assert contract == "contract"
-    assert owns is False  # caller-owned env objects are not closed by the loop
-
-
-def test_connect_rejects_unsupported() -> None:
-    from rlmesh._models._eval import connect_env
-
-    with pytest.raises(TypeError, match="reset\\(\\) and step\\(\\)"):
-        connect_env(object(), None)
-
-
-def test_connect_rejects_a_contract_only_object_by_naming_accepted_forms() -> None:
-    # EnvTarget's HasEnvContract arm is served-session-only; a contract-only
-    # object cannot be stepped locally, so connect_env names the accepted forms.
-    from rlmesh._models._eval import connect_env
-
-    class ContractOnly:
-        env_contract = "contract"
-
-    with pytest.raises(TypeError, match="only env_contract cannot be stepped"):
-        connect_env(ContractOnly(), None)
 
 
 def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> None:
@@ -109,7 +74,7 @@ def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> N
 def test_shutdown_calls_shutdown_plainly_with_no_reason() -> None:
     # shutdown_env calls the owner-level shutdown() with no arguments; a remote
     # owner's shutdown(reason=...) keeps its own default.
-    from rlmesh._models._eval import shutdown_env
+    from rlmesh._models._connect import shutdown_env
 
     calls: list[tuple[object, ...]] = []
 
@@ -122,7 +87,7 @@ def test_shutdown_calls_shutdown_plainly_with_no_reason() -> None:
 
 
 def test_shutdown_falls_back_to_close() -> None:
-    from rlmesh._models._eval import shutdown_env
+    from rlmesh._models._connect import shutdown_env
 
     calls: list[tuple[object, ...]] = []
 
@@ -134,20 +99,7 @@ def test_shutdown_falls_back_to_close() -> None:
     assert calls == [()]
 
 
-def test_backend_models_wire_their_own_remote_env() -> None:
-    # A bare-address run() dials type(self)._remote_env_cls; a backend Model that
-    # leaves it unset silently falls back to the numpy RemoteEnv (wrong value type
-    # and a forced numpy dependency). Pin that each backend wires its own.
-    from rlmesh import _native
-
-    assert _native.Model._remote_env_cls is _native.RemoteEnv
-
-    for module_name in ("rlmesh.numpy", "rlmesh.jax", "rlmesh.torch"):
-        module = pytest.importorskip(module_name)
-        assert module.Model._remote_env_cls is module.RemoteEnv, module_name
-
-
-def test_session_predict_can_pass_optional_context_with_episode_seed() -> None:
+def test_predict_can_pass_optional_context_with_episode_seed() -> None:
     import rlmesh
     from rlmesh.numpy import Model
 
@@ -187,7 +139,7 @@ def test_session_predict_can_pass_optional_context_with_episode_seed() -> None:
     assert all(isinstance(item["episode_id"], str) for item in seen)
 
 
-def test_session_predict_context_carries_stable_episode_identity() -> None:
+def test_bound_predict_context_carries_stable_episode_identity() -> None:
     import rlmesh
     from rlmesh.numpy import Model
 
@@ -219,13 +171,13 @@ def test_session_predict_context_carries_stable_episode_identity() -> None:
         seen.append(dict(context))
         return 0
 
-    with Model(predict).session(Env()) as sess:
-        sess.run(seeds=[7], episodes=1)
+    with Model(predict).bind(Env()) as binding:
+        binding.reset(seed=7)
+        while not binding.done:
+            binding.step()
 
-    # A plain local env is driven directly (no runtime in the loop), so the
-    # session mints the episode identity itself -- one id for the whole episode,
-    # the seed riding on every step, and the re-plan ordinal counting up. The
-    # served-env variant with real UUIDv7 ids is tests/integration/test_run_native.py.
+    # One id for the whole episode, the seed riding on every step, and the
+    # re-plan ordinal counting up.
     assert len(seen) == 3
     ids = {context["episode_id"] for context in seen}
     assert len(ids) == 1 and ids != {""}
@@ -234,24 +186,6 @@ def test_session_predict_context_carries_stable_episode_identity() -> None:
     assert [context["predict_seed"] for context in seen] == [
         rlmesh.predict_seed(7, index) for index in range(3)
     ]
-
-
-def test_reject_vector_env_rejects_num_envs_gt_one() -> None:
-    from typing import Any, cast
-
-    from rlmesh._models._eval import reject_vector_env
-
-    class FourEnvs:
-        num_envs = 4
-
-    with pytest.raises(ValueError, match="num_envs=4"):
-        reject_vector_env(cast(Any, FourEnvs()))
-
-    class OneEnv:
-        num_envs = 1
-
-    reject_vector_env(cast(Any, OneEnv()))  # single env is fine
-    reject_vector_env(None)  # an env with no contract is fine
 
 
 def test_no_adapter_sentinel_skips_adapter_resolution_for_tagged_env() -> None:
@@ -285,32 +219,38 @@ def test_spec_none_rejects_tagged_env_with_no_adapter_hint() -> None:
 
 
 def test_random_sample_samples_action_space_and_skips_adapter_on_tagged_env() -> None:
-    # A RANDOM_SAMPLE baseline adapts nothing, so it must drive a tagged env without
-    # raising AdapterResolutionError and return the env's action_space.sample().
-    from types import SimpleNamespace
-
+    # A RANDOM_SAMPLE baseline adapts nothing, so it drives a tagged env without
+    # raising AdapterResolutionError, stepping it under actions of its space.
     import rlmesh
     import rlmesh.adapters as adapt
 
     tags = adapt.EnvTags(
         observation={}, action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
     )
-    sentinel = object()
+    actions: list[object] = []
 
     class Env:
-        observation_space = "obs"
-        action_space = SimpleNamespace(sample=lambda: sentinel)
+        observation_space = rlmesh.spaces.Dict({"x": rlmesh.spaces.Discrete(3)})
+        action_space = rlmesh.spaces.Box(-1.0, 1.0, shape=(1,))
         metadata = tags.to_metadata()
 
-        def reset(self, *, seed: object = None) -> tuple[object, dict[str, object]]:
-            return "o", {}
+        def reset(
+            self, *, seed: object = None, options: object = None
+        ) -> tuple[object, dict[str, object]]:
+            return {"x": 0}, {}
 
         def step(self, action: object) -> tuple[object, float, bool, bool, dict]:
-            return "o", 1.0, True, False, {}
+            actions.append(action)
+            return {"x": 0}, 1.0, True, False, {}
 
-    sess = rlmesh.session(rlmesh.RANDOM_SAMPLE, Env())
-    obs, _ = sess.reset()
-    assert sess.predict(obs) is sentinel
+        def close(self) -> None:
+            return None
+
+    with rlmesh.Model(rlmesh.RANDOM_SAMPLE).bind(Env()) as binding:
+        binding.reset(seed=0)
+        binding.step()
+    assert len(actions) == 1
+    assert Env.action_space.contains(actions[0])
 
 
 def test_invalid_model_spec_mentions_no_adapter_sentinel() -> None:
@@ -321,309 +261,6 @@ def test_invalid_model_spec_mentions_no_adapter_sentinel() -> None:
 
     with pytest.raises(adapt.AdapterResolutionError, match="ModelSpec or NO_ADAPTER"):
         resolve_adapter(object(), cast(Any, SimpleNamespace(metadata={})), False)
-
-
-def test_adapted_run_uses_env_bridge_for_adapter_boundary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from types import SimpleNamespace
-
-    import rlmesh._models._eval as eval_mod
-    from rlmesh._value_conversion import IdentityBridge
-    from rlmesh.types import Value
-
-    # Inherit IdentityBridge so these doubles satisfy the full ValueBridge protocol
-    # (tree_stack/tree_unstack, device/host ops) while overriding only the encode/
-    # decode wiring this test exercises.
-    class EnvBridge(IdentityBridge):
-        name = "env"
-
-        def ensure_available(self) -> None:
-            return None
-
-        def encode(self, value: object) -> Value:
-            assert value == "env-obs"
-            return "canonical-obs"
-
-        def decode(self, value: object) -> object:
-            assert value == "canonical-action"
-            return "env-action"
-
-    class ModelBridge(IdentityBridge):
-        name = "model"
-
-        def ensure_available(self) -> None:
-            return None
-
-        def encode(self, value: object) -> Value:
-            assert value == "model-action"
-            return "canonical-model-action"
-
-        def decode(self, value: object) -> object:
-            assert value == {"payload": "canonical-obs"}
-            return {"payload": "model-obs"}
-
-    env_bridge = EnvBridge()
-    model_bridge = ModelBridge()
-    seen: dict[str, object] = {}
-
-    class Adapter:
-        def reset(self) -> None:
-            seen["reset"] = True
-
-        def transform_obs_value(
-            self,
-            raw_obs: object,
-            *,
-            input_bridge: object | None = None,
-            custom_bridge: object | None = None,
-        ) -> object:
-            seen["input_bridge"] = input_bridge
-            seen["custom_bridge"] = custom_bridge
-            assert input_bridge is env_bridge
-            assert custom_bridge is env_bridge
-            assert raw_obs == "env-obs"
-            return {"payload": env_bridge.encode(raw_obs)}
-
-        def transform_action_value(
-            self,
-            raw_action: object,
-            *,
-            action_bridge: object | None = None,
-        ) -> object:
-            seen["action_bridge"] = action_bridge
-            assert action_bridge is model_bridge
-            assert model_bridge.encode(raw_action) == "canonical-model-action"
-            return "canonical-action"
-
-    adapter = Adapter()
-
-    class Client:
-        _bridge = env_bridge
-        env_contract = SimpleNamespace(
-            num_envs=1, metadata={}, action_space=rlmesh.spaces.Discrete(1)
-        )
-
-        def reset(self) -> tuple[object, dict[str, object]]:
-            return "env-obs", {}
-
-        def step(self, action: object) -> tuple[object, float, bool, bool, dict]:
-            seen["step_action"] = action
-            return "env-obs", 1.0, True, False, {}
-
-    def predict(payload: object) -> object:
-        seen["payload"] = payload
-        assert payload == {"payload": "model-obs"}
-        return "model-action"
-
-    monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: adapter)
-
-    result = eval_mod.Session._create(  # pyright: ignore[reportPrivateUsage]
-        predict=predict,
-        spec=object(),
-        env=Client(),
-        bridge=model_bridge,
-    ).run(episodes=1)
-
-    assert result.num_episodes == 1
-    assert seen["reset"] is True
-    assert seen["payload"] == {"payload": "model-obs"}
-    assert seen["step_action"] == "env-action"
-
-
-def test_adapted_run_defaults_a_bridge_less_env_to_the_numpy_bridge(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A bridge-less env encodes obs with the *numpy* bridge, not the model's.
-
-    The env-side bridge tracks the env's native value type, never the model's
-    framework. A raw local env (a gym env hands numpy) exposes no ``_bridge``, so
-    the env side must default to numpy -- otherwise a torch/jax model rejects the
-    numpy obs at the native plan. Regression for the cross-framework local-driving
-    crash: a distinct model bridge must NOT leak onto the env side.
-    """
-    from types import SimpleNamespace
-
-    import rlmesh._models._eval as eval_mod
-    from rlmesh._value_conversion import identity_bridge
-    from rlmesh.adapters.adapter import _numpy_value_bridge
-
-    numpy_bridge = _numpy_value_bridge()
-    seen: dict[str, object] = {}
-
-    class Adapter:
-        def reset(self) -> None:
-            return None
-
-        def transform_obs_value(
-            self,
-            raw_obs: object,
-            *,
-            input_bridge: object | None = None,
-            custom_bridge: object | None = None,
-        ) -> object:
-            seen["input_bridge"] = input_bridge
-            seen["custom_bridge"] = custom_bridge
-            return {"model": raw_obs}
-
-        def transform_action_value(
-            self,
-            raw_action: object,
-            *,
-            action_bridge: object | None = None,
-        ) -> object:
-            seen["action_bridge"] = action_bridge
-            return raw_action
-
-    class Client:
-        # A native handle (has env_contract) but, like a raw local env, no _bridge.
-        env_contract = SimpleNamespace(
-            num_envs=1, metadata={}, action_space=rlmesh.spaces.Discrete(1)
-        )
-
-        def reset(self) -> tuple[object, dict[str, object]]:
-            return {"raw": "obs"}, {}
-
-        def step(self, step_action: object) -> tuple[object, float, bool, bool, dict]:
-            seen["step_action"] = step_action
-            return {"raw": "obs"}, 1.0, True, False, {}
-
-    monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: Adapter())
-
-    result = eval_mod.Session._create(  # pyright: ignore[reportPrivateUsage]
-        predict=lambda payload: "model-action",
-        spec=object(),
-        env=Client(),
-        bridge=identity_bridge,  # the model bridge -- must not become the env bridge
-    ).run(episodes=1)
-
-    assert result.num_episodes == 1
-    # Env side is numpy (the env's native default), regardless of the model bridge.
-    assert seen["input_bridge"] is numpy_bridge
-    assert seen["custom_bridge"] is numpy_bridge
-    # The action's model-side encode still uses the model bridge (unchanged).
-    assert seen["action_bridge"] is identity_bridge
-
-
-def _address_run_calls(*, close_env: bool) -> tuple[Any, list[str]]:
-    from rlmesh._models._eval import Session
-
-    calls: list[str] = []
-
-    class FakeRemoteEnv:
-        env_contract = None
-
-        def __init__(
-            self, address: str, *, workflow_edition: str | None = None
-        ) -> None:
-            self.address = address
-            self.workflow_edition = workflow_edition
-
-        def reset(self, seed: object = None) -> tuple[object, dict[str, object]]:
-            return 0, {}
-
-        def step(self, action: object) -> tuple[object, float, bool, bool, dict]:
-            return 0, 0.0, True, False, {}
-
-        def shutdown(self, reason: str = "owner shutdown") -> bool:
-            calls.append("shutdown")
-            return True
-
-        def close(self) -> None:
-            calls.append("close")
-
-    sess = Session._create(  # pyright: ignore[reportPrivateUsage]
-        predict=lambda obs: 0,
-        spec=None,
-        env="tcp://env:9000",
-        close_env=close_env,
-        remote_env_cls=FakeRemoteEnv,
-    )
-    result = sess.run(episodes=1)
-    # run() leaves a caller-held session open (reusable); teardown is close()'s.
-    assert calls == []
-    sess.close()
-    return result, calls
-
-
-def test_address_run_honors_close_env_when_loop_owns_the_client() -> None:
-    # close_env is the caller's explicit opt-in to stop the env it asked us to
-    # dial: even when the loop owns the (self-dialed) client, close_env=True must
-    # issue the owner-level shutdown() before detaching the client.
-    result, calls = _address_run_calls(close_env=True)
-    assert result.num_episodes == 1
-    assert calls == ["shutdown", "close"]
-
-
-def test_address_run_only_detaches_when_close_env_is_false() -> None:
-    # Without close_env we must never shut down a possibly-shared remote env —
-    # only detach the borrowed client connection.
-    result, calls = _address_run_calls(close_env=False)
-    assert result.num_episodes == 1
-    assert calls == ["close"]
-    assert "shutdown" not in calls
-
-
-def test_split_chunk_stays_in_framework_and_does_not_force_numpy() -> None:
-    # Regression: a chunked torch/jax DEVICE tensor must split along its leading
-    # axis WITHOUT a numpy conversion (np.asarray on a cuda tensor raises). The
-    # split uses iteration so each per-step leaf stays a framework tensor, bridged
-    # exactly like the non-chunked path and the serve path.
-    from rlmesh._models._chunk import split_chunk
-
-    class FakeDeviceTensor:
-        ndim = 2
-
-        def __init__(self, rows: list[Any]) -> None:
-            self._rows = rows
-
-        def __iter__(self) -> Any:
-            return iter(self._rows)
-
-        def __array__(self, *args: Any, **kwargs: Any) -> Any:
-            raise TypeError("can't convert a device tensor to numpy")
-
-    rows = [object(), object()]
-    assert split_chunk(FakeDeviceTensor(rows)) == rows
-
-
-def test_split_chunk_degenerate_scalar_and_scalar_leaf_mapping_are_single_step() -> (
-    None
-):
-    from rlmesh._models._chunk import split_chunk
-
-    # A bare scalar (not iterable) is one step, matching the native split_chunk's
-    # single-step leaf handling; a dict whose leaves are scalars zips to one step.
-    assert split_chunk(5.0) == [5.0]
-    assert split_chunk({"a": 1}) == [{"a": 1}]
-
-
-def test_split_chunk_zips_a_dict_chunk_per_leaf_like_the_native_map_arm() -> None:
-    import numpy as np
-    from rlmesh._models._chunk import split_chunk
-
-    # A Dict-space chunk carries the horizon INSIDE each leaf ({k: [H, ...]});
-    # every leaf splits along its chunk axis and the frames zip into H per-step
-    # dicts, mirroring stateful.rs::split_chunk's Map arm (and _first_frame).
-    chunk = {"arm": np.arange(6).reshape(3, 2), "grip": np.arange(3).reshape(3, 1)}
-    steps = split_chunk(chunk)
-    assert len(steps) == 3
-    assert steps[0]["arm"].tolist() == [0, 1]
-    assert steps[2]["grip"].tolist() == [2]
-
-    with pytest.raises(ValueError, match="disagree on horizon"):
-        split_chunk({"arm": np.zeros((3, 2)), "grip": np.zeros((2, 1))})
-
-
-def test_split_chunk_treats_text_as_a_single_step_like_the_native_side() -> None:
-    from rlmesh._models._chunk import split_chunk
-
-    # A str/bytes action is iterable, but the native split_chunk treats a text
-    # leaf as ONE step (not per-character); the Python side must match so serve
-    # and run(env) never disagree for a text-action model.
-    assert split_chunk("go") == ["go"]
-    assert split_chunk(b"go") == [b"go"]
-    assert split_chunk(bytearray(b"go")) == [bytearray(b"go")]
 
 
 # rlmesh moves every obs tensor leaf onto the model's `device` before predict,
@@ -706,52 +343,6 @@ def test_device_guard_allows_a_torch_model() -> None:
     m = M()
     m.device = "cpu"
     m._require_device_support()  # does not raise
-
-
-def test_local_session_threads_device_to_predict_step(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Session._create(device=) -> _predict_step -> model_bridge.to_device(payload, device):
-    # prove the obs the local predict sees was placed on the model's device.
-    from types import SimpleNamespace
-
-    import rlmesh._models._eval as eval_mod
-    from rlmesh._value_conversion import IdentityBridge
-
-    class RecordingBridge(IdentityBridge):
-        name = "rec"
-
-        def ensure_available(self) -> None:
-            return None
-
-        def to_device(self, value: object, device: object) -> object:
-            return {"placed_on": device}
-
-    seen: dict[str, object] = {}
-
-    class Client:
-        _bridge = RecordingBridge()
-        env_contract = SimpleNamespace(num_envs=1, metadata={})
-
-        def reset(self) -> tuple[object, dict[str, object]]:
-            return "obs", {}
-
-        def step(self, action: object) -> tuple[object, float, bool, bool, dict]:
-            return "obs", 1.0, True, False, {}
-
-    def predict(payload: object) -> object:
-        seen["payload"] = payload
-        return "action"
-
-    monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: None)
-    eval_mod.Session._create(  # pyright: ignore[reportPrivateUsage]
-        predict=predict,
-        spec=object(),
-        env=Client(),
-        bridge=RecordingBridge(),
-        device="cpu",
-    ).run(episodes=1)
-    assert seen["payload"] == {"placed_on": "cpu"}
 
 
 def test_model_construction_builds_no_native_worker() -> None:
@@ -928,3 +519,22 @@ def test_a_wrapped_callable_object_keeps_its_reset_and_close_hooks() -> None:
     coerced = coerce_model(policy, spec=None)
     assert coerced.on_episode_end == policy.reset
     assert coerced.on_close == policy.close
+
+
+@pytest.mark.parametrize("invalid", [-1, 0, 1025, 2**64])
+def test_loaded_execution_horizon_is_validated_by_rust(invalid):
+    from rlmesh import Model
+    from rlmesh._rlmesh import resolve_execution_horizon
+
+    class Invalid(Model):
+        def load(self):
+            self.execution_horizon = invalid
+
+        def predict(self, observation):
+            return 0
+
+    with pytest.raises(ValueError, match="execution_horizon must be"):
+        Invalid()
+    with pytest.raises(ValueError, match="exceeds the model's declared native_chunk"):
+        resolve_execution_horizon(None, 4, 2, 3)
+    assert resolve_execution_horizon(1, 4, 2, 3) == 1

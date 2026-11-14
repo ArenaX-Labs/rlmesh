@@ -6,14 +6,6 @@ from typing import Any, cast
 
 import pytest
 import rlmesh
-from rlmesh._client._endpoint import normalize_bind_address
-
-
-def test_path_with_tcp_transport_is_refused():
-    """ENV-P3: a Unix path cannot be served over tcp."""
-    with pytest.raises(ValueError, match="transport='tcp'"):
-        normalize_bind_address(path="/tmp/env.sock", transport="tcp")
-    assert normalize_bind_address(path="/tmp/env.sock") == "unix:///tmp/env.sock"
 
 
 def test_trial_index_reads_only_floats_that_fit_int64():
@@ -38,4 +30,4 @@ class _Spaceless:
 def test_an_env_without_spaces_is_a_type_error():
     """ENV-P4: missing spaces are TypeError, checked before tags."""
     with pytest.raises(TypeError, match="env must have 'observation_space'"):
-        rlmesh.EnvServer(cast("Any", _Spaceless()), "127.0.0.1:0")
+        rlmesh.EnvServer(cast("Any", _Spaceless()), ":0/env")

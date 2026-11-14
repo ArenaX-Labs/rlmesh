@@ -71,19 +71,10 @@ class ChunkedPolicy(rlmesh_numpy.Model):
         return observations
 
 
-def _session_types(model: rlmesh_numpy.Model[Obs, Act], policy: ChunkedPolicy) -> None:
-    assert_type(model.session("127.0.0.1:5555"), rlmesh.Session[Obs, Act])
-    assert_type(rlmesh.session(model, "127.0.0.1:5555"), rlmesh.Session[Obs, Act])
-    assert_type(
-        rlmesh.session(rlmesh_numpy.Model(typed_predict), "127.0.0.1:5555"),
-        rlmesh.Session[Obs, Act],
-    )
-    assert_type(
-        rlmesh.session(rlmesh.RANDOM_SAMPLE, "127.0.0.1:5555"),
-        rlmesh.Session[Any, Any],
-    )
+def _binding_types(model: rlmesh_numpy.Model[Obs, Act], policy: ChunkedPolicy) -> None:
+    assert_type(model.bind("127.0.0.1:5555"), rlmesh.Binding[Obs, Act])
     assert_type(policy.predict(0), rlmesh_numpy.NumpyValue)
     assert_type(
-        policy.session("127.0.0.1:5555"),
-        rlmesh.Session[rlmesh_numpy.NumpyValue, rlmesh_numpy.NumpyValue],
+        policy.bind("127.0.0.1:5555"),
+        rlmesh.Binding[rlmesh_numpy.NumpyValue, rlmesh_numpy.NumpyValue],
     )

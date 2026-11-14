@@ -11,6 +11,7 @@ only the dataclass<->dict *shape* mapping; the format authority lives in Rust.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -72,8 +73,7 @@ def encoding_to_wire(encoding: Any) -> Any:
     A native encoding (a ``str``, or a ``tuple`` accept-set of strings) passes
     through (the tuple as a list); ``None`` stays ``None``. A
     :class:`~rlmesh.adapters.CustomEncoding` becomes a ``{base, ...}`` object the
-    Rust codec accepts: a *schema* the platform describes and validates against
-    an env but never runs. Entrypoint arms travel as their ``module:callable``
+    Rust codec accepts: a describe/validate *schema*, not executable code. Entrypoint arms travel as their ``module:callable``
     strings; in-process callable arms travel as the ``<local>`` marker (see
     :func:`_arm_to_wire`).
     """
@@ -169,6 +169,29 @@ def axis_or_scalar(what: str, role: str | None, name: str, value: Any) -> Any:
     if not values:
         raise ValueError(f"{what} {role!r}: {name} must carry at least one value")
     return values
+
+
+def check_polarity(what: str, role: str | None, polarity: object) -> None:
+    """Refuse a ``polarity`` other than ``"open"`` or ``"close"``."""
+    if polarity is not None and polarity not in ("open", "close"):
+        raise ValueError(
+            f"{what} {role!r}: polarity must be 'open' or 'close', got {polarity!r}"
+        )
+
+
+def check_unit(what: str, role: str | None, unit: object) -> float | None:
+    """A ``unit``: the positive SI size of one command unit, or ``None``."""
+    if unit is None:
+        return None
+    if isinstance(unit, bool) or not isinstance(unit, (int, float)):
+        raise ValueError(f"{what} {role!r}: unit must be a number, got {unit!r}")
+    value = float(unit)
+    if not (math.isfinite(value) and value > 0):
+        raise ValueError(
+            f"{what} {role!r}: unit must be a positive number (the SI size of one "
+            f"command unit), got {unit!r}"
+        )
+    return value
 
 
 def check_labels(what: str, role: str | None, labels: Any) -> tuple[str, ...] | None:

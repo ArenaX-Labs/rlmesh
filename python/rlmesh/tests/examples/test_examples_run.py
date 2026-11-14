@@ -5,12 +5,20 @@ Docker, no external weights) is exercised here, so a change that breaks one
 fails CI. The rest of the set is typechecked but not executed:
 
 - ``byo_container/``: Docker image entrypoints; the env/model servers block forever.
+- ``isaacsim/``: needs Docker, Isaac Sim and an RTX GPU; also excluded from
+  typechecking because its Kit imports need that runtime.
 - ``sandbox/``: starts owned Docker containers.
 - ``vla_adapters/``: model x simulator study; real runs need weights and simulators.
+- ``v2/session_bench.py``: a latency benchmark (30 s per run by default).
+
+``v2/ur10e_mujoco`` runs only where MuJoCo is installed (``uv sync --group
+mujoco``).
 """
 
 from __future__ import annotations
 
+import json
+import selectors
 import socket
 import subprocess
 import sys
@@ -27,13 +35,21 @@ SERVER_STARTUP_TIMEOUT = 30.0
 
 
 def _free_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(("127.0.0.1", 0))
-        port: int = sock.getsockname()[1]
-        return port
-    finally:
-        sock.close()
+    """A free local port, on TCP and UDP both: a session host listens on it
+    (and offers boards UDP on the same number)."""
+    for _ in range(64):
+        with (
+            socket.socket() as tcp,
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp,
+        ):
+            tcp.bind(("127.0.0.1", 0))
+            port = int(tcp.getsockname()[1])
+            try:
+                udp.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError("no free local port")
 
 
 def _run_example(relative: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -52,18 +68,25 @@ def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:
     )
 
 
-def _serve_example(relative: str) -> Iterator[str]:
-    """Start a server example on a free port and yield its address."""
-    address = f"127.0.0.1:{_free_port()}"
+def _serve_example(relative: str, address: str | None = None) -> Iterator[str]:
+    """Start a server example hosting its session on a free port (or at
+    ``address``) and yield the env's address as the server announces it: on
+    loopback that carries the session's key (``host:port#key/env``), which
+    a client on another machine would need."""
     process = subprocess.Popen(
-        [sys.executable, str(EXAMPLES / relative), "--address", address],
+        [
+            sys.executable,
+            "-u",
+            str(EXAMPLES / relative),
+            "--address",
+            address or f"127.0.0.1:{_free_port()}/env",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
     try:
-        _wait_until_listening(address, process)
-        yield address
+        yield _announced_address(process)
     finally:
         process.terminate()
         try:
@@ -73,21 +96,25 @@ def _serve_example(relative: str) -> Iterator[str]:
             process.wait(timeout=10)
 
 
-def _wait_until_listening(address: str, process: subprocess.Popen[str]) -> None:
-    host, port = address.rsplit(":", 1)
+def _announced_address(process: subprocess.Popen[str]) -> str:
+    """The address in the server's ``serving ... on ADDRESS`` line."""
+    assert process.stdout is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    output: list[str] = []
     deadline = time.monotonic() + SERVER_STARTUP_TIMEOUT
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            output = process.stdout.read() if process.stdout else ""
+    while (left := deadline - time.monotonic()) > 0:
+        if not selector.select(timeout=left):
+            break
+        line = process.stdout.readline()
+        if not line:
             raise AssertionError(
-                f"server exited early (exit={process.returncode}):\n{output}"
+                f"server exited early (exit={process.wait()}):\n{''.join(output)}"
             )
-        try:
-            with socket.create_connection((host, int(port)), timeout=0.5):
-                return
-        except OSError:
-            time.sleep(0.05)
-    raise AssertionError(f"server never listened on {address}")
+        output.append(line)
+        if line.startswith("serving ") and " on " in line:
+            return line.rsplit(" on ", 1)[1].strip()
+    raise AssertionError(f"server never announced its address:\n{''.join(output)}")
 
 
 @pytest.fixture(scope="module")
@@ -100,6 +127,26 @@ def counter_address() -> Iterator[str]:
 def cartpole_address() -> Iterator[str]:
     """quickstart/serve_gymnasium.py: Gymnasium CartPole-v1 served over RLMesh."""
     yield from _serve_example("quickstart/serve_gymnasium.py")
+
+
+@pytest.fixture(scope="module")
+def bare_cartpole_address() -> Iterator[str]:
+    """quickstart/serve_gymnasium.py at an address a client names as the
+    README does, without the key it prints: another process of the same
+    user finds the key the loopback host leaves for it."""
+    address = f"127.0.0.1:{_free_port()}/env"
+    for announced in _serve_example("quickstart/serve_gymnasium.py", address):
+        assert announced.split("#", 1)[0] == address.split("/", 1)[0], announced
+        yield address
+
+
+def test_eval_against_gymnasium_server_by_bare_address(
+    bare_cartpole_address: str,
+) -> None:
+    result = _run_example("quickstart/eval.py", "--address", bare_cartpole_address)
+    _assert_ok(result)
+    assert f"connected to {bare_cartpole_address}" in result.stdout
+    assert "step=1 reward=" in result.stdout
 
 
 def test_eval_against_gymnasium_server(cartpole_address: str) -> None:
@@ -142,3 +189,26 @@ def test_adapters_serve_and_run() -> None:
     assert "Resolved adapter:" in result.stdout
     assert "Running one episode:" in result.stdout
     assert "Done." in result.stdout
+
+
+def test_v2_loopback_robot_and_policy() -> None:
+    result = _run_example("v2/loopback.py", "--seconds", "1.5")
+    _assert_ok(result)
+    assert "binding sine on ur10e" in result.stdout
+    assert "commands applied" in result.stdout
+
+
+def test_v2_ur10e_mujoco_teleop_and_mcap() -> None:
+    """The milestone demo, headless: policy, scripted takeover and hand-back, MCAP."""
+    pytest.importorskip("mujoco", reason="uv sync --group mujoco")
+    result = _run_example("v2/ur10e_mujoco/demo.py", "--seconds", "8", "--json")
+    _assert_ok(result)
+    report = json.loads(result.stdout)
+    assert all(report["checks"].values()), report["checks"]
+    assert report["checks"]["takeover"] and report["checks"]["hand_back"]
+    assert report["checks"].get("mcap_independent_read", True)
+    holders = [lease["holder"] for lease in report["lease_timeline"] if lease["holder"]]
+    assert holders[0] == "policy" and "operator" in holders and holders[-1] == "policy"
+    topics = report["recording"]["summary"]["topics"]
+    assert topics["/ur10e/wrist/cam"]["messages"] > 0
+    assert topics["/ur10e/arm/_applied"]["messages"] > 1000
