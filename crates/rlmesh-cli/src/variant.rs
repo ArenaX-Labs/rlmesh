@@ -2,8 +2,8 @@
 //!
 //! One model or environment version can ship several images (a PyTorch CUDA
 //! build, a ROCm build, a JAX build) and several runtime profiles of one image
-//! (osmesa or EGL rendering). The managed platform reads them structurally: an
-//! OCI image index is a version, its non-attestation children are variants,
+//! (osmesa or EGL rendering). The label structure is:
+//! an OCI image index is a version, its non-attestation children are variants,
 //! and each child declares itself in its `dev.rlmesh.package` label:
 //!
 //! ```json
@@ -34,11 +34,8 @@
 //! key by key. An image without a variant block gets its requires inferred
 //! from its CUDA/ROCm markers ([`infer`](fn@infer)).
 //!
-//! The managed platform implements exactly these rules (its
-//! `variant_requires_schema`, `variant_requires_vs_env`, and row naming), so
-//! like [`crate::image_check`] the parsing rules, the row keys, and the
-//! report's message prefixes (`variant:`, `profiles:`, `rows:`) are a
-//! contract.
+//! Like [`crate::image_check`], the parsing rules, row keys and report
+//! message prefixes (`variant:`, `profiles:`, `rows:`) are a contract.
 
 mod constraint;
 mod declaration;
@@ -72,7 +69,7 @@ use requires::{accel_vendor, requires_vendor, vendor_problems};
 /// The row key of an undeclared image.
 pub const DEFAULT_VARIANT_KEY: &str = "default";
 
-/// The requires and facets the platform records for the image's base row:
+/// The requires and facets the metadata records for the image's base row:
 /// the declared requires when the variant block has them; else, when the
 /// declared `facets.accel` names a stack the markers do not show, only the
 /// vendor that stack implies; else the inferred ones.
@@ -105,7 +102,7 @@ pub fn selectable(os: &str, architecture: &str) -> bool {
     os == "linux" && architecture == "amd64"
 }
 
-/// The key the platform gives an image with no variant block: `default` when
+/// The key derived for an image with no variant block: `default` when
 /// it is the only undeclared image on its platform (always, for a single
 /// image), else named for its stack (`cuda12`, `rocm6`, `cpu`); a platform the
 /// fleet cannot select is appended (`default-arm64v8`).
@@ -143,11 +140,10 @@ pub fn package_object(config: &ImageConfig) -> Option<Map<String, Value>> {
     }
 }
 
-/// Check an image's compute variant the way the platform will: the `variant`
-/// and `profiles` blocks as written (`variant_requires_schema`, failures),
-/// the declaration against the image's CUDA/ROCm markers and describe
-/// (`variant_requires_vs_env`, warnings), and the row keys the platform
-/// derives when the image is pushed alone. An image without a variant block
+/// Check an image's compute variant: invalid `variant` and `profiles`
+/// declarations are failures; mismatches with CUDA/ROCm markers and the
+/// describe envelope are warnings. Derive row keys for a single image. An image without
+/// a variant block
 /// reports what is inferred for it.
 pub fn check_variant(config: &ImageConfig) -> CheckReport {
     let package = package_object(config).unwrap_or_default();

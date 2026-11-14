@@ -20,12 +20,12 @@ pub(crate) struct VariantImage {
     pub key: String,
     pub kind: Option<Kind>,
     pub blocks: ComputeBlocks,
-    /// The requires the platform records for the base row: declared, or
+    /// The requires the metadata records for the base row: declared, or
     /// inferred from the image's markers.
     pub requires: Requires,
     pub requires_inferred: bool,
     pub facets: BTreeMap<String, String>,
-    /// The row keys the platform derives (one per profile).
+    /// The row keys the parser derives (one per profile).
     pub rows: Vec<String>,
 }
 
@@ -56,8 +56,8 @@ pub(crate) fn default_row(variants: &[VariantImage]) -> Option<(usize, usize)> {
 
 /// Read and check each child's package label, and the set as a whole: every
 /// child needs a label with a `variant.key` (a lone child may leave it out,
-/// and is keyed `default` as the platform keys it), its declaration must pass the
-/// platform's checks, row keys are unique, kinds agree, and at least one
+/// and is keyed `default`), its declaration must pass the
+/// validation checks, row keys are unique, kinds agree, and at least one
 /// child is `linux/amd64`. Returns the variants, the warnings worth printing,
 /// and every error found (all of them, so one run reports everything to fix).
 pub(crate) fn check_variants(
@@ -165,7 +165,7 @@ fn unknown_kind(source: &str, kind: Option<Kind>) -> Option<String> {
     kind.is_none().then(|| {
         format!(
             "{source}: kind unknown (no {DESCRIBE_LABEL} label and the command does not \
-             run -m rlmesh.serve); the platform's probe decides it"
+             run -m rlmesh.serve); the managed platform checks it when you onboard the image"
         )
     })
 }
@@ -182,7 +182,7 @@ fn excluded_platform(child: &Child) -> Option<String> {
 }
 
 /// The variant a checked child records: its requires and facets as the
-/// platform derives them, and its row keys.
+/// parser derives them, and its row keys.
 fn variant_image(
     child: Child,
     key: String,
@@ -289,7 +289,7 @@ fn unschedulable(variants: &[VariantImage]) -> Option<String> {
 }
 
 /// Read `--index-package`: a JSON object of version-level package data.
-/// `schemaVersion` defaults to 1. The platform reads only the version-level
+/// `schemaVersion` defaults to 1. The parser reads only the version-level
 /// keys off the index ([`variant::VERSION_PACKAGE_KEYS`]); anything else is
 /// kept as written but warned about. Returns compact JSON and the warnings.
 pub(crate) fn index_package(raw: &str, origin: &str) -> Result<(String, Vec<String>)> {
