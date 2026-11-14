@@ -18,6 +18,10 @@
 //! | [`TrafficClass::Data`] | Data | best effort; reliable for events | DROP; BLOCK for events | no | small custom kinds, events, history replies |
 //! | [`TrafficClass::Bulk`] | DataLow | best effort | DROP | no | cameras, depth, large custom kinds |
 //!
+//! Every session, the host's included, queues up to
+//! [`REALTIME_QUEUE_BATCHES`] transmit batches per link for the Realtime
+//! class's priority, where Zenoh's default of 2 drops samples in bursts.
+//!
 //! The host listens on **one** port with one session, which every class
 //! session of every participant dials: a host is one routing domain. Each
 //! key belongs to one class (both ends pick its session by the same rule),
@@ -357,6 +361,32 @@ impl TransportConfig {
     }
 }
 
+/// Transmit batches each link may queue for [`TrafficClass::Realtime`]
+/// traffic (Zenoh's most, against its default of 2).
+///
+/// Realtime samples are express, so each takes a batch of its own, and a
+/// DROP sample that finds none free within the drop wait is dropped, after
+/// which Zenoh drops the samples behind it while the queue stays congested:
+/// a burst of a few dozen samples back to back lost several on loopback with
+/// 2 batches. Batches are allocated as a burst first needs them and kept, a
+/// batch being the link's batch size (64 KiB on TCP): up to 1 MiB per link
+/// that carries Realtime traffic, 896 KiB more than the default. Only the
+/// Realtime priority's queue grows; the other classes keep Zenoh's 2.
+pub const REALTIME_QUEUE_BATCHES: usize = 16;
+
+/// The key of `priority`'s queue under `transport/link/tx/queue/size`.
+fn queue_name(priority: Priority) -> &'static str {
+    match priority {
+        Priority::RealTime => "real_time",
+        Priority::InteractiveHigh => "interactive_high",
+        Priority::InteractiveLow => "interactive_low",
+        Priority::DataHigh => "data_high",
+        Priority::Data => "data",
+        Priority::DataLow => "data_low",
+        Priority::Background => "background",
+    }
+}
+
 /// A peer-mode Zenoh config (client mode when `tuning.client`, which listens
 /// nowhere): multicast scouting off, so it listens on `listen` and dials
 /// `connect` and nothing else (sessions on one host never discover each
@@ -415,6 +445,14 @@ pub fn zenoh_config(
         &mut config,
         "transport/link/tx/keep_alive",
         tuning.keep_alive.max(1).to_string(),
+    )?;
+    set(
+        &mut config,
+        &format!(
+            "transport/link/tx/queue/size/{}",
+            queue_name(TrafficClass::Realtime.qos().priority)
+        ),
+        REALTIME_QUEUE_BATCHES.to_string(),
     )?;
     if let Some(wait) = tuning.drop_wait {
         set(
@@ -856,6 +894,14 @@ mod tests {
         assert_eq!(get("scouting/multicast/enabled"), "false");
         assert_eq!(get("mode"), "\"peer\"");
         assert_eq!(get("transport/unicast/open_timeout"), "25000");
+        assert_eq!(get("transport/link/tx/queue/size/interactive_high"), "16");
+        for other in ["control", "real_time", "data", "data_low"] {
+            assert_eq!(
+                get(&format!("transport/link/tx/queue/size/{other}")),
+                "2",
+                "{other} keeps Zenoh's default"
+            );
+        }
 
         let client = TransportTuning {
             client: true,

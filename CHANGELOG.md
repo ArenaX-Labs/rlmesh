@@ -238,6 +238,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 #### All languages
 
 - A session address's key, a launch identity and the link password the key derives no longer reach logs at any level, `repr`s, `Debug` or `Display` output, errors, tracing spans or the probe report: each shows the address as `host:port#…/name`, and every logger RLMesh installs caps Zenoh's `zenoh::api::session` target, which logs its config at `DEBUG`, at `INFO`. `rlmesh-gateway` takes a keyed address only from `RLMESH_GATEWAY_ADDRESS`, `--address-file` or `--session-file`, never the command line, and `rlmesh cockpit` also reads it from `RLMESH_COCKPIT_ADDRESS` or `--address-file`.
+- Realtime samples sent in bursts, or by a busy process, are dropped far less often on the way: every session link queues up to 16 transmit batches for realtime traffic instead of Zenoh's 2 (up to 1 MiB more per link, allocated only as a burst needs it). Boards are unchanged.
 
 #### Python
 
