@@ -148,6 +148,8 @@ impl<'a> Value<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::prelude::*;
 
     fn fields(buf: &[u8]) -> Result<Vec<(u32, u64)>, WireError> {
         let mut fields = Fields::new(buf, "test");

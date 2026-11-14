@@ -211,6 +211,8 @@ mod tests {
 /// forms a careless `Debug` would use: hex, a byte list, the raw bytes.
 #[cfg(test)]
 pub(crate) fn assert_redacted(value: &impl core::fmt::Debug, secret: &[u8]) {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
     let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
     let list: Vec<String> = secret.iter().map(ToString::to_string).collect();
     let list = list.join(",");

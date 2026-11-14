@@ -480,6 +480,8 @@ fn a_latched_part_goes_safe_when_its_lease_lapses() {
 /// A valid chunk the heap has no room for is dropped whole: its actions are
 /// counted as `no_memory`, it is neither accepted nor refused, and nothing
 /// of it is queued.
+// The failing allocator is the std test build's (`crate::test_alloc`).
+#[cfg(feature = "std")]
 #[test]
 fn a_chunk_the_heap_has_no_room_for_counts_its_actions_as_no_memory() {
     let mut f = Fixture::new();

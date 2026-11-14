@@ -28,6 +28,10 @@ mod imp {
 
 #[cfg(not(all(not(feature = "std"), target_os = "none")))]
 mod imp {
+    // A test build links std even when the crate itself is built without it.
+    #[cfg(test)]
+    extern crate std;
+
     #[cfg(test)]
     std::thread_local! {
         /// A test's heap with no room: the reserve gone and not to be had.
