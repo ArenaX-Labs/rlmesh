@@ -1,10 +1,15 @@
-//! Declarative env/model IO adapter core for RLMesh.
+//! Declarative env/model IO specs for RLMesh: the v1 declarations, and the
+//! host side of binding them.
 //!
 //! Environments and models describe their IO formats once as versioned,
-//! pure-data specs; [`v1::resolve`] derives the concrete per-pairing
-//! conversion plan by matching semantic roles. No code is ever evaluated
-//! from spec data: custom transforms resolve to host-language callbacks
-//! that bindings materialize themselves.
+//! pure-data specs ([`v1::EnvTags`], [`v1::ModelSpec`]). [`v1::resolve`]
+//! joins an env's tags against its spaces, lowers both declarations into
+//! the binder's input and binds them with the binder's Gym door
+//! ([`rlmesh_session_core::spec::role`]), which decides every conversion and
+//! runs it; this crate walks the host values (observation trees, Gym
+//! spaces, frame windows) around it. No code is ever evaluated from spec
+//! data: custom transforms resolve to host-language callbacks that bindings
+//! materialize themselves.
 //!
 //! The JSON wire format and resolution semantics are frozen per version by
 //! the conformance vectors under this crate's `conformance/` directory;
@@ -21,21 +26,18 @@
 //! is only a stable import path; the implementation sits flat at the crate root.
 
 mod apply;
-mod describe;
 mod envelope;
 mod error;
-mod fmt;
 mod join;
 mod keys;
-mod path;
-mod plans;
-mod resolver;
-pub mod roles;
+mod lower;
 mod space_json;
 mod space_view;
 mod spec;
 mod stateful;
 
+pub use rlmesh_session_core::spec::role::roles;
+use rlmesh_session_core::spec::role::{path, plan as plans};
 use rlmesh_spaces::advisory;
 
 /// Version 1 of the adapter spec format and resolution semantics.
@@ -44,8 +46,8 @@ pub mod v1 {
 
     pub use crate::advisory::{Advisory, AdvisorySeverity};
     pub use crate::apply::{
-        ApplyError, CustomTransform, NoCustoms, RESAMPLES, SkipCustoms, Value, convert_rotation,
-        convert_rotation_with, jpeg_roundtrip,
+        ApplyError, CustomTransform, Jpeg, NoCustoms, RESAMPLES, SkipCustoms, Value,
+        transform_action, transform_obs,
     };
     pub use crate::envelope::{EnvelopeError, Kind, build_describe_envelope};
     pub use crate::error::{AdapterResolutionError, ErrorCode};
@@ -54,14 +56,14 @@ pub mod v1 {
         DESCRIBE_METADATA_KEY, DESCRIBE_SCHEMA_VERSION, ENV_BRANCH_METADATA_KEY, ENV_METADATA_KEY,
         MODEL_METADATA_KEY,
     };
+    pub use crate::lower::{advisories, resolve};
     pub use crate::path::{NodePath, PathSeg};
     pub use crate::plans::{
-        ActionPlan, ActionSegment, CropPlan, CustomPlan, HistoryWindow, ImagePlan, ObsPlan,
-        PreviousAction, ResolvedAdapter, StatePiece, StatePlan, TextPlan,
+        ActionPlan, ActionSegment, Binding as ResolvedAdapter, CropPlan, CustomPlan, HistoryWindow,
+        ImagePlan, ObsPlan, PreviousAction, StatePiece, StatePlan, TextPlan,
     };
-    pub use crate::resolver::resolve;
     pub use crate::space_json::{
-        SpaceJsonError, space_dtype_name, space_kind_name, space_spec_to_json,
+        SpaceJsonError, space_dtype_name, space_kind_name, space_spec_from_json, space_spec_to_json,
     };
     pub use crate::space_view::{SpaceView, SpaceViewKind};
     pub use crate::spec::{
@@ -70,10 +72,11 @@ pub mod v1 {
         Field, FrameLaw, FramePolicy, FrameRef, Image, ImageLayout, ImageTag, InputNode, ModelLeaf,
         ModelSpec, Normalize, ObsLeaf, ObsNode, PROVENANCES, PartSource, Provenance, REFERENCES,
         ReferenceLaw, RolePolicy, RotationEncoding, RotationLiteral, SplitLayout, StackPad, State,
-        StateContainer, StateEncoding, StateTag, Text, TextContainer, TextTag, UnknownFeature,
-        reject_bare_fields_env, reject_bare_fields_model, reject_unframed_roles_env,
-        reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
-        reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, render_requests,
+        StateContainer, StateEncoding, StateTag, Text, TextContainer, TextTag, Timing,
+        UnknownFeature, reject_bare_fields_env, reject_bare_fields_model,
+        reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
+        reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
+        render_requests,
     };
     pub use crate::stateful::{
         EncodingTransform, FrameBuffers, MAX_EXECUTION_HORIZON, NoEncodings, apply_actions,
