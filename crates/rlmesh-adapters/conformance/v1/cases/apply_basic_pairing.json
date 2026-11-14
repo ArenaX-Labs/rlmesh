@@ -111,6 +111,7 @@
     "shape": [7]
   },
   "model_spec": {
+    "allow": ["select_state"],
     "input": {
       "image": {
         "dtype": "float32",

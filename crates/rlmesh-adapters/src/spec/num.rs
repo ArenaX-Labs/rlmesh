@@ -197,7 +197,7 @@ pub(crate) fn de_opt_numbers<'de, D: Deserializer<'de>>(
 }
 
 /// Upper bound on each axis of a declared render size (the image `render`
-/// assertion). A camera dial the platform binds from an untrusted spec, so the
+/// assertion). A camera dial may come from an untrusted spec, so the
 /// ceiling is a sane display resolution rather than the shared [`MAX_DIM`].
 pub(crate) const MAX_RENDER: u32 = 4096;
 

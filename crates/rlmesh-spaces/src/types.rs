@@ -64,10 +64,24 @@ pub struct MultiBinarySpec;
 /// Per-element category counts for a MultiDiscrete space, flattened row-major
 /// (C order). The logical shape lives in [`SpaceSpec::shape`] (rank-1 `[len]`
 /// for a flat vector, rank-2 `[rows, cols]` for a matrix); `nvec` always holds
-/// `numel(shape)` entries.
+/// `numel(shape)` entries. Element `i` takes values in
+/// `[start[i], start[i] + nvec[i])`; an empty `start` is all zeros.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MultiDiscreteSpec {
     pub nvec: Vec<i64>,
+    pub start: Vec<i64>,
+}
+
+impl MultiDiscreteSpec {
+    /// Element `i`'s lowest value.
+    pub fn start(&self, i: usize) -> i64 {
+        self.start.get(i).copied().unwrap_or(0)
+    }
+
+    /// Whether any element starts away from zero.
+    pub fn has_start(&self) -> bool {
+        self.start.iter().any(|s| *s != 0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

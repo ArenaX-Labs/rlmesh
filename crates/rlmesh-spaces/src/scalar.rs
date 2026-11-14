@@ -332,7 +332,7 @@ fn float_value(value: Scalar) -> f64 {
 /// correct on every input. The x86 F16C path does `f as f32` then f32->f16, and
 /// the software fallback (`from_f64_const`) truncates the low 32 mantissa bits
 /// (`val >> 32`) — each double-rounds on a different (disjoint) set of inputs;
-/// only aarch64 hardware rounds f64->f16 directly. See VoidStarKat/half-rs#116
+/// only aarch64 hardware rounds f64->f16 directly. See the half-rs conversion implementation
 /// (open). numpy / `ml_dtypes` round directly, so the wire must too — hence the
 /// f32->f16-only route above, which uses half's one reliable path.
 pub fn f64_to_f16_bits(value: f64) -> u16 {

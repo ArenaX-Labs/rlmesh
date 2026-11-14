@@ -9,8 +9,7 @@
 //!
 //! **The arms are opaque references, never executed here.** Resolution shadows a
 //! custom encoding to its `base` for the structural negotiation (width, role,
-//! env conversion all run on `base`); the platform validates the base against an
-//! env and describes the field, but never runs the arm. A custom encoding is a
+//! env conversion all run on `base`). A custom encoding is a
 //! describe/validate *schema*: the transform executes only in the process that
 //! defined its in-process callable (via the host-side
 //! [`EncodingTransform`](crate::v1::EncodingTransform) shim the Python layer
@@ -43,8 +42,8 @@ fn is_default_name(name: &str) -> bool {
 
 /// A rotation re-packing layered on a native `base` encoding.
 ///
-/// See the module docs: the arms are `module:callable` references the platform
-/// never imports; only a trusted in-process resolve does.
+/// See the module docs: the arms are `module:callable` references imported only
+/// by a trusted in-process resolve.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CustomEncoding {

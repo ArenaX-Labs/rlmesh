@@ -102,6 +102,7 @@
     "shape": [10]
   },
   "model_spec": {
+    "allow": ["select_state"],
     "input": {
       "instruction": {
         "container": "str",

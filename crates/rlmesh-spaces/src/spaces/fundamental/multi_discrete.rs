@@ -8,6 +8,7 @@ pub struct MultiDiscreteBuilder {
     dtype: DType,
     shape: Vec<i64>,
     nvec: Vec<i64>,
+    start: Vec<i64>,
     /// Deferred construction error (e.g. a ragged `matrix(..)`), surfaced by
     /// [`MultiDiscreteBuilder::build`]. `matrix` cannot return a `Result`, so a
     /// non-rectangular input is recorded here and fails the build rather than
@@ -24,6 +25,7 @@ impl MultiDiscreteBuilder {
             shape: vec![nvec.len() as i64],
             dtype: DType::Int64,
             nvec,
+            start: Vec::new(),
             error: None,
         }
     }
@@ -53,12 +55,19 @@ impl MultiDiscreteBuilder {
             shape: vec![r as i64, c as i64],
             dtype: DType::Int64,
             nvec: rows.into_iter().flatten().collect(),
+            start: Vec::new(),
             error,
         }
     }
 
     pub fn dtype(mut self, dtype: DType) -> Self {
         self.dtype = dtype;
+        self
+    }
+
+    /// Each element's lowest value, flat (row-major) as `nvec`.
+    pub fn start(mut self, start: impl Into<Vec<i64>>) -> Self {
+        self.start = start.into();
         self
     }
 
@@ -71,6 +80,7 @@ impl MultiDiscreteBuilder {
             dtype: self.dtype,
             spec: Some(SpaceKind::MultiDiscrete(MultiDiscreteSpec {
                 nvec: self.nvec,
+                start: self.start,
             })),
         };
 
@@ -121,20 +131,30 @@ pub(crate) fn validate_multidiscrete_at(space: &SpaceSpec, path: &str) -> Result
     if md.nvec.is_empty() {
         return err_space!(path, "MultiDiscrete", "nvec must be non-empty");
     }
+    if !md.start.is_empty() && md.start.len() != md.nvec.len() {
+        return err_space!(
+            path,
+            "MultiDiscrete",
+            "shape mismatch: expected len(start) == len(nvec)"
+        );
+    }
     for (i, &n) in md.nvec.iter().enumerate() {
         if n <= 0 {
             return err_space!(path, "MultiDiscrete", format!("nvec[{i}] must be > 0"));
         }
-        // The largest category index for element i is nvec[i]-1; it must fit the
-        // declared dtype, or a valid value silently wraps on the wire (e.g.
-        // MultiDiscrete(uint8, nvec=[1000]) would wrap 999). Reject at construction.
-        if check_int_in_dtype_range(n - 1, space.dtype).is_err() {
+        // Element i's values span start[i]..=start[i]+nvec[i]-1; both ends must
+        // fit the declared dtype, or a valid value silently wraps on the wire
+        // (e.g. MultiDiscrete(uint8, nvec=[1000]) would wrap 999). Reject at
+        // construction.
+        let low = md.start(i);
+        let high = low.checked_add(n - 1);
+        let fits = |v: i64| check_int_in_dtype_range(v, space.dtype).is_ok();
+        if !fits(low) || !high.is_some_and(fits) {
             return err_space!(
                 path,
                 "MultiDiscrete",
                 format!(
-                    "nvec[{i}] - 1 = {} does not fit dtype {}",
-                    n - 1,
+                    "element {i}'s values {low}..{low}+{n} do not fit dtype {}",
                     space.dtype
                 )
             );
@@ -183,12 +203,13 @@ pub(crate) fn contains_multidiscrete(
         );
     }
 
-    // Check each value is in range [0, nvec[i])
+    // Check each value is in range [start[i], start[i] + nvec[i])
     for (i, (&val, &n)) in vals.iter().zip(nvec.iter()).enumerate() {
-        if val < 0 || val >= n {
+        let low = md.start(i);
+        if val < low || val - low >= n {
             return err_space!(
                 path,
-                format!("value[{}] = {} not in range [0, {})", i, val, n)
+                format!("value[{}] = {} not in range [{low}, {low} + {})", i, val, n)
             );
         }
     }
@@ -228,6 +249,28 @@ mod tests {
         assert!(contains(&space, &SpaceValue::MultiDiscrete(vec![1])).is_err());
         assert!(contains(&space, &SpaceValue::MultiDiscrete(vec![2, 0])).is_err());
         assert!(contains(&space, &SpaceValue::Discrete(1)).is_err());
+    }
+
+    #[test]
+    fn a_start_shifts_the_values_and_must_fit_the_dtype() {
+        let space = MultiDiscreteBuilder::vector(vec![3, 4])
+            .start(vec![-1, 5])
+            .build()
+            .unwrap();
+        assert!(contains(&space, &SpaceValue::MultiDiscrete(vec![-1, 8])).is_ok());
+        assert!(contains(&space, &SpaceValue::MultiDiscrete(vec![2, 5])).is_err());
+        assert!(contains(&space, &SpaceValue::MultiDiscrete(vec![0, 4])).is_err());
+        let sample = crate::sample_seeded(&space, 3).unwrap();
+        assert!(contains(&space, &sample).is_ok());
+        for bad in [vec![-1], vec![250, 0]] {
+            assert!(
+                MultiDiscreteBuilder::vector(vec![10, 10])
+                    .dtype(DType::Uint8)
+                    .start(bad)
+                    .build()
+                    .is_err()
+            );
+        }
     }
 
     #[test]
@@ -277,6 +320,7 @@ mod tests {
             dtype: DType::Int64,
             spec: Some(SpaceKind::MultiDiscrete(MultiDiscreteSpec {
                 nvec: vec![1, 1],
+                start: Vec::new(),
             })),
         };
         assert!(validate_space(&spec).is_err());

@@ -1,4 +1,4 @@
-//! The tolerant-reader relay-fidelity CI gate (design §6).
+//! The tolerant-reader relay-fidelity CI gate.
 //!
 //! Any hop that parses + re-serializes a spec must retain every unknown kind and
 //! field. The contract is **semantic** round-trip, not byte-identical: the field
@@ -34,10 +34,10 @@ fn normalize_is_idempotent_and_preserves_unknown_kind_and_field() {
     }"#;
 
     let once = normalize_env(input);
-    // §6 gate 1: idempotence.
+    // Gate 1: idempotence.
     assert_eq!(normalize_env(&once), once, "normalize is not idempotent");
 
-    // §6 gate 2: every injected unknown kind and field survives verbatim.
+    // Gate 2: every injected unknown kind and field survives verbatim.
     for needle in [
         r#""type":"audio""#,
         "sample_rate",
@@ -71,7 +71,7 @@ fn model_spec_preserves_unknown_kind_and_field() {
 
 #[test]
 fn type_never_leaks_into_a_capture_map() {
-    // §6 gate 3 (partial): a known leaf's `type` is consumed by the leaf branch
+    // Gate 3 (partial): a known leaf's `type` is consumed by the leaf branch
     // and must not reappear as a duplicate or a captured field. Re-serializing
     // emits exactly one `type` for the leaf.
     let once = normalize_env(
@@ -83,7 +83,7 @@ fn type_never_leaks_into_a_capture_map() {
 
 #[test]
 fn malformed_of_known_kind_still_hard_errors_in_every_mode() {
-    // §6 gate 3: tolerance never weakens the malformed floor for a *recognized*
+    // Gate 3: tolerance never weakens the malformed floor for a *recognized*
     // kind. A reversed range, a zero dim, and a non-string `type` all hard-error
     // at parse, tolerant mode included.
     assert!(

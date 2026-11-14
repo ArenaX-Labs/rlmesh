@@ -14,7 +14,6 @@ use super::action::Action;
 use super::leaf_codec::leaf_codec;
 
 pub use custom::Custom;
-pub(crate) use image::MAX_STACK_SPAN;
 pub use image::{CHANNEL_ORDERS, CROP_MODES, Image, Normalize, StackPad};
 pub use state::{ConcatPart, PartSource, State, StateContainer};
 pub use text::{Text, TextContainer};
@@ -244,6 +243,46 @@ impl<'de> Deserialize<'de> for InputNode {
 pub struct ModelSpec {
     pub input: InputNode,
     pub output: Action,
+    /// Named projections (lossy fits) the model accepts, by name
+    /// (`drop_action`). A resolve applies one only when it is listed, and
+    /// records it on the adapter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+    /// How the model paces its actions (see [`Timing`]). Omitted when unset.
+    #[serde(default, skip_serializing_if = "Timing::is_unset")]
+    pub timing: Timing,
+}
+
+/// How a model paces its actions. `execution` is how many actions of each
+/// predicted chunk a run executes before re-planning when neither the run
+/// nor the model's `load()` names one (`1..=1024`); omitted when unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Timing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<u32>,
+}
+
+impl Timing {
+    /// Whether nothing is declared (the field is then omitted from the wire).
+    pub fn is_unset(&self) -> bool {
+        self.execution.is_none()
+    }
+
+    /// Refuse an `execution` outside `1..=1024`.
+    pub fn check(&self) -> Result<(), String> {
+        match self.execution {
+            Some(execution)
+                if !(1..=crate::stateful::MAX_EXECUTION_HORIZON).contains(&execution) =>
+            {
+                Err(format!(
+                    "timing.execution must be in 1..={}, got {execution}",
+                    crate::stateful::MAX_EXECUTION_HORIZON
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// The camera resolutions this model's image inputs assert, in document order.
@@ -254,9 +293,8 @@ pub struct ModelSpec {
 /// order — dict keys by their sorted names, tuple entries by position — so two
 /// walks of the same spec always agree entry for entry.
 ///
-/// This is the platform's side of the `render` contract: it feeds the requests
-/// into the environment package's `renderParams` camera dial (surfaced as
-/// `observed.renderRequests`) before the run. [`resolve`](crate::v1::resolve)
+/// Callers can feed these requests into the environment package's
+/// `renderParams` camera dial before the run. [`resolve`](crate::v1::resolve)
 /// then asserts each one against the camera it actually bound.
 pub fn render_requests(spec: &ModelSpec) -> Vec<(String, (u32, u32))> {
     fn walk(node: &InputNode, out: &mut Vec<(String, (u32, u32))>) {
@@ -388,8 +426,7 @@ mod tests {
     #[test]
     fn render_requests_walks_the_tree_in_document_order() {
         // Dict keys walk sorted, tuple entries walk by position, and the two
-        // nest: the order is the spec's own document order, and is what the
-        // platform's camera-dial binding sees. `wrist` declares no render, so it
+        // nest: the order is the spec's own document order. `wrist` declares no render, so it
         // contributes nothing; `zzz` sorts after `obs` despite being written
         // first.
         let requests = render_requests(&spec(
@@ -444,6 +481,24 @@ mod tests {
                 r#"the reserved key "type" may not name a dict child (model input tree)"#
             ),
             "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_declared_execution_timing_round_trips_and_an_unset_one_keeps_the_old_bytes() {
+        let mut timed = spec(r#"{"type": "image", "role": "image/primary"}"#);
+        let bare = serde_json::to_string(&timed).unwrap();
+        assert!(!bare.contains("timing"));
+        timed.timing.execution = Some(8);
+        let json = serde_json::to_string(&timed).unwrap();
+        assert!(json.contains(r#""timing":{"execution":8}"#), "got: {json}");
+        assert_eq!(serde_json::from_str::<ModelSpec>(&json).unwrap(), timed);
+        assert!(crate::spec::reject_unknowns_model(&timed).is_ok());
+        timed.timing.execution = Some(0);
+        assert!(
+            crate::spec::reject_unknowns_model(&timed)
+                .unwrap_err()
+                .contains("1..=1024")
         );
     }
 }

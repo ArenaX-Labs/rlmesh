@@ -1,0 +1,252 @@
+{
+  "examples/python/adapters/serve_and_run.py:ENV_TAGS": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "ee_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "ee_quat": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      "goal": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "grip": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      },
+      "wrist_rgb": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      }
+    }
+  },
+  "examples/python/vla_adapters/envs/libero.py:TAGS": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "agentview_image": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "robot0_eef_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "robot0_eef_quat": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      "robot0_eye_in_hand_image": {
+        "layout": "hwc",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false
+      },
+      "robot0_gripper_qpos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      }
+    }
+  },
+  "examples/python/vla_adapters/envs/metaworld.py:TAGS": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "corner_image": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "gripper_image": {
+        "layout": "hwc",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false
+      },
+      "proprio": {
+        "fields": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": 4,
+            "encoding": "quat_xyzw",
+            "range": null,
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 10,
+            "encoding": null,
+            "range": null,
+            "role": null
+          }
+        ],
+        "type": "split"
+      },
+      "task": {
+        "role": "text/instruction",
+        "type": "text"
+      }
+    }
+  },
+  "examples/python/vla_adapters/envs/simpler_bridge.py:TAGS": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "agent": {
+        "eef_pos": {
+          "encoding": null,
+          "range": null,
+          "role": "proprio/eef_pos",
+          "type": "state"
+        },
+        "eef_quat": {
+          "encoding": "quat_wxyz",
+          "range": null,
+          "role": "proprio/eef_rot",
+          "type": "state"
+        },
+        "gripper_width": {
+          "encoding": null,
+          "range": [0.0, 0.08],
+          "role": "proprio/gripper",
+          "type": "state"
+        }
+      },
+      "rgb": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "task_instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      }
+    }
+  }
+}
