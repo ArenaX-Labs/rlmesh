@@ -1,0 +1,6 @@
+binding refused: every_option on aloha2 under "right" (2 problems)
+
+  [unbound] input "wrist" (kind camera, at "wrist/cam"): no part matches; aloha2's camera parts: left/wrist/cam, right/wrist/cam, scene/cam, scene/cam_low.
+    fix: if one of them is meant, policy.bind("aloha2", under="right", at={"wrist": "left/wrist/cam"}, names={"state": "positional"}, allow=["resize"])
+
+  [incompatible] input "state": positional binding needs a count.

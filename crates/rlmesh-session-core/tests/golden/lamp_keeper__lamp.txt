@@ -1,0 +1,16 @@
+binding lamp_keeper on lamp: 2 inputs, 2 actions, fingerprint 46b4f1a0e6c69cb9
+replan 10 Hz
+
+  entry    dir  part    status  plan  delivers
+  pressed  in   button  bound   none  bool []
+  temp     in   temp    bound   none  f32 []
+  relay    out  relay   bound   none  bool [1]
+  dimmer   out  dimmer  bound   none  f32 [1]
+
+  input    contract   source  delivery  freshness
+  pressed  latest@10  50 Hz   10 Hz     300 ms (derived)
+  temp     every      1 Hz    10 Hz     3000 ms (derived)
+
+  action  grid             chunk                valid   edge             age cap
+  relay   10 Hz (default)  1 × 100 ms = 100 ms  100 ms  10 Hz (default)  200 ms (default)
+  dimmer  10 Hz (default)  1 × 100 ms = 100 ms  100 ms  20 Hz (default)  200 ms (default)

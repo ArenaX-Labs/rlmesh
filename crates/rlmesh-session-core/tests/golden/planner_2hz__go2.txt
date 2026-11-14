@@ -1,0 +1,10 @@
+binding planner_2hz on go2: 2 inputs, 0 actions, fingerprint fcd3039a19b4dfd6
+replan 2 Hz
+
+  entry  dir  part       status  plan          delivers
+  image  in   front/cam  bound   decode(jpeg)  u8 [720, 1280, 3]
+  q      in   legs       bound   fields pos    f32 [12]
+
+  input  contract  source  delivery  freshness
+  image  latest@2  15 Hz   2 Hz      750 ms
+  q      latest@2  500 Hz  2 Hz      750 ms

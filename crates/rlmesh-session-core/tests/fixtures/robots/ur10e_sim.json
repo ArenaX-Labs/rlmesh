@@ -1,0 +1,81 @@
+{
+  "arm": {
+    "kind": "joints",
+    "names": [
+      "shoulder_pan_joint",
+      "shoulder_lift_joint",
+      "elbow_joint",
+      "wrist_1_joint",
+      "wrist_2_joint",
+      "wrist_3_joint"
+    ],
+    "fields": ["pos", "vel", "effort"],
+    "hz": 1000,
+    "command": "position",
+    "safe": "stop",
+    "hold_max_ms": 100,
+    "max_action_age_ms": 1000,
+    "group": "arm",
+    "limits": {
+      "pos": [-6.283, 6.283]
+    }
+  },
+  "arm/tcp": {
+    "kind": "pose",
+    "frame": "base",
+    "child": "tool0",
+    "hz": 500,
+    "command": "delta",
+    "reference": "current",
+    "group": "arm",
+    "safe": "stop",
+    "hold_max_ms": 100,
+    "max_action_age_ms": 1000,
+    "limits": {
+      "pos": {
+        "max_norm": 0.01
+      },
+      "rot": {
+        "max_norm": 0.05
+      }
+    }
+  },
+  "wrist/ft": {
+    "kind": "wrench",
+    "frame": "tool0",
+    "hz": 1000
+  },
+  "wrist/cam": {
+    "kind": "camera",
+    "width": 640,
+    "height": 480,
+    "hz": 30,
+    "frame": "wrist_cam_optical",
+    "encoding": "jpeg",
+    "quality": 75,
+    "send": "latest(max_mbps=20)"
+  },
+  "scene/cam": {
+    "kind": "camera",
+    "width": 1280,
+    "height": 720,
+    "hz": 15,
+    "frame": "scene_cam_optical",
+    "encoding": "jpeg",
+    "quality": 75,
+    "send": "latest(max_mbps=20)"
+  },
+  "gripper": {
+    "kind": "gripper",
+    "hz": 100,
+    "command": "position",
+    "safe": "hold",
+    "width_m": [0.0, 0.085]
+  },
+  "task": {
+    "kind": "text"
+  },
+  "success": {
+    "kind": "success"
+  }
+}

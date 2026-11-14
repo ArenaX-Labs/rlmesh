@@ -1,0 +1,76 @@
+{
+  "left/arm": {
+    "kind": "joints",
+    "names": ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"],
+    "fields": ["pos", "vel", "effort"],
+    "hz": 50,
+    "command": "position",
+    "safe": "hold",
+    "max_action_age_ms": 1000
+  },
+  "left/gripper": {
+    "kind": "gripper",
+    "hz": 50,
+    "command": "position",
+    "safe": "hold",
+    "max_action_age_ms": 1000
+  },
+  "left/wrist/cam": {
+    "kind": "camera",
+    "width": 640,
+    "height": 480,
+    "hz": 30,
+    "frame": "left_wrist_cam_optical",
+    "encoding": "jpeg",
+    "send": "latest(max_mbps=16)"
+  },
+  "right/arm": {
+    "kind": "joints",
+    "names": ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"],
+    "fields": ["pos", "vel", "effort"],
+    "hz": 50,
+    "command": "position",
+    "safe": "hold",
+    "max_action_age_ms": 1000
+  },
+  "right/gripper": {
+    "kind": "gripper",
+    "hz": 50,
+    "command": "position",
+    "safe": "hold",
+    "max_action_age_ms": 1000
+  },
+  "right/wrist/cam": {
+    "kind": "camera",
+    "width": 640,
+    "height": 480,
+    "hz": 30,
+    "frame": "right_wrist_cam_optical",
+    "encoding": "jpeg",
+    "send": "latest(max_mbps=16)"
+  },
+  "scene/cam": {
+    "kind": "camera",
+    "width": 640,
+    "height": 480,
+    "hz": 30,
+    "frame": "cam_high_optical",
+    "encoding": "jpeg",
+    "send": "latest(max_mbps=16)"
+  },
+  "scene/cam_low": {
+    "kind": "camera",
+    "width": 640,
+    "height": 480,
+    "hz": 30,
+    "frame": "cam_low_optical",
+    "encoding": "jpeg",
+    "send": "latest(max_mbps=16)"
+  },
+  "task": {
+    "kind": "text"
+  },
+  "success": {
+    "kind": "success"
+  }
+}
