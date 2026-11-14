@@ -1,24 +1,13 @@
-use async_trait::async_trait;
-use rlmesh_grpc::env::{
-    CloseEnvsResponse as ProtoCloseResponse, Environment, RenderRequest as ProtoRenderRequest,
-    RenderResponse as ProtoRenderResponse, ResetRequest as ProtoResetRequest,
-    ResetResponse as ProtoResetResponse, StepRequest as ProtoStepRequest,
-    StepResponse as ProtoStepResponse,
-};
-use rlmesh_grpc::error::{EnvError, EnvErrorCode};
-use rlmesh_grpc::wire::{
-    decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
-    meta_map_to_proto, render_result_to_proto,
-};
+use crate::data::{EnvError, EnvErrorCode};
 use rlmesh_proto::Edition;
 
 use super::lanes::{LaneEnv, LaneReply, batch_infos, fold_phases};
 use super::legacy::{Env, VectorEnv};
 use super::types::{
-    CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest as VectorResetRequest,
+    CloseRequest, RenderRequest, ResetRequest as VectorResetRequest,
     ResetResult as VectorResetResult, StepRequest as VectorStepRequest,
 };
-use crate::binding::spaces;
+use crate::binding::spaces::{self, RenderResult};
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
 use std::collections::{BTreeMap, HashSet};
@@ -86,7 +75,7 @@ struct Conformance {
     /// Behind a lock because lane ops run concurrently through `&self`.
     warned: std::sync::Mutex<HashSet<(usize, String, String)>>,
     /// The edition the current session runs at (see
-    /// [`Environment::pin_workflow_edition`]); the warning key is its promise.
+    /// the session's edition pin); the warning key is its promise.
     edition: std::sync::Mutex<Edition>,
 }
 
@@ -97,13 +86,6 @@ impl Conformance {
             warned: std::sync::Mutex::new(HashSet::new()),
             edition: std::sync::Mutex::new(Edition::current()),
         }
-    }
-
-    fn pin(&self, edition: Edition) {
-        *self
-            .edition
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = edition;
     }
 
     fn edition(&self) -> Edition {
@@ -166,17 +148,16 @@ impl Conformance {
     }
 }
 
-/// Encode a step's per-lane results into the wire reply, checking every
-/// per-lane vector is `width` long.
-fn encode_step_response(
+/// Check a step's per-lane results (every per-lane vector `width` long) and
+/// its observations, folding every conformance warning into its info.
+fn finish_step(
     conformance: &Conformance,
     observation_space: &spaces::SpaceSpec,
     mut result: super::types::StepResult,
     width: usize,
     lanes: &[usize],
     mut warnings: Vec<ConformanceWarning>,
-    env_indices: Vec<u32>,
-) -> Result<ProtoStepResponse, EnvError> {
+) -> Result<super::types::StepResult, EnvError> {
     validate_count(&result.observations, width, "observations")?;
     validate_count(&result.terminated, width, "terminated values")?;
     validate_count(&result.truncated, width, "truncated values")?;
@@ -189,31 +170,18 @@ fn encode_step_response(
         &mut warnings,
     )?;
     inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
-    let observations = encode_batched_partial_values(&result.observations, observation_space)
-        .map_err(protocol_error_to_env_error)?;
-    Ok(ProtoStepResponse {
-        observation: Some(observations),
-        rewards: result.rewards,
-        terminated_mask: result.terminated.into_iter().map(u8::from).collect(),
-        truncated_mask: result.truncated.into_iter().map(u8::from).collect(),
-        infos: result.info.as_ref().map(meta_map_to_proto),
-        completed_episodes: result
-            .completed_episodes
-            .iter()
-            .map(public_episode_metadata_to_proto)
-            .collect::<Result<Vec<_>, _>>()?,
-        env_indices,
-    })
+    Ok(result)
 }
 
-/// Encode a reset's per-lane observations into the wire reply.
-fn encode_reset_response(
+/// Check a reset's per-lane observations, folding conformance warnings into
+/// its info.
+fn finish_reset(
     conformance: &Conformance,
     observation_space: &spaces::SpaceSpec,
     mut result: VectorResetResult,
     width: usize,
     lanes: &[usize],
-) -> Result<ProtoResetResponse, EnvError> {
+) -> Result<VectorResetResult, EnvError> {
     validate_count(&result.observations, width, "observations")?;
     let mut warnings = Vec::new();
     conformance.enforce_all(
@@ -224,30 +192,37 @@ fn encode_reset_response(
         &mut warnings,
     )?;
     inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
-    let observations = encode_batched_partial_values(&result.observations, observation_space)
-        .map_err(protocol_error_to_env_error)?;
-    Ok(ProtoResetResponse {
-        observation: Some(observations),
-        infos: result.info.as_ref().map(meta_map_to_proto),
-    })
+    Ok(result)
 }
 
-/// Decode a wire action slab into `width` per-lane actions, conformance-checked.
-fn decode_actions(
+/// Check `width` per-lane actions: their count and their conformance.
+fn check_actions(
     conformance: &Conformance,
     action_space: &spaces::SpaceSpec,
-    action: Option<&rlmesh_proto::spaces::v1::SpaceValue>,
+    actions: &[spaces::SpaceValue],
     width: usize,
     lanes: &[usize],
     warnings: &mut Vec<ConformanceWarning>,
-) -> Result<Vec<spaces::SpaceValue>, EnvError> {
-    // N is authoritative; a wrong-width/count action is a client fault, so a
-    // decode failure maps to InvalidAction (not Internal).
-    let actions = decode_batched_partial_values(action, action_space, width)
-        .map_err(|err| EnvError::new(EnvErrorCode::InvalidAction, err.to_string()))?;
-    validate_action_count(&actions, width)?;
-    conformance.enforce_all(action_space, &actions, "action", lanes, warnings)?;
-    Ok(actions)
+) -> Result<(), EnvError> {
+    validate_action_count(actions, width)?;
+    conformance.enforce_all(action_space, actions, "action", lanes, warnings)
+}
+
+/// What a native op measured: its queue wait, the env call and the env's
+/// own split of it.
+struct Call {
+    queue_ns: u64,
+    call_ns: u64,
+    inner: EndpointPhases,
+}
+
+impl Call {
+    /// The wire split, with this layer's decode and encode around the call.
+    fn phases(self, decode_ns: u64, encode_ns: u64) -> EndpointPhases {
+        let mut phases = EndpointPhases::nest(decode_ns, self.call_ns, encode_ns, self.inner);
+        phases.queue_ns = self.queue_ns;
+        phases
+    }
 }
 
 /// Bridges a lockstep [`VectorEnv`] (a natively batched env such as a gym
@@ -276,52 +251,28 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
             conformance: Conformance::from_env(),
         }
     }
-}
 
-#[async_trait]
-impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
-    fn observation_space(&self) -> &spaces::SpaceSpec {
-        &self.observation_space
-    }
-
-    fn pin_workflow_edition(&self, edition: Edition) {
-        self.conformance.pin(edition);
-    }
-
-    fn action_space(&self) -> &spaces::SpaceSpec {
-        &self.action_space
-    }
-
-    fn num_envs(&self) -> usize {
-        self.num_envs
-    }
-
-    fn env_contract(&self) -> &spaces::EnvContract {
-        &self.env_contract
-    }
-
-    async fn reset(
+    /// Reset `lanes` (empty: the whole vector), checked and conformed.
+    async fn reset_native(
         &self,
-        req: ProtoResetRequest,
-    ) -> Result<(ProtoResetResponse, EndpointPhases), EnvError> {
-        let decode_started = Instant::now();
+        lanes: &[u32],
+        seeds: Vec<i64>,
+        options: Option<spaces::MetaMap>,
+        timeout_ms: i64,
+    ) -> Result<(VectorResetResult, EndpointPhases), EnvError> {
         let request = VectorResetRequest {
-            seeds: req.seeds,
-            options: req.options.map(meta_map_from_proto),
-            // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
-            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-            env_indices: proto_env_indices_to_native(req.env_indices),
+            seeds,
+            options,
+            timeout_ms,
+            env_indices: lane_indices_to_native(lanes),
         };
         // A reset naming lanes replies only those lanes; a whole-vector reset
         // replies full width.
-        let width = if request.env_indices.is_empty() {
+        let width = if lanes.is_empty() {
             self.num_envs
         } else {
-            request.env_indices.len()
+            lanes.len()
         };
-        let partial = !request.env_indices.is_empty();
-        let decode_ns = elapsed_ns(decode_started);
-
         let lock_started = Instant::now();
         let mut env = self.inner.lock().await;
         let queue_ns = elapsed_ns(lock_started);
@@ -329,53 +280,56 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
         // An env that cannot reset individual sub-envs inherits the rejecting
         // `reset_subset` default, so a partial reset fails loud here rather
         // than silently resetting the whole vector.
-        let result = if partial {
-            env.reset_subset(request).await
-        } else {
+        let result = if lanes.is_empty() {
             env.reset(request).await
+        } else {
+            env.reset_subset(request).await
         }
         .map_err(gym_error_to_env_error)?;
         let call_ns = elapsed_ns(call_started);
         let inner = env.take_last_phases();
         drop(env);
-
-        let encode_started = Instant::now();
-        let response = encode_reset_response(
+        let result = finish_reset(
             &self.conformance,
             &self.observation_space,
             result,
             width,
             &[],
         )?;
-        let mut phases =
-            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
-        phases.queue_ns = queue_ns;
-        Ok((response, phases))
+        Ok((
+            result,
+            Call {
+                queue_ns,
+                call_ns,
+                inner,
+            }
+            .phases(0, 0),
+        ))
     }
 
-    async fn step(
+    /// Step the whole vector, checked and conformed.
+    async fn step_native(
         &self,
-        req: ProtoStepRequest,
-    ) -> Result<(ProtoStepResponse, EndpointPhases), EnvError> {
-        if !req.env_indices.is_empty() {
+        lanes: &[u32],
+        actions: Vec<spaces::SpaceValue>,
+        timeout_ms: i64,
+    ) -> Result<(super::types::StepResult, EndpointPhases), EnvError> {
+        if !lanes.is_empty() {
             return Err(EnvError::new(
                 EnvErrorCode::Unsupported,
                 "this environment steps its whole vector in lockstep; a step naming lanes \
                  (StepRequest.env_indices) needs a lane endpoint",
             ));
         }
-        let decode_started = Instant::now();
         let mut warnings = Vec::new();
-        let actions = decode_actions(
+        check_actions(
             &self.conformance,
             &self.action_space,
-            req.action.as_ref(),
+            &actions,
             self.num_envs,
             &[],
             &mut warnings,
         )?;
-        let decode_ns = elapsed_ns(decode_started);
-
         let lock_started = Instant::now();
         let mut env = self.inner.lock().await;
         let queue_ns = elapsed_ns(lock_started);
@@ -383,73 +337,71 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
         let result = env
             .step(VectorStepRequest {
                 actions,
-                // Proto timeout_ms is uint64; native is i64.
-                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
+                timeout_ms,
             })
             .await
             .map_err(gym_error_to_env_error)?;
         let call_ns = elapsed_ns(call_started);
         let inner = env.take_last_phases();
         drop(env);
-
-        let encode_started = Instant::now();
-        let response = encode_step_response(
+        let result = finish_step(
             &self.conformance,
             &self.observation_space,
             result,
             self.num_envs,
             &[],
             warnings,
-            Vec::new(),
         )?;
-        let mut phases =
-            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
-        phases.queue_ns = queue_ns;
-        Ok((response, phases))
+        Ok((
+            result,
+            Call {
+                queue_ns,
+                call_ns,
+                inner,
+            }
+            .phases(0, 0),
+        ))
     }
 
-    async fn render(
+    /// Render lane `lane` (`None`: the env's choice).
+    async fn render_native(
         &self,
-        req: ProtoRenderRequest,
-    ) -> Result<(ProtoRenderResponse, EndpointPhases), EnvError> {
-        let request = RenderRequest {
-            env_index: render_env_index(&req.env_indices)?,
-            // Proto timeout_ms is uint64; native is i64.
-            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-        };
+        lane: Option<usize>,
+        timeout_ms: i64,
+    ) -> Result<(RenderResult, EndpointPhases), EnvError> {
         let lock_started = Instant::now();
         let mut env = self.inner.lock().await;
         let queue_ns = elapsed_ns(lock_started);
         let call_started = Instant::now();
-        let result = env.render(request).await.map_err(gym_error_to_env_error)?;
+        let result = env
+            .render(RenderRequest {
+                env_index: lane,
+                timeout_ms,
+            })
+            .await
+            .map_err(gym_error_to_env_error)?;
         let call_ns = elapsed_ns(call_started);
         let inner = env.take_last_phases();
-        drop(env);
-
-        let encode_started = Instant::now();
-        let response = render_result_to_proto(&result);
-        let mut phases = EndpointPhases::nest(0, call_ns, elapsed_ns(encode_started), inner);
-        phases.queue_ns = queue_ns;
-        Ok((response, phases))
+        Ok((
+            result,
+            Call {
+                queue_ns,
+                call_ns,
+                inner,
+            }
+            .phases(0, 0),
+        ))
     }
 
-    async fn close(&self) -> Result<ProtoCloseResponse, EnvError> {
-        let result = self
-            .inner
+    async fn close_native(&self) -> Result<super::types::CloseResult, EnvError> {
+        self.inner
             .lock()
             .await
             .close(CloseRequest {
                 wait_for_episodes: false,
             })
             .await
-            .map_err(gym_error_to_env_error)?;
-        Ok(ProtoCloseResponse {
-            final_episodes: result
-                .final_episodes
-                .iter()
-                .map(public_episode_metadata_to_proto)
-                .collect::<Result<Vec<_>, _>>()?,
-        })
+            .map_err(gym_error_to_env_error)
     }
 }
 
@@ -484,44 +436,16 @@ impl WireLaneAdapter {
             env_indices.iter().map(|&lane| lane as usize).collect()
         }
     }
-}
 
-#[async_trait]
-impl Environment for WireLaneAdapter {
-    fn observation_space(&self) -> &spaces::SpaceSpec {
-        self.lanes.observation_space()
-    }
-
-    fn action_space(&self) -> &spaces::SpaceSpec {
-        self.lanes.action_space()
-    }
-
-    fn num_envs(&self) -> usize {
-        self.lanes.num_envs()
-    }
-
-    fn env_contract(&self) -> &spaces::EnvContract {
-        self.lanes.env_contract()
-    }
-
-    fn supports_lanes(&self) -> bool {
-        true
-    }
-
-    fn pin_workflow_edition(&self, edition: Edition) {
-        self.conformance.pin(edition);
-    }
-
-    async fn reset(
+    /// Reset `lanes` (empty: every lane) side by side, checked and conformed.
+    async fn reset_native(
         &self,
-        req: ProtoResetRequest,
-    ) -> Result<(ProtoResetResponse, EndpointPhases), EnvError> {
-        let decode_started = Instant::now();
-        let lanes = self.lanes_for(&req.env_indices);
-        let options = req.options.map(meta_map_from_proto);
-        let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
-        let decode_ns = elapsed_ns(decode_started);
-
+        lanes: &[u32],
+        seeds: Vec<i64>,
+        options: Option<spaces::MetaMap>,
+        timeout_ms: i64,
+    ) -> Result<(VectorResetResult, EndpointPhases), EnvError> {
+        let lanes = self.lanes_for(lanes);
         // Each scalar lane gets its own slice of a per-lane option list, so a
         // list that does not cover the lanes fails the whole reset here rather
         // than per lane.
@@ -532,7 +456,7 @@ impl Environment for WireLaneAdapter {
         let call_started = Instant::now();
         let results = futures::future::join_all(lanes.iter().enumerate().map(|(pos, &lane)| {
             let request = spaces::request::ResetRequest {
-                seed: req.seeds.get(pos).copied(),
+                seed: seeds.get(pos).copied(),
                 options: lane_options[pos].clone(),
                 timeout_ms,
             };
@@ -548,9 +472,7 @@ impl Environment for WireLaneAdapter {
             infos.push(result.info);
             phases.push(lane_phases);
         }
-
-        let encode_started = Instant::now();
-        let response = encode_reset_response(
+        let result = finish_reset(
             &self.conformance,
             self.lanes.observation_space(),
             VectorResetResult {
@@ -562,30 +484,34 @@ impl Environment for WireLaneAdapter {
             &lanes,
         )?;
         let inner = fold_phases(phases);
-        let mut folded =
-            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
-        folded.queue_ns = inner.queue_ns;
-        Ok((response, folded))
+        Ok((
+            result,
+            Call {
+                queue_ns: inner.queue_ns,
+                call_ns,
+                inner,
+            }
+            .phases(0, 0),
+        ))
     }
 
-    async fn step(
+    /// Step `lanes` (empty: every lane) side by side, checked and conformed.
+    async fn step_native(
         &self,
-        req: ProtoStepRequest,
-    ) -> Result<(ProtoStepResponse, EndpointPhases), EnvError> {
-        let decode_started = Instant::now();
-        let lanes = self.lanes_for(&req.env_indices);
+        lanes: &[u32],
+        actions: Vec<spaces::SpaceValue>,
+        timeout_ms: i64,
+    ) -> Result<(super::types::StepResult, EndpointPhases), EnvError> {
+        let lanes = self.lanes_for(lanes);
         let mut warnings = Vec::new();
-        let actions = decode_actions(
+        check_actions(
             &self.conformance,
             self.lanes.action_space(),
-            req.action.as_ref(),
+            &actions,
             lanes.len(),
             &lanes,
             &mut warnings,
         )?;
-        let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
-        let decode_ns = elapsed_ns(decode_started);
-
         let call_started = Instant::now();
         let results =
             futures::future::join_all(lanes.iter().zip(actions).map(|(&lane, action)| {
@@ -613,32 +539,35 @@ impl Environment for WireLaneAdapter {
             phases.push(lane_phases);
         }
         result.info = batch_infos(infos, Some(&done));
-
-        let encode_started = Instant::now();
-        let response = encode_step_response(
+        let result = finish_step(
             &self.conformance,
             self.lanes.observation_space(),
             result,
             lanes.len(),
             &lanes,
             warnings,
-            req.env_indices,
         )?;
         let inner = fold_phases(phases);
-        let mut folded =
-            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
-        folded.queue_ns = inner.queue_ns;
-        Ok((response, folded))
+        Ok((
+            result,
+            Call {
+                queue_ns: inner.queue_ns,
+                call_ns,
+                inner,
+            }
+            .phases(0, 0),
+        ))
     }
 
-    async fn render(
+    /// Render lane `lane`.
+    async fn render_native(
         &self,
-        req: ProtoRenderRequest,
-    ) -> Result<(ProtoRenderResponse, EndpointPhases), EnvError> {
-        let lane = render_env_index(&req.env_indices)?.unwrap_or(0);
+        lane: usize,
+        timeout_ms: i64,
+    ) -> Result<(RenderResult, EndpointPhases), EnvError> {
         let request = RenderRequest {
             env_index: Some(lane),
-            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
+            timeout_ms,
         };
         let call_started = Instant::now();
         let (result, inner) = self
@@ -646,24 +575,161 @@ impl Environment for WireLaneAdapter {
             .render(lane, request)
             .await
             .map_err(gym_error_to_env_error)?;
-        let call_ns = elapsed_ns(call_started);
-        let encode_started = Instant::now();
-        let response = render_result_to_proto(&result);
-        let mut phases = EndpointPhases::nest(0, call_ns, elapsed_ns(encode_started), inner);
-        phases.queue_ns = inner.queue_ns;
-        Ok((response, phases))
+        Ok((
+            result,
+            Call {
+                queue_ns: inner.queue_ns,
+                call_ns: elapsed_ns(call_started),
+                inner,
+            }
+            .phases(0, 0),
+        ))
     }
 
-    async fn close(&self) -> Result<ProtoCloseResponse, EnvError> {
+    async fn close_native(&self) -> Result<(), EnvError> {
         self.lanes
             .close(CloseRequest {
                 wait_for_episodes: false,
             })
             .await
-            .map_err(gym_error_to_env_error)?;
-        Ok(ProtoCloseResponse {
-            final_episodes: Vec::new(),
-        })
+            .map_err(gym_error_to_env_error)
+    }
+}
+
+/// The lockstep path serves both adapters natively: the same checks,
+/// conformance and env calls as their wire shells, without the v1 messages.
+mod served {
+    use async_trait::async_trait;
+
+    use super::{EnvError, VectorEnv, WireEnvAdapter, WireLaneAdapter};
+    use crate::EnvironmentError;
+    use crate::binding::spaces;
+    use crate::lockstep::{Reset, Served, Step};
+
+    fn failure(error: EnvError) -> EnvironmentError {
+        let class = error.debug_info.clone();
+        EnvironmentError {
+            class,
+            ..EnvironmentError::from_wire(error)
+        }
+    }
+
+    fn reset(result: super::VectorResetResult) -> Reset {
+        Reset {
+            observations: result.observations,
+            info: result.info,
+        }
+    }
+
+    fn step(result: super::super::types::StepResult) -> Step {
+        Step {
+            observations: result.observations,
+            rewards: result.rewards,
+            terminated: result.terminated,
+            truncated: result.truncated,
+            info: result.info,
+        }
+    }
+
+    fn frame(result: super::RenderResult) -> Option<Vec<u8>> {
+        result.frame.map(|frame| frame.frame)
+    }
+
+    fn contract(contract: &spaces::EnvContract, num_envs: usize) -> spaces::EnvContract {
+        spaces::EnvContract {
+            num_envs: u32::try_from(num_envs).unwrap_or(u32::MAX),
+            ..contract.clone()
+        }
+    }
+
+    #[async_trait]
+    impl<E: VectorEnv + 'static> Served for WireEnvAdapter<E> {
+        fn contract(&self) -> spaces::EnvContract {
+            contract(&self.env_contract, self.num_envs)
+        }
+
+        fn subset_step(&self) -> bool {
+            false
+        }
+
+        async fn reset(
+            &self,
+            lanes: &[u32],
+            seeds: Vec<i64>,
+            options: Option<spaces::MetaMap>,
+        ) -> Result<Reset, EnvironmentError> {
+            let (result, _) = self
+                .reset_native(lanes, seeds, options, 0)
+                .await
+                .map_err(failure)?;
+            Ok(reset(result))
+        }
+
+        async fn step(
+            &self,
+            lanes: &[u32],
+            actions: Vec<spaces::SpaceValue>,
+        ) -> Result<Step, EnvironmentError> {
+            let (result, _) = self.step_native(lanes, actions, 0).await.map_err(failure)?;
+            Ok(step(result))
+        }
+
+        async fn render(&self, lane: u32) -> Result<Option<Vec<u8>>, EnvironmentError> {
+            let (result, _) = self
+                .render_native(Some(lane as usize), 0)
+                .await
+                .map_err(failure)?;
+            Ok(frame(result))
+        }
+
+        async fn close(&self) -> Result<(), EnvironmentError> {
+            self.close_native().await.map(|_| ()).map_err(failure)
+        }
+    }
+
+    #[async_trait]
+    impl Served for WireLaneAdapter {
+        fn contract(&self) -> spaces::EnvContract {
+            contract(self.lanes.env_contract(), self.lanes.num_envs())
+        }
+
+        fn subset_step(&self) -> bool {
+            true
+        }
+
+        async fn reset(
+            &self,
+            lanes: &[u32],
+            seeds: Vec<i64>,
+            options: Option<spaces::MetaMap>,
+        ) -> Result<Reset, EnvironmentError> {
+            let (result, _) = self
+                .reset_native(lanes, seeds, options, 0)
+                .await
+                .map_err(failure)?;
+            Ok(reset(result))
+        }
+
+        async fn step(
+            &self,
+            lanes: &[u32],
+            actions: Vec<spaces::SpaceValue>,
+        ) -> Result<Step, EnvironmentError> {
+            let (result, _) = self.step_native(lanes, actions, 0).await.map_err(failure)?;
+            Ok(step(result))
+        }
+
+        async fn render(&self, lane: u32) -> Result<Option<Vec<u8>>, EnvironmentError> {
+            let (result, _) = self
+                .render_native(lane as usize, 0)
+                .await
+                .map_err(failure)?;
+            Ok(frame(result))
+        }
+
+        async fn close(&self) -> Result<(), EnvironmentError> {
+            self.close_native().await.map_err(failure)
+        }
     }
 }
 
@@ -725,67 +791,29 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
             is_recoverable: true,
             ..EnvError::new(EnvErrorCode::Internal, message)
         },
+        // The builtin class rides in `debug_info` to the lockstep reply.
+        spaces::EnvRuntimeError::Raised {
+            class,
+            message,
+            recoverable,
+        } => EnvError {
+            is_recoverable: recoverable,
+            debug_info: Some(class),
+            ..EnvError::new(EnvErrorCode::Internal, message)
+        },
         // EnvRuntimeError is #[non_exhaustive]; treat unknown variants as internal.
         other => EnvError::new(EnvErrorCode::Internal, other.to_string()),
     }
 }
 
-fn public_episode_metadata_to_proto(
-    value: &EpisodeMetadata,
-) -> std::result::Result<rlmesh_proto::env::v1::EpisodeMetadata, EnvError> {
-    Ok(rlmesh_proto::env::v1::EpisodeMetadata {
-        episode_id: value.episode_id.clone(),
-        seed: value.seed,
-        // Native env_index is i32 (>=0 lane offset); proto field is uint32.
-        env_index: value.env_index.max(0) as u32,
-        step_count: value.step_count,
-        cumulative_reward: value.cumulative_reward,
-        terminated: value.terminated,
-        truncated: value.truncated,
-        start_timestamp_ns: value.start_timestamp_ns,
-        end_timestamp_ns: value.end_timestamp_ns,
-        final_info: value.final_info.as_ref().map(meta_map_to_proto),
-    })
-}
-
-pub(super) fn proto_episode_metadata_to_public(
-    value: rlmesh_proto::env::v1::EpisodeMetadata,
-) -> std::result::Result<EpisodeMetadata, String> {
-    Ok(EpisodeMetadata {
-        episode_id: value.episode_id,
-        seed: value.seed,
-        // Proto env_index is uint32; native field is i32 (lane offsets fit i32).
-        env_index: i32::try_from(value.env_index).unwrap_or(i32::MAX),
-        step_count: value.step_count,
-        cumulative_reward: value.cumulative_reward,
-        terminated: value.terminated,
-        truncated: value.truncated,
-        start_timestamp_ns: value.start_timestamp_ns,
-        end_timestamp_ns: value.end_timestamp_ns,
-        duration_ms: (value.end_timestamp_ns - value.start_timestamp_ns).max(0) / 1_000_000,
-        final_info: value.final_info.map(meta_map_from_proto),
-    })
-}
-
 /// Convert wire lane indices (uint32) to the native i32 representation. Lane
 /// offsets always fit i32; an unrepresentable value is clamped rather than
 /// wrapped so a foreign index is rejected loudly downstream.
-fn proto_env_indices_to_native(env_indices: Vec<u32>) -> Vec<i32> {
+fn lane_indices_to_native(env_indices: &[u32]) -> Vec<i32> {
     env_indices
-        .into_iter()
-        .map(|index| i32::try_from(index).unwrap_or(i32::MAX))
+        .iter()
+        .map(|&index| i32::try_from(index).unwrap_or(i32::MAX))
         .collect()
-}
-
-fn render_env_index(env_indices: &[u32]) -> std::result::Result<Option<usize>, EnvError> {
-    match env_indices {
-        [] => Ok(None),
-        [index] => Ok(Some(*index as usize)),
-        _ => Err(EnvError::new(
-            EnvErrorCode::Unsupported,
-            "render requests support at most one env_index".to_string(),
-        )),
-    }
 }
 
 pub(super) fn validate_action_count(
@@ -815,15 +843,11 @@ pub(super) fn validate_count<T>(
     ))
 }
 
-fn protocol_error_to_env_error(error: impl ToString) -> EnvError {
-    EnvError::new(EnvErrorCode::Internal, error.to_string())
-}
-
 /// The reset options lane `pos` of a `lanes`-wide fan-out receives.
 ///
 /// The runtime sends the reserved `trial_index` option as a list in lane order
 /// when a reset restarts several lanes (see
-/// [`rlmesh_runtime::reset_options_for`]), but each lane here is a scalar env
+/// [`crate::run::runtime::reset_options_for`]), but each lane here is a scalar env
 /// that gets its own `reset`: handing it the whole list leaves
 /// `trial_index(options, None)` unable to read an ordinal. Narrow the list to
 /// this lane's element; every other key rides through unchanged. A list that
@@ -837,7 +861,8 @@ fn lane_reset_options(
     let Some(options) = options else {
         return Ok(None);
     };
-    let Some(spaces::MetaValue::List(trials)) = options.get(rlmesh_runtime::TRIAL_INDEX_OPTION)
+    let Some(spaces::MetaValue::List(trials)) =
+        options.get(crate::run::runtime::TRIAL_INDEX_OPTION)
     else {
         return Ok(Some(options.clone()));
     };
@@ -847,14 +872,14 @@ fn lane_reset_options(
             format!(
                 "reset option `{}` is a list of {} entries but this reset covers {lanes} lanes; \
                  send one ordinal per lane, in lane order",
-                rlmesh_runtime::TRIAL_INDEX_OPTION,
+                crate::run::runtime::TRIAL_INDEX_OPTION,
                 trials.len(),
             ),
         ));
     };
     let mut sliced = options.clone();
     sliced.insert(
-        rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+        crate::run::runtime::TRIAL_INDEX_OPTION.to_string(),
         trial.clone(),
     );
     Ok(Some(sliced))
@@ -863,339 +888,6 @@ fn lane_reset_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    use crate::{BindAddress, Result, ServeOptions};
-
-    use crate::binding::env::EnvClientCore as RemoteEnv;
-    use crate::binding::env::{
-        RenderResult, VectorCloseResult as CloseResult, VectorEnv,
-        VectorResetRequest as ResetRequest, VectorResetResult as ResetResult,
-        VectorStepRequest as StepRequest, VectorStepResult as StepResult,
-        WireVectorEnvServer as EnvServer,
-    };
-
-    struct DummyEnv {
-        obs_space: spaces::SpaceSpec,
-        action_space: spaces::SpaceSpec,
-        env_contract: spaces::EnvContract,
-        last_render_request: Option<RenderRequest>,
-        closes: Option<Arc<AtomicUsize>>,
-        // The split this env reports for its own work, as a Python-backed env does.
-        phases: EndpointPhases,
-        // Real time each step spends inside the env, so a reported split is
-        // contained in a measured call regardless of build profile.
-        step_delay: Duration,
-        step_gate: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
-        // Errors the next steps fail with, in order (shared so a test can queue
-        // them after the env moved into its server).
-        step_failures: Arc<Mutex<std::collections::VecDeque<spaces::EnvRuntimeError>>>,
-    }
-
-    impl DummyEnv {
-        fn new() -> Self {
-            Self::new_with_close_counter(None)
-        }
-
-        fn new_with_close_counter(closes: Option<Arc<AtomicUsize>>) -> Self {
-            let obs_space = spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![2])
-                .dtype(spaces::DType::Float32)
-                .build()
-                .unwrap();
-            let action_space = spaces::spaces::DiscreteBuilder::new(3).build().unwrap();
-            let env_contract = spaces::EnvContract {
-                id: "DummyEnv-v1".to_string(),
-                autoreset_mode: Default::default(),
-                observation_space: Some(obs_space.clone()),
-                action_space: Some(action_space.clone()),
-                metadata: None,
-                render_mode: String::new(),
-                num_envs: 2,
-            };
-
-            Self {
-                obs_space,
-                action_space,
-                env_contract,
-                last_render_request: None,
-                closes,
-                phases: EndpointPhases::default(),
-                step_delay: Duration::ZERO,
-                step_gate: None,
-                step_failures: Arc::default(),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl VectorEnv for DummyEnv {
-        fn observation_space(&self) -> &spaces::SpaceSpec {
-            &self.obs_space
-        }
-
-        fn action_space(&self) -> &spaces::SpaceSpec {
-            &self.action_space
-        }
-
-        fn num_envs(&self) -> usize {
-            2
-        }
-
-        fn env_contract(&self) -> &spaces::EnvContract {
-            &self.env_contract
-        }
-
-        async fn reset(
-            &mut self,
-            _req: ResetRequest,
-        ) -> std::result::Result<ResetResult, spaces::EnvRuntimeError> {
-            Ok(ResetResult {
-                observations: vec![
-                    spaces::SpaceValue::Box(
-                        spaces::Tensor::from_vec(vec![0; 8], vec![2], spaces::DType::Float32)
-                            .unwrap(),
-                    ),
-                    spaces::SpaceValue::Box(
-                        spaces::Tensor::from_vec(vec![1; 8], vec![2], spaces::DType::Float32)
-                            .unwrap(),
-                    ),
-                ],
-                info: None,
-                episode_ids: vec!["ep-0".to_string(), "ep-1".to_string()],
-            })
-        }
-
-        async fn step(
-            &mut self,
-            req: StepRequest,
-        ) -> std::result::Result<StepResult, spaces::EnvRuntimeError> {
-            if let Some((entered, release)) = &self.step_gate {
-                entered.notify_one();
-                release.notified().await;
-            }
-            std::thread::sleep(self.step_delay);
-            if let Some(error) = self.step_failures.lock().unwrap().pop_front() {
-                return Err(error);
-            }
-            Ok(StepResult {
-                observations: req
-                    .actions
-                    .into_iter()
-                    .map(|action| match action {
-                        spaces::SpaceValue::Discrete(value) => spaces::SpaceValue::Box(
-                            spaces::Tensor::from_vec(
-                                vec![value as u8; 8],
-                                vec![2],
-                                spaces::DType::Float32,
-                            )
-                            .unwrap(),
-                        ),
-                        other => other,
-                    })
-                    .collect(),
-                rewards: vec![1.0, 2.0],
-                terminated: vec![false, true],
-                truncated: vec![false, false],
-                info: None,
-                completed_episodes: vec![],
-                episode_ids: vec!["ep-0".to_string(), "ep-1b".to_string()],
-            })
-        }
-
-        async fn render(
-            &mut self,
-            req: RenderRequest,
-        ) -> std::result::Result<RenderResult, spaces::EnvRuntimeError> {
-            self.last_render_request = Some(req);
-            Ok(RenderResult {
-                frame: Some(spaces::RenderFrame {
-                    frame: vec![1, 2, 3],
-                }),
-            })
-        }
-
-        async fn close(
-            &mut self,
-            _req: CloseRequest,
-        ) -> std::result::Result<CloseResult, spaces::EnvRuntimeError> {
-            if let Some(closes) = &self.closes {
-                closes.fetch_add(1, Ordering::SeqCst);
-            }
-            Ok(CloseResult {
-                final_episodes: vec![],
-            })
-        }
-
-        fn take_last_phases(&mut self) -> EndpointPhases {
-            std::mem::take(&mut self.phases)
-        }
-    }
-
-    fn step_request(adapter: &WireEnvAdapter<DummyEnv>) -> ProtoStepRequest {
-        let actions = vec![
-            spaces::SpaceValue::Discrete(1),
-            spaces::SpaceValue::Discrete(2),
-        ];
-        ProtoStepRequest {
-            action: Some(encode_batched_partial_values(&actions, adapter.action_space()).unwrap()),
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn step_reports_the_wire_split_of_an_env_that_measures_nothing() {
-        let adapter = WireEnvAdapter::new(DummyEnv::new());
-        let request = step_request(&adapter);
-        let (_, phases) = adapter.step(request).await.unwrap();
-
-        assert!(phases.decode_ns > 0, "wire decode is measured");
-        assert!(phases.encode_ns > 0, "wire encode is measured");
-        // Nothing inside reported a split, so the whole call reads as user time.
-        assert!(phases.user_ns > 0);
-    }
-
-    #[tokio::test]
-    async fn step_folds_the_envs_own_split_into_the_wire_one() {
-        let mut env = DummyEnv::new();
-        env.phases = EndpointPhases {
-            decode_ns: 100,
-            user_ns: 5_000,
-            encode_ns: 200,
-            ..EndpointPhases::default()
-        };
-        env.step_delay = Duration::from_millis(1);
-        let adapter = WireEnvAdapter::new(env);
-        let request = step_request(&adapter);
-        let (_, phases) = adapter.step(request).await.unwrap();
-
-        // User time is the measured call (>= the 1ms the env really spent) minus
-        // the env's own wire share, so it keeps the env's report plus the real
-        // cost of reaching it; the env's conversion costs join the wire codec on
-        // either side.
-        assert!(phases.user_ns >= 1_000_000 - 300);
-        assert!(phases.decode_ns > 100);
-        assert!(phases.encode_ns > 200);
-    }
-
-    #[test]
-    fn conformance_warnings_land_under_the_pinned_editions_key() {
-        let conformance = Conformance {
-            policy: ValidationPolicy::Warn,
-            warned: Default::default(),
-            edition: std::sync::Mutex::new(Edition::current()),
-        };
-        conformance.pin(Edition::E2026_06);
-        let env = DummyEnv::new();
-        let out_of_range = spaces::SpaceValue::Box(
-            spaces::Tensor::from_vec(
-                5.0f32.to_le_bytes().repeat(2),
-                vec![2],
-                spaces::DType::Float32,
-            )
-            .unwrap(),
-        );
-        let mut warnings = Vec::new();
-        conformance
-            .enforce(
-                &env.obs_space,
-                &out_of_range,
-                "observation",
-                0,
-                &mut warnings,
-            )
-            .expect("a range deviation warns under the warn policy");
-        let mut info = None;
-        inject_conformance_warnings(conformance.edition(), &mut info, warnings);
-        assert!(
-            info.unwrap().contains_key("rlmesh.conformance.warning"),
-            "2026.06 reports conformance warnings under its reserved key"
-        );
-    }
-
-    #[test]
-    fn range_warnings_are_reported_once_per_lane() {
-        let conformance = Conformance {
-            policy: ValidationPolicy::Warn,
-            warned: Default::default(),
-            edition: std::sync::Mutex::new(Edition::current()),
-        };
-        let env = DummyEnv::new();
-        let out_of_range = spaces::SpaceValue::Box(
-            spaces::Tensor::from_vec(
-                5.0f32.to_le_bytes().repeat(2),
-                vec![2],
-                spaces::DType::Float32,
-            )
-            .unwrap(),
-        );
-        let values = vec![out_of_range.clone(), out_of_range];
-        let mut warnings = Vec::new();
-        conformance
-            .enforce_all(
-                &env.obs_space,
-                &values,
-                "observation",
-                &[0, 1],
-                &mut warnings,
-            )
-            .unwrap();
-        assert_eq!(warnings.len(), 2, "each lane reports its own deviation");
-        let mut again = Vec::new();
-        conformance
-            .enforce_all(&env.obs_space, &values, "observation", &[0, 1], &mut again)
-            .unwrap();
-        assert!(again.is_empty(), "each lane reports a deviation once");
-        // A vector env's lanes share one report.
-        let vector = Conformance {
-            policy: ValidationPolicy::Warn,
-            warned: Default::default(),
-            edition: std::sync::Mutex::new(Edition::current()),
-        };
-        let mut shared = Vec::new();
-        vector
-            .enforce_all(&env.obs_space, &values, "observation", &[], &mut shared)
-            .unwrap();
-        assert_eq!(shared.len(), 1);
-    }
-
-    /// Reserve an ephemeral TCP port and free it, so a server can rebind it.
-    async fn reserve_port() -> u16 {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        port
-    }
-
-    /// Connect to a starting env server, retrying until it is listening.
-    async fn connect_with_retry(
-        address: &str,
-        server: &tokio::task::JoinHandle<Result<()>>,
-    ) -> RemoteEnv {
-        loop {
-            match RemoteEnv::connect(address).await {
-                Ok(client) => break client,
-                Err(err) if !server.is_finished() => {
-                    let _ = err;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Err(err) => panic!("environment server did not start: {err}"),
-            }
-        }
-    }
-
-    /// Await a serve task that should exit cleanly after a shutdown request.
-    async fn shutdown_and_join(server: tokio::task::JoinHandle<Result<()>>) {
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-    }
-
     #[test]
     fn malformed_actions_are_recoverable_before_native_callbacks() {
         use spaces::spaces::{DictSpaceBuilder, DiscreteBuilder};
@@ -1251,1204 +943,5 @@ mod tests {
                     .is_ok()
             );
         }
-    }
-
-    #[tokio::test]
-    async fn wire_adapter_roundtrips_batched_reset_and_step() {
-        let env = WireEnvAdapter::new(DummyEnv::new());
-
-        let (reset, _) = Environment::reset(
-            &env,
-            ProtoResetRequest {
-                seeds: vec![7, 8],
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        let reset_obs =
-            decode_batched_partial_values(reset.observation.as_ref(), env.observation_space(), 2)
-                .unwrap();
-        assert_eq!(reset_obs.len(), 2);
-
-        let actions = [
-            spaces::SpaceValue::Discrete(1),
-            spaces::SpaceValue::Discrete(2),
-        ];
-        let action_space = env.action_space().clone();
-        let (step, _) = Environment::step(
-            &env,
-            ProtoStepRequest {
-                action: Some(encode_batched_partial_values(&actions, &action_space).unwrap()),
-                timeout_ms: 0,
-                env_indices: vec![],
-                episode_ids: vec![],
-            },
-        )
-        .await
-        .unwrap();
-
-        let step_obs =
-            decode_batched_partial_values(step.observation.as_ref(), env.observation_space(), 2)
-                .unwrap();
-        assert_eq!(step_obs.len(), 2);
-        assert_eq!(step.rewards, vec![1.0, 2.0]);
-        assert_eq!(step.terminated_mask, vec![0, 1]);
-    }
-
-    #[tokio::test]
-    async fn wire_adapter_rejects_wrong_action_count() {
-        let env = WireEnvAdapter::new(DummyEnv::new());
-        let actions = [spaces::SpaceValue::Discrete(1)];
-        let action_space = env.action_space().clone();
-
-        let error = Environment::step(
-            &env,
-            ProtoStepRequest {
-                action: Some(encode_batched_partial_values(&actions, &action_space).unwrap()),
-                timeout_ms: 0,
-                env_indices: vec![],
-                episode_ids: vec![],
-            },
-        )
-        .await
-        .unwrap_err();
-
-        assert_eq!(error.code, EnvErrorCode::InvalidAction);
-    }
-
-    #[tokio::test]
-    async fn wire_adapter_maps_render_env_indices_to_env_index() {
-        let env = WireEnvAdapter::new(DummyEnv::new());
-
-        let (result, _) = Environment::render(
-            &env,
-            ProtoRenderRequest {
-                env_indices: vec![1],
-                timeout_ms: 0,
-            },
-        )
-        .await
-        .unwrap();
-
-        assert!(result.frame.is_some());
-    }
-
-    #[tokio::test]
-    async fn served_env_close_detaches_and_shutdown_stops_server() {
-        let port = reserve_port().await;
-
-        let closes = Arc::new(AtomicUsize::new(0));
-        let server_closes = Arc::clone(&closes);
-        let server = tokio::spawn(async move {
-            EnvServer::new(DummyEnv::new_with_close_counter(Some(server_closes)))
-                .serve_with_options(
-                    BindAddress::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port,
-                    },
-                    ServeOptions {
-                        allow_remote_shutdown: true,
-                        ..ServeOptions::default()
-                    },
-                )
-                .await
-        });
-
-        let address = format!("tcp://127.0.0.1:{port}");
-        let mut client = connect_with_retry(&address, &server).await;
-
-        let _ = client
-            .reset(ResetRequest {
-                seeds: vec![11, 22],
-                ..ResetRequest::default()
-            })
-            .await
-            .unwrap();
-        let mut final_episodes = client.grpc().close().await.unwrap().final_episodes;
-        final_episodes.sort_by_key(|episode| episode.env_index);
-        assert_eq!(final_episodes.len(), 2);
-        assert_eq!(final_episodes[0].env_index, 0);
-        assert_eq!(final_episodes[0].seed, Some(11));
-        assert_eq!(final_episodes[1].env_index, 1);
-        assert_eq!(final_episodes[1].seed, Some(22));
-        assert_eq!(closes.load(Ordering::SeqCst), 0);
-
-        let mut second_client = RemoteEnv::connect(&address).await.unwrap();
-        let _ = second_client.reset(ResetRequest::default()).await.unwrap();
-        assert!(second_client.shutdown("test shutdown").await.unwrap());
-
-        shutdown_and_join(server).await;
-
-        assert_eq!(closes.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn detached_session_episodes_do_not_bleed_into_the_next_session() {
-        let port = reserve_port().await;
-
-        let server = tokio::spawn(async move {
-            EnvServer::new(DummyEnv::new())
-                .serve_with_options(
-                    BindAddress::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port,
-                    },
-                    ServeOptions {
-                        allow_remote_shutdown: true,
-                        ..ServeOptions::default()
-                    },
-                )
-                .await
-        });
-
-        let address = format!("tcp://127.0.0.1:{port}");
-        let mut first = connect_with_retry(&address, &server).await;
-
-        // Start episodes, then abandon the session without a graceful Close.
-        let _ = first
-            .reset(ResetRequest {
-                seeds: vec![77, 88],
-                ..ResetRequest::default()
-            })
-            .await
-            .unwrap();
-        first.grpc().detach();
-        drop(first);
-
-        // The next local Join waits for the detached stream's termination.
-        let mut second = RemoteEnv::connect(&address).await.unwrap();
-        second.reset(ResetRequest::default()).await.unwrap();
-
-        let step = second
-            .step(StepRequest {
-                actions: vec![
-                    spaces::SpaceValue::Discrete(0),
-                    spaces::SpaceValue::Discrete(1),
-                ],
-                ..StepRequest::default()
-            })
-            .await
-            .unwrap();
-        for episode in &step.completed_episodes {
-            assert_ne!(episode.seed, Some(77), "stale episode bled across sessions");
-            assert_ne!(episode.seed, Some(88), "stale episode bled across sessions");
-        }
-
-        assert!(second.shutdown("test shutdown").await.unwrap());
-        shutdown_and_join(server).await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn served_env_unix_socket_recovers_from_stale_socket_file() {
-        let dir = std::env::temp_dir().join(format!("rlmesh-env-stale-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let socket_path = dir.join("env.sock");
-        let _ = std::fs::remove_file(&socket_path);
-
-        // Leave a stale socket file behind, as a previous unclean run would.
-        // Without stale-socket cleanup, bind(2) returns AddrInUse forever.
-        let stale = tokio::net::UnixListener::bind(&socket_path).unwrap();
-        drop(stale);
-        assert!(socket_path.exists(), "stale socket file must exist");
-
-        let addr = BindAddress::Unix {
-            path: socket_path.clone(),
-        };
-        let server = tokio::spawn({
-            let addr = addr.clone();
-            async move {
-                EnvServer::new(DummyEnv::new())
-                    .serve_with_options(
-                        addr,
-                        ServeOptions {
-                            allow_remote_shutdown: true,
-                            ..ServeOptions::default()
-                        },
-                    )
-                    .await
-            }
-        });
-
-        let address = format!("unix://{}", socket_path.display());
-        let mut client = connect_with_retry(&address, &server).await;
-
-        assert!(client.shutdown("test shutdown").await.unwrap());
-        shutdown_and_join(server).await;
-
-        // The socket file is unlinked after shutdown so a re-serve would succeed.
-        assert!(
-            !socket_path.exists(),
-            "socket file must be unlinked after shutdown"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn env_serve_options_token_is_enforced_by_the_server() {
-        let port = reserve_port().await;
-
-        let addr = BindAddress::Tcp {
-            host: "127.0.0.1".to_string(),
-            port,
-        };
-        let server = tokio::spawn({
-            let addr = addr.clone();
-            async move {
-                EnvServer::new(DummyEnv::new())
-                    .bind_with_ext(
-                        addr,
-                        ServeOptions {
-                            allow_remote_shutdown: true,
-                            ..ServeOptions::default()
-                        },
-                        crate::ext::EnvServerOptions {
-                            token: Some("s3cret".to_string()),
-                            ..Default::default()
-                        },
-                    )
-                    .await?
-                    .serve()
-                    .await
-            }
-        });
-
-        let address = format!("tcp://127.0.0.1:{port}");
-
-        // An unauthenticated facade connect is rejected: the token set through
-        // ServeOptions actually reaches and is enforced by the env service.
-        let connect_error = loop {
-            match RemoteEnv::connect(&address).await {
-                Ok(_) => panic!("unauthenticated connect must be rejected when a token is set"),
-                Err(err) if !server.is_finished() => {
-                    let message = err.to_string();
-                    if message.contains("rejected the API key") {
-                        break message;
-                    }
-                    // Not yet listening; retry.
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Err(err) => panic!("env server did not start: {err}"),
-            }
-        };
-        assert!(connect_error.contains("rejected the API key"));
-
-        // A token-bearing facade client connects and handshakes successfully.
-        let env = RemoteEnv::connect_with_token(&address, "s3cret")
-            .await
-            .expect("facade connect_with_token must reach a token-protected env");
-        drop(env);
-
-        // A token-bearing client handshakes successfully.
-        let mut authed = rlmesh_grpc::EnvClient::connect_with_token(&address, "s3cret")
-            .await
-            .unwrap();
-        authed.handshake().await.expect("authorized handshake");
-        assert!(authed.shutdown("test shutdown").await.unwrap().accepted);
-
-        shutdown_and_join(server).await;
-    }
-
-    #[tokio::test]
-    async fn remote_env_reset_and_step_decode_with_shared_specs() {
-        let bound = EnvServer::new(DummyEnv::new())
-            .bind_with_options(
-                BindAddress::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 0,
-                },
-                ServeOptions {
-                    allow_remote_shutdown: true,
-                    ..ServeOptions::default()
-                },
-            )
-            .await
-            .unwrap();
-        let port = match bound.local_addr().clone() {
-            BindAddress::Tcp { port, .. } => port,
-            other => panic!("expected tcp, got {other:?}"),
-        };
-        let server = tokio::spawn(async move { bound.serve().await });
-
-        let address = format!("tcp://127.0.0.1:{port}");
-        let mut client = RemoteEnv::connect(&address).await.unwrap();
-        assert!(
-            rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS.contains(&client.selected_workflow_edition()),
-            "{}",
-            client.selected_workflow_edition()
-        );
-
-        // Multiple reset/step calls reuse the Arc-shared specs (no per-call deep
-        // clone) and still decode the expected number of observations.
-        for _ in 0..3 {
-            let reset = client.reset(ResetRequest::default()).await.unwrap();
-            assert_eq!(reset.observations.len(), client.num_envs());
-            let step = client
-                .step(VectorStepRequest {
-                    actions: vec![
-                        spaces::SpaceValue::Discrete(0),
-                        spaces::SpaceValue::Discrete(1),
-                    ],
-                    timeout_ms: 0,
-                })
-                .await
-                .unwrap();
-            assert_eq!(step.observations.len(), client.num_envs());
-        }
-
-        assert!(client.shutdown("done").await.unwrap());
-        shutdown_and_join(server).await;
-    }
-
-    #[tokio::test]
-    async fn a_recoverable_env_error_keeps_the_session_and_a_fatal_one_reopens_on_reset() {
-        let env = DummyEnv::new();
-        let failures = env.step_failures.clone();
-        let bound = EnvServer::new(env)
-            .bind_with_options(
-                BindAddress::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 0,
-                },
-                ServeOptions {
-                    allow_remote_shutdown: true,
-                    ..ServeOptions::default()
-                },
-            )
-            .await
-            .unwrap();
-        let port = match bound.local_addr().clone() {
-            BindAddress::Tcp { port, .. } => port,
-            other => panic!("expected tcp, got {other:?}"),
-        };
-        let server = tokio::spawn(async move { bound.serve().await });
-        let mut client = RemoteEnv::connect(&format!("tcp://127.0.0.1:{port}"))
-            .await
-            .unwrap();
-        let step = || VectorStepRequest {
-            actions: vec![
-                spaces::SpaceValue::Discrete(0),
-                spaces::SpaceValue::Discrete(1),
-            ],
-            timeout_ms: 0,
-        };
-
-        client.reset(ResetRequest::default()).await.unwrap();
-        failures
-            .lock()
-            .unwrap()
-            .push_back(spaces::EnvRuntimeError::Recoverable("solver hiccup".into()));
-        let error = client.step(step()).await.expect_err("recoverable failure");
-        assert!(error.is_recoverable(), "{error}");
-        assert!(error.to_string().contains("solver hiccup"), "{error}");
-        // Same session, no reset: the next step is served.
-        client
-            .step(step())
-            .await
-            .expect("step after a recoverable error");
-
-        failures
-            .lock()
-            .unwrap()
-            .push_back(spaces::EnvRuntimeError::Runtime("solver diverged".into()));
-        let error = client.step(step()).await.expect_err("fatal failure");
-        assert!(!error.is_recoverable(), "{error}");
-        // The server ended that session: a step names the error that ended it
-        // instead of a bare closed connection.
-        let error = client.step(step()).await.expect_err("session ended");
-        let message = error.to_string();
-        assert!(
-            message.contains("non-recoverable env error") && message.contains("solver diverged"),
-            "{message}"
-        );
-        // A reset opens a fresh session on the same client.
-        client
-            .reset(ResetRequest::default())
-            .await
-            .expect("reset reopens");
-        client.step(step()).await.expect("step on the new session");
-
-        assert!(client.shutdown("done").await.unwrap());
-        shutdown_and_join(server).await;
-    }
-
-    #[tokio::test]
-    async fn retiring_join_with_short_request_timeout_returns_active_session_refusal() {
-        use crate::binding::env::CoreConnect;
-
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        let mut env = DummyEnv::new();
-        env.step_gate = Some((entered.clone(), release.clone()));
-        let bound = EnvServer::new(env)
-            .bind_with_options(
-                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
-                ServeOptions::default(),
-            )
-            .await
-            .unwrap();
-        let address = bound.local_addr().to_string();
-        let server = tokio::spawn(bound.serve());
-        let mut client = rlmesh_grpc::EnvClient::connect(&address).await.unwrap();
-        client.handshake().await.unwrap();
-        client.reset(ProtoResetRequest::default()).await.unwrap();
-        let mut lane = client.clone();
-        let step = tokio::spawn(async move {
-            lane.step(ProtoStepRequest {
-                action: Some(
-                    encode_batched_partial_values(
-                        &[
-                            spaces::SpaceValue::Discrete(0),
-                            spaces::SpaceValue::Discrete(1),
-                        ],
-                        &spaces::spaces::DiscreteBuilder::new(3).build().unwrap(),
-                    )
-                    .unwrap(),
-                ),
-                ..Default::default()
-            })
-            .await
-        });
-        entered.notified().await;
-        client.detach();
-
-        let mut next = RemoteEnv::connect_with(
-            &address,
-            CoreConnect {
-                request_timeout: Some(Duration::from_millis(30)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        let error = next.reset(ResetRequest::default()).await.unwrap_err();
-        release.notify_one();
-        step.await.unwrap().unwrap();
-        assert!(matches!(error, crate::Error::Connection(_)), "{error:?}");
-        assert!(
-            error
-                .to_string()
-                .contains("already has an active Join session"),
-            "{error}"
-        );
-
-        next.reset(ResetRequest::default())
-            .await
-            .expect("join after drain");
-        next.close().await.unwrap();
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn runtime_env_close_timeout_detaches_the_session() {
-        use rlmesh_runtime::RuntimeEnv;
-
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        let mut env = DummyEnv::new();
-        env.step_gate = Some((entered.clone(), release.clone()));
-        let bound = EnvServer::new(env)
-            .bind_with_options(
-                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
-                ServeOptions::default(),
-            )
-            .await
-            .unwrap();
-        let address = bound.local_addr().to_string();
-        let server = tokio::spawn(bound.serve());
-        let mut client = rlmesh_grpc::EnvClient::connect(&address).await.unwrap();
-        client.handshake().await.unwrap();
-        client.reset(ProtoResetRequest::default()).await.unwrap();
-        let mut lane = client.clone();
-        let step = tokio::spawn(async move {
-            lane.step(ProtoStepRequest {
-                action: Some(
-                    encode_batched_partial_values(
-                        &[
-                            spaces::SpaceValue::Discrete(0),
-                            spaces::SpaceValue::Discrete(1),
-                        ],
-                        &spaces::spaces::DiscreteBuilder::new(3).build().unwrap(),
-                    )
-                    .unwrap(),
-                ),
-                ..Default::default()
-            })
-            .await
-        });
-        entered.notified().await;
-        let mut adapter = crate::model::local::EnvClientRuntimeEnv::new(client);
-        let outcome = adapter.close(Duration::from_millis(20)).await;
-        let mut client = adapter.into_inner();
-        let state = client.state();
-        release.notify_one();
-        step.await.unwrap().unwrap();
-        assert!(outcome.is_err());
-        assert_eq!(state, rlmesh_grpc::states::ClientState::Closed);
-        assert!(client.reset(ProtoResetRequest::default()).await.is_err());
-        let mut next = RemoteEnv::connect(&address).await.unwrap();
-        next.reset(ResetRequest::default())
-            .await
-            .expect("join after timed-out close");
-        next.close().await.unwrap();
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn a_fatal_reply_to_a_dropped_step_still_ends_the_session() {
-        let mut env = DummyEnv::new();
-        env.step_delay = Duration::from_millis(200);
-        let failures = env.step_failures.clone();
-        let bound = EnvServer::new(env)
-            .bind_with_options(
-                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
-                ServeOptions {
-                    allow_remote_shutdown: true,
-                    ..ServeOptions::default()
-                },
-            )
-            .await
-            .unwrap();
-        let address = bound.local_addr().to_string();
-        let server = tokio::spawn(bound.serve());
-        let mut client = RemoteEnv::connect(&address).await.unwrap();
-        let step = || StepRequest {
-            actions: vec![
-                spaces::SpaceValue::Discrete(0),
-                spaces::SpaceValue::Discrete(1),
-            ],
-            timeout_ms: 0,
-        };
-
-        client.reset(ResetRequest::default()).await.unwrap();
-        failures
-            .lock()
-            .unwrap()
-            .push_back(spaces::EnvRuntimeError::Runtime("solver diverged".into()));
-        // The caller gives up on the step (a Ctrl-C, a deadline) before the env
-        // answers it with the fatal error.
-        tokio::time::timeout(Duration::from_millis(20), client.step(step()))
-            .await
-            .expect_err("the step outlives its caller");
-        while !failures.lock().unwrap().is_empty() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        tokio::time::sleep(Duration::from_millis(300)).await;
-
-        // Nobody awaited that reply, yet the session is recorded as ended...
-        let error = client.step(step()).await.expect_err("session ended");
-        let message = error.to_string();
-        assert!(
-            message.contains("non-recoverable env error") && message.contains("solver diverged"),
-            "{message}"
-        );
-        // ...so a reset opens a fresh one instead of reusing the closed stream.
-        client
-            .reset(ResetRequest::default())
-            .await
-            .expect("reset reopens");
-        client.step(step()).await.expect("step on the new session");
-
-        assert!(client.shutdown("done").await.unwrap());
-        shutdown_and_join(server).await;
-    }
-
-    #[tokio::test]
-    async fn env_bind_resolves_port_zero_before_serving() {
-        let bound = EnvServer::new(DummyEnv::new())
-            .bind_with_options(
-                BindAddress::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 0,
-                },
-                ServeOptions {
-                    allow_remote_shutdown: true,
-                    ..ServeOptions::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        // The OS-assigned port is known before we await shutdown.
-        let resolved = bound.local_addr().clone();
-        let port = match resolved {
-            BindAddress::Tcp { port, .. } => port,
-            other => panic!("expected tcp bind address, got {other:?}"),
-        };
-        assert_ne!(port, 0, "port 0 must resolve to a real port");
-
-        let server = tokio::spawn(async move { bound.serve().await });
-
-        // No poll-connect race: the resolved address is immediately usable.
-        let address = format!("tcp://127.0.0.1:{port}");
-        let mut client = RemoteEnv::connect(&address).await.unwrap();
-        let _ = client.reset(ResetRequest::default()).await.unwrap();
-        assert!(client.shutdown("test shutdown").await.unwrap());
-
-        shutdown_and_join(server).await;
-    }
-
-    #[tokio::test]
-    async fn served_env_reports_grpc_health_serving() {
-        use tonic_health::ServingStatus;
-        use tonic_health::pb::HealthCheckRequest;
-        use tonic_health::pb::health_client::HealthClient;
-
-        let bound = EnvServer::new(DummyEnv::new())
-            .bind_with_options(
-                BindAddress::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 0,
-                },
-                ServeOptions {
-                    allow_remote_shutdown: true,
-                    ..ServeOptions::default()
-                },
-            )
-            .await
-            .unwrap();
-        let port = match bound.local_addr().clone() {
-            BindAddress::Tcp { port, .. } => port,
-            other => panic!("expected tcp, got {other:?}"),
-        };
-        let server = tokio::spawn(async move { bound.serve().await });
-
-        // A standard grpc.health.v1 client sees overall server health = SERVING.
-        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
-            .unwrap()
-            .connect()
-            .await
-            .unwrap();
-        let mut health = HealthClient::new(channel);
-        let response = health
-            .check(HealthCheckRequest {
-                service: String::new(),
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        assert_eq!(response.status, ServingStatus::Serving as i32);
-
-        // Shut the server down through the existing env client path.
-        let mut client = RemoteEnv::connect(&format!("tcp://127.0.0.1:{port}"))
-            .await
-            .unwrap();
-        assert!(client.shutdown("done").await.unwrap());
-        shutdown_and_join(server).await;
-    }
-
-    /// Run with a private environment in a subprocess: changing process-wide env
-    /// vars in this parallel test suite could accidentally authenticate other servers.
-    #[tokio::test]
-    async fn env_endpoint_environment_token_is_enforced() {
-        const CHILD: &str = "RLMESH_TEST_ENDPOINT_TOKEN_CHILD";
-        if std::env::var_os(CHILD).is_none() {
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "env::wire::tests::env_endpoint_environment_token_is_enforced",
-                    "--nocapture",
-                ])
-                .env(CHILD, "1")
-                .env(crate::ext::ENV_ENDPOINT_TOKEN_ENV, "deployment-token")
-                .status()
-                .unwrap();
-            assert!(status.success(), "environment token subprocess failed");
-            return;
-        }
-
-        let bound = EnvServer::new(DummyEnv::new())
-            .bind_with_ext(
-                BindAddress::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 0,
-                },
-                ServeOptions {
-                    allow_remote_shutdown: true,
-                    ..ServeOptions::default()
-                },
-                crate::ext::EnvServerOptions {
-                    token: Some("direct-token".to_string()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        let address = bound.local_addr().to_string();
-        let server = tokio::spawn(async move { bound.serve().await });
-
-        assert!(RemoteEnv::connect(&address).await.is_err());
-        for token in ["wrong-token", "direct-token", "Bearer direct-token"] {
-            assert!(
-                RemoteEnv::connect_with_token(&address, token)
-                    .await
-                    .is_err(),
-                "{token} must be rejected"
-            );
-        }
-
-        // The deployment token is accepted raw and in `Bearer` form.
-        drop(
-            RemoteEnv::connect_with_token(&address, "Bearer deployment-token")
-                .await
-                .unwrap(),
-        );
-        let mut client = RemoteEnv::connect_with_token(&address, "deployment-token")
-            .await
-            .unwrap();
-        assert!(client.shutdown("done").await.unwrap());
-        shutdown_and_join(server).await;
-    }
-
-    type Failures = Arc<Mutex<std::collections::VecDeque<spaces::EnvRuntimeError>>>;
-
-    /// One lane of a [`WireLaneAdapter`] that records the reset options it saw.
-    struct RecordingLane {
-        obs_space: spaces::SpaceSpec,
-        action_space: spaces::SpaceSpec,
-        env_contract: spaces::EnvContract,
-        seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>>,
-        // Errors the next resets / steps fail with, in order.
-        reset_failures: Failures,
-        step_failures: Failures,
-    }
-
-    impl RecordingLane {
-        fn new(seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>>) -> Self {
-            let obs_space = spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![2])
-                .dtype(spaces::DType::Float32)
-                .build()
-                .unwrap();
-            let action_space = spaces::spaces::DiscreteBuilder::new(3).build().unwrap();
-            let env_contract = spaces::EnvContract {
-                id: "RecordingLane-v1".to_string(),
-                autoreset_mode: Default::default(),
-                observation_space: Some(obs_space.clone()),
-                action_space: Some(action_space.clone()),
-                metadata: None,
-                render_mode: String::new(),
-                num_envs: 1,
-            };
-            Self {
-                obs_space,
-                action_space,
-                env_contract,
-                seen,
-                reset_failures: Failures::default(),
-                step_failures: Failures::default(),
-            }
-        }
-
-        fn observation() -> spaces::SpaceValue {
-            spaces::SpaceValue::Box(
-                spaces::Tensor::from_vec(vec![0; 8], vec![2], spaces::DType::Float32).unwrap(),
-            )
-        }
-    }
-
-    #[async_trait]
-    impl super::super::legacy::Env for RecordingLane {
-        fn observation_space(&self) -> &spaces::SpaceSpec {
-            &self.obs_space
-        }
-
-        fn action_space(&self) -> &spaces::SpaceSpec {
-            &self.action_space
-        }
-
-        fn env_contract(&self) -> &spaces::EnvContract {
-            &self.env_contract
-        }
-
-        async fn reset(
-            &mut self,
-            req: spaces::request::ResetRequest,
-        ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
-            if let Some(error) = self.reset_failures.lock().unwrap().pop_front() {
-                return Err(error);
-            }
-            self.seen.lock().unwrap().push(req.options);
-            Ok(spaces::request::ResetResult {
-                observation: Some(Self::observation()),
-                info: None,
-                episode_id: None,
-            })
-        }
-
-        async fn step(
-            &mut self,
-            _req: spaces::request::StepRequest,
-        ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError> {
-            if let Some(error) = self.step_failures.lock().unwrap().pop_front() {
-                return Err(error);
-            }
-            Ok(spaces::request::StepResult {
-                observation: Some(Self::observation()),
-                ..Default::default()
-            })
-        }
-
-        async fn render(
-            &mut self,
-            _req: RenderRequest,
-        ) -> std::result::Result<RenderResult, spaces::EnvRuntimeError> {
-            Ok(RenderResult { frame: None })
-        }
-
-        async fn close(
-            &mut self,
-            _req: spaces::CloseRequest,
-        ) -> std::result::Result<spaces::request::CloseResult, spaces::EnvRuntimeError> {
-            Ok(spaces::request::CloseResult)
-        }
-    }
-
-    fn trial_list(trials: &[i64]) -> spaces::MetaMap {
-        [(
-            rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
-            spaces::MetaValue::List(trials.iter().copied().map(spaces::MetaValue::Int).collect()),
-        )]
-        .into_iter()
-        .collect()
-    }
-
-    #[test]
-    fn lane_reset_options_narrows_the_trial_list_to_one_lane() {
-        let mut options = trial_list(&[7, 8, 9]);
-        options.insert("other".to_string(), spaces::MetaValue::Bool(true));
-
-        for (pos, expected) in [(0, 7), (1, 8), (2, 9)] {
-            let sliced = lane_reset_options(Some(&options), pos, 3).unwrap().unwrap();
-            assert_eq!(
-                sliced.get(rlmesh_runtime::TRIAL_INDEX_OPTION),
-                Some(&spaces::MetaValue::Int(expected)),
-            );
-            // Every other key rides through untouched.
-            assert_eq!(
-                sliced.get("other"),
-                Some(&spaces::MetaValue::Bool(true)),
-                "only trial_index is sliced",
-            );
-        }
-
-        // A bare integer (the single-lane encoding) and a map without the key
-        // are both passed on as they are.
-        let scalar: spaces::MetaMap = [(
-            rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
-            spaces::MetaValue::Int(4),
-        )]
-        .into_iter()
-        .collect();
-        assert_eq!(
-            lane_reset_options(Some(&scalar), 0, 1).unwrap(),
-            Some(scalar.clone()),
-        );
-        assert_eq!(lane_reset_options(None, 0, 1).unwrap(), None);
-    }
-
-    #[test]
-    fn a_trial_list_shorter_than_the_lanes_is_rejected() {
-        let error = lane_reset_options(Some(&trial_list(&[7])), 1, 2).unwrap_err();
-
-        assert_eq!(error.code, EnvErrorCode::InvalidAction);
-        assert!(
-            error.message.contains("list of 1 entries") && error.message.contains("covers 2 lanes"),
-            "the error must name both lengths, got {}",
-            error.message,
-        );
-    }
-
-    #[tokio::test]
-    async fn a_lane_reset_fails_loud_on_a_short_trial_list() {
-        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::new(Mutex::new(Vec::new()));
-        let adapter = WireLaneAdapter::new(vec![
-            RecordingLane::new(seen.clone()),
-            RecordingLane::new(seen.clone()),
-        ])
-        .unwrap();
-
-        let error = adapter
-            .reset(ProtoResetRequest {
-                seeds: vec![1, 2],
-                options: Some(meta_map_to_proto(&trial_list(&[10]))),
-                ..Default::default()
-            })
-            .await
-            .unwrap_err();
-
-        assert_eq!(error.code, EnvErrorCode::InvalidAction);
-        // Rejected before any lane ran, so no lane reset on a half-read option.
-        assert!(seen.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn lane_fan_out_gives_each_lane_its_own_trial_index() {
-        // The runtime sends a multi-lane reset one list in lane order; each
-        // scalar lane must see its own integer, the way `rlmesh.trial_index()`
-        // reads it.
-        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::new(Mutex::new(Vec::new()));
-        let adapter = WireLaneAdapter::new(vec![
-            RecordingLane::new(seen.clone()),
-            RecordingLane::new(seen.clone()),
-            RecordingLane::new(seen.clone()),
-        ])
-        .unwrap();
-
-        adapter
-            .reset(ProtoResetRequest {
-                seeds: vec![1, 2, 3],
-                options: Some(meta_map_to_proto(&trial_list(&[10, 11, 12]))),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-
-        let mut trials = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|options| {
-                options
-                    .as_ref()
-                    .and_then(|options| options.get(rlmesh_runtime::TRIAL_INDEX_OPTION).cloned())
-            })
-            .collect::<Vec<_>>();
-        trials.sort_by_key(|trial| match trial {
-            Some(spaces::MetaValue::Int(value)) => *value,
-            other => panic!("expected an integer trial_index, got {other:?}"),
-        });
-        assert_eq!(
-            trials,
-            vec![
-                Some(spaces::MetaValue::Int(10)),
-                Some(spaces::MetaValue::Int(11)),
-                Some(spaces::MetaValue::Int(12)),
-            ],
-        );
-    }
-
-    #[tokio::test]
-    async fn env_server_lanes_serve_one_endpoint_of_num_envs_lanes() {
-        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::new(Mutex::new(Vec::new()));
-        let bound = super::super::legacy_server::WireEnvServer::lanes(vec![
-            RecordingLane::new(seen.clone()),
-            RecordingLane::new(seen.clone()),
-        ])
-        .bind_with_options(
-            BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
-            ServeOptions {
-                allow_remote_shutdown: true,
-                ..ServeOptions::default()
-            },
-        )
-        .await
-        .unwrap();
-        let address = bound.local_addr().to_string();
-        let server = tokio::spawn(bound.serve());
-
-        let mut client = connect_with_retry(&address, &server).await;
-        assert_eq!(client.num_envs(), 2);
-        let reset = client
-            .reset(ResetRequest {
-                seeds: vec![1, 2],
-                ..ResetRequest::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(reset.observations.len(), 2);
-        assert_eq!(seen.lock().unwrap().len(), 2, "each lane reset once");
-        assert!(client.shutdown("done").await.unwrap());
-        shutdown_and_join(server).await;
-    }
-
-    #[tokio::test]
-    async fn env_server_without_lanes_fails_to_bind() {
-        let error = super::super::legacy_server::WireEnvServer::<RecordingLane>::lanes(Vec::new())
-            .bind(BindAddress::parse("tcp://127.0.0.1:0").unwrap())
-            .await
-            .err()
-            .expect("no lanes is rejected");
-        assert!(error.to_string().contains("at least one lane"), "{error}");
-    }
-
-    fn lane_step_request(adapter: &WireLaneAdapter) -> ProtoStepRequest {
-        let actions = vec![
-            spaces::SpaceValue::Discrete(0),
-            spaces::SpaceValue::Discrete(1),
-        ];
-        ProtoStepRequest {
-            action: Some(encode_batched_partial_values(&actions, adapter.action_space()).unwrap()),
-            ..Default::default()
-        }
-    }
-
-    /// Two recording lanes and their (reset, step) failure queues.
-    fn two_failing_lanes() -> (Vec<RecordingLane>, [(Failures, Failures); 2]) {
-        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::default();
-        let lanes = vec![RecordingLane::new(seen.clone()), RecordingLane::new(seen)];
-        let failures = [0, 1].map(|lane| {
-            (
-                lanes[lane].reset_failures.clone(),
-                lanes[lane].step_failures.clone(),
-            )
-        });
-        (lanes, failures)
-    }
-
-    fn recoverable(message: &str) -> spaces::EnvRuntimeError {
-        spaces::EnvRuntimeError::Recoverable(message.to_string())
-    }
-
-    fn fatal(message: &str) -> spaces::EnvRuntimeError {
-        spaces::EnvRuntimeError::Runtime(message.to_string())
-    }
-
-    #[tokio::test]
-    async fn a_lane_batch_reports_a_fatal_lane_error_over_a_recoverable_one() {
-        let (lanes, [(reset0, step0), (reset1, step1)]) = two_failing_lanes();
-        let adapter = WireLaneAdapter::new(lanes).unwrap();
-
-        step0
-            .lock()
-            .unwrap()
-            .push_back(recoverable("lane 0 hiccup"));
-        step1.lock().unwrap().push_back(fatal("lane 1 diverged"));
-        let error = adapter.step(lane_step_request(&adapter)).await.unwrap_err();
-        assert!(!error.is_recoverable, "{error}");
-        assert!(error.message.contains("lane 1 diverged"), "{error}");
-
-        reset0
-            .lock()
-            .unwrap()
-            .push_back(recoverable("lane 0 hiccup"));
-        reset1
-            .lock()
-            .unwrap()
-            .push_back(fatal("lane 1 lost its assets"));
-        let error = adapter
-            .reset(ProtoResetRequest::default())
-            .await
-            .unwrap_err();
-        assert!(!error.is_recoverable, "{error}");
-        assert!(error.message.contains("lane 1 lost its assets"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn a_lane_batch_is_recoverable_only_when_no_lane_moved() {
-        let (lanes, [(reset0, step0), (_, step1)]) = two_failing_lanes();
-        let adapter = WireLaneAdapter::new(lanes).unwrap();
-
-        // Every lane failed recoverably: nothing moved, so a retry is safe.
-        step0
-            .lock()
-            .unwrap()
-            .push_back(recoverable("lane 0 hiccup"));
-        step1
-            .lock()
-            .unwrap()
-            .push_back(recoverable("lane 1 hiccup"));
-        let error = adapter.step(lane_step_request(&adapter)).await.unwrap_err();
-        assert!(error.is_recoverable, "{error}");
-        assert!(error.message.contains("lane 0 hiccup"), "{error}");
-
-        // Lane 1 stepped while lane 0 failed: its transition is lost, so the
-        // batch ends the session rather than invite a retry that replays it.
-        step0
-            .lock()
-            .unwrap()
-            .push_back(recoverable("lane 0 hiccup"));
-        let error = adapter.step(lane_step_request(&adapter)).await.unwrap_err();
-        assert!(!error.is_recoverable, "{error}");
-        assert!(
-            error.message.contains("lane 0 step failed")
-                && error.message.contains("lane 0 hiccup")
-                && error.message.contains("lanes [1]"),
-            "{error}"
-        );
-
-        // The reset path folds the same way.
-        reset0
-            .lock()
-            .unwrap()
-            .push_back(recoverable("lane 0 hiccup"));
-        let error = adapter
-            .reset(ProtoResetRequest::default())
-            .await
-            .unwrap_err();
-        assert!(!error.is_recoverable, "{error}");
-        assert!(error.message.contains("lane 0 reset failed"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn a_fatal_lane_error_beside_a_recoverable_one_ends_the_served_session() {
-        let (lanes, [(reset0, step0), (reset1, step1)]) = two_failing_lanes();
-        let bound = super::super::legacy_server::WireEnvServer::lanes(lanes)
-            .bind_with_options(
-                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
-                ServeOptions {
-                    allow_remote_shutdown: true,
-                    ..ServeOptions::default()
-                },
-            )
-            .await
-            .unwrap();
-        let address = bound.local_addr().to_string();
-        let server = tokio::spawn(bound.serve());
-        let mut client = connect_with_retry(&address, &server).await;
-        let step = || StepRequest {
-            actions: vec![
-                spaces::SpaceValue::Discrete(0),
-                spaces::SpaceValue::Discrete(1),
-            ],
-            timeout_ms: 0,
-        };
-
-        client.reset(ResetRequest::default()).await.unwrap();
-        step0
-            .lock()
-            .unwrap()
-            .push_back(recoverable("lane 0 hiccup"));
-        step1.lock().unwrap().push_back(fatal("lane 1 diverged"));
-        let error = client.step(step()).await.expect_err("fatal lane");
-        assert!(!error.is_recoverable(), "{error}");
-        assert!(error.to_string().contains("lane 1 diverged"), "{error}");
-        let error = client.step(step()).await.expect_err("session ended");
-        assert!(
-            error.to_string().contains("non-recoverable env error"),
-            "{error}"
-        );
-
-        // A reset reopens; a reset batch with a fatal lane ends that session too.
-        reset0
-            .lock()
-            .unwrap()
-            .push_back(recoverable("lane 0 hiccup"));
-        reset1
-            .lock()
-            .unwrap()
-            .push_back(fatal("lane 1 lost its assets"));
-        let error = client
-            .reset(ResetRequest::default())
-            .await
-            .expect_err("fatal lane reset");
-        assert!(!error.is_recoverable(), "{error}");
-        assert!(
-            error.to_string().contains("lane 1 lost its assets"),
-            "{error}"
-        );
-        let error = client.step(step()).await.expect_err("session ended");
-        assert!(
-            error.to_string().contains("non-recoverable env error"),
-            "{error}"
-        );
-
-        client
-            .reset(ResetRequest::default())
-            .await
-            .expect("reset reopens");
-        client.step(step()).await.expect("step on the new session");
-        assert!(client.shutdown("done").await.unwrap());
-        shutdown_and_join(server).await;
     }
 }

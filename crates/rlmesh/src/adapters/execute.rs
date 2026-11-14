@@ -513,10 +513,7 @@ pub(crate) fn resolve_parts(
                     _ => None,
                 })
                 .ok_or_else(|| Error::adapter_resolution("custom encoding state plan missing"))?;
-            if state.pad_to.is_some()
-                || state.reshape.is_some()
-                || state.container != core::StateContainer::Array
-            {
+            if state.pad_to.is_some() || state.reshape.is_some() || state.list {
                 return Err(Error::adapter_resolution(
                     "a state with CustomEncoding must be an unpadded, unreshaped array",
                 ));
@@ -540,7 +537,7 @@ pub(crate) fn resolve_parts(
                         offset,
                         width,
                         total,
-                        dtype: crate::DType::parse(&state.dtype)
+                        dtype: crate::DType::parse(state.dtype.name())
                             .ok_or_else(|| Error::adapter_resolution("unknown state dtype"))?,
                         transform: arm(&c.from_base, "from_base")?,
                     });
@@ -636,12 +633,8 @@ impl Adapter {
     }
     /// Non-fatal notes produced while resolving this adapter.
     pub fn advisories(&self) -> Vec<Advisory> {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .parts
-            .plan
-            .advisories()
+        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        core::advisories(&state.parts.plan)
             .into_iter()
             .map(crate::adapters::Advisory::from_core)
             .collect()
@@ -716,10 +709,7 @@ impl AdapterBase for Adapter {
             .encodings
             .repack_action(&mut action)
             .map_err(Error::from_apply)?;
-        let tensor = parts
-            .plan
-            .transform_action(&action)
-            .map_err(Error::from_apply)?;
+        let tensor = core::transform_action(&parts.plan, &action).map_err(Error::from_apply)?;
         core::record_action(&parts.plan, &action, buffers, "local", *current_step)
             .map_err(Error::from_apply)?;
         crate::binding::tensor_from_core(tensor).map(Value::Tensor)

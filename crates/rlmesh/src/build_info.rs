@@ -48,7 +48,7 @@ impl fmt::Display for BuildSource {
 pub struct BuildInfo {
     /// The package version the build was made as ([`VERSION`]).
     pub version: &'static str,
-    /// The wire protocol generation this build speaks (`rlmesh-wire-v1`).
+    /// The wire protocol generation this build speaks (`rlmesh-realtime-v1`).
     pub protocol_generation: &'static str,
     /// The exact workflow edition spelling this build advertises: the sealed
     /// `YYYY.MM` base on a release, `YYYY.MM-<cohort>` on a prerelease or
@@ -114,7 +114,7 @@ mod tests {
     fn fields_follow_the_build() {
         let info = build_info();
         assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(info.protocol_generation, "rlmesh-wire-v1");
+        assert_eq!(info.protocol_generation, "rlmesh-realtime-v1");
         assert_eq!(
             info.workflow_edition_base,
             crate::current_workflow_edition()
@@ -138,7 +138,7 @@ mod tests {
         let text = info.to_string();
         assert!(
             text.starts_with(&format!(
-                "BuildInfo(version={:?}, protocol_generation=\"rlmesh-wire-v1\", ",
+                "BuildInfo(version={:?}, protocol_generation=\"rlmesh-realtime-v1\", ",
                 info.version
             )),
             "{text}"

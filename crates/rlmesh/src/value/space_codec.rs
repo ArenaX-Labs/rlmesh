@@ -505,7 +505,10 @@ mod tests {
         let counts = spec(
             &[2],
             CoreDType::Int64,
-            WireKind::MultiDiscrete(MultiDiscreteSpec { nvec: vec![3, 4] }),
+            WireKind::MultiDiscrete(MultiDiscreteSpec {
+                nvec: vec![3, 4],
+                ..Default::default()
+            }),
         );
         let value = value_from_space(&counts, SpaceValue::MultiDiscrete(vec![2, 3])).unwrap();
         assert_eq!(value.kind(), ValueKind::Tensor);

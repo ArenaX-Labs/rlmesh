@@ -4,9 +4,11 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use super::types::predict_seed;
-use crate::{Error, Result};
+use crate::spaces::SpaceSpec;
+use crate::{EnvContract, Error, Result};
 
 /// The live episodes a model tracks before a new one is refused.
 pub(crate) const EPISODE_CAPACITY: usize = 65_536;
@@ -104,6 +106,11 @@ pub struct PredictContext<'a> {
     pub predict_seed: Option<i64>,
     /// The episode's free state.
     pub state: &'a mut EpisodeState,
+    /// The observation space of the env the episode runs in (`None` when no
+    /// env is known).
+    pub observation_space: Option<&'a SpaceSpec>,
+    /// That env's action space: what a model with no adapter answers in.
+    pub action_space: Option<&'a SpaceSpec>,
 }
 
 /// One context per row of a batched corner.
@@ -119,17 +126,27 @@ pub(crate) struct OwnedContext {
     predict_seed: Option<i64>,
     state: EpisodeState,
     stored: bool,
+    env: Option<Arc<EnvContract>>,
 }
 
 impl OwnedContext {
     pub(crate) fn view(&mut self) -> PredictContext<'_> {
+        let env = self.env.as_deref();
         PredictContext {
             episode_id: &self.episode_id,
             episode_seed: self.episode_seed,
             predict_index: self.predict_index,
             predict_seed: self.predict_seed,
             state: &mut self.state,
+            observation_space: env.map(EnvContract::observation_space),
+            action_space: env.map(EnvContract::action_space),
         }
+    }
+
+    /// This context on the env `env` (the row's route's).
+    pub(crate) fn on(mut self, env: Option<Arc<EnvContract>>) -> OwnedContext {
+        self.env = env;
+        self
     }
 
     /// A throwaway context for an anonymous row (or a fused spec-less call).
@@ -141,6 +158,7 @@ impl OwnedContext {
             predict_seed: None,
             state: EpisodeState::default(),
             stored: false,
+            env: None,
         }
     }
 }
@@ -234,6 +252,7 @@ impl EpisodeStore {
             predict_seed: entry.seed.map(|seed| predict_seed(seed, index)),
             state: entry.state.take().unwrap_or_default(),
             stored: true,
+            env: None,
         })
     }
 

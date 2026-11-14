@@ -1,8 +1,7 @@
 use super::*;
 use crate::spaces::{Discrete, Space};
 use crate::{
-    DType, Env, ErrorClass, FrameSources, InfoDict, Model, ModelOptions, RunOptions,
-    SessionOptions, SessionRunOptions, Tensor,
+    DType, Env, ErrorClass, FrameSources, InfoDict, Model, ModelOptions, RunOptions, Tensor,
 };
 use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -174,7 +173,7 @@ fn model() -> Model {
     Model::new(|_: Value| Ok(Value::Int(0)), ModelOptions::default()).unwrap()
 }
 #[test]
-fn capture_native_and_session_render_media_and_stable_episode_indices() {
+fn capture_render_media_with_stable_episode_indices_across_runs() {
     let mut rec = recorder();
     let mut capture = rec
         .capture("model/../name", "env", Default::default())
@@ -193,16 +192,15 @@ fn capture_native_and_session_render_media_and_stable_episode_indices() {
             },
         )
         .unwrap();
-    {
-        let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-        session
-            .run(SessionRunOptions {
+    model
+        .run(
+            &mut env,
+            RunOptions {
                 hooks: Some(&mut *capture),
                 ..Default::default()
-            })
-            .unwrap();
-        session.close().unwrap();
-    }
+            },
+        )
+        .unwrap();
     let workloads = rec.workloads();
     assert_eq!(
         workloads[0]
@@ -305,7 +303,7 @@ fn vector_capture_refusal_and_missing_frames_warning_never_aborts() {
             "m",
             "e",
             RecorderCaptureOptions {
-                session: Some(Arc::new(Context { n: 2, fails: true })),
+                binding: Some(Arc::new(Context { n: 2, fails: true })),
                 ..Default::default()
             },
         )
@@ -321,7 +319,7 @@ fn vector_capture_refusal_and_missing_frames_warning_never_aborts() {
             "m",
             "e",
             RecorderCaptureOptions {
-                session: Some(Arc::new(Context { n: 1, fails: true })),
+                binding: Some(Arc::new(Context { n: 1, fails: true })),
                 cameras: Some(vec!["render".into()]),
                 ..Default::default()
             },
@@ -418,4 +416,27 @@ fn export_preserves_python_json_kinds_and_refuses_binary_config_before_writing()
     let json = std::fs::read_to_string(path.join("result.json")).unwrap();
     assert!(json.contains("\"reward\": Infinity"));
     assert!(json.contains("\"meanReward\": Infinity"));
+}
+
+#[test]
+fn a_saved_result_loads_back_with_the_outcomes_the_bundle_keeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let saved = result();
+    for name in ["bundle", "bundle.zip"] {
+        let path = saved
+            .save(
+                dir.path().join(name),
+                crate::RunResultSaveOptions::default(),
+            )
+            .unwrap();
+        let loaded = RunResult::load(&path).unwrap();
+        let (a, b) = (&saved.episodes[0], &loaded.episodes[0]);
+        assert_eq!(
+            (b.seed, b.steps, b.reward, b.terminated, b.success),
+            (a.seed, a.steps, a.reward, a.terminated, a.success)
+        );
+        assert_eq!((b.trial, b.predict_ms), (None, None), "not kept");
+    }
+    let error = RunResult::load(dir.path().join("missing")).unwrap_err();
+    assert_eq!(error.class(), ErrorClass::OSError);
 }

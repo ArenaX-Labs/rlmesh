@@ -8,7 +8,6 @@ pub use crate::binding::spaces::request::{
 pub use crate::binding::spaces::{CloseRequest, RenderFrame, RenderRequest, RenderResult};
 pub use crate::env::lanes::LaneEnv;
 pub use crate::env::legacy::{Env, VectorEnv};
-pub use crate::env::legacy_server::{BoundWireEnvServer, WireEnvServer, WireVectorEnvServer};
 pub use crate::env::types::{
     CloseResult as VectorCloseResult, EpisodeMetadata, ResetRequest as VectorResetRequest,
     ResetResult as VectorResetResult, StepRequest as VectorStepRequest,
@@ -35,26 +34,18 @@ pub fn env_server_wait(
 /// borrows it).
 pub fn env_core(env: &crate::RemoteEnv) -> crate::Result<&EnvClientCore> {
     env.core_ref()
-        .ok_or_else(|| crate::Error::Runtime("RemoteEnv is in use by a session".to_string()))
+        .ok_or_else(|| crate::Error::Runtime("RemoteEnv is in use by a run".to_string()))
 }
 
 /// The core behind a [`crate::RemoteVectorEnv`].
 pub fn vector_env_core(env: &crate::RemoteVectorEnv) -> crate::Result<&EnvClientCore> {
     env.core_ref()
-        .ok_or_else(|| crate::Error::Runtime("RemoteVectorEnv is in use by a session".to_string()))
+        .ok_or_else(|| crate::Error::Runtime("RemoteVectorEnv is in use by a run".to_string()))
 }
 
-/// Python's `normalize_connect_address` (one implementation for every
-/// language): an address, or the `host` / `port` / `path` / `transport`
-/// helpers, as one connect string; every refusal is the ValueError class.
-pub fn normalize_connect_address(
-    address: Option<&str>,
-    host: Option<&str>,
-    port: Option<u16>,
-    path: Option<&str>,
-    transport: Option<crate::Transport>,
-) -> crate::Result<String> {
-    crate::env::client::normalize_connect_address(address, host, port, path, transport)
+/// Validate a required session participant address.
+pub fn normalize_connect_address(address: Option<&str>) -> crate::Result<String> {
+    crate::env::client::normalize_connect_address(address)
 }
 
 /// A client timeout in seconds (RMT-4): `None` and zero are no timeout;

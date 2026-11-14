@@ -1,26 +1,11 @@
-//! Generated RLMesh protobuf bindings and protocol-level constants.
+//! Internal driver data types, workflow editions, and build identity.
 #![deny(rustdoc::broken_intra_doc_links)]
 
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-/// Identity of the frozen wire substrate: the `core` handshake plus the `spaces`
-/// value transport the runtime relays between env and model. NOT the package
-/// version, NOT the product semver, and NOT a per-service version — it names the
-/// one shared byte contract every component is built against, decoupled from all
-/// of them.
-///
-/// Compatibility is plain equality: a peer is compatible iff its token equals
-/// this. There is no support window and no range negotiation. The wire grows
-/// additively forever under this single token; workflow *behavior* rides on
-/// editions and optional *features* on capabilities, so neither forces a bump.
-///
-/// This is a failsafe, not a version counter: in the normal course it is never
-/// bumped. Bumping it to `rlmesh-wire-v2` is a deliberate, public hard pivot — a
-/// build that intentionally will not interoperate with `rlmesh-wire-v1` — reserved
-/// for a wire break that additive growth, editions, and capabilities genuinely
-/// cannot absorb.
-pub const PROTOCOL_GENERATION: &str = "rlmesh-wire-v1";
+/// Identity of the realtime session wire used by this build.
+pub const PROTOCOL_GENERATION: &str = "rlmesh-realtime-v1";
 
 /// Current workflow semantics edition.
 ///
@@ -110,6 +95,9 @@ const fn edition_at(bytes: &'static [u8], start: usize, end: usize) -> &'static 
 pub enum Edition {
     /// `2026.06`, sealed at v0.1.0. Contract: `docs/editions/2026.06.md`.
     E2026_06,
+    /// `2026.10`, provisional until v0.2.0 seals it. Contract:
+    /// `docs/editions/2026.10.md`.
+    E2026_10,
 }
 
 impl Edition {
@@ -120,12 +108,13 @@ impl Edition {
     /// a new arm does not compile until it is named there, and the test fails
     /// unless every name this build offers ([`SUPPORTED_WORKFLOW_EDITIONS`]) and
     /// every arm's own base resolve through this list.
-    const ALL: &'static [Edition] = &[Edition::E2026_06];
+    const ALL: &'static [Edition] = &[Edition::E2026_06, Edition::E2026_10];
 
     /// The bare `YYYY.MM` base this edition's contract document is keyed by.
     pub const fn base(&self) -> &'static str {
         match self {
             Edition::E2026_06 => "2026.06",
+            Edition::E2026_10 => "2026.10",
         }
     }
 
@@ -194,7 +183,9 @@ impl std::error::Error for UnknownEdition {}
 pub struct EditionDefaults {
     /// Per-episode step bound applied when the session sets no explicit
     /// `max_episode_steps` and the runtime owns resets, so a broken termination
-    /// condition surfaces as a truncation instead of hanging the run.
+    /// condition surfaces as a truncation instead of hanging the run. Under
+    /// env-owned resets (`NEXT_STEP`) the runtime cannot truncate a lane, so an
+    /// episode the env has not ended by this bound fails the run instead.
     ///
     /// Not named in the prose of `docs/editions/2026.06.md`, but observable in
     /// the episode ledger the edition's "Episode Accounting" section governs
@@ -263,6 +254,19 @@ static DEFAULTS_2026_06: EditionDefaults = EditionDefaults {
     conformance_warning_info_key: "rlmesh.conformance.warning",
 };
 
+/// Edition `2026.10`: the same defaults as `2026.06`. Frozen once v0.2.0 seals
+/// the edition.
+static DEFAULTS_2026_10: EditionDefaults = EditionDefaults {
+    default_max_episode_steps: 100_000,
+    trial_index_option_key: "trial_index",
+    driver_owned_reset_modes: &[
+        core::v1::AutoresetMode::Disabled,
+        core::v1::AutoresetMode::Unspecified,
+    ],
+    success_info_keys: &["is_success", "success", "task_success"],
+    conformance_warning_info_key: "rlmesh.conformance.warning",
+};
+
 /// The defaults row governing a session running at `edition`.
 ///
 /// Exhaustive by construction: a new [`Edition`] arm does not compile until it
@@ -270,6 +274,7 @@ static DEFAULTS_2026_06: EditionDefaults = EditionDefaults {
 pub const fn defaults(edition: Edition) -> &'static EditionDefaults {
     match edition {
         Edition::E2026_06 => &DEFAULTS_2026_06,
+        Edition::E2026_10 => &DEFAULTS_2026_10,
     }
 }
 
@@ -376,13 +381,6 @@ pub mod capabilities {
     pub const ENV_SUBSET_STEP: &str = "subset_step";
 }
 
-/// Whether the given protocol generation is the one this build speaks. Plain
-/// equality — there is no support window. Whitespace is trimmed so a padded wire
-/// value still matches.
-pub fn is_protocol_generation_supported(generation: &str) -> bool {
-    generation.trim() == PROTOCOL_GENERATION
-}
-
 /// Ordering key for a workflow edition name: `(base, cohort?, suffix)`.
 ///
 /// The name is split at its **first** `-` into a `YYYY.MM` base and an optional
@@ -395,9 +393,7 @@ pub fn is_protocol_generation_supported(generation: &str) -> bool {
 /// - `suffix` is the full cohort as a deterministic third tiebreak; two
 ///   same-date cohorts are ordered by suffix rather than by iteration order.
 ///
-/// Applies to workflow editions only. Protocol generations are compared by plain
-/// equality ([`is_protocol_generation_supported`]), never ordered — there is no
-/// generation window to pick a highest from.
+/// Applies to workflow editions only; protocol generation tokens are not ordered.
 pub fn edition_sort_key(edition: &str) -> (&str, bool, &str) {
     match edition.split_once('-') {
         Some((base, suffix)) => (base, true, suffix),
@@ -544,6 +540,12 @@ pub const DEV_BUILD_HINT: &str = "dev builds only interoperate with the identica
      rebuild both sides from the same tree state, or build both with RLMESH_RELEASE_BUILD=1 \
      to speak the sealed edition";
 
+/// The remedy an edition refusal between released builds carries: the
+/// moment two peers' editions differ is when an undeclared one has moved.
+pub const PIN_HINT: &str = "run both sides on rlmesh releases that share an edition; a \
+     participant that declares no workflow_edition floats to its build's newest, so pin each \
+     one (to what rlmesh.current_workflow_edition() prints) before you upgrade either side";
+
 impl EditionRefusal {
     /// Whether any tier offered a local dev cohort (`<base>-dev.<git>`).
     pub fn involves_dev_build(&self) -> bool {
@@ -552,13 +554,13 @@ impl EditionRefusal {
             .any(|tier| tier.can.iter().any(|edition| edition.contains("-dev.")))
     }
 
-    /// `"; hint: ..."` with [`DEV_BUILD_HINT`] when a dev build took part, else
-    /// empty — for callers to append to their refusal message.
+    /// `"; hint: ..."` with [`DEV_BUILD_HINT`] when a dev build took part,
+    /// else [`PIN_HINT`] — for callers to append to their refusal message.
     pub fn hint(&self) -> String {
         if self.involves_dev_build() {
             format!("; hint: {DEV_BUILD_HINT}")
         } else {
-            String::new()
+            format!("; hint: {PIN_HINT}")
         }
     }
 }
@@ -723,53 +725,6 @@ pub fn negotiate_session_floor(
     })
 }
 
-/// Whether a client's handshake offer is compatible with this server: the only
-/// handshake-level decision is protocol generation (a hard, full-restart break).
-///
-/// The workflow **edition** is NOT decided here — only the runtime sees every
-/// participant, so it is the sole edition authority (via [`negotiate_session_floor`],
-/// which degenerates to `env ∩ self` when the model and runtime are the same build).
-/// A generation-compatible peer that shares no edition handshakes fine and then
-/// fails at the runtime's floor, with a clearer all-tiers diagnostic. Env and model
-/// servers use this same function, so the verdict cannot drift between services.
-pub fn evaluate_handshake(client_protocol_generation: &str) -> bool {
-    is_protocol_generation_supported(client_protocol_generation)
-}
-
-/// The core handshake request this build sends as a gRPC client: its protocol
-/// generation, the editions it CAN drive, the edition it declares (WANT), its
-/// advertised capabilities, and PeerInfo. Shared by the env and model clients
-/// (each wraps it in its service-specific request) so the request shape cannot
-/// drift between services.
-///
-/// `declared` is the caller's pinned edition; `None` declares
-/// [`CURRENT_WORKFLOW_EDITION`], which is `max(can)` for this build and therefore
-/// leaves negotiation exactly where it was before the field existed.
-pub fn core_handshake_request(
-    component: &str,
-    capabilities: &[&str],
-    declared: Option<&str>,
-) -> core::v1::HandshakeRequest {
-    core::v1::HandshakeRequest {
-        protocol_generation: PROTOCOL_GENERATION.to_string(),
-        peer_info: Some(peer_info(component)),
-        capabilities: capability_map(capabilities),
-        supported_workflow_editions: supported_workflow_editions(),
-        preferred_workflow_edition: declared_workflow_edition(declared).to_string(),
-    }
-}
-
-/// The human-facing rejection message when a client's protocol generation does not
-/// match this server. Generation is the ONLY handshake-level rejection; an edition
-/// mismatch is decided — and diagnosed — by the runtime's floor, not here. Shared by
-/// the env and model servers so the rejection prose cannot drift.
-pub fn generation_mismatch_message(client_protocol_generation: &str) -> String {
-    format!(
-        "protocol generation {client_protocol_generation} not compatible with server \
-         {PROTOCOL_GENERATION}"
-    )
-}
-
 /// Return supported workflow editions as owned strings for protobuf messages.
 pub fn supported_workflow_editions() -> Vec<String> {
     SUPPORTED_WORKFLOW_EDITIONS
@@ -813,7 +768,7 @@ pub fn has_capability(map: &HashMap<String, String>, name: &str) -> bool {
 
 pub mod core {
     pub mod v1 {
-        tonic::include_proto!("rlmesh.core.v1");
+        include!(concat!(env!("OUT_DIR"), "/rlmesh.core.v1.rs"));
     }
 }
 
@@ -957,19 +912,19 @@ pub fn peer_info(component: &str) -> core::v1::PeerInfo {
 
 pub mod env {
     pub mod v1 {
-        tonic::include_proto!("rlmesh.env.v1");
+        include!(concat!(env!("OUT_DIR"), "/rlmesh.env.v1.rs"));
     }
 }
 
 pub mod spaces {
     pub mod v1 {
-        tonic::include_proto!("rlmesh.spaces.v1");
+        include!(concat!(env!("OUT_DIR"), "/rlmesh.spaces.v1.rs"));
     }
 }
 
 pub mod model {
     pub mod v1 {
-        tonic::include_proto!("rlmesh.model.v1");
+        include!(concat!(env!("OUT_DIR"), "/rlmesh.model.v1.rs"));
     }
 }
 
@@ -1211,10 +1166,10 @@ mod build_manifest;
 #[cfg(test)]
 mod tests {
     use super::{
-        CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, SUPPORTED_WORKFLOW_EDITIONS, SessionOffer,
-        evaluate_handshake, is_protocol_generation_supported, negotiate_session_floor,
-        negotiate_workflow_edition, supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, SUPPORTED_WORKFLOW_EDITIONS, SessionOffer,
+        negotiate_session_floor, negotiate_workflow_edition, supported_workflow_editions,
     };
+    use super::{DEFAULTS_2026_06, DEFAULTS_2026_10, Edition, defaults};
 
     /// One tier of a negotiation case: what it CAN drive, and what it WANTs
     /// (`None` = undeclared, which negotiation reads as `max(can)`).
@@ -1556,20 +1511,6 @@ mod tests {
     }
 
     #[test]
-    fn protocol_generation_is_plain_equality() {
-        // The only generation check is equality with this build's generation —
-        // there is no support window. Whitespace is trimmed; anything else is a
-        // hard mismatch (a deliberate major break).
-        assert!(is_protocol_generation_supported(PROTOCOL_GENERATION));
-        assert!(is_protocol_generation_supported(&format!(
-            " {PROTOCOL_GENERATION} "
-        )));
-        assert!(!is_protocol_generation_supported("rlmesh-wire-v2"));
-        assert!(!is_protocol_generation_supported(""));
-        assert!(!is_protocol_generation_supported("0.1.0"));
-    }
-
-    #[test]
     fn split_editions_recovers_every_supported_edition() {
         // The build-time list is comma-separated; today's tree generates one
         // entry, so cover the retained-fallback shape here rather than waiting
@@ -1693,22 +1634,10 @@ mod tests {
             assert!(refusal.hint().contains("RLMESH_RELEASE_BUILD=1"));
         }
 
-        // Release and prerelease cohorts alone get no dev-build advice.
+        // Release and prerelease cohorts alone get the pin advice instead.
         let refusal = refusal(&["2025.01"], &["2026.06-0.2.0-beta.1"]);
         assert!(!refusal.involves_dev_build(), "{refusal}");
-        assert_eq!(refusal.hint(), "");
-    }
-
-    #[test]
-    fn evaluate_handshake_gates_generation_only() {
-        // The handshake decides ONE thing: protocol generation. Editions are the
-        // runtime's call (the floor), so a generation-ok peer is compatible
-        // regardless of editions — even with no mutual edition (it fails later at
-        // the floor, with a clearer all-tiers message).
-        assert!(evaluate_handshake(PROTOCOL_GENERATION));
-
-        // A protocol mismatch is never compatible.
-        assert!(!evaluate_handshake("rlmesh-wire-v2"));
+        assert_eq!(refusal.hint(), format!("; hint: {}", super::PIN_HINT));
     }
 
     #[test]
@@ -1845,6 +1774,9 @@ mod tests {
             match edition {
                 Edition::E2026_06 => {
                     assert!(Edition::ALL.contains(&Edition::E2026_06));
+                }
+                Edition::E2026_10 => {
+                    assert!(Edition::ALL.contains(&Edition::E2026_10));
                 }
             }
             let row = defaults(*edition);
@@ -2290,7 +2222,7 @@ mod tests {
     /// `max(can)` for this build — so this build's own offer never caps a peer.
     #[test]
     fn this_build_declares_its_current_edition_by_default() {
-        use super::{core_handshake_request, declared_workflow_edition, edition_sort_key};
+        use super::{declared_workflow_edition, edition_sort_key};
 
         // The no-op argument rests on this: the default WANT is `max(can)`, so a
         // retained edition sorting above the current one would make this build's
@@ -2317,12 +2249,23 @@ mod tests {
             Some(CURRENT_WORKFLOW_EDITION),
             "an undeclared build wants its current edition"
         );
+    }
 
-        let request = core_handshake_request("rlmesh-env", &[], None);
-        assert_eq!(request.preferred_workflow_edition, CURRENT_WORKFLOW_EDITION);
+    /// A run between peers on different editions executes at their floor,
+    /// but the env keeps running its own edition's defaults: correct only
+    /// while every retained row is equal.
+    #[test]
+    fn retained_edition_rows_stay_equal_until_an_env_is_pinned_to_the_floor() {
+        assert_eq!(defaults(Edition::E2026_06), &DEFAULTS_2026_06);
+        assert_eq!(defaults(Edition::E2026_10), &DEFAULTS_2026_10);
         assert_eq!(
-            core_handshake_request("rlmesh-env", &[], Some("2026.06")).preferred_workflow_edition,
-            "2026.06"
+            DEFAULTS_2026_06, DEFAULTS_2026_10,
+            "the 2026.06 and 2026.10 edition defaults now differ. A run whose env and model \
+             negotiated a floor below the env's edition still steps the env under the env's \
+             own row: see the TODO in `RunEdition::with_model` \
+             (crates/rlmesh/src/model/local.rs). Before the rows may differ, decide how the \
+             env is pinned to the run's floor (sent with each reset, or the pairing refused \
+             at bind), implement it there, then drop this assertion"
         );
     }
 }

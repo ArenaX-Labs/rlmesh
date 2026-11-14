@@ -64,6 +64,10 @@ fn a_model_type_describes_its_declarations_without_constructing() {
     assert_eq!(runtime["component"], "rlmesh-rust");
     assert_eq!(runtime["language"], "rust");
     assert!(runtime["preferred_workflow_edition"].is_string());
+    assert_eq!(
+        runtime["session_wire_revision"],
+        rlmesh_session::wire::version::WIRE_REVISION
+    );
     let metadata = Model::describe::<Planner>().unwrap();
     assert_eq!(metadata.get("kind"), Some(&Value::Text("model".into())));
 }

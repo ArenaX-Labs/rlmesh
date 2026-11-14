@@ -1,0 +1,339 @@
+Traces {
+    env: {
+        0: [
+            "reset seed=Some(21) options=None obs=4698f8d767af88af:108,2a0cdc78119a762a:12,6d16eef64a45dfc5:16,58b71f522fbd1b58:8,76fbe53fcfccefaa:40,a8c7f832281a39c5:8,756241e1be8c9396:12,44c508d0cef90e34:5,f921091be4163e9e:3,692558b056101a44:16,cf1444eecf128899:10,4d25767f9dce13f5:4,37edb6f1d36a97d5:6,c0d15f70237e5676:32,a3bcd8632a65c405:6,08328807b4eb6fed:2,403ce8fb6acfdd63:12\nstep action=353c828f5c5937bf:28 reward=3fd5555efaf084f1 term=0 trunc=0 obs=2c1ec7fd57aa9b39:108,3036ed583022fdab:12,6d16eef64a45dfc5:16,b25280e7eb9f55e8:8,b73d9e0e1d0e4e56:40,e6bd86443df8ce07:8,3f143152c4e36197:12,6f5e9db6f92a3cd2:5,f9210a1be4164051:3,88201fb960ff6465:16,94ae3562f0c5a270:10,ad2aca7747985764:4,fb4e98c73babab04:6,9c368a15030e7631:32,5ac490f951bee481:6,08328707b4eb6e3a:2,b0872d838aebac0e:12\nstep action=af211f786ee05fd2:28 reward=3fe555a49b0dc64a term=0 trunc=0 obs=1daed76c2af45f39:108,94c74dc6e5f20d5a:12,6d16eef64a45dfc5:16,29176b928835bb8b:8,e65f6fa9c4937965:40,e6bd86443df8ce07:8,d56795d96856d705:12,dc1639d92046cc1a:5,f998341be47bae14:3,581cd0fa58d99645:16,5f99ff16da3d7c38:10,ad2aca7747985764:4,9b4944cf91e16795:6,ba5d06e6e408e707:32,00d7a10e59a3eb05:6,082f2207b4e88cc4:2,6b79300d3ad6b454:12\nstep action=d5d802d025a3764e:28 reward=3ff00057082491b0 term=0 trunc=0 obs=d99baa879c312ede:108,abd3efe6d06e69c4:12,6d16eef64a45dfc5:16,39a17a5aba590591:8,b73d9e0e1d0e4e56:40,89cd31291d2aefa4:8,925d3eec32eef8d7:12,7804b2b6fe0f5854:5,f9246f1be41921c7:3,692558b056101a44:16,e8cf6a9df13d5c4e:10,4d25767f9dce13f5:4,d7e4fcfa299d713d:6,b17c84e03cf254ac:32,5594a110cda26705:6,082f2307b4e88e77:2,a1af90d370746222:12\nstep action=6e7a0ab5c1f9088d:28 reward=3ff5559b7baa53b4 term=0 trunc=0 obs=dfc961b39bc3de61:108,9a0bcd375390237a:12,6d16eef64a45dfc5:16,80355612e355135b:8,efdd30c0868dcab4:40,89cd31291d2aefa4:8,155cedea14c25027:12,44c509d0cef90fe7:5,d94a37186c0d38bf:3,581cd0fa58d99645:16,0e54cd9b626e0b3a:10,ad2aca7747985764:4,d7e196fa299a8e14:6,aed8e0f62678ae45:32,55949d10cda26039:6,082f2307b4e88e77:2,dd4c24a7baa9a82c:12\nstep action=014255133730dd5c:28 reward=3ffaaab45045da47 term=0 trunc=0 obs=b7cf9671ea6722a5:108,5f859afce36f3d98:12,6d16eef64a45dfc5:16,fa54db17ae1f660b:8,d95c1782efe5e8d3:40,e6bd86443df8ce07:8,be144c53799cef27:12,dc12d5d92043ec57:5,d2db201869095f18:3,581cd0fa58d99645:16,363a41b6aec20349:10,4d25767f9dce13f5:4,d7e4fcfa299d713d:6,aa02d8c50849b5bf:32,de30f50e4602aa19:6,082f2307b4e88e77:2,ede91584cd6a8d74:12\nstep action=512c8ceea79ce3ed:28 reward=4000002a3486f04a term=0 trunc=1 obs=ab7ca1f531b93903:108,cbd7b69516eeba09:12,6d16eef64a45dfc5:16,5eb84d038fb77424:8,b73d9e0e1d0e4e56:40,e6bd86443df8ce07:8,7e1ef442cd317605:12,7804b3b6fe0f5a07:5,d94c37186c0dbb96:3,88201fb960ff6465:16,cf3314ccb6cae7df:10,4d25767f9dce13f5:4,37edb6f1d36a97d5:6,6869cf34c23ac911:32,b32f0c6577261211:6,08328807b4eb6fed:2,e8756aa5d53126dc:12",
+        ],
+        1: [
+            "reset seed=Some(22) options=None obs=afa36d4345516f83:108,cd7c8507c9065042:12,6d16eef64a45dfc5:16,5fa7abeb07db1927:8,e65f6fa9c4937965:40,e6bd86443df8ce07:8,5467b0da1d106495:12,d80d6daea7dc809f:5,d949ad186c0c4e41:3,392209f14dea4c24:16,390f48bf63663649:10,4d25767f9dce13f5:4,fb4e98c73babab04:6,b2cb608b445b1522:32,32eef910ba02dfe5:6,082f2307b4e88e77:2,e82e4804ffc4a8ce:12\nstep action=1783dc017fdffb02:28 reward=3fd5567a18833cef term=0 trunc=0 obs=256978ab445eb37f:108,ed84c0ea592ccde4:12,6d16eef64a45dfc5:16,69a8adedac6b974c:8,76fbe53fcfccefaa:40,a8c7f832281a39c5:8,be144c53799cef27:12,4d67b9d0d3db49f3:5,f9246e1be4192014:3,581cd0fa58d99645:16,91ad9462ee381b0f:10,ad2aca7747985764:4,9b45decf91de846c:6,6c4eb526de052ed8:32,28ac44f6f15e5105:6,082f2207b4e88cc4:2,181d006cfeb44e9d:12\nstep action=2d60430437ea9bfc:28 reward=3fe555bfde602b72 term=0 trunc=0 obs=2294ddd209732ae1:108,5b0b402a40f89f07:12,6d16eef64a45dfc5:16,6533c0bcb5e5acd9:8,d95c1782efe5e8d3:40,89cd31291d2aefa4:8,7e1ef442cd317605:12,6f5e9db6f92a3cd2:5,d2db2118690960cb:3,392209f14dea4c24:16,dfe2a8b78878e8c5:10,4d25767f9dce13f5:4,fb4e98c73babab04:6,99a027cb4b304a03:32,f87ad8659e65f305:6,08328807b4eb6fed:2,052b87118b2f5ee4:12\nstep action=cfadc49b29675d85:28 reward=3ff000172c6c6f95 term=0 trunc=0 obs=f4b307ec6fdb3e41:108,8872a4c4ff2f5c1a:12,6d16eef64a45dfc5:16,982f062479ad9e90:8,b73d9e0e1d0e4e56:40,c7c2bf3b330983e6:8,5267e6db86837fb5:12,6f6202b6f92d1e48:5,f997fa1be47b4b86:3,392209f14dea4c24:16,69cfa1cc20f40c64:10,4d25767f9dce13f5:4,37edb6f1d36a97d5:6,8ba79d13b8403767:32,7d6938f9655cb8a1:6,08328707b4eb6e3a:2,5acb4ffd3a2c6699:12\nstep action=57356c7d44dfc6c0:28 reward=3ff555603d0fe432 term=1 trunc=0 obs=e713fcbe31483e49:108,1fd26070967791b0:12,6d16eef64a45dfc5:16,ad0c54d32a892c2b:8,e65f6fa9c4937965:40,89cd31291d2aefa4:8,9d19bb4bd820c026:12,6f6202b6f92d1e48:5,d6c4371869e81f2d:3,88201fb960ff6465:16,fa20d43069c00e29:10,ad2aca7747985764:4,37ea50f1d367b4ac:6,5020971ae2145ffa:32,e0e50a4a79b88619:6,082f2207b4e88cc4:2,bcd349f32912f2a7:12",
+        ],
+        2: [
+            "reset seed=Some(23) options=None obs=7d7fb477efbe445b:108,9fedc5a08c4da1f3:12,6d16eef64a45dfc5:16,db7ce10136f96086:8,17f272243c477780:40,e6bd86443df8ce07:8,3f143152c4e36197:12,e4b8e9d925290626:5,d0a39818672732bf:3,581cd0fa58d99645:16,fa1d6e3069bd2b00:10,ad2aca7747985764:4,d7e4fcfa299d713d:6,dd1b0c2db01fcc7a:32,1b1ffc65b20499d9:6,082f2307b4e88e77:2,7da31978d273236a:12\nstep action=43eddc8298bce216:28 reward=3fd556bee1e0e972 term=0 trunc=0 obs=0497513346fbea08:108,3f854a25ae127bb2:12,6d16eef64a45dfc5:16,911d525d5123608a:8,76fbe53fcfccefaa:40,89cd31291d2aefa4:8,ff1ed9421877e875:12,44c508d0cef90e34:5,d949ac186c0c4c8e:3,581cd0fa58d99645:16,d02e01c952605ad4:10,ad2aca7747985764:4,d7e4fcfa299d713d:6,d796966c68e2bbf0:32,32eef910ba02dfe5:6,08328707b4eb6e3a:2,97138831e5133626:12\nstep action=3e6dedae7b2be407:28 reward=3fe5561b1842a54f term=0 trunc=0 obs=b6ebf62668e0973d:108,756d2eabee3bbd64:12,6d16eef64a45dfc5:16,9c37b9a150cb7453:8,e65f6fa9c4937965:40,89cd31291d2aefa4:8,b26d3ad3304dc324:12,d810d1aea7df6062:5,f9246e1be4192014:3,692558b056101a44:16,0d34109b6178d6b0:10,ad2aca7747985764:4,d7e196fa299a8e14:6,3b9637a9b76ab88b:32,35a38e4cedb99565:6,08328807b4eb6fed:2,10f7b329ea02c0bb:12\nstep action=9b3a7e7a7adf5ee8:28 reward=3ff0001421f5f40e term=0 trunc=0 obs=b6d235a276e38918:108,e859b65449afc8bd:12,6d16eef64a45dfc5:16,fbf85272e4584583:8,17f272243c477780:40,a8c7f832281a39c5:8,155cedea14c25027:12,6f6203b6f92d1ffb:5,d0a6fc18672a1282:3,88201fb960ff6465:16,f5edb6aea8983c39:10,4d25767f9dce13f5:4,fb51fec73bae8e2d:6,8f36352627ff1158:32,0aa089a41edb1ac9:6,08328807b4eb6fed:2,b6c7f886dd8e545c:12\nstep action=377f1f14b508d0e6:28 reward=3ff5559764c45e21 term=1 trunc=0 obs=da14c7d3fbf89f6b:108,a53c224225d3d77b:12,6d16eef64a45dfc5:16,48f0a6723bd16470:8,d95c1782efe5e8d3:40,89cd31291d2aefa4:8,756241e1be8c9396:12,6f6203b6f92d1ffb:5,d2db201869095f18:3,581cd0fa58d99645:16,99a176416fc7c07f:10,4d25767f9dce13f5:4,9b45decf91de846c:6,ea509b7552ac76e5:32,3d5bae4e1418139d:6,08328707b4eb6e3a:2,41f9beafd2f0ca7c:12",
+        ],
+        3: [
+            "reset seed=Some(24) options=None obs=74d0c4497acc7e55:108,e7e043e47170e410:12,6d16eef64a45dfc5:16,ed0cfeb800504acf:8,ce9c4c4b88022baf:40,c7c2bf3b330983e6:8,756241e1be8c9396:12,dc1639d92046cc1a:5,d0a6fd18672a1435:3,581cd0fa58d99645:16,fe19a51349cbee9a:10,4d25767f9dce13f5:4,d7e4fcfa299d713d:6,d1ac53746403dd99:32,c6637c633e06f759:6,08328807b4eb6fed:2,4b329fd51b372276:12\nstep action=98fd706e0c7b72ba:28 reward=3fd55651d49754d4 term=0 trunc=0 obs=e3bdbc9bdae7ff21:108,d9df3c1bcd907ffe:12,6d16eef64a45dfc5:16,ed9e98482a66ff9e:8,e65f6fa9c4937965:40,e6bd86443df8ce07:8,5d24633b2bb54704:12,e0b381aeacc19a6e:5,d0a6fd18672a1435:3,581cd0fa58d99645:16,cc143deecc8606e6:10,4d25767f9dce13f5:4,d7e4fcfa299d713d:6,5c9c74d19042cced:32,a4aa69a6ba1b4cb9:6,082f2307b4e88e77:2,dab2b1ca475fd029:12\nstep action=354a2405183aec17:28 reward=3fe5558fd808229c term=0 trunc=0 obs=c849fe132757a580:108,4199de3c4d175c94:12,6d16eef64a45dfc5:16,54e57195eb7505d2:8,e65f6fa9c4937965:40,e6bd86443df8ce07:8,f26292e3dcb93c46:12,d80d6daea7dc809f:5,d0a6fd18672a1435:3,88201fb960ff6465:16,c9dbc1c3cac41625:10,ad2aca7747985764:4,d7e196fa299a8e14:6,5667d75fda4fea91:32,1b1ffc65b20499d9:6,082f2307b4e88e77:2,7854448c47875ad6:12\nstep action=a0dae60b60e8eab7:28 reward=3ff0004732c4786a term=0 trunc=0 obs=eecbcc05a5b18793:108,5f9cc239a535a989:12,6d16eef64a45dfc5:16,21c0a1c73c385f9a:8,efdd30c0868dcab4:40,89cd31291d2aefa4:8,945d08eac97bddb7:12,dc1639d92046cc1a:5,d0a39818672732bf:3,392209f14dea4c24:16,a972c6c5fdd77389:10,ad2aca7747985764:4,9b45decf91de846c:6,2d84ec2845246858:32,72924da459bb0acd:6,08328707b4eb6e3a:2,b9796beb86f6dcb9:12\nstep action=6257953c2f29910b:28 reward=3ff55583c906271a term=0 trunc=0 obs=f14fc93c09375c23:108,ad7da14f06e7f581:12,6d16eef64a45dfc5:16,3e12cfa324c684ac:8,b73d9e0e1d0e4e56:40,e6bd86443df8ce07:8,5467b0da1d106495:12,d810d1aea7df6062:5,f997fb1be47b4d39:3,581cd0fa58d99645:16,5b20d4e1eeb79682:10,ad2aca7747985764:4,9b45decf91de846c:6,782b63940cf74385:32,3d5bae4e1418139d:6,082f2207b4e88cc4:2,fd2fe2c9c4a6a228:12\nstep action=d8f57806c513f1a1:28 reward=3ffaaad3096e8561 term=0 trunc=0 obs=5437dbb77e47533c:108,0a584bb8a3781502:12,6d16eef64a45dfc5:16,0e3ca08a62fb7346:8,ce9c4c4b88022baf:40,e6bd86443df8ce07:8,925d3eec32eef8d7:12,4d6b1ed0d3de2b69:5,d94d11186c0f2e04:3,88201fb960ff6465:16,8f3cea9934b7a4ca:10,ad2aca7747985764:4,9b45decf91de846c:6,7f69d9e79fc0ed12:32,32ef7510ba03b299:6,08328707b4eb6e3a:2,80921fc75ba4c1e7:12\nstep action=b5cf9a41db82b7d1:28 reward=400000340fd2051b term=1 trunc=0 obs=15f5911468d86b34:108,323e07e2ba7bfc9b:12,6d16eef64a45dfc5:16,707829e6a7624b28:8,76fbe53fcfccefaa:40,c7c2bf3b330983e6:8,3d1467542e567cb7:12,e0b382aeacc19c21:5,f921091be4163e9e:3,88201fb960ff6465:16,b636fb840e38eff2:10,ad2aca7747985764:4,37edb6f1d36a97d5:6,207e652b8e7a14a1:32,d7e4fcfa299d713d:6,082f2307b4e88e77:2,9dce1cfb9704ec5e:12",
+        ],
+        4: [
+            "reset seed=Some(25) options=None obs=ec6106657008a535:108,83b3b32af21b209f:12,6d16eef64a45dfc5:16,2f64cf539fd341d2:8,efdd30c0868dcab4:40,a8c7f832281a39c5:8,925d3eec32eef8d7:12,44c508d0cef90e34:5,d0a6fc18672a1282:3,692558b056101a44:16,5e225f0af3991532:10,4d25767f9dce13f5:4,d7e4fcfa299d713d:6,1fe04fe36287ec9d:32,32ef7910ba03b965:6,08328807b4eb6fed:2,7dee7e00768944e8:12\nstep action=91caf99cb9582c25:28 reward=3fd5556eeb2890d1 term=0 trunc=0 obs=ccbf0cb5c302424c:108,1511c8aec833a138:12,6d16eef64a45dfc5:16,a820b06672c430df:8,e65f6fa9c4937965:40,c7c2bf3b330983e6:8,fd1f0f4381eb0395:12,44c509d0cef90fe7:5,f9246f1be41921c7:3,392209f14dea4c24:16,94b19b62f0c88599:10,4d25767f9dce13f5:4,9b45decf91de846c:6,9e89044431c0e6c8:32,e5ea810f6c6392d5:6,082f2307b4e88e77:2,ad7c6c825d1acdd1:12\nstep action=31d4d983fc8d4f9d:28 reward=3fe555bcb911bd50 term=0 trunc=0 obs=df75f80eaf1f43ac:108,c112c38823f37cb2:12,6d16eef64a45dfc5:16,0b34428f2b617d65:8,17f272243c477780:40,c7c2bf3b330983e6:8,925d3eec32eef8d7:12,e4bc4fd9252be94f:5,d0a30e1867264841:3,88201fb960ff6465:16,e9d799c4755b6aa9:10,ad2aca7747985764:4,d7e4fcfa299d713d:6,65d026825339f18c:32,e5ea950f6c63b4d1:6,082f2307b4e88e77:2,159ab31c3e89e765:12\nstep action=a78d0990b182d6eb:28 reward=3ff0002462b5d7be term=0 trunc=0 obs=cf835dcae657c663:108,1673e98ba8c0eb3b:12,6d16eef64a45dfc5:16,935ed25a0504d55b:8,76fbe53fcfccefaa:40,89cd31291d2aefa4:8,5467b0da1d106495:12,7804b2b6fe0f5854:5,f9246f1be41921c7:3,692558b056101a44:16,cf2faeccb6c804b6:10,ad2aca7747985764:4,fb51fec73bae8e2d:6,0e1b54bc006c9628:32,3d5c2a4e1418e651:6,08328807b4eb6fed:2,58fd21dd236a1040:12\nstep action=c1643c03e73bdb3f:28 reward=3ff555794cab62a8 term=0 trunc=0 obs=e845baf548583b1f:108,240e4670f81a4608:12,6d16eef64a45dfc5:16,d50ba6cfc059fd61:8,e65f6fa9c4937965:40,a8c7f832281a39c5:8,155cedea14c25027:12,e0b381aeacc19a6e:5,d2db201869095f18:3,88201fb960ff6465:16,e69fe710ece3cc1f:10,4d25767f9dce13f5:4,fb4e98c73babab04:6,4d121ab0c4d0afc1:32,e0e58a4a79b95f99:6,08328807b4eb6fed:2,185d445d78a8ee72:12\nstep action=b75bb56342527712:28 reward=3ffaaad82cc3f4ff term=0 trunc=0 obs=f40f06ea83b30050:108,09f35f78a642863d:12,6d16eef64a45dfc5:16,e7eaf0bb94ae7672:8,efdd30c0868dcab4:40,a8c7f832281a39c5:8,5d24633b2bb54704:12,780818b6fe123b7d:5,d949ac186c0c4c8e:3,581cd0fa58d99645:16,91ad9462ee381b0f:10,ad2aca7747985764:4,9b45decf91de846c:6,a9b5c059222fa8c8:32,4febeda4461a4b05:6,08328807b4eb6fed:2,f2cb0b233572c513:12\nstep action=1e458b27f6c2abd9:28 reward=4000002d59d55e6c term=0 trunc=1 obs=1cdc6f919c8a1fa6:108,ff5e4d8822d16b24:12,6d16eef64a45dfc5:16,31e8662a820296e1:8,e65f6fa9c4937965:40,a8c7f832281a39c5:8,f26292e3dcb93c46:12,6f6202b6f92d1e48:5,f9246e1be4192014:3,88201fb960ff6465:16,fe1d0b1349ced1c3:10,4d25767f9dce13f5:4,fb4e98c73babab04:6,88cfa17addab1fcf:32,060690f6ddbeb581:6,082f2207b4e88cc4:2,b90467609006f4ad:12",
+        ],
+        5: [
+            "reset seed=Some(26) options=None obs=c56512bcab24354f:108,3139b3ceba2dd7c7:12,6d16eef64a45dfc5:16,a4cf4352b70eb29b:8,efdd30c0868dcab4:40,e6bd86443df8ce07:8,756241e1be8c9396:12,d80d6daea7dc809f:5,f921091be4163e9e:3,392209f14dea4c24:16,47ba910897988d8e:10,4d25767f9dce13f5:4,fb4e98c73babab04:6,a5b2880d389fa195:32,a3bcd8632a65c405:6,08328807b4eb6fed:2,3b58b6b66e6a549b:12\nstep action=040bc23c4ff32b14:28 reward=3fd55652ab56e9aa term=0 trunc=0 obs=a6cf44ada4a9c98d:108,7c418c47d44acff9:12,6d16eef64a45dfc5:16,6fc0f318d199c285:8,e65f6fa9c4937965:40,89cd31291d2aefa4:8,de24483a76fbb974:12,e0b381aeacc19a6e:5,d2db0e1869094082:3,392209f14dea4c24:16,e966cdcb6b079b73:10,ad2aca7747985764:4,d7e196fa299a8e14:6,347437ac9068ac6c:32,35a30e4cedb8bbe5:6,082f2307b4e88e77:2,5edd36f740f66baa:12\nstep action=c3d6956035843d2f:28 reward=3fe555fe92d0e0e7 term=0 trunc=0 obs=64e159fa0baeacd5:108,d08755c6c9aadd9f:12,6d16eef64a45dfc5:16,c4586d49c8721a21:8,ce9c4c4b88022baf:40,a8c7f832281a39c5:8,945d08eac97bddb7:12,d80d6daea7dc809f:5,d2db201869095f18:3,581cd0fa58d99645:16,bbb8a83d2cd14ddb:10,4d25767f9dce13f5:4,fb51fec73bae8e2d:6,afc69e222e2a0d78:32,e5eb150f6c648e51:6,082f2207b4e88cc4:2,dedee9dcaa8dc2c1:12\nstep action=8af97d406f9b08e3:28 reward=3ff0005285ded1b2 term=0 trunc=0 obs=ff02b12a435dd416:108,2bb13b71e009b2b3:12,6d16eef64a45dfc5:16,8f7d284c7e06f1ca:8,e65f6fa9c4937965:40,89cd31291d2aefa4:8,b26d3ad3304dc324:12,6f5e9db6f92a3cd2:5,d6c4371869e81f2d:3,88201fb960ff6465:16,6fc9a757cb71203a:10,4d25767f9dce13f5:4,fb51fec73bae8e2d:6,9e002adf5660ed13:32,58492e4d01590eed:6,082f2207b4e88cc4:2,d37f23e76647c657:12\nstep action=bbc33a7a29d90bf9:28 reward=3ff55575509d5fb0 term=0 trunc=0 obs=8945d0bfd3617bdb:108,2fba7b994e221cd5:12,6d16eef64a45dfc5:16,fe0aead4bb9e8feb:8,efdd30c0868dcab4:40,a8c7f832281a39c5:8,d56795d96856d705:12,e4b8e9d925290626:5,d949ac186c0c4c8e:3,392209f14dea4c24:16,f51e8b2919325fa9:10,ad2aca7747985764:4,37ea50f1d367b4ac:6,fb7bfbb753a7c399:32,1b1ffc65b20499d9:6,082f2307b4e88e77:2,11b88c800c61edc4:12\nstep action=333957148402e627:28 reward=3ffaaab145cf5ebf term=0 trunc=0 obs=6bac722c8c413e8f:108,d86eb3f11407ec80:12,6d16eef64a45dfc5:16,fe115401535f3422:8,e65f6fa9c4937965:40,c7c2bf3b330983e6:8,be144c53799cef27:12,d80d6caea7dc7eec:5,d6c3f91869e7b5d3:3,88201fb960ff6465:16,b5496e840d6f6691:10,4d25767f9dce13f5:4,d7e196fa299a8e14:6,37b93e7d248474a5:32,729295a459bb8525:6,082f2307b4e88e77:2,5629ee441ee28fa3:12\nstep action=97ef9c688c9c389e:28 reward=4000001040bfe3b0 term=0 trunc=0 obs=8d3ab7b65b2fa63b:108,2c171ccbd5fb226f:12,6d16eef64a45dfc5:16,85a352648eaa455a:8,efdd30c0868dcab4:40,c7c2bf3b330983e6:8,5d24633b2bb54704:12,7804b3b6fe0f5a07:5,f9210a1be4164051:3,88201fb960ff6465:16,dcf1970a3d033b18:10,4d25767f9dce13f5:4,37ea50f1d367b4ac:6,817e9b6181b31117:32,c74f15a6cdb927a5:6,08328807b4eb6fed:2,751a2d5bee164331:12\nstep action=cd548f5a2147e234:28 reward=4002aace8728c563 term=1 trunc=0 obs=afb17ac960c85bf3:108,d521967c70cc8853:12,6d16eef64a45dfc5:16,863a1597d274da01:8,76fbe53fcfccefaa:40,c7c2bf3b330983e6:8,7e1ef442cd317605:12,dc1639d92046cc1a:5,f997fb1be47b4d39:3,392209f14dea4c24:16,39cb0bbf640674d3:10,4d25767f9dce13f5:4,37edb6f1d36a97d5:6,382cd0dfec13ffed:32,28ac3cf6f15e436d:6,082f2207b4e88cc4:2,6e532b5546ea0d8d:12",
+        ],
+        6: [
+            "reset seed=Some(27) options=None obs=67b272b2e184bead:108,2d98ef69a25c8e34:12,6d16eef64a45dfc5:16,8f4ee21aac293b54:8,76fbe53fcfccefaa:40,e6bd86443df8ce07:8,ff1ed9421877e875:12,e4b8e9d925290626:5,d6c4371869e81f2d:3,581cd0fa58d99645:16,1bf45b697eab2f66:10,ad2aca7747985764:4,d7e4fcfa299d713d:6,4ff34fbe745eb631:32,c66380633e06fe25:6,08328807b4eb6fed:2,cd7c681f086b0fdb:12\nstep action=a3b8a52ba090a622:28 reward=3fd555d908d39c83 term=0 trunc=0 obs=54abc67b400b6c99:108,3d9efe25db436193:12,6d16eef64a45dfc5:16,b010a31f7d926ae8:8,b73d9e0e1d0e4e56:40,89cd31291d2aefa4:8,5467b0da1d106495:12,dc163ad92046cdcd:5,d0a397186727310c:3,581cd0fa58d99645:16,94c014d3bf132aa0:10,ad2aca7747985764:4,37ea50f1d367b4ac:6,73ec1bd2c99805b2:32,a4aa69a6ba1b4cb9:6,08328707b4eb6e3a:2,2a7a8ce0b82f4976:12\nstep action=0560cbf60ba60348:28 reward=3fe5557d99413d70 term=0 trunc=0 obs=39cdcae25c3c7088:108,fa75f2dcc5a7250c:12,6d16eef64a45dfc5:16,ee4536f5b4eca8ca:8,76fbe53fcfccefaa:40,a8c7f832281a39c5:8,f4625ce273462126:12,7804b3b6fe0f5a07:5,d0a39818672732bf:3,692558b056101a44:16,d02e01c952605ad4:10,ad2aca7747985764:4,fb51fec73bae8e2d:6,7a00756d55c20a00:32,32eef510ba02d919:6,08328807b4eb6fed:2,6e5e06a47392dcf3:12\nstep action=dd04bf1b10d60124:28 reward=3ff0000eae18ac9f term=0 trunc=0 obs=02912736d901c535:108,a920dbbc3aff429f:12,6d16eef64a45dfc5:16,138882bbfcdcb50d:8,d95c1782efe5e8d3:40,a8c7f832281a39c5:8,356ce9d112211a74:12,d80d6caea7dc7eec:5,d0a397186727310c:3,88201fb960ff6465:16,f1252cd0f3d9a6ac:10,4d25767f9dce13f5:4,9b45decf91de846c:6,d46acec28740b6ad:32,d7e5a0fa299e87e9:6,08328707b4eb6e3a:2,8e64bc17437984f8:12\nstep action=b8e9229cbfebaafd:28 reward=3ff55596732cd6b1 term=0 trunc=0 obs=bd7c992991144554:108,6373208b83be48c9:12,6d16eef64a45dfc5:16,1147ad159ec928e3:8,efdd30c0868dcab4:40,89cd31291d2aefa4:8,b26d3ad3304dc324:12,e4bc4fd9252be94f:5,d0a6fc18672a1282:3,692558b056101a44:16,2a23136eea438422:10,ad2aca7747985764:4,fb51fec73bae8e2d:6,45ead008c5271490:32,a3bcd8632a65c405:6,082f2307b4e88e77:2,f423e9753aef2b38:12\nstep action=39bf57ce41a24861:28 reward=3ffaaae2f9a69141 term=0 trunc=0 obs=eb854d3490889cf3:108,54dc83fad907479f:12,6d16eef64a45dfc5:16,4c3d8273ca0f2279:8,d95c1782efe5e8d3:40,a8c7f832281a39c5:8,f26292e3dcb93c46:12,44c508d0cef90e34:5,f997fb1be47b4d39:3,692558b056101a44:16,e9d799c4755b6aa9:10,4d25767f9dce13f5:4,d7e4fcfa299d713d:6,19012c9d477e9071:32,35a38e4cedb99565:6,08328707b4eb6e3a:2,1c5d073751ab2479:12\nstep action=8be57f80c70672c1:28 reward=400000121682f944 term=0 trunc=0 obs=8f254faa19627810:108,b3565cd8ad64e2e1:12,6d16eef64a45dfc5:16,3781e8a332635fb7:8,76fbe53fcfccefaa:40,c7c2bf3b330983e6:8,945d08eac97bddb7:12,dc163ad92046cdcd:5,d0a6fc18672a1282:3,88201fb960ff6465:16,c5d1fd5b35430012:10,ad2aca7747985764:4,d7e4fcfa299d713d:6,0e8ae08a959e5cda:32,038bae4a8d59b96d:6,08328807b4eb6fed:2,a5addad6ab0a2705:12\nstep action=6fccefc158d63ede:28 reward=4002aab0da6f9454 term=1 trunc=0 obs=e83b35a9fb0a8604:108,7d978cce6332d39a:12,6d16eef64a45dfc5:16,a8b1427bd19289ee:8,b73d9e0e1d0e4e56:40,89cd31291d2aefa4:8,945d08eac97bddb7:12,780817b6fe1239ca:5,d0a397186727310c:3,692558b056101a44:16,9d5bfdd65e951c46:10,4d25767f9dce13f5:4,d7e196fa299a8e14:6,97d2f07c6002191d:32,f87ad8659e65f305:6,08328707b4eb6e3a:2,8c5d666958d93859:12",
+        ],
+    },
+    model: [
+        "2x 075b5f8263ec6b62 -> [0.53, -0.83000004, 0.278, -0.30200005, 0.49099994, 0.16499996, 0.62399995, 0.54699993, 0.051999927, 0.4009999, 0.319, 0.08699989, -0.822, -0.906]",
+        "2x 25e0d4d058dd52f8 -> [-0.55200005, -0.90000004, -0.21000004, -1.115, -0.1220001, 0.36699998, 0.83299994, -0.13800001, -0.72, -0.878, 0.37099993, -0.62500006, -0.29200006, 0.80500007]",
+        "2x 28b76eff681f2c7c -> [0.5819999, -0.31800002, 0.18900001, -0.73600006, 0.263, 1.1789999, -0.62900007, -0.697, 1.1959999, -0.24700004, -0.52500004, 0.32299995, 0.013999939, 0.6559999]",
+        "2x 531d9abbc01ab32d -> [0.2479999, -1.189, -0.7900001, 0.71299994, -0.61700004, 0.34599996, -0.906, 0.852, -0.78800005, 1.1559999, -0.7110001, 0.85800004, 0.12199998, -1.141]",
+        "2x 57fa8e832fe26044 -> [1.1959999, -1.01, -0.33200008, -0.37000006, 0.81500006, 0.51399994, -0.25200003, -0.52000004, 0.553, -1.0170001, -0.48000002, 0.030999899, -1.052, 0.775]",
+        "2x 613658ca7beccc95 -> [-0.45200002, 0.5849999, 0.32999992, -0.82100004, -0.55700004, -0.628, 0.29299998, -1.1520001, 0.74599993, 1.118, -0.97400004, -1.001, 0.7809999, -0.009000063]",
+        "2x 63e5f154c6deec21 -> [-0.47800004, 0.48599994, 0.329, 0.68299997, -0.9660001, -0.47800004, -0.48800004, 0.7249999, -0.86700004, -0.30200005, -0.08200002, -0.42300004, -0.88000005, -0.24600005]",
+        "2x 6ec416d134c8276a -> [0.37, 1.03, -0.055999994, -0.86600006, 1.023, -0.9200001, 0.26, 0.449, -1.0810001, 0.31599998, -0.975, 0.45599997, -0.67100006, 1.1759999]",
+        "2x 759f5d2b6c3576b2 -> [-0.61500007, 0.6689999, -0.41400003, 0.29699993, 0.83099985, 1.02, -0.66600007, -0.88600004, 0.12199998, -0.57600003, -0.06400001, 0.52699995, 0.17299998, 0.83099985]",
+        "2x 7cdb8989db592f52 -> [-0.30000007, 1.019, -0.50400007, 1.004, 1.0439999, -1.105, -0.26600003, -0.06800008, 0.788, 0.706, 0.967, -0.42100006, 1.1829998, -0.33000004]",
+        "2x 83c6e70294e71bad -> [-0.27600002, -0.027999997, 0.737, -0.66300005, -0.41100007, 0.5869999, -0.25900006, -0.86700004, 0.8139999, 0.9749999, -0.62700003, 0.32499993, 1.119, 0.467]",
+        "2x 8e671f99b15657ce -> [-0.013000011, -0.21200007, 0.85899997, -1.149, -0.77700007, -0.63600004, 1.0539999, 1.092, 1.063, 0.020999908, 0.49699998, -0.44800007, -1.0070001, -0.43200004]",
+        "2x 979f01b666ba1296 -> [-0.78700006, 0.082999945, 0.788, -0.512, 0.88100004, -0.19500005, 0.046000004, -0.18400002, -0.72300005, 0.7939999, 0.533, -0.20900005, -0.79700005, 0.9519999]",
+        "2x a998d30a82bf9d13 -> [1.1659999, -0.009000063, 0.5489999, -0.86200005, 0.95799994, -0.23600006, 0.93799996, 0.4979999, -0.90200007, -0.30700004, -0.61500007, -1.1750001, 0.7149999, 0.51199996]",
+        "2x bb119bd93087adba -> [-0.14400005, 0.515, 0.49099994, -0.14200008, 1.0279999, 0.63899994, 0.52, 0.04100001, -0.88500005, 1.171, 1.181, -1.0400001, -0.70900005, -0.37800002]",
+        "2x bce4370a307709eb -> [1.082, -1.033, 0.13399994, 1.007, -0.33900005, -0.07800007, 0.99099994, -0.15400004, 0.9549999, -0.38700002, -0.48600006, 0.94499993, 0.30299997, -0.5590001]",
+        "2x c5a074d0e38e5605 -> [0.30699992, -0.37300003, 0.95000005, 1.096, -0.45700008, 0.7299999, -0.73200005, -0.819, -0.47600007, 0.81500006, 0.6029999, -0.27800006, -0.26700002, -1.041]",
+        "2x ca9aa5c0c67a3242 -> [-0.84800005, -1.1980001, 0.2939999, -0.59200007, -0.58100003, -0.85300004, -0.69100004, 0.095999956, -1.039, 0.5209999, -0.88500005, -0.23200005, -1.187, -0.29300004]",
+        "2x d63abace0c9258b2 -> [-0.52500004, -0.92300004, -0.59700006, -0.032999992, -0.78900003, 1.128, -0.51800007, 0.32299995, -0.39000005, 1.0, -0.81100005, 0.888, 1.108, 0.579]",
+        "2x e2351829bd739067 -> [0.8499999, -0.76000005, 0.6099999, -1.018, 0.454, 0.86699986, -0.12100005, 0.339, -0.72400004, 0.22099996, -0.59800005, 0.63899994, -1.1930001, 0.8109999]",
+        "2x f803be19e394c902 -> [0.94499993, -1.2, 0.21799994, 0.052999973, 0.7609999, -0.20000005, 0.742, -0.68900007, 0.1559999, -1.189, -1.0300001, -0.82800007, 0.67999995, -1.008]",
+    ],
+    steps: [
+        (
+            Some(
+                21,
+            ),
+            0,
+            "obs=bc46dcfd81f6cf8c action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fd5555efaf084f1 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(0.6666712666666667)})",
+        ),
+        (
+            Some(
+                21,
+            ),
+            1,
+            "obs=8004aa0c438f4396 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fe555a49b0dc64a term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(1.3334089333333332)})",
+        ),
+        (
+            Some(
+                21,
+            ),
+            2,
+            "obs=2223eb57783fda3f action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff00057082491b0 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.000166)})",
+        ),
+        (
+            Some(
+                21,
+            ),
+            3,
+            "obs=c7936681e8ebb777 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff5559b7baa53b4 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.6668004666666665)})",
+        ),
+        (
+            Some(
+                21,
+            ),
+            4,
+            "obs=316f79d3ce572625 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ffaaab45045da47 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(3.3333517333333336)})",
+        ),
+        (
+            Some(
+                21,
+            ),
+            5,
+            "obs=826433631428c441 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=4000002a3486f04a term=false trunc=true info=Metadata({\"is_success\": Bool(false), \"x\": Float(4.000161)})",
+        ),
+        (
+            Some(
+                22,
+            ),
+            0,
+            "obs=2223eb57783fda3f action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fd5567a18833cef term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(0.6668062666666666)})",
+        ),
+        (
+            Some(
+                22,
+            ),
+            1,
+            "obs=bc46dcfd81f6cf8c action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fe555bfde602b72 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(1.3334349333333333)})",
+        ),
+        (
+            Some(
+                22,
+            ),
+            2,
+            "obs=469e506a9605576c action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff000172c6c6f95 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.0000442)})",
+        ),
+        (
+            Some(
+                22,
+            ),
+            3,
+            "obs=ae992ac6e8d8babd action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff555603d0fe432 term=true trunc=false info=Metadata({\"is_success\": Bool(true), \"x\": Float(2.6666874666666667)})",
+        ),
+        (
+            Some(
+                23,
+            ),
+            0,
+            "obs=ae4fc933b9f6d74c action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fd556bee1e0e972 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(0.6668390666666666)})",
+        ),
+        (
+            Some(
+                23,
+            ),
+            1,
+            "obs=5e4205d069fa02ab action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fe5561b1842a54f term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(1.3335219333333332)})",
+        ),
+        (
+            Some(
+                23,
+            ),
+            2,
+            "obs=d326a8822ba2501e action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff0001421f5f40e term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.0000384)})",
+        ),
+        (
+            Some(
+                23,
+            ),
+            3,
+            "obs=35f5aaa21116a9ba action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff5559764c45e21 term=true trunc=false info=Metadata({\"is_success\": Bool(true), \"x\": Float(2.6667926666666664)})",
+        ),
+        (
+            Some(
+                24,
+            ),
+            0,
+            "obs=9a050e30cfda4176 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fd55651d49754d4 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(0.6667870666666667)})",
+        ),
+        (
+            Some(
+                24,
+            ),
+            1,
+            "obs=2223eb57783fda3f action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fe5558fd808229c term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(1.3333891333333332)})",
+        ),
+        (
+            Some(
+                24,
+            ),
+            2,
+            "obs=2223eb57783fda3f action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff0004732c4786a term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.0001358)})",
+        ),
+        (
+            Some(
+                24,
+            ),
+            3,
+            "obs=316f79d3ce572625 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff55583c906271a term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.6667552666666667)})",
+        ),
+        (
+            Some(
+                24,
+            ),
+            4,
+            "obs=8004aa0c438f4396 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ffaaad3096e8561 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(3.3334103333333336)})",
+        ),
+        (
+            Some(
+                24,
+            ),
+            5,
+            "obs=6789e1d08d646b9d action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=400000340fd2051b term=true trunc=false info=Metadata({\"is_success\": Bool(true), \"x\": Float(4.0001986)})",
+        ),
+        (
+            Some(
+                25,
+            ),
+            0,
+            "obs=7910d10cca74623e action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fd5556eeb2890d1 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(0.6666788666666666)})",
+        ),
+        (
+            Some(
+                25,
+            ),
+            1,
+            "obs=858c1a3ba450cca0 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fe555bcb911bd50 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(1.3334319333333333)})",
+        ),
+        (
+            Some(
+                25,
+            ),
+            2,
+            "obs=e74a4f9303a8916b action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff0002462b5d7be term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.0000694)})",
+        ),
+        (
+            Some(
+                25,
+            ),
+            3,
+            "obs=5e4205d069fa02ab action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff555794cab62a8 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.6667352666666666)})",
+        ),
+        (
+            Some(
+                25,
+            ),
+            4,
+            "obs=a08ad950f77a5585 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ffaaad82cc3f4ff term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(3.3334201333333335)})",
+        ),
+        (
+            Some(
+                25,
+            ),
+            5,
+            "obs=7910d10cca74623e action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=4000002d59d55e6c term=false trunc=true info=Metadata({\"is_success\": Bool(false), \"x\": Float(4.000173)})",
+        ),
+        (
+            Some(
+                26,
+            ),
+            0,
+            "obs=2f6295921da773c0 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fd55652ab56e9aa term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(0.6667874666666667)})",
+        ),
+        (
+            Some(
+                26,
+            ),
+            1,
+            "obs=d326a8822ba2501e action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fe555fe92d0e0e7 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(1.3334947333333333)})",
+        ),
+        (
+            Some(
+                26,
+            ),
+            2,
+            "obs=64b384a88a84c3d7 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff0005285ded1b2 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.0001574)})",
+        ),
+        (
+            Some(
+                26,
+            ),
+            3,
+            "obs=d326a8822ba2501e action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff55575509d5fb0 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.6667276666666666)})",
+        ),
+        (
+            Some(
+                26,
+            ),
+            4,
+            "obs=7910d10cca74623e action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ffaaab145cf5ebf term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(3.3333459333333333)})",
+        ),
+        (
+            Some(
+                26,
+            ),
+            5,
+            "obs=858c1a3ba450cca0 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=4000001040bfe3b0 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(4.000062)})",
+        ),
+        (
+            Some(
+                26,
+            ),
+            6,
+            "obs=d05d8e3a5f5828df action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=4002aace8728c563 term=true trunc=false info=Metadata({\"is_success\": Bool(true), \"x\": Float(4.666803466666667)})",
+        ),
+        (
+            Some(
+                27,
+            ),
+            0,
+            "obs=eab124ec8ed169fa action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fd555d908d39c83 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(0.6667294666666667)})",
+        ),
+        (
+            Some(
+                27,
+            ),
+            1,
+            "obs=c7936681e8ebb777 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3fe5557d99413d70 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(1.3333717333333333)})",
+        ),
+        (
+            Some(
+                27,
+            ),
+            2,
+            "obs=bc46dcfd81f6cf8c action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff0000eae18ac9f term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.000028)})",
+        ),
+        (
+            Some(
+                27,
+            ),
+            3,
+            "obs=6bca53b9652d178b action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ff55596732cd6b1 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(2.6667908666666666)})",
+        ),
+        (
+            Some(
+                27,
+            ),
+            4,
+            "obs=316f79d3ce572625 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=3ffaaae2f9a69141 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(3.3334407333333336)})",
+        ),
+        (
+            Some(
+                27,
+            ),
+            5,
+            "obs=6bca53b9652d178b action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=400000121682f944 term=false trunc=false info=Metadata({\"is_success\": Bool(false), \"x\": Float(4.000069)})",
+        ),
+        (
+            Some(
+                27,
+            ),
+            6,
+            "obs=51b852d1865d8a61 action=Tensor(Tensor(dtype=\"float32\", shape=[7], bytes=28)) reward=4002aab0da6f9454 term=true trunc=false info=Metadata({\"is_success\": Bool(true), \"x\": Float(4.6666902666666665)})",
+        ),
+    ],
+    episodes: [
+        "seed=Some(21) steps=6 reward=401c004952596928 term=false trunc=true success=Some(false)",
+        "seed=Some(22) steps=4 reward=400aaafaef669c5e term=true trunc=false success=Some(true)",
+        "seed=Some(23) steps=4 reward=400aab3465a9ef9a term=true trunc=false success=Some(true)",
+        "seed=Some(24) steps=6 reward=401c0058a181c568 term=true trunc=false success=Some(true)",
+        "seed=Some(25) steps=6 reward=401c0042a9c8bbc6 term=false trunc=true success=Some(false)",
+        "seed=Some(26) steps=7 reward=4022aad9540b61a5 term=true trunc=false success=Some(true)",
+        "seed=Some(27) steps=7 reward=4022aac86174d6b3 term=true trunc=false success=Some(true)",
+    ],
+}

@@ -1,11 +1,7 @@
 //! Live viewer configuration and session driver.
 use crate::env::factory::{py_float, py_str};
-use crate::{Error, Result, RunContext, Value};
-use std::{
-    fmt,
-    str::FromStr,
-    time::{Duration, Instant},
-};
+use crate::{Error, Result, Value};
+use std::{fmt, str::FromStr, time::Duration};
 
 /// Where to display live frames.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -306,149 +302,66 @@ pub(crate) fn read_frame(read: &crate::ReadFn, camera: &str) -> Option<Frame> {
     frame(&read(&image.into()).ok()?)
 }
 
-pub(crate) struct ViewerDriver {
-    options: View,
-    viewer: Option<rlmesh_viewer::Viewer>,
-    disabled: bool,
-    pub(crate) quit: bool,
-    next_step: Option<Instant>,
-    last: Option<Value>,
-    hud: rlmesh_viewer::Hud,
-}
-impl ViewerDriver {
-    pub(crate) fn new(options: View) -> Self {
-        Self {
-            options,
-            viewer: None,
-            disabled: false,
-            quit: false,
-            next_step: None,
-            last: None,
-            hud: Default::default(),
-        }
-    }
-    pub(crate) fn feed(
-        &mut self,
-        ctx: &dyn RunContext,
-        obs: Value,
-        hud: rlmesh_viewer::Hud,
-    ) -> Result<bool> {
-        if self.disabled {
-            return Ok(false);
-        }
-        let mut sources = ctx.frame_sources()?;
-        if self.viewer.is_none() {
-            if sources.labels().is_empty() {
-                self.disabled = true;
-                crate::warnings::warn(
-                    crate::WarningCategory::UserWarning,
-                    "rlmesh view: env declares no image roles and has no rgb render mode; viewer disabled.",
-                )?;
-                return Ok(false);
-            }
-            use rlmesh_viewer::{Backend, FrameFormat, Viewer};
-            let backends = match self.options.backend {
-                ViewBackend::Terminal => vec![Backend::Terminal],
-                ViewBackend::Http => vec![Backend::Http(self.options.port)],
-                ViewBackend::Both => vec![Backend::Terminal, Backend::Http(self.options.port)],
-            };
-            let format = match self.options.format {
-                ViewFormat::Jpeg => FrameFormat::Jpeg(self.options.quality),
-                ViewFormat::Png => FrameFormat::Png,
-            };
-            let viewer = Viewer::new(
-                &backends,
-                self.options.fps.min(u32::MAX as u64) as u32,
-                format,
-            );
-            for message in viewer.warnings() {
-                crate::warnings::warn(
-                    crate::WarningCategory::UserWarning,
-                    format!("rlmesh view: {message}"),
-                )?;
-            }
-            let labels = sources.labels();
-            let selected = self
-                .options
-                .source
-                .as_ref()
-                .filter(|source| labels.contains(source))
-                .or(sources.default_label().as_ref())
-                .and_then(|s| labels.iter().position(|l| l == s))
-                .unwrap_or(0);
-            viewer.set_sources(labels, selected);
-            self.viewer = Some(viewer);
-        }
-        let viewer = self.viewer.as_ref().expect("viewer was initialized above");
-        if viewer.wants_frame() {
-            let selected = viewer.selected_source();
-            let value = if selected == sources.render_label
-                && let Some(render) = sources.render.as_mut()
-            {
-                render.call().ok()
-            } else {
-                selected.and_then(|s| {
-                    let mut image = crate::adapters::Image::new(s);
-                    image.layout = crate::adapters::ImageLayout::Hwc;
-                    ctx.read(&obs, &image.into()).ok()
-                })
-            };
-            if let Some(frame) = value.as_ref().and_then(frame) {
-                viewer.feed_frame(&frame.data, frame.width, frame.height, frame.channels);
-                self.hud.width = frame.width;
-                self.hud.height = frame.height;
-            }
-        }
-        self.last = Some(obs);
-        self.hud = rlmesh_viewer::Hud {
-            width: self.hud.width,
-            height: self.hud.height,
-            ..hud
-        };
-        viewer.feed_hud(self.hud.clone());
-        self.quit |= viewer.should_quit();
-        Ok(viewer.take_skip() || self.quit)
-    }
-    pub(crate) fn delay(&mut self) -> Duration {
-        let Some(hz) = self.options.step_hz else {
-            return Duration::ZERO;
-        };
-        if self.quit {
-            return Duration::ZERO;
-        }
-        let period = Duration::try_from_secs_f64(1.0 / hz).unwrap_or(Duration::MAX);
-        let now = Instant::now();
-        let due = self.next_step.filter(|due| *due >= now);
-        self.next_step = due.unwrap_or(now).checked_add(period);
-        due.map_or(Duration::ZERO, |due| due - now)
-    }
-    pub(crate) fn disable(&mut self) {
-        self.disabled = true;
-        self.viewer = None;
-    }
-    pub(crate) fn hold(&self) -> ViewHold {
-        if self.disabled || self.quit || self.last.is_none() {
-            ViewHold::Off
-        } else {
-            self.options.hold
-        }
-    }
-    pub(crate) fn quittable(&self) -> bool {
-        use std::io::IsTerminal;
-        std::io::stdin().is_terminal()
-            && (self.options.backend != ViewBackend::Terminal || std::io::stdout().is_terminal())
-    }
-    pub(crate) fn held(&mut self, ctx: &dyn RunContext) -> Result<()> {
-        if let Some(obs) = self.last.clone() {
-            let mut hud = self.hud.clone();
-            if !hud.outcome.ends_with("[held]") {
-                hud.outcome.push_str(" [held]");
-            }
-            self.feed(ctx, obs, hud)?;
-        }
-        Ok(())
-    }
+/// HUD payload, formatted per-backend (JSON for HTTP, a line for the terminal).
+///
+/// `fps` is the viewer's own draw rate (filled in by the viewer);
+/// every other field is supplied by the caller each step. A sentinel of `0` (or
+/// `-1` for `seed`) means "unknown / not applicable" and the backends omit it.
+#[derive(Clone)]
+#[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+pub struct Hud {
+    /// Steps in the current episode.
+    pub step: i64,
+    /// Return so far in the current episode.
+    pub reward: f64,
+    /// Episode status (`running`, `terminated`, `truncated`).
+    pub outcome: String,
+    /// Viewer draw rate (frames/sec actually painted); set by the viewer, not the caller.
+    pub fps: f64,
+    /// Smoothed model forward time in ms (the `predict` cost; ~0 on chunk-replay steps).
+    pub model_ms: f64,
+    /// Smoothed env `step()` time in ms (the simulator cost).
+    pub env_ms: f64,
+    /// Smoothed eval throughput in env steps/sec (distinct from the draw `fps`).
+    pub sps: f64,
+    /// Wall-clock seconds since the current episode's reset.
+    pub elapsed_s: f64,
+    /// 1-based current episode index; `0` when unknown (hand-driven loop).
+    pub episode: i64,
+    /// Total episodes in the run; `0` when unknown.
+    pub episodes: i64,
+    /// Current episode seed; `-1` when none/unknown.
+    pub seed: i64,
+    /// Selected source frame width; `0` until the first frame is fed.
+    pub width: u32,
+    /// Selected source frame height; `0` until the first frame is fed.
+    pub height: u32,
+    /// 1-based position within the current action chunk; `0` when not chunking.
+    pub chunk_pos: i64,
+    /// Action-chunk length (execution horizon); `0`/`1` when not chunking.
+    pub chunk_len: i64,
 }
 
-#[cfg(test)]
-mod tests;
+impl Default for Hud {
+    /// All-unknown HUD: zeroed counters/timings and the `-1` "no seed" sentinel (a
+    /// derived default would make `seed` read as a real seed of `0`).
+    fn default() -> Self {
+        Self {
+            step: 0,
+            reward: 0.0,
+            outcome: String::new(),
+            fps: 0.0,
+            model_ms: 0.0,
+            env_ms: 0.0,
+            sps: 0.0,
+            elapsed_s: 0.0,
+            episode: 0,
+            episodes: 0,
+            seed: -1,
+            width: 0,
+            height: 0,
+            chunk_pos: 0,
+            chunk_len: 0,
+        }
+    }
+}
