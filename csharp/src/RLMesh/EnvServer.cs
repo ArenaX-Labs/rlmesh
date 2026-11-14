@@ -8,6 +8,7 @@ namespace RLMesh;
 /// <summary>Experimental. Options for serving one authored environment.</summary>
 public sealed class EnvServerOptions
 {
+    /// <summary>The session participant address to serve at (":0/env", "host:port/session/name"); null is ":0/env", a session of its own on an OS-assigned local port.</summary>
     public string? Address { get; set; }
     public bool CloseEnvOnShutdown { get; set; } = true;
     public Ext.EnvServerOptions? Ext { get; set; }
@@ -41,7 +42,7 @@ public sealed unsafe partial class EnvServer : IDisposable
             {
                 // Encode before acquiring; an invalid option must still release
                 // the library-owned env through the constructor's outer catch.
-                byte[] address = Utf8.Encode(options?.Address ?? "tcp://127.0.0.1:0", true);
+                byte[] address = Utf8.Encode(options?.Address ?? ":0/env", true);
                 byte[] host = Utf8.Encode(options?.Ext?.HostRuntimeJson ?? HostRuntime(), true);
                 borrow = env.Record.Acquire(env);
                 acquired = true;
@@ -93,6 +94,13 @@ public sealed unsafe partial class EnvServer : IDisposable
     {
         using var call = Record.Acquire(this);
         RLMeshBytes bytes = default; Status.Check(Native.rlmesh_env_server_address(call.Server, &bytes));
+        return Utf8.OwnedText(bytes);
+    });
+    // What logs show: the address without its key, which Address hands over.
+    public override string ToString() => NativeGate.Call(() =>
+    {
+        using var call = Record.Acquire(this);
+        RLMeshBytes bytes = default; Status.Check(Native.rlmesh_env_server_repr(call.Server, &bytes));
         return Utf8.OwnedText(bytes);
     });
     public void Start() => NativeGate.Call(() => { using var call = Record.Acquire(this); Status.Check(Native.rlmesh_env_server_start(call.Server)); });

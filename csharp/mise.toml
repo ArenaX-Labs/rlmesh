@@ -1,6 +1,6 @@
 # Installed only when a C# task is selected; unrelated checks need no SDK.
 [tools]
-dotnet = { version = "10.0.402", backend = "core:dotnet" }
+dotnet = { version = "10.0.403", backend = "core:dotnet" }
 zig = "0.13.0"
 
 [env]

@@ -63,7 +63,7 @@ def main() -> None:
                     raise RuntimeError("player exited before serving")
                 if "RLMesh host runtime: " in line:
                     host_runtime = json.loads(line.split("RLMesh host runtime: ", 1)[1])
-                match = re.search(r"Serving Unity-ReachTarget-v0 on (tcp://\S+)", line)
+                match = re.search(r"Serving Unity-ReachTarget-v0 on (\S+)", line)
                 if match:
                     break
                 if time.monotonic() >= deadline:

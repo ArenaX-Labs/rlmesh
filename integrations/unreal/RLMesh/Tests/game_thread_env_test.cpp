@@ -42,7 +42,7 @@ try
 			return rlmesh::StepResult{rlmesh::Value(position), 1.0, position >= 3, false, {}};
 		});
 
-	rlmesh::EnvServer server(env, rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+	rlmesh::EnvServer server(env, rlmesh::EnvServerOptions{}.with_address(":0/env"));
 	server.start();
 	const std::string address = server.address();
 

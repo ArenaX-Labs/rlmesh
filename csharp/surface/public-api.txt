@@ -34,6 +34,7 @@ class RLMesh.EnvServer
   Shutdown() : System.Void
   ShutdownAsync(System.Threading.CancellationToken) : System.Threading.Tasks.Task
   Start() : System.Void
+  ToString() : System.String
   Wait(System.Nullable`1{System.TimeSpan}) : System.Boolean
   Address : System.String { get; }
 

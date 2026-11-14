@@ -17,6 +17,10 @@ DOTNET_BUILD = [
     "--nologo",
 ]
 CC = ["zig", "cc"]
+ABI = re.search(
+    r"#define RLMESH_ABI_VERSION (\d+)",
+    (ROOT / "crates/rlmesh-capi/include/rlmesh.h").read_text(),
+)[1]
 
 
 def run(args, *, env=None, expected=0, cwd=ROOT):
@@ -42,10 +46,10 @@ def gate_tests(env):
         ),
         "generation": (
             '#include "rlmesh.h"\nuint32_t rlmesh_abi_version(void){return 777;}\n',
-            ("777", "5"),
+            ("777", ABI),
         ),
         "version": (
-            '#include "rlmesh.h"\nuint32_t rlmesh_abi_version(void){return 5;}\nRLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out){out->version="wrong-version"; return RLMESH_OK;}\n',
+            '#include "rlmesh.h"\nuint32_t rlmesh_abi_version(void){return RLMESH_ABI_VERSION;}\nRLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out){out->version="wrong-version"; return RLMESH_OK;}\n',
             (
                 "wrong-version",
                 tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"][
@@ -54,13 +58,13 @@ def gate_tests(env):
             ),
         ),
         "later_symbol": (
-            '#include "rlmesh.h"\nuint32_t rlmesh_abi_version(void){return 5;}\nRLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out){out->version=RLMESH_VERSION; return RLMESH_OK;}\n',
+            '#include "rlmesh.h"\nuint32_t rlmesh_abi_version(void){return RLMESH_ABI_VERSION;}\nRLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out){out->version=RLMESH_VERSION; return RLMESH_OK;}\n',
             ("rlmesh_capi", "rlmesh_value_none"),
         ),
     }
     cases["dict_readback_symbol"] = (
         '#include "rlmesh.h"\n'
-        "uint32_t rlmesh_abi_version(void){return 5;}\n"
+        "uint32_t rlmesh_abi_version(void){return RLMESH_ABI_VERSION;}\n"
         "RLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out){out->version=RLMESH_VERSION; return RLMESH_OK;}\n"
         "RLMeshStatus rlmesh_dict_new(const RLMeshStr* keys, const RLMeshSpaceSpec* const* spaces, size_t n, RLMeshDict** out){*out=(RLMeshDict*)1; return RLMESH_OK;}\n"
         "void rlmesh_space_free(RLMeshSpace* space){}\n",
@@ -120,6 +124,25 @@ def gate_tests(env):
                 f"NativeGate {name} failed: {result.stdout}\n{result.stderr}"
             )
         print(f"NativeGate {name}: passed")
+
+
+def native_gate(env, project, assembly):
+    """The Gymnasium gate's rows over the project's env, driven from Python 0.2."""
+    run([*DOTNET_BUILD, str(project)], env=env)
+    program = project.parent / "bin/Debug/net10.0" / assembly
+    run(
+        [
+            "uv",
+            "run",
+            "--no-sync",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "python/rlmesh/tests/conformance/native_gate.py",
+        ],
+        env=dict(env, RLMESH_NATIVE_GATE=f"dotnet {program}"),
+    )
 
 
 def compile_tests(env):
@@ -223,6 +246,7 @@ def main():
             ],
             env=env,
         )
+    native_gate(env, CSHARP / "tests/Gate/Gate.csproj", "Gate.dll")
     run(["python", str(CSHARP / "tools/benchmark.py")], env=env)
     print(
         "C# foundation: both assembly suites, ABI/layout, gate and C# 9 fixtures passed"
@@ -236,6 +260,11 @@ def main():
             str(unity.parent / "bin/Debug/net10.0/RLMesh.Unity.Tests.dll"),
         ],
         env=env,
+    )
+    native_gate(
+        env,
+        ROOT / "integrations/unity/Tests~/DotNet/Gate/Gate.csproj",
+        "RLMesh.Unity.Gate.dll",
     )
     unity_scratch = pathlib.Path.home() / ".cache/rlmesh-unity"
     unity_scratch.mkdir(parents=True, exist_ok=True)

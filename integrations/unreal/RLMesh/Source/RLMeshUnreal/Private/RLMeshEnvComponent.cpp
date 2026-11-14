@@ -33,13 +33,15 @@ void URLMeshEnvComponent::BeginPlay()
 		Server = std::make_unique<rlmesh::EnvServer>(std::move(Env), std::move(Options));
 		Server->start();
 		ServedAddress = UTF8_TO_TCHAR(Server->address().c_str());
-		UE_LOG(LogRLMesh, Log, TEXT("Serving %s on %s"), *EnvId, *ServedAddress);
+		// to_string() leaves the address's key out; ServedAddress keeps it.
+		UE_LOG(LogRLMesh, Log, TEXT("Serving %s: %s"), *EnvId, UTF8_TO_TCHAR(Server->to_string().c_str()));
 	}
 	catch (const std::exception& Error)
 	{
 		Server.reset();
 		GameThread.reset();
-		UE_LOG(LogRLMesh, Error, TEXT("Could not serve %s on %s: %s"), *EnvId, *Address, UTF8_TO_TCHAR(Error.what()));
+		// Address may carry its key; the error names the address without it.
+		UE_LOG(LogRLMesh, Error, TEXT("Could not serve %s: %s"), *EnvId, UTF8_TO_TCHAR(Error.what()));
 	}
 }
 
