@@ -24,7 +24,8 @@ use wasm_bindgen_test::*;
 
 const ROBOT: &str = r#"{
     "arm": {"kind": "joints", "count": 7, "fields": ["pos", "vel"], "hz": 1000,
-            "command": "position", "hold_max_ms": 100, "max_age_ms": 50},
+            "command": "position", "safe": "hold", "hold_max_ms": 100,
+            "max_age_ms": 50},
     "gripper": {"kind": "gripper", "hz": 100, "command": "position", "safe": "hold"},
     "scene/cam": {"kind": "camera", "width": 640, "height": 480, "hz": 20,
                   "encoding": "jpeg", "quality": 85}
