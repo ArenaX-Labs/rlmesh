@@ -25,7 +25,7 @@ use chrono::Utc;
 
 pub use bench::{BenchOptions, BenchResult, bench_model};
 pub use env::{EnvProbeOptions, probe_env};
-pub use model::{ModelProbeOptions, probe_model};
+pub use model::{ADAPTER_LESS, ModelProbeOptions, probe_model};
 pub use report::{
     BaselinePoint, CheckStatus, Observed, ProbeCheck, ProbeEnv, ProbePeer, ProbePreview,
     ProbeReport, ProbeSubject, Recommendation, RenderRequest, SCHEMA_VERSION, knee_batch_size,

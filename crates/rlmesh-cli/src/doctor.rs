@@ -298,6 +298,23 @@ fn failed(report: &ProbeReport) -> bool {
         .any(|check| check.status == CheckStatus::Fail)
 }
 
+/// What to do when a model's predict checks were skipped for want of inputs
+/// (it declares no ModelSpec and no `--env` was given): the probe's own
+/// report cannot name this CLI's flag.
+fn predict_hint(report: &ProbeReport, image: &str) -> Option<String> {
+    report
+        .checks
+        .iter()
+        .any(|check| check.tags.iter().any(|tag| tag == doctor::ADAPTER_LESS))
+        .then(|| {
+            format!(
+                "predict checks skipped: {image} declares no ModelSpec, so there are no \
+                 inputs to probe it with. Declare one on the model (its `spec`), or pass \
+                 --env <env-image> to check it against that env's spaces"
+            )
+        })
+}
+
 fn render_checks(
     report: &ProbeReport,
     image: &str,
@@ -325,6 +342,9 @@ fn render_checks(
         counts[index] += 1;
         writeln!(stdout, "{label}  {:<width$}  {}", check.name, check.detail)?;
     }
+    if let Some(hint) = predict_hint(report, image) {
+        writeln!(stdout, "{}  {hint}", style.yellow("note"))?;
+    }
     let summary = format!(
         "{image} ({subject}): {} passed, {} warnings, {} failed, {} skipped",
         counts[0], counts[1], counts[2], counts[3]
@@ -339,4 +359,61 @@ fn render_checks(
         None => writeln!(stdout, "{}", style.success(&summary))?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `probe_model` reports for a model that declares no ModelSpec,
+    /// probed with no `--env`.
+    fn adapter_less_report() -> ProbeReport {
+        let mut report = doctor::failed_handshake(ProbeSubject::Model, "");
+        report.checks[0] = ProbeCheck::new(
+            "handshake",
+            CheckStatus::Warn,
+            "model 0.2.0 on python 3.11 declares no ModelSpec (adapter-less)",
+        )
+        .tag(doctor::ADAPTER_LESS);
+        for check in &mut report.checks[1..] {
+            check.detail = "no ModelSpec to synthesize inputs from".into();
+        }
+        report
+    }
+
+    fn rendered(report: &ProbeReport) -> String {
+        let mut out = Vec::new();
+        render_checks(
+            report,
+            "my-policy:dev",
+            &mut out,
+            Style::for_terminal(false),
+        )
+        .unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn skipped_predict_checks_say_how_to_get_them() {
+        let text = rendered(&adapter_less_report());
+        let note = text
+            .lines()
+            .find(|line| line.starts_with("note  "))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert_eq!(
+            note,
+            "note  predict checks skipped: my-policy:dev declares no ModelSpec, so there are \
+             no inputs to probe it with. Declare one on the model (its `spec`), or pass \
+             --env <env-image> to check it against that env's spaces"
+        );
+        // The note sits above the summary, which still counts the skips.
+        assert!(
+            text.trim_end()
+                .ends_with("0 passed, 1 warnings, 0 failed, 6 skipped"),
+            "{text}"
+        );
+        // A model whose checks ran, or failed to start, gets no such note.
+        let failed = doctor::failed_handshake(ProbeSubject::Model, "no answer");
+        assert!(!rendered(&failed).contains("note"));
+    }
 }

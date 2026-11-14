@@ -295,6 +295,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 #### CLI
 
+- `rlmesh doctor` and `rlmesh bench` on a model that declares no `ModelSpec`, run without `--env`, say that its predict checks were skipped and how to get them: declare a `ModelSpec`, or pass `--env <env-image>`.
 - `rlmesh check-image` run without `--platform-editions` or `--platform-version` says it compares the image with this rlmesh build, not a platform, and an edition refusal lists both sides' editions; its other notes no longer assume a managed platform.
 
 ## [0.1.0] - 2026-09-23

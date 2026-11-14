@@ -290,6 +290,22 @@ fn a_model_is_checked_against_its_spec_or_its_reference_env() {
         assert_eq!(names, model::MODEL_CHECK_NAMES);
         assert_eq!(report.checks[0].status, handshake, "{:#?}", report.checks);
         assert_eq!(report.env.env_id, env_id);
+        if handshake == CheckStatus::Warn {
+            // Adapter-less with no reference env: tagged, saying how to get the
+            // predict checks, and each skipped check says why.
+            assert!(report.checks[0].tags.iter().any(|tag| tag == ADAPTER_LESS));
+            assert!(
+                report.checks[0]
+                    .detail
+                    .contains("so its predict checks were skipped: declare a ModelSpec"),
+                "{}",
+                report.checks[0].detail
+            );
+            for check in &report.checks[1..] {
+                assert_eq!(check.status, CheckStatus::Skip, "{}", check.name);
+                assert!(check.detail.contains("no ModelSpec"), "{}", check.detail);
+            }
+        }
         if handshake == CheckStatus::Pass {
             // The random baseline answers in range, but never alike.
             for (name, status) in [

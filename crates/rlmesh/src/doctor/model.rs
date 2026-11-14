@@ -25,6 +25,10 @@ use crate::binding::routes::{Route, run_routes};
 use crate::model::ModelHandler as _;
 use crate::{BindOptions, Binding, RemoteModel, RemoteModelOptions, RunOptions};
 
+/// The tag on the handshake check of a model that declares no ModelSpec,
+/// probed with no reference env: every predict check after it is skipped.
+pub const ADAPTER_LESS: &str = "adapter_less";
+
 pub(super) const MODEL_CHECK_NAMES: &[&str] = &[
     "handshake",
     "resolve",
@@ -177,13 +181,17 @@ pub(super) fn connect(
                     CheckStatus::Warn,
                     format!(
                         "model {} on {} {} declares no ModelSpec (adapter-less) and no reference \
-                         env was given; its inputs are checked when an evaluation binds it",
+                         env was given, so its predict checks were skipped: declare a ModelSpec \
+                         on the model, or probe it beside a reference env to check it against \
+                         that env's spaces",
                         peer.package_version, peer.language, peer.language_version
                     ),
                 )
-                .tag("adapter_less"),
+                .tag(ADAPTER_LESS),
             );
-            probe.skip_remaining("the model declares no ModelSpec and no reference env was given");
+            probe.skip_remaining(
+                "no ModelSpec to synthesize inputs from, and no reference env to take them from",
+            );
             return Err(Box::new(peer));
         }
         (_, false) => synth::synthesize(&model_spec).map_err(|error| {
