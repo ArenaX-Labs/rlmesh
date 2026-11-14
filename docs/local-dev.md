@@ -67,7 +67,7 @@ mise run test:python:unit
 mise run test:python:integration
 ```
 
-On `uv run`, uv rebuilds the native extension when Rust sources change; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. Otherwise the editable install keeps loading the last in-tree build: when a source build was stamped from a commit other than the checkout's HEAD, rlmesh warns once, on first use of the native core, to run `mise run build:python:develop` (set `RLMESH_STALE_CHECK=0` to skip the check; installed wheels are never checked). See [testing](testing.md) for the full test layering.
+On `uv run` and `mise run setup:python`, uv rebuilds the native extension when Rust sources or the commit change (the commit is part of its stamp, see [dev builds](#dev-builds-and-the-dev-cohort)). `mise run test` syncs once before its Rust, Python and C/C++ suites start, so all three load one build, stamped like the C library they test against. The Python lint and format tasks run `uv run --no-sync`, so a commit's hooks never rebuild it with the tree half staged, and stop first with one line saying to run `mise run setup:python` when `.venv` lacks a locked dev dependency (a new worktree's is empty), rather than fall back to whatever ruff is on PATH; `test:affected`, which holds the heavy lock, syncs it instead; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. Otherwise the editable install keeps loading the last in-tree build: when a source build was stamped from a commit other than the checkout's HEAD, rlmesh warns once, on first use of the native core, to run `mise run build:python:develop` (set `RLMESH_STALE_CHECK=0` to skip the check; installed wheels are never checked). See [testing](testing.md) for the full test layering.
 
 ## Worktrees and Limited Compute
 
@@ -111,11 +111,11 @@ A build from this checkout is a **dev build**: `crates/rlmesh-proto/build.rs` st
 So two dev artifacts interoperate only when they were built from the identical tree state. This bites when the two sides of a session come from separate builds, for example a C or C++ env linked against `rlmesh-capi` and the editable Python extension, or an env server built before you edited a file and a runtime built after. The build script reruns only when HEAD, `rlmesh.toml`, the protos, or `RLMESH_RELEASE_BUILD` change, so even an artifact that cargo considers fresh can carry an older dirty fingerprint. The session then fails at the runtime's floor with `no mutual workflow edition`, and the message ends with a hint naming the remedy:
 
 - Rebuild both sides from the same tree state (commit or stash first, then rebuild each artifact).
-- Or build both with `RLMESH_RELEASE_BUILD=1`, which stamps the release cohort instead, so both sides speak the sealed edition however dirty the checkout is. Set it for every build that takes part, for example `RLMESH_RELEASE_BUILD=1 cargo build -p rlmesh-capi --release` and `RLMESH_RELEASE_BUILD=1 mise run build:python:develop`. `examples/chrono/demo.sh` does this.
+- Or build both with `RLMESH_RELEASE_BUILD=1`, which stamps the release cohort instead, so both sides use the same official cohort however dirty the checkout is (a prerelease cohort until the edition seals). Set it for every build that takes part, for example `RLMESH_RELEASE_BUILD=1 cargo build -p rlmesh-capi --release` and `RLMESH_RELEASE_BUILD=1 mise run build:python:develop`. `examples/chrono/demo.sh` does this.
 
 ## Docs
 
-The user docs and the Python API reference are published at [rlmesh.dev/docs](https://rlmesh.dev/docs/) and built from the managed platform repo, which snapshots this package's API surface (`rlmesh-api-surface docs-api-surface`) on each release. This `docs/` directory keeps the maintainer docs and the specs the tooling reads: the workflow editions, compatibility and versioning policy, and the describe envelope.
+The user docs and the Python API reference are published at [rlmesh.dev/docs](https://rlmesh.dev/docs/). Generate an API reference from this checkout with `uv run rlmesh-api-surface docs-api-surface --output-dir <dir>`. This `docs/` directory keeps the maintainer docs and the specs the tooling reads: the workflow editions, compatibility and versioning policy, and the describe envelope.
 
 ## Release Gate
 

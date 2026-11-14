@@ -12,11 +12,21 @@ Needs an RTX GPU with a driver Isaac Sim 6.1 supports, and about 11 GB of RAM. A
 ## Run locally
 
 ```bash
-docker build -t franka-reach:dev examples/python/isaacsim
-docker run --rm --gpus all --memory=16g -p 50051:50051 \
+docker build --build-arg RLMESH_VERSION=0.2.0a1 -t franka-reach:dev examples/python/isaacsim
+docker run --rm --gpus all --memory=16g --network host \
   -e 'RLMESH_MAKE_KWARGS={"lanes": 4}' franka-reach:dev   # ready after ~45 s
-python examples/python/isaacsim/run_local.py   # scripted policy against every lane
+RLMESH_ENV_ADDRESS='127.0.0.1:7447#<key>/franka' python examples/python/isaacsim/run_local.py
 ```
+
+Use the same 0.2 build in the container and client (prereleases must match).
+Copy the participant address from the serving line, including its session key.
+The local recipe uses Linux host networking so the embedded session host stays
+on loopback. Managed launchers can override `RLMESH_ADDRESS` and supply their
+own session credentials.
+The `#<key>` above is a placeholder for that key. 0.2 accepts session participant
+addresses only; a bare `host:port` is no longer an env address.
+This example is excluded from the typechecker and `test:python:examples` because
+it needs Isaac Sim, an RTX GPU and Docker; GPU execution is a manual check.
 
 `--memory` caps the container, so an out-of-memory kill takes down the container instead of your desktop.
 

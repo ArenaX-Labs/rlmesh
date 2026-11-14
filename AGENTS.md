@@ -1,8 +1,9 @@
 # RLMesh agent context (open-source framework)
 
 RLMesh connects models to environments for evaluation. This repo is the OSS
-framework: Rust crates in `crates/` (runtime, protocol, gRPC, spaces, adapters,
-sandbox, viewer, CLI, C API) and the `rlmesh` Python package in
+framework: Rust crates in `crates/` (the `rlmesh` facade, the v2 session
+`rlmesh-session` and its sans-IO core `rlmesh-session-core`, the cockpit,
+adapters, spaces, CLI, C API, and the internal driver data/editions crate `rlmesh-proto`) and the `rlmesh` Python package in
 `python/rlmesh/` (a maturin build whose extension crate is
 `python/rlmesh/rust`). The Python package is the supported surface. The
 managed platform consumes this repo as pinned releases; keep its contracts
@@ -29,19 +30,24 @@ The host has limited CPU and memory and is shared with other worktrees:
 
 Compiled crates are cached by sccache (`RUSTC_WRAPPER` in `mise.toml`), so a
 fresh worktree mostly rebuilds from cache. The editable Python install loads
-the in-tree extension; after Rust changes, `mise run build:python:develop`
-refreshes it (`test:affected` does this itself).
+the in-tree extension; after Rust changes or a commit, `mise run setup:python`
+refreshes it (`test` and `test:affected` do this themselves).
 
 ## Rules
 
-- The wire contract is `crates/rlmesh-proto/proto/`, frozen per protocol
-  generation against `rlmesh.toml`; `protocol:baseline-verify` and
-  `protocol:breaking` enforce it.
+- The realtime session protocol `crates/rlmesh-session-core/proto/` is the
+  only governed wire contract (`[protocols."rlmesh-realtime-v1"]` in
+  `rlmesh.toml`, provisional until 0.2.0 freezes it). buf lints it; byte
+  goldens (`crates/rlmesh-session-core/tests/vectors/wire`) guard encodings;
+  `protocol:baseline-verify` and `protocol:breaking` enforce a frozen one.
+  `rlmesh-proto` contains internal driver data and editions, with no wire
+  compatibility promise; it is published only as an internal dependency of
+  `rlmesh` and `rlmesh-cli`.
 - Never hand-edit generated files: regenerate native stubs with
   `mise run stubs:generate`, and update the Python API surface snapshot
   (`python/rlmesh/tests/api_surface/snapshots/`) with the change it records.
 - Conventional commit titles; squash-merged PR titles become the commit. The
   changelog is hand-written (`mise run changelog:draft` only drafts bullets).
-- Half-built features get removed, not left behind flags.
+- Unreleased work may be fenced if CI builds and tests it; nothing half-built ships.
 
 Maintainer docs: `docs/local-dev.md`, `docs/testing.md`, `CONTRIBUTING.md`.

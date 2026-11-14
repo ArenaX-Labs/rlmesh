@@ -1,22 +1,25 @@
-# A bring-your-own env container: serves a Gymnasium env over the RLMesh
-# protocol on port 50051. Build it, then dial it with rlmesh.RemoteEnv (locally)
-# or hand the tag to RLMesh Managed.
+# A bring-your-own env container: hosts an RLMesh session and serves a
+# Gymnasium env in it. Build it, then run it as a sandbox (locally) or hand
+# the tag to RLMesh Managed.
 #
 #   docker build -t my-env:latest examples/python/byo_container/env
-#   docker run --rm -p 50051:50051 my-env:latest
-#   # in another shell / process:
-#   python -c "import rlmesh; e=rlmesh.RemoteEnv('127.0.0.1:50051'); print(e.reset())"
+#   python -c "import rlmesh; e=rlmesh.SandboxEnv('image://my-env:latest'); print(e.reset())"
 FROM python:3.11-slim
 
-# Pin rlmesh to the build your host runs against (the protocol handshake checks
-# compatibility). Add your env's own dependencies here too.
-RUN pip install --no-cache-dir "rlmesh" "gymnasium"
+# Pin rlmesh to the build your host runs against. Add your env's own
+# dependencies here too.
+ARG RLMESH_VERSION=0.2.0a1
+RUN pip install --no-cache-dir "rlmesh==${RLMESH_VERSION}" "gymnasium"
 
 WORKDIR /app
 COPY entrypoint.py .
 
-EXPOSE 50051
-ENV RLMESH_ADDRESS=0.0.0.0:50051
+# A session host listens on one port, which every traffic class dials.
+EXPOSE 7447
+ENV RLMESH_ADDRESS=0.0.0.0:7447
+# Written once the env answers, removed when it stops.
+ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json
+HEALTHCHECK --interval=2s --start-period=120s CMD test -f /tmp/rlmesh-ready.json
 # Or skip entrypoint.py and serve the recipe directly:
 #   ENTRYPOINT ["python", "-m", "rlmesh.serve", "--env", "entrypoint:MyEnv"]
 ENTRYPOINT ["python", "entrypoint.py"]

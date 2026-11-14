@@ -32,18 +32,41 @@ The `params` module and the `Model.params` and `EnvFactory.params` declarations
 are Experimental; their native counterparts are deferred until that surface is
 Stable.
 
+`rlmesh.EvalReport` (per-task and per-suite success of saved result bundles)
+is Experimental. Rust reaches it as `rlmesh::binding::report` (binding
+plumbing, semver-exempt) and the CLI as `rlmesh eval report`; C and C++ are
+deferred.
+
+`BatchOptions` (a served model's batcher) and the `RunHooks`
+`transform_observation` and `transform_action` hooks are Experimental.
+
+`Model.run_routes` (many env targets against one model in one process) and
+`RunResult.merge` are Experimental. Rust reaches them as
+`rlmesh::binding::routes` (binding plumbing, semver-exempt); C and C++ are
+deferred.
+
 > [!WARNING]
 > The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.
 
 > [!WARNING]
-> The `rlmesh-wire-v1` protocol generation stabilized at 0.1.0, and the supported-generation window holds that single generation. A future incompatible wire change mints a new generation rather than mutating v1, and it would live only in the runtime (see [The runtime is the interpreter](#the-runtime-is-the-interpreter)). Prerelease and local builds carry exact cohort suffixes, so mismatched moving builds fail loudly instead of guessing they are compatible.
+> RLMesh 0.2 speaks `rlmesh-realtime-v1` over session addresses only. The 0.1 gRPC protocol requires a 0.1 runner. Prerelease and local builds carry exact cohort suffixes so incompatible moving builds fail clearly.
 
 ## Native APIs: Rust, C and C++
 
 The `rlmesh` Rust facade crate, the C API (`rlmesh.h`) and the C++ header (`rlmesh.hpp`) share the Python package's nouns and constructs (envs, spaces, values, models, runs, sessions, remote clients and the same error classes and texts), each in its own language's conventions. Their changes are recorded in the [changelog](../CHANGELOG.md), breaking ones with a migration note. None of them carries Python's Stable promise yet:
 
 - **Rust facade (`rlmesh` crate): Preview.** It is intended to become stable but may still change in a `0.x` minor release, with a migration note. `rlmesh::ext` holds documented Rust-only extras and is part of the facade. `rlmesh::binding` is `#[doc(hidden)]` plumbing for the in-repo bindings (the Python extension and the C API): it is Internal and exempt from SemVer, so do not depend on it.
-- **C API (`rlmesh.h`): Experimental.** Binary compatibility is tracked by the ABI generation, currently 5: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.5` SONAME and the CMake package version. A layout or enum change, a signature retype or a removed symbol bumps the generation, which may happen in any minor release; binaries and sources built for another generation do not load or build against it. Within a generation, a sized struct (options, vtables, attributes, out-structs) grows only by appending optional fields whose all-zero bytes mean the default, so a caller compiled against an older header keeps working; a field that must be supplied needs a new generation. A struct below its `RLMESH_<NAME>_MIN_SIZE` is refused, and a newer caller's nonzero bytes past the library's struct size are refused rather than ignored. C-only extras are fenced under `rlmesh_ext_` / `RLMeshExt` names.
+
+  A program that embeds the runtime to drive served envs and models itself (a runner of its own) needs what lives there and in the equally hidden `rlmesh::lockstep`: `binding::runtime::{RuntimeEnv, RuntimeDriver, RuntimeHooks, episode_seed}`, `binding::model::{ModelHandler, LockstepEnv, ConnectedEnv}` and `lockstep::ServedModel`. Such a runner may use them, deliberately, on one condition: it pins an exact `rlmesh` version (`rlmesh = "=0.2.0"`) and expects to adapt on every upgrade. They carry no stability promise across releases, not even patch releases, and their changes may go unrecorded in the changelog. `crates/rlmesh/tests/embedded_runner.rs` builds and runs a driver from them as such a runner does, so a change that breaks that path fails in this repository first.
+
+  What such a runner should know:
+
+  - Connect an env with `LockstepEnv::connect(address, options, declared_edition)`: it makes the checks `Model.run` makes before driving one (an autoreset mode and spaces the driver represents, a workflow edition the env and the runner share) and returns what the driver's session spec needs. `LockstepEnv::new` over a bare `lockstep::connect` skips them.
+  - The driver takes its model by value. Set `close_model_on_end` in the session spec for a model the run alone owns, so the driver closes it when the run ends (a served model then leaves its host, where a dropped one is logged as lost); leave it unset for a model other runs share.
+  - Whether a failed call can succeed when retried is `rlmesh::ext::ErrorExt::is_transient` (and `GymError::is_transient` on the lockstep layer): a host not listening yet, a robot not joined yet, a deadline or a peer's recoverable failure is transient; a key the host refuses, an edition the env does not run or a malformed address is final. A robot name the session never sees reads as one not joined yet, since the session cannot tell them apart. `Error::is_recoverable` answers a different question, whether the session stays usable after the failure. A `ModelHandler` signals a failure worth retrying with `Error::model_recoverable`. In Python the class says the same: a refused key raises `ProtocolException`, not the `ConnectionError` a launcher retries until the host listens.
+  - The 0.2 driver sends the groups waiting for a prediction to the model as one `predict_grouped` call, whether or not the model fuses them, and applies the results when that call returns. A `ModelHandler` takes `&mut self` and is called one call at a time, so one predict per group would only queue behind it. The 0.1 driver instead kept one predict per group in flight and applied each as it landed, so with a lane-served env and a model that does not fuse, a lane no longer gets its action before the slowest group of its call. A handler that can serve groups concurrently (one in front of a pool) does so inside `predict_grouped`, and reports how many lanes rode its forward with `ModelHandler::take_group_size`, which the `group.size` metric records.
+
+- **C API (`rlmesh.h`): Experimental.** Binary compatibility is tracked by the ABI generation, currently 6: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.6` SONAME and the CMake package version. 0.2 does not ship the C ABI; generation 6 grew after it was cut without a bump, so the first release that ships it publishes that surface as ABI 7. A layout or enum change, a signature retype or a removed symbol bumps the generation, which may happen in any minor release; binaries and sources built for another generation do not load or build against it. Within a generation, a sized struct (options, vtables, attributes, out-structs) grows only by appending optional fields whose all-zero bytes mean the default, so a caller compiled against an older header keeps working; a field that must be supplied needs a new generation. A struct below its `RLMESH_<NAME>_MIN_SIZE` is refused, and a newer caller's nonzero bytes past the library's struct size are refused rather than ignored. C-only extras are fenced under `rlmesh_ext_` / `RLMeshExt` names.
 - **C++ header (`rlmesh.hpp`): Experimental.** A header-only C++17 wrapper over the C API, compiled into each consumer; it changes together with the C API it wraps. It requires C++17 and exceptions and is tested at C++17 and C++20 with one header shape. C++-only extras live in `rlmesh::ext`.
 
 - **C# package (`RLMesh`): Experimental.** The `netstandard2.1` and `net10.0` assemblies support serving authored environments, including spaces, tensors, values and supporting errors. See [the C# guide](../csharp/README.md) for usage and native-library requirements. This API may change or disappear. Hosts must complete `RLMesh.Ext.Lifetime.Shutdown` before unloading its managed context; a `false` result means the context must remain loaded. Unity runtime support has not yet been validated.
@@ -79,48 +102,56 @@ Workflow semantics are governed by a negotiated workflow edition. Each base edit
 
 An edition is a sticky declaration in a participant's source, not a version: it records the contract an env or model was authored against, and upgrading the rlmesh package never moves it. How to declare one, and which surface wins when several are set, is in [workflow editions](editions/index.md).
 
-### The guarantee
+### What you can rely on
 
-A participant authored against a sealed edition keeps working with any later participant, as long as the later one does not require something the older one cannot express. The session runs at the older participant's declared edition. A genuinely new type the old side never knew is a clean refusal, not a silent conversion.
+RLMesh is pre-1.0, so the promises are in three tiers, from strongest to weakest:
+
+1. **A frozen environment image reproduces its results.** The environment never changes inside its container, whatever RLMesh release drives it later, as long as that release still speaks the image's protocol.
+2. **An edition locks default behaviour within a release line.** A participant authored against a sealed edition keeps running at that edition with any later release of the same line (for example, every 0.2.x), as long as the other side does not require something the older one cannot express. The session runs at the older participant's declared edition; a genuinely new type the old side never knew is a clean refusal, not a silent conversion. Keeping an edition across every future release is the goal for 1.0, not a promise yet.
+3. **Before 1.0, the wire can change between minor versions.** A minor release may replace the protocol, as 0.2 replaced the 0.1 gRPC wire with real-time sessions, and may stop offering an older edition. Upgrading `rlmesh` never forces your simulator or model framework to move with it: they stay in their own images. Components must use compatible protocol versions; interoperation between 0.1 and 0.2 is not implemented.
 
 ### How the session edition is chosen
 
-Every participant brings two things to its handshake. `supported_workflow_editions` is what it **can** run: the retained list of editions its build implements. `preferred_workflow_edition` is what it **wants**: the one edition it declares. The runtime is the only participant that sees every other one, so it alone selects, and the rule is the highest edition every participant can run that no participant's declaration excludes (`negotiate_session_floor` in `rlmesh-proto`). A participant that declares nothing is read as wanting the newest edition it can run, which is what every build made before the field existed means, so the rule is a no-op against a 0.1.0 peer. A declaration is a ceiling, not an exact demand: a bare `YYYY.MM` admits every cohort of that base and anything older, so `2026.06` works unchanged on a dev or prerelease build whose only offer is `2026.06-<cohort>`, and a declaration above what another participant can run never lifts the session past that participant. A declaration with a cohort suffix uses the full edition ordering as its ceiling, so it can select an older sealed edition both sides offer. The runtime is itself a participant, so it can hold a session below what env and model could run together; when it does, it logs whether its build or its own declaration was the cause. When no edition satisfies everyone, the session is refused before any Join stream opens, with a message naming what each tier (env, model, runtime) wants and can run. The chosen edition is then pinned on both legs: `ResolveAdapterRequest.selected_workflow_edition` to the model, and `ConfigureEnvRequest.selected_workflow_edition` as the env's first Join message.
-
-### The runtime is the interpreter
-
-Env and model never talk to each other; each talks only to the runtime, which decodes and rebuilds every message it relays. So one edition governs the whole session, and the runtime reads every edition-governed default (the step bound, the reserved reset option, which autoreset modes it owns, the success info keys, the conformance-warning key) from a per-edition table keyed by that one value, never from a string compare. Ceilings, by contrast, are per leg: what the runtime may emit toward the env is bounded by what the env's build can decode, and likewise for the model, so a type one leg cannot express is refused on that leg alone. The runtime records those ceilings on the session spec and checks its contract and relayed payloads through `RelayPolicy`; the default policy refuses payloads outside the target ceiling.
-
-The same shape fixes what a future `rlmesh-wire-v2` would look like: a runtime-only dual stack. The runtime registers both generations and speaks v1 to a v1 leg and v2 to a v2 leg. A served env or model never needs both, and a generation bump never partitions a fleet.
+A served model publishes its declared and supported workflow editions on
+Attach and in the roster; the env publishes its offer in env info. The driver
+chooses the highest edition env, model and runtime can all run, bounded by their
+declarations, and pins the model's ModelResolve. The current 0.2 line offers
+only 2026.10, so no separate env pin is needed. See [workflow editions](editions/index.md).
 
 ### What is part of the contract
 
-- **The 256 MiB message cap.** One encoded message on any env or model leg, in either direction, is bounded by `rlmesh_grpc::MAX_MESSAGE_SIZE`; an oversized message fails at the sender's encode or the receiver's decode with the gRPC status `OUT_OF_RANGE`. It is a fixed constant of `rlmesh-wire-v1`, not a knob, and no later release lowers it (details in [performance](https://rlmesh.dev/docs/guides/performance/)).
-- **Sealed editions are never dropped.** `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
-- **The wire grows additively.** Field tags are never removed or renumbered within `rlmesh-wire-v1` (`mise run protocol:breaking`). A new dtype, `AutoresetMode`, or `SpaceSpec` arm is a new type an old peer refuses rather than decodes wrongly (the two exceptions, error codes and `MetaValue` kinds, are listed under "Not yet guaranteed"), and an emitter may only send it toward a leg that can decode it; the emitter-side rules are in [workflow editions](editions/index.md).
+- **Sealed editions are retained within a release line.** Every later release of the line keeps offering a sealed edition; only a new line (each 0.x minor, before 1.0) may drop one, by name and with its reason in `[workflow.dropped_editions]`. `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
 
-### The machine proof
+### Across 0.1 and 0.2
 
-`mise run test:crossver` builds a release-cohort wheel from this tree and runs it against the published wheel pinned in `tests/system/crossver.lock`: old and new env servers against old and new runtimes, old and new served models against the other side's runtime, both same-version controls, and two forged refusals (a pin of an edition no build implements, and a `rlmesh-wire-v2` handshake). Each real cell must reproduce the committed trace and report the server's handshake result and the session edition. It runs as its own CI job; `docs/testing.md` describes the cells.
+0.2 speaks only session addresses and refuses the 0.1 gRPC wire by address, naming the 0.2 form, so a 0.1 peer and a 0.2 peer never meet and there is no cross-version matrix. An image built with 0.1 is refused by `SandboxEnv` and `SandboxModel` with a message to rebuild it with 0.2.
 
-### Not yet guaranteed
+A runner that drives both, handing a 0.2 env's contract to a 0.1 model, meets the 0.1 readers. What they refuse that 0.2 accepts (`crates/rlmesh-adapters-compat` checks each against the released 0.1 crates):
 
-- Only one edition exists. Negotiation, pinning, and the defaults table are exercised, but no session has run at an edition other than the participants' newest, so edition-driven behavior divergence is untested until a second edition is minted.
-- The OSS runtime refuses; it does not convert. A dtype, enum value, or space arm the target leg cannot decode is a decode error at that peer today, not a re-encoding on its behalf. Two unknown-value paths still fold instead of refusing: an unknown env or model error code reads as `UNSPECIFIED`, and a `MetaValue` with an unknown arm reads as `null`, so an emitter must not put new semantics on either.
-- Per-leg ceilings check known dtypes and payload sizes. They do not preserve unknown protobuf fields through decoding, and the message transport still enforces the full encoded-message limit.
-- The wire-v1 and sealed-edition contracts apply from v0.1.0. Before the first stable wheel is published, mixed cells verify refusal of the incompatible rc.12 cohort. The permanent fixture becomes v0.1.0 after publication.
+- A `Text` space with `min_length: 0` (Gymnasium's empty string allowed) is valid in 0.2; the 0.1 space validator refuses it with `min_length must be > 0`.
+- An env that declares a gripper actuator's `polarity` or an actuator's `unit`, tag fields 0.2 added, is refused when a 0.1 model resolves it: they are unknown fields to its reader (below).
 
-## Versioning and forward-compatibility roadmap
+### Adapter tag fields across releases
 
-The wire and behavioral contracts are sealed at v0.1.0. Further work extends the implementation and its evidence:
+A model refuses, when it resolves, an env tag field its release does not know, unless the field's name starts with `x-` or `ext.`: an older model must not silently drop a modifier that changes what an action means (a reversed gripper, another unit). The refusal names the field and says the model's rlmesh is the older side. So any tag field added after 0.2.0 is either prefixed, and older models ignore it, or a deliberate break for older models. Nothing checks at authoring time that a new field meant to be ignorable carries the prefix; the compatibility tests against the last release's reader catch one that does not. An embedding runner bridging to an older reader may strip fields it knows that reader predates, at its own risk: the older model then runs as if the env had not declared them. See [env tags](specs/env_tags.v1.md#validation).
 
-- **v0.1.0.** First stable release. Seals the `2026.06` workflow edition, freezing its spec checksum, and freezes the `rlmesh-wire-v1` protocol generation.
-- **Included in v0.1.0.** A typed edition and per-edition defaults table in the runtime; WANT/CAN negotiation over `preferred_workflow_edition`; declaration surfaces with a base-level ceiling; the `ConfigureEnv` pin on the env leg; the retained edition list generated from `rlmesh.toml` and gated by `policy:check`; the cross-version matrix in CI; `rlmesh.build_info()`; a reserved `MetaValue.null` arm.
-- **Second edition, when a real semantic change requires one.** Mint a second workflow edition and exercise negotiation and the defaults table against a real semantic change.
-- **Included in v0.1.0: per-leg ceilings and the relay seam.** The runtime records each leg's decodable dtypes, capabilities, and message cap. Its relay policy checks the contract and payloads before forwarding them. Conversion for an older leg is a policy the managed platform may supply; the OSS default refuses.
-- **`rlmesh init`.** A scaffolder that writes the edition declaration into a new project, so declaring is the default rather than a step to remember.
-- **Native APIs, near term.** Promote the `rlmesh` facade crate from Preview to Stable and stabilize the CLI commands once they settle. The other crates stay internal with no stability promise.
-- **v1.0, date not set.** Broader API stabilization. The wire-v1 and sealed-edition commitments already apply from v0.1.0.
+### Current limits
+
+The realtime protocol remains provisional until 0.2.0 freezes it. Internal run
+driver messages remain protobuf data types for now; they are not served remotely.
+
+## Versioning roadmap
+
+0.2.0 seals the 2026.10 workflow edition and freezes the realtime session
+protocol for the 0.2 line: every 0.2.x release speaks it unchanged. A later
+minor may still change it before 1.0. The published 0.1 crates continue to
+support the 0.1 wire independently.
+
+Open: whether 0.2 keeps offering the `2026.06` edition, and how editions
+(lockable behaviour) and wire versions (rewrites) relate long term. 0.2 drops
+`2026.06` today; that decision is not final.
+Native Rust APIs remain Preview; C, C++ and C# remain Experimental. The fenced
+C ABI is not released in 0.2 and will ship as ABI 7 in a later release.
 
 ## Value conformance
 
@@ -141,4 +172,8 @@ Core feature releases move together. Patch releases may be artifact-specific whe
 python scripts/check_rlmesh_policy.py
 ```
 
-`mise run check` includes `mise run policy:check`, `mise run protocol:baseline-verify` (live protos byte-identical to the committed snapshot), and `mise run protocol:breaking` (`buf breaking` against the immutable `v0.1.0` tag). Before that tag exists, the v0.1.0 release candidate is checked against the rc.12 tag. Later versions require the stable tag. Regenerating the editable snapshot cannot make an incompatible change pass this comparison. The byte goldens in `crates/rlmesh-proto/tests/wire_golden.rs` also pin each message's encoding.
+`mise run check` includes `policy:check`, `protocol:baseline-verify` and
+`protocol:breaking`. The protocol checks govern only entries under
+`[protocols.*]`: while provisional, lint and session byte goldens protect the
+realtime wire; once frozen, the baseline and immutable freeze tag protect it.
+The kept `rlmesh-proto` messages are internal driver data, outside wire governance.

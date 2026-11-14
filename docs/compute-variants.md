@@ -421,9 +421,9 @@ Tags:
 
 ### What check-image validates
 
-`rlmesh check-image IMAGE` reports `variant:`, `profiles:`, and `rows:` lines next to its other checks, in the same failed / warnings / not checked buckets and the same `--json` shape. The rules are the platform's own.
+`rlmesh check-image IMAGE` reports `variant:`, `profiles:`, and `rows:` lines next to its other checks, in the same failed / warnings / not checked buckets and the same `--json` shape. The checks validate the image's declared compute requirements and profiles.
 
-It **fails** on what the platform's `variant_requires_schema` check fails:
+It **fails** on invalid declarations:
 
 - a block of the wrong type
 - a missing or malformed key
@@ -438,7 +438,7 @@ It **fails** on what the platform's `variant_requires_schema` check fails:
 - `gpu.count` outside 0 to 8
 - a derived row key that does not match the key pattern
 
-It **warns** when a declaration contradicts the image's own markers, the cases the platform's `variant_requires_vs_env` check covers. For `accel.cuda` the CLI checks the whole constraint, upper bounds included, so it can warn where the platform does not:
+It **warns** when a declaration contradicts the image's own markers. For `accel.cuda` the CLI checks the whole constraint, including upper bounds:
 
 - `accel.vendor` `amd` on a CUDA image, or `nvidia` on a ROCm image
 - `accel.cuda` that admits drivers older than the image's CUDA runtime needs, because the constraint has no lower bound (`<13`) or its lower bound sits below the runtime (`>=12.2` on CUDA 12.4); or that admits none that can run it, because an upper bound or an `==` sits below the runtime (`<12`, `==12.2`)

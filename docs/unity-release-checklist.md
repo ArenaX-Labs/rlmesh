@@ -1,6 +1,7 @@
-# Unity v0.2 release checklist
+# Unity release checklist (fenced for 0.2)
 
-**Status: Experimental; Unity support not yet verified on IL2CPP.** Unity support
+**Status: Experimental; fenced for 0.2; Unity support not yet verified on IL2CPP.**
+These gates apply to a future Unity release; Unity packages do not ship in 0.2. Unity support
 must not be claimed until all three D-44 gates below pass on the release
 artifacts. There is no Unity installation or licence on the implementation host;
 the .NET tests cannot substitute for these gates.

@@ -1,11 +1,12 @@
-"""BYO model container entrypoint: serve a policy as an RLMesh model endpoint.
+"""BYO model container entrypoint: serve a policy on an RLMesh session.
 
 You write a Dockerfile (see the sibling ``Dockerfile``) and this entrypoint, and
-RLMesh runs the image. The container serves the policy on
-``RLMESH_ADDRESS`` (default ``0.0.0.0:50051``); a client drives it with
-``rlmesh.session(rlmesh.RemoteModel(address), env)`` un-managed, or
-``rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)`` managed -- and RLMesh
-Managed runs the same image. ``docker push`` the tag to a registry it can reach.
+RLMesh runs the image. The container hosts a session on ``RLMESH_ADDRESS``
+(default ``0.0.0.0:7447``) and serves the policy in it as ``RLMESH_NAME``
+(default ``model``); a client runs it with ``rlmesh.Model(address).run(env)``
+at the address its launcher made, or
+``rlmesh.SandboxModel("image://<tag>").run(env)`` managed -- and RLMesh Managed
+runs the same image. ``docker push`` the tag to a registry it can reach.
 
 The lazy path: skip this file entirely and set the Dockerfile ENTRYPOINT to
 ``python -m rlmesh.serve my_pkg:MyPolicy`` -- it serves the MyPolicy model below
@@ -17,6 +18,7 @@ from __future__ import annotations
 import os
 
 from rlmesh.numpy import Model
+from rlmesh.serve import serve_model
 
 
 class MyPolicy(Model):
@@ -34,10 +36,12 @@ class MyPolicy(Model):
 
 
 def main() -> None:
-    address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
-    print(f"RLMesh BYO model serving {address}", flush=True)
-    # Equivalent one-liner: `python -m rlmesh.serve <this_module>:MyPolicy`.
-    MyPolicy().serve(address)
+    address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:7447")
+    name = os.environ.get("RLMESH_NAME", "model")
+    # Loads the weights, then prints "RLMesh serving model on ..." once the
+    # model answers. Equivalent one-liner:
+    # `python -m rlmesh.serve <this_module>:MyPolicy`.
+    serve_model(MyPolicy, address, name=name)
 
 
 if __name__ == "__main__":

@@ -12,29 +12,36 @@
 
 Serve an environment in one process, drive it from another. Same `reset` / `step` / `render` / `close` you already know, just over the wire. Python on top, Rust underneath.
 
+> **0.2 is an alpha.** It replaces the 0.1 gRPC protocol with real-time
+> sessions, and 0.1 and 0.2 do not talk to each other. This page describes
+> 0.2; a plain `pip install rlmesh` still gives 0.1, which is maintained on
+> the [`release/0.1`](https://github.com/ArenaX-Labs/rlmesh/tree/release/0.1) branch.
+
 ## Install
 
 ```bash
-pip install "rlmesh[gymnasium,numpy]"
+pip install --pre "rlmesh[gymnasium,numpy]"
 ```
+
+`--pre` picks the 0.2 alpha. To use this branch before its alpha is on PyPI, [install it from source](docs/installation.md#from-source).
 
 ## Quickstart
 
-Serve an env:
+Serve an env at an address:
 
 ```python
 import gymnasium as gym
 import rlmesh
 
-rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555").serve()
+rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555/cartpole").serve()
 ```
 
-Use it from somewhere else:
+Use it from another process:
 
 ```python
 from rlmesh.numpy import RemoteEnv
 
-env = RemoteEnv("127.0.0.1:5555")
+env = RemoteEnv("127.0.0.1:5555/cartpole")
 obs, info = env.reset(seed=0)
 
 done = False
@@ -45,53 +52,46 @@ while not done:
 env.close()
 ```
 
+On one machine the address is all you need. From another machine or a container, use the full address the server reports (`server.address`): it ends in a key the server makes when it starts.
+
 More in [`examples/python`](examples/python): adapters, Docker sandboxes, bring-your-own containers.
 
-### Endpoint authentication
+## Robots
 
-A served model or env requires a key when it is started with
-`RLMESH_MODEL_ENDPOINT_TOKEN` / `RLMESH_ENV_ENDPOINT_TOKEN`. Clients send one
-with `api_key=` (`authorization: Bearer <key>`), and an `https://` address
-dials over TLS, so a policy behind a TLS load balancer drives your local env
-directly:
+`rlmesh.realtime` (Experimental) runs robots and policies on one network:
+a host on your PC, robots that declare their parts (an ESP32 with two
+servos, a camera, an arm), and policies that bind to them by kind and
+drive several at once, with a cockpit that shows why each robot is or
+isn't moving and recordings that export to LeRobot. Start with
+[real-time sessions](docs/realtime.md).
 
-```python
-import rlmesh
-
-model = rlmesh.RemoteModel("https://models.example.com", api_key="...")
-result = rlmesh.run(model, MyEnv(), episodes=10)
+```sh
+pip install --pre "rlmesh[robot]"
+rlmesh host
 ```
-
-Without `api_key`, clients read `RLMESH_API_KEY`, and send it only to
-`https://` addresses. `tls_ca_file=` trusts a private CA bundle instead of the
-system roots. The same options exist in Rust (`RemoteModelOptions::api_key`),
-C (`RLMeshRemoteModelOptions.api_key`) and C++ (`with_api_key`).
-
-Servers send HTTP/2 keepalive PINGs on idle connections. They detect a dead
-peer and keep NAT mappings and proxies that count PINGs as traffic alive, but
-many L7 load balancers (AWS ALB among them) do not reset their idle timer on a
-PING: set the proxy's stream idle timeout above the longest gap between
-predicts, including the env's reset between episodes.
 
 ## Rust
 
-Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the gRPC stubs are generated at build time.
+Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the session protobuf messages are generated at build time.
 
 ## C and C++
 
-The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ API](crates/rlmesh-capi/README-cpp.md) (`rlmesh.hpp`, C++17, with RAII handles and exceptions) ship as a prebuilt package on each GitHub Release, with CMake and pkg-config support.
+The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ API](crates/rlmesh-capi/README-cpp.md) (`rlmesh.hpp`, C++17, with RAII handles and exceptions) are fenced for 0.2: they stay built and tested in CI, but no prebuilt C/C++ package is published. Source builds retain CMake and pkg-config support. 0.2 publishes the Python wheels and Rust crates; C#, Unity, Unreal and npm publication is also fenced.
 
 ```cpp
 rlmesh::Model model([](const rlmesh::Value&) { return rlmesh::Value(0); });
-auto result = model.run("tcp://127.0.0.1:5555", {.episodes = 2, .seeds = {0, 1}});
+auto result = model.run("127.0.0.1:7447/counter",
+                        rlmesh::RunOptions{}.with_episodes(2).with_seeds({0, 1}));
 ```
 
-RLMesh aims to feel familiar in every language: the same nouns and constructs (`Env`, `Space`, `Model`, `run`, `Session`, `RemoteEnv`), each in that language's own conventions and with its own helpers.
+RLMesh aims to feel familiar in every language: the same nouns and constructs (`Env`, `Space`, `Model`, `run`, `Binding`, `RemoteEnv`), each in that language's own conventions and with its own helpers.
 
 ## Integrations
 
 - [Unreal Engine](integrations/unreal/RLMesh): serve actors as RLMesh environments.
 - [Unity](integrations/unity): Experimental `com.rlmesh.unity` package with main-thread callbacks and reload preflight. Unity support is not yet verified on IL2CPP.
+- [ESP32](integrations/esp32): `RLMesh`, an ESP32 on Wi-Fi as an RLMesh robot: one Arduino library, provisioned over USB, joining your host on its own. Built from source for now.
+- [Arduino](integrations/arduino): `RLMeshTether`, the board side of a USB tether for boards without a network (Nano, Uno, Mega, UNO R4). Unreleased: the computer side is not in this release.
 
 ## Status
 
