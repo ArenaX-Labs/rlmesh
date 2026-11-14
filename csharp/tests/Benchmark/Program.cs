@@ -24,7 +24,7 @@ static unsafe class Program
 {
     static void Checkpoint() { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); GC.WaitForPendingFinalizers(); }
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void Steps(RLMeshSession* session, RLMeshValue* action, int count)
+    static void Steps(RLMeshBinding* binding, RLMeshValue* action, int count)
     {
         for (int i = 0; i < count; i++)
         {
@@ -32,7 +32,7 @@ static unsafe class Program
             double reward = 0; bool terminated = false, truncated = false;
             try
             {
-                Status.Check(Native.rlmesh_session_step(session, action, &observation, &reward, &terminated, &truncated, &info));
+                Status.Check(Native.rlmesh_binding_step(binding, action, &observation, &reward, &terminated, &truncated, &info));
                 // Same ownership adoption as a public Value return. Keep it live
                 // through the iteration, then let its SafeHandle finalize.
                 Value result = new(observation); observation = null;
@@ -48,15 +48,15 @@ static unsafe class Program
         using var call = env.Record.Acquire(env);
         Value action = 0;
         using var input = action.Handle.Acquire(action);
-        var options = new RLMeshSessionOptions { struct_size = (UIntPtr)sizeof(RLMeshSessionOptions), execution_horizon = 1 };
-        RLMeshSession* session = null;
-        Status.Check(Native.rlmesh_session_new(new RLMeshModelTarget { kind = RLMeshModelTargetKind.RLMESH_MODEL_TARGET_KIND_RANDOM_SAMPLE }, Native.rlmesh_env_target(call.Env), &options, &session));
+        var options = new RLMeshBindOptions { struct_size = (UIntPtr)sizeof(RLMeshBindOptions), execution_horizon = 1 };
+        RLMeshBinding* binding = null;
+        Status.Check(Native.rlmesh_bind(new RLMeshModelTarget { kind = RLMeshModelTargetKind.RLMESH_MODEL_TARGET_KIND_RANDOM_SAMPLE }, Native.rlmesh_env_target(call.Env), &options, &binding));
         try
         {
             RLMeshValue* observation = null; RLMeshValue* info = null;
-            Status.Check(Native.rlmesh_session_reset(session, null, null, &observation, &info));
+            Status.Check(Native.rlmesh_binding_reset(binding, null, null, &observation, &info));
             Native.rlmesh_value_free(observation); Native.rlmesh_value_free(info);
-            Steps(session, input.Value, 1000);
+            Steps(binding, input.Value, 1000);
             Checkpoint();
             if (args.Length != 0 && args[0] == "--timing")
             {
@@ -65,26 +65,26 @@ static unsafe class Program
                 Console.WriteLine("ready");
                 while (Console.ReadLine() != null)
                 {
-                    var timer = Stopwatch.StartNew(); Steps(session, input.Value, 10000); timer.Stop();
+                    var timer = Stopwatch.StartNew(); Steps(binding, input.Value, 10000); timer.Stop();
                     Console.WriteLine(timer.Elapsed.TotalNanoseconds / 10000);
                 }
                 return;
             }
             long handles = Interlocked.Read(ref HandleMetrics.FinalizableConstructions);
             long bytes = GC.GetTotalAllocatedBytes(precise: true);
-            Steps(session, input.Value, 10000);
+            Steps(binding, input.Value, 10000);
             Checkpoint();
             long allocated = GC.GetTotalAllocatedBytes(precise: true) - bytes;
             long constructed = Interlocked.Read(ref HandleMetrics.FinalizableConstructions) - handles;
             long live = Interlocked.Read(ref HandleMetrics.LiveHandles);
-            Steps(session, input.Value, 100000);
+            Steps(binding, input.Value, 100000);
             Checkpoint();
             long after = Interlocked.Read(ref HandleMetrics.LiveHandles);
             Console.WriteLine($"C# gate: {constructed / 10000.0:F3} finalizable SafeHandles/step; {allocated / 10000.0:F3} B/step; live handles {live} -> {after} after 100000 steps");
             if (constructed > 20000 || allocated > 5120000 || after != live)
                 throw new Exception("E-3 allocation or no-leak budget failed");
         }
-        finally { Native.rlmesh_session_free(session); authored.tensor.Dispose(); }
+        finally { Native.rlmesh_binding_free(binding); authored.tensor.Dispose(); }
         GC.KeepAlive(authored); GC.KeepAlive(action);
     }
 }

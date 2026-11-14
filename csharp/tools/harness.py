@@ -36,7 +36,7 @@ def drive(command, directory, env):
                         "serving harness did not publish an address in 30s"
                     )
             address = server.stdout.readline().strip()
-            assert address.startswith("tcp://"), address
+            assert address.endswith("/env"), address
             subprocess.run(
                 [
                     "uv",

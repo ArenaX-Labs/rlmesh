@@ -8,7 +8,7 @@ namespace RLMesh.Unity
 {
     public abstract class RLMeshEnvBehaviour : MonoBehaviour, IEnv
     {
-        public string Address = "tcp://127.0.0.1:5555";
+        public string Address = "127.0.0.1:7447/env";
         public string EnvId = "Unity-v0";
         private MainThreadDispatcher dispatcher;
         private EnvServer server;
@@ -71,7 +71,8 @@ namespace RLMesh.Unity
                 ownsBackground = true;
                 Application.runInBackground = true;
                 Debug.Log("RLMesh host runtime: " + hostRuntimeJson, this);
-                Debug.Log("Serving " + EnvId + " on " + servedAddress, this);
+                // The server's ToString leaves the address's key out; GetServedAddress has it.
+                Debug.Log("Serving " + EnvId + ": " + server, this);
             }
             catch { StopServing(); throw; }
         }

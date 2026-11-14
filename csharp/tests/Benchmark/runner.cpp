@@ -25,17 +25,17 @@ struct Counter {
 };
 int main() {
   rlmesh::Env env(Counter{});
-  auto session = rlmesh::session(rlmesh::RANDOM_SAMPLE, env);
-  session.reset();
+  auto binding = rlmesh::bind(rlmesh::RANDOM_SAMPLE, env);
+  binding.reset();
   rlmesh::Value action = 0;
   for (int i = 0; i < 1000; ++i)
-    session.step(action);
+    binding.step(action);
   std::cout << "ready" << std::endl;
   std::string line;
   while (std::getline(std::cin, line)) {
     auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < 10000; ++i)
-      session.step(action);
+      binding.step(action);
     auto nanos = std::chrono::duration<double, std::nano>(
                      std::chrono::steady_clock::now() - start)
                      .count();

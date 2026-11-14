@@ -36,7 +36,8 @@ pass before support for it is claimed; the supplied player gate targets Linux.
 
 Import **Reach Target** from this package's Samples tab. Attach
 `RLMeshReachTargetBehaviour` to a GameObject, then press Play. The log shows
-`Serving Unity-v0 on tcp://127.0.0.1:5555` (set `EnvId` to change the label).
+`Serving Unity-v0 on 127.0.0.1:7447/env` (set `EnvId` to change the label): the env
+`env` in a session the player hosts on port 7447.
 
 The observation is a float32 tensor of shape `[1]`: the offset along world X to
 a target chosen on reset. `Discrete(3)` actions move backward, stay, or move
@@ -48,7 +49,7 @@ where Unreal normalizes its reward by `TargetRange`.
 ```python
 import rlmesh
 
-print(rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:5555", episodes=3))
+print(rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:7447/env", episodes=3))
 ```
 
 ## Serve your own environment
@@ -80,8 +81,8 @@ public sealed class CounterBehaviour : RLMeshEnvBehaviour
 
 `Start` starts serving. If overriding `Start`, call `base.Start()` after your
 initialization; call `base.OnEnable()`, `base.Update()` and `base.OnDisable()` in overrides too.
-`Address` selects the bind address; `tcp://127.0.0.1:0` requests an ephemeral
-port. `GetServedAddress()` returns the actual address while serving.
+`Address` selects the session participant address; `:0/env` requests an
+ephemeral port. `GetServedAddress()` returns the actual address while serving.
 `EnvId` is the log label and reset info's `env_id`: the core v0.2 authoring API
 has no environment-ID interface. `StartServing()` / `StopServing()` are explicit
 main-thread controls. A component starts serving again when re-enabled. While

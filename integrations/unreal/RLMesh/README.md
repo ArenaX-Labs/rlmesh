@@ -19,14 +19,14 @@ It runs on Win64 and Linux and uses the prebuilt RLMesh C/C++ library.
 
 ## Try the example
 
-Add an **RLMesh Reach Target** component to any actor and press Play. The log shows `Serving Unreal-v0 on tcp://127.0.0.1:5555`. Each episode asks a model to move the actor along X to a hidden target: the observation is the offset to the target, the action is `Discrete(3)` (back, stay, forward), and the reward is minus the remaining distance.
+Add an **RLMesh Reach Target** component to any actor and press Play. The log shows `Serving Unreal-v0 on 127.0.0.1:7447/env`: the env `env` in a session the game hosts on port 7447. Each episode asks a model to move the actor along X to a hidden target: the observation is the offset to the target, the action is `Discrete(3)` (back, stay, forward), and the reward is minus the remaining distance.
 
 Drive it from Python:
 
 ```python
 import rlmesh
 
-result = rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:5555", episodes=3)
+result = rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:7447/env", episodes=3)
 print(result)
 ```
 
