@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import warnings
 from collections.abc import Mapping
 from typing import Literal
 
@@ -64,12 +65,25 @@ def run_docker(
 #: it, including the module-import form ``pkg:Env-v0`` and ``ALE/Pong-v5``.
 _GYM_VERSION_RE = re.compile(r"-v\d+$")
 
+#: A tagless name Docker accepts as an image reference: lowercase path
+#: components (``a-z0-9`` joined by ``.``, ``_``, ``__`` or dashes). Gymnasium
+#: ids are mostly CamelCase (``CartPole-v1``), which Docker refuses, and the
+#: ``module:Env-v0`` form names its module, so neither is probed as an image.
+_COMPONENT = r"[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*"
+_DOCKER_NAME_RE = re.compile(rf"^{_COMPONENT}(?:/{_COMPONENT})*$")
 
-def resolve_source_kind(source: str) -> tuple[SourceKind, str]:
+
+def resolve_source_kind(
+    source: str, *, prefer_build: bool = False
+) -> tuple[SourceKind, str]:
     """Classify a sandbox source and return ``(kind, resolved_ref)``.
 
-    * ``gym://`` / ``hf://`` / gym-versioned bare id (``-v<int>``) -> build from
-      source, never probed as a Docker image.
+    * ``gym://`` / ``hf://`` -> build from source, never probed as a Docker image.
+    * gym-versioned bare id (``-v<int>``) -> build from source, unless it is
+      also a valid tagless Docker image name and a local image of it exists:
+      then a registered gym id (or ``prefer_build``, set when build options
+      were given) still builds, with a warning naming ``docker://``, and an id
+      no installed gym package registers runs the image.
     * ``docker://img`` / ``image://img`` -> prebuilt (explicit).
     * bare image-shaped (``:tag`` / ``@sha256:``), local image -> prebuilt.
     * bare image-shaped, not local -> ``docker pull`` then prebuilt, else error.
@@ -95,8 +109,7 @@ def resolve_source_kind(source: str) -> tuple[SourceKind, str]:
     if "://" in value:
         raise ValueError(f"unsupported sandbox source scheme: {source!r}")
     if looks_like_gym_id(value):
-        _log_resolution(source, "build", "gym id")
-        return "build", value
+        return _resolve_gym_shaped(source, value, prefer_build=prefer_build)
     if not _is_image_shaped(value):
         return _resolve_tagless(source, value)
     if shutil.which("docker") is None:
@@ -144,6 +157,58 @@ def _resolve_tagless(source: str, value: str) -> tuple[SourceKind, str]:
         f"{value} to run it as a prebuilt image (pulls if needed) or gym://"
         f"{value} to build it from source"
     )
+
+
+def _resolve_gym_shaped(
+    source: str, value: str, *, prefer_build: bool
+) -> tuple[SourceKind, str]:
+    """Classify a bare id with Gymnasium's ``-v<int>`` suffix.
+
+    It builds from source, as it always has, unless it could also name a
+    tagless Docker image and a local image of that name exists (``docker image
+    inspect``, never a pull). Then the id may be either, so which one wins
+    is said out loud: an id a gym package installed here registers, or a
+    build asked for with build options, still builds and warns naming the
+    ``docker://`` spelling; any other id runs the image.
+    """
+    if (
+        _DOCKER_NAME_RE.match(value) is None
+        or shutil.which("docker") is None
+        or not docker_image_exists(value)
+    ):
+        _log_resolution(source, "build", "gym id")
+        return "build", value
+    if prefer_build or gym_id_registered(value):
+        why = (
+            "build options were given" if prefer_build else "it is a registered gym id"
+        )
+        warnings.warn(
+            f"sandbox source {source!r} names both a gym id and a local Docker "
+            f"image; building the gym env from source because {why}. Use "
+            f"docker://{value} to run the image, or gym://{value} to build "
+            "without this warning",
+            stacklevel=3,
+        )
+        _log_resolution(source, "build", "gym id; a local image has the same name")
+        return "build", value
+    _log_resolution(
+        source, "prebuilt", "local Docker image; no installed gym package registers it"
+    )
+    return "prebuilt", value
+
+
+def gym_id_registered(value: str) -> bool:
+    """Whether a gym package installed here registers ``value``.
+
+    Reads Gymnasium's registry without importing any other module, so an id
+    a package registers only when imported reads as unregistered. ``False``
+    when Gymnasium is not installed.
+    """
+    try:
+        from gymnasium.envs.registration import registry
+    except ImportError:
+        return False
+    return value in registry
 
 
 def looks_like_gym_id(value: str) -> bool:
@@ -203,6 +268,7 @@ __all__ = [
     "SourceKind",
     "docker_image_exists",
     "docker_pull",
+    "gym_id_registered",
     "looks_like_gym_id",
     "resolve_source_kind",
     "run_docker",

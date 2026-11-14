@@ -375,9 +375,11 @@ def test_tagless_name_without_docker_cli_mentions_the_cli(
     assert "gym://myenv" in str(excinfo.value)
 
 
-def test_gym_versioned_names_never_probe_docker(
+def test_gym_ids_docker_cannot_spell_never_probe_docker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # CamelCase and the module form cannot be a tagless image name; a
+    # lowercase `name-v1` can, and is probed (test_sandbox_prebuilt.py).
     monkeypatch.setattr(
         _sources,
         "docker_image_exists",

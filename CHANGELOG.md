@@ -239,6 +239,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - The live viewer shows the env's first image role by default; `View(source="render")` asks for `render()`.
 - An adapter resolution error for a missing role suggests near matches.
 - `rlmesh check-image` checks that an image exposes its session's port (7447) instead of port 50051.
+- A bare `SandboxEnv` source with Gymnasium's `-v<N>` suffix that also names a local Docker image (`rlmesh-libero-v1`) runs that image when no installed gym package registers the id; a registered id, or one given build options, still builds from source and warns, naming the `docker://` spelling.
 
 ### Fixed
 

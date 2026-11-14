@@ -462,7 +462,7 @@ def start_sandbox_container(
     devices = string_sequence("devices", run.devices)
     volumes = string_sequence("volumes", run.volumes)
     user = normalize_user(run.user)
-    kind, resolved = resolve_source_kind(source)
+    kind, resolved = resolve_source_kind(source, prefer_build=_asks_for_build(build))
     if kind == "prebuilt":
         _warn_ignored_build_options(build)
         return start_prebuilt_container(
@@ -692,6 +692,27 @@ def pid_namespace_id() -> str | None:
         return os.readlink("/proc/self/ns/pid")
     except OSError:
         return None
+
+
+def _asks_for_build(options: SandboxBuild) -> bool:
+    """Whether ``options`` configure a from-source build.
+
+    A reason to build a source that names both a gym id and a local image.
+    """
+    return (
+        options.trust_remote_code
+        or options.allow_unpinned_hf
+        or any(
+            getattr(options, name) is not None
+            for name in (
+                "base_image",
+                "rlmesh_package",
+                "packages",
+                "imports",
+                "build_memory",
+            )
+        )
+    )
 
 
 def _warn_ignored_build_options(options: SandboxBuild) -> None:

@@ -85,6 +85,80 @@ def test_bare_image_tag_not_found_raises_with_pull_stderr(
     assert "unauthorized: authentication required" in str(excinfo.value)
 
 
+def test_a_gym_shaped_name_that_is_also_a_local_image_says_which_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lowercase ``name-v1`` is both a valid gym id and a valid Docker name.
+    With no local image it builds as before; with one, an id no installed
+    gym package registers runs the image, and a registered id (or a build
+    asked for with build options) still builds, warning with ``docker://``."""
+    monkeypatch.setattr(_sources.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        _sources, "docker_pull", lambda *_a: pytest.fail("never pulls a gym id")
+    )
+    local: set[str] = set()
+    probed: list[str] = []
+
+    def exists(image: str) -> bool:
+        probed.append(image)
+        return image in local
+
+    monkeypatch.setattr(_sources, "docker_image_exists", exists)
+    registered: set[str] = set()
+    monkeypatch.setattr(_sources, "gym_id_registered", lambda v: v in registered)
+
+    # No local image: unchanged, a build.
+    assert _sources.resolve_source_kind("rlmesh-libero-v1") == (
+        "build",
+        "rlmesh-libero-v1",
+    )
+    assert probed == ["rlmesh-libero-v1"]
+
+    # A local image, and no gym package registers the id: the image.
+    local.add("rlmesh-libero-v1")
+    assert _sources.resolve_source_kind("rlmesh-libero-v1") == (
+        "prebuilt",
+        "rlmesh-libero-v1",
+    )
+
+    # A registered id still builds, and says how to run the image instead.
+    registered.add("rlmesh-libero-v1")
+    with pytest.warns(UserWarning, match=r"docker://rlmesh-libero-v1 to run the image"):
+        assert _sources.resolve_source_kind("rlmesh-libero-v1") == (
+            "build",
+            "rlmesh-libero-v1",
+        )
+
+    # So does one given build options, whatever the registry says.
+    registered.clear()
+    with pytest.warns(UserWarning, match="because build options were given"):
+        assert _sources.resolve_source_kind("rlmesh-libero-v1", prefer_build=True) == (
+            "build",
+            "rlmesh-libero-v1",
+        )
+
+    # A name Docker cannot spell, or a module form, is never probed; an
+    # explicit scheme neither.
+    probed.clear()
+    local.update({"Rlmesh-Libero-v1", "pkg:env-v1"})
+    assert _sources.resolve_source_kind("Rlmesh-Libero-v1")[0] == "build"
+    assert _sources.resolve_source_kind("pkg:env-v1")[0] == "build"
+    assert _sources.resolve_source_kind("gym://rlmesh-libero-v1")[0] == "build"
+    assert probed == []
+
+
+def test_gym_id_registered_reads_the_registry_without_importing() -> None:
+    pytest.importorskip("gymnasium")
+    assert _sources.gym_id_registered("CartPole-v1")
+    assert not _sources.gym_id_registered("rlmesh-libero-v1")
+
+
+def test_build_options_ask_for_a_build() -> None:
+    assert not sandbox._asks_for_build(sandbox.SandboxBuild())
+    assert sandbox._asks_for_build(sandbox.SandboxBuild(packages=["libero"]))
+    assert sandbox._asks_for_build(sandbox.SandboxBuild(trust_remote_code=True))
+
+
 # --- prebuilt_run_cmd hardening + binding ------------------------------------
 
 
