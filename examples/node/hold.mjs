@@ -38,7 +38,8 @@ try {
     }
   })();
 
-  console.log(String(await policy.bind('ur10e'))); // the binding table
+  await policy.bind('ur10e');
+  console.log(String(policy.binding)); // the binding table
   const stats = await policy.run(
     async (obs) => {
       const arm = new Float32Array(60); // [chunk 10, 6 joints]

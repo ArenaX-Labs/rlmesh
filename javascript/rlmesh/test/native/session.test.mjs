@@ -142,7 +142,8 @@ test('a Node policy drives a Node robot on loopback', async () => {
   const seen = [];
   await using ur = await FakeUR10e.start(host);
   await using policy = new rlmesh.Policy(SINE, { session: host, name: 'sine' });
-  const binding = await policy.bind('ur10e');
+  assert.equal(await policy.bind('ur10e'), policy);
+  const binding = policy.binding;
   assert.equal(policy.clock, 'wall');
   await assert.rejects(policy.run(() => ({}), { episodes: 2 }), (e) => e instanceof RangeError && /episodes= is for a lockstep robot/.test(e.message));
   assert.match(String(binding), /wrist +in +wrist\/cam +bound +decode\(jpeg\) → crop\(640x480 → 96x96, bilinear\)/);
@@ -213,7 +214,7 @@ test('the binding table and refusals match the conformance goldens', async () =>
   assert.equal(rtde.name, 'ur10e_rtde');
   {
     await using pi0 = new rlmesh.Policy(fixture('policies', 'pi0_single'), { session: host, name: 'pi0_single' });
-    const binding = await pi0.bind('ur10e');
+    const binding = (await pi0.bind('ur10e')).binding;
     assert.equal(binding.table.replace(/\n+$/, ''), golden('pi0_single__ur10e'));
     assert.ok(binding.warnings.length && binding.warnings[0].includes('gripper'));
   }
@@ -228,7 +229,7 @@ test('the binding table and refusals match the conformance goldens', async () =>
   assert.equal(err.message.replace(/\n+$/, ''), golden('force_policy__ur10e_rtde__refused'));
   assert.deepEqual(err.problems, [['incompatible', 'input', 'ft']]);
   // The fix the message suggests is a different robot: the same policy binds where the wrench is in tool0.
-  assert.match(String(await refused.bind('ur10e')), /wrist\/ft/);
+  assert.match(String((await refused.bind('ur10e')).binding), /wrist\/ft/);
   await refused.close();
 
   await assert.rejects(
@@ -443,7 +444,7 @@ test('a policy publishes annotations under its name and never binds them', async
         { session: host, name: 'tracker', publishes: { target: { kind: 'x/target', hz: 25, fields: { xy: ['float32', [2]] } } } },
       );
       // One robot besides the tracker's own parts: bound with no robot named, the eye alone.
-      const binding = await tracker.bind();
+      const binding = (await tracker.bind()).binding;
       assert.match(binding.toString(), /binding tracker on eye-1/);
       assert.throws(() => tracker.publish('boxes', Float32Array.of(0, 0)), /no part 'boxes'/);
       // For half a second: the recorder subscribes to a new part once it sees it.

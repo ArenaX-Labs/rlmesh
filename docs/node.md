@@ -40,7 +40,8 @@ try {
       await rate.sleep();
     }
   })();
-  console.log(String(await policy.bind("ur10e"))); // the binding table
+  await policy.bind("ur10e");
+  console.log(String(policy.binding)); // the binding table
   await policy.run(
     async (obs) => {
       const arm = new Float32Array(60); // [chunk 10, 6 joints]
@@ -71,6 +72,8 @@ block instead of the `finally`.
 | `robot.arm()`, `estop(reason)`, `clear_estop()`    | `await robot.arm()`, `estop(reason)`, `clearEstop()`               |
 | `robot.now_ns()` (`time.monotonic_ns()`)           | `robot.nowNs()` (`process.hrtime.bigint()`)                        |
 | `Policy(map, session=host).bind(robot, **opts)`    | `await new Policy(map, { session: host }).bind(robot, opts)`       |
+| `policy.bind("sim").run(predict, episodes=20)`     | `await (await policy.bind('sim')).run(predict, { episodes: 20 })`  |
+| `policy.binding` (the table bound)                 | `policy.binding`                                                   |
 | `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                                  |
 | `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }`      |
 | `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                       |

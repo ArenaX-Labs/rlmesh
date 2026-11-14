@@ -6,7 +6,8 @@
 //   const robot = await Robot.connect('ur10e', UR10E, { session: host });
 //   await robot.arm();
 //   const policy = new Policy(HOLD, { session: host, name: 'hold' });
-//   console.log(String(await policy.bind('ur10e')));               // the binding table
+//   await policy.bind('ur10e');
+//   console.log(String(policy.binding));                          // the binding table
 //   // robot loop: robot.publish('arm', { pos, vel, effort }); const due = robot.due('arm'); await rate.sleep();
 //   await policy.run((obs) => ({ arm: { data: holdQ(obs), shape: [10, 6] } }), { duration: 5 });
 //
@@ -1070,7 +1071,9 @@ export class Policy implements AsyncDisposable {
   }
 
   /**
-   * Attach, bind to `robot`'s parts and declare the binding. Rejects with `BindingRefused`.
+   * Attach, bind to `robot`'s parts and declare the binding; resolves to the policy, to `run`
+   * (`(await policy.bind('ur10e')).run(predict)`). Rejects with `BindingRefused`; `binding` is the
+   * table bound.
    * With no robot it binds the session's view of every robot, each under its name, so one policy
    * drives several: its actions name their robot (`eye-1:eyes`).
    *
@@ -1079,7 +1082,7 @@ export class Policy implements AsyncDisposable {
    * several robots, any of them lockstep, rejects with `BindingRefused`, as does a lockstep robot
    * for a policy that `publishes`.
    */
-  async bind(robot?: string | null, opts: BindOptions = {}): Promise<BindingTable> {
+  async bind(robot?: string | null, opts: BindOptions = {}): Promise<this> {
     if (this.native) throw new SessionException(`policy ${this.name} is already bound`);
     const positional = Object.entries(opts.names ?? {}).map(([entry, mode]) => {
       if (mode !== 'positional') {
@@ -1100,7 +1103,7 @@ export class Policy implements AsyncDisposable {
       }),
     );
     for (const part of this.native.publishedParts()) this.fields.set(part.path, part.fields);
-    return new BindingTable(this.native);
+    return this;
   }
 
   /**
@@ -1487,7 +1490,6 @@ export async function drive(
   },
 ): Promise<RunStats> {
   await using p = new Policy(policy, opts);
-  await p.bind(robot, opts);
   // Awaited here: returning the run's promise would close the policy as the block exits, mid-run.
-  return await p.run(predict, opts);
+  return await (await p.bind(robot, opts)).run(predict, opts);
 }

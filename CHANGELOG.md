@@ -81,6 +81,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - Error statuses distinguish classes (`RLMESH_ERR_TYPE`, `RLMESH_ERR_PROTOCOL`, `RLMESH_ERR_RUNTIME`, `RLMESH_ERR_OS`), and `RLMESH_ERR_TRANSPORT` is renamed `RLMESH_ERR_CONNECTION`.
 - `rlmesh.hpp` requires exceptions and throws typed exceptions in place of `Result<T>`; options are aggregates with `std::chrono` durations.
 
+#### Other bindings (not published)
+
+- JavaScript: a Node `Policy`'s `bind()` resolves to the policy, as Python's does, so `run` chains on it (`(await policy.bind('ur10e')).run(predict)`); the binding table it resolved to is `policy.binding`.
+
 ### Added
 
 #### Real-time sessions (Python, Experimental)
