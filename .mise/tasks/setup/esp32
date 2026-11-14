@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Install pinned Arduino-ESP32 and Xtensa build tools (only for board CI and release builds)"
+#MISE dir="{{ config_root }}"
+set -euo pipefail
+
+mise install arduino-cli@1.5.1 github:esp-rs/espup@0.19.0
+index=https://espressif.github.io/arduino-esp32/package_esp32_index.json
+mise exec arduino-cli@1.5.1 -- arduino-cli core update-index --additional-urls "$index"
+mise exec arduino-cli@1.5.1 -- arduino-cli core install esp32:esp32@3.3.12 --additional-urls "$index"
+rustup toolchain install nightly --profile minimal
+mise exec github:esp-rs/espup@0.19.0 -- espup install --targets esp32,esp32s3 --toolchain-version 1.97.0.0
