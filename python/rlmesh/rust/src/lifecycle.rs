@@ -86,6 +86,14 @@ impl PyBuildInfo {
         rlmesh::build_info().protocol_generation
     }
 
+    /// The session wire revision this build speaks. A 0.2 pre-release's wire
+    /// may break before 0.2.0 freezes it: two builds on different revisions
+    /// cannot talk, and `rlmesh check-image` compares an image's with this.
+    #[getter]
+    fn session_wire_revision(&self) -> u32 {
+        rlmesh::build_info().session_wire_revision
+    }
+
     /// The exact workflow edition spelling this build advertises: the sealed
     /// `YYYY.MM` base on a release, `YYYY.MM-<cohort>` on a prerelease or
     /// source build.

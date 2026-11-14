@@ -529,7 +529,9 @@ RLMESH_API const char* rlmesh_build_source_str(RLMeshBuildSource source);
 /* The linked library's identity. Every string is static, NUL-terminated UTF-8 with
  * process lifetime; nothing is freed. supported_workflow_editions lists
  * supported_workflow_editions_len editions, newest first; git is NULL when the build was
- * not stamped from git. */
+ * not stamped from git. session_wire_revision is the session wire revision the library
+ * speaks (two builds on different revisions cannot talk), 0 from a library built
+ * before the field. */
 typedef struct RLMeshBuildInfo {
   size_t struct_size;
   const char* version;
@@ -540,7 +542,7 @@ typedef struct RLMeshBuildInfo {
   size_t supported_workflow_editions_len;
   const char* build_cohort;
   RLMeshBuildSource build_source;
-  uint32_t _reserved;
+  uint32_t session_wire_revision;
   const char* git;
 } RLMeshBuildInfo;
 #define RLMESH_BUILD_INFO_INIT                                         \

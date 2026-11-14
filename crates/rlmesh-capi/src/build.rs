@@ -43,7 +43,7 @@ pub struct RLMeshBuildInfo {
     pub supported_workflow_editions_len: usize,
     pub build_cohort: *const c_char,
     pub build_source: RLMeshBuildSource,
-    pub _reserved: u32,
+    pub session_wire_revision: u32,
     pub git: *const c_char,
 }
 
@@ -128,7 +128,7 @@ pub unsafe extern "C" fn rlmesh_build_info(out: *mut RLMeshBuildInfo) -> RLMeshS
             supported_workflow_editions_len: info.supported.len(),
             build_cohort: info.build_cohort.as_ptr(),
             build_source: RLMeshBuildSource::of(rlmesh::build_info().build_source),
-            _reserved: 0,
+            session_wire_revision: rlmesh::build_info().session_wire_revision,
             git: info
                 .git
                 .as_ref()
@@ -334,7 +334,7 @@ mod tests {
             supported_workflow_editions_len: 0,
             build_cohort: std::ptr::null(),
             build_source: RLMeshBuildSource::Invalid,
-            _reserved: 0,
+            session_wire_revision: 0,
             git: std::ptr::null(),
         };
         assert_eq!(unsafe { rlmesh_build_info(&mut info) }, RLMeshStatus::Ok);
@@ -351,6 +351,7 @@ mod tests {
         };
         assert_eq!(text(editions[0]), rust.workflow_edition);
         assert_eq!(info.git.is_null(), rust.git.is_none());
+        assert_eq!(info.session_wire_revision, rust.session_wire_revision);
         assert_eq!(
             text(rlmesh_build_source_str(info.build_source as i32)),
             rust.build_source.as_str()

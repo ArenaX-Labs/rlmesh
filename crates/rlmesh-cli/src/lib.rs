@@ -1,4 +1,5 @@
 mod auth;
+mod build;
 mod check;
 mod cli;
 mod container;
@@ -69,7 +70,9 @@ pub async fn run_cli_in(
 ) -> Result<i32> {
     let stdout_style = Style::for_terminal(stdout_is_terminal);
     let stderr_style = Style::for_terminal(stderr_is_terminal);
-    let command = Cli::command().color(ColorChoice::Never);
+    let command = Cli::command()
+        .color(ColorChoice::Never)
+        .version(build::VERSION_LINE.as_str());
     let cli = match command
         .try_get_matches_from(std::iter::once(OsString::from("rlmesh")).chain(argv))
         .and_then(|matches| Cli::from_arg_matches(&matches))
@@ -288,8 +291,15 @@ fn profile_store(profiles: &mut Option<ProfileStore>) -> &mut ProfileStore {
 }
 
 fn version(stdout: &mut impl Write, style: Style) -> Result<()> {
+    let info = rlmesh::build_info();
     write_heading(stdout, style, "RLMesh CLI")?;
     write_key_value(stdout, style, "Version", env!("CARGO_PKG_VERSION"))?;
+    write_key_value(
+        stdout,
+        style,
+        "Build",
+        &build::build_kind(info.build_source, info.git),
+    )?;
     write_key_value(
         stdout,
         style,
@@ -301,6 +311,12 @@ fn version(stdout: &mut impl Write, style: Style) -> Result<()> {
         style,
         "Editions",
         &rlmesh_proto::supported_workflow_editions().join(", "),
+    )?;
+    write_key_value(
+        stdout,
+        style,
+        "Session wire",
+        &info.session_wire_revision.to_string(),
     )?;
     write_key_value(stdout, style, "Distribution", &cli_distribution())?;
     Ok(())
@@ -384,7 +400,29 @@ mod tests {
         assert!(stdout.contains(rlmesh_proto::CURRENT_WORKFLOW_EDITION));
         assert!(stdout.contains(&rlmesh_proto::supported_workflow_editions().join(", ")));
         assert!(stdout.contains("Distribution"));
+        let info = rlmesh::build_info();
+        assert!(
+            stdout.contains(&build::build_kind(info.build_source, info.git)),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "Session wire  {}",
+                rlmesh_session::wire::version::WIRE_REVISION
+            )),
+            "{stdout}"
+        );
         assert!(!stdout.contains('\x1b'));
+    }
+
+    #[tokio::test]
+    async fn dash_dash_version_says_what_kind_of_build_this_is() {
+        let (code, stdout, stderr) = run_for_test(&["--version"]).await;
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert_eq!(stdout, format!("rlmesh {}\n", *build::VERSION_LINE));
+        assert!(stdout.contains(" · session wire "), "{stdout}");
     }
 
     #[tokio::test]

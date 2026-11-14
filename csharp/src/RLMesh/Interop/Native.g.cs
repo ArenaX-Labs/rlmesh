@@ -219,7 +219,7 @@ namespace RLMesh.Interop
         public RLMeshBuildSource build_source;
 
         [NativeTypeName("uint32_t")]
-        public uint _reserved;
+        public uint session_wire_revision;
 
         [NativeTypeName("const char *")]
         public sbyte* git;
@@ -378,7 +378,7 @@ namespace RLMesh.Interop
     {
         public RLMeshBoundType type_;
 
-        [NativeTypeName("__AnonymousRecord_rlmesh_L856_C3")]
+        [NativeTypeName("__AnonymousRecord_rlmesh_L858_C3")]
         public _value_e__Union value;
 
         [StructLayout(LayoutKind.Explicit)]

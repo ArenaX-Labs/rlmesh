@@ -112,6 +112,7 @@ int main(void) {
   CHECK(rlmesh_build_source_str(bi.build_source) != NULL);
   CHECK(rlmesh_build_source_str(RLMESH_BUILD_SOURCE_INVALID) == NULL);
   CHECK((bi.git != NULL) == (strncmp(bi.build_cohort, "dev.", 4) == 0));
+  CHECK(bi.session_wire_revision >= 1);
   printf("%s %s\n", bi.version, rlmesh_current_workflow_edition());
 
   RLMeshBytes repr = {NULL, 0, 0};

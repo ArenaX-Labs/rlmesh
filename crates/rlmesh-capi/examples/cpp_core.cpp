@@ -33,6 +33,7 @@ int main() {
   CHECK(info.supported_workflow_editions.front() == info.workflow_edition);
   CHECK(!rlmesh::to_string(info.build_source).empty());
   CHECK(info.git.has_value() == (info.build_cohort.substr(0, 4) == "dev."));
+  CHECK(info.session_wire_revision >= 1);
   std::ostringstream repr;
   repr << info;
   CHECK(repr.str().rfind("BuildInfo(version=\"", 0) == 0);

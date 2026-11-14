@@ -562,6 +562,7 @@ struct BuildInfo {
   std::string_view build_cohort{};
   BuildSource build_source = BuildSource::Package;
   std::optional<std::string_view> git{};
+  uint32_t session_wire_revision = 0;  ///< 0 from a library built before the field
 };
 
 /// This library's build identity (`rlmesh.build_info()`).
@@ -580,6 +581,7 @@ inline BuildInfo build_info() {
   info.build_cohort = detail::sv(raw.build_cohort);
   info.build_source = static_cast<BuildSource>(raw.build_source);
   if (raw.git != nullptr) info.git = detail::sv(raw.git);
+  info.session_wire_revision = raw.session_wire_revision;
   return info;
 }
 
@@ -589,6 +591,7 @@ inline std::string to_string(const BuildInfo& info) {
   std::ostringstream out;
   out << "BuildInfo(version=" << std::quoted(std::string(info.version))
       << ", protocol_generation=" << std::quoted(std::string(info.protocol_generation))
+      << ", session_wire_revision=" << info.session_wire_revision
       << ", workflow_edition=" << std::quoted(std::string(info.workflow_edition))
       << ", workflow_edition_base=" << std::quoted(std::string(info.workflow_edition_base))
       << ", build_cohort=" << std::quoted(std::string(info.build_cohort))

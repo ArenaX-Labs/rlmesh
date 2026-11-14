@@ -164,6 +164,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `View(hold=...)` keeps the viewer up after the session ends, `View(step_hz=...)` paces a fast simulator, and the HTTP viewer has a quit button.
 - `rlmesh.FrameSources` and `rlmesh.recorder` are Stable.
 - A predict corner's `context` carries `observation_space` and `action_space`, the spaces of the env its episode runs in, so a model with `spec = NO_ADAPTER` can read the action space it answers in.
+- `rlmesh.BuildInfo.session_wire_revision` is the session wire revision the build speaks (also `rlmesh::BuildInfo::session_wire_revision`, and in C and C++ `RLMeshBuildInfo.session_wire_revision`, which takes the struct's reserved field).
 
 #### CLI
 
@@ -173,6 +174,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `rlmesh check-image` validates an image's compute variant and warns where it contradicts the image's CUDA or ROCm versions.
 - `rlmesh doctor` and `rlmesh bench` take `--volume HOST:CONTAINER` mounts and `--kwargs-json` params for the image under probe, as a sandbox does.
 - `rlmesh doctor IMAGE` checks an env or model image's handshake, contract and conformance and writes `probe-report.json`; `rlmesh bench IMAGE` sweeps concurrent sessions against a model image and recommends `max_batch_size`. Both exit 1 on a failed check.
+- `rlmesh --version` (and `python -m rlmesh --version`) says whether the build is a release build or a dev build, which talks only to builds of its own commit, and prints its workflow editions and session wire revision; `rlmesh version` adds `Build` and `Session wire` rows.
 
 #### Rust
 

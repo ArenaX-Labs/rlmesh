@@ -152,6 +152,10 @@
             "kind": "property",
             "signature": "property protocol_generation: str"
           },
+          "session_wire_revision": {
+            "kind": "property",
+            "signature": "property session_wire_revision: int"
+          },
           "supported_workflow_editions": {
             "kind": "property",
             "signature": "property supported_workflow_editions: list[str]"

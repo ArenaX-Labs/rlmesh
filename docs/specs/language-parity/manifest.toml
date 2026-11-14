@@ -618,7 +618,6 @@ params = {}
 also = [
   "RLMESH_BUILD_INFO_INIT",
   "RLMESH_BUILD_INFO_MIN_SIZE",
-  "RLMeshBuildInfo::_reserved",
   "RLMeshBuildInfo::struct_size",
   "RLMeshBuildInfo::supported_workflow_editions_len",
   "rlmesh_build_info_repr",
@@ -747,6 +746,26 @@ params = {}
 ["rlmesh:BuildInfo.protocol_generation".cpp]
 status = "present"
 path = "rlmesh::BuildInfo::protocol_generation"
+params = {}
+
+["rlmesh:BuildInfo.session_wire_revision"]
+area = "core"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BuildInfo.session_wire_revision".rust]
+status = "present"
+path = "rlmesh::BuildInfo::session_wire_revision"
+params = {}
+
+["rlmesh:BuildInfo.session_wire_revision".c]
+status = "present"
+path = "RLMeshBuildInfo::session_wire_revision"
+params = {}
+
+["rlmesh:BuildInfo.session_wire_revision".cpp]
+status = "present"
+path = "rlmesh::BuildInfo::session_wire_revision"
 params = {}
 
 ["rlmesh:BuildInfo.supported_workflow_editions"]

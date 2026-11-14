@@ -28,6 +28,8 @@ def test_fields_are_typed() -> None:
         value = getattr(info, name)
         assert isinstance(value, str) and value, name
     assert info.git is None or isinstance(info.git, str)
+    assert isinstance(info.session_wire_revision, int)
+    assert info.session_wire_revision >= 1
 
 
 def test_version_and_generation() -> None:
@@ -35,6 +37,7 @@ def test_version_and_generation() -> None:
 
     assert info.version == rlmesh._rlmesh.__version__
     assert info.protocol_generation == "rlmesh-realtime-v1"
+    assert info.session_wire_revision == rlmesh._rlmesh.SESSION_WIRE_REVISION
 
 
 def test_base_is_year_month_and_prefixes_edition() -> None:
@@ -68,6 +71,7 @@ def test_repr_is_stable() -> None:
     assert repr(info) == (
         f'BuildInfo(version="{info.version}", '
         f'protocol_generation="{info.protocol_generation}", '
+        f"session_wire_revision={info.session_wire_revision}, "
         f'workflow_edition="{info.workflow_edition}", '
         f'workflow_edition_base="{info.workflow_edition_base}", '
         f'build_cohort="{info.build_cohort}", '

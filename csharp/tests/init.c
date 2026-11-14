@@ -40,7 +40,7 @@ int main(void) {
   NUM(build, supported_workflow_editions_len);
   PTR(build, build_cohort);
   NUM(build, build_source);
-  NUM(build, _reserved);
+  NUM(build, session_wire_revision);
   LASTPTR(build, git);
   printf(",\"box\":{");
   NUM(box, struct_size);

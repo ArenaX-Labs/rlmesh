@@ -50,6 +50,10 @@ pub struct BuildInfo {
     pub version: &'static str,
     /// The wire protocol generation this build speaks (`rlmesh-realtime-v1`).
     pub protocol_generation: &'static str,
+    /// The session wire revision this build speaks: a 0.2 pre-release's wire
+    /// may break before 0.2.0 freezes it, and two builds on different
+    /// revisions cannot talk.
+    pub session_wire_revision: u32,
     /// The exact workflow edition spelling this build advertises: the sealed
     /// `YYYY.MM` base on a release, `YYYY.MM-<cohort>` on a prerelease or
     /// source build.
@@ -76,6 +80,7 @@ pub fn build_info() -> BuildInfo {
     BuildInfo {
         version: VERSION,
         protocol_generation: rlmesh_proto::PROTOCOL_GENERATION,
+        session_wire_revision: rlmesh_session::wire::version::WIRE_REVISION,
         workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION,
         workflow_edition_base: rlmesh_proto::WORKFLOW_EDITION_BASE,
         supported_workflow_editions: rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS,
@@ -90,10 +95,12 @@ impl fmt::Display for BuildInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "BuildInfo(version={:?}, protocol_generation={:?}, workflow_edition={:?}, \
-             workflow_edition_base={:?}, build_cohort={:?}, build_source={:?}, git=",
+            "BuildInfo(version={:?}, protocol_generation={:?}, session_wire_revision={}, \
+             workflow_edition={:?}, workflow_edition_base={:?}, build_cohort={:?}, \
+             build_source={:?}, git=",
             self.version,
             self.protocol_generation,
+            self.session_wire_revision,
             self.workflow_edition,
             self.workflow_edition_base,
             self.build_cohort,
@@ -115,6 +122,10 @@ mod tests {
         let info = build_info();
         assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(info.protocol_generation, "rlmesh-realtime-v1");
+        assert_eq!(
+            info.session_wire_revision,
+            rlmesh_session::wire::version::WIRE_REVISION
+        );
         assert_eq!(
             info.workflow_edition_base,
             crate::current_workflow_edition()
@@ -138,8 +149,9 @@ mod tests {
         let text = info.to_string();
         assert!(
             text.starts_with(&format!(
-                "BuildInfo(version={:?}, protocol_generation=\"rlmesh-realtime-v1\", ",
-                info.version
+                "BuildInfo(version={:?}, protocol_generation=\"rlmesh-realtime-v1\", \
+                 session_wire_revision={}, ",
+                info.version, info.session_wire_revision
             )),
             "{text}"
         );
