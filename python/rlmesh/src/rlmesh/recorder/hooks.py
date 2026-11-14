@@ -1,13 +1,13 @@
 """Live capture: a :class:`~rlmesh.RunHooks` that records into a workload.
 
-This is the ``run(hooks=...)`` tie-in, on either loop. It observes the eval and, per
+This is the ``run(hooks=...)`` / ``bind(hooks=...)`` tie-in. It observes the eval and, per
 episode, records the outcome plus any media the env exposes -- per-step image frames
 read through the run's own reader and streamed straight into a native AV1 writer (one
 frame in memory at a time), and/or an env-produced video file whose path the env
 leaves in the step ``info`` (that path comes from the env, which may be remote, so it
 is copied only when it names a regular file inside the run directory). The env's
-``render()`` frame is captured when the run can reach it: always on the session loop,
-and on the native ``Model.run`` loop for a local env object (not an address target).
+``render()`` frame is captured when the run can reach it: always on a binding, and on
+``Model.run`` for a local env object (not an address target).
 Frames come from one env: a vector env is refused unless ``cameras=[]``.
 
 All capture is best-effort: a camera that fails to read or encode is warned once and
@@ -16,6 +16,7 @@ dropped, and the episode's outcome is still recorded -- capture never aborts the
 
 from __future__ import annotations
 
+import json
 import os
 import warnings
 from dataclasses import dataclass
@@ -31,8 +32,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
 
-    from .._models import EpisodeResult, RunResult, StepEvent
-    from .._rlmesh import PyVideoWriter
+    from .._models import EpisodeResult, RunResult, StepEvent, TelemetryRow
+    from .._rlmesh import PyEpisodeArtifacts, PyVideoWriter
     from .media import MediaStager
     from .schema import WorkloadRecord
 
@@ -96,22 +97,29 @@ class CaptureHooks(RunHooks):
         stager: MediaStager,
         prefix: str,
         cameras: list[str] | None,
-        session: RunContext | None,
+        binding: RunContext | None,
         video_keys: tuple[str, ...],
         included_in_metrics: bool,
+        telemetry: list[TelemetryRow],
+        tree: tuple[PyEpisodeArtifacts, str, str] | None = None,
     ) -> None:
+        #: ``Recorder.record``'s artifact tree: its writer (fed by the run),
+        #: staging root and bundle prefix.
+        self._tree = tree
+        self._artifact_tap = tree[0] if tree is not None else None
         self._workload = workload
+        self._telemetry = telemetry
         self._stager = stager
         self._prefix = prefix
         self._cameras = tuple(cameras) if cameras is not None else ()
-        self._session = session
+        self._binding = binding
         self._video_keys = video_keys
         self._included = included_in_metrics
         #: An explicit ``cameras`` list (even empty) is honored as-is; ``None`` defers
-        #: discovery to the first step, when the session's contract is populated.
+        #: discovery to the first step, when the run's contract is populated.
         self._resolved = cameras is not None
         self._explicit = cameras is not None
-        #: Memoized ``render()`` thunk (resolved once from the session), or ``None``.
+        #: Memoized ``render()`` thunk (resolved once from the run context), or ``None``.
         self._render: Callable[[], object] | None = None
         self._render_resolved = False
         self._render_camera: str | None = RENDER_CAMERA if cameras is not None else None
@@ -124,21 +132,24 @@ class CaptureHooks(RunHooks):
         self._video_path: str | None = None
 
     def on_run_start(self, context: RunContext) -> None:
-        """Adopt the run's context, so ``capture(session=...)`` is optional.
+        """Adopt the run's context, so ``capture(binding=...)`` is optional.
 
-        An explicitly passed session wins (a hand-driven loop can still wire
+        An explicitly passed context wins (a hand-driven loop can still wire
         one in); otherwise the running loop's context is used for source
         discovery and the ``render()`` frame.
         """
-        if self._session is None:
-            self._session = context
+        if self._binding is None:
+            self._binding = context
+        if self._tree is not None:
+            # Several runs into one workload continue its episode numbering.
+            self._tree[0].set_episode_offset(len(self._workload.episodes))
 
     def on_episode_start(self, *, episode: int, seed: int | None) -> None:
         """Reset the per-episode writers and env-video path."""
         if (
-            self._session is not None
+            self._binding is not None
             and (self._cameras or not self._explicit)
-            and self._session.num_envs > 1
+            and self._binding.num_envs > 1
         ):
             raise ValueError(
                 "recorder captures frames from a single env: a vector env's "
@@ -150,17 +161,17 @@ class CaptureHooks(RunHooks):
     def _render_thunk(self) -> Callable[[], object] | None:
         if not self._render_resolved:
             self._render_resolved = True
-            if self._session is not None:
+            if self._binding is not None:
                 self._render = self._discover().render
         return self._render
 
     def _discover(self) -> FrameSources:
         """The run's frame sources, via the viewer's own discovery."""
-        session = self._session
-        if session is None:
+        binding = self._binding
+        if binding is None:
             return FrameSources(roles=(), render_label=None, render=None)
         try:
-            return session.frame_sources()
+            return binding.frame_sources()
         except Exception:
             return FrameSources(roles=(), render_label=None, render=None)
 
@@ -168,7 +179,7 @@ class CaptureHooks(RunHooks):
         if self._resolved:
             return
         self._resolved = True
-        if self._session is None:
+        if self._binding is None:
             return
         sources = self._discover()
         self._render = sources.render
@@ -177,7 +188,7 @@ class CaptureHooks(RunHooks):
         self._cameras = sources.labels
         if not self._cameras:
             _warn(
-                "recorder: no render() or image roles discovered from the session; "
+                "recorder: no render() or image roles discovered from the run; "
                 "recording metrics only"
             )
 
@@ -245,7 +256,7 @@ class CaptureHooks(RunHooks):
     def on_episode_end(self, result: EpisodeResult) -> None:
         """Finalize this episode's media and append its record to the workload."""
         index = len(self._workload.episodes)
-        media: list[MediaRef] = []
+        media = self._adopt_episode()
         for camera, cam in self._writers.items():
             try:
                 meta = cam.writer.finish()
@@ -289,8 +300,45 @@ class CaptureHooks(RunHooks):
         self._writers = {}
         self._video_path = None
 
+    def _adopt_episode(self) -> list[MediaRef]:
+        """Bundle the tree's record of the episode that just ended.
+
+        Its files join the bundle and its videos the episode's media.
+        """
+        if self._tree is None:
+            return []
+        tap, root, prefix = self._tree
+        raw = tap.take_finished()
+        if raw is None:
+            return []
+        record = json.loads(raw)
+        episode_dir = f"episodes/ep{record['episodeIndex']:06d}"
+        for path in [f["path"] for f in record["files"]] + [
+            f"{episode_dir}/episode.json"
+        ]:
+            self._stager.adopt(os.path.join(root, path), f"{prefix}/{path}")
+        return [
+            MediaRef(
+                camera=f"{r['camera']}.{r['stream']}",
+                kind="video",
+                path=f"{prefix}/{r['path']}",
+                format="mp4",
+                frame_count=r["frames"],
+                width=r["width"],
+                height=r["height"],
+                fps=float(r["fps"]),
+            )
+            for r in record["recordings"]
+        ]
+
     def on_run_end(self, result: RunResult) -> None:
-        """Flag any requested camera that never yielded a recordable frame."""
+        """Keep the run's telemetry; flag cameras that never yielded a frame."""
+        self._telemetry.extend(result.telemetry)
+        if self._tree is not None:
+            _, root, prefix = self._tree
+            windows = os.path.join(root, "telemetry", "windows.jsonl")
+            if os.path.isfile(windows):
+                self._stager.adopt(windows, f"{prefix}/telemetry/windows.jsonl")
         for cam in self._writers.values():
             try:
                 cam.writer.finish()

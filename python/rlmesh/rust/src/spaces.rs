@@ -11,7 +11,6 @@ mod value_codec;
 
 // Re-export for use by other modules
 pub use crate::spaces::space::{make_space, parse_space};
-pub(crate) use crate::spaces::spec_view::extract_space_spec;
 pub use crate::spaces::spec_view::{env_contract_to_py, register_classes};
 pub(crate) use crate::spaces::tensor::{extract_tensor, wrap_native_tensor};
 pub(crate) use crate::spaces::value_codec::{

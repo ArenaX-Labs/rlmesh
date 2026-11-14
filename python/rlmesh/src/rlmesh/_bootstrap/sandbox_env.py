@@ -6,6 +6,7 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any, cast
 
+from .._client._endpoint import redact_address
 from .loaders import load_env_from_spec
 from .spec_resolution import BootstrapUsageError, resolve_bootstrap_spec
 
@@ -74,18 +75,17 @@ def main(
                 "vectorization concatenates observations with numpy, which discards "
                 "the framework tensors. Serve scalar (RLMESH_NUM_ENVS=1)."
             )
-        # Canonical bind contract: RLMESH_ADDRESS (a full bind address) wins, then
-        # RLMESH_PORT (default 50051). EnvServer auto-detects the vectorized
-        # shape, so one construction path serves scalar and vector envs.
-        address = os.environ.get("RLMESH_ADDRESS")
-        if address:
-            server = EnvServer(env, address, framework=framework, device=device)
-        else:
-            port = int(os.environ.get("RLMESH_PORT") or "50051")
-            server = EnvServer(
-                env, host="0.0.0.0", port=port, framework=framework, device=device
-            )
-        print(f"RLMesh sandbox serving {server.address}", flush=True)
+        # The env serves as RLMESH_NAME in the session the container hosts at
+        # RLMESH_ADDRESS. EnvServer auto-detects the vectorized shape, so one
+        # construction path serves scalar and vector envs.
+        address = os.environ.get("RLMESH_ADDRESS") or "0.0.0.0:7447"
+        name = os.environ.get("RLMESH_NAME") or "env"
+        server = EnvServer(
+            env, f"{address.rstrip('/')}/{name}", framework=framework, device=device
+        )
+        # A container's log: the bound address carries the session's key (a
+        # credential its launcher already holds), so print it without.
+        print(f"RLMesh sandbox serving {redact_address(server.address)}", flush=True)
         server.serve()
         return 0
     except Exception as exc:  # pragma: no cover - exercised through container runs

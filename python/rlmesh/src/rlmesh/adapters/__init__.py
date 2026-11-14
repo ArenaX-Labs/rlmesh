@@ -128,6 +128,7 @@ from .specs import (
     StateTag,
     Text,
     TextTag,
+    Timing,
 )
 from .tag import tag
 
@@ -203,6 +204,7 @@ __all__ = [
     "StateTag",
     "Text",
     "TextTag",
+    "Timing",
     "resolve",
     "resolve_from_contract",
     "tag",

@@ -1,10 +1,7 @@
-"""Env connection and contract synthesis for the local drive path.
+"""Run and binding targets.
 
-Turns a session target (a live env, an ``EnvFactory``, a remote handle, or an
-address) into a ``(client, contract, owns_client)`` triple, synthesizes a
-client-side contract for a local env, and provides the small env-protocol shims
-(reset/close/shutdown) and the env-side value bridge. Used by
-:class:`rlmesh._models._eval.Session`.
+Their classification, a local env's contract and factory build, the env-side
+value bridge, and the owner-shutdown shim.
 """
 
 from __future__ import annotations
@@ -16,17 +13,14 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from .._value_conversion import ValueBridge
 
-# The cross-module surface this private module offers its siblings (chiefly
-# ``_eval.Session``); ``__all__`` marks these underscore helpers as exported so
+# The cross-module surface this private module offers its siblings;
+# ``__all__`` marks these underscore helpers as exported so
 # the type checker does not read sibling imports as private-symbol leakage.
 __all__ = [
     "adapter_env_bridge",
     "classify_env_target",
-    "close_client",
-    "connect_env",
     "factory_env",
     "local_contract",
-    "reset_env",
     "shutdown_env",
 ]
 
@@ -61,44 +55,11 @@ def classify_env_target(target: object) -> tuple[str, Any]:
     if isinstance(address, str):
         return ("address", address)
     raise TypeError(
-        "session()/run() expect a live env exposing reset() and step(), an "
+        "run()/bind() expect a live env exposing reset() and step(), an "
         "EnvFactory exposing make(), an object exposing a dialable address, or "
         f"an address string; got {type(target).__name__} (an object exposing "
         "only env_contract cannot be stepped)"
     )
-
-
-def connect_env(
-    target: object,
-    remote_env_cls: type | None,
-    workflow_edition: str | None = None,
-) -> tuple[Any, Any, bool]:
-    """Resolve a session target to ``(client, contract, owns_client)``.
-
-    ``target`` is an address string, a live env (local object or remote handle), an
-    :class:`~rlmesh.EnvFactory`, or an object exposing an ``address``. ``owns_client``
-    is True when this dialed the connection or built the env from a factory, so
-    the session knows to close it; a caller's env or handle is borrowed.
-    A handle is driven in-process through its own client; a plain local env gets
-    a synthesized contract (tags ride in ``env.metadata`` via ``tag()`` /
-    ``EnvFactory.make``); a factory is built and driven locally -- no serving
-    needed to resolve a spec'd adapter.
-
-    ``workflow_edition`` is this side's declaration, carried onto the handshake
-    of a dialed address. The other kinds negotiate nothing (a local env or an
-    already-connected handle), so it does not apply there.
-    """
-    kind, payload = classify_env_target(target)
-    if kind == "address":
-        client = _remote_env(payload, remote_env_cls, workflow_edition)
-        return client, client.env_contract, True
-    if kind == "handle":
-        return payload, payload.env_contract, False
-    if kind == "factory":
-        # Built here, so owned here: closed with the session.
-        env = factory_env(payload)
-        return env, local_contract(env), True
-    return payload, local_contract(payload), False
 
 
 @dataclass(frozen=True)
@@ -169,16 +130,6 @@ def factory_env(factory: object) -> Any:
     return construct_authored_env(factory)
 
 
-def _remote_env(
-    address: str, remote_env_cls: type | None, workflow_edition: str | None = None
-) -> Any:
-    if remote_env_cls is None:
-        from ..numpy import RemoteEnv
-
-        remote_env_cls = RemoteEnv
-    return remote_env_cls(address, workflow_edition=workflow_edition)
-
-
 def adapter_env_bridge(client: Any) -> ValueBridge:
     """The bridge for the framework the env hands its observations *in*.
 
@@ -198,58 +149,6 @@ def adapter_env_bridge(client: Any) -> ValueBridge:
     from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
 
     return _numpy_bridge
-
-
-def declares_reset_option(contract: Any, key: str) -> bool:
-    """Whether the connected env declared this reserved reset-option key.
-
-    An env opts in by listing the key under ``ENV_RESET_OPTIONS_KEY`` in its
-    metadata (:attr:`rlmesh.EnvFactory.reset_options` stamps it). A reserved
-    option goes only to an env that asked for it, so an env forwarding ``options``
-    blindly into a third-party ``reset`` never sees a key it cannot interpret.
-    """
-    from .._rlmesh import ENV_RESET_OPTIONS_KEY
-
-    metadata = cast("Mapping[str, Any] | None", getattr(contract, "metadata", None))
-    declared = (
-        metadata.get(ENV_RESET_OPTIONS_KEY) if isinstance(metadata, Mapping) else None
-    )
-    if isinstance(declared, str):
-        return declared == key
-    return isinstance(declared, (list, tuple)) and key in declared
-
-
-def reset_env(
-    client: Any, seed: int | None, options: Mapping[str, Any] | None = None
-) -> tuple[Any, Mapping[str, Any]]:
-    """Reset an env and normalize its return to ``(obs, info)``.
-
-    Accepts a gymnasium ``(obs, info)`` pair (the second element a Mapping) or a bare
-    observation; the latter pairs with an empty info dict. ``options`` is forwarded
-    only when non-empty, so an env whose ``reset`` takes no ``options`` keeps
-    working (see :func:`declares_reset_option` for who gets a reserved key).
-    """
-    kwargs: dict[str, Any] = {}
-    if seed is not None:
-        kwargs["seed"] = seed
-    if options:
-        kwargs["options"] = dict(options)
-    result: Any = client.reset(**kwargs)
-    if isinstance(result, tuple):
-        pair = cast("tuple[Any, ...]", result)
-        # Only a (obs, info) pair where the second element is a Mapping is a
-        # gymnasium reset return; any other tuple is itself the observation.
-        if len(pair) == 2 and isinstance(pair[1], Mapping):
-            return pair[0], cast("Mapping[str, Any]", pair[1])
-        return pair, {}
-    return result, {}
-
-
-def close_client(client: Any) -> None:
-    """Release a dialed connection by calling its ``close``, if it has one."""
-    close = getattr(client, "close", None)
-    if callable(close):
-        close()
 
 
 def shutdown_env(target: object) -> None:

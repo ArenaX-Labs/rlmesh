@@ -53,7 +53,7 @@ def test_env_server_hosts_a_list_of_envs_as_independently_reset_lanes() -> None:
     # first episode ends. That makes the slot assignment deterministic.
     lanes = [LaneEnv(1), LaneEnv(3, step_seconds=0.1)]
     try:
-        server = rlmesh.EnvServer(cast("Any", lanes), host="127.0.0.1", port=0)
+        server = rlmesh.EnvServer(cast("Any", lanes), ":0/env")
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")

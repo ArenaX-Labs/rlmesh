@@ -16,30 +16,32 @@ Precedence, highest first:
    peer);
 4. the :attr:`rlmesh.EnvFactory.workflow_edition` / :attr:`rlmesh.Model.workflow_edition`
    class declaration (source-resident);
-5. ``[tool.rlmesh] workflow_edition`` in the project's ``pyproject.toml``
+5. ``[tool.rlmesh] workflow_edition`` in the ``pyproject.toml`` of the project
+   that contains the authored class's module, else of the working directory
    (project-resident);
-6. nothing -- the peer floats to this build's newest edition. A participant
-   with a home for the declaration (an authored ``EnvFactory``/``Model``
-   subclass, or anything served) says so once per process as a
-   :class:`WorkflowEditionWarning`; an ad hoc callable in a local run floats
-   quietly.
+6. nothing -- the peer floats to this build's newest edition.
+
+Running and serving resolve quietly. A float is reported where an author
+reviews a participant before an upgrade: ``rlmesh check``, ``rlmesh
+check-image`` and ``rlmesh doctor`` (see :func:`float_nudge`), and a session
+refused because its peers share no edition.
 
 An empty ``RLMESH_WORKFLOW_EDITION`` short-circuits the chain at rung 2: it
-declares nothing *deliberately*, so rungs 3-5 are not consulted and the float is
-not reported.
+declares nothing *deliberately*, so rungs 3-5 are not consulted and no check
+reports the float.
 """
 
 from __future__ import annotations
 
-import contextvars
-import inspect
-import warnings
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from ._load_native import load_native
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from rlmesh._rlmesh import ServeOptions
 
 __all__ = [
@@ -50,44 +52,41 @@ __all__ = [
 
 
 class WorkflowEditionWarning(UserWarning):
-    """An authored or served participant declared no workflow edition.
+    """The category of rlmesh's workflow-edition warnings.
 
-    Filter it by category (``warnings.filterwarnings("ignore",
+    Running and serving an undeclared participant do not warn; ``rlmesh
+    check``, ``check-image`` and ``doctor`` report the float instead. Filter
+    it by category (``warnings.filterwarnings("ignore",
     category=rlmesh.WorkflowEditionWarning)``) rather than by message.
     """
 
 
-#: Set by a caller that already resolved this participant's declaration for
-#: the servers it stands up itself (the loopback env server in ``run``), so
-#: they do not nudge a second time on the caller's behalf.
-resolved_by_caller: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "rlmesh_editionresolved_by_caller", default=False
-)
-
 #: Process-wide declaration, above every in-code surface but a call keyword.
 #: Set it to the empty string to declare nothing *deliberately*: resolution stops
 #: there -- no lower surface is consulted -- the peer floats to this build's
-#: newest edition, and the undeclared warning stays quiet. That is what this
-#: repo's own test suites do.
+#: newest edition, and no check reports it. That is what this repo's own test
+#: suites do.
 WORKFLOW_EDITION_ENV_VAR: Final = "RLMESH_WORKFLOW_EDITION"
 
 #: The ``[tool.rlmesh]`` table and key read from the project's ``pyproject.toml``.
 _PYPROJECT_TABLE: Final = "[tool.rlmesh]"
 _PYPROJECT_KEY: Final = "workflow_edition"
 
-_warned = False
+#: This package's own directory: a class defined in rlmesh (a ``Model``
+#: wrapping a callable) names no user project.
+_PACKAGE_DIR: Final = Path(__file__).resolve().parent
 
 
 def current_workflow_edition() -> str:
     """The bare ``YYYY.MM`` edition this build runs at -- what to paste into a declaration.
 
-    The same value on every build of that edition (``"2026.06"``): a declaration
+    The same value on every build of that edition (``"2026.10"``): a declaration
     names the contract a participant was authored against, and a bare base
     selects whichever spelling of it both sides offer -- the sealed name on a
-    release, this build's cohort (``"2026.06-0.1.0-rc.12"``,
-    ``"2026.06-dev.<sha>"``, what ``rlmesh.build_info().workflow_edition``
-    reports) on a
-    prerelease or local build. That cohort spelling is also accepted as a
+    release, this build's cohort (``"2026.10-<version>"`` on a prerelease,
+    ``"2026.10-dev.<sha>"`` on a local build: what
+    ``rlmesh.build_info().workflow_edition`` reports) on a prerelease or local
+    build. That cohort spelling is also accepted as a
     declaration, and pins to that exact moving build.
     """
     return str(load_native("current_workflow_edition")())
@@ -110,7 +109,7 @@ def resolve_workflow_edition(
     call: str | None = None,
     option: str | None = None,
     declared: str | None = None,
-    authored: bool = False,
+    origin: object | None = None,
 ) -> str | None:
     """The workflow edition this participant declares, or ``None`` when it declares none.
 
@@ -119,69 +118,124 @@ def resolve_workflow_edition(
         option: A served peer's ``ServeOptions`` / ``--workflow-edition`` value.
         declared: The class-level declaration (``EnvFactory.workflow_edition`` /
             ``Model.workflow_edition``).
-        authored: Whether this participant has a home for a declaration -- an
-            authored subclass, or a served peer. Only such a participant is
-            nudged when it floats; an ad hoc callable in a local run is not.
+        origin: The authored class (or an instance or function of it) whose
+            project's ``pyproject.toml`` is the project rung. Without one, or
+            when its module lies in no project, the working directory's.
 
     Returns:
         The winning declaration, validated and trimmed, or ``None`` when no
-        surface declares one -- in which case the peer floats to this build's
-        newest edition and, when ``authored``, a one-time
-        :class:`WorkflowEditionWarning` says so. An empty
-        ``RLMESH_WORKFLOW_EDITION`` is the deliberate form of that: it ends
-        resolution without consulting ``option`` / ``declared`` /
-        ``pyproject.toml``, and without the warning.
+        surface declares one, in which case the peer floats to this build's
+        newest edition. An empty ``RLMESH_WORKFLOW_EDITION`` ends resolution
+        without consulting ``option`` / ``declared`` / ``pyproject.toml``.
 
     Raises:
         ValueError: If the winning value names an edition this build cannot run.
     """
+    return resolve_declaration(
+        call=call, option=option, declared=declared, origin=origin
+    )[0]
+
+
+def float_nudge() -> str:
+    """What a check says about a participant that floats: where to pin, and why."""
+    edition = current_workflow_edition()
+    return (
+        f"no workflow edition declared: it floats to {edition!r}, which moves when "
+        f'rlmesh upgrades. Pin it before you upgrade: workflow_edition = "{edition}" '
+        "on the class or under [tool.rlmesh] in pyproject.toml "
+        f"({WORKFLOW_EDITION_ENV_VAR}='' floats deliberately)"
+    )
+
+
+def resolve_declaration(
+    *,
+    call: str | None = None,
+    option: str | None = None,
+    declared: str | None = None,
+    origin: object | None = None,
+) -> tuple[str | None, bool]:
+    """:func:`resolve_workflow_edition`, and whether it floats for want of a declaration.
+
+    The flag is ``False`` for a declaration and for the deliberate float (an
+    empty ``RLMESH_WORKFLOW_EDITION``): only an undeclared float is reported.
+    """
     # Rungs 1-4 are the native resolver's, shared with every language (COR-6);
-    # Python layers its project-file rung and its own warning on top (D-7).
+    # Python layers its project-file rung on top (D-7).
     resolved, deliberate = load_native("resolve_workflow_edition_rungs")(
         call=call, option=option, declared=declared
     )
     if resolved is not None:
-        return str(resolved)
+        return str(resolved), False
     if deliberate:
-        # Set-but-empty is the documented "deliberately undeclared" switch: it
-        # ends resolution there rather than falling through to the surfaces
-        # below it, and suppresses the float warning.
-        return None
-    project = _from_pyproject()
+        return None, False
+    project = _from_pyproject(origin)
     if project is not None and project.strip():
-        return validate_workflow_edition(project)
-    if authored and not resolved_by_caller.get():
-        _warn_undeclared()
-    return None
+        return validate_workflow_edition(project), False
+    return None, True
 
 
-#: The project-manifest rung, scanned once per working directory: a long-lived
-#: process can chdir between sessions, but within one directory the answer is
-#: stable and every server or session it opens would otherwise walk the same
-#: ancestors again.
+#: The project-manifest rung, scanned once per starting directory: every
+#: server or session a process opens would otherwise walk the same ancestors.
 _pyproject_cache: dict[Path, str | None] = {}
 
 
-def _from_pyproject() -> str | None:
-    """``[tool.rlmesh] workflow_edition`` from the nearest enclosing ``pyproject.toml``."""
+def _from_pyproject(origin: object | None = None) -> str | None:
+    """``[tool.rlmesh] workflow_edition`` from the project that holds ``origin``.
+
+    The project is the nearest ``pyproject.toml`` above ``origin``'s module
+    file, so the answer does not change with where the process starts; the
+    working directory's is the fallback for an origin with no file or no
+    enclosing project.
+    """
+    manifest = _origin_manifest(origin)
+    if manifest is not None:
+        return _cached(manifest.parent, lambda: _manifest_edition(manifest))
     start = Path.cwd()
-    if start not in _pyproject_cache:
-        _pyproject_cache[start] = _pyproject_edition(start)
-    return _pyproject_cache[start]
+    return _cached(start, lambda: _pyproject_edition(start))
+
+
+def _cached(key: Path, scan: Callable[[], str | None]) -> str | None:
+    if key not in _pyproject_cache:
+        _pyproject_cache[key] = scan()
+    return _pyproject_cache[key]
+
+
+def _origin_manifest(origin: object | None) -> Path | None:
+    """The ``pyproject.toml`` of the project ``origin``'s module lies in, if any."""
+    if origin is None:
+        return None
+    module_name = getattr(origin, "__module__", None)
+    if not isinstance(module_name, str):
+        module_name = getattr(type(origin), "__module__", None)
+    module = sys.modules.get(module_name) if isinstance(module_name, str) else None
+    filename = getattr(module, "__file__", None)
+    if not isinstance(filename, str):
+        return None
+    directory = Path(filename).resolve().parent
+    if directory == _PACKAGE_DIR or _PACKAGE_DIR in directory.parents:
+        return None
+    for candidate in (directory, *directory.parents):
+        manifest = candidate / "pyproject.toml"
+        if manifest.is_file():
+            return manifest
+    return None
 
 
 def _pyproject_edition(start: Path) -> str | None:
     for directory in (start, *start.parents):
         manifest = directory / "pyproject.toml"
-        if not manifest.is_file():
-            continue
-        try:
-            return _scan_table_string(manifest.read_text(encoding="utf-8"))
-        except OSError:
-            # An unreadable manifest is not this resolver's error to raise: the
-            # project is simply not declaring an edition here.
-            return None
+        if manifest.is_file():
+            return _manifest_edition(manifest)
     return None
+
+
+def _manifest_edition(manifest: Path) -> str | None:
+    try:
+        return _scan_table_string(manifest.read_text(encoding="utf-8"))
+    except OSError:
+        # An unreadable manifest is not this resolver's error to raise: the
+        # project is simply not declaring an edition here.
+        return None
 
 
 def _scan_table_string(text: str) -> str | None:
@@ -211,50 +265,13 @@ def _scan_table_string(text: str) -> str | None:
     return None
 
 
-def _caller_stacklevel() -> int:
-    """Frames from :func:`warnings.warn` out to the first caller outside rlmesh.
-
-    Every declaration surface reaches the resolver through a different number of
-    internal hops, so a fixed ``stacklevel`` points at rlmesh's own files on most
-    of them -- which is both unhelpful and wrong for a module-scoped warning
-    filter. ``skip_file_prefixes=`` would say this directly, but it is 3.12+ and
-    this package supports 3.10.
-    """
-    package = str(Path(__file__).parent)
-    level = 1
-    frame = inspect.currentframe()
-    frame = frame.f_back if frame is not None else None
-    while frame is not None and frame.f_code.co_filename.startswith(package):
-        frame = frame.f_back
-        level += 1
-    return level
-
-
-def _warn_undeclared() -> None:
-    """Say once, per process, which edition an undeclared participant floated to."""
-    global _warned
-    if _warned:
-        return
-    _warned = True
-    stacklevel = _caller_stacklevel()
-    edition = current_workflow_edition()
-    warnings.warn(
-        f"no workflow edition declared: floating to {edition!r}, which moves when "
-        f'rlmesh upgrades. Pin it with workflow_edition = "{edition}" on the class '
-        f"or [tool.rlmesh] in pyproject.toml; {WORKFLOW_EDITION_ENV_VAR}='' floats "
-        "deliberately.",
-        WorkflowEditionWarning,
-        stacklevel=stacklevel,
-    )
-
-
 def serve_options_declaring(
     options: ServeOptions | None = None,
     *,
     call: str | None = None,
     option: str | None = None,
     declared: str | None = None,
-    authored: bool = True,
+    origin: object | None = None,
 ) -> ServeOptions | None:
     """Return ``options`` carrying this peer's resolved edition declaration.
 
@@ -269,7 +286,7 @@ def serve_options_declaring(
     if option is None and options is not None:
         option = options.workflow_edition
     resolved = resolve_workflow_edition(
-        call=call, option=option, declared=declared, authored=authored
+        call=call, option=option, declared=declared, origin=origin
     )
     if (resolved is None and options is None) or (
         options is not None and resolved == options.workflow_edition
@@ -279,10 +296,6 @@ def serve_options_declaring(
     if options is None:
         return native(workflow_edition=resolved)
     return native(
-        allow_remote_shutdown=options.allow_remote_shutdown,
-        idle_timeout_seconds=options.idle_timeout_seconds,
-        drain_timeout_seconds=options.drain_timeout_seconds,
         close_timeout_seconds=options.close_timeout_seconds,
         workflow_edition=resolved,
-        compress_responses=options.compress_responses,
     )

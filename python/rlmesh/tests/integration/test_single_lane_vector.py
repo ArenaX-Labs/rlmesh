@@ -25,7 +25,7 @@ def _one_lane(mode=gym.vector.AutoresetMode.NEXT_STEP):
 
 
 def test_served_unbatched_over_the_wire():
-    server = rlmesh.EnvServer(_one_lane(), "127.0.0.1:0")
+    server = rlmesh.EnvServer(_one_lane(), ":0/env")
     server.start()
     try:
         env = RemoteEnv(server.address)

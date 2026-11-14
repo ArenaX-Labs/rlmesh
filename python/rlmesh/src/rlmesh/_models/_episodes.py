@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from .._value_conversion import ValueBridge
+    from ..spaces import Space
     from ..types import PredictContext
 
 EPISODE_STATE_CAPACITY = 65_536
@@ -72,12 +74,36 @@ class EpisodeStore:
         on_end: Callable[[str], None] | None = None,
         *,
         capacity: int | None = None,
+        bridge: ValueBridge | None = None,
     ) -> None:
         self._on_end = on_end
         self._capacity = (
             episode_capacity() if capacity is None else max(1, int(capacity))
         )
         self._episodes: dict[str, _Episode] = {}
+        self._bridge = bridge
+        #: Each route's env spaces, in the model's framework, by env id.
+        self._spaces: dict[str, tuple[object, Space[Any], Space[Any]]] = {}
+
+    def _env_spaces(self, raw: Any) -> tuple[Space[Any] | None, Space[Any] | None]:
+        """The observation and action spaces of the env ``raw``'s row is on."""
+        contract = raw.get("env_contract") if raw is not None else None
+        if contract is None:
+            return None, None
+        env_id = str(raw.get("env_id") or "")
+        cached = self._spaces.get(env_id)
+        if cached is None or cached[0] is not contract:
+            from ..spaces import space_from_spec
+
+            observation: Space[Any] = space_from_spec(
+                contract.observation_space, bridge=cast("Any", self._bridge)
+            )
+            action: Space[Any] = space_from_spec(
+                contract.action_space, bridge=cast("Any", self._bridge)
+            )
+            cached = (contract, observation, action)
+            self._spaces[env_id] = cached
+        return cached[1], cached[2]
 
     def __len__(self) -> int:
         return len(self._episodes)
@@ -86,7 +112,8 @@ class EpisodeStore:
         """Enrich one raw native context into the full :class:`PredictContext`.
 
         ``raw`` is what the engine hands a corner: ``{"episode_id",
-        "episode_seed"}``. This adds the episode's re-plan ordinal
+        "episode_seed", "env_id", "env_contract"}``. This turns the contract
+        into the env's spaces (once per env), and adds the episode's re-plan ordinal
         (``predict_index``), the seed derived from it (``predict_seed``, ``None``
         when the episode was not explicitly seeded), and the episode's own
         ``state`` dict -- the model's free slot, alive until the episode ends.
@@ -98,6 +125,7 @@ class EpisodeStore:
         """
         episode_id = str(raw.get("episode_id") or "") if raw is not None else ""
         seed = raw.get("episode_seed") if raw is not None else None
+        observation_space, action_space = self._env_spaces(raw)
         if not episode_id:
             return {
                 "episode_id": "",
@@ -105,6 +133,8 @@ class EpisodeStore:
                 "predict_index": 0,
                 "predict_seed": None,
                 "state": {},
+                "observation_space": observation_space,
+                "action_space": action_space,
             }
         episode = self._episodes.get(episode_id)
         if episode is None:
@@ -130,6 +160,8 @@ class EpisodeStore:
                 else _native_predict_seed(episode.seed, index)
             ),
             "state": episode.state,
+            "observation_space": observation_space,
+            "action_space": action_space,
         }
 
     def end(self, episode_id: str = "") -> None:
@@ -149,3 +181,4 @@ class EpisodeStore:
             key for key, episode in self._episodes.items() if episode.env_id == env_id
         ]:
             del self._episodes[episode_id]
+        self._spaces.pop(env_id, None)

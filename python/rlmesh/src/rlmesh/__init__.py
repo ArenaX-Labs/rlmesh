@@ -1,7 +1,6 @@
 """RLMesh Python SDK."""
 
 import sys as _sys
-import warnings as _warnings
 
 # The wire value encoding is little-endian and numpy/torch `frombuffer` are
 # native-endian (torch/dlpack admit no byte-order override), so a big-endian host
@@ -22,8 +21,8 @@ if _TYPE_CHECKING:
 
 from . import _rlmesh as _rlmesh
 from . import adapters as adapters
+from . import managed as managed
 from . import params as params
-from . import platform as platform
 from . import spaces as spaces
 from . import specs as specs
 from . import types as types
@@ -33,27 +32,34 @@ from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
     RANDOM_SAMPLE,
+    BatchOptions,
+    Binding,
     EpisodeResult,
+    EvalReport,
     FrameSources,
+    Interrupted,
     Reader,
     RunContext,
     RunHooks,
     RunResult,
-    Session,
     StepEvent,
     TelemetryRow,
     View,
     run,
-    session,
+)
+from ._models import (
+    session as session,  # a 0.1 name, kept only to raise
 )
 from ._native import (
     Model,
     RemoteEnv,
-    RemoteModel,
     RemoteVectorEnv,
     SandboxEnv,
     SandboxModel,
     SandboxVectorEnv,
+)
+from ._native import (
+    RemoteModel as RemoteModel,  # a 0.1 name, kept only to raise
 )
 from ._peer_info import register_python_peer_info as _register_python_peer_info
 from ._rlmesh import (
@@ -73,6 +79,7 @@ from ._rlmesh import (
 )
 from ._sandbox import SandboxBuild, SandboxRuntime
 from ._server import EnvServer
+from ._upgrade import Session as Session  # a 0.1 name, kept only to raise
 from ._variants import Variant
 from .params import Param, ParamSpec, Vector
 from .recorder import Recorder
@@ -81,12 +88,6 @@ try:
     __version__ = _package_version("rlmesh")
 except _PackageNotFoundError:
     __version__ = str(getattr(_rlmesh, "__version__", "0+unknown"))
-
-# Deprecated alias for build_info().workflow_edition, removed in 0.2. Bound
-# lazily below so the read, not the import, warns; declared here so type
-# checkers still see it.
-if _TYPE_CHECKING:
-    __build__ = build_info().workflow_edition
 
 __doc__ = _rlmesh.__doc__
 
@@ -106,18 +107,17 @@ def __getattr__(name: str) -> object:
 
         return getattr(_describe, name)
     if name == "__build__":
-        _warnings.warn(
-            "rlmesh.__build__ is deprecated and will be removed in 0.2; "
-            "use rlmesh.build_info().workflow_edition",
-            DeprecationWarning,
-            stacklevel=2,
+        raise AttributeError(
+            "rlmesh.__build__ is gone in rlmesh 0.2: "
+            "use rlmesh.build_info().workflow_edition"
         )
-        return build_info().workflow_edition
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # __getattr__ alone leaves the lazy names out of dir(), so a REPL or IDE never
 # completes them; __all__ is the public list, globals() the eagerly bound one.
+# The 0.1 names 0.2 removed (Session, session, RemoteModel) stay importable,
+# out of __all__, only to raise an error naming their replacement.
 def __dir__() -> list[str]:
     return sorted(set(globals()) | set(__all__))
 
@@ -128,12 +128,16 @@ __all__ = [
     "ENV_RESET_OPTIONS_KEY",
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
+    "BatchOptions",
+    "Binding",
     "BuildInfo",
     "EnvFactory",
     "EnvServer",
     "EnvironmentException",
     "EpisodeResult",
+    "EvalReport",
     "FrameSources",
+    "Interrupted",
     "Model",
     "ModelException",
     "Param",
@@ -144,7 +148,6 @@ __all__ = [
     "Recorder",
     "RecoverableEnvironmentException",
     "RemoteEnv",
-    "RemoteModel",
     "RemoteVectorEnv",
     "RunContext",
     "RunHooks",
@@ -155,7 +158,6 @@ __all__ = [
     "SandboxRuntime",
     "SandboxVectorEnv",
     "ServeOptions",
-    "Session",
     "StepEvent",
     "TelemetryRow",
     "Tensor",
@@ -163,7 +165,6 @@ __all__ = [
     "Vector",
     "View",
     "WorkflowEditionWarning",
-    "__build__",
     "__version__",
     "adapters",
     "build_info",
@@ -174,7 +175,6 @@ __all__ = [
     "predict_seed",
     "run",
     "sanitize_metadata",
-    "session",
     "spaces",
     "specs",
     "trial_index",

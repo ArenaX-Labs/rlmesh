@@ -28,9 +28,8 @@ class TinyEnv:
 
 server = rlmesh.EnvServer(
     TinyEnv(),
-    host="127.0.0.1",
-    port=0,
-    options=rlmesh.ServeOptions(allow_remote_shutdown=True),
+    address=":0/env",
+    options=rlmesh.ServeOptions(close_timeout_seconds=1.0),
 )
 assert_type(server.address, str)
 assert_type(server.env_contract, EnvContract)

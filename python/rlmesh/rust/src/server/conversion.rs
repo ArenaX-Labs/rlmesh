@@ -12,7 +12,7 @@ use rlmesh_spaces::{AutoresetMode, MetaMap};
 
 use crate::spaces::{ValueBackend, py_any_to_meta_map, py_any_to_space_value_with_backend};
 
-pub(super) fn extract_optional_meta_attr(
+fn extract_optional_meta_attr(
     obj: &Bound<'_, PyAny>,
     attr_name: &str,
 ) -> PyResult<Option<MetaMap>> {
@@ -26,6 +26,53 @@ pub(super) fn extract_optional_meta_attr(
     }
 
     Ok(Some(py_any_to_meta_map(&value)?))
+}
+
+/// The contract metadata key a Gymnasium env's `EnvSpec` travels under, as
+/// `EnvSpec.to_json()` (a client strips it from the metadata it reports).
+pub(super) const GYM_SPEC_KEY: &str = "rlmesh.gym.spec";
+
+/// `spec_json(env)`: the env's `EnvSpec` as JSON, or `None`. A spec whose
+/// kwargs or entry points are not JSON keeps its basic fields.
+const SPEC_JSON: &std::ffi::CStr = cr#"
+import dataclasses
+
+def spec_json(env):
+    spec = getattr(env, "spec", None)
+    if spec is None or not hasattr(spec, "to_json"):
+        return None
+    try:
+        return spec.to_json()
+    except Exception:
+        text = lambda v: v if isinstance(v, str) else None
+        return dataclasses.replace(
+            spec,
+            entry_point=text(spec.entry_point),
+            vector_entry_point=text(spec.vector_entry_point),
+            kwargs={},
+            additional_wrappers=(),
+        ).to_json()
+"#;
+
+/// `obj.metadata` with its `EnvSpec` (if it has one) under [`GYM_SPEC_KEY`].
+pub(super) fn extract_metadata(obj: &Bound<'_, PyAny>) -> PyResult<Option<MetaMap>> {
+    let mut metadata = extract_optional_meta_attr(obj, "metadata")?;
+    let py = obj.py();
+    let globals = PyDict::new(py);
+    py.run(SPEC_JSON, Some(&globals), None)?;
+    let spec = globals
+        .get_item("spec_json")?
+        .map(|f| f.call1((obj,)))
+        .transpose()
+        .ok()
+        .flatten()
+        .and_then(|text| text.extract::<String>().ok());
+    if let Some(spec) = spec {
+        metadata
+            .get_or_insert_with(MetaMap::new)
+            .insert(GYM_SPEC_KEY.into(), rlmesh_spaces::MetaValue::String(spec));
+    }
+    Ok(metadata)
 }
 
 pub(super) fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {
@@ -50,8 +97,8 @@ pub(super) fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 /// env naturally needs explicit reset. A present value is held to the contract:
 /// an explicit `None`, a non-string, or an unrecognized string raises
 /// `ValueError` rather than silently downgrading to `Disabled`, which would
-/// double-reset a mislabeled self-autoresetting env. `SameStep` is reserved in
-/// the protocol but not yet honored by the runtime, so it is rejected too.
+/// double-reset a mislabeled self-autoresetting env. `SameStep` is served on
+/// v2 sessions (the v1 wire and `Model.run` refuse it).
 pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<AutoresetMode> {
     if !obj.hasattr("metadata")? {
         return Ok(AutoresetMode::Disabled);
@@ -96,10 +143,7 @@ pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<Autorese
     match mode_str.as_str() {
         "NextStep" => Ok(AutoresetMode::NextStep),
         "Disabled" => Ok(AutoresetMode::Disabled),
-        "SameStep" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "SAME_STEP autoreset mode is not yet supported by the rlmesh runtime; \
-             construct the environment with NEXT_STEP or DISABLED autoreset",
-        )),
+        "SameStep" => Ok(AutoresetMode::SameStep),
         // Present but unrecognized: either a typo or a mode this runtime does
         // not know. Erroring beats silently downgrading to DISABLED, which would
         // double-reset a self-autoresetting env.
@@ -506,8 +550,10 @@ mod tests {
                 ),
                 // unrecognized string -> error
                 (env_with_mode(py, Some(pystr(py, "Bogus"))), None),
-                // SAME_STEP is reserved but unsupported -> error
-                (env_with_mode(py, Some(pystr(py, "SameStep"))), None),
+                (
+                    env_with_mode(py, Some(pystr(py, "SameStep"))),
+                    Some(AutoresetMode::SameStep),
+                ),
             ];
 
             for (env, expected) in cases {

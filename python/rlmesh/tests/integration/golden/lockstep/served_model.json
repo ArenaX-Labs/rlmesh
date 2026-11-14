@@ -1,0 +1,18 @@
+[
+  [
+    "reset seed=5 options=None obs=bfc46efa511c0c5d",
+    "step action=b2ab9247a290aef5 reward=-0x1.861860db6db6ep-3 done=False obs=eba21d30da6f4c8e",
+    "step action=a6cb2ef09538a396 reward=-0x1.229ef61861864p-4 done=False obs=08bb30f7160a535c",
+    "step action=69d581c0f4813bdc reward=0x1.31bcb50c30c30p-2 done=False obs=9985beb80adc8bc1",
+    "step action=3cebb0e70d4550a8 reward=0x1.0e627fb9e79e7p-1 done=True obs=51df27ea99ba90af",
+    "reset seed=6 options=None obs=cfaa60bd3f032d2a",
+    "step action=bc339ed9b2a63211 reward=-0x1.d803e5db6db6ep-3 done=False obs=f95e93b8f55386c0",
+    "step action=c7403aa263b8f794 reward=0x1.b084a24f3cf3cp-2 done=False obs=758f1d89cb5f68d9",
+    "step action=18b0783546630fe7 reward=-0x1.c09c0a4924925p-2 done=True obs=52017b4e993adbe7"
+  ],
+  7,
+  [
+    "seed=5 steps=4 reward=0x1.2166e34618617p-1 term=True trunc=False success=True",
+    "seed=6 steps=3 reward=-0x1.f832b5cf3cf40p-3 term=False trunc=True success=False"
+  ]
+]

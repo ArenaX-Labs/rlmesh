@@ -2,7 +2,7 @@
 
 The ``instruction=`` override is written into every text leaf the model spec
 declares, at its tree placement and in its declared shape. Pure tree machinery,
-used by the per-step predict assembly in :mod:`rlmesh._models._eval`.
+used by the per-step predict assembly in :mod:`rlmesh._models.base`.
 """
 
 from __future__ import annotations

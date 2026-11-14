@@ -1,11 +1,18 @@
 mod adapters;
+mod bind;
 mod client;
-mod hooks;
+mod facade;
+mod launch;
 mod lifecycle;
+mod lockstep;
 mod model;
+mod nested;
 mod peer_info;
 mod sandbox;
+#[cfg(test)]
+mod secret_traces;
 mod server;
+mod session;
 mod spaces;
 mod telemetry;
 mod types;
@@ -121,7 +128,7 @@ impl std::io::Write for PyStream {
 ///
 /// CPython ignores SIGPIPE at startup, but an embedded interpreter initialized
 /// without signal handlers (`Py_InitializeEx(0)`) keeps the default action:
-/// terminate. The gRPC transport's vectored writes cannot opt out of the
+/// terminate. The session transport's vectored writes cannot opt out of the
 /// signal, so a peer hanging up mid-write would kill that host process instead
 /// of failing the write with `EPIPE`.
 // The libc signal calls are the only way to read and set the disposition; the
@@ -158,28 +165,43 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
         lifecycle::resolve_workflow_edition_rungs,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(lifecycle::set_ready_hook, m)?)?;
     m.add_class::<lifecycle::PyBuildInfo>()?;
     m.add_function(wrap_pyfunction!(lifecycle::build_info, m)?)?;
-    m.add_function(wrap_pyfunction!(model::check_remote_model_options, m)?)?;
-    m.add_function(wrap_pyfunction!(model::local_env_contract, m)?)?;
     m.add_function(wrap_pyfunction!(client::normalize_connect_address, m)?)?;
 
     m.add_class::<server::PyEnvServer>()?;
     m.add_class::<server::PyVectorEnvServer>()?;
     m.add_class::<model::PyModel>()?;
-    m.add_class::<model::PyModelClient>()?;
+    m.add_class::<bind::PyBinding>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
     m.add_class::<client::PyEditionCell>()?;
     m.add_class::<viewer::PyViewer>()?;
     m.add_class::<viewer::PyVideoWriter>()?;
+    m.add_class::<viewer::PyEpisodeArtifacts>()?;
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
+    m.add_function(wrap_pyfunction!(facade::load_run_result, m)?)?;
+    m.add_function(wrap_pyfunction!(facade::merge_telemetry, m)?)?;
+    m.add_function(wrap_pyfunction!(facade::eval_report, m)?)?;
     m.add_function(wrap_pyfunction!(model::predict_seed, m)?)?;
+    m.add_function(wrap_pyfunction!(model::episode_seed, m)?)?;
+    m.add_function(wrap_pyfunction!(model::model_answers, m)?)?;
+    m.add_function(wrap_pyfunction!(model::model_describe, m)?)?;
+    m.add_function(wrap_pyfunction!(model::resolve_execution_horizon, m)?)?;
+    m.add_function(wrap_pyfunction!(nested::nested_predict, m)?)?;
     m.add_function(wrap_pyfunction!(peer_info::set_python_peer_info, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_reap_orphans, m)?)?;
+    m.add_function(wrap_pyfunction!(sandbox::sandbox_session_port, m)?)?;
+    m.add_function(wrap_pyfunction!(sandbox::sandbox_host_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::launch_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::identity_key, m)?)?;
+    m.add_function(wrap_pyfunction!(launch::launched_address, m)?)?;
+
+    session::register(m)?;
 
     adapters::register_constants(m)?;
     m.add_class::<adapters::PyAdvisory>()?;
@@ -187,6 +209,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(adapters::adapters_resolve, m)?)?;
     m.add_function(wrap_pyfunction!(adapters::adapters_join_check, m)?)?;
     m.add_function(wrap_pyfunction!(adapters::adapters_spec_normalize, m)?)?;
+    m.add_function(wrap_pyfunction!(adapters::adapters_render_size, m)?)?;
     m.add_function(wrap_pyfunction!(adapters::describe_envelope_normalize, m)?)?;
 
     Ok(())

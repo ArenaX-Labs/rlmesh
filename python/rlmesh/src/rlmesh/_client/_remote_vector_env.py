@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from .._value_conversion import encode_framework_array_batch
 from ..spaces import Space
 from ..types import Metadata
+from . import _gym
 from ._remote_base import ActionT, RemoteClientBase, ValueT
 
 if TYPE_CHECKING:
@@ -26,23 +27,28 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
     caller at a time, so dial one client per thread.
 
     Args:
-        address: Endpoint address such as ``"tcp://127.0.0.1:5555"``.
-        host: TCP host helper used when ``address`` is omitted.
-        port: TCP port helper used when ``address`` is omitted.
-        path: Unix socket path helper used when ``address`` is omitted.
-        transport: Explicit transport selector.
+        address: Endpoint address such as ``"localhost:5555/env"``.
         connect_timeout_seconds: Optional dial timeout in seconds.
         request_timeout_seconds: Optional per-request timeout in seconds.
         workflow_edition: The workflow edition this client declares.
-        api_key: Key sent as ``authorization: Bearer <key>`` on every request.
-            ``None`` (default) reads ``RLMESH_API_KEY`` for an ``https://``
-            address only; ``""`` sends none. Never shown in errors or repr.
-        tls_ca_file: PEM bundle an ``https://`` dial trusts instead of the
-            system roots.
     """
 
     _single_observation_space: Space[ValueT] | None = None
     _single_action_space: Space[ActionT] | None = None
+    _batched_spaces: tuple[Any, Any] | None = None
+    _gym_codecs: tuple[_gym.Convert | None, _gym.Convert] | None = None
+    #: ``gymnasium.vector.VectorEnv``'s flag (its ``__del__`` closes an open
+    #: env); open only once connected.
+    closed: bool = True
+
+    def _initialize(self, *args: Any, **kwargs: Any) -> None:
+        super()._initialize(*args, **kwargs)
+        self.closed = False
+
+    def close(self) -> None:
+        """Detach this client from the remote endpoint."""
+        super().close()
+        self.closed = True
 
     def _make_client(
         self,
@@ -50,7 +56,6 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None,
         workflow_edition: str | None,
-        **credentials: str,
     ) -> Any:
         from .._load_native import load_native
 
@@ -59,7 +64,8 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
             workflow_edition=workflow_edition,
-            **credentials,
+            # A Gymnasium face's info is the env's own, exactly.
+            **({"runtime_info": False} if self._gym_active else {}),
         )
 
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
@@ -95,13 +101,50 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
 
     @property
     def observation_space(self) -> Space[ValueT]:
-        """Alias for `single_observation_space`."""
+        """The observation space: batched under Gymnasium, else `single_observation_space`.
+
+        Batched is ``gymnasium.vector``'s convention.
+        """
+        if self._gym_active:
+            return cast("Space[ValueT]", self._batched()[0])
         return self.single_observation_space
 
     @property
     def action_space(self) -> Space[ActionT]:
-        """Alias for `single_action_space`."""
+        """The action space: batched under Gymnasium, else `single_action_space`."""
+        if self._gym_active:
+            return cast("Space[ActionT]", self._batched()[1])
         return self.single_action_space
+
+    def _batched(self) -> tuple[Any, Any]:
+        if self._batched_spaces is None:
+            from gymnasium.vector.utils import batch_space
+
+            self._batched_spaces = (
+                batch_space(cast("Any", self.single_observation_space), self.num_envs),
+                batch_space(cast("Any", self.single_action_space), self.num_envs),
+            )
+        return self._batched_spaces
+
+    def _codecs(self) -> tuple[_gym.Convert | None, _gym.Convert]:
+        if self._gym_codecs is None:
+            self._gym_codecs = (
+                _gym.observation_converter(self.single_observation_space, batched=True),
+                _gym.action_converter(
+                    self.single_action_space,
+                    self._space_spec("action"),
+                    batch=self.num_envs,
+                ),
+            )
+        return self._gym_codecs
+
+    def _observations(self, wire: object) -> ValueT:
+        obs = self._bridge.decode(cast("Any", wire))
+        if self._gym_values:
+            convert = self._codecs()[0]
+            if convert is not None:
+                obs = convert(obs)
+        return cast("ValueT", obs)
 
     def reset(
         self,
@@ -127,8 +170,13 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             seeds = None
         else:
             seeds = [seed]
+        if self._gym_active:
+            # Seeds this env's own ``np_random``, as ``VectorEnv.reset`` does.
+            cast("Any", _gym.gym).vector.VectorEnv.reset(
+                self, seed=seed if isinstance(seed, int) else None
+            )
         obs, info = self._client.reset(seeds=seeds, options=options)
-        return cast("ValueT", self._bridge.decode(obs)), info
+        return self._observations(obs), info
 
     def step(self, actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]:
         """Step all remote environments with a batch of actions.
@@ -144,11 +192,14 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             ended on this step, ``0`` when none did). An env key of the same
             name wins and shadows the runtime's; the client logs that once.
         """
+        if self._gym_values and not isinstance(actions, list):
+            # One batched action (Gymnasium's form); a list stays per lane.
+            actions = cast("ActionT", self._codecs()[1](actions))
         obs, rewards, terminated, truncated, info = self._client.step(
-            self._encode_actions(actions)
+            self._encode_actions(cast("ActionT", actions))
         )
         return (
-            cast("ValueT", self._bridge.decode(obs)),
+            self._observations(obs),
             cast("ValueT", self._bridge.decode(rewards)),
             cast("ValueT", self._bridge.decode(terminated)),
             cast("ValueT", self._bridge.decode(truncated)),

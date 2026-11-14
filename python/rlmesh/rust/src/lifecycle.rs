@@ -21,44 +21,21 @@ pub struct PyServeOptions {
 #[pymethods]
 impl PyServeOptions {
     #[new]
-    #[pyo3(signature = (*, allow_remote_shutdown=false, idle_timeout_seconds=None, drain_timeout_seconds=None, close_timeout_seconds=None, workflow_edition=None, compress_responses=false))]
+    #[pyo3(signature = (*, close_timeout_seconds=None, workflow_edition=None))]
     fn new(
-        allow_remote_shutdown: bool,
-        idle_timeout_seconds: Option<f64>,
-        drain_timeout_seconds: Option<f64>,
         close_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
-        compress_responses: bool,
     ) -> PyResult<PyServeOptions> {
         Ok(PyServeOptions {
             options: ServeOptions {
-                allow_remote_shutdown,
-                idle_timeout: optional_duration("idle_timeout_seconds", idle_timeout_seconds)?,
-                drain_timeout: optional_duration("drain_timeout_seconds", drain_timeout_seconds)?,
                 close_timeout: optional_duration("close_timeout_seconds", close_timeout_seconds)?,
                 // The Python model client wrapper is inherently single-flight
                 // (its `block_on` predict API serializes by construction), so the
                 // server-side concurrency cap is left at the default here. A
                 // future Python knob can surface it without a wire change.
                 workflow_edition: checked_workflow_edition(workflow_edition)?,
-                compress_responses,
             },
         })
-    }
-
-    #[getter]
-    fn allow_remote_shutdown(&self) -> bool {
-        self.options.allow_remote_shutdown
-    }
-
-    #[getter]
-    fn idle_timeout_seconds(&self) -> Option<f64> {
-        self.options.idle_timeout.map(|value| value.as_secs_f64())
-    }
-
-    #[getter]
-    fn drain_timeout_seconds(&self) -> Option<f64> {
-        self.options.drain_timeout.map(|value| value.as_secs_f64())
     }
 
     #[getter]
@@ -69,13 +46,6 @@ impl PyServeOptions {
     #[getter]
     fn workflow_edition(&self) -> Option<String> {
         self.options.workflow_edition.clone()
-    }
-
-    /// Whether an env server compresses its responses (zstd, else gzip) for a
-    /// client that accepts them. Off by default; it only pays on a slow link.
-    #[getter]
-    fn compress_responses(&self) -> bool {
-        self.options.compress_responses
     }
 }
 
@@ -110,7 +80,7 @@ impl PyBuildInfo {
         rlmesh::build_info().version
     }
 
-    /// The wire protocol generation this build speaks (`rlmesh-wire-v1`).
+    /// The wire protocol generation this build speaks (`rlmesh-realtime-v1`).
     #[getter]
     fn protocol_generation(&self) -> &'static str {
         rlmesh::build_info().protocol_generation
@@ -199,7 +169,7 @@ pub fn validate_workflow_edition(edition: &str) -> PyResult<String> {
 /// `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
 /// declaration. Returns the winner (validated and trimmed) and whether
 /// resolution stopped at a set-but-blank variable; `(None, False)` leaves
-/// Python's `pyproject.toml` rung and the float warning to the caller.
+/// Python's `pyproject.toml` rung to the caller.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 #[pyo3(signature = (*, call=None, option=None, declared=None))]
@@ -220,6 +190,35 @@ pub fn resolve_workflow_edition_rungs(
         EditionResolution::FloatsDeliberately => (None, true),
         EditionResolution::Undeclared => (None, false),
     })
+}
+
+/// Call `hook` with `{kind, participant, address, port, pid}` as each env or
+/// model this process serves becomes able to answer (`None` clears it). The
+/// address is redacted; `python -m rlmesh.serve` prints its serving line here.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
+#[pyfunction]
+#[pyo3(signature = (hook))]
+pub fn set_ready_hook(hook: Option<Py<PyAny>>) {
+    let hook = hook.map(|hook| {
+        std::sync::Arc::new(move |ready: &rlmesh::binding::Ready| {
+            Python::attach(|py| {
+                let call = || -> PyResult<()> {
+                    let info = pyo3::types::PyDict::new(py);
+                    info.set_item("kind", ready.kind)?;
+                    info.set_item("participant", &ready.participant)?;
+                    info.set_item("address", &ready.address)?;
+                    info.set_item("port", ready.port)?;
+                    info.set_item("pid", ready.pid)?;
+                    hook.call1(py, (info,))?;
+                    Ok(())
+                };
+                if let Err(err) = call() {
+                    err.write_unraisable(py, None);
+                }
+            });
+        }) as std::sync::Arc<dyn Fn(&rlmesh::binding::Ready) + Send + Sync>
+    });
+    rlmesh::binding::set_ready_hook(hook);
 }
 
 /// Normalize an optional declared edition: blank declares nothing, anything

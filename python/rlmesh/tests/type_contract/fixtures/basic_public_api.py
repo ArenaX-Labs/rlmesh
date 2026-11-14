@@ -6,9 +6,8 @@ import rlmesh
 from rlmesh import types
 from typing_extensions import assert_type
 
-options = rlmesh.ServeOptions(allow_remote_shutdown=True, idle_timeout_seconds=1.0)
-assert_type(options.allow_remote_shutdown, bool)
-assert_type(options.idle_timeout_seconds, float | None)
+options = rlmesh.ServeOptions(close_timeout_seconds=1.0)
+assert_type(options.close_timeout_seconds, float | None)
 
 tensor = rlmesh.Tensor(b"\x00\x01", [2], "uint8")
 assert_type(tensor, rlmesh.Tensor)

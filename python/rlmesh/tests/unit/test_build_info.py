@@ -1,4 +1,4 @@
-"""``rlmesh.build_info()`` reports this build's identity; ``__build__`` is its alias."""
+"""``rlmesh.build_info()`` reports this build's identity (``__build__``, its 0.1 alias, is gone)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def test_version_and_generation() -> None:
     info = rlmesh.build_info()
 
     assert info.version == rlmesh._rlmesh.__version__
-    assert info.protocol_generation == "rlmesh-wire-v1"
+    assert info.protocol_generation == "rlmesh-realtime-v1"
 
 
 def test_base_is_year_month_and_prefixes_edition() -> None:
@@ -77,9 +77,14 @@ def test_repr_is_stable() -> None:
     assert repr(info) == repr(rlmesh.build_info())
 
 
-def test_dunder_build_is_a_deprecated_alias() -> None:
-    with pytest.warns(DeprecationWarning, match=r"build_info\(\)\.workflow_edition"):
-        value = rlmesh.__build__
+def test_dunder_build_is_gone() -> None:
+    with pytest.raises(AttributeError, match=r"build_info\(\)\.workflow_edition"):
+        _ = rlmesh.__build__
 
-    assert value == rlmesh.build_info().workflow_edition
-    assert "__build__" in dir(rlmesh)
+    assert "__build__" not in rlmesh.__all__
+
+
+def test_removed_names_stay_out_of_the_public_list() -> None:
+    for name in ("Session", "session", "RemoteModel"):
+        assert hasattr(rlmesh, name)
+        assert name not in rlmesh.__all__

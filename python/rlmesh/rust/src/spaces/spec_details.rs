@@ -76,17 +76,24 @@ fn space_spec_details_impl<'py>(
         }
         // `nvec` is stored flat (row-major). A rank-2 shape is reshaped back to
         // the nested `[[...], [...]]` matrix form; lower ranks stay flat.
+        // `start`, in the same form, only when nonzero.
         SpaceKind::MultiDiscrete(spec) => {
-            if space.shape.len() == 2 {
-                let cols = space.shape[1].max(0) as usize;
-                let rows: Vec<Vec<i64>> = if cols == 0 {
-                    Vec::new()
+            let set = |key: &str, flat: &[i64]| -> PyResult<()> {
+                if space.shape.len() == 2 {
+                    let cols = space.shape[1].max(0) as usize;
+                    let rows: Vec<Vec<i64>> = if cols == 0 {
+                        Vec::new()
+                    } else {
+                        flat.chunks(cols).map(|chunk| chunk.to_vec()).collect()
+                    };
+                    details.set_item(key, rows)
                 } else {
-                    spec.nvec.chunks(cols).map(|chunk| chunk.to_vec()).collect()
-                };
-                details.set_item("nvec", rows)?;
-            } else {
-                details.set_item("nvec", spec.nvec.clone())?;
+                    details.set_item(key, flat.to_vec())
+                }
+            };
+            set("nvec", &spec.nvec)?;
+            if spec.has_start() {
+                set("start", &spec.start)?;
             }
         }
         SpaceKind::Text(spec) => {

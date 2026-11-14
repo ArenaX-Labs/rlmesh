@@ -187,6 +187,7 @@ def _part_to_dict(part: State | Constant) -> Any:
         and part.provenance is None
         and part.part is None
         and part.labels is None
+        and part.polarity is None
         and part.source == "observation"
     )
     if role_only:
@@ -231,6 +232,8 @@ def _part_to_dict(part: State | Constant) -> Any:
         out["part"] = part.part
     if part.labels is not None:
         out["labels"] = list(part.labels)
+    if part.polarity is not None:
+        out["polarity"] = part.polarity
     return out
 
 
@@ -342,6 +345,7 @@ def _part_from_dict(item: object) -> ConcatPart:
         part=part.get("part"),
         labels=part.get("labels"),
         source=part.get("source", "observation"),
+        polarity=part.get("polarity"),
     )
 
 
@@ -423,6 +427,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
                 part=base.part,
                 labels=base.labels,
                 source=base.source,
+                polarity=base.polarity,
                 pad_to=pad_to,
                 dtype=dtype,
                 reshape=reshape_t,

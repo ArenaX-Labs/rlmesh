@@ -1,6 +1,6 @@
 """Role-addressed, read-only views over an env's observations.
 
-:class:`Reader` (built by :meth:`rlmesh._models._eval.Session.reader`) maps a raw
+:class:`Reader` (built by a run context's ``read``) maps a raw
 observation to a ``{role: value}`` dict through the same adapter pipeline a model
 uses, pointed at the consumer. Plus the read-item normalization and the
 read-adapter resolution that reuse the model adapter pipeline.
@@ -25,7 +25,7 @@ __all__ = ["Reader", "env_image_roles", "resolve_read_adapter"]
 class Reader:
     """A resolved, role-addressed read over an env's observations (read-only).
 
-    Built by :meth:`Session.reader`. Calling it maps one raw env observation to a
+    Built by a run context's ``read``. Calling it maps one raw env observation to a
     ``{role: value}`` dict, each value in the encoding its read item declared -- a
     bare role keeps the env's native encoding; an :class:`~rlmesh.adapters.Image` /
     :class:`~rlmesh.adapters.State` leaf converts (``Image(IMAGE_PRIMARY,

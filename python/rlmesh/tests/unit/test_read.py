@@ -1,4 +1,4 @@
-"""Read-only role inspection: sess.reader / sess.read.
+"""Read-only role inspection: a run context's read (a Binding's, here).
 
 Pins the inline read seam: the same adapter pipeline a model uses, pointed at the
 consumer. A read item is a role constant (kept in the env's native encoding) or a
@@ -10,6 +10,7 @@ the env-native leaf by the env's own tag -- authoritative, so a prefix-less role
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -68,63 +69,66 @@ class _ArmEnv:
         return None
 
 
-def _session(tagged_env: Any = None) -> Any:
+@pytest.fixture
+def bind() -> Iterator[Callable[..., Any]]:
     pytest.importorskip("numpy")
     pytest.importorskip("gymnasium")
-    if tagged_env is None:
-        tagged_env = adapt.tag(_ArmEnv(), _tags())
-    return rlmesh.session(rlmesh.RANDOM_SAMPLE, tagged_env)
+    bindings: list[Any] = []
+
+    def bind(tagged_env: Any = None) -> Any:
+        if tagged_env is None:
+            tagged_env = adapt.tag(_ArmEnv(), _tags())
+        from rlmesh.numpy import Model
+
+        bindings.append(Model(rlmesh.RANDOM_SAMPLE).bind(tagged_env))
+        return bindings[-1]
+
+    yield bind
+    for binding in bindings:
+        binding.close()
 
 
-def test_reader_overrides_encoding_and_keeps_native_for_bare_roles() -> None:
-    sess = _session()
-    obs, _ = sess.reset()
+def test_read_overrides_encoding_and_keeps_native_for_bare_roles(
+    bind: Callable[..., Any],
+) -> None:
+    binding = bind()
+    obs, _ = binding.reset()
 
-    read = sess.reader(
-        adapt.Image(adapt.IMAGE_PRIMARY, layout="chw"),  # env HWC -> CHW
-        adapt.EEF_POS,  # bare role -> env-native state
-    )
-    out = read(obs)
-
-    assert set(out) == {adapt.IMAGE_PRIMARY, adapt.EEF_POS}
-    assert out[adapt.IMAGE_PRIMARY].shape == (3, 8, 8)  # layout converted
-    assert out[adapt.EEF_POS].shape == (3,)  # native, untouched
-    assert read.roles == (adapt.IMAGE_PRIMARY, adapt.EEF_POS)
+    # env HWC -> CHW
+    image = binding.read(obs, adapt.Image(adapt.IMAGE_PRIMARY, layout="chw"))
+    assert image.shape == (3, 8, 8)  # layout converted
+    # bare role -> env-native state
+    assert binding.read(obs, adapt.EEF_POS).shape == (3,)  # native, untouched
 
 
-def test_bare_role_desugars_a_prefixless_text_role() -> None:
+def test_bare_role_desugars_a_prefixless_text_role(bind: Callable[..., Any]) -> None:
     # INSTRUCTION carries no kind prefix, so desugar must read the env tag, not the
     # role string. This is the case that kills a prefix-matching shortcut.
-    sess = _session()
-    obs, _ = sess.reset()
-    assert sess.reader(adapt.INSTRUCTION)(obs)[adapt.INSTRUCTION] == "pick up the cube"
+    binding = bind()
+    obs, _ = binding.reset()
+    assert binding.read(obs, adapt.INSTRUCTION) == "pick up the cube"
 
 
-def test_read_one_shot_returns_the_single_value_and_caches() -> None:
-    sess = _session()
-    obs, _ = sess.reset()
+def test_read_returns_the_single_value_and_caches(bind: Callable[..., Any]) -> None:
+    binding = bind()
+    obs, _ = binding.reset()
 
-    ee = sess.read(obs, adapt.EEF_POS)
+    ee = binding.read(obs, adapt.EEF_POS)
     assert ee.shape == (3,)
-    img = sess.read(obs, adapt.Image(adapt.IMAGE_PRIMARY, layout="chw"))
+    img = binding.read(obs, adapt.Image(adapt.IMAGE_PRIMARY, layout="chw"))
     assert img.shape == (3, 8, 8)
     # Second call with the same item reuses the resolved reader (no re-resolve).
-    assert sess.read(obs, adapt.EEF_POS).shape == (3,)
+    assert binding.read(obs, adapt.EEF_POS).shape == (3,)
 
 
-def test_reader_rejects_an_unknown_role() -> None:
-    sess = _session()
+def test_read_rejects_an_unknown_role(bind: Callable[..., Any]) -> None:
+    binding = bind()
+    obs, _ = binding.reset()
     with pytest.raises(adapt.AdapterResolutionError):
-        sess.reader("proprio/not_a_real_role")
+        binding.read(obs, "proprio/not_a_real_role")
 
 
-def test_reader_needs_at_least_one_item() -> None:
-    sess = _session()
-    with pytest.raises(TypeError):
-        sess.reader()
-
-
-def test_bare_image_role_keeps_env_chw_layout() -> None:
+def test_bare_image_role_keeps_env_chw_layout(bind: Callable[..., Any]) -> None:
     # A torch-style env stores its camera CHW and tags layout="chw". A bare role read
     # must keep that native layout, not silently transpose to the Image default
     # (hwc), which would move the channel axis and corrupt the frame.
@@ -157,10 +161,10 @@ def test_bare_image_role_keeps_env_chw_layout() -> None:
         },
         action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
-    sess = _session(adapt.tag(_ChwEnv(), tags))
-    obs, _ = sess.reset()
+    binding = bind(adapt.tag(_ChwEnv(), tags))
+    obs, _ = binding.reset()
 
-    native = sess.read(obs, adapt.IMAGE_PRIMARY)  # bare role -> env-native layout
+    native = binding.read(obs, adapt.IMAGE_PRIMARY)  # bare role -> env-native layout
     assert native.shape == (3, 8, 8)  # kept CHW, not transposed to (8, 8, 3)
 
 
@@ -197,51 +201,20 @@ class _ClipEnv(_ArmEnv):
         return {"cam": np.arange(8 * 8 * 3, dtype=np.uint8).reshape(8, 8, 3)}
 
 
-def test_read_by_role_resolves_against_an_env_that_declares_clip_clamps() -> None:
+def test_read_by_role_resolves_against_an_env_that_declares_clip_clamps(
+    bind: Callable[..., Any],
+) -> None:
     # Regression: a read rides the env's own action along as a *no-op* output. ``clip``
     # is env-side only (the resolver forbids a model action from setting it), so
     # echoing it verbatim made every read against a clip-declaring env raise
     # "clip is an env-side actuator clamp; the model action declaration must leave it
     # unset" -- silently blanking the live viewer and `record`, which both read by
     # role. The read must strip the env-side clamps and resolve normally.
-    sess = _session(adapt.tag(_ClipEnv(), _clip_tags()))
-    obs, _ = sess.reset()
+    binding = bind(adapt.tag(_ClipEnv(), _clip_tags()))
+    obs, _ = binding.reset()
 
-    img = sess.read(obs, adapt.Image(adapt.IMAGE_PRIMARY, layout="hwc"))
+    img = binding.read(obs, adapt.Image(adapt.IMAGE_PRIMARY, layout="hwc"))
     assert img.shape == (8, 8, 3)
-
-
-def test_session_observation_roles_groups_declared_roles() -> None:
-    sess = _session()
-    roles = sess.observation_roles()
-    assert roles == adapt.ObservationRoles(
-        images=(adapt.IMAGE_PRIMARY,),
-        states=(adapt.EEF_POS,),
-        texts=(adapt.INSTRUCTION,),
-    )
-    sess.close()
-
-
-def test_session_observation_roles_is_empty_for_an_untagged_env() -> None:
-    class _UntaggedEnv:
-        def reset(
-            self, *, seed: object = None, options: object = None
-        ) -> tuple[int, dict[str, object]]:
-            return 0, {}
-
-        def step(
-            self, action: object
-        ) -> tuple[int, float, bool, bool, dict[str, object]]:
-            return 0, 1.0, True, False, {}
-
-        def close(self) -> None:
-            return None
-
-    from typing import cast
-
-    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), cast("Any", _UntaggedEnv()))
-    assert sess.observation_roles() == adapt.ObservationRoles()
-    sess.close()
 
 
 def test_read_only_action_drops_env_side_clip_clamps() -> None:

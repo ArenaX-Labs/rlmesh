@@ -1,0 +1,2483 @@
+//! PyO3 bindings for real-time sessions (protocol v2): an
+//! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound
+//! policy ([`rlmesh_session::Controller`]) and an MCAP recorder
+//! ([`rlmesh_session::record::Recorder`]). The `rlmesh.realtime` package wraps
+//! them; every rule (packing, binding, the edge, leases, the run loop)
+//! stays in the Rust crates.
+//!
+//! The GIL is released around every blocking wait and every network call.
+//! Edge ticks and transport callbacks never take it: the robot's own loop
+//! ticks its edge (`due`), and the run loop attaches only to call
+//! `predict` (and, between starts, to check for signals).
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use pyo3::buffer::PyBuffer;
+use pyo3::create_exception;
+use pyo3::exceptions::{PyTimeoutError, PyValueError};
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList, PyTuple};
+#[cfg(feature = "stub-gen")]
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
+use rlmesh_session::address::{Address, HostingOptions};
+use rlmesh_session::controller::sleep_until;
+use rlmesh_session::edge::{Due, Rejection, Robot};
+use rlmesh_session::host::BoardData;
+use rlmesh_session::record::{RecordError, Recorder};
+use rlmesh_session::sdk::{self, BindOptions, BindPolicyError, EmbeddedHost, ErrorKind};
+use rlmesh_session::spec::BindError;
+use rlmesh_session::spec::apply::{Tensor, Value};
+use rlmesh_session::wire::{PartSpec, ParticipantId, PriorityClass, ReasonCode};
+use rlmesh_session::{
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, Resume, RunError,
+    RunEvent, RunMode, SendError, Sent, SessionError, SkipReason, Snapshot, Step,
+    SystemMonotonicClock,
+};
+
+use rlmesh::lockstep::GymError;
+use rlmesh::realtime::{
+    self, BoundPolicy, LockstepPolicy, LockstepRunError, LockstepStats, RunSettings,
+};
+use rlmesh_session::spec::Policy;
+use rlmesh_session::wire::RobotClock;
+
+use crate::client::{check_signals, signal_poll};
+use crate::spaces::wrap_native_tensor;
+use crate::types::RLMeshException;
+
+create_exception!(
+    _rlmesh,
+    SessionException,
+    RLMeshException,
+    "A real-time session (protocol v2) failed."
+);
+
+create_exception!(
+    _rlmesh,
+    SessionRefused,
+    SessionException,
+    "The session host refused a verb; `status` names why (`LEASE_BUSY`, `NOT_READY`, ...)."
+);
+
+create_exception!(
+    _rlmesh,
+    BindingRefused,
+    SessionException,
+    "The binder refused a policy: the message is the refuse-and-explain text; \
+     `problems` lists `(code, \"input\" | \"action\", entry)` per problem."
+);
+
+create_exception!(
+    _rlmesh,
+    SessionLost,
+    SessionException,
+    "The session is gone for a policy's run: its robot's heartbeats lapsed or the host is gone; \
+     `reason` names why (`robot_lost`, `host_lost`)."
+);
+
+create_exception!(
+    _rlmesh,
+    StartSkipped,
+    SessionException,
+    "A policy start was skipped: `reason` is `waiting_for`, `stale_input` or \
+     `window_gap`; `waiting`, `stale` and `gaps` name the entries."
+);
+
+/// Registers the exception types.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = m.py();
+    m.add("SessionException", py.get_type::<SessionException>())?;
+    m.add("SessionRefused", py.get_type::<SessionRefused>())?;
+    m.add("BindingRefused", py.get_type::<BindingRefused>())?;
+    m.add("StartSkipped", py.get_type::<StartSkipped>())?;
+    m.add("SessionLost", py.get_type::<SessionLost>())?;
+    m.add_class::<PyHost>()?;
+    m.add_class::<PyRobot>()?;
+    m.add_class::<PyDue>()?;
+    m.add_class::<PyController>()?;
+    m.add_class::<PyObservation>()?;
+    m.add_class::<PyRate>()?;
+    m.add_class::<PyRecorder>()?;
+    m.add_class::<PySamples>()?;
+    #[cfg(feature = "fleet")]
+    m.add_class::<PyScene>()?;
+    m.add_function(wrap_pyfunction!(parse_address, m)?)?;
+    m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
+    m.add_function(wrap_pyfunction!(run_session, m)?)?;
+    m.add_function(wrap_pyfunction!(frames_between, m)?)?;
+    crate::lockstep::register(m)?;
+    Ok(())
+}
+
+/// Parses an address: a participant address,
+/// `[rlmesh://][host/][session/]participant`, or with `session=True` a
+/// session address, `[rlmesh://][host/][session]`, as
+/// `{"host", "port", "session", "participant"}` (`None` where it names
+/// none). A malformed or old form (`lockstep://`, a tenant segment) is the
+/// ValueError class, an upgrade's naming the new form.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def parse_address(text: str, session: bool = False) -> dict[str, typing.Any]: ...
+"#
+    )
+)]
+#[pyfunction]
+#[pyo3(signature = (text, session=false))]
+fn parse_address<'py>(py: Python<'py>, text: &str, session: bool) -> PyResult<Bound<'py, PyDict>> {
+    let parsed = if session {
+        Address::session(text)
+    } else {
+        Address::participant(text)
+    }
+    .map_err(address_err)?;
+    let d = PyDict::new(py);
+    d.set_item("host", parsed.host.as_ref().map(|h| h.name.clone()))?;
+    d.set_item("port", parsed.host.as_ref().and_then(|h| h.port))?;
+    d.set_item("session", parsed.session)?;
+    d.set_item("participant", parsed.participant)?;
+    Ok(d)
+}
+
+/// Whether `text` is a v2 session or participant address rather than a v1
+/// endpoint (`host:port`, a port, `tcp://`, `unix://`, `https://`).
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def is_v2_address(text: str) -> bool: ...
+"#
+    )
+)]
+#[pyfunction]
+fn is_v2_address(text: &str) -> bool {
+    rlmesh_session::address::is_v2_address(text)
+}
+
+/// The static rigid transform from pose `a` to pose `b`, both in the scene
+/// frame `world`: `(xyz, quat_xyzw)` of `T_b←a`.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def frames_between(
+    a_xyz: typing.Sequence[float],
+    a_quat_xyzw: typing.Sequence[float],
+    b_xyz: typing.Sequence[float],
+    b_quat_xyzw: typing.Sequence[float],
+) -> tuple[list[float], list[float]]: ...
+"#
+    )
+)]
+#[pyfunction]
+fn frames_between(
+    a_xyz: [f64; 3],
+    a_quat_xyzw: [f64; 4],
+    b_xyz: [f64; 3],
+    b_quat_xyzw: [f64; 4],
+) -> ([f64; 3], [f64; 4]) {
+    let pose = |xyz, quat_xyzw| rlmesh_session::wire::Pose { xyz, quat_xyzw };
+    let t =
+        rlmesh_session::spec::frames::between(&pose(a_xyz, a_quat_xyzw), &pose(b_xyz, b_quat_xyzw));
+    (t.xyz, t.quat_xyzw)
+}
+
+/// A fresh session for a run's local env: on the host of the served model
+/// at `model` when given, which the model reaches; else on this process's
+/// shared in-process host.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def run_session(model: str | None = None) -> str: ...
+"#
+    )
+)]
+#[pyfunction]
+#[pyo3(signature = (model = None))]
+fn run_session(model: Option<&str>) -> PyResult<String> {
+    rlmesh::lockstep::run_session(model).map_err(crate::lockstep::gym_err)
+}
+
+/// An address refused as the ValueError class, without the error's kind.
+fn address_err(err: SessionError) -> PyErr {
+    match err {
+        SessionError::Config(why) => PyValueError::new_err(why),
+        other => PyValueError::new_err(other.to_string()),
+    }
+}
+
+/// The runtime every session object of this process runs on. Its first use
+/// also installs the log subscriber, so a session's warnings (a robot the
+/// host dropped, a name another process took over) reach stderr.
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        crate::telemetry::init_tracing("session");
+        tokio::runtime::Builder::new_multi_thread()
+            .thread_name("rlmesh-session")
+            .enable_all()
+            .build()
+            .expect("failed to build the rlmesh session runtime")
+    })
+}
+
+/// Runs `work` on the session runtime with the GIL released, polling
+/// Python signals so Ctrl-C interrupts a wait.
+pub(crate) fn block_on<T>(
+    py: Python<'_>,
+    work: impl Future<Output = PyResult<T>> + Send,
+) -> PyResult<T>
+where
+    T: Send,
+{
+    py.detach(|| {
+        runtime().block_on(async move {
+            let mut work = std::pin::pin!(work);
+            let mut poll = signal_poll();
+            loop {
+                tokio::select! {
+                    result = &mut work => return result,
+                    _ = poll.tick() => check_signals()?,
+                }
+            }
+        })
+    })
+}
+
+pub(crate) fn session_err(err: SessionError) -> PyErr {
+    match ErrorKind::of(&err) {
+        ErrorKind::Refused(status) => Python::attach(|py| {
+            let message = match &err {
+                SessionError::Rejected(refusal) | SessionError::Unverified(refusal) => {
+                    refusal.message.clone()
+                }
+                other => other.to_string(),
+            };
+            let err = SessionRefused::new_err(message);
+            if let Err(set) = err.value(py).setattr("status", status) {
+                return set;
+            }
+            err
+        }),
+        ErrorKind::Timeout => PyTimeoutError::new_err(err.to_string()),
+        ErrorKind::Value => PyValueError::new_err(err.to_string()),
+        ErrorKind::Session => SessionException::new_err(err.to_string()),
+    }
+}
+
+pub(crate) fn bind_err(err: BindError) -> PyErr {
+    Python::attach(|py| {
+        let problems = sdk::bind_problems(&err);
+        let err_obj = BindingRefused::new_err(err.to_string());
+        if let Err(set) = err_obj.value(py).setattr("problems", problems) {
+            return set;
+        }
+        err_obj
+    })
+}
+
+fn controller_err(err: ControllerError) -> PyErr {
+    match err {
+        ControllerError::Bind(err) => bind_err(err),
+        ControllerError::Session(err) => session_err(err),
+        // `realtime::bind` takes a lockstep robot through its exchange.
+        err @ ControllerError::Lockstep(_) => BindingRefused::new_err(err.to_string()),
+    }
+}
+
+fn bind_policy_err(err: BindPolicyError) -> PyErr {
+    match err {
+        BindPolicyError::Policy(_) => BindingRefused::new_err(err.to_string()),
+        BindPolicyError::Controller(err) => controller_err(err),
+    }
+}
+
+fn lost_err<E>(err: &RunError<E>) -> PyErr {
+    let RunError::Lost(reason) = err else {
+        return SessionException::new_err(err.to_string());
+    };
+    Python::attach(|py| {
+        let lost = SessionLost::new_err(err.to_string());
+        if let Err(set) = lost
+            .value(py)
+            .setattr("reason", sdk::reason_name(reason.code))
+        {
+            return set;
+        }
+        lost
+    })
+}
+
+fn send_err(err: SendError) -> PyErr {
+    match err {
+        SendError::Value(message) => PyValueError::new_err(message),
+        SendError::Session(err) => session_err(err),
+    }
+}
+
+fn observe_err(err: ObserveError) -> PyErr {
+    match err {
+        ObserveError::Skipped(skip) => Python::attach(|py| {
+            let reason = skip.reason();
+            let err = StartSkipped::new_err(format!(
+                "start skipped ({reason}): waiting for {:?}, stale {:?}, window gaps {:?}",
+                skip.waiting, skip.stale, skip.gaps
+            ));
+            let value = err.value(py);
+            let set = value
+                .setattr("reason", reason.name())
+                .and_then(|()| value.setattr("waiting", skip.waiting.clone()))
+                .and_then(|()| value.setattr("stale", skip.stale.clone()))
+                .and_then(|()| value.setattr("gaps", skip.gaps.clone()));
+            match set {
+                Ok(()) => err,
+                Err(set) => set,
+            }
+        }),
+        other => SessionException::new_err(other.to_string()),
+    }
+}
+
+/// The session a session address (`[host/][session]`) names, placed by the
+/// hosting rule: joined, or hosted in this process when no host answers.
+/// Joining it puts capture times on `CLOCK_MONOTONIC`,
+/// `time.monotonic_ns()`'s clock.
+fn place(
+    py: Python<'_>,
+    text: &str,
+    lease_grace: Duration,
+    insecure: bool,
+) -> PyResult<EmbeddedHost> {
+    let address = Address {
+        insecure,
+        ..Address::session(text).map_err(address_err)?
+    };
+    block_on(py, async move {
+        EmbeddedHost::start(&address, lease_grace)
+            .await
+            .map_err(session_err)
+    })
+}
+
+use rlmesh_session::address::LEASE_GRACE;
+
+pub(crate) fn timeout(seconds: f64) -> PyResult<Duration> {
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| PyValueError::new_err(format!("timeout {seconds} is not a duration")))
+}
+
+/// A timeout that may have no limit: `None` waits for as long as it takes.
+fn limit(seconds: Option<f64>) -> PyResult<Duration> {
+    seconds.map_or(Ok(Duration::MAX), timeout)
+}
+
+fn priority(name: &str) -> PyResult<PriorityClass> {
+    sdk::priority(name).map_err(PyValueError::new_err)
+}
+
+/// The host's health as `participant` reads it (the newest, or with `wait`
+/// the next), as the dict `health()` documents.
+fn health_dict<'py>(
+    py: Python<'py>,
+    participant: &rlmesh_session::Participant,
+    wait: bool,
+    timeout_s: Option<f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let wait_for = limit(timeout_s)?;
+    let health = block_on(py, async {
+        let health = if wait {
+            participant.next_health(wait_for).await
+        } else {
+            participant.health(wait_for).await
+        };
+        health.map_err(session_err)
+    })?;
+    let d = PyDict::new(py);
+    d.set_item("epoch", health.epoch.0)?;
+    d.set_item("host_ns", health.host_ns)?;
+    let links = PyDict::new(py);
+    for link in sdk::health_links(participant, &health) {
+        let l = PyDict::new(py);
+        l.set_item("heartbeats", link.heartbeats)?;
+        l.set_item("rtt_ms", link.rtt_ms)?;
+        l.set_item("jitter_ms", link.jitter_ms)?;
+        l.set_item("heartbeat_gap_max_ms", link.heartbeat_gap_max_ms)?;
+        l.set_item("last_heartbeat_age_ms", link.last_heartbeat_age_ms)?;
+        l.set_item("offset_ms", link.offset_ms.map(|(offset, _)| offset))?;
+        l.set_item("offset_error_ms", link.offset_ms.map(|(_, error)| error))?;
+        l.set_item("health", link.health)?;
+        l.set_item("last_chunk_accepted", link.last_chunk_accepted)?;
+        l.set_item("last_chunk_applied", link.last_chunk_applied)?;
+        l.set_item("queue_depth", link.queue_depth)?;
+        let rejected_by = PyDict::new(py);
+        for (reason, n) in &link.rejected_by {
+            rejected_by.set_item(reason, n)?;
+        }
+        l.set_item(
+            "rejected",
+            link.rejected_by.iter().map(|(_, n)| n).sum::<u64>(),
+        )?;
+        l.set_item("rejected_by", rejected_by)?;
+        let clock_refused = PyList::empty(py);
+        for r in &link.clock_refused {
+            let refused = PyDict::new(py);
+            refused.set_item("part", &r.part)?;
+            refused.set_item("participant", &r.participant)?;
+            refused.set_item("error_ms", r.error_ms)?;
+            refused.set_item("bound_ms", r.bound_ms)?;
+            clock_refused.append(refused)?;
+        }
+        l.set_item("clock_refused", clock_refused)?;
+        let published = PyDict::new(py);
+        for (part, sent, coalesced) in &link.published {
+            let p = PyDict::new(py);
+            p.set_item("published", sent)?;
+            p.set_item("coalesced", coalesced)?;
+            published.set_item(part, p)?;
+        }
+        l.set_item("published", published)?;
+        let run = link
+            .run
+            .as_ref()
+            .map(|run| {
+                let r = PyDict::new(py);
+                r.set_item("starts", run.starts)?;
+                r.set_item("completions", run.completions)?;
+                let skipped = PyDict::new(py);
+                for (reason, n) in &run.skipped {
+                    skipped.set_item(reason, n)?;
+                }
+                r.set_item("skipped", skipped)?;
+                r.set_item("chunks_sent", run.chunks_sent)?;
+                r.set_item("pending_ms", run.pending_ms)?;
+                r.set_item("latency_p50_ms", run.latency_p50_ms)?;
+                r.set_item("latency_p99_ms", run.latency_p99_ms)?;
+                r.set_item("drifting", run.drifting)?;
+                PyResult::Ok(r)
+            })
+            .transpose()?;
+        l.set_item("run", run)?;
+        let seen = PyDict::new(py);
+        for (part, seq) in &link.last_seq_seen {
+            seen.set_item(part, seq)?;
+        }
+        l.set_item("last_seq_seen", seen)?;
+        links.set_item(link.participant, l)?;
+    }
+    d.set_item("links", links)?;
+    Ok(d)
+}
+
+/// A session host in this process, on a local TCP port.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Host", frozen)]
+pub struct PyHost {
+    host: EmbeddedHost,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyHost {
+    /// Places the session `address` names (`":0"`: hosted here on an
+    /// OS-assigned port). It listens on loopback only unless `insecure`.
+    /// A session hosted here carries boards' realtime parts as
+    /// `board_data` says (`tcp`, `udp`, `udp-only`; `None`:
+    /// `RLMESH_BOARD_DATA`, else `udp`).
+    #[new]
+    #[pyo3(signature = (address=":0", lease_grace_ms=250, insecure=false, board_data=None))]
+    fn new(
+        py: Python<'_>,
+        address: &str,
+        lease_grace_ms: u64,
+        insecure: bool,
+        board_data: Option<&str>,
+    ) -> PyResult<Self> {
+        let options = HostingOptions {
+            board_data: board_data
+                .map(|text| BoardData::parse(text, "board_data"))
+                .transpose()
+                .map_err(PyValueError::new_err)?,
+        };
+        let address = Address {
+            insecure,
+            ..Address::session(address).map_err(address_err)?
+        };
+        let lease_grace = Duration::from_millis(lease_grace_ms);
+        let host = block_on(py, async move {
+            EmbeddedHost::start_with(&address, lease_grace, &options)
+                .await
+                .map_err(session_err)
+        })?;
+        Ok(Self { host })
+    }
+
+    /// `{ip}:{port}[/{session}]#{key}`: what participants connect to. The
+    /// key is a credential (its holder attaches as device `local`).
+    #[getter]
+    fn address(&self) -> String {
+        self.host.address().invite()
+    }
+
+    /// Stops the host (participants see it leave).
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        block_on(py, async { self.host.close().await.map_err(session_err) })
+    }
+
+    /// Each participant's link as the host measured it, as of its last
+    /// health interval (about a second): dicts of `participant`,
+    /// `heartbeats`, `rtt_ms`, `last_heartbeat_ms`, `data_path` (a robot's
+    /// realtime parts: `"tcp"` or `"udp"`), `chunks_accepted`,
+    /// `chunk_timing` (per commanded part: `received`, `accepted`, `lost`,
+    /// `late_ms`, `late_max_ms`, `gap_max_ms`), `datagram_board`,
+    /// `datagram_host` (each end of a robot's datagram path, or `None`),
+    /// `path_time` (a robot offered the path: `udp_s`, `tcp_s` since it
+    /// attached, and the host's `fallbacks` and `returns` between them, or
+    /// `None`) and `datagram_relay` (how long the host took to relay its
+    /// chunks, subscriber to socket: `ms`, counts in buckets `[0, 1)`,
+    /// `[1, 2)`, ... `[64, inf)` ms, and `max_ms`; or `None`).
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn health<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let rows = block_on(py, async { Ok(self.host.health().await) })?;
+        let list = PyList::empty(py);
+        let ms = |ns: u64| ns as f64 * 1e-6;
+        for row in rows {
+            let d = PyDict::new(py);
+            d.set_item("participant", row.participant.as_str())?;
+            d.set_item("heartbeats", row.heartbeats)?;
+            d.set_item("rtt_ms", row.rtt_ns.map(ms))?;
+            d.set_item("last_heartbeat_ms", row.last_heartbeat_age_ns.map(ms))?;
+            d.set_item("data_path", row.data_path.name())?;
+            d.set_item("chunks_accepted", row.chunks_accepted)?;
+            let timing = PyDict::new(py);
+            for t in &row.chunk_timing {
+                let part = PyDict::new(py);
+                part.set_item("received", t.received)?;
+                part.set_item("accepted", t.accepted)?;
+                part.set_item("lost", t.lost)?;
+                part.set_item("late_ms", t.late_ms.to_vec())?;
+                part.set_item("late_max_ms", f64::from(t.late_max_us) * 1e-3)?;
+                part.set_item("gap_max_ms", f64::from(t.gap_max_us) * 1e-3)?;
+                let name = row
+                    .parts
+                    .get(&t.channel)
+                    .cloned()
+                    .unwrap_or_else(|| t.channel.to_string());
+                timing.set_item(name, part)?;
+            }
+            d.set_item("chunk_timing", timing)?;
+            for (key, end) in [
+                ("datagram_board", row.datagram_board),
+                ("datagram_host", row.datagram_host),
+            ] {
+                let value = end
+                    .map(|s| {
+                        let e = PyDict::new(py);
+                        e.set_item("active", s.active)?;
+                        e.set_item("sent", s.sent)?;
+                        e.set_item("received", s.received)?;
+                        e.set_item("lost", s.lost)?;
+                        e.set_item("reordered", s.reordered)?;
+                        e.set_item("unopened", s.unopened)?;
+                        e.set_item("fallbacks", s.fallbacks)?;
+                        PyResult::Ok(e)
+                    })
+                    .transpose()?;
+                d.set_item(key, value)?;
+            }
+            let time = row
+                .path_time
+                .map(|t| {
+                    let e = PyDict::new(py);
+                    e.set_item("udp_s", t.datagram.as_secs_f64())?;
+                    e.set_item("tcp_s", t.session.as_secs_f64())?;
+                    e.set_item("fallbacks", t.fallbacks)?;
+                    e.set_item("returns", t.returns)?;
+                    PyResult::Ok(e)
+                })
+                .transpose()?;
+            d.set_item("path_time", time)?;
+            let relay = row
+                .datagram_relay
+                .map(|r| {
+                    let e = PyDict::new(py);
+                    e.set_item("ms", r.ms.to_vec())?;
+                    e.set_item("max_ms", r.max_us as f64 * 1e-3)?;
+                    PyResult::Ok(e)
+                })
+                .transpose()?;
+            d.set_item("datagram_relay", relay)?;
+            list.append(d)?;
+        }
+        Ok(list)
+    }
+}
+
+/// A sample's fields as owned bytes: UTF-8 for a `str`, else a
+/// C-contiguous buffer's bytes.
+fn field_bytes(py: Python<'_>, path: &str, fields: &[Bound<'_, PyAny>]) -> PyResult<Vec<Vec<u8>>> {
+    let mut owned: Vec<Vec<u8>> = Vec::with_capacity(fields.len());
+    for field in fields {
+        if let Ok(text) = field.extract::<String>() {
+            owned.push(text.into_bytes());
+        } else {
+            let buffer = PyBuffer::<u8>::get(field).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "{path}: a field must be a C-contiguous bytes-like or a str"
+                ))
+            })?;
+            owned.push(buffer.to_vec(py)?);
+        }
+    }
+    Ok(owned)
+}
+
+/// One field of a part, for the Python layer: `(name, dtype, shape)`.
+type FieldInfo = (String, String, Vec<u32>);
+
+fn fields_info(fields: &[rlmesh_session::wire::FieldSpec]) -> Vec<FieldInfo> {
+    fields
+        .iter()
+        .map(|f| (f.name.clone(), f.dtype.name().to_string(), f.shape.clone()))
+        .collect()
+}
+
+pub(crate) fn part_dict<'py>(py: Python<'py>, part: &PartSpec) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("path", part.path.as_str())?;
+    d.set_item("kind", &part.kind)?;
+    d.set_item("hz", part.hz)?;
+    d.set_item("event", part.event)?;
+    d.set_item("encoding", part.encoding.wire_name())?;
+    d.set_item("fields", fields_info(&part.fields))?;
+    match &part.command {
+        Some(command) => {
+            let c = PyDict::new(py);
+            c.set_item("mode", &command.mode)?;
+            c.set_item("fields", fields_info(&command.fields))?;
+            c.set_item("group", command.group.as_deref())?;
+            c.set_item("safe", &command.safe_behavior)?;
+            c.set_item("control_hz", part.control_hz)?;
+            d.set_item("command", c)?;
+        }
+        None => d.set_item("command", py.None())?,
+    }
+    Ok(d)
+}
+
+/// An `rlmesh_session::spec` tensor as a native `Tensor` (zero-copy when its buffer
+/// is 8-byte aligned; one copy otherwise).
+pub(crate) fn tensor_to_py<'py>(py: Python<'py>, tensor: Tensor) -> PyResult<Bound<'py, PyAny>> {
+    let dtype = rlmesh_spaces::DType::from_name(tensor.dtype.name()).ok_or_else(|| {
+        SessionException::new_err(format!("no tensor dtype for {}", tensor.dtype.name()))
+    })?;
+    let shape: Vec<i64> = tensor.shape.iter().map(|d| i64::from(*d)).collect();
+    let native = if tensor.data.as_ptr().addr().is_multiple_of(8) {
+        rlmesh_spaces::Tensor::from_vec(tensor.data, shape, dtype)
+    } else {
+        rlmesh_spaces::Tensor::from_slice(&tensor.data, &shape, dtype)
+    }
+    .map_err(|e| SessionException::new_err(e.to_string()))?;
+    wrap_native_tensor(py, native)
+}
+
+pub(crate) fn value_to_py<'py>(py: Python<'py>, value: Value) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        Value::Tensor(tensor) => tensor_to_py(py, tensor),
+        Value::Dict(fields) => {
+            let d = PyDict::new(py);
+            for (name, tensor) in fields {
+                d.set_item(name, tensor_to_py(py, tensor)?)?;
+            }
+            Ok(d.into_any())
+        }
+        Value::Text(text) => Ok(text.into_pyobject(py)?.into_any()),
+    }
+}
+
+/// One array from Python: `(dtype, shape, bytes-like)`.
+pub(crate) fn tensor_from_py(entry: &str, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+    let (dtype, shape, data): (String, Vec<u32>, PyBuffer<u8>) = obj.extract().map_err(|_| {
+        PyValueError::new_err(format!(
+            "{entry}: expected an array, got {}",
+            obj.get_type()
+                .name()
+                .map_or_else(|_| "?".into(), |n| n.to_string())
+        ))
+    })?;
+    let data = data.to_vec(obj.py())?;
+    sdk::tensor(entry, &dtype, shape, data).map_err(PyValueError::new_err)
+}
+
+/// What `predict` returned, by action entry: an array, or a dict of arrays.
+pub(crate) fn values_from_py(output: &Bound<'_, PyAny>) -> PyResult<Vec<(String, Value)>> {
+    let dict = output
+        .cast::<PyDict>()
+        .map_err(|_| PyValueError::new_err("predict must return a dict keyed by action name"))?;
+    let mut values = Vec::with_capacity(dict.len());
+    for (key, item) in dict.iter() {
+        let entry: String = key.extract()?;
+        let value = match item.cast::<PyDict>() {
+            Ok(fields) => Value::Dict(
+                fields
+                    .iter()
+                    .map(|(name, array)| {
+                        let name: String = name.extract()?;
+                        let tensor = tensor_from_py(&format!("{entry}.{name}"), &array)?;
+                        Ok((name, tensor))
+                    })
+                    .collect::<PyResult<_>>()?,
+            ),
+            Err(_) => Value::Tensor(tensor_from_py(&entry, &item)?),
+        };
+        values.push((entry, value));
+    }
+    Ok(values)
+}
+
+/// A robot: its map declared, a publisher per part and an edge per command
+/// group.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Robot", frozen)]
+pub struct PyRobot {
+    name: String,
+    /// The robot now: a rejoin swaps it ([`sdk::keep_joined`]).
+    robot: sdk::RobotSlot,
+    /// Joins it again when the host drops it.
+    keeper: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    session: EmbeddedHost,
+}
+
+impl PyRobot {
+    fn robot(&self) -> PyResult<Arc<Robot>> {
+        self.robot
+            .lock()
+            .ok()
+            .and_then(|r| r.clone())
+            .ok_or_else(|| SessionException::new_err(format!("robot {} is closed", self.name)))
+    }
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyRobot {
+    /// Attaches as `name` (the robot's participant id), declares
+    /// `robot_json` (the authored map) and starts its publishers and
+    /// edges. When the host drops it (a network gap past its presence
+    /// grace) it joins again on its own.
+    #[new]
+    #[pyo3(signature = (address, name, robot_json, timeout_s=10.0))]
+    fn new(
+        py: Python<'_>,
+        address: &str,
+        name: &str,
+        robot_json: String,
+        timeout_s: f64,
+    ) -> PyResult<Self> {
+        let session = place(py, address, LEASE_GRACE, false)?;
+        let address = session.address().clone();
+        let wait = timeout(timeout_s)?;
+        let (rejoin, json) = (address.clone(), robot_json.clone());
+        let robot = block_on(py, async move {
+            sdk::connect_robot(&address, name, &robot_json, wait)
+                .await
+                .map_err(|err| match err {
+                    rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
+                    other => SessionException::new_err(other.to_string()),
+                })
+        })?;
+        let slot: sdk::RobotSlot = Arc::new(Mutex::new(Some(Arc::new(robot))));
+        let keeper = {
+            let _runtime = runtime().enter();
+            sdk::keep_joined(slot.clone(), rejoin, name.to_string(), json)
+        };
+        Ok(Self {
+            name: name.to_string(),
+            robot: slot,
+            keeper: Mutex::new(Some(keeper)),
+            session,
+        })
+    }
+
+    #[cfg(feature = "fleet")]
+    /// Waits in the lobby of the home daemon `home` names (`None`: this
+    /// machine's rlmeshd) as robot `name` until a run assigns it, then joins
+    /// the run and declares `robot_json`. A refused join (its pin, another
+    /// map) is reported to the daemon by the next wait, which goes on
+    /// waiting; `timeout_s` (`None`: none) bounds it all.
+    #[staticmethod]
+    #[pyo3(signature = (home, name, robot_json, timeout_s=None))]
+    fn from_lobby(
+        py: Python<'_>,
+        home: Option<String>,
+        name: &str,
+        robot_json: String,
+        timeout_s: Option<f64>,
+    ) -> PyResult<Self> {
+        let wait = timeout_s.map(timeout).transpose()?;
+        let (robot, address) = block_on(py, async move {
+            sdk::robot_from_lobby(home.as_deref(), name, &robot_json, wait)
+                .await
+                .map_err(|err| match err {
+                    rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
+                    other => SessionException::new_err(other.to_string()),
+                })
+        })?;
+        Ok(Self {
+            name: name.to_string(),
+            robot: Arc::new(Mutex::new(Some(Arc::new(robot)))),
+            keeper: Mutex::new(None),
+            session: EmbeddedHost::joined(address),
+        })
+    }
+
+    #[cfg(feature = "fleet")]
+    /// Why this robot should leave its scene's run: the run is closing (its
+    /// reason, `scene_ended` or `scene_failed`), the host lost it
+    /// (`robot_lost`: wait in the lobby again, where its run re-sends its
+    /// join), or another process took its name over (`superseded`: stop).
+    /// `None` while it is in the run, and outside a scene.
+    #[getter]
+    fn leaving(&self) -> PyResult<Option<String>> {
+        Ok(sdk::leaving(self.robot()?.participant()).map(|l| sdk::leave_name(&l)))
+    }
+
+    /// The robot's participant id.
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The robot's participant address, `{ip}:{port}[/{session}]#{key}/{name}`.
+    #[getter]
+    fn address(&self) -> String {
+        self.session.address().participant_invite(&self.name)
+    }
+
+    /// The parts as the host normalised them, in authored order.
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn parts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let robot = self.robot()?;
+        let parts = robot
+            .parts()
+            .iter()
+            .map(|p| part_dict(py, p))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, parts)
+    }
+
+    /// Publishes one sample of `path` from its fields in declaration order
+    /// (C-contiguous bytes-likes; a `str` for text), captured at
+    /// `capture_ns` (`time.monotonic_ns()`; now by default). The values
+    /// are copied before this returns. Returns the sample's seq, or `None`
+    /// when coalesced (or handed to an image encoder).
+    #[pyo3(signature = (path, fields, capture_ns=None))]
+    fn publish(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        #[gen_stub(override_type(
+            type_repr = "collections.abc.Sequence[builtins.str | builtins.bytes | memoryview]",
+            imports = ("collections.abc", "builtins")
+        ))]
+        fields: Vec<Bound<'_, PyAny>>,
+        capture_ns: Option<i64>,
+    ) -> PyResult<Option<u64>> {
+        let robot = self.robot()?;
+        let owned = field_bytes(py, path, &fields)?;
+        let capture = capture_ns.unwrap_or_else(|| robot.participant().clock().now_ns());
+        py.detach(move || sdk::publish(robot.published(), path, capture, owned))
+            .map_err(session_err)
+    }
+
+    /// Publishes one frame of the camera `path` already encoded as JPEG
+    /// (a C-contiguous bytes-like), sent as it is: for a part declared
+    /// `encoding: jpeg`, at its declared size. Captured at `capture_ns`
+    /// (now by default); copied before this returns.
+    #[pyo3(signature = (path, jpeg, capture_ns=None))]
+    fn publish_jpeg(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        #[gen_stub(override_type(type_repr = "builtins.bytes | builtins.bytearray | memoryview", imports = ("builtins")))]
+        jpeg: Bound<'_, PyAny>,
+        capture_ns: Option<i64>,
+    ) -> PyResult<()> {
+        let robot = self.robot()?;
+        let buffer = PyBuffer::<u8>::get(&jpeg).map_err(|_| {
+            PyValueError::new_err(format!("{path}: a JPEG frame is a C-contiguous bytes-like"))
+        })?;
+        let owned = bytes::Bytes::from(buffer.to_vec(py)?);
+        let capture = capture_ns.unwrap_or_else(|| robot.participant().clock().now_ns());
+        py.detach(move || robot.published().publish_jpeg(path, capture, owned))
+            .map_err(session_err)
+    }
+
+    /// One control tick of the edge serving `path` and its command group:
+    /// what to dispatch now, or `None`. Call it once per tick per group.
+    fn due(&self, py: Python<'_>, path: &str) -> PyResult<Option<PyDue>> {
+        let robot = self.robot()?;
+        let due = py.detach(|| robot.due(path)).map_err(session_err)?;
+        due.map(|due| PyDue::new(py, &robot, due)).transpose()
+    }
+
+    /// The robot switched control modes after a handover of `path`'s
+    /// group: the group may dispatch again.
+    fn handover_done(&self, path: &str) -> PyResult<()> {
+        self.robot()?.handover_done(path).map_err(session_err)
+    }
+
+    /// DISARMED or SAFE to ARMED, in a fresh epoch; nothing when already
+    /// armed. It clears no robot's hold.
+    fn arm(&self, py: Python<'_>) -> PyResult<()> {
+        let robot = self.robot()?;
+        block_on(py, async move {
+            robot
+                .participant()
+                .arm()
+                .await
+                .map(|_| ())
+                .map_err(session_err)
+        })
+    }
+
+    /// Lets `robot`, stopped on its own, take leases again, in a session
+    /// already armed.
+    fn rearm(&self, py: Python<'_>, robot: &str) -> PyResult<()> {
+        let id = ParticipantId::new(robot).map_err(|err| session_err(SessionError::from(err)))?;
+        let handle = self.robot()?;
+        block_on(py, async move {
+            handle
+                .participant()
+                .rearm(&id)
+                .await
+                .map(|_| ())
+                .map_err(session_err)
+        })
+    }
+
+    /// Back to DISARMED.
+    fn disarm(&self, py: Python<'_>) -> PyResult<()> {
+        let robot = self.robot()?;
+        block_on(py, async move {
+            robot
+                .participant()
+                .disarm()
+                .await
+                .map(|_| ())
+                .map_err(session_err)
+        })
+    }
+
+    /// Asks the host to keep its recent recording as an incident named
+    /// `label` (the cockpit's Keep).
+    fn keep(&self, py: Python<'_>, label: String) -> PyResult<()> {
+        let robot = self.robot()?;
+        block_on(py, async move {
+            robot.participant().keep(&label).await.map_err(session_err)
+        })
+    }
+
+    /// Emergency stop, latched locally with no network (any thread): the
+    /// next `due` purges every queue and returns `estop`, and the host is
+    /// told in the background. Latched until `clear_estop`, then disarm and
+    /// arm.
+    fn estop(&self, reason: String) -> PyResult<()> {
+        self.robot()?.estop(reason);
+        Ok(())
+    }
+
+    /// Clears the local e-stop latch and tells the host `Clear` (after any
+    /// unsent e-stop): the session stays ESTOP, unlatched, until disarm and
+    /// arm.
+    fn clear_estop(&self) -> PyResult<()> {
+        self.robot()?.clear_estop();
+        Ok(())
+    }
+
+    /// Tells the host the robot fell back on its own account (a device
+    /// watchdog fired): the session goes SAFE. Never blocks.
+    fn report_safe(&self, reason: String) -> PyResult<()> {
+        let robot = self.robot()?;
+        let participant = robot.participant();
+        participant.report_safe(
+            participant.authority_view().epoch(),
+            ReasonCode::DeviceWatchdog,
+            reason,
+        );
+        Ok(())
+    }
+
+    /// The session mode this robot sees (`disarmed`, `armed`, `active`,
+    /// `safe`, `estop`).
+    #[getter]
+    fn mode(&self) -> PyResult<String> {
+        Ok(self
+            .robot()?
+            .participant()
+            .authority()
+            .map_or_else(|| "disarmed".into(), |v| v.mode.to_string().to_lowercase()))
+    }
+
+    /// Why the session mode is what it is (`robot_lost`, `estop_local`, ...;
+    /// `unspecified` before any change).
+    #[getter]
+    fn mode_reason(&self) -> PyResult<String> {
+        Ok(sdk::reason_name(
+            self.robot()?
+                .participant()
+                .authority_view()
+                .with(|v| v.map_or(ReasonCode::Unspecified, |v| v.mode_reason.code)),
+        ))
+    }
+
+    /// Every robot held until re-armed by name, as dicts with `robot`,
+    /// `reason`, `detail`, `at_ns` (session time) and `message`.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn held<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        held_list(py, self.robot()?.participant().authority().as_ref())
+    }
+
+    /// Now on this robot's clock (`time.monotonic_ns()`).
+    fn now_ns(&self) -> PyResult<i64> {
+        Ok(self.robot()?.participant().clock().now_ns())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one. See `Robot.health` for the fields.
+    #[pyo3(signature = (wait=false, timeout_s=Some(10.0)))]
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn health<'py>(
+        &self,
+        py: Python<'py>,
+        wait: bool,
+        timeout_s: Option<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let robot = self.robot()?;
+        health_dict(py, robot.participant(), wait, timeout_s)
+    }
+
+    /// The counters of the edge serving `path`.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn edge_stats<'py>(&self, py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
+        let stats = self.robot()?.edge_stats(path).map_err(session_err)?;
+        let d = PyDict::new(py);
+        d.set_item("accepted", stats.accepted)?;
+        d.set_item("rejected", stats.rejected_total())?;
+        let rejected_by = PyDict::new(py);
+        for reason in Rejection::ALL {
+            let n = stats.rejected(reason);
+            if n > 0 {
+                rejected_by.set_item(sdk::rejection_name(reason), n)?;
+            }
+        }
+        d.set_item("rejected_by", rejected_by)?;
+        let clock_refused = stats
+            .clock_refused
+            .as_ref()
+            .map(|r| {
+                let robot = self.robot()?;
+                let path = robot.path_of(r.channel).unwrap_or(path);
+                let refused = PyDict::new(py);
+                refused.set_item("part", path)?;
+                refused.set_item("participant", r.participant.as_str())?;
+                refused.set_item("error_ms", r.error_ns as f64 * 1e-6)?;
+                refused.set_item("bound_ms", r.bound_ns as f64 * 1e-6)?;
+                refused.set_item("message", r.explain(robot.participant().id(), path))?;
+                PyResult::Ok(refused)
+            })
+            .transpose()?;
+        d.set_item("clock_refused", clock_refused)?;
+        d.set_item("clamped", stats.clamped)?;
+        d.set_item("handovers", stats.handovers)?;
+        d.set_item("safe_reports", stats.safe_reports)?;
+        let modes = PyDict::new(py);
+        for mode in sdk::EDGE_MODES {
+            let m = stats.mode(mode);
+            modes.set_item(sdk::mode_name(mode), (m.ticks, m.entries))?;
+        }
+        d.set_item("modes", modes)?;
+        // How this part's chunks arrived: on whichever path they rode.
+        let robot = self.robot()?;
+        let timing = robot
+            .part(path)
+            .and_then(|part| stats.timing(part.channel).copied())
+            .unwrap_or_default();
+        d.set_item("received", timing.received)?;
+        d.set_item("lost", timing.lost)?;
+        d.set_item("late_ms", timing.late_ms.to_vec())?;
+        d.set_item("late_max_ms", f64::from(timing.late_max_us) * 1e-3)?;
+        d.set_item("gap_max_ms", f64::from(timing.gap_max_us) * 1e-3)?;
+        Ok(d)
+    }
+
+    /// Detaches: the edges and publishers go, the host drops the parts.
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        if let Some(keeper) = self.keeper.lock().ok().and_then(|mut k| k.take()) {
+            keeper.abort();
+        }
+        let taken = self.robot.lock().map(|mut r| r.take()).unwrap_or(None);
+        block_on(py, async move {
+            if let Some(robot) = taken {
+                sdk::close_robot(robot).await.map_err(session_err)?;
+            }
+            self.session.close().await.map_err(session_err)
+        })
+    }
+}
+
+/// The robots `state` holds, as dicts for `held`.
+fn held_list<'py>(
+    py: Python<'py>,
+    state: Option<&rlmesh_session::wire::AuthoritySnapshot>,
+) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty(py);
+    let Some(state) = state else {
+        return Ok(list);
+    };
+    for held in &state.held {
+        let d = PyDict::new(py);
+        d.set_item("robot", held.robot.as_str())?;
+        d.set_item("reason", sdk::reason_name(held.reason.code))?;
+        d.set_item("detail", &held.reason.detail)?;
+        d.set_item("at_ns", held.reason.at_ns)?;
+        d.set_item("message", state.held_refusal(&held.robot))?;
+        list.append(d)?;
+    }
+    Ok(list)
+}
+
+#[cfg(feature = "fleet")]
+/// A run's state as a dict: `run`, `version`, `stage`, `members` (each
+/// `name`, `stage`, `error`) and `error` (each error `status`, `message`).
+fn run_state<'py>(
+    py: Python<'py>,
+    state: &rlmesh_session::wire::RunState,
+) -> PyResult<Bound<'py, PyDict>> {
+    let error =
+        |e: &Option<rlmesh_session::wire::CtlError>| -> PyResult<Option<Bound<'py, PyDict>>> {
+            e.as_ref()
+                .map(|e| {
+                    let d = PyDict::new(py);
+                    d.set_item("status", sdk::status_name(e.status))?;
+                    d.set_item("message", &e.message)?;
+                    Ok(d)
+                })
+                .transpose()
+        };
+    let d = PyDict::new(py);
+    d.set_item("run", &state.run)?;
+    d.set_item("version", state.version)?;
+    d.set_item("stage", sdk::run_stage_name(state.stage))?;
+    let members = PyList::empty(py);
+    for m in &state.members {
+        let member = PyDict::new(py);
+        member.set_item("name", m.name.as_str())?;
+        member.set_item("stage", sdk::member_stage_name(m.stage))?;
+        member.set_item("error", error(&m.error)?)?;
+        members.append(member)?;
+    }
+    d.set_item("members", members)?;
+    d.set_item("error", error(&state.error)?)?;
+    Ok(d)
+}
+
+#[cfg(feature = "fleet")]
+/// A scene run started from this process on the home daemon's lobby.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Scene", frozen)]
+pub struct PyScene {
+    run: String,
+    scene: tokio::sync::Mutex<Option<sdk::SceneRun>>,
+}
+
+#[cfg(feature = "fleet")]
+impl PyScene {
+    async fn with<T>(
+        &self,
+        f: impl AsyncFnOnce(&sdk::SceneRun) -> Result<T, SessionError>,
+    ) -> PyResult<T> {
+        let scene = self.scene.lock().await;
+        let scene = scene
+            .as_ref()
+            .ok_or_else(|| SessionException::new_err(format!("run {} is closed", self.run)))?;
+        f(scene).await.map_err(session_err)
+    }
+}
+
+#[cfg(feature = "fleet")]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyScene {
+    /// Runs the scene file's text `scene_toml` on the home daemon `home`
+    /// names (`None`: this machine's rlmeshd), waiting up to `timeout_s` for
+    /// it (`manual_arm`: wait for `arm()`). A refused scene raises
+    /// `SessionRefused` with its code.
+    #[new]
+    #[pyo3(signature = (home, scene_toml, manual_arm=false, timeout_s=10.0))]
+    fn new(
+        py: Python<'_>,
+        home: Option<String>,
+        scene_toml: String,
+        manual_arm: bool,
+        timeout_s: f64,
+    ) -> PyResult<Self> {
+        let wait = timeout(timeout_s)?;
+        let scene = block_on(py, async move {
+            sdk::SceneRun::start(home.as_deref(), &scene_toml, manual_arm, wait)
+                .await
+                .map_err(session_err)
+        })?;
+        Ok(Self {
+            run: scene.run().to_string(),
+            scene: tokio::sync::Mutex::new(Some(scene)),
+        })
+    }
+
+    /// The run's id.
+    #[getter]
+    fn run(&self) -> &str {
+        &self.run
+    }
+
+    /// Where the run's members join, once its host is up (`None` before).
+    fn address(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        block_on(py, self.with(async |s| s.address().await))
+    }
+
+    /// The run's state now.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let state = block_on(py, self.with(async |s| s.status().await))?;
+        run_state(py, &state)
+    }
+
+    /// Waits up to `timeout_s` for the run to be at `stage` (`running`);
+    /// its state then. A run that ends first raises `SessionRefused` with
+    /// its error; the timeout raises `TimeoutError`.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn wait_until<'py>(
+        &self,
+        py: Python<'py>,
+        stage: &str,
+        timeout_s: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let stage = sdk::run_stage(stage).map_err(PyValueError::new_err)?;
+        let wait = timeout(timeout_s)?;
+        let state = block_on(
+            py,
+            self.with(async move |s| s.wait_until(stage, wait).await),
+        )?;
+        run_state(py, &state)
+    }
+
+    /// Arms the run (`manual`, or after a lost member rejoined); its state.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn arm<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let state = block_on(py, self.with(async |s| s.arm().await))?;
+        run_state(py, &state)
+    }
+
+    /// Re-arms `robot` in the run; its state.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn rearm<'py>(&self, py: Python<'py>, robot: &str) -> PyResult<Bound<'py, PyDict>> {
+        let id = ParticipantId::new(robot).map_err(|err| session_err(SessionError::from(err)))?;
+        let state = block_on(py, self.with(async move |s| s.rearm(&id).await))?;
+        run_state(py, &state)
+    }
+
+    /// Stops the run and waits up to `timeout_s` for it to end; its state.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    #[pyo3(signature = (timeout_s=10.0))]
+    fn stop<'py>(&self, py: Python<'py>, timeout_s: f64) -> PyResult<Bound<'py, PyDict>> {
+        let wait = timeout(timeout_s)?;
+        let state = block_on(py, self.with(async move |s| s.stop(wait).await))?;
+        run_state(py, &state)
+    }
+
+    /// Stops the run unless it ended, and leaves the lobby. Idempotent.
+    #[pyo3(signature = (timeout_s=10.0))]
+    fn close(&self, py: Python<'_>, timeout_s: f64) -> PyResult<()> {
+        let wait = timeout(timeout_s)?;
+        block_on(py, async move {
+            let taken = self.scene.lock().await.take();
+            match taken {
+                Some(scene) => scene.close(wait).await.map_err(session_err),
+                None => Ok(()),
+            }
+        })
+    }
+}
+
+/// What the robot does this control tick.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Due", frozen)]
+pub struct PyDue {
+    /// The part the tick concerns.
+    #[pyo3(get)]
+    path: String,
+    /// `driving`, `hold`, `safe`, `estop` or `idle`.
+    #[pyo3(get)]
+    mode: &'static str,
+    fields: Option<Py<PyDict>>,
+    /// The declared safe behaviour to run now, or `None`.
+    #[pyo3(get)]
+    safe: Option<String>,
+    /// `(group, from_path, to_path)` on the tick a handover starts.
+    #[pyo3(get)]
+    handover: Option<(String, String, String)>,
+    /// The lease token of the chunk the command came from.
+    #[pyo3(get)]
+    lease_token: Option<u64>,
+    /// That chunk's seq under its token.
+    #[pyo3(get)]
+    chunk_seq: Option<u64>,
+    /// The command's index in that chunk.
+    #[pyo3(get)]
+    index: Option<u32>,
+    /// When the edge received the chunk (this robot's clock).
+    #[pyo3(get)]
+    received_ns: Option<i64>,
+    /// When this command's slot starts (this robot's clock).
+    #[pyo3(get)]
+    slot_ns: Option<i64>,
+    /// The inputs the chunk was computed from: `(path, seq_first,
+    /// seq_last)`, with this robot's paths.
+    #[pyo3(get)]
+    based_on: Vec<(String, u64, u64)>,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyDue {
+    /// The command fields by name (validated and clamped), or `None`.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, Tensor] | None", imports = ("builtins")))]
+    fn fields(&self, py: Python<'_>) -> Option<Py<PyDict>> {
+        self.fields.as_ref().map(|f| f.clone_ref(py))
+    }
+}
+
+impl PyDue {
+    fn new(py: Python<'_>, robot: &Robot, due: Due) -> PyResult<Self> {
+        let fields = match sdk::due_fields(robot, &due).map_err(SessionException::new_err)? {
+            Some(fields) => {
+                let d = PyDict::new(py);
+                for (name, tensor) in fields {
+                    d.set_item(name, tensor_to_py(py, tensor)?)?;
+                }
+                Some(d.unbind())
+            }
+            None => None,
+        };
+        let based_on = sdk::due_based_on(robot, &due);
+        let Due {
+            path,
+            mode,
+            action,
+            safe,
+            handover,
+        } = due;
+        let chunk = action.as_ref().map(|a| &a.chunk);
+        Ok(Self {
+            mode: sdk::mode_name(mode),
+            fields,
+            safe: safe.map(|s| s.to_string()),
+            handover: handover.map(|h| (h.group, h.from, h.to)),
+            lease_token: chunk.map(|c| c.lease_token.0),
+            chunk_seq: chunk.map(|c| c.seq),
+            index: action.as_ref().map(|a| a.index),
+            received_ns: chunk.map(|c| c.receive_ns),
+            slot_ns: action.as_ref().map(|a| a.slot_ns),
+            based_on,
+            path,
+        })
+    }
+}
+
+/// A policy start: each input as `predict` receives it, and its snapshot.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Observation", frozen)]
+pub struct PyObservation {
+    values: Py<PyDict>,
+    meta: Snapshot,
+    /// The session time the snapshot was taken at.
+    #[pyo3(get)]
+    time_ns: i64,
+}
+
+impl PyObservation {
+    fn new(py: Python<'_>, observation: Observation, time_ns: i64) -> PyResult<Self> {
+        let values = PyDict::new(py);
+        for (entry, value) in observation.values {
+            values.set_item(entry, value_to_py(py, value)?)?;
+        }
+        Ok(Self {
+            values: values.unbind(),
+            meta: observation.meta,
+            time_ns,
+        })
+    }
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyObservation {
+    /// Inputs by entry: a `Tensor`, a dict of them, or a `str`.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn values(&self, py: Python<'_>) -> Py<PyDict> {
+        self.values.clone_ref(py)
+    }
+
+    /// Each input's conservative age in ns, by entry (`None`: blank, or no
+    /// clock mapping).
+    #[getter]
+    fn ages(&self) -> BTreeMap<String, Option<i64>> {
+        self.meta
+            .inputs
+            .iter()
+            .map(|i| (i.entry.clone(), i.age_ns))
+            .collect()
+    }
+
+    /// Inputs delivered stale under `allow: hold`.
+    #[getter]
+    fn stale(&self) -> Vec<String> {
+        self.meta
+            .inputs
+            .iter()
+            .filter(|i| i.stale)
+            .map(|i| i.entry.clone())
+            .collect()
+    }
+
+    /// Window slots padded by `allow: warmup`, by entry.
+    #[getter]
+    fn padded(&self) -> BTreeMap<String, u32> {
+        self.meta
+            .inputs
+            .iter()
+            .filter(|i| i.padded > 0)
+            .map(|i| (i.entry.clone(), i.padded))
+            .collect()
+    }
+
+    /// Inputs bound to a constant (`allow: blank`).
+    #[getter]
+    fn blank(&self) -> Vec<String> {
+        self.meta
+            .inputs
+            .iter()
+            .filter(|i| i.blank)
+            .map(|i| i.entry.clone())
+            .collect()
+    }
+
+    /// The newest capture minus the oldest, across inputs.
+    #[getter]
+    fn skew_ns(&self) -> i64 {
+        self.meta.skew_ns
+    }
+
+    /// Each input's seq range delivered, by entry: `(seq_first,
+    /// seq_last)`, `None` when blank.
+    #[getter]
+    fn seqs(&self) -> BTreeMap<String, Option<(u64, u64)>> {
+        self.meta
+            .inputs
+            .iter()
+            .map(|i| {
+                let range = i.samples.first().zip(i.samples.last());
+                (i.entry.clone(), range.map(|(a, b)| (a.seq, b.seq)))
+            })
+            .collect()
+    }
+
+    /// Per stream, the seq range used: `(stream id, seq_first, seq_last)`.
+    #[getter]
+    fn based_on(&self) -> Vec<(u32, u64, u64)> {
+        self.meta
+            .based_on
+            .iter()
+            .map(|r| (r.channel.0, r.seq_first, r.seq_last))
+            .collect()
+    }
+}
+
+/// `predict`, called from the run loop, and `on_step` after each start.
+struct PyPredictor<'a> {
+    predict: &'a Py<PyAny>,
+    on_step: Option<&'a Py<PyAny>>,
+}
+
+impl Predictor for PyPredictor<'_> {
+    type Error = PyErr;
+
+    fn predict(
+        &mut self,
+        observation: Observation,
+        snapshot_ns: i64,
+    ) -> Result<Vec<(String, Value)>, PyErr> {
+        Python::attach(|py| {
+            let observation = Py::new(py, PyObservation::new(py, observation, snapshot_ns)?)?;
+            let output = self.predict.call1(py, (observation,))?;
+            values_from_py(output.bind(py))
+        })
+    }
+
+    fn idle(&mut self) -> Result<(), PyErr> {
+        check_signals()
+    }
+
+    fn step(&mut self, step: &Step) -> Result<(), PyErr> {
+        let Some(on_step) = self.on_step else {
+            return Ok(());
+        };
+        Python::attach(|py| {
+            let d = PyDict::new(py);
+            d.set_item("shadow", step.shadow)?;
+            d.set_item("time_ns", step.snapshot_ns)?;
+            let (actions, parts, seqs) = (PyDict::new(py), PyDict::new(py), PyDict::new(py));
+            for action in &step.actions {
+                let value = action
+                    .actions()
+                    .map(|value| value_to_py(py, value))
+                    .transpose()?;
+                actions.set_item(&action.entry, value)?;
+                parts.set_item(&action.entry, action.part.as_deref())?;
+                seqs.set_item(&action.entry, action.seq)?;
+            }
+            d.set_item("actions", actions)?;
+            d.set_item("parts", parts)?;
+            d.set_item("seqs", seqs)?;
+            on_step.call1(py, (d,)).map(drop)
+        })
+    }
+}
+
+/// What a policy is bound through: the controller of wall-clock robots,
+/// or one lockstep robot's exchange.
+#[derive(Clone)]
+enum Driving {
+    Wall(Arc<Controller>),
+    Lockstep(Arc<LockstepPolicy>),
+}
+
+/// A policy bound to a robot: inputs, leases, chunks and the run loop, on
+/// the robot's clock.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Controller", frozen)]
+pub struct PyController {
+    name: String,
+    controller: Mutex<Option<Driving>>,
+    /// The parts it publishes (annotations), when it declared any.
+    published: Option<Arc<rlmesh_session::edge::Published>>,
+    session: EmbeddedHost,
+}
+
+impl PyController {
+    fn bound(&self) -> PyResult<Driving> {
+        self.controller
+            .lock()
+            .ok()
+            .and_then(|c| c.clone())
+            .ok_or_else(|| SessionException::new_err(format!("policy {} is closed", self.name)))
+    }
+
+    /// The wall clock's controller: a verb only it has (leases, sends,
+    /// health) is refused for a lockstep robot.
+    fn controller(&self) -> PyResult<Arc<Controller>> {
+        match self.bound()? {
+            Driving::Wall(controller) => Ok(controller),
+            Driving::Lockstep(policy) => Err(SessionException::new_err(format!(
+                "policy {} drives robot {}, which runs in lockstep: this call is for \
+                 wall-clock robots (run() steps a lockstep robot, its lease held for it)",
+                self.name,
+                policy.robot()
+            ))),
+        }
+    }
+
+    fn binding(&self) -> PyResult<Arc<rlmesh_session::spec::bind::Binding>> {
+        Ok(match self.bound()? {
+            Driving::Wall(controller) => controller.binding(),
+            Driving::Lockstep(policy) => policy.binding(),
+        })
+    }
+}
+
+fn lockstep_bind_err(err: GymError) -> PyErr {
+    match err {
+        GymError::Map(why) => Python::attach(|py| {
+            let err = BindingRefused::new_err(why);
+            match err
+                .value(py)
+                .setattr("problems", Vec::<(String, String, String)>::new())
+            {
+                Ok(()) => err,
+                Err(set) => set,
+            }
+        }),
+        other => lockstep_err(other),
+    }
+}
+
+fn lockstep_err(err: GymError) -> PyErr {
+    match err {
+        GymError::Session(err) => session_err(err),
+        GymError::Malformed(why) | GymError::Value(why) => PyValueError::new_err(why),
+        GymError::Timeout(_) => PyTimeoutError::new_err(err.to_string()),
+        other => SessionException::new_err(other.to_string()),
+    }
+}
+
+fn realtime_bind_err(err: realtime::BindError) -> PyErr {
+    match err {
+        realtime::BindError::Policy(err) => bind_policy_err(err),
+        realtime::BindError::Lockstep(err) => lockstep_bind_err(err),
+    }
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyController {
+    /// Attaches as `name` at `priority`, waits for `robot`'s parts, binds
+    /// `policy_json` (the policy map) with the run-time options, and
+    /// declares the binding. With `publishes_json` (an authored map of
+    /// parts, none commandable) it also declares those parts under its own
+    /// name, to publish annotations. Raises `BindingRefused` with the
+    /// binder's refuse-and-explain text. `timeout_s` bounds the join and the
+    /// bind; `wait_timeout_s` the later `acquire` and hand-back waits
+    /// (`None`: no limit).
+    #[new]
+    #[pyo3(signature = (
+        address, name, policy_json, robot, *, priority="model", under=None,
+        at=BTreeMap::new(), positional=Vec::new(), allow=Vec::new(),
+        captures=BTreeMap::new(), timeout_s=Some(10.0), wait_timeout_s=Some(10.0), publishes_json=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        address: &str,
+        name: &str,
+        policy_json: &str,
+        robot: Option<&str>,
+        priority: &str,
+        under: Option<&str>,
+        at: BTreeMap<String, String>,
+        positional: Vec<String>,
+        allow: Vec<String>,
+        captures: BTreeMap<String, String>,
+        timeout_s: Option<f64>,
+        wait_timeout_s: Option<f64>,
+        publishes_json: Option<&str>,
+    ) -> PyResult<Self> {
+        let session = place(py, address, LEASE_GRACE, false)?;
+        let address = session.address().clone();
+        let wait = limit(timeout_s)?;
+        let later = limit(wait_timeout_s)?;
+        let class = self::priority(priority)?;
+        let options = BindOptions {
+            name,
+            robot,
+            under,
+            at: at.into_iter().collect(),
+            positional: &positional,
+            allow: &allow,
+            captures: captures.into_iter().collect(),
+        }
+        .run_options()
+        .map_err(|why| BindingRefused::new_err(format!("binding refused: {why}")))?;
+        let policy = Policy::parse(policy_json)
+            .map_err(|why| BindingRefused::new_err(format!("binding refused: {name}: {why}")))?;
+        let (bound, published) = block_on(py, async move {
+            let Some(publishes) = publishes_json else {
+                let bound = realtime::bind(&address, name, &policy, &options, class, wait)
+                    .await
+                    .map_err(realtime_bind_err)?;
+                return Ok((bound, None));
+            };
+            match sdk::bind_built_policy(
+                &address,
+                name,
+                &policy,
+                Some(publishes),
+                &options,
+                class,
+                wait,
+            )
+            .await
+            {
+                Ok((controller, published)) => {
+                    Ok((BoundPolicy::Wall(controller), published.map(Arc::new)))
+                }
+                // Annotations ride the wall clock's session streams.
+                Err(BindPolicyError::Controller(ControllerError::Lockstep(robot))) => {
+                    Err(BindingRefused::new_err(format!(
+                        "binding refused: robot {robot} runs in lockstep, and a policy that \
+                         publishes (publishes=) runs on the wall clock only"
+                    )))
+                }
+                Err(err) => Err(bind_policy_err(err)),
+            }
+        })?;
+        let bound = match bound {
+            BoundPolicy::Wall(mut controller) => {
+                controller.set_wait_timeout(later);
+                Driving::Wall(Arc::new(controller))
+            }
+            BoundPolicy::Lockstep(policy) => Driving::Lockstep(Arc::new(policy)),
+        };
+        Ok(Self {
+            name: name.to_string(),
+            controller: Mutex::new(Some(bound)),
+            published,
+            session,
+        })
+    }
+
+    /// The parts this policy publishes, as the host normalised them, in
+    /// authored order (none without `publishes_json`).
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn published_parts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let parts = self
+            .published
+            .iter()
+            .flat_map(|p| p.parts())
+            .map(|p| part_dict(py, p))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, parts)
+    }
+
+    /// Publishes one sample of one of this policy's own parts from its
+    /// fields in declaration order (C-contiguous bytes-likes; a `str` for
+    /// text), captured at `capture_ns` (`time.monotonic_ns()`; now by
+    /// default). Returns the sample's seq, or `None` when coalesced.
+    #[pyo3(signature = (path, fields, capture_ns=None))]
+    fn publish(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        #[gen_stub(override_type(
+            type_repr = "collections.abc.Sequence[builtins.str | builtins.bytes | memoryview]",
+            imports = ("collections.abc", "builtins")
+        ))]
+        fields: Vec<Bound<'_, PyAny>>,
+        capture_ns: Option<i64>,
+    ) -> PyResult<Option<u64>> {
+        let published = self.published.clone().ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "policy {} publishes nothing: pass publishes= to Policy",
+                self.name
+            ))
+        })?;
+        let owned = field_bytes(py, path, &fields)?;
+        let controller = self.controller()?;
+        let capture = capture_ns.unwrap_or_else(|| controller.participant().clock().now_ns());
+        py.detach(move || sdk::publish(&published, path, capture, owned))
+            .map_err(session_err)
+    }
+
+    /// The policy's participant id.
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The bound robot's clock: `wall`, or `lockstep` (one robot that
+    /// declared it).
+    #[getter]
+    fn clock(&self) -> PyResult<&'static str> {
+        Ok(match self.bound()? {
+            Driving::Wall(_) => "wall",
+            Driving::Lockstep(_) => "lockstep",
+        })
+    }
+
+    /// The binding table, as the cockpit shows it.
+    #[getter]
+    fn table(&self) -> PyResult<String> {
+        Ok(self.binding()?.table())
+    }
+
+    /// The binding table as canonical JSON (what the fingerprint is over).
+    #[getter]
+    fn table_json(&self) -> PyResult<String> {
+        Ok(self.binding()?.table_text())
+    }
+
+    /// The binding fingerprint, 16 hex digits.
+    #[getter]
+    fn fingerprint(&self) -> PyResult<String> {
+        Ok(self.binding()?.fingerprint.to_string())
+    }
+
+    /// Warnings the binder accepted the binding with.
+    #[getter]
+    fn warnings(&self) -> PyResult<Vec<String>> {
+        Ok(self.binding()?.warnings.clone())
+    }
+
+    /// The replan rate R.
+    #[getter]
+    fn replan_hz(&self) -> PyResult<f64> {
+        Ok(self.binding()?.replan_hz)
+    }
+
+    /// Each bound action: `(entry, part path or None, chunk)`.
+    fn actions(&self) -> PyResult<Vec<(String, Option<String>, u32)>> {
+        Ok(self
+            .binding()?
+            .actions
+            .iter()
+            .map(|a| {
+                (
+                    a.entry.clone(),
+                    a.part.as_ref().map(|p| p.path.to_string()),
+                    a.chunk,
+                )
+            })
+            .collect())
+    }
+
+    /// A policy start now. Raises `StartSkipped` when an input is missing,
+    /// stale (without `allow: hold`) or has a window gap.
+    fn observe(&self, py: Python<'_>) -> PyResult<PyObservation> {
+        let controller = self.controller()?;
+        let (observation, at) = py.detach(|| controller.observe()).map_err(observe_err)?;
+        PyObservation::new(py, observation, at)
+    }
+
+    /// Sends one chunk per action entry, computed from `observation`:
+    /// `values` maps each action to `(dtype, shape, bytes)` or a dict of
+    /// them, `[chunk, ...]`. Returns each entry's chunk seq, or `None`
+    /// without the lease (or for a dropped entry).
+    fn send(
+        &self,
+        py: Python<'_>,
+        #[gen_stub(override_type(type_repr = "dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+        values: &Bound<'_, PyAny>,
+        observation: &PyObservation,
+    ) -> PyResult<BTreeMap<String, Option<u64>>> {
+        let controller = self.controller()?;
+        let values = values_from_py(values)?;
+        let based_on = observation.meta.based_on.clone();
+        let at = observation.time_ns;
+        let sent = py
+            .detach(|| controller.send(&values, &based_on, at))
+            .map_err(send_err)?;
+        Ok(sent
+            .into_iter()
+            .map(|(entry, outcome)| {
+                let seq = match outcome {
+                    Sent::Seq(seq) => Some(seq),
+                    Sent::NoLease | Sent::Dropped => None,
+                };
+                (entry, seq)
+            })
+            .collect())
+    }
+
+    /// Takes the binding's leases now, preempting a lower class; from then
+    /// on they are kept. Returns `(robot:path, token)` per part. Raises
+    /// `SessionRefused` (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) when
+    /// they cannot be granted.
+    fn acquire(&self, py: Python<'_>) -> PyResult<Vec<(String, u64)>> {
+        let controller = self.controller()?;
+        let leases = block_on(py, {
+            let controller = controller.clone();
+            async move { controller.acquire().await.map_err(session_err) }
+        })?;
+        Ok(leases
+            .iter()
+            .map(|l| {
+                let path = controller
+                    .participant()
+                    .part_by_id(l.channel)
+                    .map_or_else(|_| l.channel.to_string(), |p| p.qualified());
+                (path, l.token.0)
+            })
+            .collect())
+    }
+
+    /// Gives the leases back; they are not re-requested until `acquire` or
+    /// `run`. With `to` (a class: `model`), hands them back to the policy
+    /// of that class they took the parts from, which resumes them, and
+    /// waits for it to hold them again: returns one dict per policy, with
+    /// `to`, `parts` (`robot:path`) and `taken`. Raises `SessionRefused`
+    /// when they cannot be handed back, with nothing released.
+    #[pyo3(signature = (to=None))]
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]] | None", imports = ("builtins", "typing")))]
+    fn release<'py>(
+        &self,
+        py: Python<'py>,
+        to: Option<&str>,
+    ) -> PyResult<Option<Bound<'py, PyList>>> {
+        let controller = self.controller()?;
+        let Some(to) = to else {
+            block_on(py, async move {
+                controller.release().await.map_err(session_err)
+            })?;
+            return Ok(None);
+        };
+        let class = self::priority(to)?;
+        let backs = block_on(py, async move {
+            controller.release_to(class).await.map_err(session_err)
+        })?;
+        let list = PyList::empty(py);
+        for back in backs {
+            let d = PyDict::new(py);
+            d.set_item("to", back.to.as_str())?;
+            d.set_item("parts", back.parts)?;
+            d.set_item("taken", back.taken)?;
+            list.append(d)?;
+        }
+        Ok(Some(list))
+    }
+
+    /// Every robot held until re-armed by name, as dicts with `robot`,
+    /// `reason`, `detail`, `at_ns` (session time) and `message`.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn held<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        match self.bound()? {
+            Driving::Wall(controller) => {
+                held_list(py, controller.participant().authority().as_ref())
+            }
+            Driving::Lockstep(_) => Ok(PyList::empty(py)),
+        }
+    }
+
+    /// Whether this policy holds every lease its binding commands (a
+    /// lockstep robot's, always: it is taken at bind).
+    fn holds(&self) -> PyResult<bool> {
+        Ok(match self.bound()? {
+            Driving::Wall(controller) => controller.holds(),
+            Driving::Lockstep(_) => true,
+        })
+    }
+
+    /// Runs the policy on its robot's clock, on this thread.
+    ///
+    /// Wall clock: the loop until `stop()`, `duration_s` or a failure,
+    /// calling `predict(observation)` at the replan rate with one inference
+    /// in flight. `mode` is `command`, or `shadow` to predict without a
+    /// lease and send nothing until it holds one. `resume` is `manual` (the
+    /// default): a part a higher class took stays parked until `resume()`,
+    /// or `auto`: it is asked for again once free. If the robot or the host
+    /// is lost, it raises `SessionLost`.
+    ///
+    /// Lockstep: `episodes` episodes (default 1), each from a reset seeded
+    /// from `seed` as a model run seeds it, one `predict` per chunk, until
+    /// each ends or `stop()`. `duration_s`, `mode="shadow"` and `resume`
+    /// raise `ValueError` here, as `episodes` and `seed` do on the wall
+    /// clock.
+    ///
+    /// `on_step(step)` gets each completed start as a dict (`shadow`,
+    /// `time_ns`, and per action entry its `actions` as the edge receives
+    /// them, `parts` and chunk `seqs`). If `predict` or `on_step` raises,
+    /// the leases are released and the exception propagates.
+    #[pyo3(signature = (
+        predict, duration_s=None, mode="command", on_step=None, resume=None, episodes=None,
+        seed=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &self,
+        py: Python<'_>,
+        #[gen_stub(override_type(
+            type_repr = "collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]]",
+            imports = ("collections.abc", "builtins", "typing")
+        ))]
+        predict: Py<PyAny>,
+        duration_s: Option<f64>,
+        mode: &str,
+        #[gen_stub(override_type(
+            type_repr = "collections.abc.Callable[[dict[builtins.str, typing.Any]], None] | None",
+            imports = ("collections.abc", "builtins", "typing")
+        ))]
+        on_step: Option<Py<PyAny>>,
+        resume: Option<&str>,
+        episodes: Option<u64>,
+        seed: Option<i64>,
+    ) -> PyResult<()> {
+        let bound = self.bound()?;
+        let mode = RunMode::from_name(mode).ok_or_else(|| {
+            PyValueError::new_err(format!("mode {mode:?}: \"command\" or \"shadow\""))
+        })?;
+        let resume = resume
+            .map(|name| {
+                Resume::from_name(name).ok_or_else(|| {
+                    PyValueError::new_err(format!("resume {name:?}: \"manual\" or \"auto\""))
+                })
+            })
+            .transpose()?;
+        let settings = RunSettings {
+            duration: duration_s.map(timeout).transpose()?,
+            mode,
+            resume,
+            episodes,
+            seed,
+        };
+        let clock = match &bound {
+            Driving::Wall(_) => RobotClock::Wall,
+            Driving::Lockstep(_) => RobotClock::Lockstep,
+        };
+        settings.check(clock).map_err(PyValueError::new_err)?;
+        let mut predictor = PyPredictor {
+            predict: &predict,
+            on_step: on_step.as_ref(),
+        };
+        let controller = match bound {
+            Driving::Wall(controller) => controller,
+            Driving::Lockstep(policy) => {
+                return match py.detach(|| policy.run(&mut predictor, &settings)) {
+                    Ok(_) => Ok(()),
+                    Err(LockstepRunError::Predict(err)) => Err(err),
+                    Err(LockstepRunError::Settings(why)) => Err(PyValueError::new_err(why)),
+                    Err(LockstepRunError::Robot(err)) => Err(lockstep_err(err)),
+                };
+            }
+        };
+        let result = py.detach(|| controller.run(&mut predictor, settings.wall()));
+        match result {
+            Ok(()) => Ok(()),
+            Err(RunError::Predict(err)) => Err(err),
+            Err(RunError::Send(err)) => Err(send_err(err)),
+            Err(err @ RunError::Lost(_)) => Err(lost_err(&err)),
+            Err(RunError::Rebind(why)) => Err(Python::attach(|py| {
+                let err = BindingRefused::new_err(why);
+                match err
+                    .value(py)
+                    .setattr("problems", Vec::<(String, String, String)>::new())
+                {
+                    Ok(()) => err,
+                    Err(set) => set,
+                }
+            })),
+        }
+    }
+
+    /// Asks a `run` in progress to return.
+    fn stop(&self) -> PyResult<()> {
+        match self.bound()? {
+            Driving::Wall(controller) => controller.stop(),
+            Driving::Lockstep(policy) => policy.stop(),
+        }
+        Ok(())
+    }
+
+    /// Hands the parts a higher class took back to this policy: they are
+    /// asked for again (once their holder lets go). Returns them,
+    /// `robot:path`.
+    fn resume(&self) -> PyResult<Vec<String>> {
+        Ok(self.controller()?.resume())
+    }
+
+    /// The session's live link health as the host last published it (once
+    /// a second); with `wait`, the next publication. The first call
+    /// subscribes and waits for one. See `Policy.health` for the fields.
+    #[pyo3(signature = (wait=false, timeout_s=Some(10.0)))]
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn health<'py>(
+        &self,
+        py: Python<'py>,
+        wait: bool,
+        timeout_s: Option<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let controller = self.controller()?;
+        health_dict(py, controller.participant(), wait, timeout_s)
+    }
+
+    /// The run's counters, with its `clock`. Wall: starts, skips and
+    /// completions, the input the starts are phased after (`aligned_to`,
+    /// `phase_offset_ms`), and per input bound to a part its samples
+    /// `received` and `lost` (`inputs`). Lockstep: starts, chunks and one
+    /// dict per episode (`return`, `steps`, `terminated`, `truncated`).
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let controller = match self.bound()? {
+            Driving::Wall(controller) => controller,
+            Driving::Lockstep(policy) => return lockstep_stats(py, &policy.stats()),
+        };
+        let stats = controller.stats();
+        let d = PyDict::new(py);
+        d.set_item("clock", "wall")?;
+        d.set_item("aligned_to", controller.aligned_input())?;
+        d.set_item(
+            "phase_offset_ms",
+            controller.phase_offset().as_secs_f64() * 1e3,
+        )?;
+        d.set_item("starts", stats.starts)?;
+        d.set_item("completions", stats.completions)?;
+        let skipped = PyDict::new(py);
+        for reason in SkipReason::ALL {
+            skipped.set_item(reason.name(), stats.skipped(reason))?;
+        }
+        d.set_item("skipped", skipped)?;
+        d.set_item("chunks_sent", stats.chunks_sent)?;
+        d.set_item("shadow_predictions", stats.shadow_predictions)?;
+        d.set_item("send_errors", stats.send_errors)?;
+        let ms = |d: Option<Duration>| d.map(|d| d.as_secs_f64() * 1e3);
+        d.set_item("latency_p50_ms", ms(stats.latency_p50))?;
+        d.set_item("latency_p99_ms", ms(stats.latency_p99))?;
+        d.set_item("latency_max_ms", ms(stats.latency_max))?;
+        d.set_item("drifting", stats.drifting)?;
+        let refused: Vec<String> = controller
+            .clock_refusals()
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect();
+        d.set_item("clock_refused", refused)?;
+        d.set_item("waiting", controller.waiting())?;
+        let parked: Vec<String> = controller.parked().into_iter().map(|p| p.part).collect();
+        d.set_item("parked", parked)?;
+        let inputs = PyList::empty(py);
+        for input in &stats.inputs {
+            let row = PyDict::new(py);
+            row.set_item("entry", &input.entry)?;
+            row.set_item("part", &input.part)?;
+            row.set_item("received", input.received)?;
+            row.set_item("lost", input.lost)?;
+            inputs.append(row)?;
+        }
+        d.set_item("inputs", inputs)?;
+        Ok(d)
+    }
+
+    /// Takes the events reported so far (`rate_drift`, inference pending),
+    /// oldest first, as dicts with a `kind` and a `message`.
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn events<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let events = match self.bound()? {
+            Driving::Wall(controller) => controller.drain_events(),
+            // A lockstep run waits on nothing and nobody takes its lease.
+            Driving::Lockstep(_) => Vec::new(),
+        };
+        let list = PyList::empty(py);
+        for event in events {
+            let d = PyDict::new(py);
+            d.set_item("message", event.to_string())?;
+            match event {
+                RunEvent::RateDrift {
+                    measured_hz,
+                    expected_hz,
+                    cause,
+                    drifting,
+                } => {
+                    d.set_item("kind", "rate_drift")?;
+                    d.set_item("measured_hz", measured_hz)?;
+                    d.set_item("expected_hz", expected_hz)?;
+                    d.set_item("cause", cause)?;
+                    d.set_item("drifting", drifting)?;
+                }
+                RunEvent::InferencePending { pending } => {
+                    d.set_item("kind", "inference_pending")?;
+                    d.set_item("pending_s", pending.as_secs_f64())?;
+                }
+                RunEvent::RobotHeld { .. } => d.set_item("kind", "robot_held")?,
+                RunEvent::ClockRefused { .. } => d.set_item("kind", "clock_refused")?,
+                RunEvent::WaitingToArm { .. } => d.set_item("kind", "waiting_to_arm")?,
+                RunEvent::Shadowing { .. } => d.set_item("kind", "shadowing")?,
+                RunEvent::Commanding { .. } => d.set_item("kind", "commanding")?,
+                RunEvent::InputLost { part, .. } => {
+                    d.set_item("kind", "input_lost")?;
+                    d.set_item("part", part)?;
+                }
+                RunEvent::Rebound { parts, .. } => {
+                    d.set_item("kind", "rebound")?;
+                    d.set_item("parts", parts)?;
+                }
+                RunEvent::Parked { part, by, .. } => {
+                    d.set_item("kind", "parked")?;
+                    d.set_item("part", part)?;
+                    d.set_item("by", by)?;
+                }
+                RunEvent::HandedBack { part, by, .. } => {
+                    d.set_item("kind", "handed_back")?;
+                    d.set_item("part", part)?;
+                    d.set_item("by", by)?;
+                }
+            }
+            list.append(d)?;
+        }
+        Ok(list)
+    }
+
+    /// Gives the leases back and detaches.
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        let taken = self.controller.lock().map(|mut c| c.take()).unwrap_or(None);
+        block_on(py, async move {
+            match taken {
+                Some(Driving::Wall(controller)) => {
+                    sdk::close_policy(controller).await.map_err(session_err)?;
+                }
+                Some(Driving::Lockstep(policy)) => {
+                    policy.stop();
+                    policy.close().await;
+                }
+                None => {}
+            }
+            self.session.close().await.map_err(session_err)
+        })
+    }
+}
+
+/// A lockstep run's counters: what `stats()` returns for a lockstep robot.
+fn lockstep_stats<'py>(py: Python<'py>, stats: &LockstepStats) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("clock", "lockstep")?;
+    d.set_item("starts", stats.starts)?;
+    d.set_item("chunks_sent", stats.chunks_sent)?;
+    let episodes = PyList::empty(py);
+    for episode in &stats.episodes {
+        let e = PyDict::new(py);
+        e.set_item("return", episode.reward)?;
+        e.set_item("steps", episode.steps)?;
+        e.set_item("terminated", episode.terminated)?;
+        e.set_item("truncated", episode.truncated)?;
+        episodes.append(e)?;
+    }
+    d.set_item("episodes", episodes)?;
+    Ok(d)
+}
+
+/// A fixed-rate loop timer on `time.monotonic_ns()`: `sleep()` waits for
+/// the next period (coarse sleep, then a short spin) with the GIL
+/// released. A tick more than a period late skips the missed ones rather
+/// than bursting.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Rate", frozen)]
+pub struct PyRate {
+    rate: sdk::Rate,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[pymethods]
+impl PyRate {
+    #[new]
+    fn new(hz: f64) -> PyResult<Self> {
+        Ok(Self {
+            rate: sdk::Rate::new(hz).map_err(PyValueError::new_err)?,
+        })
+    }
+
+    /// Waits until the next period starts; returns how late this call was
+    /// for it, in ns.
+    fn sleep(&self, py: Python<'_>) -> i64 {
+        let clock = SystemMonotonicClock;
+        let (next, late) = self.rate.next(clock.now_ns());
+        py.detach(|| sleep_until(|| clock.now_ns(), next));
+        late
+    }
+
+    /// Periods skipped because a call came more than a period late.
+    #[getter]
+    fn missed(&self) -> u64 {
+        self.rate.missed()
+    }
+}
+
+fn record_err(err: RecordError) -> PyErr {
+    match err {
+        RecordError::Session(err) => session_err(err),
+        other => SessionException::new_err(other.to_string()),
+    }
+}
+
+/// An MCAP recording of a session, as an observer participant.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Recorder", frozen)]
+pub struct PyRecorder {
+    path: String,
+    recorder: Mutex<Option<Recorder>>,
+    session: EmbeddedHost,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyRecorder {
+    /// Attaches as observer `name` and starts recording every stream,
+    /// chunk and authority change of the session into a new MCAP file at
+    /// `path`.
+    #[new]
+    #[pyo3(signature = (address, path, name="recorder", timeout_s=10.0))]
+    fn new(
+        py: Python<'_>,
+        address: &str,
+        path: String,
+        name: &str,
+        timeout_s: f64,
+    ) -> PyResult<Self> {
+        let session = place(py, address, LEASE_GRACE, false)?;
+        let address = session.address().clone();
+        let wait = timeout(timeout_s)?;
+        let recorder = block_on(py, async {
+            sdk::start_recorder(&address, &path, name, wait)
+                .await
+                .map_err(record_err)
+        })?;
+        Ok(Self {
+            path,
+            recorder: Mutex::new(Some(recorder)),
+            session,
+        })
+    }
+
+    /// The MCAP file.
+    #[getter]
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Stops recording and finishes the file: `messages`, `channels`,
+    /// `bytes`, `log_time_clamped`. `None` when already closed.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any] | None", imports = ("builtins", "typing")))]
+    fn close<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let taken = self.recorder.lock().map(|mut r| r.take()).unwrap_or(None);
+        let Some(recorder) = taken else {
+            return Ok(None);
+        };
+        let stats = block_on(py, async move {
+            let stats = sdk::finish_recorder(recorder).await.map_err(record_err)?;
+            self.session.close().await.map_err(session_err)?;
+            Ok::<_, PyErr>(stats)
+        })?;
+        let d = PyDict::new(py);
+        d.set_item("path", stats.path.to_string_lossy())?;
+        d.set_item("messages", stats.messages)?;
+        d.set_item("channels", stats.channels)?;
+        d.set_item("bytes", stats.bytes)?;
+        d.set_item("log_time_clamped", stats.log_time_clamped)?;
+        Ok(Some(d))
+    }
+
+    /// Reads a recording back: `messages`, `metadata` (record names),
+    /// `topics` (per topic: `schema`, `channels`, `messages`,
+    /// `first_log_ns`, `last_log_ns`, `log_time_monotonic`,
+    /// `publish_time_monotonic`, `undecodable`) and `leases` (the lease
+    /// timeline: `log_ns`, `part`, `holder`, `priority`, `token`).
+    #[staticmethod]
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn read<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
+        let summary = py
+            .detach(|| rlmesh_session::record::summarize(&path))
+            .map_err(record_err)?;
+        let d = PyDict::new(py);
+        d.set_item("messages", summary.messages)?;
+        d.set_item("metadata", summary.metadata)?;
+        let topics = PyDict::new(py);
+        for t in summary.topics {
+            let row = PyDict::new(py);
+            row.set_item("schema", t.schema)?;
+            row.set_item("channels", t.channels)?;
+            row.set_item("messages", t.messages)?;
+            row.set_item("first_log_ns", t.first_log_ns)?;
+            row.set_item("last_log_ns", t.last_log_ns)?;
+            row.set_item("log_time_monotonic", t.log_time_monotonic)?;
+            row.set_item("publish_time_monotonic", t.publish_time_monotonic)?;
+            row.set_item("undecodable", t.undecodable)?;
+            topics.set_item(t.topic, row)?;
+        }
+        d.set_item("topics", topics)?;
+        let leases = PyList::empty(py);
+        for l in summary.leases {
+            let row = PyDict::new(py);
+            row.set_item("log_ns", l.log_ns)?;
+            row.set_item("part", l.part)?;
+            row.set_item("holder", l.holder)?;
+            row.set_item("priority", l.priority)?;
+            row.set_item("token", l.token)?;
+            leases.append(row)?;
+        }
+        d.set_item("leases", leases)?;
+        Ok(d)
+    }
+
+    /// Every sample of a recording (an MCAP file, or a directory of them)
+    /// split into its declared fields, one at a time (one file's messages
+    /// held, each camera frame decoded as it is taken): `(topic, log_ns,
+    /// capture_ns, fields)`, each field `(name, dtype, shape, bytes)`, in
+    /// log-time order within a file. `capture_ns` is the capture time in
+    /// session time. Topics are `{robot}/{path}` and `{robot}/{path}/_applied`
+    /// (no fields: the edge dispatched nothing); camera frames come as raw
+    /// RGB, or with no bytes under `images=False` (a pass that only needs
+    /// each stream's shape).
+    #[staticmethod]
+    #[pyo3(signature = (path, images = true))]
+    fn samples(path: String, images: bool) -> PyResult<PySamples> {
+        let samples = rlmesh_session::record::samples(&path).map_err(record_err)?;
+        Ok(PySamples {
+            inner: Mutex::new(if images {
+                samples
+            } else {
+                samples.skip_images()
+            }),
+        })
+    }
+}
+
+/// [`PyRecorder::samples`]: a recording's samples, decoded as they are taken.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Samples", frozen)]
+pub struct PySamples {
+    inner: Mutex<rlmesh_session::record::Samples>,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PySamples {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// The next `(topic, log_ns, capture_ns, fields)`.
+    #[gen_stub(override_return_type(type_repr = "tuple[builtins.str, builtins.int, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]", imports = ("builtins",)))]
+    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyTuple>>> {
+        let next = py.detach(|| {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next()
+        });
+        let Some(sample) = next.transpose().map_err(record_err)? else {
+            return Ok(None);
+        };
+        let fields = PyList::empty(py);
+        for f in sample.fields {
+            fields.append((
+                f.name,
+                f.dtype.name(),
+                f.shape,
+                pyo3::types::PyBytes::new(py, &f.bytes),
+            ))?;
+        }
+        Ok(Some(PyTuple::new(
+            py,
+            [
+                sample.topic.into_pyobject(py)?.into_any(),
+                sample.log_ns.into_pyobject(py)?.into_any(),
+                sample.capture_ns.into_pyobject(py)?.into_any(),
+                fields.into_any(),
+            ],
+        )?))
+    }
+}

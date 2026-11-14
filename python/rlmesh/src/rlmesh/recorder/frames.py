@@ -50,7 +50,7 @@ def as_frame(value: object) -> tuple[Any, int, int, int] | None:
 def read_frame(event: StepEvent, role: str) -> tuple[Any, int, int, int] | None:
     """Read one image-observation ``role`` frame, or ``None``.
 
-    Uses ``event.read`` -- the session's own role-addressed reader -- so the frame
+    Uses ``event.read`` -- the run's own role-addressed reader -- so the frame
     comes back in the requested ``hwc`` layout whatever the env stores. Returns ``None``
     when the read fails, the role is absent, or the value is not a 1/3/4-channel image
     -- that frame is skipped (a transient miss never disables the camera).
