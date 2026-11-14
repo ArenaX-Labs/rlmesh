@@ -1,5 +1,5 @@
 # Dependabot keeps the SHA-pinned GitHub Actions and the example container
-# base images current, matching rlmesh-closed. It rewrites the pinned commit
+# base images current. It rewrites the pinned commit
 # SHA and the `# vX.Y.Z` comment together. The cooldown holds a new release
 # back for a week. Rust and Python dependencies and mise tools are bumped by
 # hand (`mise run deps:outdated`).
