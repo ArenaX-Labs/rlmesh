@@ -1488,5 +1488,6 @@ export async function drive(
 ): Promise<RunStats> {
   await using p = new Policy(policy, opts);
   await p.bind(robot, opts);
-  return p.run(predict, opts);
+  // Awaited here: returning the run's promise would close the policy as the block exits, mid-run.
+  return await p.run(predict, opts);
 }

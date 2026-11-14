@@ -197,6 +197,15 @@ test('a Node policy drives a Node robot on loopback', async () => {
   assert.deepEqual(edge.modes.safe, [0, 0], 'a released lease never latches safe');
 });
 
+test('drive binds and runs a policy in one call, closing it when the run ends', async () => {
+  await using ur = await FakeUR10e.start(host);
+  const hold = () => ({ arm: { data: new Float32Array(60).map((_, i) => HOME[i % 6]), shape: [10, 6] }, gripper: { data: new Float64Array(10).fill(0.5), shape: [10, 1] } });
+  const stats = await rlmesh.drive(SINE, 'ur10e', hold, { session: host, name: 'drive', duration: 1 });
+  assert.equal(stats.clock, 'wall');
+  assert.ok(stats.completions > 0 && stats.chunksSent > 0, JSON.stringify(stats));
+  assert.ok(ur.log.some((d) => d.mode === 'driving'), 'the robot played the chunks');
+});
+
 test('the binding table and refusals match the conformance goldens', async () => {
   await using robot = await rlmesh.Robot.connect('ur10e', fixture('robots', 'ur10e'), { session: host });
   await using rtde = await rlmesh.Robot.connect('ur10e_rtde', fixture('robots', 'ur10e_rtde'), { session: host });
