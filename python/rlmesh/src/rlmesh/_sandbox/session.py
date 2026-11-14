@@ -201,15 +201,21 @@ def _answers_v1(address: str) -> bool:
 
 
 def wait_serving(
-    sandbox: SandboxInfo, timeout: float, ready: Callable[[float], None]
+    sandbox: SandboxInfo,
+    timeout: float,
+    ready: Callable[[float], None],
+    *,
+    role: str = "env",
 ) -> None:
     """Wait up to ``timeout`` seconds for the container to serve, or raise.
 
     ``ready(attempt_timeout)`` connects to what it serves, raising a dial
     error until it answers. An image built with rlmesh 0.1 (it answers the
-    v1 wire) is refused naming it, and a dial error against an exited
-    container fails fast with its recent logs; an inspect failure is reported
-    as such instead of being misread as an exit.
+    v1 wire) is refused naming it. Whatever an attempt raised, a container
+    that exited is the cause: the error leads with its exit code and its
+    last log lines (``the env container exited with code 1 during
+    startup``), with the dial it cut short left out. An inspect failure is
+    reported as such instead of being misread as an exit.
     """
     deadline = time.monotonic() + timeout
     short_id = sandbox.container_id[:12]
@@ -223,24 +229,30 @@ def wait_serving(
                 )
             ready(attempt)
             return
-        except _TRANSIENT_DIAL_ERRORS as exc:
-            if _answers_v1(sandbox.address):
+        except Exception as exc:
+            transient = isinstance(exc, _TRANSIENT_DIAL_ERRORS)
+            if transient and _answers_v1(sandbox.address):
                 raise ValueError(
                     f"{source!r} was built with rlmesh 0.1; rebuild it with rlmesh "
                     "0.2: a 0.2 sandbox joins the session its container hosts, and "
                     "this image serves the v1 wire instead"
                 ) from exc
-            running = _container_running(sandbox.container_id)
-            if running is None:
+            try:
+                state = _container_state(sandbox.container_id)
+            except Exception:
+                if not transient:
+                    raise exc from None
+                raise
+            if state is not None and not state.running:
+                raise RuntimeError(
+                    _exited_during_startup(role, source, sandbox.container_id, state)
+                ) from None
+            if not transient:
+                raise
+            if state is None:
                 raise RuntimeError(
                     f"could not inspect sandbox container {short_id} for "
                     f"{source!r} (docker daemon busy?); last dial error: {exc}"
-                ) from exc
-            if not running:
-                raise RuntimeError(
-                    f"sandbox container {short_id} for {source!r} exited before "
-                    f"becoming ready; recent logs:\n"
-                    f"{_container_logs(sandbox.container_id)}"
                 ) from exc
             if time.monotonic() >= deadline:
                 raise RuntimeError(
@@ -249,6 +261,21 @@ def wait_serving(
                     f"{_container_logs(sandbox.container_id)}"
                 ) from exc
             time.sleep(0.1)
+
+
+def _exited_during_startup(
+    role: str, source: str, container_id: str, state: ContainerState
+) -> str:
+    """The error of a container that exited before its session answered."""
+    short_id = container_id[:12]
+    exited = (
+        f"the {role} container exited with code {state.exit_code} during startup"
+        if state.exit_code is not None
+        else f"the {role} container stopped during startup"
+    )
+    logs = _container_logs(container_id)
+    shown = f"its last log lines:\n{logs}" if logs else "it logged nothing"
+    return f"{exited} ({source!r}, container {short_id}); {shown}"
 
 
 def peer_session(sandbox: SandboxInfo) -> str:
@@ -277,24 +304,46 @@ def peer_session(sandbox: SandboxInfo) -> str:
     return f"{ips[0]}:{_base(sandbox.address)[1]}" + (f"#{key}" if key else "")
 
 
-def _container_running(container_id: str) -> bool | None:
-    """Whether the sandbox container is still running, or None if unknowable.
+@dataclass(frozen=True)
+class ContainerState:
+    """A container's run state, as ``docker inspect`` reports it."""
 
-    ``True``/``False`` report the container's actual state; ``None`` means the
-    inspect itself failed (daemon busy/erroring), which callers must surface as
-    "could not inspect" rather than misreporting the container as exited. Any
-    outcome returns promptly, so callers fail fast instead of spinning the
-    whole connect timeout.
+    running: bool
+    #: Its exit code once it stopped (``None`` while it runs).
+    exit_code: int | None
+
+
+def _container_state(container_id: str) -> ContainerState | None:
+    """The container's run state, or ``None`` if unknowable.
+
+    ``None`` means the inspect itself failed (daemon busy/erroring), which
+    callers must surface as "could not inspect" rather than misreporting
+    the container as exited.
     """
-    proc = run_docker(["docker", "inspect", "-f", "{{.State.Running}}", container_id])
+    proc = run_docker(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            "{{.State.Running}} {{.State.ExitCode}}",
+            container_id,
+        ]
+    )
     if proc.returncode != 0:
         return None
-    return proc.stdout.strip() == "true"
+    running, _, code = proc.stdout.strip().partition(" ")
+    if running == "true":
+        return ContainerState(running=True, exit_code=None)
+    try:
+        return ContainerState(running=False, exit_code=int(code))
+    except ValueError:
+        return ContainerState(running=False, exit_code=None)
 
 
 def container_stopped(container_id: str) -> bool:
     """Whether the container is known to have stopped (not when unknowable)."""
-    return _container_running(container_id) is False
+    state = _container_state(container_id)
+    return state is not None and not state.running
 
 
 #: The most log lines an error quotes from a container.

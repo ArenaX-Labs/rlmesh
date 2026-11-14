@@ -22,7 +22,7 @@ def _session_port(monkeypatch: pytest.MonkeyPatch) -> None:
     """Containers publish on 40000 and serve at once."""
     monkeypatch.setattr(session_mod, "_sandbox_session_port", lambda: 40000)
     monkeypatch.setattr(session_mod, "_sandbox_host_identity", lambda: ("secret", "k"))
-    monkeypatch.setattr(model_mod, "wait_serving", lambda *_args: None)
+    monkeypatch.setattr(model_mod, "wait_serving", lambda *_args, **_kwargs: None)
 
 
 class _StartProc:

@@ -175,12 +175,21 @@ def test_a_wrong_key_is_refused_once_a_starting_host_listens(
 
 
 def test_a_container_that_exits_reports_its_own_error(gate_images: GateImages) -> None:
+    """The exit leads, with its code and the container's last log lines: no
+    session timeout comes first, in the text or chained before it."""
     t0 = time.monotonic()
-    with pytest.raises(RuntimeError, match="exited before becoming ready") as failed:
+    with pytest.raises(RuntimeError) as failed:
         rlmesh.SandboxEnv(gate_images.exits)
     waited = time.monotonic() - t0
     TIMINGS["exited container reported"].append(waited)
-    assert EXITS_MARKER in str(failed.value), str(failed.value)
+    text = str(failed.value)
+    assert text.startswith("the env container exited with code 1 during startup ("), (
+        text
+    )
+    assert "its last log lines:\n" in text and EXITS_MARKER in text, text
+    assert len(text.split("its last log lines:\n", 1)[1].splitlines()) <= 40, text
+    assert "timed out" not in text, text
+    assert failed.value.__cause__ is None and failed.value.__suppress_context__
     assert waited < 15.0, f"reported only after {waited:.2f}s"
 
 

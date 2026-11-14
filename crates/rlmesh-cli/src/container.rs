@@ -28,6 +28,8 @@ pub struct RunExtras<'a> {
 pub struct Container {
     id: String,
     image: String,
+    /// The participant it serves as (`env`, `model`).
+    role: String,
     /// The participant address the container serves at, with its host's
     /// key: a credential, so print it only through `redact`.
     pub address: String,
@@ -57,6 +59,7 @@ impl Container {
         Ok(Self {
             id: String::from_utf8_lossy(&output.stdout).trim().to_string(),
             image: image.to_string(),
+            role: name.to_string(),
             address: participant_address(port, key, name)?,
         })
     }
@@ -73,18 +76,18 @@ impl Container {
         let deadline = Instant::now() + timeout;
         let short = &self.id[..self.id.len().min(12)];
         loop {
-            if !self.running() {
-                bail!(
-                    "container {short} for {} exited before serving; recent logs:\n{}",
-                    self.image,
-                    self.logs()
-                );
+            if let Some(code) = self.exited() {
+                bail!("{}", self.exit_report(code));
             }
             let left = deadline.saturating_duration_since(Instant::now());
             let error = match ready(left.min(READY_ATTEMPT)) {
                 Ok(()) => return Ok(()),
                 Err(error) => error,
             };
+            // A container that died during the attempt is its cause.
+            if let Some(code) = self.exited() {
+                bail!("{}", self.exit_report(code));
+            }
             if Instant::now() >= deadline {
                 bail!(
                     "container {short} for {} did not serve within {}s ({error}); recent logs:\n{}",
@@ -97,11 +100,29 @@ impl Container {
         }
     }
 
-    fn running(&self) -> bool {
-        Command::new("docker")
-            .args(["inspect", "-f", "{{.State.Running}}", &self.id])
+    /// The container's exit code once it stopped (`Some(None)`: stopped,
+    /// code unknown), `None` while it runs or when docker cannot say.
+    fn exited(&self) -> Option<Option<i32>> {
+        let output = Command::new("docker")
+            .args([
+                "inspect",
+                "-f",
+                "{{.State.Running}} {{.State.ExitCode}}",
+                &self.id,
+            ])
             .output()
-            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "true")
+            .ok()
+            .filter(|output| output.status.success())?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let (running, code) = text.trim().split_once(' ').unwrap_or((text.trim(), ""));
+        (running != "true").then(|| code.parse().ok())
+    }
+
+    /// The error of a container that exited before it served: its exit
+    /// leads, then its last log lines.
+    fn exit_report(&self, code: Option<i32>) -> String {
+        let short = &self.id[..self.id.len().min(12)];
+        exit_report(&self.role, &self.image, short, code, &self.logs())
     }
 
     /// The last lines the container wrote, any secret in them (its address
@@ -128,6 +149,21 @@ impl Drop for Container {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+}
+
+/// The error of `role`'s container (`short` id, running `image`) that
+/// exited with `code` before it served, quoting its last log lines.
+fn exit_report(role: &str, image: &str, short: &str, code: Option<i32>, logs: &str) -> String {
+    let exited = match code {
+        Some(code) => format!("the {role} container exited with code {code} during startup"),
+        None => format!("the {role} container stopped during startup"),
+    };
+    let logs = logs.trim_end();
+    if logs.is_empty() {
+        format!("{exited} ({image}, container {short}); it logged nothing")
+    } else {
+        format!("{exited} ({image}, container {short}); its last log lines:\n{logs}")
     }
 }
 
@@ -203,6 +239,25 @@ mod tests {
     use rlmesh_session::address::Address;
 
     use super::*;
+
+    #[test]
+    fn an_exit_during_startup_leads_its_report() {
+        assert_eq!(
+            exit_report(
+                "env",
+                "sapien:gate",
+                "abc123",
+                Some(1),
+                "libvulkan missing\n"
+            ),
+            "the env container exited with code 1 during startup (sapien:gate, container \
+             abc123); its last log lines:\nlibvulkan missing"
+        );
+        assert_eq!(
+            exit_report("model", "m:1", "abc123", None, ""),
+            "the model container stopped during startup (m:1, container abc123); it logged nothing"
+        );
+    }
 
     #[test]
     fn run_passes_the_identity_by_name_and_dials_its_key() {

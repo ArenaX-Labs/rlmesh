@@ -15,6 +15,8 @@ use crate::sandbox::{EffectiveSandboxSpec, EnvironmentSourceRef, hf, shell_quote
 const ENV_NAME: &str = "env";
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTAINER_LOG_TAIL_BYTES: usize = 64 * 1024;
+/// The most log lines the report of a container that exited quotes.
+const CONTAINER_LOG_TAIL_LINES: usize = 40;
 
 /// Label stamped on every container rlmesh starts.
 const OWNER_LABEL: &str = "rlmesh.sandbox=1";
@@ -258,12 +260,29 @@ fn startup_failure_report(
     cause: &anyhow::Error,
     hint: Option<&str>,
 ) -> anyhow::Error {
-    let state = match inspect_container_state(container_id) {
+    let inspected = inspect_container_state(container_id);
+    let logs = container_logs(container_id);
+    // A container that exited is the cause, whatever the wait last saw.
+    if let Ok(Some(state)) = &inspected
+        && state.is_terminal()
+    {
+        let logs = logs
+            .map(|logs| last_lines(&logs, CONTAINER_LOG_TAIL_LINES))
+            .unwrap_or_else(|err| format!("<unavailable: {err}>"));
+        return anyhow!(format_exit_report(
+            state,
+            container_id,
+            container_name,
+            &logs,
+            hint
+        ));
+    }
+    let state = match inspected {
         Ok(Some(state)) => state.summary(),
         Ok(None) => "container state: unavailable (container not found)".to_string(),
         Err(err) => format!("container state: unavailable ({err})"),
     };
-    let logs = match container_logs(container_id) {
+    let logs = match logs {
         Ok(logs) if logs.trim().is_empty() => "container logs: <empty>".to_string(),
         Ok(logs) => format!(
             "container logs:\n{}",
@@ -280,6 +299,49 @@ fn startup_failure_report(
         &logs,
         hint,
     ))
+}
+
+/// The report of an env container that exited before its session answered:
+/// that exit leads, then its last log lines, not the wait it cut short.
+fn format_exit_report(
+    state: &ContainerState,
+    container_id: &str,
+    container_name: &str,
+    logs: &str,
+    hint: Option<&str>,
+) -> String {
+    let exited = match state.exit_code {
+        Some(code) => format!("the env container exited with code {code} during startup"),
+        None => format!(
+            "the env container stopped ({}) during startup",
+            state.status
+        ),
+    };
+    let logs = logs.trim_end();
+    let mut report = if logs.is_empty() {
+        format!("{exited}; it logged nothing")
+    } else {
+        format!("{exited}; its last log lines:\n{logs}")
+    };
+    if !state.error.trim().is_empty() {
+        report.push_str(&format!("\ndocker: {}", state.error.trim()));
+    }
+    report.push_str(&format!(
+        "\ncontainer id: {container_id}\ncontainer name: {container_name}"
+    ));
+    if let Some(hint) = hint {
+        report.push_str("\nhint: ");
+        report.push_str(hint);
+    }
+    report
+}
+
+/// The last `lines` lines of `text`, bounded to [`CONTAINER_LOG_TAIL_BYTES`]
+/// too.
+fn last_lines(text: &str, lines: usize) -> String {
+    let all: Vec<&str> = text.trim_end().lines().collect();
+    let kept = all[all.len().saturating_sub(lines)..].join("\n");
+    tail_text(&kept, CONTAINER_LOG_TAIL_BYTES)
 }
 
 fn container_logs(container_id: &str) -> Result<String> {
@@ -1045,11 +1107,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness, bounded_build_memory,
-        builder_name, confirmed_terminal_summary, current_pid_namespace_id, docker_run_args,
-        format_startup_failure_report, is_docker_size, is_orphan, owner_pid_liveness,
-        parse_container_state, parse_owned_containers, pid_is_alive, render_bootstrap_json,
-        render_dockerfile, resolve_build_memory, shell_quote, tail_text,
+        BootstrapSpec, CONTAINER_LOG_TAIL_LINES, ContainerState, OwnedContainer, OwnerPidLiveness,
+        bounded_build_memory, builder_name, confirmed_terminal_summary, current_pid_namespace_id,
+        docker_run_args, format_exit_report, format_startup_failure_report, is_docker_size,
+        is_orphan, last_lines, owner_pid_liveness, parse_container_state, parse_owned_containers,
+        pid_is_alive, render_bootstrap_json, render_dockerfile, resolve_build_memory, shell_quote,
+        tail_text,
     };
     use crate::sandbox::source::{GymSourceRef, ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::sandbox::{
@@ -1436,6 +1499,31 @@ mod tests {
             Some("pass rlmesh_package=\"local\""),
         );
         assert!(with_hint.contains("hint: pass rlmesh_package=\"local\""));
+    }
+
+    #[test]
+    fn an_exited_container_leads_its_report_with_its_exit() {
+        let state = parse_container_state("exited\n1\n\n").unwrap();
+        let logs: String = (1..=60).map(|i| format!("line {i}\n")).collect();
+        let report = format_exit_report(
+            &state,
+            "abc123",
+            "rlmesh-sandbox-test",
+            &last_lines(&logs, CONTAINER_LOG_TAIL_LINES),
+            None,
+        );
+        assert!(
+            report.starts_with(
+                "the env container exited with code 1 during startup; its last log lines:\nline 21\n"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains("line 60\ncontainer id: abc123\n"),
+            "{report}"
+        );
+        assert!(!report.contains("line 20\n"), "{report}");
+        assert!(!report.contains("timed out"), "{report}");
     }
 
     #[test]

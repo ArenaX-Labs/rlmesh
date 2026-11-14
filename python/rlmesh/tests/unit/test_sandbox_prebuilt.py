@@ -20,7 +20,7 @@ def _session_port(monkeypatch: pytest.MonkeyPatch) -> None:
     """Containers publish on 40000, under keys ``k``, and serve at once."""
     monkeypatch.setattr(sandbox, "_sandbox_session_port", lambda: 40000)
     monkeypatch.setattr(sandbox, "_sandbox_host_identity", lambda: ("secret", "k"))
-    monkeypatch.setattr(_model, "wait_serving", lambda *_args: None)
+    monkeypatch.setattr(_model, "wait_serving", lambda *_args, **_kwargs: None)
 
 
 # --- resolve_source_kind -----------------------------------------------------

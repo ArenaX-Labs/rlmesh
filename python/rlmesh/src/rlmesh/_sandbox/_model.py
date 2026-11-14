@@ -162,6 +162,7 @@ class SandboxModel:
                 info,
                 self._connect_timeout,
                 lambda attempt: model_answers(info.address, attempt),
+                role="model",
             )
         except BaseException:
             # Killed: it never answered, so there is nothing to drain.

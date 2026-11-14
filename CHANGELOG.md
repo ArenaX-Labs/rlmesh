@@ -287,6 +287,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A lockstep robot validates and clamps its commands to its parts' declared limits as on the wall clock, `RemoteEnv`'s action space carries those limits, and `info["clamped"]` counts the commands they changed.
 - A `realtime.Policy` given a lockstep robot's participant address as its session raises `BindingRefused` at once, naming the session's address, instead of waiting out its timeout.
 - A `SandboxEnv` or `SandboxModel` whose container fails to become ready reports it at once: the container is killed rather than given Docker's 10-second stop grace.
+- A `SandboxEnv`, `SandboxModel`, sandbox built from source or `rlmesh doctor` image whose container exits during startup raises one error that leads with it (`the env container exited with code 1 during startup`) and its last 40 log lines, instead of a session timeout chained before it.
 - A sandbox built from source reports a key its container refuses at once instead of retrying it for 30 seconds.
 - A `realtime.Policy` preempted while it was asking for its lease again (its view of the lease had gone stale) is parked like any preempted policy, instead of taking the part back on its own when the operator lets go.
 - A `realtime.Policy`'s `acquire()` right after it binds waits, up to its wait timeout, for the robots' publishers to install the delivery plans of the streams it reads, as it does for the clocks, instead of being refused `NOT_READY`.

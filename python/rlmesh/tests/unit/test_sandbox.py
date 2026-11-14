@@ -443,11 +443,13 @@ def test_attach_failure_with_failing_stop_leaves_session_retryable(
             raise RuntimeError("docker daemon unavailable")
 
     _patch_stop(monkeypatch, flaky_stop)
-    monkeypatch.setattr(sandbox, "_container_running", lambda _cid: False)
+    monkeypatch.setattr(
+        sandbox, "_container_state", lambda _cid: sandbox.ContainerState(False, 3)
+    )
     monkeypatch.setattr(sandbox, "_container_logs", lambda _cid: "boom")
 
     session = _ManualSession()
-    with pytest.raises(RuntimeError, match="exited before becoming ready"):
+    with pytest.raises(RuntimeError, match="exited with code 3 during startup"):
         session._attach(connect_timeout_seconds=1.0)
 
     assert session._closed is False
@@ -458,13 +460,59 @@ def test_attach_failure_with_failing_stop_leaves_session_retryable(
     assert stop_calls == ["container-1", "container-1"]
 
 
+def test_a_container_that_exits_during_startup_is_the_error_not_the_dial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exit leads, with the container's last 40 log lines (secrets
+    redacted), and the dial it cut short is neither in the text nor chained,
+    so a traceback's first exception is the exit, not a session timeout.
+    Whatever the dial raised: a refusal the container's death caused too."""
+    key = "k" * 52
+    docker_calls: list[list[str]] = []
+
+    def docker(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        docker_calls.append(cmd)
+        if cmd[1] == "inspect":
+            return SimpleNamespace(returncode=0, stdout="false 1\n", stderr="")
+        out = f"listening on 0.0.0.0:40000#{key}/env\n"
+        err = "ImportError: libvulkan.so.1: cannot open shared object file\n"
+        return SimpleNamespace(returncode=0, stdout=out, stderr=err)
+
+    monkeypatch.setattr(sandbox, "run_docker", docker)
+    monkeypatch.setattr(sandbox, "_accepts", lambda _address: True)
+    monkeypatch.setattr(sandbox, "_answers_v1", lambda _address: False)
+    info = sandbox.SandboxInfo(**_start_result())
+
+    for raised in (
+        ConnectionError("timed out after 900ms waiting for the session host"),
+        rlmesh.ProtocolException("the session closed"),
+    ):
+
+        def dial(_attempt: float, raised: Exception = raised) -> None:
+            raise raised
+
+        with pytest.raises(RuntimeError) as failed:
+            sandbox.wait_serving(info, 30.0, dial)
+        text = str(failed.value)
+        assert text.startswith(
+            "the env container exited with code 1 during startup ("
+        ), text
+        assert text.endswith(
+            "its last log lines:\nlistening on 0.0.0.0:40000#…/env\n"
+            "ImportError: libvulkan.so.1: cannot open shared object file"
+        ), text
+        assert key not in text and "timed out" not in text, text
+        assert failed.value.__cause__ is None and failed.value.__suppress_context__
+        assert ["docker", "logs", "--tail", "40"] == docker_calls[-1][:4]
+
+
 def test_attach_reports_inspect_failure_distinctly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An inspect failure (daemon busy) must not be misreported as the container
     having exited with empty logs."""
     _patch_stop(monkeypatch, lambda *, container_id, kill=False: None)
-    monkeypatch.setattr(sandbox, "_container_running", lambda _cid: None)
+    monkeypatch.setattr(sandbox, "_container_state", lambda _cid: None)
 
     session = _ManualSession()
     with pytest.raises(RuntimeError, match="could not inspect sandbox container"):
@@ -517,7 +565,9 @@ def test_attach_retries_in_short_attempts(
     FlakyClient.calls = 0
     _patch_start(monkeypatch)
     _patch_stop(monkeypatch, lambda *, container_id, kill=False: None)
-    monkeypatch.setattr(sandbox, "_container_running", lambda _cid: True)
+    monkeypatch.setattr(
+        sandbox, "_container_state", lambda _cid: sandbox.ContainerState(True, None)
+    )
     monkeypatch.setattr(native, "PyEnvClient", FlakyClient)
 
     with rlmesh.SandboxEnv("CartPole-v1"):
