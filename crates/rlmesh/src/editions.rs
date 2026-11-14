@@ -9,17 +9,14 @@
 //! 3. the served peer's option;
 //! 4. the type's declaration;
 //!
-//! then none: the participant floats to this build's newest edition, and an
-//! authored participant says so once per process as a
-//! [`WorkflowEditionWarning`](crate::WarningCategory::WorkflowEditionWarning).
-//! A blank value declares nothing and falls through; a set-but-blank
-//! environment variable stops resolution, floats, and does not warn. The
-//! winner is validated and trimmed; an edition this build cannot run is the
-//! ValueError class. No project file is read.
+//! then none: the participant floats to this build's newest edition. Running
+//! and serving resolve quietly; a describe envelope marks the float
+//! (`workflow_edition_floats`) for the checks that report it. A blank value
+//! declares nothing and falls through; a set-but-blank environment variable
+//! stops resolution and floats deliberately. The winner is validated and
+//! trimmed; an edition this build cannot run is the ValueError class. No
+//! project file is read.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use crate::warnings::{WarningCategory, warn};
 use crate::{Error, Result};
 
 /// The environment variable holding the process-wide declaration.
@@ -34,6 +31,42 @@ pub(crate) const WORKFLOW_EDITION_ENV_VAR: &str = "RLMESH_WORKFLOW_EDITION";
 /// reports) on a prerelease or local build.
 pub fn current_workflow_edition() -> &'static str {
     rlmesh_proto::WORKFLOW_EDITION_BASE
+}
+
+/// What a participant declaring `declared` offers: the edition it runs
+/// (this build's current when it declares none) and every edition this
+/// build runs.
+pub(crate) fn offer(declared: Option<&str>) -> (String, Vec<String>) {
+    (
+        rlmesh_proto::declared_workflow_edition(declared).to_string(),
+        rlmesh_proto::supported_workflow_editions(),
+    )
+}
+
+/// A lockstep env's offer (its `gym_env` edition answers), negotiated
+/// against `declared` (the driver's WANT) with the same edition ordering the env client
+/// negotiates it: the env's offer, the selected edition and its retained
+/// base. A refusal is the message to report.
+pub(crate) fn negotiate_env(
+    info: &crate::lockstep::GymEnvInfo,
+    declared: Option<&str>,
+) -> std::result::Result<(rlmesh_proto::SessionOffer, String, rlmesh_proto::Edition), String> {
+    let env = rlmesh_proto::SessionOffer {
+        editions: info.supported_workflow_editions.clone(),
+        preferred: Some(info.workflow_edition.trim().to_string()).filter(|w| !w.is_empty()),
+    };
+    let selected = rlmesh_proto::negotiate_workflow_edition(
+        &env,
+        &rlmesh_proto::SessionOffer::this_build(declared),
+    )
+    .map_err(|refusal| {
+        format!(
+            "no mutual workflow edition with the env: {refusal}{}",
+            refusal.hint()
+        )
+    })?;
+    let base = rlmesh_proto::parse_retained_edition(&selected)?;
+    Ok((env, selected, base))
 }
 
 /// The declarations one participant could resolve from (rungs 1, 3 and 4).
@@ -54,7 +87,7 @@ pub enum EditionResolution {
     Declared(String),
     /// A set-but-blank `RLMESH_WORKFLOW_EDITION`: floats deliberately.
     FloatsDeliberately,
-    /// Nothing declared one: floats, and an authored participant warns.
+    /// Nothing declared one: floats.
     Undeclared,
 }
 
@@ -80,8 +113,7 @@ fn nonblank(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.trim().is_empty())
 }
 
-/// Resolve the call, environment, peer and type declarations, without
-/// warning.
+/// Resolve the call, environment, peer and type declarations.
 pub fn resolve_rungs(sources: EditionSources<'_>) -> Result<EditionResolution> {
     if let Some(call) = nonblank(sources.call) {
         return validate_workflow_edition(call).map(EditionResolution::Declared);
@@ -101,43 +133,15 @@ pub fn resolve_rungs(sources: EditionSources<'_>) -> Result<EditionResolution> {
     Ok(EditionResolution::Undeclared)
 }
 
-static WARNED: AtomicBool = AtomicBool::new(false);
-
-/// Resolve a native participant's edition; an `authored` participant that
-/// floats warns once per process (the handler's failure is this call's).
-pub(crate) fn resolve_native(
-    sources: EditionSources<'_>,
-    authored: bool,
-) -> Result<Option<String>> {
-    let resolution = resolve_rungs(sources)?;
-    if resolution == EditionResolution::Undeclared
-        && authored
-        && !WARNED.swap(true, Ordering::SeqCst)
-    {
-        warn_floating()?;
-    }
-    Ok(resolution.into_declared())
-}
-
-/// The native float warning.
-fn warn_floating() -> Result<()> {
-    let edition = current_workflow_edition();
-    warn(
-        WarningCategory::WorkflowEditionWarning,
-        format!(
-            "no workflow edition declared: floating to '{edition}', which moves when rlmesh \
-             upgrades. Pin it with workflow_edition \"{edition}\" on the type or in the call's \
-             options; {WORKFLOW_EDITION_ENV_VAR}='' floats deliberately."
-        ),
-    )
+/// Resolve a native participant's declared edition (`None`: it floats).
+pub(crate) fn resolve_native(sources: EditionSources<'_>) -> Result<Option<String>> {
+    resolve_rungs(sources).map(EditionResolution::into_declared)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
-    use crate::warnings::{Warning, set_warning_handler, tests::HANDLER_LOCK};
+    use crate::warnings::tests::HANDLER_LOCK;
 
     /// Runs `body` with `RLMESH_WORKFLOW_EDITION` set to `value` (or unset),
     /// serialized with every other test touching the variable or the handler.
@@ -222,47 +226,5 @@ mod tests {
             let err = resolve_rungs(sources(None, None, Some("1999.01"))).unwrap_err();
             assert_eq!(err.class(), crate::ErrorClass::ValueError);
         });
-    }
-
-    #[test]
-    fn an_authored_float_warns_once() {
-        let seen = Arc::new(Mutex::new(Vec::<Warning>::new()));
-        with_env(None, || {
-            WARNED.store(false, Ordering::SeqCst);
-            let sink = seen.clone();
-            set_warning_handler(Some(Box::new(move |warning: &Warning| {
-                sink.lock().unwrap().push(warning.clone());
-                Ok(())
-            })));
-            assert_eq!(
-                resolve_native(EditionSources::default(), false).unwrap(),
-                None
-            );
-            assert!(
-                seen.lock().unwrap().is_empty(),
-                "an unauthored float is quiet"
-            );
-            assert_eq!(
-                resolve_native(EditionSources::default(), true).unwrap(),
-                None
-            );
-            assert_eq!(
-                resolve_native(EditionSources::default(), true).unwrap(),
-                None
-            );
-            set_warning_handler(None);
-        });
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].category, WarningCategory::WorkflowEditionWarning);
-        let edition = current_workflow_edition();
-        assert_eq!(
-            seen[0].message,
-            format!(
-                "no workflow edition declared: floating to '{edition}', which moves when rlmesh \
-                 upgrades. Pin it with workflow_edition \"{edition}\" on the type or in the \
-                 call's options; RLMESH_WORKFLOW_EDITION='' floats deliberately."
-            )
-        );
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-proto"
-description = "Internal RLMesh crate (unstable Rust API): protobuf definitions and generated gRPC stubs."
+description = "Internal RLMesh crate (unstable Rust API): internal driver data types and workflow editions."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
@@ -12,12 +12,13 @@ readme = "README.md"
 license = { workspace = true }
 categories = { workspace = true }
 keywords = { workspace = true }
+# Published as an internal dependency of `rlmesh` and `rlmesh-cli`.
 publish = { workspace = true }
 
 [package.metadata.cargo-machete]
-ignored = ["prost", "prost-types", "tonic-prost", "tonic-prost-build"]
+ignored = ["prost", "tonic-prost-build"]
 
-# The build script invokes `protoc` to generate the gRPC stubs. The docs.rs
+# The build script invokes `protoc` to generate internal data types. The docs.rs
 # build image ships `protoc` (via the crates-build-env `protobuf-compiler`
 # package), so no extra escape hatch is needed; this block documents the docs.rs
 # build expectations and renders all targets.
@@ -27,9 +28,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 prost = { workspace = true }
-prost-types = { workspace = true }
-tonic = { workspace = true }
-tonic-prost = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

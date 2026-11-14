@@ -1,7 +1,8 @@
 //! Rust SDK for RLMesh model-environment evaluation workflows.
 //!
-//! RLMesh connects a model to an environment over gRPC. This crate is the
-//! Rust facade over the transport, wire, and runtime crates. RLMesh uses
+//! RLMesh connects a model to an environment over a session: participant
+//! addresses such as `:0/env`. This crate is the Rust facade
+//! over the transport, wire, and runtime crates. RLMesh uses
 //! the same nouns and constructs in every language, following each
 //! language's conventions. Use this crate to serve or drive environments
 //! and models from Rust.
@@ -17,8 +18,8 @@
 //!
 //! - **Run a model against an env.** [`Model::run`] (or [`run`]) drives
 //!   episodes on the native loop and returns a [`RunResult`]; [`RunHooks`]
-//!   observe it. [`Model::session`] (or [`session`]) returns a [`Session`]
-//!   to drive by hand.
+//!   observe it. `Model::bind` binds it to
+//!   one env to step by hand.
 //!
 //! Use [`RemoteEnv`] when you want to step an environment server directly.
 //!
@@ -29,6 +30,18 @@
 //! Build them with `..Default::default()`: by project policy appending an
 //! options field is a minor change, and a full struct literal without `..`
 //! is unsupported.
+//!
+//! # Features
+//!
+//! Sessions, serving and running are always built; the features add the
+//! optional surfaces.
+//!
+//! - `viewer` (default): the live terminal/HTTP [`viewer`] behind
+//!   [`View`]. Without it a run's `view` warns and shows nothing.
+//!
+//! - `managed` (default): the [`managed`] module, an Experimental client for
+//!   the managed RLMesh platform that shares the `rlmesh` CLI's sign-in.
+//!   Pulls in `reqwest`, `rustls` and `keyring`.
 //!
 //! # Errors
 //!
@@ -41,6 +54,30 @@
 //! (a failure your [`Policy`] raised, carrying a [`ModelErrorCode`]). Both
 //! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`],
 //! which is false for every other variant.
+//!
+//! # Logging
+//!
+//! The crate logs through `tracing` and installs no subscriber. If you
+//! install one, cap the target `zenoh::api::session` (and
+//! `zenoh::api::scouting`) at `INFO` whatever level you ask for: Zenoh logs
+//! its whole config there at `DEBUG` when a session opens, and that config
+//! holds, in plain text, the link password a session's key derives, so
+//! whoever reads the log could link to the host. A global filter does it
+//! (a target directive alone does not: a span directive enables events of
+//! any target inside it):
+//!
+//! ```no_run
+//! use tracing_subscriber::prelude::*;
+//!
+//! let capped = ["zenoh::api::session", "zenoh::api::scouting"];
+//! tracing_subscriber::registry()
+//!     .with(tracing_subscriber::filter::filter_fn(move |meta| {
+//!         *meta.level() <= tracing::Level::INFO
+//!             || !capped.iter().any(|t| meta.target().starts_with(t))
+//!     }))
+//!     .with(tracing_subscriber::fmt::layer())
+//!     .init();
+//! ```
 //!
 //! # Example: serve an environment
 //!
@@ -76,7 +113,7 @@
 //! };
 //! let server = EnvServer::new(
 //!     env,
-//!     EnvServerOptions { address: Some("tcp://127.0.0.1:0".into()), ..Default::default() },
+//!     EnvServerOptions { address: Some(":0/env".into()), ..Default::default() },
 //! )?;
 //! println!("listening on {}", server.address());
 //! server.serve()
@@ -106,7 +143,7 @@
 //!
 //! # fn run() -> rlmesh::Result<()> {
 //! let model = Model::new(Counter, ModelOptions::default())?;
-//! model.serve("tcp://127.0.0.1:50051", ModelServeOptions::default())?;
+//! model.serve(":50051/model", ModelServeOptions::default())?;
 //! // A closure is a policy too.
 //! let greedy = Model::new(|_observation: Value| Ok(Value::Int(0)), ModelOptions::default())?;
 //! # drop(greedy);
@@ -120,18 +157,28 @@ pub mod adapters;
 mod address;
 #[doc(hidden)]
 pub mod binding;
-mod bound;
 mod build_info;
-mod credentials;
+mod data;
 mod describe;
 mod dlpack;
+mod doctor;
 mod dtype;
 mod editions;
 pub mod env;
 mod error;
 pub mod ext;
+mod floor;
+mod lifecycle;
+/// The v2 session protocol engine the bindings drive (R-25 binding
+/// plumbing, like [`binding`]): hidden and semver-exempt.
+#[doc(hidden)]
+pub mod lockstep;
+#[cfg(feature = "managed")]
+pub mod managed;
 mod model;
 pub mod prelude;
+mod ready;
+pub mod realtime;
 pub mod recorder;
 mod run;
 pub mod serve_options;
@@ -141,9 +188,14 @@ mod tensor;
 pub mod types;
 mod value;
 mod view;
+/// The live viewer engine behind [`View`] (R-25 binding plumbing: runs and
+/// the Python binding drive it; users reach it through `View`).
+#[cfg(feature = "viewer")]
+#[doc(hidden)]
+pub mod viewer;
 mod warnings;
 
-pub(crate) use address::{BindAddress, ConnectAddress};
+pub(crate) use address::ConnectAddress;
 pub use build_info::{BuildInfo, BuildSource, VERSION, build_info};
 pub use describe::{
     Describable, DescribeJsonOptions, DescribeKind, DescribeOptions, describe, describe_json,
@@ -157,10 +209,12 @@ pub const DESCRIBE_METADATA_KEY: &str = rlmesh_adapters::v1::DESCRIBE_METADATA_K
 
 /// The describe envelope's schema version.
 pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION as i64;
+#[doc(no_inline)]
+pub use crate::run::runtime::ENV_RESET_OPTIONS_KEY;
 pub use env::{
     Env, EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, EnvServer, EnvServerOptions, MadeEnv,
-    RemoteEnv, RemoteEnvOptions, RemoteVectorEnv, ServedEnv, TagParam, Transport, Variant,
-    VariantOptions, VectorEnv, VectorSeed, trial_index,
+    RemoteEnv, RemoteEnvOptions, RemoteVectorEnv, ServedEnv, TagParam, Variant, VariantOptions,
+    VectorEnv, VectorSeed, trial_index,
 };
 pub use error::{
     EnvironmentError, Error, ErrorClass, ErrorCode, InvalidArgumentError, ModelError,
@@ -172,17 +226,15 @@ pub use model::{
 };
 pub use recorder::{
     EpisodeRecord, MediaRef, Recorder, RecorderAddOptions, RecorderCaptureOptions,
-    RecorderExportOptions, RecorderOptions, RecorderToDictOptions, WorkloadRecord,
+    RecorderExportOptions, RecorderOptions, RecorderToDictOptions, VideoCodec, WorkloadRecord,
 };
-#[doc(no_inline)]
-pub use rlmesh_runtime::ENV_RESET_OPTIONS_KEY;
 pub use run::{
-    EnvTarget, EpisodeResult, FrameSources, ModelTarget, RANDOM_SAMPLE, RandomSample, ReadFn,
-    ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult, Session,
-    SessionOptions, SessionRunOptions, StepEvent, TelemetryRow, run, run_async, session,
-    session_async,
+    BindOptions, EnvTarget, EpisodeResult, FrameSources, ModelTarget, RANDOM_SAMPLE, RandomSample,
+    ReadFn, ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult,
+    RunResultSaveOptions, StepEvent, TelemetryRow, run, run_async,
 };
-pub use serve_options::ServeOptions;
+pub use run::{Binding, bind};
+pub use serve_options::{BatchOptions, ServeOptions};
 pub use specs::EnvContract;
 pub use tensor::{Tensor, ToDlpackOptions};
 pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};
@@ -192,7 +244,7 @@ pub use warnings::{Warning, WarningCategory, WarningHandler, set_warning_handler
 /// Mint one fresh routing/episode id (UUIDv7 — time-ordered, sortable by creation,
 /// never repeats). The single id-format home for this crate's id authorities (the
 /// direct env client and the in-process / remote model paths). The runtime driver
-/// mints its own ids in `rlmesh-runtime` (it does not depend on this crate).
+/// (`run::runtime`) mints its own.
 pub(crate) fn mint_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rlmesh_grpc::wire::Bytes;
+use bytes::Bytes;
 
 use crate::binding::spaces;
 use crate::{Error, Result};
@@ -193,8 +193,8 @@ impl ModelObservation {
             .observation_space
             .as_ref()
             .ok_or_else(|| Error::model("env contract missing observation space"))?;
-        let value = rlmesh_grpc::wire::leaves_value(leaves.to_vec());
-        rlmesh_grpc::wire::decode_batched_partial_values(Some(&value), space, rows)
+        let value = crate::data::leaves_value(leaves.to_vec());
+        crate::data::decode_batched_partial_values(Some(&value), space, rows)
             .map_err(|err| Error::model(err.to_string()))
     }
 
@@ -209,6 +209,27 @@ impl ModelObservation {
         }
         Ok(lanes.remove(0))
     }
+}
+
+/// Structurally validate each per-lane action against the route's action space
+/// before the codec encodes it. The spec-directed codec would otherwise silently
+/// drop or reinterpret a mismatched typed action (extra Dict keys are skipped by
+/// the spec-key walk; a wrong-dtype Box leaf is emitted as raw bytes and read
+/// back at the spec dtype), and that value/spec mismatch never reaches the env's
+/// own validation. Range deviations (Box bounds) pass through — those are the
+/// env's validation policy to decide.
+pub(crate) fn check_actions_conform(
+    action_space: &spaces::SpaceSpec,
+    actions: &[spaces::SpaceValue],
+) -> Result<()> {
+    for (lane, action) in actions.iter().enumerate() {
+        if let spaces::Conformance::Structural(err) = spaces::conform(action_space, action) {
+            return Err(Error::model(format!(
+                "model action for lane {lane} does not match the action space: {err}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -230,7 +251,7 @@ mod tests {
     /// A `ModelObservation` carrying `values` encoded against `obs_space()`.
     fn observation(values: &[SpaceValue]) -> ModelObservation {
         let space = obs_space();
-        let wire = rlmesh_grpc::wire::encode_batched_partial_values(values, &space).unwrap();
+        let wire = crate::data::encode_batched_partial_values(values, &space).unwrap();
         let contract = spaces::EnvContract {
             id: "T".into(),
             action_space: None,
@@ -301,5 +322,20 @@ mod tests {
         let mut obs = observation(&[box_u8(3)]);
         obs.observation = None;
         assert!(obs.decoded_lanes().is_err());
+    }
+
+    #[test]
+    fn check_actions_conform_rejects_structural_mismatch() {
+        let space = obs_space();
+
+        // Matching kind/shape/dtype passes (one lane and many).
+        assert!(check_actions_conform(&space, &[box_u8(0)]).is_ok());
+        assert!(check_actions_conform(&space, &[box_u8(0), box_u8(1)]).is_ok());
+
+        // A Discrete value for a Box space is a structural mismatch.
+        assert!(check_actions_conform(&space, &[SpaceValue::Discrete(0)]).is_err());
+        // A wrong-shape Box would otherwise mis-encode -> rejected.
+        let wide = SpaceValue::Box(Tensor::from_vec(vec![0u8, 1], vec![2], DType::Uint8).unwrap());
+        assert!(check_actions_conform(&space, &[wide]).is_err());
     }
 }

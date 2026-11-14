@@ -12,8 +12,7 @@ import "rlmesh/spaces/v1/value.proto";
 // `episode_info` vector (see PredictRequest) when the observation/action payload
 // is batched; the lane/slot positional index is no longer a wire concept.
 message AdapterContext {
-  // Correlation only; OSS does not key on it (the managed layer owns session
-  // lifecycle). Kept on the wire so closed can correlate.
+  // Correlation label for telemetry and logs; routing uses `env_id`.
   string session_id = 1;
   // The connected env container this adapter serves (UUIDv7, minted by the
   // runtime on env attach). The single model-facing routing key; replaces the
@@ -160,7 +159,7 @@ message PredictResponse {
   repeated rlmesh.spaces.v1.SpaceValue actions = 2;
 }
 
-// One request carrying N independent predict groups (control-plane-decided
+// One request carrying N independent predict groups (caller-decided
 // grouping). Each group is a complete, already-routed `PredictRequest` the
 // server processes against its OWN env's spec — like a DB GROUP BY: the model
 // keeps every resolved EnvSpec/adapter and demuxes each group by its `env_id`,

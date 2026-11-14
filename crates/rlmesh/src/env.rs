@@ -14,7 +14,6 @@ pub(crate) mod envelope;
 pub(crate) mod factory;
 pub(crate) mod lanes;
 pub(crate) mod legacy;
-pub(crate) mod legacy_server;
 pub(crate) mod served;
 pub(crate) mod server;
 pub(crate) mod signals;
@@ -31,7 +30,7 @@ pub use factory::{
     EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, MadeEnv, TagParam, Variant, VariantOptions,
 };
 pub use served::ServedEnv;
-pub use server::{EnvServer, EnvServerOptions, Transport};
+pub use server::{EnvServer, EnvServerOptions};
 pub use trial::trial_index;
 
 use crate::spaces::Space;
