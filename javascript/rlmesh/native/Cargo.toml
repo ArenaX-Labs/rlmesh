@@ -1,0 +1,42 @@
+[package]
+name = "rlmesh-node"
+description = "Internal RLMesh crate (unstable Rust API): the Node and Electron binding's native addon: an embedded session host, robots and bound policies over rlmesh-session, loaded by the rlmesh npm package."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+# Shipped inside the npm package, not on crates.io.
+publish = false
+
+[package.metadata.cargo-machete]
+# Used by build.rs only.
+ignored = ["napi-build"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# Unreleased: the lobby and scene runs. Never in a release addon; CI builds it.
+fleet = ["rlmesh-session/fleet"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = "3"
+bytes = { workspace = true }
+# The real-time policy on either clock (`rlmesh::realtime`), as the PyO3
+# binding runs it.
+rlmesh = { workspace = true, default-features = false }
+rlmesh-session = { workspace = true, features = ["record"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+
+[build-dependencies]
+napi-build = "2"
+
+[lints]
+workspace = true
