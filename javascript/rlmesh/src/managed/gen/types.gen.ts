@@ -7,14 +7,14 @@ export type ClientOptions = {
 
 export type ErrorDetail = {
     /**
-     * Machine-readable reason. Evaluation create and preview answer an invalid request with `incompatible_pairing`, `unknown_scenario`, `checkpoint_scope`, `unscoped_checkpoint`, `missing_episode_cap`, `platform_maximum_exceeded`, `custom_checkpoint_not_allowed`, `env_var_not_allowed` or `platform_storage_not_allowed` when the refusal has structure (see `details`), and `bad_request` otherwise. A retry past the platform's retries per evaluation also answers `platform_maximum_exceeded`.
+     * Machine-readable reason. Evaluation create and preview answer an invalid request with `incompatible_pairing`, `unknown_scenario`, `missing_episode_cap`, `platform_maximum_exceeded`, `custom_checkpoint_not_allowed`, `env_var_not_allowed` or `platform_storage_not_allowed` when the refusal has structure (see `details`), and `bad_request` otherwise. A retry past the platform's retries per evaluation also answers `platform_maximum_exceeded`.
      */
     code: string;
     message: string;
     /**
      * The facts a caller needs to offer the fix, shaped per `code`; absent for codes that carry none.
      */
-    details?: PairingRefusal | ScenarioRefusal | CheckpointScopeRefusal | CheckpointSuggestion | EpisodeCapRefusal | MaximumRefusal | CustomCheckpointRefusal | EnvVarRefusal | PlatformStorageRefusal;
+    details?: PairingRefusal | ScenarioRefusal | EpisodeCapRefusal | MaximumRefusal | CustomCheckpointRefusal | EnvVarRefusal | PlatformStorageRefusal;
 };
 
 export type ErrorResponse = {
@@ -68,51 +68,6 @@ export type RegistryBootstrapInfo = {
      * True only for a development registry served over plain HTTP.
      */
     plainHttp: boolean;
-};
-
-export type IssueClusterJoinTokenRequest = {
-    ttl?: '1h' | '24h';
-};
-
-export type ClusterJoinToken = {
-    /**
-     * Secret shown once; do not log
-     */
-    token: string;
-    expiresAt: string;
-};
-
-export type ClaimClusterJoinRequest = {
-    /**
-     * Opaque nonblank install nonce; at most 128 UTF-8 bytes
-     */
-    nonce: string;
-    attempt: number;
-    /**
-     * Fixed by the first claim
-     */
-    relay: boolean;
-    /**
-     * Optional existing cluster binding; mismatch refuses before any mutation
-     */
-    clusterId?: string;
-};
-
-export type ClaimClusterJoinResponse = {
-    clusterId: string;
-    generation: number;
-    /**
-     * Control and pull; relay only when requested
-     */
-    credentials: Array<ClusterCredential>;
-    registry?: RegistryBootstrapInfo;
-    apiUrl: string;
-    agentGrpc?: string;
-    outputStore?: OutputStoreInfo;
-};
-
-export type ConfirmClusterJoinRequest = {
-    generation: number;
 };
 
 export type InfoResponse = {
@@ -253,7 +208,7 @@ export type Evaluation = {
     }>;
     name?: string;
     status: EvaluationStatus;
-    origin: string;
+    origin: 'platform' | 'import' | 'legacy_import';
     projectId: string;
     request: EvaluationRequest;
     /**
@@ -578,56 +533,6 @@ export type ScenarioRefusal = {
 };
 
 /**
- * Details of `checkpoint_scope`.
- */
-export type CheckpointScopeRefusal = {
-    model: string;
-    /**
-     * The checkpoint the task would run.
-     */
-    checkpoint: string;
-    /**
-     * The scenario patterns that checkpoint declares.
-     */
-    declaredFor: Array<string>;
-    scenario: string;
-    /**
-     * The model's checkpoints declared for the scenario.
-     */
-    fitting: Array<string>;
-    /**
-     * The request named the checkpoint; omitting it lets each task pick its own.
-     */
-    pinned?: boolean;
-};
-
-/**
- * Details of `unscoped_checkpoint`, a ref naming no checkpoint whose model declares several but not which scenarios the default fits.
- */
-export type CheckpointSuggestion = {
-    /**
-     * Catalog ref of the model.
-     */
-    model: string;
-    /**
-     * The checkpoint the tasks would run with (the model's default).
-     */
-    chosen: string;
-    /**
-     * The tasks' scenario group, e.g. `libero_spatial`.
-     */
-    group: string;
-    /**
-     * The checkpoint whose name is the group's own once separators are set aside (`libero-spatial` for `libero_spatial`). Absent when no checkpoint is named for the group.
-     */
-    suggested?: string;
-    /**
-     * The model's other catalog checkpoints.
-     */
-    alternatives: Array<string>;
-};
-
-/**
  * Details of `missing_episode_cap`: the environment never ends an episode on its own and the model binds no `max_episode_steps` for it, most often because the model was built for another environment.
  */
 export type EpisodeCapRefusal = {
@@ -888,7 +793,7 @@ export type EvaluationListItem = {
     }>;
     name?: string;
     status: EvaluationStatus;
-    origin: string;
+    origin: 'platform' | 'import' | 'legacy_import';
     projectId: string;
     progress: Progress;
     createdBy?: Creator;
@@ -1101,6 +1006,38 @@ export type ResourceOverrides = {
     runtime?: RoleResourceOverride;
 };
 
+/**
+ * Tasks of one scenario group running a model checkpoint not declared for it. off_suite: the checkpoint declares other scenarios, or another of the model's checkpoints declares this group or is named for it (`libero-spatial` for `libero_spatial`). undeclared: a model ref naming no checkpoint runs its default, and the model has several checkpoints but declares no scenarios, so nothing says the default fits. A pinned checkpoint nothing contradicts, and custom checkpoint URIs, are taken as meant.
+ */
+export type CheckpointScopeWarning = {
+    kind: 'off_suite' | 'undeclared';
+    message: string;
+    /**
+     * The request's models[].model.
+     */
+    model: string;
+    /**
+     * The checkpoint the tasks run.
+     */
+    checkpoint: string;
+    /**
+     * The tasks' scenario group, e.g. `libero_spatial`.
+     */
+    group: string;
+    /**
+     * The scenario patterns the checkpoint declares; absent when it declares none.
+     */
+    declaredFor?: Array<string>;
+    /**
+     * The model's checkpoints to run instead, the one declared or named for the group first; for undeclared, every other catalog checkpoint.
+     */
+    choices: Array<string>;
+    /**
+     * The request named the checkpoint (models[].checkpoint, or a tasks[].models model@checkpoint entry).
+     */
+    pinned?: boolean;
+};
+
 export type EvaluationCommand = {
     id: string;
     status: EvaluationStatus;
@@ -1110,6 +1047,10 @@ export type EvaluationCommand = {
      * Create only; knobs the request omitted that were filled from the model's runtime probe recommendation.
      */
     warnings?: Array<string>;
+    /**
+     * Create only; as EvaluationPreview.checkpointWarnings.
+     */
+    checkpointWarnings?: Array<CheckpointScopeWarning>;
 };
 
 export type EffectiveRoleResources = {
@@ -1336,6 +1277,10 @@ export type EvaluationPreview = {
      */
     warnings: Array<string>;
     /**
+     * Tasks that run a checkpoint not declared for their suite, one entry per model, checkpoint and scenario group, each message also in warnings. The run is not refused, but expect near-zero scores; each affected workload's metadata carries checkpointScope with the entry's kind. Absent when every task's checkpoint fits.
+     */
+    checkpointWarnings?: Array<CheckpointScopeWarning>;
+    /**
      * What the control plane could verify about each request model's checkpoint through the organization's storage connections: a private hf://, s3:// or gs:// checkpoint resolves to the connection whose scope (Hugging Face namespace, bucket and prefix) covers it, and one read is made with that connection's credential. Absent when no model runs a remote checkpoint. Only `inaccessible` should block a launch; `unknown` covers public URIs, cluster-owned Secrets and timed-out checks. When the run carries connections and no eligible cluster's agent supports them, every request model is listed as `unknown` with the reason `no cluster with connections support is available` (also in `warnings`), and creating the evaluation answers 400.
      */
     models?: Array<{
@@ -1422,7 +1367,7 @@ export type EvaluationSweepEvaluation = {
 export type EvaluationUpdate = {
     name?: string;
     /**
-     * Merged into the evaluation's tags; a null or empty value removes the key.
+     * Merged into the evaluation's tags; a null or empty value removes the key. A patch that would leave more than 64 tags, and more than there were, is a 400.
      */
     tags?: {
         [key: string]: string | null;
@@ -1508,6 +1453,9 @@ export type Workload = {
     error?: string;
     model?: unknown;
     environment?: unknown;
+    /**
+     * The compiled task's metadata. checkpointScope (off_suite or undeclared, as CheckpointScopeWarning.kind) marks a workload whose checkpoint is not declared for its suite.
+     */
     metadata?: StringMap;
     /**
      * Platform routes only: the latest attempt's reconciled infrastructure cost estimate (rlmesh.cost_estimate.v1, with its own currency), our cost, never what the organization pays (see GET /v1/evaluations/{id}/charge). Absent on the organization's own routes, until reconciled, or when the pricing catalog is unconfigured.
@@ -1825,317 +1773,6 @@ export type Project = {
 };
 
 /**
- * control (rlm_cs_): the agent gRPC service. relay (rlm_cr_): the cell metrics/OTLP relay routes. pull (rlm_cp_): the registry token endpoint's Basic password. Each endpoint accepts only its own purpose's credential (ADR-0019).
- */
-export type ClusterCredentialPurpose = 'control' | 'relay' | 'pull';
-
-export type ClusterCredential = {
-    purpose: ClusterCredentialPurpose;
-    /**
-     * The credential (rlm_cs_, rlm_cr_ or rlm_cp_ by purpose), shown exactly once
-     */
-    secret: string;
-    /**
-     * When the credential a rotation replaced stops working; absent when there was none or the rotation was forced
-     */
-    previousExpiresAt?: string;
-};
-
-/**
- * The agent's view of the warm pool from its latest inventory report.
- */
-export type ClusterWarmStatus = {
-    requestedGpus: number;
-    requestedCpuNodes: number;
-    /**
-     * Placeholders the agent is holding; below requested while a run is active or under DRA.
-     */
-    heldGpus: number;
-    heldCpuNodes: number;
-    /**
-     * Placeholders that are Running, i.e. scheduled with images pulled.
-     */
-    readyGpus: number;
-    readyCpuNodes: number;
-    /**
-     * GPU nodes whose preload pod is Running, i.e. every model and environment image pulled.
-     */
-    gpuNodesPreloaded: number;
-    /**
-     * GPU nodes the preload DaemonSet covers.
-     */
-    gpuNodesTotal: number;
-    /**
-     * CPU-pool nodes with every environment image pulled.
-     */
-    cpuNodesPreloaded: number;
-    /**
-     * CPU-pool nodes the preload DaemonSet covers.
-     */
-    cpuNodesTotal: number;
-    gpusWithheld?: 'run-active' | 'dra';
-    lastError?: string;
-    /**
-     * Image refs whose pull or /bin/true failed, with the waiting reason.
-     */
-    stuckImages?: Array<string>;
-    updatedAt: string;
-};
-
-/**
- * ClusterInventorySummary as shown to tenants; omits the platform-only agentVersion.
- */
-export type OrganizationClusterInventorySummary = {
-    /**
-     * Warm pool status. On shared capacity the counts are reported as they are, stuckImages is omitted and lastError is replaced by a generic message, since both can name another organization's repos.
-     */
-    warm?: ClusterWarmStatus;
-    observedAt: string;
-    provider?: string;
-    region?: string;
-    nodeCount: number;
-    readyNodes: number;
-    gpuCount: number;
-    gpuTypes: Array<string>;
-};
-
-/**
- * Capacity the cluster holds ready with placeholder pods. `until` is when the hold lapses: `ttlSeconds` after the later of priming and the cluster's last submission or finished evaluation. Absent `until` means nothing is held.
- */
-export type ClusterWarmSummary = {
-    gpus: number;
-    cpuNodes: number;
-    ttlSeconds: number;
-    /**
-     * Catalog repo paths kept resident. Present only on a cluster dedicated to the caller's organization; shared capacity keeps its list platform-only.
-     */
-    images?: Array<string>;
-    until?: string;
-    /**
-     * Whether the GPU hold survives active runs; see ClusterWarmPoolRequest.holdDuringRuns.
-     */
-    holdDuringRuns: boolean;
-};
-
-/**
- * What one cluster offers of one hardware class, with the class's facets inlined. Rebuilt from every agent inventory report (source inventory) unless an operator override (source override) has taken the class over. Versions are the lowest any node of the class reports, absent when a node reports none. resourceName, productLabel and nodePool are platform-only.
- */
-export type OfferClass = {
-    /**
-     * Hardware class id
-     */
-    class: string;
-    name: string;
-    vendor: 'nvidia' | 'amd' | 'cpu';
-    family: string;
-    compute?: string;
-    gfx?: string;
-    vramBytes?: number;
-    provisional: boolean;
-    /**
-     * Nodes of the class; for cpu/amd64, the amd64 nodes without an accelerator
-     */
-    nodes: number;
-    /**
-     * Allocatable devices across those nodes
-     */
-    gpus: number;
-    /**
-     * Kernel driver version (NVIDIA 550.54.15, AMD 6.8.5)
-     */
-    driver?: string;
-    /**
-     * Newest CUDA version the driver supports
-     */
-    cuda?: string;
-    rocm?: string;
-    /**
-     * Environment rendering backends the class runs: osmesa on CPU; egl only once a cell opts its GPUs in
-     */
-    render: Array<'osmesa' | 'egl'>;
-    /**
-     * Device resource pods request (nvidia.com/gpu, amd.com/gpu); platform-only
-     */
-    resourceName?: string;
-    /**
-     * Product label as the nodes report it; platform-only
-     */
-    productLabel?: string;
-    /**
-     * Node pools the class runs in, comma-separated; platform-only
-     */
-    nodePool?: string;
-    /**
-     * No node of the class right now (nodes and gpus 0), but a node pool that made them still exists and scales up for a pod placed on the class
-     */
-    provisionable: boolean;
-    source: 'inventory' | 'override';
-    observedAt: string;
-};
-
-/**
- * Tenant-owned dedicated cluster view. Shared capacity is represented separately by ManagedCluster.
- */
-export type OrganizationCluster = {
-    id: string;
-    name?: string;
-    organizationId?: string;
-    provider: string;
-    region: string;
-    capabilities: Array<string>;
-    /**
-     * Read-only. The hardware class ids of the cluster's accelerator offers (nvidia/l40s, amd/mi300x). For a cell whose agent reports no accelerator offers, the accelerators an older registration declared, which placement then reads as a fallback (logged once per cluster).
-     */
-    readonly gpuTypes: Array<string>;
-    maxConcurrency: number;
-    /**
-     * false means draining: no new work, in-flight work finishes
-     */
-    active: boolean;
-    lastSeenAt?: string;
-    disabledAt?: string;
-    archivedAt?: string;
-    /**
-     * The organization's preferred cluster
-     */
-    default: boolean;
-    /**
-     * The organization's own in-flight work; only on its dedicated clusters
-     */
-    activeAssignments?: number;
-    createdAt: string;
-    inventory?: OrganizationClusterInventorySummary;
-    warm: ClusterWarmSummary;
-    /**
-     * What the cluster offers per hardware class, CPU first; always includes cpu/amd64. Omits the platform-only resourceName, productLabel and nodePool.
-     */
-    offers: Array<OfferClass>;
-};
-
-export type ManagedCluster = {
-    id: 'managed';
-    name: 'RLMesh managed';
-    active: boolean;
-    /**
-     * Prefer shared capacity over dedicated clusters; platform default then least-loaded placement
-     */
-    default: boolean;
-};
-
-/**
- * Agent-observed cluster facts from the latest cluster.inventory report.
- */
-export type ClusterInventorySummary = {
-    observedAt: string;
-    agentVersion?: string;
-    /**
-     * Cloud from the nodes' providerID scheme (aws, gce, nebius, ...)
-     */
-    provider?: string;
-    region?: string;
-    nodeCount: number;
-    readyNodes: number;
-    gpuCount: number;
-    gpuTypes: Array<string>;
-    warm?: ClusterWarmStatus;
-};
-
-/**
- * Platform view of the warm pool, including the image list.
- */
-export type ClusterWarmPool = {
-    gpus: number;
-    cpuNodes: number;
-    ttlSeconds: number;
-    /**
-     * Catalog repo paths whose current image the held nodes keep resident.
-     */
-    images: Array<string>;
-    until?: string;
-    /**
-     * Whether the GPU hold survives active runs; see ClusterWarmPoolRequest.holdDuringRuns.
-     */
-    holdDuringRuns: boolean;
-};
-
-export type OwnedCluster = {
-    id: string;
-    name?: string;
-    organizationId?: string;
-    /**
-     * Owner display name, from local rows.
-     */
-    organizationName?: string;
-    /**
-     * The agent control credential (rlm_cs_) is installed; without one the cell cannot authenticate until an admin mints it (POST /v1/platform/clusters/{id}/credentials?purpose=control)
-     */
-    hasClusterSecret: boolean;
-    /**
-     * Purposes with a current credential, in the order control, relay, pull
-     */
-    installedCredentials: Array<ClusterCredentialPurpose>;
-    /**
-     * ADR-0019 migration state, forward only. legacy: rlm_cs_ is accepted for every purpose (clusters that predate per-purpose credentials). dual: additionally rlm_cr_ and rlm_cp_ for their own purposes (set once both are minted). split: each credential for its own purpose only (new registrations; the operator's split=true; or automatically once rlm_cr_ has authenticated, rlm_cp_ has authenticated at least twice an hour or more apart, both after the last use of rlm_cs_ outside agent control, the control credential was rotated after the move to dual, and rlm_cs_ has not been used outside agent control for 24 hours). After the legacy deadline a legacy cluster is refused for every purpose, and a dual one is refused rlm_cs_ outside agent control and keeps agent control only on an rlm_cs_ minted after it went dual.
-     */
-    credentialMode: 'legacy' | 'dual' | 'split';
-    provider: string;
-    region: string;
-    capabilities: Array<string>;
-    /**
-     * Read-only. The hardware class ids of the cluster's accelerator offers (nvidia/l40s, amd/mi300x). For a cell whose agent reports no accelerator offers, the accelerators an older registration declared, which placement then reads as a fallback (logged once per cluster).
-     */
-    readonly gpuTypes: Array<string>;
-    /**
-     * How many evaluations may run at once, whatever is inside them
-     */
-    maxConcurrency: number;
-    /**
-     * Lane ceiling: the most workloads one evaluation may run at once
-     */
-    maxParallelWorkloads: number;
-    /**
-     * How many probes may run at once; each also takes one of the maxConcurrency slots
-     */
-    maxProbeConcurrency: number;
-    active: boolean;
-    imagePullScope: 'org' | 'platform';
-    activeAssignments: number;
-    lastSeenAt?: string;
-    /**
-     * When the cluster was disabled (draining)
-     */
-    disabledAt?: string;
-    archivedAt?: string;
-    /**
-     * The shared pool's preferred cluster
-     */
-    platformDefault: boolean;
-    createdAt: string;
-    updatedAt: string;
-    inventory?: ClusterInventorySummary;
-    warm: ClusterWarmPool;
-    /**
-     * What the cluster offers per hardware class, CPU first; always includes cpu/amd64.
-     */
-    offers: Array<OfferClass>;
-};
-
-/**
- * A cluster and credentials shown exactly once.
- */
-export type OwnedProvisionedCluster = {
-    /**
-     * Present on registration; existing credentials are retained
-     */
-    joinToken?: ClusterJoinToken;
-    cluster: OwnedCluster;
-    /**
-     * All three purposes from registration (control, relay, pull, in that order); the one rotated purpose from a credential rotation
-     */
-    credentials: Array<ClusterCredential>;
-};
-
-/**
  * eval: a whole launch (models + environments + settings); model: a reusable model selection with optional checkpoints; environment: a reusable environment and scenario selection; warm: a warm capacity hold for a dedicated cluster.
  */
 export type PresetKind = 'eval' | 'model' | 'environment' | 'warm';
@@ -2161,10 +1798,7 @@ export type PresetSettings = {
  */
 export type PresetPerturbationOp = {
     opName: string;
-    /**
-     * low, mid, high, or custom
-     */
-    preset: string;
+    preset: 'low' | 'mid' | 'high' | 'custom';
     params?: Array<number>;
 };
 
@@ -2229,215 +1863,6 @@ export type Preset = {
     warm?: PresetWarm;
     createdAt: string;
     updatedAt: string;
-};
-
-/**
- * Hold warm capacity and preload images. Sending the warm object again restarts the window. Use release to clear every hold.
- */
-export type ClusterWarmPoolRequest = {
-    /**
-     * Release every node and image hold. Cannot be combined with images or node counts.
-     */
-    release?: boolean;
-    gpus?: number;
-    cpuNodes?: number;
-    ttlSeconds?: number;
-    /**
-     * Catalog repo paths (prebuilt/xvla/libero) to keep resident; omit to keep the current list, send [] to clear it.
-     */
-    images?: Array<string>;
-    /**
-     * Keep the GPU hold while runs are active: the agent yields only the nodes the work in flight claims and re-holds each one as its run is reaped, so back-to-back evaluations start on a node that is already warm. Default false releases the whole GPU hold until the cluster is idle. Omit to keep the current setting.
-     */
-    holdDuringRuns?: boolean;
-};
-
-/**
- * A node's accelerator as its labels describe it: NVIDIA GPU Feature Discovery (nvidia.com/gpu.*, nvidia.com/cuda.*) or the AMD node labeller (amd.com/gpu.*), plus the device plugin's allocatable count. Without feature discovery only vendor, product, resourceName and count are known.
- */
-export type NodeGpu = {
-    vendor: 'nvidia' | 'amd';
-    /**
-     * Product label as the node carries it, e.g. NVIDIA-L40S, AMD_Instinct_MI300X_OAM
-     */
-    product?: string;
-    /**
-     * PCI device id where the labels carry one (AMD), e.g. 0x74a1
-     */
-    deviceId?: string;
-    /**
-     * Device resource pods request: nvidia.com/gpu or amd.com/gpu
-     */
-    resourceName: string;
-    count: number;
-    family?: string;
-    /**
-     * CUDA compute capability (GFD)
-     */
-    compute?: string;
-    gfx?: string;
-    memoryBytes?: number;
-    /**
-     * Kernel driver version: NVIDIA's, or AMD's amdgpu
-     */
-    driver?: string;
-    cuda?: string;
-    /**
-     * ROCm release from the rlmesh.dev/rocm-version node label
-     */
-    rocm?: string;
-    /**
-     * Rendering backends the GPU offers environment pods; egl once the cell opts in (gpu.renderEnvironments)
-     */
-    render?: Array<'egl'>;
-    /**
-     * The node label that identified the product, as key=value, which a pod pinned to its class selects on; the AMD device-id label when no product name is labelled
-     */
-    selectorLabel?: string;
-};
-
-export type NodeResources = {
-    cpuCores: number;
-    memoryBytes: number;
-    gpus: number;
-};
-
-export type ClusterNode = {
-    name: string;
-    instanceType?: string;
-    zone?: string;
-    /**
-     * Karpenter nodepool label when present
-     */
-    nodePool?: string;
-    /**
-     * NVIDIA's nvidia.com/gpu.product label; gpu.product names either vendor's
-     */
-    gpuProduct?: string;
-    /**
-     * The node's kubernetes.io/arch
-     */
-    arch?: string;
-    gpu?: NodeGpu;
-    ready: boolean;
-    conditions: Array<{
-        type: string;
-        status: string;
-    }>;
-    allocatable: NodeResources;
-    capacity: NodeResources;
-    createdAt: string;
-    /**
-     * Running workload pods scheduled on the node
-     */
-    workloadPods: number;
-    /**
-     * Node-wide instant reading at observedAt; absent without a Prometheus source.
-     */
-    usage?: {
-        cpuCores?: number;
-        memoryBytes?: number;
-        gpuUtilPercent?: number;
-    };
-};
-
-export type ClusterNodes = {
-    observedAt: string;
-    agentVersion?: string;
-    provider?: string;
-    region?: string;
-    items: Array<ClusterNode>;
-};
-
-export type ClusterQueueEntry = {
-    assignmentId: string;
-    evaluationId?: string;
-    organizationId?: string;
-    organizationName?: string;
-    /**
-     * The tier the entry leases at. background is a probe nobody is waiting on, behind every evaluation.
-     */
-    priorityTier: 'high' | 'normal' | 'low' | 'background';
-    position: number;
-    queuedAt: string;
-};
-
-export type ClusterOffers = {
-    items: Array<OfferClass>;
-};
-
-/**
- * Operator overrides, applied in order. Each entry takes its class over from inventory: fields omitted keep what the cluster offers now (an empty string clears a version), and later inventory reports leave it alone until reset. reset drops the override and rebuilds the class from the latest inventory report.
- */
-export type ClusterOffersUpdate = {
-    offers: Array<{
-        /**
-         * Hardware class id, or a product name that resolves to a known class (L40S, NVIDIA-H100-80GB-HBM3)
-         */
-        class: string;
-        /**
-         * Drop the override; takes no other field
-         */
-        reset?: boolean;
-        nodes?: number;
-        gpus?: number;
-        driver?: string;
-        cuda?: string;
-        rocm?: string;
-        render?: Array<'osmesa' | 'egl'>;
-        /**
-         * Defaults to the vendor's device resource
-         */
-        resourceName?: string;
-        nodePool?: string;
-    }>;
-};
-
-/**
- * One class of the control plane's hardware taxonomy. Ids are the taxonomy's own (vendor/product), never raw product strings; every product spelling a node, nvidia-smi or an operator uses resolves to one through its aliases.
- */
-export type HardwareClass = {
-    /**
-     * Canonical id: nvidia/l40s, nvidia/h100-sxm, amd/mi300x, cpu/amd64
-     */
-    id: string;
-    /**
-     * Display name
-     */
-    name: string;
-    vendor: 'nvidia' | 'amd' | 'cpu';
-    /**
-     * Architecture family: volta, turing, ampere, ada, hopper, blackwell, cdna2, cdna3, cdna4, amd64; unknown for a provisional class nothing was learned about
-     */
-    family: string;
-    /**
-     * CUDA compute capability (NVIDIA only), e.g. 8.9
-     */
-    compute?: string;
-    /**
-     * AMD ISA target (AMD only), e.g. gfx942
-     */
-    gfx?: string;
-    /**
-     * Memory per device
-     */
-    vramBytes?: number;
-    /**
-     * Folded product strings that resolve to the class
-     */
-    aliases: Array<string>;
-    /**
-     * Minted from a product a cluster reported that the taxonomy did not know, so nothing reported is dropped; facets are whatever the node's feature discovery labels said
-     */
-    provisional: boolean;
-    createdAt: string;
-};
-
-export type HardwareClassList = {
-    /**
-     * Known classes first, then provisional ones
-     */
-    items: Array<HardwareClass>;
 };
 
 /**
@@ -2541,8 +1966,8 @@ export type ProbeRecommendation = {
      */
     renderRequests?: Array<{
         role?: string;
-        height?: number;
-        width?: number;
+        height: number;
+        width: number;
     }>;
     maxBatchSize?: number;
     batchWindowMs?: number;
@@ -2748,7 +2173,9 @@ export type RepoProbe = {
     /**
      * The image's dev.rlmesh.describe envelope (detail responses only).
      */
-    describe?: unknown;
+    describe?: {
+        [key: string]: unknown;
+    };
     /**
      * The parsed dev.rlmesh.package payload. checkpointRequires maps each checkpoint name to the facets (framework, accel, render) the compute variant serving it must carry, read off checkpoints[].requires in the label; catalog-only, never part of the run spec. checkpointDisplayNames maps each checkpoint name to the human name read off checkpoints[].displayName (trimmed, at most 64 characters; others dropped); display-only. checkpoints[].entrypoint (module:Class, served via RLMESH_SERVE_TARGET) is kept when valid; an invalid one is dropped with a warning.
      */
@@ -2950,123 +2377,13 @@ export type RegistryRepository = {
             kind: 'model' | 'environment' | 'unknown';
             id: string;
             name: string;
-            status?: string;
+            status?: 'pending' | 'probing' | 'ready' | 'failed';
             probe?: {
                 [key: string]: unknown;
             };
         };
     }>;
 };
-
-/**
- * Tenant-owned dedicated cluster view. Shared capacity is represented separately by ManagedCluster.
- */
-export type OrganizationClusterWritable = {
-    id: string;
-    name?: string;
-    organizationId?: string;
-    provider: string;
-    region: string;
-    capabilities: Array<string>;
-    maxConcurrency: number;
-    /**
-     * false means draining: no new work, in-flight work finishes
-     */
-    active: boolean;
-    lastSeenAt?: string;
-    disabledAt?: string;
-    archivedAt?: string;
-    /**
-     * The organization's preferred cluster
-     */
-    default: boolean;
-    /**
-     * The organization's own in-flight work; only on its dedicated clusters
-     */
-    activeAssignments?: number;
-    createdAt: string;
-    inventory?: OrganizationClusterInventorySummary;
-    warm: ClusterWarmSummary;
-    /**
-     * What the cluster offers per hardware class, CPU first; always includes cpu/amd64. Omits the platform-only resourceName, productLabel and nodePool.
-     */
-    offers: Array<OfferClass>;
-};
-
-export type OwnedClusterWritable = {
-    id: string;
-    name?: string;
-    organizationId?: string;
-    /**
-     * Owner display name, from local rows.
-     */
-    organizationName?: string;
-    /**
-     * The agent control credential (rlm_cs_) is installed; without one the cell cannot authenticate until an admin mints it (POST /v1/platform/clusters/{id}/credentials?purpose=control)
-     */
-    hasClusterSecret: boolean;
-    /**
-     * Purposes with a current credential, in the order control, relay, pull
-     */
-    installedCredentials: Array<ClusterCredentialPurpose>;
-    /**
-     * ADR-0019 migration state, forward only. legacy: rlm_cs_ is accepted for every purpose (clusters that predate per-purpose credentials). dual: additionally rlm_cr_ and rlm_cp_ for their own purposes (set once both are minted). split: each credential for its own purpose only (new registrations; the operator's split=true; or automatically once rlm_cr_ has authenticated, rlm_cp_ has authenticated at least twice an hour or more apart, both after the last use of rlm_cs_ outside agent control, the control credential was rotated after the move to dual, and rlm_cs_ has not been used outside agent control for 24 hours). After the legacy deadline a legacy cluster is refused for every purpose, and a dual one is refused rlm_cs_ outside agent control and keeps agent control only on an rlm_cs_ minted after it went dual.
-     */
-    credentialMode: 'legacy' | 'dual' | 'split';
-    provider: string;
-    region: string;
-    capabilities: Array<string>;
-    /**
-     * How many evaluations may run at once, whatever is inside them
-     */
-    maxConcurrency: number;
-    /**
-     * Lane ceiling: the most workloads one evaluation may run at once
-     */
-    maxParallelWorkloads: number;
-    /**
-     * How many probes may run at once; each also takes one of the maxConcurrency slots
-     */
-    maxProbeConcurrency: number;
-    active: boolean;
-    imagePullScope: 'org' | 'platform';
-    activeAssignments: number;
-    lastSeenAt?: string;
-    /**
-     * When the cluster was disabled (draining)
-     */
-    disabledAt?: string;
-    archivedAt?: string;
-    /**
-     * The shared pool's preferred cluster
-     */
-    platformDefault: boolean;
-    createdAt: string;
-    updatedAt: string;
-    inventory?: ClusterInventorySummary;
-    warm: ClusterWarmPool;
-    /**
-     * What the cluster offers per hardware class, CPU first; always includes cpu/amd64.
-     */
-    offers: Array<OfferClass>;
-};
-
-/**
- * A cluster and credentials shown exactly once.
- */
-export type OwnedProvisionedClusterWritable = {
-    /**
-     * Present on registration; existing credentials are retained
-     */
-    joinToken?: ClusterJoinToken;
-    cluster: OwnedClusterWritable;
-    /**
-     * All three purposes from registration (control, relay, pull, in that order); the one rotated purpose from a credential rotation
-     */
-    credentials: Array<ClusterCredential>;
-};
-
-export type RequestBody = ClusterOffersUpdate;
 
 export type GetInfoData = {
     body?: never;
@@ -3217,6 +2534,9 @@ export type ListEvaluationsData = {
          * Only evaluations created strictly before this RFC 3339 instant.
          */
         createdBefore?: string;
+        /**
+         * At most 1000; a larger value is capped.
+         */
         limit?: number;
         cursor?: string;
         /**
@@ -3390,6 +2710,9 @@ export type ListEvaluationSweepsData = {
     body?: never;
     path?: never;
     query?: {
+        /**
+         * At most 1000; a larger value is capped.
+         */
         limit?: number;
         cursor?: string;
     };
@@ -3732,6 +3055,9 @@ export type ListEvaluationWorkloadsData = {
         id: string;
     };
     query?: {
+        /**
+         * At most 1000; a larger value is capped.
+         */
         limit?: number;
         cursor?: string;
         /**
@@ -3773,6 +3099,9 @@ export type ListEvaluationEpisodesData = {
         id: string;
     };
     query?: {
+        /**
+         * At most 1000; a larger value is capped.
+         */
         limit?: number;
         cursor?: string;
         /**
@@ -3835,6 +3164,9 @@ export type ListEvaluationLogsData = {
          * Only lines observed after this RFC 3339 timestamp.
          */
         since?: string;
+        /**
+         * At most 1000; a larger value is capped.
+         */
         limit?: number;
         cursor?: string;
     };
@@ -4261,7 +3593,7 @@ export type StreamEvaluationEventsError = StreamEvaluationEventsErrors[keyof Str
 
 export type StreamEvaluationEventsResponses = {
     /**
-     * Server-sent event stream, beginning with a snapshot. Snapshot routes and live telemetry expose clusterId only for the reader organization's dedicated clusters. Shared capacity carries managed:true without a cell id, name, version, or inventory. A keep-alive comment arrives every 15 seconds. Every block, keep-alives included, carries two fields measured on the control plane's monotonic clock, never a producer's: `elapsed`, milliseconds since this stream opened, and `age`, milliseconds since the newest runner measurement (a telemetry window or summary, episode progress or an episode) reached the control plane, absent until one has. A reader bounds the stream's start by its own request timing and places later blocks on its own clock, so it can tell fresh data from data delivered late. Readers that do not know the fields ignore them, as server-sent events require.
+     * Server-sent event stream, beginning with a snapshot. Snapshot routes and live telemetry expose clusterId only for the reader organization's dedicated clusters. Shared capacity carries managed:true without a cell id, name, version, or inventory. The snapshot's `phase` is the evaluation's status. The server ends the stream once the evaluation is terminal (completed, failed or cancelled): right after the snapshot when it already is, otherwise after a `status` event or at a keep-alive. A reconnect starts from a fresh snapshot (there is no Last-Event-ID resume), so a reader stops reconnecting when the snapshot's phase is terminal. A keep-alive comment arrives every 15 seconds. Every block, keep-alives included, carries two fields measured on the control plane's monotonic clock, never a producer's: `elapsed`, milliseconds since this stream opened, and `age`, milliseconds since the newest runner measurement (a telemetry window or summary, episode progress or an episode) reached the control plane, absent until one has. A reader bounds the stream's start by its own request timing and places later blocks on its own clock, so it can tell fresh data from data delivered late. Readers that do not know the fields ignore them, as server-sent events require.
      */
     200: string;
 };
@@ -4335,6 +3667,21 @@ export type CheckCatalogCompatibilityResponses = {
          */
         code?: string;
         message?: string;
+        /**
+         * Present when the pairing was judged as a transfer: each thing the run would make up so the model runs.
+         */
+        transfer?: Array<{
+            /**
+             * blank_camera, zero_state, padded_state, empty_text, held_actuator or dropped_action.
+             */
+            kind: string;
+            role: string;
+            part?: string;
+            /**
+             * The fill in a sentence.
+             */
+            detail: string;
+        }>;
         /**
          * What a launch of this pairing would bind, not what the environment publishes by default: the model's catalog pairing params, the contract branch they select, the camera size its spec asserts, and the pairing's episode step cap. maxEpisodeSteps is the cap every scenario of the pairing shares; when the scenarios cap differently (or only some of them cap at all) the preview reports maxEpisodeStepsRange instead, since it names no scenario and the run's cap is whichever scenario it launches. Absent when the caller supplied their own spaces, or when the pairing binds nothing.
          */
@@ -4604,258 +3951,6 @@ export type SetDefaultProjectResponses = {
 
 export type SetDefaultProjectResponse = SetDefaultProjectResponses[keyof SetDefaultProjectResponses];
 
-export type ClaimClusterJoinData = {
-    body: ClaimClusterJoinRequest;
-    path?: never;
-    query?: never;
-    url: '/v1/cluster-join';
-};
-
-export type ClaimClusterJoinErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * invalid_join_token (unknown, revoked or malformed token) or join_token_expired (an expired token; its unconfirmed generation is revoked); error.code identifies the refusal
-     */
-    401: ErrorResponse;
-    /**
-     * cluster_mismatch, token_already_used, join_token_claimed, stale_attempt, relay_mismatch (relay differs from the first claim's choice), cluster_archived or unsafe_output_store (the control plane cannot route installs; nothing is claimed); error.code identifies the refusal
-     */
-    409: ErrorResponse;
-    /**
-     * Too many requests for this IP or token
-     */
-    429: unknown;
-};
-
-export type ClaimClusterJoinError = ClaimClusterJoinErrors[keyof ClaimClusterJoinErrors];
-
-export type ClaimClusterJoinResponses = {
-    /**
-     * One-time credentials and installation routing; Cache-Control is no-store
-     */
-    200: ClaimClusterJoinResponse;
-};
-
-export type ClaimClusterJoinResponse2 = ClaimClusterJoinResponses[keyof ClaimClusterJoinResponses];
-
-export type ConfirmClusterJoinData = {
-    body: ConfirmClusterJoinRequest;
-    path?: never;
-    query?: never;
-    url: '/v1/cluster-join/confirm';
-};
-
-export type ConfirmClusterJoinErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * invalid_join_token (not a control credential) or join_token_expired (the generation's token expired before confirmation); error.code identifies the refusal
-     */
-    401: ErrorResponse;
-    /**
-     * stale_generation: the generation is no longer current (reclaimed, reissued, reassigned or archived)
-     */
-    409: ErrorResponse;
-    /**
-     * Too many requests for this IP or credential
-     */
-    429: unknown;
-};
-
-export type ConfirmClusterJoinError = ConfirmClusterJoinErrors[keyof ConfirmClusterJoinErrors];
-
-export type ConfirmClusterJoinResponses = {
-    /**
-     * Current generation confirmed
-     */
-    200: {
-        status: 'confirmed';
-    };
-};
-
-export type ConfirmClusterJoinResponse = ConfirmClusterJoinResponses[keyof ConfirmClusterJoinResponses];
-
-export type IssueClusterJoinTokenData = {
-    body?: IssueClusterJoinTokenRequest;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/v1/clusters/{id}/join-tokens';
-};
-
-export type IssueClusterJoinTokenErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not owned by the active organization
-     */
-    404: ErrorResponse;
-    /**
-     * Cluster is archived (code cluster_archived)
-     */
-    409: ErrorResponse;
-    /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
-     */
-    429: ErrorResponse;
-    /**
-     * An upstream service could not complete the request
-     */
-    502: ErrorResponse;
-};
-
-export type IssueClusterJoinTokenError = IssueClusterJoinTokenErrors[keyof IssueClusterJoinTokenErrors];
-
-export type IssueClusterJoinTokenResponses = {
-    /**
-     * One-time token; Cache-Control is no-store
-     */
-    201: ClusterJoinToken;
-};
-
-export type IssueClusterJoinTokenResponse = IssueClusterJoinTokenResponses[keyof IssueClusterJoinTokenResponses];
-
-export type GetClusterBootstrapData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/v1/clusters/bootstrap';
-};
-
-export type GetClusterBootstrapErrors = {
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Output store requires unsafe region-wide S3 egress
-     */
-    409: unknown;
-};
-
-export type GetClusterBootstrapError = GetClusterBootstrapErrors[keyof GetClusterBootstrapErrors];
-
-export type GetClusterBootstrapResponses = {
-    /**
-     * Installation routing; requires clusters:read
-     */
-    200: InfoResponse;
-};
-
-export type GetClusterBootstrapResponse = GetClusterBootstrapResponses[keyof GetClusterBootstrapResponses];
-
-export type ListClustersData = {
-    body?: never;
-    path?: never;
-    query?: {
-        limit?: number;
-        cursor?: string;
-    };
-    url: '/v1/clusters';
-};
-
-export type ListClustersErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-};
-
-export type ListClustersError = ListClustersErrors[keyof ListClustersErrors];
-
-export type ListClustersResponses = {
-    /**
-     * Cluster page
-     */
-    200: {
-        items: Array<OrganizationCluster | ManagedCluster>;
-        nextCursor: PageCursor;
-    };
-};
-
-export type ListClustersResponse = ListClustersResponses[keyof ListClustersResponses];
-
-export type CreateOrganizationClusterData = {
-    body: {
-        name?: string;
-        provider: string;
-        region: string;
-        capabilities?: Array<string>;
-        /**
-         * Read-only; send none. A non-empty list is refused.
-         *
-         * @deprecated
-         */
-        gpuTypes?: Array<string>;
-        maxConcurrency?: number;
-    };
-    path?: never;
-    query?: never;
-    url: '/v1/clusters';
-};
-
-export type CreateOrganizationClusterErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
-     */
-    429: ErrorResponse;
-    /**
-     * An upstream service could not complete the request
-     */
-    502: ErrorResponse;
-};
-
-export type CreateOrganizationClusterError = CreateOrganizationClusterErrors[keyof CreateOrganizationClusterErrors];
-
-export type CreateOrganizationClusterResponses = {
-    /**
-     * Cluster and its three one-time credentials (ADR-0019): control (rlm_cs_, the agent), relay (rlm_cr_, the metrics/OTLP relays) and pull (rlm_cp_, the registry pull password); Cache-Control is no-store
-     */
-    201: OwnedProvisionedCluster;
-};
-
-export type CreateOrganizationClusterResponse = CreateOrganizationClusterResponses[keyof CreateOrganizationClusterResponses];
-
 export type ListPresetsData = {
     body?: never;
     path?: never;
@@ -5072,404 +4167,6 @@ export type UpdatePresetResponses = {
 
 export type UpdatePresetResponse = UpdatePresetResponses[keyof UpdatePresetResponses];
 
-export type DeleteOrganizationClusterData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/v1/clusters/{id}';
-};
-
-export type DeleteOrganizationClusterErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not found
-     */
-    404: ErrorResponse;
-    /**
-     * Cluster still referenced by assignments, evaluations, probe runs or status snapshots, or named by an active cluster secret connection (the message names it)
-     */
-    409: ErrorResponse;
-    /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
-     */
-    429: ErrorResponse;
-};
-
-export type DeleteOrganizationClusterError = DeleteOrganizationClusterErrors[keyof DeleteOrganizationClusterErrors];
-
-export type DeleteOrganizationClusterResponses = {
-    /**
-     * Cluster deleted
-     */
-    204: void;
-};
-
-export type DeleteOrganizationClusterResponse = DeleteOrganizationClusterResponses[keyof DeleteOrganizationClusterResponses];
-
-export type GetOrganizationClusterData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/v1/clusters/{id}';
-};
-
-export type GetOrganizationClusterErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not found
-     */
-    404: ErrorResponse;
-};
-
-export type GetOrganizationClusterError = GetOrganizationClusterErrors[keyof GetOrganizationClusterErrors];
-
-export type GetOrganizationClusterResponses = {
-    /**
-     * Owned cluster
-     */
-    200: OwnedCluster;
-};
-
-export type GetOrganizationClusterResponse = GetOrganizationClusterResponses[keyof GetOrganizationClusterResponses];
-
-export type UpdateOrganizationClusterData = {
-    body: {
-        maxConcurrency?: number;
-        /**
-         * false drains, true resumes
-         */
-        active?: boolean;
-        /**
-         * Archive an idle cluster and revoke every credential
-         */
-        archived?: true;
-        name?: string;
-        /**
-         * true makes this the organization's default cluster; false clears it (only when it is the current default)
-         */
-        default?: boolean;
-        warm?: ClusterWarmPoolRequest;
-    };
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/v1/clusters/{id}';
-};
-
-export type UpdateOrganizationClusterErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not found
-     */
-    404: ErrorResponse;
-    /**
-     * Cluster still has pending or in-flight assignments, or is an organization's cluster being moved to the shared pool or another organization (cluster_org_linked)
-     */
-    409: ErrorResponse;
-    /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
-     */
-    429: ErrorResponse;
-};
-
-export type UpdateOrganizationClusterError = UpdateOrganizationClusterErrors[keyof UpdateOrganizationClusterErrors];
-
-export type UpdateOrganizationClusterResponses = {
-    /**
-     * Cluster updated
-     */
-    204: void;
-};
-
-export type UpdateOrganizationClusterResponse = UpdateOrganizationClusterResponses[keyof UpdateOrganizationClusterResponses];
-
-export type RotateOrganizationClusterCredentialsData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query: {
-        purpose: ClusterCredentialPurpose;
-        force?: boolean;
-    };
-    url: '/v1/clusters/{id}/credentials';
-};
-
-export type RotateOrganizationClusterCredentialsErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not found
-     */
-    404: ErrorResponse;
-    /**
-     * The cluster is archived (code cluster_archived), a join claim is pending (code join_pending; issue a new install command), a previous rotation of this purpose is still in its overlap (retry with force=true; never returned for split=true on a dual cluster), or split=true on a legacy cluster (code credentials_missing); otherwise code rotation_in_progress
-     */
-    409: ErrorResponse;
-    /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
-     */
-    429: ErrorResponse;
-    /**
-     * An upstream service could not complete the request
-     */
-    502: ErrorResponse;
-};
-
-export type RotateOrganizationClusterCredentialsError = RotateOrganizationClusterCredentialsErrors[keyof RotateOrganizationClusterCredentialsErrors];
-
-export type RotateOrganizationClusterCredentialsResponses = {
-    /**
-     * Owned cluster and one-time replacement credential; Cache-Control no-store
-     */
-    201: OwnedProvisionedCluster;
-};
-
-export type RotateOrganizationClusterCredentialsResponse = RotateOrganizationClusterCredentialsResponses[keyof RotateOrganizationClusterCredentialsResponses];
-
-export type GetOrganizationClusterNodesData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/v1/clusters/{id}/nodes';
-};
-
-export type GetOrganizationClusterNodesErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not found
-     */
-    404: ErrorResponse;
-};
-
-export type GetOrganizationClusterNodesError = GetOrganizationClusterNodesErrors[keyof GetOrganizationClusterNodesErrors];
-
-export type GetOrganizationClusterNodesResponses = {
-    /**
-     * Latest node snapshot
-     */
-    200: ClusterNodes;
-};
-
-export type GetOrganizationClusterNodesResponse = GetOrganizationClusterNodesResponses[keyof GetOrganizationClusterNodesResponses];
-
-export type GetOrganizationClusterQueueData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/v1/clusters/{id}/queue';
-};
-
-export type GetOrganizationClusterQueueErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not found
-     */
-    404: ErrorResponse;
-};
-
-export type GetOrganizationClusterQueueError = GetOrganizationClusterQueueErrors[keyof GetOrganizationClusterQueueErrors];
-
-export type GetOrganizationClusterQueueResponses = {
-    /**
-     * Queue entries in dispatch order
-     */
-    200: {
-        items: Array<ClusterQueueEntry>;
-    };
-};
-
-export type GetOrganizationClusterQueueResponse = GetOrganizationClusterQueueResponses[keyof GetOrganizationClusterQueueResponses];
-
-export type GetOrganizationClusterOffersData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/v1/clusters/{id}/offers';
-};
-
-export type GetOrganizationClusterOffersErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not found
-     */
-    404: ErrorResponse;
-};
-
-export type GetOrganizationClusterOffersError = GetOrganizationClusterOffersErrors[keyof GetOrganizationClusterOffersErrors];
-
-export type GetOrganizationClusterOffersResponses = {
-    /**
-     * Offers
-     */
-    200: ClusterOffers;
-};
-
-export type GetOrganizationClusterOffersResponse = GetOrganizationClusterOffersResponses[keyof GetOrganizationClusterOffersResponses];
-
-export type UpdateOrganizationClusterOffersData = {
-    body: RequestBody;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/v1/clusters/{id}/offers';
-};
-
-export type UpdateOrganizationClusterOffersErrors = {
-    /**
-     * The request is invalid
-     */
-    400: ErrorResponse;
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-    /**
-     * Cluster not found
-     */
-    404: ErrorResponse;
-    /**
-     * Cluster archived
-     */
-    409: ErrorResponse;
-    /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
-     */
-    429: ErrorResponse;
-};
-
-export type UpdateOrganizationClusterOffersError = UpdateOrganizationClusterOffersErrors[keyof UpdateOrganizationClusterOffersErrors];
-
-export type UpdateOrganizationClusterOffersResponses = {
-    /**
-     * Offers after the change
-     */
-    200: ClusterOffers;
-};
-
-export type UpdateOrganizationClusterOffersResponse = UpdateOrganizationClusterOffersResponses[keyof UpdateOrganizationClusterOffersResponses];
-
-export type ListHardwareClassesData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/v1/hardware-classes';
-};
-
-export type ListHardwareClassesErrors = {
-    /**
-     * Authentication is required or invalid
-     */
-    401: ErrorResponse;
-    /**
-     * The caller does not have access to this operation
-     */
-    403: ErrorResponse;
-};
-
-export type ListHardwareClassesError = ListHardwareClassesErrors[keyof ListHardwareClassesErrors];
-
-export type ListHardwareClassesResponses = {
-    /**
-     * Hardware classes
-     */
-    200: HardwareClassList;
-};
-
-export type ListHardwareClassesResponse = ListHardwareClassesResponses[keyof ListHardwareClassesResponses];
-
 export type RestoreRepoData = {
     body: {
         path: string;
@@ -5595,6 +4292,9 @@ export type ListReposResponse = ListReposResponses[keyof ListReposResponses];
 export type DeleteRepoData = {
     body?: never;
     path: {
+        /**
+         * Repo path including namespace. Its slashes may be sent as they are or percent-encoded.
+         */
         path: string;
     };
     query: {
@@ -5644,7 +4344,7 @@ export type GetRepoData = {
     body?: never;
     path: {
         /**
-         * Repo path including namespace, e.g. prebuilt/gr00t-n1.7/libero
+         * Repo path including namespace, e.g. prebuilt/gr00t-n1.7/libero. Its slashes may be sent as they are or percent-encoded.
          */
         path: string;
     };
@@ -5684,6 +4384,9 @@ export type UpdateRepoData = {
         tags?: Array<string>;
     };
     path: {
+        /**
+         * Repo path including namespace. Its slashes may be sent as they are or percent-encoded.
+         */
         path: string;
     };
     query?: never;
@@ -5724,7 +4427,7 @@ export type GetRepoCompatibilityData = {
     body?: never;
     path: {
         /**
-         * Repo path including namespace, e.g. prebuilt/gr00t-n1.7/libero
+         * Repo path including namespace, e.g. prebuilt/gr00t-n1.7/libero. Its slashes may be sent as they are or percent-encoded.
          */
         path: string;
     };
@@ -5764,7 +4467,7 @@ export type PutRepoVariantsData = {
     };
     path: {
         /**
-         * Repo path including namespace, e.g. acme/pi0/libero
+         * Repo path including namespace, e.g. acme/pi0/libero. Its slashes may be sent as they are or percent-encoded.
          */
         path: string;
     };
@@ -5825,6 +4528,9 @@ export type PutRepoVariantsResponse = PutRepoVariantsResponses[keyof PutRepoVari
 export type UpdateRepoVariantData = {
     body: RepoVariantOverride;
     path: {
+        /**
+         * Repo path including namespace. Its slashes may be sent as they are or percent-encoded.
+         */
         path: string;
         key: string;
     };
@@ -6104,7 +4810,7 @@ export type CancelProbeRunResponses = {
      */
     200: {
         id: string;
-        status: string;
+        status: 'queued' | 'running' | 'ready' | 'failed' | 'cancelled';
     };
 };
 
@@ -6206,6 +4912,9 @@ export type ListRegistryRepositoriesData = {
          */
         repository?: string;
         namespace?: string;
+        /**
+         * At most 1000; a larger value is capped.
+         */
         limit?: number;
         cursor?: string;
     };
