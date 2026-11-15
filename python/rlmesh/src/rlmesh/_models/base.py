@@ -546,7 +546,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
         from rlmesh.numpy import Model
 
-        result = Model(lambda observation: 0).run("127.0.0.1:5555/env", seeds=[0])
+        result = Model(lambda observation: 0).run("127.0.0.1:5555", seeds=[0])
         print(result.mean_reward)
     """
 

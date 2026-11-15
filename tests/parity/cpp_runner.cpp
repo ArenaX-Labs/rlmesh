@@ -221,6 +221,31 @@ void https_env(Model &model) {
     current_error_masked(":1", ":PORT");
   }
 }
+// An env served at a bare ":0" (short for ":0/env"), run at its bare
+// host:port#key.
+void bare_env(Model &model, const std::shared_ptr<Script> &state) {
+  EnvServer server(Counter{state}, EnvServerOptions{}.with_address(":0"));
+  server.start();
+  const std::string address = server.address();
+  const auto slash = address.rfind('/');
+  try {
+    auto result = model.run(address.substr(0, slash));
+    std::cout << "\"episodes\":" << result.num_episodes()
+              << ",\"steps\":" << result.total_steps() << ",\"served_name\":";
+    quote(address.substr(slash + 1));
+  } catch (...) {
+    current_error();
+  }
+  server.shutdown();
+}
+void bare_port_env(Model &model) {
+  try {
+    model.run("5555");
+    REQUIRE(false);
+  } catch (...) {
+    current_error();
+  }
+}
 // A model served as the participant "policy" of a session this process
 // hosts, reached by its address and driving a local env.
 void served_model(Env &env, Model &model,
@@ -447,6 +472,10 @@ int main(int argc, char **argv) {
       server.shutdown();
     } else if (op == "https_env") {
       https_env(model);
+    } else if (op == "bare_env") {
+      bare_env(model, state);
+    } else if (op == "bare_port_env") {
+      bare_port_env(model);
     } else if (op == "served_model") {
       served_model(env, model, state);
     } else if (op == "busy_remote") {

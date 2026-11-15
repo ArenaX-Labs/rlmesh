@@ -6,8 +6,8 @@
 //! Python client in `examples/python/quickstart/eval.py`.
 //!
 //! ```bash
-//! cargo run -p rlmesh --example serve_env            # :5555/env
-//! cargo run -p rlmesh --example serve_env :7000/env
+//! cargo run -p rlmesh --example serve_env            # :5555
+//! cargo run -p rlmesh --example serve_env :7000
 //! ```
 #![allow(clippy::print_stdout)]
 
@@ -73,7 +73,7 @@ impl Env for CounterEnv {
 fn main() -> rlmesh::Result<()> {
     let address = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| ":5555/env".to_string());
+        .unwrap_or_else(|| ":5555".to_string());
 
     // The server binds at construction, so the resolved address is known
     // before serving. `serve()` blocks; Ctrl-C drains and closes the env.

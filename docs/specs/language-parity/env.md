@@ -433,9 +433,12 @@ ValueError (`py/_authoring.py:287`).
    `metadata[ENV_BRANCH_METADATA_KEY]` after JSON parsing, else `ValueError`
    (`py/_server.py:75-105`).
 5. The address is normalized as a session participant address. `None` binds
-   `:0/env`; an empty address is refused with `ValueError`. There are no
-   host, port, path or transport helpers. V1 endpoint addresses fail with
-   `v1 endpoints need RLMesh 0.1; serve with rlmesh.serve / pass the session address`.
+   `:0/env`; a bare `host:port` (or `:port`, keyed or not) is short for
+   `host:port/env`; an empty address is refused with `ValueError`. There are
+   no host, port, path or transport helpers. V1 endpoint addresses
+   (`tcp://`, `unix://`, `https://`) fail with
+   `v1 endpoints need RLMesh 0.1; serve with rlmesh.serve / pass the session address`;
+   a bare port (`5555`) fails naming `:5555`.
 6. The workflow edition is resolved (Core, D-7): an explicit
    `options.workflow_edition` is the call's value (COR-6 rung 1), adopted
    verbatim ahead of `RLMESH_WORKFLOW_EDITION`; otherwise

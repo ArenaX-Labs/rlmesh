@@ -209,7 +209,7 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue], GymEnv):  # pyright: igno
     prints its own).
 
     Args:
-        address: Endpoint address such as ``"127.0.0.1:5555/env"``,
+        address: Endpoint address such as ``"127.0.0.1:5555"``,
             ``"127.0.0.1:5555"``, or ``"unix:///tmp/env.sock"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
@@ -222,7 +222,7 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue], GymEnv):  # pyright: igno
 
     Examples:
         >>> from rlmesh.numpy import RemoteEnv
-        >>> env = RemoteEnv("127.0.0.1:5555/env")
+        >>> env = RemoteEnv("127.0.0.1:5555")
         >>> observation, info = env.reset(seed=42)
         >>> observation, reward, terminated, truncated, info = env.step(0)
         >>> env.close()
@@ -246,7 +246,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue], GymVectorEnv)
     by leaf as :class:`RemoteEnv` casts one.
 
     Args:
-        address: Endpoint address such as ``"127.0.0.1:5555/env"``.
+        address: Endpoint address such as ``"127.0.0.1:5555"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.
@@ -258,7 +258,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue], GymVectorEnv)
 
     Examples:
         >>> from rlmesh.numpy import RemoteVectorEnv
-        >>> envs = RemoteVectorEnv("127.0.0.1:5555/env")
+        >>> envs = RemoteVectorEnv("127.0.0.1:5555")
         >>> observations, infos = envs.reset(seed=42)
         >>> actions = [envs.single_action_space.sample() for _ in range(envs.num_envs)]
         >>> observations, rewards, terminations, truncations, infos = envs.step(actions)

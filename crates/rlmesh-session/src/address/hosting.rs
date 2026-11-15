@@ -213,6 +213,77 @@ pub(crate) fn refused_link(base: SocketAddr) -> SessionError {
     ))
 }
 
+/// What a peer that is no session host said: an HTTP/2 server (a gRPC one,
+/// as RLMesh 0.1 serves), or something else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Foreign {
+    Http2,
+    Other,
+}
+
+/// The HTTP/2 client connection preface.
+const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// How long a join runs before [`open_client`] probes its peer: a healthy
+/// join is done by then and never sends a session host a stray preface.
+const PROBE_AFTER: Duration = Duration::from_secs(1);
+
+/// How long a peer gets to answer an HTTP/2 preface ([`probe`]).
+const PREFACE_PROBE: Duration = Duration::from_secs(1);
+
+/// What `head`, the first bytes a peer sent, says it is: a SETTINGS frame on
+/// stream 0 opens every HTTP/2 server's side of a connection.
+pub(crate) fn foreign(head: &[u8]) -> Foreign {
+    match head {
+        [_, _, _, 0x04, _, 0, 0, 0, 0, ..] => Foreign::Http2,
+        _ => Foreign::Other,
+    }
+}
+
+/// Up to 9 bytes `stream` sends within `within` (an HTTP/2 frame header).
+async fn first_bytes(stream: &mut tokio::net::TcpStream, within: Duration) -> Vec<u8> {
+    use tokio::io::AsyncReadExt as _;
+    let mut head = [0; 9];
+    let mut read = 0;
+    let deadline = tokio::time::Instant::now() + within;
+    while read < head.len() {
+        match tokio::time::timeout_at(deadline, stream.read(&mut head[read..])).await {
+            Ok(Ok(n)) if n > 0 => read += n,
+            _ => break,
+        }
+    }
+    head[..read].to_vec()
+}
+
+/// Whether the peer at `addr` is no session host, and what it is, by what
+/// it answers an HTTP/2 preface with: an HTTP/2 server its SETTINGS (sent
+/// at once, spoken to or not), another server whatever it answers garbage
+/// with. A session host says nothing: it reads a frame that never
+/// completes. `None`: silent, as a session host is.
+async fn probe(addr: SocketAddr) -> Option<Foreign> {
+    use tokio::io::AsyncWriteExt as _;
+    let connect = tokio::time::timeout(LISTEN_PROBE, tokio::net::TcpStream::connect(addr));
+    let mut stream = connect.await.ok()?.ok()?;
+    stream.write_all(H2_PREFACE).await.ok()?;
+    let head = first_bytes(&mut stream, PREFACE_PROBE).await;
+    (!head.is_empty()).then(|| foreign(&head))
+}
+
+/// The failure of a join whose peer at `base` is no session host.
+pub(crate) fn not_session(base: SocketAddr, foreign: Foreign) -> SessionError {
+    SessionError::NotSession(match foreign {
+        Foreign::Http2 => format!(
+            "the server at {base} doesn't speak the RLMesh session protocol: it answers \
+             HTTP/2, as an RLMesh 0.1 (gRPC) server does. RLMesh 0.2 can't connect to 0.1; \
+             serve it with RLMesh 0.2"
+        ),
+        Foreign::Other => format!(
+            "the server at {base} doesn't speak the RLMesh session protocol; is it an RLMesh \
+             0.1 (gRPC) server, or something else on that port? RLMesh 0.2 can't connect to 0.1"
+        ),
+    })
+}
+
 /// Links to the host at `base` as a Zenoh client within `timeout`, with no
 /// password (a LAN host's, as rlmeshd's pairing endpoint is reached).
 pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, SessionError> {
@@ -243,7 +314,34 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
 /// [`refused_link`], final. A port that drops a connection as soon as it
 /// accepts it is no such host ([`holds`]): the join keeps trying. Running
 /// out of time is a timeout (a Zenoh error), which a retry may get past.
+///
+/// A peer that is no session host fails the join as [`not_session`], final:
+/// one that answers an HTTP/2 preface ([`probe`]: beside a join still open
+/// after [`PROBE_AFTER`], so a healthy join opens no extra connection, and
+/// once more before calling it a refusal).
 pub(super) async fn open_client(
+    base: SocketAddr,
+    link: Option<LinkAuth>,
+    deadline: tokio::time::Instant,
+) -> Result<Transport, SessionError> {
+    let probe = async {
+        tokio::time::sleep(PROBE_AFTER).await;
+        while !listening(base).await {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        match probe(joinable(base)).await {
+            Some(foreign) => foreign,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        biased;
+        joined = join_client(base, link, deadline) => joined,
+        foreign = probe => Err(not_session(base, foreign)),
+    }
+}
+
+async fn join_client(
     base: SocketAddr,
     link: Option<LinkAuth>,
     deadline: tokio::time::Instant,
@@ -307,6 +405,10 @@ pub(super) async fn open_client(
                 .unwrap_or(false);
         refused = if by_host { refused + 1 } else { 0 };
         if refused >= REFUSED_ROUNDS {
+            let answer = tokio::time::timeout_at(deadline, probe(joinable(base)));
+            if let Ok(Some(foreign)) = answer.await {
+                return Err(not_session(base, foreign));
+            }
             return Err(refused_link(base));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

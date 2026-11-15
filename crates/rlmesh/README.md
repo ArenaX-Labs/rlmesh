@@ -277,7 +277,7 @@ let model = RemoteModel::new(RemoteModelOptions::default().address("127.0.0.1:74
 let result = rlmesh::run(&model, "127.0.0.1:7447/counter", RunOptions::default())?;
 ```
 
-Addresses are session participant addresses (`host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port). 0.2 rejects the removed v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
+Addresses are session participant addresses (`host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port). Where an env is served or dialled, a bare `host:port` is short for `host:port/env`. 0.2 rejects the removed v1 forms (`tcp://host:port`, `unix:///path/to.sock`, a bare port) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
 
 ### Adapters
 

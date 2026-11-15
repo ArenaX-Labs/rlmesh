@@ -8,8 +8,13 @@ endpoint helpers, shutdown RPC and wire deadlines.
 ## Addresses and options
 
 `RemoteEnv`, `RemoteVectorEnv` and `RemoteModel` take a session address such as
-`:0/env`, `host:port/env`, or the address returned by a server. TCP, Unix and
-HTTPS v1 endpoint addresses fail with ValueError and the migration hint:
+`:0/env`, `host:port/env`, or the address returned by a server. For an env
+(`RemoteEnv`, `RemoteVectorEnv`, a run's or binding's env address), a bare
+`host:port` is short for `host:port/env`; a `RemoteModel`'s address names its
+model. A peer at the address that is no session host (an RLMesh 0.1 gRPC
+server answers HTTP/2) fails the connect at once as `ProtocolException`, saying
+it doesn't speak the RLMesh session protocol. TCP, Unix and HTTPS v1 endpoint
+addresses fail with ValueError and the migration hint:
 `v1 endpoints need RLMesh 0.1; serve with rlmesh.serve / pass the session address`.
 There are no host, port, path, transport, api_key or tls_ca_file constructor
 helpers. The platform HTTP client retains its own credentials.

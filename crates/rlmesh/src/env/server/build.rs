@@ -343,7 +343,7 @@ fn check_expected_branch(metadata: Option<&crate::Metadata>) -> Result<()> {
 }
 
 fn normalize_bind_address(options: &EnvServerOptions) -> Result<String> {
-    let address = options.address.as_deref().unwrap_or(":0/env");
-    crate::ConnectAddress::parse(address)?;
-    Ok(address.to_string())
+    let address = crate::address::env_address(options.address.as_deref().unwrap_or(":0/env"));
+    crate::ConnectAddress::parse(&address)?;
+    Ok(address)
 }

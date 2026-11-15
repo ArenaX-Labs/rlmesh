@@ -27,7 +27,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
     caller at a time, so dial one client per thread.
 
     Args:
-        address: Endpoint address such as ``"localhost:5555/env"``.
+        address: Endpoint address such as ``"localhost:5555"`` (short for ``"localhost:5555/env"``).
         connect_timeout_seconds: Optional dial timeout in seconds.
         request_timeout_seconds: Optional per-request timeout in seconds.
         workflow_edition: The workflow edition this client declares.

@@ -155,8 +155,11 @@ fn construct_server(
         ))
     })?;
 
-    let address = address.unwrap_or(":0/env");
-    rlmesh::ext::ConnectAddress::parse(address).map_err(to_py_err)?;
+    // A lone host:port is short for host:port/env.
+    let address = rlmesh::ext::ConnectAddress::env(address.unwrap_or(":0/env"))
+        .map_err(to_py_err)?
+        .as_str();
+    let address = address.as_str();
     rlmesh::lockstep::check(env_contract.clone())
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     // Without the GIL: the host it joins may be a Python thread's of this

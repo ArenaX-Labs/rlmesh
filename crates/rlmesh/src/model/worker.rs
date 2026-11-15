@@ -114,9 +114,10 @@ impl RunLocalOptions {
         }
     }
 
-    /// Parse a string env address (e.g. `"host:7447/env"`).
+    /// Parse a string env address (e.g. `"host:7447/env"`, or `"host:7447"`
+    /// for short).
     pub fn parse(env_address: &str) -> Result<Self> {
-        Ok(Self::new(ConnectAddress::parse(env_address)?))
+        Ok(Self::new(ConnectAddress::env(env_address)?))
     }
 
     /// Run exactly `max_episodes` episodes (0 runs nothing).

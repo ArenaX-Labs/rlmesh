@@ -49,7 +49,7 @@ where Unreal normalizes its reward by `TargetRange`.
 ```python
 import rlmesh
 
-print(rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:7447/env", episodes=3))
+print(rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:7447", episodes=3))
 ```
 
 ## Serve your own environment

@@ -336,6 +336,8 @@ fn execute(case: &Json) -> Json {
             out
         }
         "https_env" => https_env(&model),
+        "bare_env" => bare_env(env, &model),
+        "bare_port_env" => error_record(model.run("5555", RunOptions::default()).unwrap_err()),
         "served_model" => served_model(&mut env, &model),
         "busy_remote" => {
             let server = EnvServer::new(
@@ -994,6 +996,32 @@ fn masked(mut record: Json, value: &str, mask: &str) -> Json {
 }
 
 /// A run refuses an https:// env endpoint (v1) before any dial.
+/// An env served at a bare `:0` (short for `:0/env`), run at its bare
+/// `host:port#key`.
+fn bare_env(env: ScriptedEnv, model: &Model) -> Json {
+    let server = EnvServer::new(
+        env,
+        EnvServerOptions {
+            address: Some(":0".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    server.start().unwrap();
+    let address = server.address().to_string();
+    let (bare, name) = address.rsplit_once('/').unwrap();
+    let out = match model.run(bare, RunOptions::default()) {
+        Ok(result) => json!({
+            "episodes": result.num_episodes(),
+            "steps": result.total_steps(),
+            "served_name": name,
+        }),
+        Err(error) => error_record(error),
+    };
+    server.shutdown().unwrap();
+    out
+}
+
 fn https_env(model: &Model) -> Json {
     let error = model
         .run("https://127.0.0.1:1", RunOptions::default())

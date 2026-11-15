@@ -19992,6 +19992,7 @@ rust = [
   { path = "rlmesh::ext::ConnectAddress::StructuralPartialEq", rule = "R-25" },
   { path = "rlmesh::ext::ConnectAddress::Lockstep", rule = "R-25" },
   { path = "rlmesh::ext::ConnectAddress::as_str", rule = "R-25" },
+  { path = "rlmesh::ext::ConnectAddress::env", rule = "R-25" },
   { path = "rlmesh::ext::ConnectAddress::parse", rule = "R-25" },
   { path = "rlmesh::ext::EnvServerOptions", rule = "R-25" },
   { path = "rlmesh::ext::EnvServerOptions::Clone", rule = "R-25" },

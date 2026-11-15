@@ -116,7 +116,7 @@ impl ClientCore {
 
         let runtime = shared_runtime();
 
-        rlmesh::ext::ConnectAddress::parse(address).map_err(to_py_err)?;
+        rlmesh::ext::ConnectAddress::env(address).map_err(to_py_err)?;
         let connect_timeout = rlmesh::binding::env::client_timeout_from_secs(
             connect_timeout_seconds,
             "connect_timeout_seconds",

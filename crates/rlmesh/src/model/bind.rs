@@ -80,6 +80,12 @@ impl Binding {
         execution_horizon: u32,
         workflow_edition: Option<&str>,
     ) -> Result<Self> {
+        let address = &crate::address::env_address(address);
+        if let Some(why) = crate::address::bare_port(address) {
+            return Err(Error::invalid_argument(format!(
+                "Model.bind({address:?}): {why}"
+            )));
+        }
         if !crate::address::is_v2(address) {
             let address = crate::address::redact(address);
             return Err(Error::invalid_argument(format!(

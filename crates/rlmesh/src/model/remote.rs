@@ -65,7 +65,10 @@ pub struct RemoteModel(Arc<RemoteModelInner>);
 impl RemoteModel {
     /// Check the session participant address and local timeouts without I/O.
     pub fn new(options: RemoteModelOptions) -> Result<RemoteModel> {
-        let address = crate::env::client::normalize_connect_address(options.address.as_deref())?;
+        // A model has no default name: its address names it.
+        let address = options
+            .address
+            .ok_or_else(|| crate::Error::invalid_argument("address is required"))?;
         ConnectAddress::parse(&address)?;
         let connect_timeout = crate::env::client::normalize_timeout(options.connect_timeout);
         let request_timeout = crate::env::client::normalize_timeout(options.request_timeout);

@@ -6,7 +6,11 @@ from typing import NoReturn
 
 
 def refuse_v1_address(where: str, address: str) -> None:
-    """Refuse ``address`` when it is a v1 endpoint (0.2 uses session addresses)."""
+    """Refuse ``address`` when it is a v1 endpoint (0.2 uses session addresses).
+
+    A bare ``host:port`` is an env's address (short for ``host:port/env``):
+    callers expand it first (``_client._endpoint.env_address``).
+    """
     from ._client._endpoint import redact_address
     from ._rlmesh import is_v2_address
 
@@ -14,6 +18,12 @@ def refuse_v1_address(where: str, address: str) -> None:
     legacy_scheme = bool(separator) and scheme not in {"rlmesh", "lockstep"}
     if not legacy_scheme and is_v2_address(address):
         return
+    port = address.strip()
+    if port.isascii() and port.isdigit():
+        raise ValueError(
+            f'{where}({port!r}): "{port}" is a bare port, which names no host: write '
+            f'":{port}" for this machine\'s port {port} (or "host:{port}")'
+        )
     raise ValueError(
         f"{where}({redact_address(address)!r}): v1 endpoints need RLMesh 0.1; "
         "serve with rlmesh.serve / pass the session address"

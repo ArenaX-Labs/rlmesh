@@ -349,7 +349,7 @@ rlmesh_binding_free(binding);
 
 ### Remote clients
 
-`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an env server with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. 0.2 rejects the removed v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
+`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an env server with no address is `:0/env`). Where an env is served or dialled, a bare `host:port` is short for `host:port/env`. An env or model joins the session there, hosting it in its own process when nothing listens on that port. 0.2 rejects the removed v1 forms (`tcp://host:port`, `unix:///path/to.sock`, a bare port) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
 
 ```c
 RLMeshRemoteEnvOptions options = RLMESH_REMOTE_ENV_OPTIONS_INIT;
