@@ -142,9 +142,10 @@ class EnvServer:
             ``VectorEnvLike`` shape) is served by the vector server instead.
         address: The env's participant address in a session:
             ``"host:port/name"``, ``":0/name"`` (an OS-assigned local port) or
-            ``"session/name"``. Defaults to ``":0/env"``. A v1 endpoint
-            (``"host:port"``, ``"tcp://..."`` or ``"unix://..."``) raises a
-            ``ValueError`` naming the session form.
+            ``"session/name"``; a bare ``"host:port"`` is short for
+            ``"host:port/env"``. Defaults to ``":0/env"``. A v1 endpoint
+            (``"tcp://..."`` or ``"unix://..."``) raises a ``ValueError``
+            naming the session form.
         options: Optional serve lifecycle options: the close timeout and the
             workflow edition this endpoint declares (see
             :doc:`/editions/index`). An edition set here is declared verbatim;

@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 #### All languages
 
-- The 0.1 gRPC transport (`rlmesh-wire-v1`) is removed. Envs and models serve and connect on session participant addresses such as `127.0.0.1:7447/env`; `host:port`, `tcp://`, `unix://` and `https://` endpoints are refused with an error that says so.
+- The 0.1 gRPC transport (`rlmesh-wire-v1`) is removed. Envs and models serve and connect on session participant addresses such as `127.0.0.1:7447/policy`. Where an env is served or dialled, a bare `host:port` is short for `host:port/env`, so `EnvServer(env, "127.0.0.1:5555")` and `RemoteEnv("127.0.0.1:5555")` meet; a served model is always named (`Model("lab:7447/openpi")`). `tcp://`, `unix://` and `https://` endpoints are refused with an error that says so, and a bare port (`5555`) with one naming `:5555`. Dialling a 0.1 (gRPC) server fails within about a second, saying that it doesn't speak the session protocol and that 0.2 can't connect to 0.1.
 - A session listens on one port (7447 by default; TCP, and UDP at the same number for boards) in place of 0.1's port 50051.
 - Session keys replace 0.1's `api_key`, `tls_ca_file` and endpoint tokens, and remote shutdown is gone. `RLMESH_API_KEY` still authenticates `rlmesh.managed` and the CLI's `eval` commands, but no longer env or model connections.
 - Images built for 0.1 must be rebuilt: `SandboxEnv`, `SandboxModel` and `rlmesh check-image` refuse an image that advertises the 0.1 protocol.

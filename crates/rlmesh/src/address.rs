@@ -4,6 +4,30 @@ use std::{fmt, str::FromStr};
 pub(crate) const V1_REFUSAL: &str =
     "v1 endpoints need RLMesh 0.1; serve with rlmesh.serve / pass the session address";
 
+/// An env's participant address: a lone `host:port` is short for
+/// `host:port/env` (anything else as given).
+pub(crate) fn env_address(text: &str) -> String {
+    rlmesh_session::address::defaulting_participant(text, rlmesh_session::address::DEFAULT_ENV)
+}
+
+/// Why a bare port (`5555`) is no address, when `text` is one: it names no
+/// host, and `:5555` does.
+pub(crate) fn bare_port(text: &str) -> Option<String> {
+    let port = text.trim();
+    (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())).then(|| {
+        format!(
+            "{port:?} is a bare port, which names no host: write \":{port}\" for this machine's \
+             port {port} (or \"host:{port}\")"
+        )
+    })
+}
+
+/// Why `text`, which is no session participant address, is refused: a
+/// bare port names no host; anything else is a v1 endpoint.
+pub(crate) fn refusal(text: &str) -> Error {
+    Error::invalid_argument(bare_port(text).unwrap_or_else(|| V1_REFUSAL.into()))
+}
+
 pub(crate) fn is_v2(text: &str) -> bool {
     let text = text.trim();
     if let Some((scheme, _)) = text.split_once("://")
@@ -31,9 +55,15 @@ impl ConnectAddress {
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
         let value = value.as_ref();
         if !is_v2(value) {
-            return Err(Error::invalid_argument(V1_REFUSAL));
+            return Err(refusal(value));
         }
         Ok(Self::Lockstep(value.to_string()))
+    }
+
+    /// Parse an env's participant address, where a lone `host:port` is
+    /// short for `host:port/env`.
+    pub fn env(value: impl AsRef<str>) -> Result<Self> {
+        Self::parse(env_address(value.as_ref()))
     }
     /// The participant address as a string.
     pub fn as_str(&self) -> String {
@@ -73,16 +103,41 @@ mod tests {
             "https://host:443#key/env",
             "tcp://host:1#key/env",
             "unix:///tmp/env.sock#key/env",
-            "host:1",
-            "50051",
         ] {
-            assert_eq!(
-                ConnectAddress::parse(address).unwrap_err().to_string(),
-                V1_REFUSAL
-            );
+            for parsed in [ConnectAddress::parse(address), ConnectAddress::env(address)] {
+                assert_eq!(parsed.unwrap_err().to_string(), V1_REFUSAL, "{address}");
+            }
         }
         for address in [":0/env", "host:7447/env", "env"] {
             assert!(ConnectAddress::parse(address).is_ok());
+            assert!(ConnectAddress::env(address).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_lone_host_and_port_is_an_envs_address() {
+        for (short, full) in [
+            ("127.0.0.1:5555", "127.0.0.1:5555/env"),
+            (":0", ":0/env"),
+            ("lab:7447", "lab:7447/env"),
+        ] {
+            assert_eq!(ConnectAddress::env(short).unwrap().as_str(), full);
+            // Not for a role without a default name (a served model).
+            assert_eq!(
+                ConnectAddress::parse(short).unwrap_err().to_string(),
+                V1_REFUSAL
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_port_names_the_host_it_needs() {
+        for parsed in [ConnectAddress::parse("5555"), ConnectAddress::env("5555")] {
+            let why = parsed.unwrap_err().to_string();
+            assert!(
+                why.contains("bare port") && why.contains("\":5555\""),
+                "{why}"
+            );
         }
     }
 }

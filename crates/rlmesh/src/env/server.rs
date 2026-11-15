@@ -100,7 +100,7 @@ impl Listener {
         contract: &crate::EnvContract,
     ) -> Result<(Self, String)> {
         if !crate::address::is_v2(address) {
-            return Err(Error::invalid_argument(crate::address::V1_REFUSAL));
+            return Err(crate::address::refusal(address));
         }
         crate::lockstep::check(contract.to_wire()?)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;

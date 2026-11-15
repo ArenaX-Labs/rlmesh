@@ -181,9 +181,10 @@ fn a_binding_reaches_a_served_env_and_refuses_what_it_cannot_drive() {
     binding.reset(Some(1), None).unwrap();
     assert_eq!(binding.step(None).unwrap().0, Value::Int(1));
     binding.close().unwrap();
-    // A v1 endpoint, and a served model at one.
+    // A v1 endpoint, and a served model at a bare host:port (a model has no
+    // default name).
     let error = model
-        .bind("127.0.0.1:1", BindOptions::default())
+        .bind("tcp://127.0.0.1:1", BindOptions::default())
         .unwrap_err();
     assert_eq!(error.class(), ErrorClass::ValueError);
     let error =

@@ -128,7 +128,7 @@ def main() -> None:
     env = CubePickEnv()
     # Publish the tags in the served contract (validated against the
     # env's spaces up front).
-    server = rlmesh.EnvServer(env, ":0/env", tags=ENV_TAGS)
+    server = rlmesh.EnvServer(env, ":0", tags=ENV_TAGS)
     server.start()
     try:
         # The adapter the model would get against this env, for illustration

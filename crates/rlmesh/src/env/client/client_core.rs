@@ -91,7 +91,9 @@ impl EnvClientCore {
     /// bound), a refused handshake the ProtocolException class, an expired
     /// `connect_timeout` the TimeoutError class.
     pub async fn connect_with(address: &str, options: CoreConnect<'_>) -> Result<Self> {
-        let parsed = ConnectAddress::parse(address)?;
+        let parsed = ConnectAddress::env(address)?;
+        let address = parsed.as_str();
+        let address = address.as_str();
         let connect_timeout = normalize_timeout(options.connect_timeout);
         let dial = Self::dial(parsed, options.declared, connect_timeout.map(join_bound));
         let mut core = match connect_timeout {

@@ -151,6 +151,19 @@ def execute(case):
                     }
                 )
             raise AssertionError("invalid argument accepted")
+        if operation == "bare_env":
+            with rlmesh.EnvServer(env, ":0") as server:
+                server.start()
+                bare, _, name = server.address.rpartition("/")
+                result = model.run(bare)
+                return {
+                    "episodes": result.num_episodes,
+                    "steps": result.total_steps,
+                    "served_name": name,
+                }
+        if operation == "bare_port_env":
+            model.run("5555")
+            raise AssertionError("a bare port accepted")
         if operation == "run":
             opts = {
                 key: case[key]

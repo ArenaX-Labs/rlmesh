@@ -176,7 +176,7 @@ fn v1_bind_addresses_are_refused() {
     for address in [
         "tcp://127.0.0.1:0",
         "unix:///tmp/env.sock",
-        "127.0.0.1:5555",
+        "https://127.0.0.1:5555",
     ] {
         let err = EnvServer::new(
             Counter::new(&counters),

@@ -28,7 +28,7 @@ impl Policy for ConstantPolicy {
 fn main() -> rlmesh::Result<()> {
     let address = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| ":5555/env".to_string());
+        .unwrap_or_else(|| ":5555".to_string());
 
     let model = Model::new(ConstantPolicy, ModelOptions::default())?;
 

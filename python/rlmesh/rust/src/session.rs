@@ -105,6 +105,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScene>()?;
     m.add_function(wrap_pyfunction!(parse_address, m)?)?;
     m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
+    m.add_function(wrap_pyfunction!(env_address, m)?)?;
     m.add_function(wrap_pyfunction!(run_session, m)?)?;
     m.add_function(wrap_pyfunction!(frames_between, m)?)?;
     crate::lockstep::register(m)?;
@@ -157,6 +158,22 @@ def is_v2_address(text: str) -> bool: ...
 #[pyfunction]
 fn is_v2_address(text: &str) -> bool {
     rlmesh_session::address::is_v2_address(text)
+}
+
+/// An env's participant address: a lone `host:port` (or `:port`, keyed, or
+/// with the scheme) is short for `host:port/env`; anything else as given.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def env_address(text: str) -> str: ...
+"#
+    )
+)]
+#[pyfunction]
+fn env_address(text: &str) -> String {
+    rlmesh_session::address::defaulting_participant(text, rlmesh_session::address::DEFAULT_ENV)
 }
 
 /// The static rigid transform from pose `a` to pose `b`, both in the scene

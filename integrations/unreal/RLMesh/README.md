@@ -26,7 +26,7 @@ Drive it from Python:
 ```python
 import rlmesh
 
-result = rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:7447/env", episodes=3)
+result = rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:7447", episodes=3)
 print(result)
 ```
 

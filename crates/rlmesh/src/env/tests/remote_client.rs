@@ -208,3 +208,116 @@ fn a_connect_timeout_reports_why_the_join_ran_out() {
     assert!(waited <= timeout + Duration::from_millis(500), "{waited:?}");
     drop(listener);
 }
+
+/// A free loopback port (bound and released).
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+#[test]
+fn a_bare_host_and_port_is_the_env_there() {
+    let counters = Arc::new(Counters::default());
+    let port = free_port();
+    let bare = format!("127.0.0.1:{port}");
+    let server = EnvServer::new(
+        Counter::new(&counters),
+        EnvServerOptions {
+            address: Some(bare.clone()),
+            ..quick()
+        },
+    )
+    .unwrap();
+    server.start().unwrap();
+    assert!(server.address().ends_with("/env"), "{}", server.address());
+    for address in [bare.clone(), format!("{bare}/env")] {
+        let mut remote = dial(&address).unwrap();
+        assert_eq!(remote.address(), format!("{bare}/env"));
+        let (observation, _) = remote.reset(Some(1), None).unwrap();
+        assert_eq!(observation, Value::Int(1));
+        remote.close().unwrap();
+    }
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn a_bare_port_is_refused_naming_the_host_form() {
+    for err in [
+        dial("5555").err().unwrap(),
+        EnvServer::new(
+            Counter::new(&Arc::new(Counters::default())),
+            EnvServerOptions {
+                address: Some("5555".into()),
+                ..quick()
+            },
+        )
+        .err()
+        .unwrap(),
+    ] {
+        assert_eq!(err.class(), ErrorClass::ValueError);
+        assert!(err.to_string().contains("\":5555\""), "{err}");
+    }
+}
+
+/// A TCP server on loopback that speaks something other than the session
+/// protocol: `reply` at once (`first`), or once it has read what the
+/// client sent.
+fn foreign_server(reply: &'static [u8], first: bool) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { return };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 256];
+                if !first && !matches!(conn.read(&mut buf), Ok(n) if n > 0) {
+                    return;
+                }
+                let _ = conn.write_all(reply);
+                let _ = conn.read(&mut buf);
+            });
+        }
+    });
+    port
+}
+
+/// An HTTP/2 server's first frame: an empty SETTINGS on stream 0.
+const H2_SETTINGS: &[u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
+
+#[test]
+fn a_01_grpc_server_is_named_not_timed_out() {
+    // An HTTP/2 server sends its SETTINGS at once (a 0.1 gRPC server), or
+    // answers once spoken to; another protocol answers something else.
+    for (reply, first, http2) in [
+        (H2_SETTINGS, true, true),
+        (H2_SETTINGS, false, true),
+        (&b"HTTP/1.1 400 Bad Request\r\n\r\n"[..], true, false),
+        (&b"HTTP/1.1 400 Bad Request\r\n\r\n"[..], false, false),
+    ] {
+        let port = foreign_server(reply, first);
+        let started = std::time::Instant::now();
+        let err = RemoteEnv::new(
+            RemoteEnvOptions::default()
+                .address(format!("127.0.0.1:{port}"))
+                .connect_timeout(Duration::from_secs(20)),
+        )
+        .err()
+        .unwrap();
+        let text = err.to_string();
+        assert_eq!(err.class(), ErrorClass::ProtocolException, "{text}");
+        assert!(
+            text.contains(&format!(
+                "the server at 127.0.0.1:{port} doesn't speak the RLMesh session protocol"
+            )) && text.contains("RLMesh 0.2 can't connect to 0.1"),
+            "{text}"
+        );
+        assert_eq!(text.contains("HTTP/2"), http2, "{text}");
+        // Final at once, not after the connect timeout.
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+}

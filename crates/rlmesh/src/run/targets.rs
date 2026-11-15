@@ -115,13 +115,13 @@ impl<'a> EnvTarget<'a> {
 
 impl From<&str> for EnvTarget<'_> {
     fn from(address: &str) -> Self {
-        EnvTarget(EnvKind::Address(address.to_string()))
+        EnvTarget(EnvKind::Address(crate::address::env_address(address)))
     }
 }
 
 impl From<String> for EnvTarget<'_> {
     fn from(address: String) -> Self {
-        EnvTarget(EnvKind::Address(address))
+        EnvTarget(EnvKind::Address(crate::address::env_address(&address)))
     }
 }
 

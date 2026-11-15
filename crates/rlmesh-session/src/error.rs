@@ -40,6 +40,11 @@ pub enum SessionError {
         /// The request, still being sent.
         pending: Pending,
     },
+    /// What listens at an address is no session host: it speaks another
+    /// protocol (an RLMesh 0.1 gRPC server, say). Final: retrying cannot
+    /// link.
+    #[error("{0}")]
+    NotSession(String),
     /// Something expected did not happen in time.
     #[error("timed out after {0:?} waiting for {1}")]
     Timeout(Duration, String),

@@ -287,6 +287,44 @@ static void https_env(RLMeshModel *model) {
                            NULL, &result) != RLMESH_OK);
   error_fields_masked(":1", ":PORT");
 }
+/* An env served at a bare ":0" (short for ":0/env"), run at its bare
+ * host:port#key. */
+static void bare_env(RLMeshEnv **env, RLMeshModel *model) {
+  RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
+  so.address = ":0";
+  RLMeshEnvServer *server = NULL;
+  OK(rlmesh_env_server_new(env, 1, &so, &server));
+  OK(rlmesh_env_server_start(server));
+  RLMeshBytes address = {NULL, 0, 0};
+  OK(rlmesh_env_server_address(server, &address));
+  size_t slash = address.len;
+  while (slash > 0 && ((const char *)address.data)[slash - 1] != '/')
+    --slash;
+  REQUIRE(slash > 0);
+  char bare[256];
+  snprintf(bare, sizeof bare, "%.*s", (int)(slash - 1),
+           (const char *)address.data);
+  RLMeshRunResult *result = NULL;
+  if (rlmesh_model_run(model, rlmesh_address_target(bare), NULL, &result) !=
+      RLMESH_OK)
+    error_fields();
+  else {
+    printf("\"episodes\":%llu,\"steps\":%llu,\"served_name\":\"%.*s\"",
+           (unsigned long long)rlmesh_run_result_num_episodes(result),
+           (unsigned long long)rlmesh_run_result_total_steps(result),
+           (int)(address.len - slash), (const char *)address.data + slash);
+    rlmesh_run_result_free(result);
+  }
+  rlmesh_bytes_free(address);
+  OK(rlmesh_env_server_shutdown(server));
+  rlmesh_env_server_free(server);
+}
+static void bare_port_env(RLMeshModel *model) {
+  RLMeshRunResult *result = NULL;
+  REQUIRE(rlmesh_model_run(model, rlmesh_address_target("5555"), NULL,
+                           &result) != RLMESH_OK);
+  error_fields();
+}
 /* A model served as the participant "policy" of a session this process
  * hosts, reached by its address and driving a local env. */
 static void served_model(RLMeshEnv *env, RLMeshModel *model,
@@ -577,6 +615,10 @@ int main(int argc, char **argv) {
     rlmesh_env_server_free(server);
   } else if (!strcmp(op, "https_env")) {
     https_env(model);
+  } else if (!strcmp(op, "bare_env")) {
+    bare_env(&env, model);
+  } else if (!strcmp(op, "bare_port_env")) {
+    bare_port_env(model);
   } else if (!strcmp(op, "served_model")) {
     served_model(env, model, &ev, &s, &attrs);
   } else if (!strcmp(op, "busy_remote")) {

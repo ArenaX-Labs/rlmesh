@@ -246,6 +246,12 @@ impl ConnectedEnv {
 /// Connect to a session env and negotiate its declared edition.
 async fn connect_env(options: &LocalRun) -> Result<ConnectedEnv> {
     {
+        if let Some(why) = crate::address::bare_port(&options.address) {
+            return Err(Error::invalid_argument(format!(
+                "Model.run({:?}): {why}",
+                options.address
+            )));
+        }
         if !crate::address::is_v2(&options.address) {
             return Err(Error::invalid_argument(format!(
                 "Model.run({:?}): a v1 env endpoint, which rlmesh 0.2 no longer dials; \

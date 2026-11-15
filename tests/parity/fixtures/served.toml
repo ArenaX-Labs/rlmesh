@@ -15,3 +15,18 @@ operation = "https_env"
 languages = ["rust", "c", "cpp"]
 why = "A run dials only session addresses: an https:// env endpoint is v1, refused before any dial (TLS is the session's security config, safety step 6)."
 expect = { error = "ValueError", text = "Model.run(\"https://127.0.0.1:PORT\"): a v1 env endpoint, which rlmesh 0.2 no longer dials; serve the env at a session address (EnvServer(env, \":0/name\")) and run against that, or pass the env object itself" }
+
+[[scenario]]
+id = "bare_env_address"
+family = "Addresses"
+rules = ["R-2"]
+operation = "bare_env"
+why = "A lone host:port is an env's address, short for host:port/env: served at \":0\", run at its bare host:port#key."
+expect = { episodes = 1, steps = 2, served_name = "env" }
+
+[[scenario]]
+id = "bare_port_env"
+family = "Addresses"
+rules = ["R-22"]
+operation = "bare_port_env"
+expect = { error = "ValueError", text = "Model.run(\"5555\"): \"5555\" is a bare port, which names no host: write \":5555\" for this machine's port 5555 (or \"host:5555\")" }

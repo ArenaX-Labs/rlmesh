@@ -57,6 +57,22 @@ public sealed unsafe class FoundationTests
     }
 
     [Fact]
+    public void ABareHostAndPortIsTheEnvThere()
+    {
+        // ":0" is short for ":0/env", and the served host:port#key for its env.
+        using var server = new EnvServer(new Counter(), new() { Address = ":0" });
+        server.Start();
+        string address = server.Address;
+        Assert.EndsWith("/env", address);
+        using (var client = new NativeClient(address[..address.LastIndexOf('/')]))
+            client.Run();
+        var bare = Assert.Throws<ValueError>(() => new EnvServer(new Counter(), new() { Address = "5555" }));
+        Assert.Contains("\":5555\"", bare.Message);
+        var v1 = Assert.Throws<ValueError>(() => new EnvServer(new Counter(), new() { Address = "tcp://127.0.0.1:1" }));
+        Assert.Contains("v1 endpoints need RLMesh 0.1", v1.Message);
+    }
+
+    [Fact]
     public void ValuesHaveExactKindsAndStrictReads()
     {
         Value[] ints = { (sbyte)-1, (byte)1, (short)-1, (ushort)1, -1, 1U, -1L };

@@ -217,8 +217,12 @@ impl OwnedTarget {
             released: false,
         }
     }
+    /// Open the target; an address it hands back is an env's, where a lone
+    /// `host:port` is short for `host:port/env`.
     pub(crate) fn open(&mut self, edition: Option<&str>, caller: CallerJobs) -> Result<AdaptedEnv> {
-        self.adapter.open(edition, caller)
+        let mut target = self.adapter.open(edition, caller)?;
+        target.address = crate::address::env_address(&target.address);
+        Ok(target)
     }
     pub(crate) fn release(&mut self) -> Result<()> {
         if std::mem::replace(&mut self.released, true) {

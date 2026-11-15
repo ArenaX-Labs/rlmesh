@@ -265,12 +265,12 @@ impl RemoteEnvOptions {
     }
 }
 
-/// Normalize a connect address: one connect string from an address or the
-/// helpers, every refusal the ValueError class.
+/// Normalize an env's connect address: one connect string from an address
+/// (a lone `host:port` is short for `host:port/env`), every refusal the
+/// ValueError class.
 pub(crate) fn normalize_connect_address(address: Option<&str>) -> Result<String> {
     let address = address.ok_or_else(|| Error::invalid_argument("address is required"))?;
-    ConnectAddress::parse(address)?;
-    Ok(address.to_string())
+    Ok(ConnectAddress::env(address)?.as_str())
 }
 
 /// Zero means no timeout, as `None` does.

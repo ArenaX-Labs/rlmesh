@@ -39,7 +39,7 @@ while not (terminated or truncated):
 env.close()
 ```
 
-The part after `#` is a key the server makes when it starts; another process needs it to connect, so copy the whole address each time you start the server.
+The part after `#` is a key the server makes when it starts; another process needs it to connect, so copy the whole address each time you start the server. The last segment names the env in the session; leave it off and it is `env`: `EnvServer(env, "127.0.0.1:5555")` serves at `127.0.0.1:5555/env`, and `RemoteEnv("127.0.0.1:5555")` reaches it.
 
 ## Installation
 

@@ -223,7 +223,7 @@ binding.close();
 
 ### Remote clients
 
-`rlmesh::RemoteEnv` and `RemoteVectorEnv` connect at construction and step a served env directly, Gymnasium style. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an `EnvServer` with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. 0.2 rejects the removed v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
+`rlmesh::RemoteEnv` and `RemoteVectorEnv` connect at construction and step a served env directly, Gymnasium style. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an `EnvServer` with no address is `:0/env`). Where an env is served or dialled, a bare `host:port` is short for `host:port/env`. An env or model joins the session there, hosting it in its own process when nothing listens on that port. 0.2 rejects the removed v1 forms (`tcp://host:port`, `unix:///path/to.sock`, a bare port) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
 
 ```cpp
 rlmesh::RemoteEnvOptions connection;

@@ -320,7 +320,7 @@ class RemoteEnv(RemoteEnvBase[TorchValue, TorchValue], GymEnv):  # pyright: igno
     (see :func:`as_tensor`), so in-place ops never corrupt the wire buffer.
 
     Args:
-        address: Endpoint address such as ``"127.0.0.1:5555/env"``,
+        address: Endpoint address such as ``"127.0.0.1:5555"``,
             ``"127.0.0.1:5555"``, or ``"unix:///tmp/env.sock"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
@@ -333,7 +333,7 @@ class RemoteEnv(RemoteEnvBase[TorchValue, TorchValue], GymEnv):  # pyright: igno
 
     Examples:
         >>> from rlmesh.torch import RemoteEnv
-        >>> env = RemoteEnv("127.0.0.1:5555/env")  # doctest: +SKIP
+        >>> env = RemoteEnv("127.0.0.1:5555")  # doctest: +SKIP
         >>> observation, info = env.reset(seed=42)  # doctest: +SKIP
         >>> observation, reward, terminated, truncated, info = env.step(
         ...     0
@@ -354,7 +354,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue], GymVectorEnv)
     terminations, and truncations decode into Torch values.
 
     Args:
-        address: Endpoint address such as ``"127.0.0.1:5555/env"``.
+        address: Endpoint address such as ``"127.0.0.1:5555"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.
@@ -366,7 +366,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue], GymVectorEnv)
 
     Examples:
         >>> from rlmesh.torch import RemoteVectorEnv
-        >>> envs = RemoteVectorEnv("127.0.0.1:5555/env")  # doctest: +SKIP
+        >>> envs = RemoteVectorEnv("127.0.0.1:5555")  # doctest: +SKIP
         >>> observations, infos = envs.reset(seed=42)  # doctest: +SKIP
         >>> actions = [
         ...     envs.single_action_space.sample() for _ in range(envs.num_envs)

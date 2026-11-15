@@ -256,7 +256,7 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue], GymEnv):  # pyright: ignore[r
     :func:`asarray`), so there is no wire-buffer mutation hazard.
 
     Args:
-        address: Endpoint address such as ``"127.0.0.1:5555/env"``,
+        address: Endpoint address such as ``"127.0.0.1:5555"``,
             ``"127.0.0.1:5555"``, or ``"unix:///tmp/env.sock"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
@@ -269,7 +269,7 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue], GymEnv):  # pyright: ignore[r
 
     Examples:
         >>> from rlmesh.jax import RemoteEnv
-        >>> env = RemoteEnv("127.0.0.1:5555/env")  # doctest: +SKIP
+        >>> env = RemoteEnv("127.0.0.1:5555")  # doctest: +SKIP
         >>> observation, info = env.reset(seed=42)  # doctest: +SKIP
         >>> observation, reward, terminated, truncated, info = env.step(
         ...     0
@@ -290,7 +290,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue], GymVectorEnv):  #
     terminations, and truncations decode into JAX values.
 
     Args:
-        address: Endpoint address such as ``"127.0.0.1:5555/env"``.
+        address: Endpoint address such as ``"127.0.0.1:5555"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.
@@ -302,7 +302,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue], GymVectorEnv):  #
 
     Examples:
         >>> from rlmesh.jax import RemoteVectorEnv
-        >>> envs = RemoteVectorEnv("127.0.0.1:5555/env")  # doctest: +SKIP
+        >>> envs = RemoteVectorEnv("127.0.0.1:5555")  # doctest: +SKIP
         >>> observations, infos = envs.reset(seed=42)  # doctest: +SKIP
         >>> envs.close()  # doctest: +SKIP
     """

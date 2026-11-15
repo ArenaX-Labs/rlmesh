@@ -839,3 +839,55 @@ fn redact_text_leaves_every_launch_secret_out_of_log_lines() {
     let sha = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
     assert_eq!(redact_text(sha), sha);
 }
+
+#[test]
+fn a_lone_host_and_port_is_short_for_its_default_participant() {
+    for (short, full) in [
+        ("127.0.0.1:5555", "127.0.0.1:5555/env"),
+        (" lab:7447 ", "lab:7447/env"),
+        (":0", ":0/env"),
+        ("[::1]:5555", "[::1]:5555/env"),
+        ("rlmesh://lab:7447", "rlmesh://lab:7447/env"),
+        ("127.0.0.1:5555#k.k", "127.0.0.1:5555#k.k/env"),
+    ] {
+        assert_eq!(defaulting_participant(short, DEFAULT_ENV), full, "{short}");
+    }
+    // Named, session-named, or not a host with a port: as given.
+    for given in [
+        "127.0.0.1:5555/env",
+        "127.0.0.1:5555/bench/arm",
+        "cartpole",
+        "bench/arm",
+        "5555",
+        "lab.local",
+        "localhost",
+        "tcp://h:1",
+        "https://h:443",
+        "unix:///s",
+        "lockstep://a:1/b",
+        "",
+    ] {
+        assert_eq!(defaulting_participant(given, DEFAULT_ENV), given, "{given}");
+    }
+    let short =
+        Address::participant(&defaulting_participant("127.0.0.1:5555", "policy")).expect("parse");
+    assert_eq!(
+        short,
+        Address::participant("127.0.0.1:5555/policy").expect("parse")
+    );
+    // A session address keeps reading host:port as that host's session.
+    let session = Address::session("127.0.0.1:5555").expect("session");
+    assert_eq!(session.participant, None);
+    assert_eq!(session.session_name(), DEFAULT_SESSION);
+}
+
+#[test]
+fn an_http2_servers_first_frame_reads_as_one() {
+    use super::hosting::{Foreign, foreign};
+    // An empty SETTINGS frame on stream 0, and one with a setting.
+    assert_eq!(foreign(&[0, 0, 0, 4, 0, 0, 0, 0, 0]), Foreign::Http2);
+    assert_eq!(foreign(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 3]), Foreign::Http2);
+    assert_eq!(foreign(b"HTTP/1.1 400 Bad Request"), Foreign::Other);
+    assert_eq!(foreign(&[0, 0, 0, 4]), Foreign::Other);
+    assert_eq!(foreign(&[0, 0, 0, 4, 0, 0, 0, 0, 1]), Foreign::Other);
+}
