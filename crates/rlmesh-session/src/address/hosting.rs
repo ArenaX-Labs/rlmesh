@@ -317,14 +317,14 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
 ///
 /// A peer that is no session host fails the join as [`not_session`], final:
 /// one that answers an HTTP/2 preface ([`probe`]: beside a join still open
-/// after [`PROBE_AFTER`], so a healthy join opens no extra connection, and
-/// once more before calling it a refusal).
+/// after [`PROBE_AFTER`], and after a join that fails, so a healthy join
+/// opens no extra connection).
 pub(super) async fn open_client(
     base: SocketAddr,
     link: Option<LinkAuth>,
     deadline: tokio::time::Instant,
 ) -> Result<Transport, SessionError> {
-    let probe = async {
+    let delayed = async {
         tokio::time::sleep(PROBE_AFTER).await;
         while !listening(base).await {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -336,8 +336,16 @@ pub(super) async fn open_client(
     };
     tokio::select! {
         biased;
-        joined = join_client(base, link, deadline) => joined,
-        foreign = probe => Err(not_session(base, foreign)),
+        joined = join_client(base, link, deadline) => match joined {
+            Ok(transport) => Ok(transport),
+            // A peer that refused the join before the probe ran (a key it
+            // can't find) may be no session host at all: ask it first.
+            Err(error) => match probe(joinable(base)).await {
+                Some(foreign) => Err(not_session(base, foreign)),
+                None => Err(error),
+            },
+        },
+        foreign = delayed => Err(not_session(base, foreign)),
     }
 }
 
@@ -405,10 +413,6 @@ async fn join_client(
                 .unwrap_or(false);
         refused = if by_host { refused + 1 } else { 0 };
         if refused >= REFUSED_ROUNDS {
-            let answer = tokio::time::timeout_at(deadline, probe(joinable(base)));
-            if let Ok(Some(foreign)) = answer.await {
-                return Err(not_session(base, foreign));
-            }
             return Err(refused_link(base));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
