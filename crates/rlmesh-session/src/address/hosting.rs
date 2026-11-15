@@ -226,7 +226,7 @@ const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// How long a join runs before [`open_client`] probes its peer: a healthy
 /// join is done by then and never sends a session host a stray preface.
-const PROBE_AFTER: Duration = Duration::from_secs(1);
+pub(super) const PROBE_AFTER: Duration = Duration::from_secs(1);
 
 /// How long a peer gets to answer an HTTP/2 preface ([`probe`]).
 const PREFACE_PROBE: Duration = Duration::from_secs(1);
@@ -267,6 +267,19 @@ async fn probe(addr: SocketAddr) -> Option<Foreign> {
     stream.write_all(H2_PREFACE).await.ok()?;
     let head = first_bytes(&mut stream, PREFACE_PROBE).await;
     (!head.is_empty()).then(|| foreign(&head))
+}
+
+/// `error`, unless the peer at `base` is no session host, when it is
+/// [`not_session`]: a join that fails before or without linking (no key to
+/// link with) still names a 0.1 server rather than the missing key.
+pub(super) async fn or_not_session(base: SocketAddr, error: SessionError) -> SessionError {
+    if !listening(base).await {
+        return error;
+    }
+    match probe(joinable(base)).await {
+        Some(foreign) => not_session(base, foreign),
+        None => error,
+    }
 }
 
 /// The failure of a join whose peer at `base` is no session host.
@@ -340,10 +353,7 @@ pub(super) async fn open_client(
             Ok(transport) => Ok(transport),
             // A peer that refused the join before the probe ran (a key it
             // can't find) may be no session host at all: ask it first.
-            Err(error) => match probe(joinable(base)).await {
-                Some(foreign) => Err(not_session(base, foreign)),
-                None => Err(error),
-            },
+            Err(error) => Err(or_not_session(base, error).await),
         },
         foreign = delayed => Err(not_session(base, foreign)),
     }

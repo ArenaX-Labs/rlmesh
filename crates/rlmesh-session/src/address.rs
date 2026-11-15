@@ -57,7 +57,9 @@ use crate::address::credentials::hosted_key;
 #[cfg(feature = "fleet")]
 use crate::address::credentials::remembered;
 use crate::address::host_keys::filed_key;
-use crate::address::hosting::{listening, local_host, local_host_keyed, open_client};
+use crate::address::hosting::{
+    listening, local_host, local_host_keyed, open_client, or_not_session,
+};
 use crate::clock::SystemMonotonicClock;
 use crate::error::SessionError;
 use crate::participant::{Participant, ParticipantConfig};
@@ -885,9 +887,22 @@ impl SessionAddress {
         // this process runs, or rlmeshd's). rlmeshd's key is on disk whether
         // or not rlmeshd is the host at this address, so holding it alone
         // doesn't end the wait: a host listening does.
+        let probe_after = tokio::time::Instant::now() + hosting::PROBE_AFTER;
+        let mut probed = false;
         while self.base.ip().is_loopback() && tokio::time::Instant::now() < deadline {
             let waiting = match self.credential() {
                 Ok(_) => self.awaits_host_key() && !listening(self.base).await,
+                // No key yet, though something listens: a 0.1 server never
+                // brings one, so ask it once rather than wait it out.
+                Err(err @ SessionError::Rejected(_))
+                    if !probed && tokio::time::Instant::now() >= probe_after =>
+                {
+                    probed = true;
+                    if let SessionError::NotSession(why) = or_not_session(self.base, err).await {
+                        return Err(SessionError::NotSession(why));
+                    }
+                    true
+                }
                 // No key yet; a key file refused is final.
                 Err(SessionError::Rejected(_)) => true,
                 Err(err) => return Err(err),
@@ -900,7 +915,9 @@ impl SessionAddress {
         // Without a key there is nothing to link with: say so before
         // dialing. Taken again once linked, when a host this process runs
         // may have brought its own.
-        self.credential()?;
+        if let Err(err) = self.credential() {
+            return Err(or_not_session(self.base, err).await);
+        }
         self.attach_by(deadline, host_timeout, id, roles, priority, finish)
             .await
             .map_err(|err| self.refused_filed(err))
