@@ -58,6 +58,13 @@ CSHARP_CI_INPUTS = {
     ".mise/tasks/release/cxx/package",
     ".github/workflows/ci.yml",
 }
+# CI's Windows wheel check (check:windows) also runs when its own task, its
+# workflow step or the wheel's maturin features change.
+WINDOWS_CI_INPUTS = {
+    ".mise/tasks/check/windows",
+    ".github/workflows/ci.yml",
+    "python/rlmesh/pyproject.toml",
+}
 
 
 @dataclass(frozen=True)
@@ -65,10 +72,18 @@ class Plan:
     rust: list[str] | None  # None means the whole workspace
     python: bool
     csharp: bool = False
+    windows: bool = False  # CI only: type-check the Windows wheel
 
     def describe(self) -> str:
         rust = "all" if self.rust is None else (" ".join(self.rust) or "none")
-        return f"rust: {rust}\npython: {'yes' if self.python else 'no'}\ncsharp: {'yes' if self.csharp else 'no'}"
+        lines = [
+            f"rust: {rust}",
+            f"python: {'yes' if self.python else 'no'}",
+            f"csharp: {'yes' if self.csharp else 'no'}",
+        ]
+        if self.windows:
+            lines.append("windows: yes")
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -140,7 +155,7 @@ def plan(
             for path in changed
         )
     if any(path in WORKSPACE_INPUTS for path in changed):
-        return Plan(rust=None, python=True, csharp=csharp or ci)
+        return Plan(rust=None, python=True, csharp=csharp or ci, windows=ci)
 
     selected: set[str] = set()
     for path in changed:
@@ -159,15 +174,20 @@ def plan(
     python = EXTENSION_PACKAGE in selected or any(
         path.startswith(PYTHON_PREFIXES) for path in changed
     )
+    windows = False
     if ci:
         csharp |= "rlmesh-capi" in selected
-    return Plan(rust=sorted(selected), python=python, csharp=csharp)
+        windows = EXTENSION_PACKAGE in selected or any(
+            path in WINDOWS_CI_INPUTS for path in changed
+        )
+    return Plan(rust=sorted(selected), python=python, csharp=csharp, windows=windows)
 
 
 def write_github_output(selection: Plan, path: Path) -> None:
-    """Append the CI C# selection to a GitHub Actions output file."""
+    """Append the CI C# and Windows wheel selections to a GitHub Actions output file."""
     with path.open("a") as output:
         output.write(f"csharp={str(selection.csharp).lower()}\n")
+        output.write(f"windows={str(selection.windows).lower()}\n")
 
 
 def git(*args: str) -> str:

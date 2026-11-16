@@ -113,7 +113,8 @@ jobs:
           if-no-files-found: error
 
       - name: Minimize uv cache
-        if: always()
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: uv cache prune --ci
 
   wheels-macos:
@@ -254,7 +255,8 @@ jobs:
           if-no-files-found: error
 
       - name: Minimize uv cache
-        if: always()
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: uv cache prune --ci
 
   esp32:

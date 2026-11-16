@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#MISE description="Type-check the Windows wheel's crates for x86_64-pc-windows-msvc with cargo-xwin, the cross toolchain its release build uses"
+#MISE dir="{{ config_root }}"
+
+# The Windows wheel is cross-built from Linux at release time only
+# (build:python:wheel windows: maturin, which drives xwin: clang-cl and the
+# MSVC CRT/SDK). This checks the same crates and features on pull requests that
+# reach them, so code that only compiles on unix fails there, not at release.
+# It runs build scripts, so C dependencies compile with clang-cl: clang must be
+# on PATH. The first run downloads the MSVC CRT/SDK into ~/.cache/cargo-xwin.
+set -euo pipefail
+
+triple=x86_64-pc-windows-msvc
+toolchain="$(mise current rust)"
+rustup target list --installed --toolchain "$toolchain" | grep -qx "$triple" ||
+  rustup target add --toolchain "$toolchain" "$triple"
+
+# The wheel's crate and features as python/rlmesh/pyproject.toml gives them to
+# maturin ([tool.maturin] no-default-features, features).
+cargo xwin check --locked --target "$triple" \
+  -p rlmesh-python --no-default-features --features cli,abi3-py311
