@@ -2183,10 +2183,12 @@ surface the area tables map; it has no manifest column. Its constraints:
 ### R-30 Node (JS) native binding
 
 The Node binding is the same `rlmesh` npm package's `default` export
-condition (Node 22+, Electron's main process): `Host`, `Robot`, `Policy`, `Rate`,
-`Recorder` and `Scene` (`runScene`) over a Node-API addon (`javascript/rlmesh/native`, napi-rs) that
+condition (Node 22+, Electron's main process): `Host`, `Robot`, `Policy`, `Rate` and
+`SessionRecorder` over a Node-API addon (`javascript/rlmesh/native`, napi-rs) that
 binds `rlmesh-session` (its edge included) and `rlmesh::realtime` directly, as PyO3 does. It is
-Experimental, binds the v2 session like R-29, and has no manifest column.
+Experimental, binds the v2 session like R-29, and has no manifest column. The lobby and scene runs
+stay unreleased behind the addon's `fleet` feature, as Python's `_fleet` does: the package exports
+none of them.
 
 - **Python's `rlmesh.realtime`, one to one.** The same classes, verbs and
   options, with JS names (`now_ns` is `nowNs`, `edge_stats` is `edgeStats`,

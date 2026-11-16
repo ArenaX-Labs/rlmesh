@@ -1,9 +1,12 @@
 # The Node binding
 
 Status: Experimental (protocol v2). The `rlmesh` npm package
-(`javascript/rlmesh`) is fenced for 0.2: CI builds and tests it, but the release
-workflow does not publish npm packages. Build from source to experiment; the API
-may change.
+(`javascript/rlmesh`) is not on npm yet: the release workflow's npm steps are
+fenced. Its pre-releases will install with `npm install rlmesh@next` (npm's
+`latest` is a deprecated `0.0.1` placeholder). Until then, build from source to
+experiment. CI builds the addon for linux-x64 and runs the native tests below
+when the binding, its examples or the session crates change. The API may
+change.
 
 In Node 22+ and Electron's main process, `rlmesh` runs real-time sessions
 in-process: a session host, robots with their edges, and bound policies, on
@@ -19,8 +22,9 @@ same package exports both, `connect` for a gateway and the classes below for
 the session itself.
 
 `examples/node/hold.mjs` runs it end to end (`node examples/node/hold.mjs`
-after `mise run build:js:native`): the conformance UR10e, faked, and a policy
-that holds the arm. Its core:
+after `mise run build:js:native` and `node javascript/rlmesh/build.mjs
+--node-only`): the conformance UR10e, faked, and a policy that holds the arm.
+Its core:
 
 ```js
 import { Host, Policy, Rate, Robot } from "rlmesh";
@@ -61,12 +65,22 @@ On Node 24 and later, `await using host = await Host.open()` (and the same
 for `Robot`, `Policy` and `SessionRecorder`) closes each one at the end of the
 block instead of the `finally`.
 
+`Robot`, `Policy` and `SessionRecorder` place their session by the hosting
+rule, as in Python. A `Host` or its address is joined. An empty session (`''`,
+a robot's default) joins the local host on `RLMESH_PORT` (7447 by default),
+and a loopback `:port` joins whatever listens there. When nothing listens, the
+participant hosts the session in this process until it closes. So a script
+ported from Python with no session, or with `session=""`, runs the same.
+`robot.address` is the robot's participant address on that host, its key
+included.
+
 ## How it maps to Python
 
 | Python (`rlmesh.realtime`)                         | Node (`rlmesh`)                                                    |
 | -------------------------------------------------- | ------------------------------------------------------------------ |
 | `with Host() as host`                              | `const host = await Host.open()` … `await host.close()`            |
 | `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`              |
+| `Robot(name, parts)` (the local session)           | `await Robot.connect(name, parts)`                                 |
 | `robot.publish("arm", pos=q, vel=dq)`              | `robot.publish('arm', { pos: q, vel: dq })`                        |
 | `robot.due("arm").value` (NumPy array)             | `robot.due('arm').value` (`{ dtype, shape, data }`)                |
 | `robot.arm()`, `estop(reason)`, `clear_estop()`    | `await robot.arm()`, `estop(reason)`, `clearEstop()`               |
@@ -92,6 +106,24 @@ block instead of the `finally`.
 | `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                     |
 
 The rules are R-30 in the [parity spec](specs/language-parity/rules.md).
+
+### Not yet in Node
+
+These parts of `rlmesh.realtime` have no Node counterpart yet:
+
+- **Serving a lockstep robot.** A Node `Robot` runs on the wall clock;
+  `Robot(..., clock=Clock.LOCKSTEP)` with `serve` and `serve_lockstep` is
+  Python's. A Node policy runs a lockstep robot served elsewhere (below).
+- **Builders.** Python's `parts`, `inputs` and `actions` modules
+  (`parts.joints(...)`) return the plain dicts; Node takes those dicts as
+  written.
+- **Holds and hand-backs.** `robot.rearm(name)`, `robot.held` and
+  `policy.held`, `policy.release(to="model")`, and `robot.part(path)` with
+  `robot.command(path)`. A held robot is re-armed from Python or the cockpit.
+- **A timeout per bind.** Python's `policy.bind(..., timeout=)`; in Node,
+  `bind` waits for the `Policy`'s own `timeout`.
+- **A two-argument `predict`.** Python's `predict(obs, policy)`; in Node,
+  `predict` takes the observation only. Close over the policy instead.
 
 ## Lockstep robots
 
@@ -207,15 +239,26 @@ platform runs evaluations would reach the generated code.
 
 ## Building and testing
 
-The addon is built per platform with cargo (no `@napi-rs/cli`); the package
-loads `dist/rlmesh.{platform}-{arch}.node` on first use, or the path in
-`RLMESH_NATIVE`. `connect` works without it.
+The addon is built per platform with cargo (no `@napi-rs/cli`). On first use
+the package loads the path in `RLMESH_NATIVE` if set, else
+`dist/rlmesh.{platform}-{arch}.node` (a local build), else the
+`@rlmesh/{platform}-{arch}` package npm installs as an optional dependency.
+It refuses an addon whose version is not the package's, such as a stale local
+build. `connect` works without it.
 
 ```sh
 mise run build:js:native   # the addon, profile node (LTO, stripped)
-mise run test:js:native    # the twin of test_v2_session.py, in Node
+mise run test:js:native    # the twin of test_v2_session.py, in Node (the lockstep test runs a Python env through uv)
 mise run bench:js:native   # the same 1 kHz robot and 50 Hz policy, in Node and in Python
 ```
 
+`test:js:native` bundles `dist/node.js` alone (`build.mjs --node-only`), so it
+needs no wasm toolchain.
+
 The addon has no npm dependencies. On linux-x64 it is 15.3 MB stripped (6.8
-MB gzipped). Publishing per-platform prebuilds is future work.
+MB gzipped). The release workflow builds one per platform (`mise run
+release:js:native`: linux-x64 and linux-arm64 against glibc 2.28, win32-x64,
+and darwin-x64 and darwin-arm64 on macOS) and packs each as
+`@rlmesh/{platform}-{arch}` (`mise run release:js:package`). `rlmesh` names
+them all as optional dependencies at its own version, and npm installs the
+one for your platform.
