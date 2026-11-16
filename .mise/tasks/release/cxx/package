@@ -45,11 +45,11 @@ echo "==> packaging $name (ABI generation $abi_gen)"
 #    binary records the build-machine absolute path in DT_NEEDED; with it the binary
 #    records librlmesh_capi.so.${abi_gen} and the loader refuses a different ABI
 #    generation. Deps cache between the two.
-#    Windows: cross-build with cargo-xwin, which fetches the MSVC CRT and Windows
-#    SDK (accepting Microsoft's license for them, as maturin does for the wheels).
+#    Windows: cross-build with cargo-xwin (scripts/xwin-env.sh: the target, the
+#    MSVC CRT and Windows SDK, and Rust's own archiver and linker).
 if [ "$target" = windows ]; then
-  rustup target add "$triple"
-  XWIN_ACCEPT_LICENSE=1 cargo xwin build -p rlmesh-capi --release --lib --target "$triple"
+  . scripts/xwin-env.sh
+  cargo xwin build -p rlmesh-capi --release --lib --target "$triple"
 elif [ "$target" = macos ]; then
   # Build/lipo/sign happens before packaging so these exact signed bytes also
   # reach NuGet and Unity. Never mutate a signed dylib here.

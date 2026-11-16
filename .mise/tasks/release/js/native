@@ -22,8 +22,13 @@ if [[ "$platform" == darwin-* && "$(uname -s)" != Darwin ]]; then
   exit 1
 fi
 
-rustup target add "$triple"
-export XWIN_ACCEPT_LICENSE=1 ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache"
+if [ "$platform" = win32-x64 ]; then
+  # The target, and the archiver and linker cargo-xwin runs.
+  . scripts/xwin-env.sh
+else
+  rustup target add "$triple"
+fi
+export ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache"
 # Node for Windows does not ship the MSVC runtime, so the addon links it statically.
 export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C target-feature=+crt-static"
 "${build[@]}" --profile node -p rlmesh-node

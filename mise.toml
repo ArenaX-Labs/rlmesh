@@ -23,7 +23,8 @@ maturin = "1.15"
 
 # Cross-compiles release wheels (maturin --zig) and builds the C/C++ binding smokes.
 zig = "0.17"
-# Cross-compiles the Windows (MSVC) C/C++ package from Linux; needs clang on PATH.
+# Cross-compiles the Windows (MSVC) C/C++ package and Node addon from Linux;
+# needs clang on PATH (scripts/xwin-env.sh brings the archiver and linker).
 "github:rust-cross/cargo-xwin" = "0.23"
 # Cross-compiles the Linux Node addons against a glibc floor (release:js:native).
 "github:rust-cross/cargo-zigbuild" = "0.24"
