@@ -32,8 +32,9 @@ include = [
   "python/rlmesh/tests/type_contract/fixtures",
   "tools/rlmesh_api_surface/src/rlmesh_api_surface",
 ]
-# Isaac Sim examples import the Kit runtime, which no dev environment carries.
-exclude = ["examples/python/isaacsim"]
+# Isaac Sim examples import the Kit runtime, and the coding agent LIBERO and
+# the Anthropic SDK; no dev environment carries them.
+exclude = ["examples/python/isaacsim", "examples/python/coding_agent"]
 typeCheckingMode = "basic"
 strict = ["python/rlmesh/src/rlmesh"]
 defineConstant = { DEBUG = true }
