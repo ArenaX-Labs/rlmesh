@@ -40,13 +40,12 @@ const KEEP = [
 // cluster credential and join token prefixes. Generation fails if the kept surface still has any.
 const LEAKS = /ADR-\d|rlm_(c[srp]|jt)_/;
 
-// Wording about how the platform runs evaluations rather than what a caller sends and reads: its
-// clusters, cells, Kubernetes objects, controllers, agents and schedulers, its operators, its own
-// routes and services. A description whose first sentence has any is left out, and generation
-// fails if any reaches a comment of the generated client.
+// Deployment wording: how the service runs rather than what a caller sends and reads. A
+// description whose first sentence has any is left out, and generation fails if any reaches a
+// comment of the generated client.
 const INTERNAL =
   /\b(clusters?|cells?|kubernetes|k8s|pods?|controllers?|schedulers?|sidecars?|tenants?|operators?|prometheus|workos)\b|\bagent[- ](authored|grpc|version)|versions\.agent|\/v1\/(platform|clusters)\b/i;
-// The platform's machines, in lower case: Node, the JavaScript runtime, and node: modules are not.
+// Lower-case node(s) as deployment wording; Node, the JavaScript runtime, and node: modules are not.
 const NODES = /\bnodes?\b(?![.:])/;
 // The RLMESH_* variables a user sets are the ones this repo reads; any other is the platform's.
 const PUBLIC_ENV = new Set(
@@ -59,8 +58,8 @@ const context = (text, term) => {
   return text.slice(Math.max(0, at - 80), at + term.length + 80).replace(/\s+/g, ' ');
 };
 
-// Fields only the platform's own reads fill (its operators' cross-organization views, its cost)
-// or that describe its deployment rather than the caller's runs. Each is left out of the client.
+// Fields only the service's own reads fill, or that describe its deployment rather than the
+// caller's runs. Each is left out of the client.
 const PLATFORM_ONLY = /\bplatform[- ](scoped|wide|routes|reads)\b/i;
 const DROP = { MeAccess: ['isPlatformOrganization'], RLMeshURLs: ['agentGrpc'], InfoResponse: ['outputStore'] };
 const dropped = [];
