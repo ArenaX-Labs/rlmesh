@@ -234,6 +234,17 @@ first release, publish a placeholder `0.0.1` of each `@rlmesh/{platform}-{arch}`
 the same way, then add the trusted publisher (repository `ArenaX-Labs/rlmesh`,
 workflow `release.yml`, environment `release`) in each package's settings.
 
+To rehearse it without publishing, dispatch the workflow on any branch with
+`gh workflow run release.yml --ref <branch> -f rehearse=npm`. Only the
+`npm-rehearsal-*` jobs run, on a read-only token with no environment or
+secrets: they build all five addons and the bundles with the same tasks, pack
+them, check the tarballs (one version, no `fleet.js`, an addon only in each
+platform package, built for its target), and install and run
+`examples/node/hold.mjs` from the tarballs on linux-x64 and darwin-arm64
+(`mise run release:js:smoke`, which also runs locally after
+`release:js:package`). The tarballs stay on the run as `npm-rehearsal-packages`
+for three days.
+
 ## Post-publish smoke
 
 ```bash
