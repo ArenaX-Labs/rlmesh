@@ -201,7 +201,9 @@ one's token with `client.setConfig({ auth })`.
 
 `mise run js:managed:generate` regenerates `src/managed/gen` from
 `https://api.rlmesh.dev/openapi.yaml` (or a contract file given as its
-argument), keeping only the public paths.
+argument), keeping only the public paths and fields and the first sentence of
+each description. It fails, changing nothing, when wording about how the
+platform runs evaluations would reach the generated code.
 
 ## Building and testing
 

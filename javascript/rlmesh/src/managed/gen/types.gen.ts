@@ -7,7 +7,7 @@ export type ClientOptions = {
 
 export type ErrorDetail = {
     /**
-     * Machine-readable reason. Evaluation create and preview answer an invalid request with `incompatible_pairing`, `unknown_scenario`, `missing_episode_cap`, `platform_maximum_exceeded`, `custom_checkpoint_not_allowed`, `env_var_not_allowed` or `platform_storage_not_allowed` when the refusal has structure (see `details`), and `bad_request` otherwise. A retry past the platform's retries per evaluation also answers `platform_maximum_exceeded`.
+     * Machine-readable reason.
      */
     code: string;
     message: string;
@@ -26,7 +26,7 @@ export type AppAuth = {
 };
 
 /**
- * Identity-provider endpoints in RFC 8414 vocabulary. Clients must take endpoints from here rather than deriving provider URLs, so a provider change is a control-plane deploy, not a client upgrade.
+ * Identity-provider endpoints in RFC 8414 vocabulary.
  */
 export type AuthInfo = {
     dashboard: AppAuth;
@@ -40,26 +40,6 @@ export type RlMeshUrls = {
     api: string;
     dashboard: string;
     docs: string;
-    /**
-     * Externally reachable agent gRPC endpoint. Present only when the operator configured RLMESH_CONTROL_PLANE_PUBLIC_GRPC_URL.
-     */
-    agentGrpc?: string;
-};
-
-export type OutputStoreInfo = {
-    provider: 's3' | 'gcs';
-    /**
-     * Custom S3 endpoint origin, when configured. No user information or query parameters.
-     */
-    endpoint?: string;
-    /**
-     * S3 signing region; absent for GCS.
-     */
-    region?: string;
-    /**
-     * Exact output-store hostnames used by cell workloads. No credentials or URL paths.
-     */
-    hosts: Array<string>;
 };
 
 export type RegistryBootstrapInfo = {
@@ -73,13 +53,9 @@ export type RegistryBootstrapInfo = {
 export type InfoResponse = {
     auth: AuthInfo;
     urls: RlMeshUrls;
-    /**
-     * Present only on authenticated /v1/clusters/bootstrap; omitted from public discovery.
-     */
-    outputStore?: OutputStoreInfo;
     registry?: RegistryBootstrapInfo;
     /**
-     * Names of the feature flags that are on in this deployment. It says whether a feature is available here at all, not whether a given organization has it. Absent on control planes older than the flag table.
+     * Names of the feature flags that are on in this deployment.
      */
     features?: Array<string>;
 };
@@ -92,7 +68,7 @@ export type MeResponse = {
 };
 
 /**
- * What the organization has consumed against its admission limits; present once the org is provisioned. A null limit is unlimited.
+ * What the organization has consumed against its admission limits; present once the org is provisioned.
  */
 export type MeOrganizationUsage = {
     /**
@@ -114,60 +90,51 @@ export type MeOrganizationUsage = {
 };
 
 /**
- * One evaluation's models, tasks and execution knobs. The platform holds what one evaluation may ask for to deployment-wide maximums: timeoutSeconds, cpu and memory overrides, resources.environment.gpu, tasks[].workers, tasks[].episodes, managed.maxParallelWorkloads, managed.modelReplicas, and retries per evaluation. A request past one is refused with platform_maximum_exceeded naming the field; what the platform defaults stays under them. An operator can exempt an organization (limits.platformMaximumsExempt), and the platform organization is exempt.
+ * One evaluation's models, tasks and execution knobs.
  */
 export type EvaluationRequest = {
     models: Array<ModelRef>;
     tasks: Array<TaskRef>;
     projectId?: string;
     managed?: {
-        /**
-         * Pin the evaluation to an available cluster. A disabled or archived cluster is refused. When omitted, the managed preference skips dedicated clusters and uses platform default then least-loaded shared capacity. Otherwise placement prefers the organization's dedicated default, then dedicated capacity, then the shared platform default and least-loaded shared capacity.
-         */
         clusterId?: string;
         /**
-         * Env workloads the run may have in flight at once. Omitted: the cluster's whole concurrency budget, held to the platform maximum (300 by default); larger values are clamped to the cluster's budget (metadata.effectiveMaxParallelWorkloads), and values past the platform maximum are refused with platform_maximum_exceeded.
+         * Env workloads the run may have in flight at once.
          */
         maxParallelWorkloads?: number;
-        /**
-         * Model server pods per model; the model's routes are spread across them round-robin. Each replica holds a GPU for the whole run. Past the platform maximum (4 by default) the request is refused with platform_maximum_exceeded.
-         */
         modelReplicas?: number;
         /**
-         * Prefer a vendor (nvidia, amd) or a hardware class id (nvidia/l40s) when placement ranks admissible compute variants. A preference, never a requirement: it admits nothing extra and refuses nothing.
+         * Prefer a vendor (nvidia, amd) or a hardware class id (nvidia/l40s) when placement ranks admissible compute variants.
          */
         accelerator?: string;
-        /**
-         * Admit only (variant, class) pairs a probe has verified on the target cluster's hardware; pairs admitted on their declared requirements alone are out.
-         */
         requireVerified?: boolean;
     };
     resources?: ResourceOverrides;
     /**
-     * Ignored. Hot models were removed; accepted so older saved requests still launch.
+     * Ignored.
      *
      * @deprecated
      */
     residentKeepAliveSeconds?: number;
     /**
-     * Run deadline. Omitted: 6 hours, or the platform maximum when that is lower. Past the platform maximum (12 hours by default) the request is refused with platform_maximum_exceeded.
+     * Run deadline.
      */
     timeoutSeconds?: number;
     /**
-     * Actions executed per model inference, for every workload. Omitted: each workload runs at the re-plan interval its model (or its checkpoint) declares, so one evaluation can carry several; see effectiveConfig.workloads[].maxActionChunk. A value past what one predict returns is refused.
+     * Actions executed per model inference, for every workload.
      */
     maxActionChunk?: number;
     /**
-     * Predicts coalesced into one grouped model call; 1 = off. Explicit values override every model/checkpoint group. Omitted: resolved independently per group; models that declare supportsBatching default to 32, lowered only by a probe failure ceiling measured on this cluster's accelerator, and other models stay off whatever their probe measured.
+     * Predicts coalesced into one grouped model call; 1 = off.
      */
     maxBatchSize?: number;
     batchWindowMs?: number;
     /**
-     * Env clients one model server admits, independent of maxBatchSize; a group with N replicas admits N times this. Omitted: each model/checkpoint group's route count divided by modelReplicas, rounded up, so admission never throttles below the worker count.
+     * Env clients one model server admits, independent of maxBatchSize; a group with N replicas admits N times this.
      */
     clientsPerServer?: number;
     /**
-     * Grouped-predict batches one model endpoint may run at once: the next batch assembles while the previous one infers. 1 restores the serial batcher; absent picks the platform default (1 below 300 lanes per runner, else 2).
+     * Grouped-predict batches one model endpoint may run at once: the next batch assembles while the previous one infers.
      */
     maxInFlightBatches?: number;
     /**
@@ -180,7 +147,7 @@ export type EvaluationRequest = {
 };
 
 /**
- * Latest run placement. Shared platform capacity carries only managed=true; id and name are present only for the reader organization's dedicated cluster. Absent before placement or when capacity was reassigned to another organization.
+ * Latest run placement.
  */
 export type EvaluationCluster = {
     id?: string;
@@ -190,30 +157,12 @@ export type EvaluationCluster = {
 
 export type Evaluation = {
     id: string;
-    /**
-     * Platform-scoped reads only.
-     */
-    organizationId?: string;
-    /**
-     * Platform-scoped reads only.
-     */
-    organizationName?: string;
     cluster?: EvaluationCluster;
-    /**
-     * Clusters the evaluation's runs were placed on; platform-scoped reads only.
-     */
-    clusters?: Array<{
-        id: string;
-        name?: string;
-    }>;
     name?: string;
     status: EvaluationStatus;
     origin: 'platform' | 'import' | 'legacy_import';
     projectId: string;
     request: EvaluationRequest;
-    /**
-     * What the evaluation actually ran with, compiled once at creation (schema rlmesh.effective_config.v1): every execution knob after probe recommendations and cluster clamps (maxActionChunk, maxBatchSize, batchWindowMs, maxParallelWorkloads, clientsPerServer, maxInFlightBatches, asyncPrefetchLead, runner image and sizing), the digest-pinned model/environment images, modelReplicas, the target cluster (tenant reads replace effectiveConfig.cluster with EvaluationCluster, omitting shared identity and inventory), and versions (controlPlane, managedAbi, agent, and perturbationOps: the perturbation op catalog version, present when any task is perturbed; version 2 fixed frame_drop, a no-op before, and frame_freeze, so results across versions are not comparable). workloads[] carries the per-cell half -- {id, model, checkpoint, environment, task, maxActionChunk, maxEpisodeSteps} -- because the re-plan interval and the episode step cap are resolved per model x checkpoint x pairing and the run-wide block cannot say what any one cell ran. modelExecution[] carries the resolved throughput settings per runner/model-server group: {model, checkpoint, maxBatchSize, batchWindowMs, clientsPerServer, maxInFlightBatches}. Here model is the compiled instance name matching effectiveConfig.workloads[].model; preview.modelExecution instead supplies the public catalog ref in model and this compiled name in modelInstance. Settings are frozen at compile time and replayed on retries; maxInFlightBatches is frozen only when the request set it, otherwise each runner sizes it from its own routes. batchWindowMs is absent for a group whose maxBatchSize is 1. The execution throughput fields summarize group settings only when every group agrees, and omit maxBatchSize, batchWindowMs and maxInFlightBatches when batching is off; older evaluations without modelExecution retain their legacy run-wide settings. metadata.probeRecommendations (a JSON string) lists the batching knobs filled from runtime probes, one {model, checkpoint, maxBatchSize, batchWindowMs} per group that took any; metadata.probeRecommendation keeps its original {model, maxBatchSize, batchWindowMs} object when every group took the same recommendation of one model, and is absent otherwise. models[] and environments[] carry variant, class and confidence when placement applied a compute variant (for an environment the variant is its profile, and render names its rendering backend: osmesa on the CPU, or egl on a GPU of a cell that opted into GPU rendering), and resolutions[] (VariantResolution) the full answer with alternatives, recorded in shadow mode too. runtimes[] (RuntimeSnapshot) separately freezes each materialized image's complete describe.runtime, one entry per distinct role, request ref and imageDigest that runs, including solver-off and shadow refusals. In shadow mode runtimes[].imageDigest is the default image that runs, while resolutions[].imageDigest remains the solver's choice. The version describe applies to its default child (including another variant with that same digest); non-default images use only their own facts. Missing declarations omit runtime and retain imageDigest. Runtime snapshots are absent for evaluations compiled before this feature. Preview returns the same runtimes[] shape for its compile; creation recompiles and may resolve newer images. Compare against request to see what the platform filled in or clamped. Absent for evaluations created before it existed.
-     */
     effectiveConfig?: {
         [key: string]: unknown;
     };
@@ -223,26 +172,23 @@ export type Evaluation = {
     modelIdentities: Array<ModelIdentity>;
     progress: Progress;
     /**
-     * Share of metric-included episodes whose verdict is success, over each task's latest attempt (the list-page headline). Absent before any episode settles.
+     * Share of metric-included episodes whose verdict is success, over each task's latest attempt (the list-page headline).
      */
     successRate?: number;
     meanReward?: number;
     createdBy?: Creator;
     demoPublishedAt?: string;
     /**
-     * Another organization's published showcase: readable here, never the reader's own, and served without its creator. Absent on the owner's reads.
+     * Another organization's published showcase: readable here, never the reader's own, and served without its creator.
      */
     shared?: boolean;
     queuePosition?: number;
     queueDepth?: number;
-    /**
-     * When the evaluation first left the managed queue for a cluster. Elapsed from createdAt to here was waiting for cluster capacity; after it, waiting happens inside the cluster (nodes, images, inputs). Retries do not move it; absent until dispatched and on list reads.
-     */
     dispatchedAt?: string;
     createdAt: string;
     updatedAt: string;
     /**
-     * Earliest evidence of execution (a running workload, a runtime connection, an episode or a runner telemetry window), clamped to [createdAt, the time it was recorded]; elapsed before this was queue/provisioning wait rather than compute. Once running, status never drops back to queued or provisioning.
+     * Earliest evidence of execution (a running workload, a runtime connection, an episode or a runner telemetry window), clamped to [createdAt, the time it was recorded]; elapsed before this was queue/provisioning wait rather than compute.
      */
     startedAt?: string;
     completedAt?: string;
@@ -265,9 +211,6 @@ export type EvaluationSweepCreated = {
         name: string;
         point: EvaluationSweepPoint;
     }>;
-    /**
-     * Points that failed validation, catalog resolution, or cluster selection; the rest of the sweep still ran.
-     */
     skipped: Array<{
         name: string;
         point: EvaluationSweepPoint;
@@ -314,7 +257,7 @@ export type PerturbationCatalog = {
 };
 
 /**
- * What a variant is built on. Not requirements; selection pins and checkpoint requires match against them.
+ * What a variant is built on.
  */
 export type VariantFacets = {
     /**
@@ -325,9 +268,6 @@ export type VariantFacets = {
     render?: 'osmesa' | 'egl' | 'none';
 };
 
-/**
- * What a cluster offer must satisfy. Version constraints are comma-joined clauses (">=8.0,<10.0"); a bare version is a minimum. accel.compute, accel.cuda and accel.driver are NVIDIA-only, accel.gfx AMD-only, and every key but accel.vendor needs accel.vendor.
- */
 export type VariantRequires = {
     'accel.vendor'?: 'nvidia' | 'amd';
     /**
@@ -347,14 +287,11 @@ export type VariantRequires = {
      */
     'accel.driver'?: string;
     /**
-     * Minimum VRAM per GPU as a quantity: 16Gi, 24G, 512Mi. Binary suffixes are powers of 1024, decimal ones powers of 1000, none is bytes; the value must be a positive whole number of bytes.
+     * Minimum VRAM per GPU as a quantity: 16Gi, 24G, 512Mi.
      */
     'accel.vram'?: string;
 };
 
-/**
- * How a variant's pod differs from its image's defaults.
- */
 export type VariantRuntime = {
     envVars?: {
         [key: string]: string;
@@ -371,7 +308,7 @@ export type VariantRuntime = {
 };
 
 /**
- * At least one field. A null requiresOverride clears the override; an absent one leaves it.
+ * At least one field.
  */
 export type RepoVariantOverride = {
     /**
@@ -380,7 +317,7 @@ export type RepoVariantOverride = {
     requiresOverride?: VariantRequires | null;
     priority?: number;
     /**
-     * true takes the variant out of selection; false returns it to the status its image gives it. The default variant cannot be disabled.
+     * true takes the variant out of selection; false returns it to the status its image gives it.
      */
     disabled?: boolean;
 };
@@ -409,7 +346,7 @@ export type PairingInput = {
     input: string;
     kind: 'image' | 'state' | 'text';
     /**
-     * e.g. `proprio/eef_rot`
+     * e.g.
      */
     role: string;
     /**
@@ -452,7 +389,7 @@ export type PairingActuator = {
 };
 
 /**
- * Details of `incompatible_pairing`: a model cannot read an environment's observations or drive its action, as the adapters resolver judged it. Every role the model reads is listed with what feeds it, so a reader sees every gap at once rather than the first one the resolver stopped at.
+ * Details of `incompatible_pairing`: a model cannot read an environment's observations or drive its action, as the adapters resolver judged it.
  */
 export type PairingRefusal = {
     /**
@@ -472,7 +409,7 @@ export type PairingRefusal = {
      */
     resolverCode?: string;
     /**
-     * One row per environment role a model input reads, in input order. Absent when a refusal beyond those roles (`unresolved`) kept the rest from resolving.
+     * One row per environment role a model input reads, in input order.
      */
     inputs?: Array<PairingInput>;
     /**
@@ -504,7 +441,7 @@ export type PairingRefusal = {
      */
     modelEnvironments?: Array<string>;
     /**
-     * Catalog models that declare this environment and pass the same check, in catalog order (at most twenty). Removing the environment from the request is the other fix.
+     * Catalog models that declare this environment and pass the same check, in catalog order (at most twenty).
      */
     alternatives: Array<{
         model: string;
@@ -553,16 +490,13 @@ export type EpisodeCapRefusal = {
 };
 
 /**
- * Details of `platform_maximum_exceeded`: the request asks for more of something than the platform lets one evaluation have. The maximums are deployment-wide; an operator can exempt an organization from them.
+ * Details of `platform_maximum_exceeded`: the request asks for more of something than the platform lets one evaluation have.
  */
 export type MaximumRefusal = {
     /**
      * The request field as a path (`timeoutSeconds`, `tasks[t1].workers`, `resources.model.cpu`, `models[acme/pi0].resources.memory`, `managed.modelReplicas`), or `retries` for a retry past the count.
      */
     field: string;
-    /**
-     * What the request asks for, as written (a number or a Kubernetes quantity).
-     */
     requested: string;
     /**
      * The most the platform allows.
@@ -655,14 +589,10 @@ export type MeAccess = {
     platformRole: 'admin' | 'viewer' | null;
     fullAccess: boolean;
     demoPublisher: boolean;
-    /**
-     * Whether the credential is scoped to the platform operators' organization
-     */
-    isPlatformOrganization: boolean;
 };
 
 /**
- * Present only for a signed-in dashboard user whose session has no organization, while the self-serve-organizations feature flag is on: whether they may create their own organization (POST /v1/me/organizations). Read from cached state; the create checks again.
+ * Present only for a signed-in dashboard user whose session has no organization, while the self-serve-organizations feature flag is on: whether they may create their own organization (POST /v1/me/organizations).
  */
 export type MeOnboarding = {
     canCreateOrganization: boolean;
@@ -689,7 +619,7 @@ export type Progress = {
     completedTasks: number;
     totalTasks: number;
     /**
-     * Distinct scenarios in the request. tasks are the workloads behind them: N per scenario once tasks[].workers shards its episodes across env workers (<task>--sN).
+     * Distinct scenarios in the request.
      */
     totalScenarios?: number;
     completedEpisodes: number;
@@ -703,17 +633,17 @@ export type Progress = {
      */
     etaSeconds?: number;
     /**
-     * Set while running when no episode has reached the control plane for 15 minutes: the time of the last one (or of startedAt if none has). Says nothing about why; see the diagnosis.
+     * Set while running when no episode has reached the control plane for 15 minutes: the time of the last one (or of startedAt if none has).
      */
     stalledSince?: string;
 };
 
 /**
- * What one request model ref compiled to. What runs is a tuple -- runtime (the registry repo), compute variant, checkpoint and overrides -- so a repo path alone cannot tell base from fine-tune or one variant from another. Recorded at creation; evaluations created before it get a fallback built from the request and the compiled models[], with no fingerprint or display name.
+ * What one request model ref compiled to.
  */
 export type ModelIdentity = {
     /**
-     * Stable grouping key in the tasks[].models grammar: model[#variant][@checkpoint], the checkpoint only when the ref names one. Workload metadata modelKey carries it.
+     * Stable grouping key in the tasks[].models grammar: model[#variant][@checkpoint], the checkpoint only when the ref names one.
      */
     key: string;
     /**
@@ -764,7 +694,7 @@ export type ModelIdentity = {
      */
     overrides?: Array<string>;
     /**
-     * Versioned hash of the image, checkpoint weights (and serving entrypoint, when one is declared) and override values (mf1:...). Equal fingerprints ran the same model; the same key with another fingerprint was rebuilt or retrained. Hardware is not part of it.
+     * Versioned hash of the image, checkpoint weights (and serving entrypoint, when one is declared) and override values (mf1:...).
      */
     fingerprint?: string;
 };
@@ -775,22 +705,7 @@ export type StringMap = {
 
 export type EvaluationListItem = {
     id: string;
-    /**
-     * Present on platform-wide list responses.
-     */
-    organizationId?: string;
-    /**
-     * Organization display name; platform-wide list responses only.
-     */
-    organizationName?: string;
     cluster?: EvaluationCluster;
-    /**
-     * Clusters the evaluation's runs were placed on; platform-wide list responses only, absent before placement.
-     */
-    clusters?: Array<{
-        id: string;
-        name?: string;
-    }>;
     name?: string;
     status: EvaluationStatus;
     origin: 'platform' | 'import' | 'legacy_import';
@@ -812,7 +727,7 @@ export type EvaluationListItem = {
      */
     environments: Array<string>;
     /**
-     * Share of metric-included episodes whose verdict is success; failure and unknown both count as not-success. Rows recorded before verdicts fall back to terminated-and-not-truncated.
+     * Share of metric-included episodes whose verdict is success; failure and unknown both count as not-success.
      */
     successRate?: number;
     meanReward?: number;
@@ -820,20 +735,20 @@ export type EvaluationListItem = {
     metadata?: StringMap;
     demoPublishedAt?: string;
     /**
-     * Another organization's published showcase: readable here, never the reader's own, and served without its creator. Absent on the owner's reads.
+     * Another organization's published showcase: readable here, never the reader's own, and served without its creator.
      */
     shared?: boolean;
     createdAt: string;
     updatedAt: string;
     /**
-     * Earliest evidence of execution (a running workload, a runtime connection, an episode or a runner telemetry window), clamped to [createdAt, the time it was recorded]; elapsed before this was queue/provisioning wait rather than compute. Once running, status never drops back to queued or provisioning.
+     * Earliest evidence of execution (a running workload, a runtime connection, an episode or a runner telemetry window), clamped to [createdAt, the time it was recorded]; elapsed before this was queue/provisioning wait rather than compute.
      */
     startedAt?: string;
     completedAt?: string;
 };
 
 /**
- * Container sizing override for the model server. cpu/memory as in RoleResourceOverride; vram is a GPU-type fit signal (never scheduled); gpu is the whole-device count, 0 or 1 (the catalog declares no multi-GPU entries); gpuResourceName overrides the extended resource the server requests (default nvidia.com/gpu), e.g. a renamed shared slot on a time-sliced node.
+ * Container sizing override for the model server.
  */
 export type ModelResourceOverride = {
     cpu?: string;
@@ -849,11 +764,11 @@ export type ModelRef = {
      */
     model: string;
     /**
-     * A checkpoint name the model declares, or an ad-hoc storage URI (hf://, s3://, gs://, https://) compiled into a synthetic checkpoint that inherits the default checkpoint's delivery contract. Omitted: the model's default, except that when checkpoints declare the scenarios they fit, each task takes the checkpoint matching its scenario. A pinned checkpoint whose declared scenarios a task does not match is rejected.
+     * A checkpoint name the model declares, or an ad-hoc storage URI (hf://, s3://, gs://, https://) compiled into a synthetic checkpoint that inherits the default checkpoint's delivery contract.
      */
     checkpoint?: string;
     /**
-     * Set on this model's server container. RLMESH_* (other than RLMESH_MAKE_KWARGS and RLMESH_NUM_ENVS), NVIDIA_*, AWS_*, CUDA_VISIBLE_DEVICES, AMD_VISIBLE_DEVICES and the proxy variables are reserved. Names that look like credentials are rejected with 400: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, WANDB_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GITHUB_TOKEN; the bare names TOKEN, API_KEY, APIKEY, SECRET, SECRET_KEY, PASSWORD, PRIVATE_KEY and ACCESS_KEY; and any name ending in _TOKEN, _SECRET, _PASSWORD, _API_KEY, _APIKEY, _SECRET_KEY, _ACCESS_KEY or _PRIVATE_KEY (case-insensitive). Names such as HF_HOME or S3_ENDPOINT are allowed. The same rule applies to a catalog entry's package envVars (a pushed digest naming one fails its probe; an evaluation built from an older entry carrying one is refused with the same 400) and to a retry, which re-checks the stored evaluation. envVars are stored with the evaluation and returned by its reads, so credentials belong in an organization connection (/v1/connections).
+     * Set on this model's server container.
      */
     envVars?: StringMap;
     /**
@@ -861,7 +776,7 @@ export type ModelRef = {
      */
     resources?: ModelResourceOverride;
     /**
-     * Pin one of the version's compute variants by key (cuda12, rocm6, jax-cuda12, or a profile such as cuda12-egl). Omitted, placement picks among the admissible variants on the target cluster by one fixed rule: verified before declared, then managed.accelerator, then the version's default variant, then higher priority, then key order. Probe-measured performance never decides. A pinned variant that is inadmissible on the cluster is refused with the reasons, never substituted. The same model may appear twice with different variants; tasks[].models then addresses one as "model#variant".
+     * Pin one of the version's compute variants by key (cuda12, rocm6, jax-cuda12, or a profile such as cuda12-egl).
      */
     variant?: string;
 };
@@ -874,11 +789,11 @@ export type RecordVideoSpec = {
      */
     raw?: Array<string>;
     /**
-     * Camera roles encoded post-perturbation. Defaults to [primary] only when the request carries no record block at all; an explicit empty list records no video.
+     * Camera roles encoded post-perturbation.
      */
     perturbed?: Array<string>;
     /**
-     * Additional cameras to record from the unperturbed observation, e.g. views the model does not consume. You choose them; nothing is inferred.
+     * Additional cameras to record from the unperturbed observation, e.g. views the model does not consume.
      */
     extra?: Array<string>;
     fps?: number;
@@ -888,7 +803,7 @@ export type RecordVideoSpec = {
      */
     every?: number;
     /**
-     * Encode every Nth frame of a recorded episode. Playback fps is unchanged, so a stride-k video plays k times faster than wall time.
+     * Encode every Nth frame of a recorded episode.
      */
     stride?: number;
 };
@@ -896,7 +811,7 @@ export type RecordVideoSpec = {
 export type RecordTrajectorySpec = {
     obs?: 'raw' | 'perturbed' | 'both' | 'none';
     /**
-     * Write image pixels for the image leaves of an observation. Off keeps the leaf's shape and dtype but drops the bytes, which is what makes state-only trajectories affordable. Frames are the size the environment rendered for this pairing (effectiveConfig task metadata renderSize), not the size the environment renders by default.
+     * Write image pixels for the image leaves of an observation.
      */
     obsImages?: boolean;
     action?: 'raw' | 'perturbed' | 'both' | 'none';
@@ -911,7 +826,7 @@ export type RecordTrajectorySpec = {
 };
 
 /**
- * Per-episode recording policy. The attempt stamp is always written. Video is off unless a camera is named, except that a request with no record block at all records video.perturbed [primary]. A trajectory is written when any of obs, action, reward, info or stepTiming is on.
+ * Per-episode recording policy.
  */
 export type RecordSpec = {
     video?: RecordVideoSpec;
@@ -938,7 +853,7 @@ export type PerturbationOpSpec = {
 
 export type TaskRef = {
     /**
-     * Free-form for a standalone environment. For an environment declaring scenarioGroups it names the scenario to run as <group>/<scenario> (e.g. libero_goal/5), optionally followed by a --<variant> suffix; the scenario's env vars (RLMESH_MAKE_KWARGS) are applied under any envVars given here. A taskId naming no scenario is rejected unless envVars pins RLMESH_MAKE_KWARGS.
+     * Free-form for a standalone environment.
      */
     taskId: string;
     /**
@@ -948,11 +863,11 @@ export type TaskRef = {
     episodes: number;
     seed?: number;
     /**
-     * Exact per-episode seeds; length must equal episodes. Mutually exclusive with seed. Only takes effect when the environment lets the driver own resets (autoreset disabled/unspecified).
+     * Exact per-episode seeds; length must equal episodes.
      */
     seeds?: Array<number>;
     /**
-     * Overlaid on the environment's container vars and its scenario's. RLMESH_MAKE_KWARGS is then filled key by key from the model's catalog pairing for this environment: a key given here wins, a key the pairing declares and this does not is added, and a key that contradicts a contract discriminant or a camera size the model's spec asserts is rejected rather than silently overridden. The binding that resulted is recorded as the task's pairingParams metadata. Names that look like credentials are rejected with 400: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, WANDB_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GITHUB_TOKEN; the bare names TOKEN, API_KEY, APIKEY, SECRET, SECRET_KEY, PASSWORD, PRIVATE_KEY and ACCESS_KEY; and any name ending in _TOKEN, _SECRET, _PASSWORD, _API_KEY, _APIKEY, _SECRET_KEY, _ACCESS_KEY or _PRIVATE_KEY (case-insensitive). Names such as HF_HOME or S3_ENDPOINT are allowed. The same rule applies to a catalog entry's package envVars (a pushed digest naming one fails its probe; an evaluation built from an older entry carrying one is refused with the same 400) and to a retry, which re-checks the stored evaluation. envVars are stored with the evaluation and returned by its reads, so credentials belong in an organization connection (/v1/connections).
+     * Overlaid on the environment's container vars and its scenario's.
      */
     envVars?: StringMap;
     /**
@@ -961,27 +876,24 @@ export type TaskRef = {
     record?: RecordSpec;
     perturbation?: PerturbationSpec;
     /**
-     * Restrict this task to the named request models. A bare entry matches a models[].model in the same request (every checkpoint and variant of it); "model#variant" one pinned compute variant; "model@checkpoint" pins one resolved checkpoint; the forms combine as "model#variant@checkpoint". Omitted or empty runs the task against every model.
+     * Restrict this task to the named request models.
      */
     models?: Array<string>;
     metadata?: StringMap;
     /**
-     * Pin the environment's compute variant or profile by key (egl for GPU rendering, osmesa for software rendering). Omitted, the default profile runs. A pinned profile that is inadmissible on the target cluster is refused with the reasons.
+     * Pin the environment's compute variant or profile by key (egl for GPU rendering, osmesa for software rendering).
      */
     variant?: string;
     /**
-     * native (the default) runs the task only where the model's spec resolves against the environment, and refuses the request otherwise. transfer runs the model on an environment it was not built for: the platform shows the model a virtual environment covering its spec, standing in for what the environment lacks (a black frame for a missing camera, zeros for missing state, a narrower state part padded with its fill, an empty instruction) and holding any actuator the model does not drive at its fill, while a model action the environment has no actuator for is dropped. The preview's warnings list every fill, the task's metadata records them as pairing=transfer and transferFills, and a pair that needs nothing runs, and is labelled, as native. A pair even a transfer cannot run (a custom input, a state role with no declared width) is refused with the reason. Works for any model image, whatever SDK it was built with.
+     * native (the default) runs the task only where the model's spec resolves against the environment, and refuses the request otherwise.
      */
     pairing?: 'native' | 'transfer';
     /**
-     * Environment workers to split this task's episodes across. The platform expands the task into <taskId>--s1..N, each running a consecutive slice of one episode space with the same seed (or the matching slice of seeds), so the split never changes which episodes run; results merge back under the task. Must not exceed episodes. Omitted: one worker per episode, scaled back uniformly so the request stays under 300 workers per model (the runner's measured ceiling); 1 forces a single worker.
+     * Environment workers to split this task's episodes across.
      */
     workers?: number;
 };
 
-/**
- * Container sizing override for the environment pod. cpu/memory as in RoleResourceOverride; gpu is the whole-device count (0 drops the profile's device, 1-8 request that many) and gpuResourceName the extended resource it requests, for a profile that renders on a GPU.
- */
 export type EnvironmentResourceOverride = {
     cpu?: string;
     memory?: string;
@@ -990,7 +902,7 @@ export type EnvironmentResourceOverride = {
 };
 
 /**
- * Container sizing override for one role. Kubernetes quantities; cpu must be at least 500m and memory at least 512Mi. An omitted field keeps the catalog/probe-derived value.
+ * Container sizing override for one role.
  */
 export type RoleResourceOverride = {
     cpu?: string;
@@ -998,7 +910,7 @@ export type RoleResourceOverride = {
 };
 
 /**
- * Per-role sizing overrides applied on top of the catalog label and probe recommendation. Precedence per field: catalog < probe < resources.<role> < models[].resources. The effective values are echoed per workload in previews and as resources.<role>.<field> workload metadata.
+ * Per-role sizing overrides applied on top of the catalog label and probe recommendation.
  */
 export type ResourceOverrides = {
     model?: ModelResourceOverride;
@@ -1007,7 +919,7 @@ export type ResourceOverrides = {
 };
 
 /**
- * Tasks of one scenario group running a model checkpoint not declared for it. off_suite: the checkpoint declares other scenarios, or another of the model's checkpoints declares this group or is named for it (`libero-spatial` for `libero_spatial`). undeclared: a model ref naming no checkpoint runs its default, and the model has several checkpoints but declares no scenarios, so nothing says the default fits. A pinned checkpoint nothing contradicts, and custom checkpoint URIs, are taken as meant.
+ * Tasks of one scenario group running a model checkpoint not declared for it.
  */
 export type CheckpointScopeWarning = {
     kind: 'off_suite' | 'undeclared';
@@ -1066,7 +978,7 @@ export type EffectiveRoleResources = {
 };
 
 /**
- * Sizing each role's container runs with. cpu is a request only; memory is request and limit (memoryLimit replaces the limit when present); gpu is a whole-device limit. A field the controller defaults per cluster is omitted.
+ * Sizing each role's container runs with.
  */
 export type EffectiveResources = {
     model: EffectiveRoleResources;
@@ -1074,9 +986,6 @@ export type EffectiveResources = {
     runtime: EffectiveRoleResources;
 };
 
-/**
- * Expected duration, credits, and free headroom, from the cluster's newest completed runs of the request's first model/env pair (source "history"), else measured constants (source "default"). Workers run side by side as the controller admits them (estimates.parallelWorkloads at the start): each model/checkpoint group at most clientsPerServer times its model replicas at once, all groups at most maxParallelWorkloads, and a freed slot takes the longest queued worker it may admit. totalSeconds is floorSeconds plus that schedule's length in episodes times episodeSeconds, plus tailSeconds.
- */
 export type PreviewEstimate = {
     /**
      * Startup paid at any size, submit to first episode.
@@ -1092,7 +1001,7 @@ export type PreviewEstimate = {
     tailSeconds: number;
     totalSeconds: number;
     /**
-     * Episodes times what the pair's recent runs were charged per episode: what the run is expected to cost the organization. Absent before any of them was charged.
+     * Episodes times what the pair's recent runs were charged per episode: what the run is expected to cost the organization.
      */
     credits?: number;
     perEpisodeCredits?: number;
@@ -1110,11 +1019,11 @@ export type PreviewEstimate = {
     sampleEvaluations: number;
     source: 'history' | 'default';
     /**
-     * Episodes that can still be added without lengthening the run, as one-episode workers under the runner ceiling, read off the same admission schedule as totalSeconds: the slots maxParallelWorkloads and each group's clientsPerServer times replicas leave free before the schedule ends (a defaulted clientsPerServer grows with the workers, so only maxParallelWorkloads bounds it). 0 when the admitted slots are full until the end.
+     * Episodes that can still be added without lengthening the run, as one-episode workers under the runner ceiling, read off the same admission schedule as totalSeconds: the slots maxParallelWorkloads and each group's clientsPerServer times replicas leave free before the schedule ends (a defaulted clientsPerServer grows with the workers, so only maxParallelWorkloads bounds it).
      */
     headroomEpisodes: number;
     /**
-     * low when the numbers cannot speak for this run: no history, fewer than 3 sample runs, or history that ran under half as many episodes at once. Episode time grows with width, since every worker shares the model server, so a low estimate tends to run long.
+     * low when the numbers cannot speak for this run: no history, fewer than 3 sample runs, or history that ran under half as many episodes at once.
      */
     confidence: 'low' | 'normal';
     /**
@@ -1163,7 +1072,7 @@ export type VariantResolution = {
     role: 'model' | 'environment';
     variantKey: string;
     /**
-     * The solver's chosen image; a profile shares its image's digest. In shadow mode the materialized image remains the version default.
+     * The solver's chosen image; a profile shares its image's digest.
      */
     imageDigest: string;
     /**
@@ -1171,20 +1080,11 @@ export type VariantResolution = {
      */
     class: string;
     /**
-     * verified: a probe ran this variant on this class and passed. declared: admitted on its requirements alone (untested, or a facet the cell could not confirm).
+     * verified: a probe ran this variant on this class and passed.
      */
     confidence: 'verified' | 'declared';
-    /**
-     * Devices the pod requests on the class.
-     */
     gpus: number;
-    /**
-     * Why this pair: its verdict, the pin, the default, priority, the accelerator preference, and any requirement the cell could not confirm.
-     */
     reasons?: Array<string>;
-    /**
-     * Every other (variant, class) pair on the cluster, admissible or not, so a form can disable a choice with its reason rather than hide it.
-     */
     alternatives?: Array<{
         variantKey: string;
         class: string;
@@ -1195,7 +1095,7 @@ export type VariantResolution = {
 };
 
 /**
- * The materialized image's describe.runtime, copied once at evaluation compilation for models and environments. Omitted when no runtime was declared. Additional declaration fields (OS, architecture, protocol editions) are preserved.
+ * The materialized image's describe.runtime, copied once at evaluation compilation for models and environments.
  */
 export type RuntimeDeclaration = {
     language?: string;
@@ -1227,7 +1127,7 @@ export type EvaluationPreview = {
          */
         maxActionChunk?: number;
         /**
-         * Steps one episode of this workload may take before the runtime truncates it, from the model's catalog pairing for this environment. Absent when the pairing declares no cap.
+         * Steps one episode of this workload may take before the runtime truncates it, from the model's catalog pairing for this environment.
          */
         maxEpisodeSteps?: number;
         /**
@@ -1237,18 +1137,9 @@ export type EvaluationPreview = {
     }>;
     estimates: {
         workloadCount: number;
-        /**
-         * Workloads that run at once, as the cluster controller admits them: each model/checkpoint group runs at most clientsPerServer times its model replicas of its workloads, and all groups together at most the request's managed.maxParallelWorkloads (the target cluster's lane ceiling when omitted, and clamped to it). The rest queue for a free slot.
-         */
         parallelWorkloads: number;
         episodeCount: number;
-        /**
-         * Effective model server pods per model.
-         */
         modelReplicas: number;
-        /**
-         * Model server pods the run materializes on its first attempt, summed over the (model, checkpoint) groups its workloads reference: each group runs modelReplicas pods, or one per workload when it has fewer workloads than that.
-         */
         modelServerCount: number;
         /**
          * Env clients each model server admits, after defaults, when all groups agree; otherwise read modelExecution.
@@ -1269,19 +1160,16 @@ export type EvaluationPreview = {
         estimate?: PreviewEstimate;
     };
     /**
-     * Applied execution settings per model/checkpoint group, including defaults. Absent on older servers.
+     * Applied execution settings per model/checkpoint group, including defaults.
      */
     modelExecution?: Array<PreviewModelExecution>;
-    /**
-     * Actionable advisory notes about the compiled run that do not stop it: checkpoints picked per scenario, explicit overrides past a probe ceiling, requested scale above the available lanes, pins the variant solver recorded but did not apply, and a task whose envVars set MUJOCO_GL=egl (or PYOPENGL_PLATFORM=egl) while its environment pod requests no GPU, which names the environment's egl profile to pin with tasks[].variant instead.
-     */
     warnings: Array<string>;
     /**
-     * Tasks that run a checkpoint not declared for their suite, one entry per model, checkpoint and scenario group, each message also in warnings. The run is not refused, but expect near-zero scores; each affected workload's metadata carries checkpointScope with the entry's kind. Absent when every task's checkpoint fits.
+     * Tasks that run a checkpoint not declared for their suite, one entry per model, checkpoint and scenario group, each message also in warnings.
      */
     checkpointWarnings?: Array<CheckpointScopeWarning>;
     /**
-     * What the control plane could verify about each request model's checkpoint through the organization's storage connections: a private hf://, s3:// or gs:// checkpoint resolves to the connection whose scope (Hugging Face namespace, bucket and prefix) covers it, and one read is made with that connection's credential. Absent when no model runs a remote checkpoint. Only `inaccessible` should block a launch; `unknown` covers public URIs, cluster-owned Secrets and timed-out checks. When the run carries connections and no eligible cluster's agent supports them, every request model is listed as `unknown` with the reason `no cluster with connections support is available` (also in `warnings`), and creating the evaluation answers 400.
+     * What the control plane could verify about each request model's checkpoint through the organization's storage connections: a private hf://, s3:// or gs:// checkpoint resolves to the connection whose scope (Hugging Face namespace, bucket and prefix) covers it, and one read is made with that connection's credential.
      */
     models?: Array<{
         model: string;
@@ -1293,12 +1181,9 @@ export type EvaluationPreview = {
         checkpointAccess: 'accessible' | 'inaccessible' | 'unknown';
         reason?: string;
     }>;
-    /**
-     * The compute variant and hardware class placement chose per model and environment ref on the target cluster, with why, and every other (variant, class) pair with why it is out. Recorded in shadow mode too (RLMESH_VARIANT_SOLVER), where the images are still the versions' defaults; absent when the solver is off. A pinned variant with no admissible class, or an explicit cluster where some ref has none, answers 400 with the reasons instead.
-     */
     resolutions?: Array<VariantResolution>;
     /**
-     * Runtime declarations for the images this preview would run, one per distinct role, request ref and materialized image digest, including when placement is off or refuses in shadow mode. Uses the same shape and selection as effectiveConfig.runtimes; recompilation at creation may resolve newer images. Missing declarations omit runtime and retain imageDigest.
+     * Runtime declarations for the images this preview would run, one per distinct role, request ref and materialized image digest, including when placement is off or refuses in shadow mode.
      */
     runtimes?: Array<RuntimeSnapshot>;
 };
@@ -1324,13 +1209,7 @@ export type PerturbationPresetRef = {
 };
 
 /**
- * Axis values keyed by request path. Every value is the JSON that path
- * takes in an EvaluationRequest, except `tasks[].seed` (an integer offset
- * added to each task's seed/seeds) and `tasks[].perturbation`
- * (`{opName, preset}` expanded through the perturbation catalog, or null
- * for no perturbation). Axes apply in the listed order, so a `tasks` axis
- * is the base for the `tasks[].*` axes.
- *
+ * Axis values keyed by request path.
  */
 export type EvaluationSweepAxes = {
     models?: Array<Array<ModelRef>>;
@@ -1367,7 +1246,7 @@ export type EvaluationSweepEvaluation = {
 export type EvaluationUpdate = {
     name?: string;
     /**
-     * Merged into the evaluation's tags; a null or empty value removes the key. A patch that would leave more than 64 tags, and more than there were, is a 400.
+     * Merged into the evaluation's tags; a null or empty value removes the key.
      */
     tags?: {
         [key: string]: string | null;
@@ -1428,7 +1307,7 @@ export type Workload = {
     id: string;
     taskId: string;
     /**
-     * Opaque server-derived identity from the immutable request; model copies and worker shards fold. Never parse this key.
+     * Opaque server-derived identity from the immutable request; model copies and worker shards fold.
      */
     scenarioKey?: string;
     /**
@@ -1454,20 +1333,10 @@ export type Workload = {
     model?: unknown;
     environment?: unknown;
     /**
-     * The compiled task's metadata. checkpointScope (off_suite or undeclared, as CheckpointScopeWarning.kind) marks a workload whose checkpoint is not declared for its suite.
+     * The compiled task's metadata.
      */
     metadata?: StringMap;
-    /**
-     * Platform routes only: the latest attempt's reconciled infrastructure cost estimate (rlmesh.cost_estimate.v1, with its own currency), our cost, never what the organization pays (see GET /v1/evaluations/{id}/charge). Absent on the organization's own routes, until reconciled, or when the pricing catalog is unconfigured.
-     */
-    cost?: unknown;
-    /**
-     * Latest attempt's reconciled resource summary (rlmesh.resource_summary.v1); absent until reconciled or when Prometheus is unconfigured.
-     */
     resources?: unknown;
-    /**
-     * Node/GPU identity extracted from the latest attempt's Kubernetes summary; absent until reconciled.
-     */
     hardware?: unknown;
     /**
      * Latest attempt's hardware/software stamp (attempt.json); absent until reconciled.
@@ -1482,20 +1351,14 @@ export type Workload = {
      */
     artifacts?: WorkloadArtifacts;
     /**
-     * Latest attempt's final-artifact synchronization state, separate from execution status. Absent before a manifest is announced.
+     * Latest attempt's final-artifact synchronization state, separate from execution status.
      */
     artifactReconciliationStatus?: 'pending' | 'reconciled' | 'failed';
     /**
-     * Runner invariant flags that tripped on at least half of the latest attempt's episodes ("frozen_observation on 9/10 episodes"), plus "identical_reset: first frame shared with …" when this workload's reset frame matches a workload running a different scenario. Absent when nothing tripped.
+     * Runner invariant flags that tripped on at least half of the latest attempt's episodes ("frozen_observation on 9/10 episodes"), plus "identical_reset: first frame shared with …" when this workload's reset frame matches a workload running a different scenario.
      */
     warnings?: Array<string>;
-    /**
-     * Latest attempt's pod execution window start (kubernetes-summary.json); absent until reconciled.
-     */
     windowStartedAt?: string;
-    /**
-     * Latest attempt's pod execution window end; absent until reconciled.
-     */
     windowEndedAt?: string;
     createdAt: string;
     updatedAt: string;
@@ -1520,7 +1383,7 @@ export type Episode = {
     id: string;
     taskId: string;
     /**
-     * Opaque server-derived identity from the immutable request; model copies and worker shards fold. Never parse this key.
+     * Opaque server-derived identity from the immutable request; model copies and worker shards fold.
      */
     scenarioKey?: string;
     /**
@@ -1537,14 +1400,14 @@ export type Episode = {
     perturbationTag?: string;
     episodeArtifactId: string;
     /**
-     * Workload attempt this episode belongs to; absent for rows recorded before their attempt context resolved. Filter on the workload's attempt to scope a retried task to its latest attempt.
+     * Workload attempt this episode belongs to; absent for rows recorded before their attempt context resolved.
      */
     attempt?: number;
     score?: number;
     stepCount?: number;
     durationMs?: number;
     /**
-     * When the episode began on the runner. observedAt is when the control plane ingested the row and is bursty under reconciliation; use these for completion curves.
+     * When the episode began on the runner.
      */
     startedAt?: string;
     /**
@@ -1553,11 +1416,11 @@ export type Episode = {
     completedAt?: string;
     seed?: number;
     /**
-     * This episode's ordinal within the environment's initial-state table, delivered by the runtime as a reset option. Absent when the environment does not accept one, so a suite's initial states can be audited for coverage only where it is present.
+     * This episode's ordinal within the environment's initial-state table, delivered by the runtime as a reset option.
      */
     trialIndex?: number;
     /**
-     * Effective verdict shared with progress and score aggregates, in both slim and full responses. Uses the column verdict, then result.verdict, then success if result.terminated is true and result.truncated is not true; otherwise unknown. Reward does not affect the fallback. Running and incomplete episodes are excluded from metrics regardless of verdict. Optional for compatibility with older servers.
+     * Effective verdict shared with progress and score aggregates, in both slim and full responses.
      */
     verdict?: 'success' | 'failure' | 'unknown';
     recordings?: Array<EpisodeRecording>;
@@ -1591,8 +1454,7 @@ export type AttemptMetric = {
     windowsDiscarded: number;
     seconds: number;
     /**
-     * Rollup scalars keyed by the cross-language metric names (t_step_ms, t_model_wall_ms, t_infer_ms, queue_wire_ms, r, throughput_steps_per_s, predict_rate, batch_fill, model_duty, p95_model_rpc_ms, p95_env_step_ms, bytes_per_s), plus the endpoint phase decomposition where the runtime reports it (t_model_decode_ms, t_model_user_ms, t_model_encode_ms, t_model_residual_ms, t_model_queue_ms, model_in_flight, t_model_adapter_ms, held_episodes, held_bytes, t_env_decode_ms, t_env_user_ms, t_env_encode_ms, t_env_residual_ms, t_env_lane_skew_ms). The phases do not sum to the endpoint total: t_*_residual_ms is RLMesh's own unattributed server-side cost, t_model_queue_ms overlaps t_infer_ms rather than adding to it, and t_model_adapter_ms sits inside t_model_user_ms. held_episodes/held_bytes are the engine's per-episode state gauges, and t_env_lane_skew_ms is the slowest env lane over the median one. A metric that is not derivable from the archived telemetry is null, not absent.
-     *
+     * Rollup scalars keyed by the cross-language metric names (t_step_ms, t_model_wall_ms, t_infer_ms, queue_wire_ms, r, throughput_steps_per_s, predict_rate, batch_fill, model_duty, p95_model_rpc_ms, p95_env_step_ms, bytes_per_s), plus the endpoint phase decomposition where the runtime reports it (t_model_decode_ms, t_model_user_ms, t_model_encode_ms, t_model_residual_ms, t_model_queue_ms, model_in_flight, t_model_adapter_ms, held_episodes, held_bytes, t_env_decode_ms, t_env_user_ms, t_env_encode_ms, t_env_residual_ms, t_env_lane_skew_ms).
      */
     values: {
         [key: string]: number | null;
@@ -1603,7 +1465,7 @@ export type AttemptMetric = {
 
 export type ScoreGroup = {
     /**
-     * The group's key. For groupBy=model, the ModelIdentity key (model[#variant][@checkpoint]); workloads compiled before identities were recorded group by repo path.
+     * The group's key.
      */
     key: string;
     /**
@@ -1671,9 +1533,6 @@ export type EvaluationDiagnosis = {
      * When the control plane last ingested a telemetry sample for this evaluation; absent if none.
      */
     lastTelemetryAt?: string;
-    /**
-     * Present only while stalled: what the heartbeats imply (workloads hung while the cell still reports, or the cell/ingest path itself gone quiet).
-     */
     stall?: string;
     /**
      * Latest-attempt status per workload, counted.
@@ -1682,9 +1541,6 @@ export type EvaluationDiagnosis = {
         [key: string]: number;
     };
     failures: Array<WorkloadFailure>;
-    /**
-     * Distinct recent problems, newest first, at most 20: the newest warning/error lines folded by message once pod names, hashes and addresses are masked, each the newest line of its problem with a count of the lines it stands for.
-     */
     recentProblems: Array<ProblemLine>;
 };
 
@@ -1772,9 +1628,6 @@ export type Project = {
     createdAt: string;
 };
 
-/**
- * eval: a whole launch (models + environments + settings); model: a reusable model selection with optional checkpoints; environment: a reusable environment and scenario selection; warm: a warm capacity hold for a dedicated cluster.
- */
 export type PresetKind = 'eval' | 'model' | 'environment' | 'warm';
 
 export type EnvironmentSelection = {
@@ -1812,25 +1665,19 @@ export type PresetPerturbations = {
     includeBaseline?: boolean;
 };
 
-/**
- * A warm capacity hold saved to apply in one step through the warm request on PATCH /v1/clusters/{id}. Saving one applies nothing.
- */
 export type PresetWarm = {
     gpus: number;
     /**
      * At least one of gpus and cpuNodes is above zero.
      */
     cpuNodes: number;
-    /**
-     * Release the hold after the cluster is idle this long.
-     */
     ttlSeconds: number;
     /**
      * Keep the GPU hold through evaluations, handing each GPU to the run that needs it.
      */
     holdDuringRuns: boolean;
     /**
-     * Catalog repo paths to keep pulled, deduplicated. Checked for shape only: a repo removed since the save stays listed until the preset is saved again.
+     * Catalog repo paths to keep pulled, deduplicated.
      */
     images: Array<string>;
 };
@@ -1897,7 +1744,7 @@ export type RepoLastPush = {
 };
 
 /**
- * Deprecated: the per-class verdicts on RepoVariant.verdicts record what a probe measured where. GPU evidence recorded for one digest, apart from its explicit tags. Frozen: a push still records hint and prior, but no probe completion writes measured or cpuCompatible any more.
+ * Deprecated: the per-class verdicts on RepoVariant.verdicts record what a probe measured where.
  *
  * @deprecated
  */
@@ -1910,9 +1757,6 @@ export type RepoProbeGpu = {
      * The repo's previous current digest measured GPU use when this one was pushed.
      */
     prior?: boolean;
-    /**
-     * A probe placed on a CPU node completed; set only by such a run.
-     */
     cpuCompatible?: boolean;
     /**
      * The newest terminal probe run with a recorded placement; measured VRAM use is never replaced by a run that measured none.
@@ -1936,7 +1780,7 @@ export type RepoProbeGpu = {
 };
 
 /**
- * Something the probe observed that a reader should know before running the container. Flags never gate runnability; a flagged probe is still ready.
+ * Something the probe observed that a reader should know before running the container.
  */
 export type ProbeFlag = {
     name: 'non_deterministic' | 'float_noise' | 'stateful' | 'horizon_mismatch' | 'native_chunk_undeclared' | 'seed_ignored' | 'batching_unbacked' | 'batch_no_gain' | 'spec_drift' | 'slow_reset' | 'slow_step';
@@ -1944,17 +1788,17 @@ export type ProbeFlag = {
 };
 
 /**
- * Eval-request knobs measured by the probe. Batching numbers are specific to the hardware the run was measured on.
+ * Eval-request knobs measured by the probe.
  */
 export type ProbeRecommendation = {
     /**
-     * Superseded by nativeChunk, which names what it measures: how many actions one predict returns. Present only on recommendations stored before the split; a probe run today writes nativeChunk instead, so read that and fall back to this.
+     * Superseded by nativeChunk, which names what it measures: how many actions one predict returns.
      *
      * @deprecated
      */
     maxActionChunk?: number;
     /**
-     * Actions one predict of this model returns (K). The model's own protocol rather than a tunable: the platform clamps maxActionChunk to it. Absent when the model is single-step or elastic.
+     * Actions one predict of this model returns (K).
      */
     nativeChunk?: number;
     /**
@@ -1962,7 +1806,7 @@ export type ProbeRecommendation = {
      */
     nativeChunkElastic?: boolean;
     /**
-     * Camera sizes the model's spec asserts (Image(render=...)). A launch dials the environment's camera to these before the run; a pairing whose environment has no camera dial is refused.
+     * Camera sizes the model's spec asserts (Image(render=...)).
      */
     renderRequests?: Array<{
         role?: string;
@@ -1980,22 +1824,13 @@ export type ProbeRecommendation = {
 };
 
 /**
- * What the run was measured on; a batch knee does not transfer across accelerators. class, vendor, product and compute read the accelerator through the hardware taxonomy; driver, cuda and rocm are what the node's feature discovery labels reported, when it ran.
+ * What the run was measured on; a batch knee does not transfer across accelerators.
  */
 export type ProbeHardware = {
-    /**
-     * The accelerator the subject ran on; absent when nothing on the cluster names it (no GPU sample, node label or inventory entry) or the subject was given no GPU.
-     */
     gpuModel?: string;
-    /**
-     * GPUs allocated to the probed subject's own pod (0 for a CPU subject), not the node's capacity; absent when unknown.
-     */
     gpus?: number;
     vramBytes?: number;
     instanceType?: string;
-    /**
-     * The node the subject's pod ran on.
-     */
     nodeName?: string;
     cpuCores?: number;
     memoryBytes?: number;
@@ -2012,22 +1847,13 @@ export type ProbeHardware = {
      * CUDA compute capability (NVIDIA) or gfx target (AMD) of the class
      */
     compute?: string;
-    /**
-     * Kernel driver version the node reported
-     */
     driver?: string;
-    /**
-     * CUDA runtime version the node reported
-     */
     cuda?: string;
-    /**
-     * ROCm release the node's rlmesh.dev/rocm-version label reported (AMD)
-     */
     rocm?: string;
 };
 
 /**
- * Preview media captured by an environment probe, as artifact URIs. Resolve them through the run's own artifact-links route (POST /v1/probe-runs/{id}/artifact-links).
+ * Preview media captured by an environment probe, as artifact URIs.
  */
 export type ProbePreview = {
     imageUri?: string;
@@ -2068,7 +1894,7 @@ export type VariantMeasured = {
 };
 
 /**
- * What a probe found for one variant on one hardware class. ready and failed come from the newest settled run on the class; untested and running are slots the scheduler has queued or is measuring.
+ * What a probe found for one variant on one hardware class.
  */
 export type VariantVerdict = {
     /**
@@ -2098,14 +1924,11 @@ export type VariantVerdict = {
      * Where a settled verdict came from: a probe run; a probe run of identical content (same layers, runtime config and rlmesh labels, same prober) on another version, which runId names; or an evaluation attempt that settled on the class (lower confidence; never overwrites a probe's)
      */
     source?: 'probe' | 'reused' | 'observed';
-    /**
-     * When an untested slot joined the probe scheduler's queue; absent on a slot that waits to be asked for
-     */
     queuedAt?: string;
 };
 
 /**
- * One compute variant of a version: the image that actually runs plus the facets and requirements that make it admissible on a hardware class. A version declaring none carries one synthesized default whose image is the version itself.
+ * One compute variant of a version: the image that actually runs plus the facets and requirements that make it admissible on a hardware class.
  */
 export type RepoVariant = {
     id: string;
@@ -2162,7 +1985,7 @@ export type RepoVariant = {
 };
 
 /**
- * One pushed version of a repo. status is its effective readiness: the static tier's verdict on the push, demoted to failed only when every hardware class a runtime probe settled on failed (a failure on one class never demotes a version another class runs). The per-class detail is on variants.
+ * One pushed version of a repo.
  */
 export type RepoProbe = {
     digest: string;
@@ -2177,7 +2000,7 @@ export type RepoProbe = {
         [key: string]: unknown;
     };
     /**
-     * The parsed dev.rlmesh.package payload. checkpointRequires maps each checkpoint name to the facets (framework, accel, render) the compute variant serving it must carry, read off checkpoints[].requires in the label; catalog-only, never part of the run spec. checkpointDisplayNames maps each checkpoint name to the human name read off checkpoints[].displayName (trimmed, at most 64 characters; others dropped); display-only. checkpoints[].entrypoint (module:Class, served via RLMESH_SERVE_TARGET) is kept when valid; an invalid one is dropped with a warning.
+     * The parsed dev.rlmesh.package payload.
      */
     package?: unknown;
     /**
@@ -2191,7 +2014,7 @@ export type RepoProbe = {
         }>;
     };
     /**
-     * Deprecated: read the per-class verdicts on variants instead. A probe completion no longer records GPU evidence, so measured reflects only runs from before compute variants. Why this digest lands on a GPU. explicit is the user's own requirement (a gpu tag on the repo or in the package label, or a gpu resourceClass); measured means a probe observed VRAM use and evaluations default to a GPU. hinted (a CUDA base in the image config) and prior (the repo's previous digest measured use) only place the probe pod so it can measure; they never place an evaluation. Absent when the digest runs on CPU.
+     * Deprecated: read the per-class verdicts on variants instead.
      *
      * @deprecated
      */
@@ -2229,7 +2052,7 @@ export type Repo = {
     pendingDigest?: string;
     lastPush: RepoLastPush;
     /**
-     * runnable whenever the current digest is ready (evaluations run it), whatever the last push is doing: lastPush and pendingDigest report a newer push still being checked or failed. Otherwise the last push's triage: checking while pending, probing, missing a probe, or awaiting pending-digest promotion; failed on an effective failure; not_current when ready and neither current nor pending (evaluations do not use it).
+     * runnable whenever the current digest is ready (evaluations run it), whatever the last push is doing: lastPush and pendingDigest report a newer push still being checked or failed.
      */
     state: 'runnable' | 'checking' | 'failed' | 'not_current';
     probe?: RepoProbe;
@@ -2244,26 +2067,11 @@ export type Repo = {
     defaultVariant?: string;
     updatedAt: string;
     /**
-     * Set on an archived repo. Archived repos are left out of listings unless archived=true, and still resolve by path.
+     * Set on an archived repo.
      */
     archivedAt?: string;
-    /**
-     * Public id of the organization owning a custom repo's namespace. Set only on platform reads; prebuilt repos have none.
-     */
-    organizationId?: string;
-    /**
-     * Display name of that owning organization. Set only on platform reads.
-     */
-    organizationName?: string;
-    /**
-     * Public id (repo_…) of a custom repo, the subject of a repository erasure request. Set only on platform reads.
-     */
-    id?: string;
 };
 
-/**
- * The repo's current version as variants × hardware classes: the classes the organization's clusters offer (its own and the shared cells) plus any class a verdict names, with a cell per slot.
- */
 export type CompatibilityMatrix = {
     path: string;
     digest: string;
@@ -2277,9 +2085,6 @@ export type CompatibilityMatrix = {
         vendor: 'nvidia' | 'amd' | 'cpu';
         product: string;
         compute?: string;
-        /**
-         * A cluster the organization can place on offers the class
-         */
         offered: boolean;
         provisional?: boolean;
     }>;
@@ -2346,10 +2151,6 @@ export type ProbeRun = {
     report?: unknown;
     recommendation?: ProbeRecommendation;
     hardware?: ProbeHardware;
-    /**
-     * Platform routes only: our infrastructure cost estimate for the probe (rlmesh.cost.v1). Absent on the organization's own routes and when unpriced.
-     */
-    cost?: unknown;
     preview?: ProbePreview;
     createdAt: string;
     startedAt?: string;
@@ -2366,7 +2167,7 @@ export type RegistryRepository = {
         name: string;
         digest?: string;
         /**
-         * Set when this tag's image is a child of an index version (a per-backend tag grouped by an OCI index); the version digest it belongs to. Listings nest the tag under that version.
+         * Set when this tag's image is a child of an index version (a per-backend tag grouped by an OCI index); the version digest it belongs to.
          */
         indexDigest?: string;
         /**
@@ -2462,7 +2263,7 @@ export type CreateEvaluationArtifactLinkErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
     /**
@@ -2499,7 +2300,7 @@ export type ListEvaluationsData = {
          */
         kind?: 'probe';
         /**
-         * showcases=only lists the evaluations the platform published as showcases, from every organization, newest publication first: readable (never writable) by any organization, createdBy omitted and environment variable values redacted outside the owner. Runtime probes are never listed. The page is never continued and the other filters do not apply.
+         * showcases=only lists the evaluations the platform published as showcases, from every organization, newest publication first: readable (never writable) by any organization, createdBy omitted and environment variable values redacted outside the owner.
          */
         showcases?: 'only';
         /**
@@ -2514,9 +2315,6 @@ export type ListEvaluationsData = {
          * Repeatable model id filter; an evaluation matches when its request names any of the given models.
          */
         model?: Array<string>;
-        /**
-         * Repeatable latest-placement filter: an own dedicated cluster id or managed for shared platform capacity. Applies before pagination; other organizations' cluster ids never match.
-         */
         cluster?: Array<string>;
         /**
          * Repeatable environment id filter; an evaluation matches when any of its tasks names one of the given environments.
@@ -2540,7 +2338,7 @@ export type ListEvaluationsData = {
         limit?: number;
         cursor?: string;
         /**
-         * Skip this many rows instead of following a cursor. Enables random page access; when set, the response carries `total`. Mutually exclusive with `cursor`: supplying both is a 400.
+         * Skip this many rows instead of following a cursor.
          */
         offset?: number;
     };
@@ -2572,7 +2370,7 @@ export type ListEvaluationsResponses = {
         items: Array<EvaluationListItem>;
         nextCursor: PageCursor;
         /**
-         * Rows matching the filters, ignoring the page window. Only present when `offset` was supplied.
+         * Rows matching the filters, ignoring the page window.
          */
         total?: number;
     };
@@ -2609,7 +2407,7 @@ export type CreateEvaluationErrors = {
      */
     423: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -2646,7 +2444,7 @@ export type PreviewEvaluationErrors = {
      */
     403: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -2690,7 +2488,7 @@ export type ImportEvaluationErrors = {
      */
     409: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -2777,7 +2575,7 @@ export type CreateEvaluationSweepErrors = {
      */
     423: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -2855,7 +2653,7 @@ export type DeleteEvaluationErrors = {
      */
     409: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -2937,7 +2735,7 @@ export type UpdateEvaluationErrors = {
      */
     409: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -2980,7 +2778,7 @@ export type CancelEvaluationErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -3033,7 +2831,7 @@ export type RetryEvaluationErrors = {
      */
     423: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -3205,7 +3003,7 @@ export type GetEvaluationTelemetryData = {
     };
     query?: {
         /**
-         * Only rows of this series kind (window, gpu, download, upload, phase, resource); the stored kind names (telemetry.window, gpu.sample, download.progress, upload.progress, runtime.phase, resource.sample) are accepted too. Pods are always included.
+         * Only rows of this series kind (window, gpu, download, upload, phase, resource); the stored kind names (telemetry.window, gpu.sample, download.progress, upload.progress, runtime.phase, resource.sample) are accepted too.
          */
         kind?: string;
         /**
@@ -3244,16 +3042,10 @@ export type GetEvaluationTelemetryResponses = {
     200: {
         windows: Array<unknown>;
         gpuSamples: Array<{
-            /**
-             * workloadId/pod
-             */
             route: string;
             observedAt: string;
             sample: unknown;
         }>;
-        /**
-         * Sidecar download transfers (kind download.progress) — the model checkpoint pull is component artifact-download-model, input name "checkpoint"; payload phases are started/cache_checked/running/completed with bytesTotal and cumulative bytesTransferred. cacheStatus reports checking, hit, miss, or available; sourceUri identifies the origin with credentials, query and fragment removed; targetPath is the destination.
-         */
         downloads: Array<{
             /**
              * workloadId/artifact-download-<role>
@@ -3262,9 +3054,6 @@ export type GetEvaluationTelemetryResponses = {
             observedAt: string;
             sample: unknown;
         }>;
-        /**
-         * Sidecar upload transfers (kind upload.progress) — same phase/byte shape as downloads, route workloadId/artifact-upload-<role>.
-         */
         uploads: Array<{
             /**
              * workloadId/artifact-upload-<role>
@@ -3273,9 +3062,6 @@ export type GetEvaluationTelemetryResponses = {
             observedAt: string;
             sample: unknown;
         }>;
-        /**
-         * Runtime and controller lifecycle marks (kind runtime.phase). Connection phases env_connected, model_connected, model_ready, and warmup carry durationMs, startedAt/endedAt and peer identity. Agent-authored workload_status marks carry taskId, attempt, state and message, including waits before pods exist.
-         */
         phases: Array<{
             /**
              * workloadId/<phase>
@@ -3284,20 +3070,11 @@ export type GetEvaluationTelemetryResponses = {
             observedAt: string;
             sample: unknown;
         }>;
-        /**
-         * Agent-authored CPU/memory snapshots (kind resource.sample) — one per workload pod per 10s beat, with per-container cpuCores and memoryBytes, joinable to pods by pod name.
-         */
         resourceSamples: Array<{
-            /**
-             * workloadId/pod
-             */
             route: string;
             observedAt: string;
             sample: unknown;
         }>;
-        /**
-         * Agent-authored provisioning records — one per pod in each attempt's topology (runner, model server, env workers), with actual node placement, hardware, images, and kubernetes timing marks.
-         */
         pods: Array<{
             taskId: string;
             attempt: number;
@@ -3308,13 +3085,7 @@ export type GetEvaluationTelemetryResponses = {
             pod: string;
             node?: string | null;
             instanceType?: string | null;
-            /**
-             * GPU product label of the node the pod actually landed on
-             */
             gpuType?: string | null;
-            /**
-             * GPUs requested by the pod's containers
-             */
             gpuCount?: number | null;
             zone?: string | null;
             restartCount: number;
@@ -3322,9 +3093,6 @@ export type GetEvaluationTelemetryResponses = {
              * Per-container image refs and resolved image IDs
              */
             images?: unknown;
-            /**
-             * createdAt plus podScheduled/initialized/containersReady/ready transition timestamps and, once placed, the node's nodeCreatedAt/nodeReadyAt; false conditions include <condition>Reason and <condition>Message
-             */
             conditions?: unknown;
             /**
              * App and init-container start/finish timestamps, restarts, exit codes, and waitingReason/waitingMessage when waiting
@@ -3593,7 +3361,7 @@ export type StreamEvaluationEventsError = StreamEvaluationEventsErrors[keyof Str
 
 export type StreamEvaluationEventsResponses = {
     /**
-     * Server-sent event stream, beginning with a snapshot. Snapshot routes and live telemetry expose clusterId only for the reader organization's dedicated clusters. Shared capacity carries managed:true without a cell id, name, version, or inventory. The snapshot's `phase` is the evaluation's status. The server ends the stream once the evaluation is terminal (completed, failed or cancelled): right after the snapshot when it already is, otherwise after a `status` event or at a keep-alive. A reconnect starts from a fresh snapshot (there is no Last-Event-ID resume), so a reader stops reconnecting when the snapshot's phase is terminal. A keep-alive comment arrives every 15 seconds. Every block, keep-alives included, carries two fields measured on the control plane's monotonic clock, never a producer's: `elapsed`, milliseconds since this stream opened, and `age`, milliseconds since the newest runner measurement (a telemetry window or summary, episode progress or an episode) reached the control plane, absent until one has. A reader bounds the stream's start by its own request timing and places later blocks on its own clock, so it can tell fresh data from data delivered late. Readers that do not know the fields ignore them, as server-sent events require.
+     * Server-sent event stream, beginning with a snapshot.
      */
     200: string;
 };
@@ -3610,9 +3378,6 @@ export type CheckCatalogCompatibilityData = {
         };
         observationSpace?: unknown;
         actionSpace?: unknown;
-        /**
-         * Cluster id to place on; omitted picks the one an unpinned evaluation would land on. Read only when both sides are repo refs.
-         */
         cluster?: string;
         /**
          * Pin the model's compute variant by key, as models[].variant would.
@@ -3642,7 +3407,7 @@ export type CheckCatalogCompatibilityErrors = {
      */
     403: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -3663,7 +3428,7 @@ export type CheckCatalogCompatibilityResponses = {
         };
         plan?: AdapterPlan;
         /**
-         * Why the pairing does not resolve. render_conflict: the model asserts a frame size the environment cannot be dialled to. spec_too_new: the spec uses a vocabulary this platform's adapters do not carry yet. pairing_conflict: the catalog pairing itself cannot be bound (two render sizes, a pinned dial against an assertion, a bad step cap). invalid_input leaves compatible null.
+         * Why the pairing does not resolve.
          */
         code?: string;
         message?: string;
@@ -3683,7 +3448,7 @@ export type CheckCatalogCompatibilityResponses = {
             detail: string;
         }>;
         /**
-         * What a launch of this pairing would bind, not what the environment publishes by default: the model's catalog pairing params, the contract branch they select, the camera size its spec asserts, and the pairing's episode step cap. maxEpisodeSteps is the cap every scenario of the pairing shares; when the scenarios cap differently (or only some of them cap at all) the preview reports maxEpisodeStepsRange instead, since it names no scenario and the run's cap is whichever scenario it launches. Absent when the caller supplied their own spaces, or when the pairing binds nothing.
+         * What a launch of this pairing would bind, not what the environment publishes by default: the model's catalog pairing params, the contract branch they select, the camera size its spec asserts, and the pairing's episode step cap.
          */
         environmentParams?: {
             params?: {
@@ -3711,23 +3476,11 @@ export type CheckCatalogCompatibilityResponses = {
                 number
             ];
         };
-        /**
-         * Which compute variant of each side would run on which hardware class of the cluster, with every other (variant, class) pair and why it is out. Absent when a side was given inline, or when no cluster is eligible.
-         */
         placement?: {
-            /**
-             * Public id of the reader organization's dedicated cluster only; omitted for RLMesh managed capacity.
-             */
             cluster?: string;
-            /**
-             * True for RLMesh managed capacity, which exposes no cell identity.
-             */
             managed: boolean;
             model?: VariantResolution;
             environment?: VariantResolution;
-            /**
-             * Why a side has no admissible variant on the cluster, one line per variant and class.
-             */
             errors?: Array<string>;
         };
     };
@@ -3851,7 +3604,7 @@ export type CreateProjectErrors = {
      */
     403: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -3896,7 +3649,7 @@ export type RenameProjectErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -3935,7 +3688,7 @@ export type SetDefaultProjectErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4022,7 +3775,7 @@ export type CreatePresetErrors = {
      */
     403: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4061,7 +3814,7 @@ export type DeletePresetErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4151,7 +3904,7 @@ export type UpdatePresetErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4202,7 +3955,7 @@ export type RestoreRepoErrors = {
      */
     423: unknown;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4293,7 +4046,7 @@ export type DeleteRepoData = {
     body?: never;
     path: {
         /**
-         * Repo path including namespace. Its slashes may be sent as they are or percent-encoded.
+         * Repo path including namespace.
          */
         path: string;
     };
@@ -4324,7 +4077,7 @@ export type DeleteRepoErrors = {
      */
     409: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4344,7 +4097,7 @@ export type GetRepoData = {
     body?: never;
     path: {
         /**
-         * Repo path including namespace, e.g. prebuilt/gr00t-n1.7/libero. Its slashes may be sent as they are or percent-encoded.
+         * Repo path including namespace, e.g. prebuilt/gr00t-n1.7/libero.
          */
         path: string;
     };
@@ -4379,13 +4132,13 @@ export type UpdateRepoData = {
         displayName?: string;
         description?: string;
         /**
-         * Replaces the repo's tags. The retired placement tags gpu and cpu are not written: a repo keeps the ones it carries whatever the list says, and a list adding one it does not carry is refused with 400 (declare accel.vendor in a variant's requirements instead).
+         * Replaces the repo's tags.
          */
         tags?: Array<string>;
     };
     path: {
         /**
-         * Repo path including namespace. Its slashes may be sent as they are or percent-encoded.
+         * Repo path including namespace.
          */
         path: string;
     };
@@ -4407,7 +4160,7 @@ export type UpdateRepoErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4427,7 +4180,7 @@ export type GetRepoCompatibilityData = {
     body?: never;
     path: {
         /**
-         * Repo path including namespace, e.g. prebuilt/gr00t-n1.7/libero. Its slashes may be sent as they are or percent-encoded.
+         * Repo path including namespace, e.g. prebuilt/gr00t-n1.7/libero.
          */
         path: string;
     };
@@ -4467,7 +4220,7 @@ export type PutRepoVariantsData = {
     };
     path: {
         /**
-         * Repo path including namespace, e.g. acme/pi0/libero. Its slashes may be sent as they are or percent-encoded.
+         * Repo path including namespace, e.g. acme/pi0/libero.
          */
         path: string;
     };
@@ -4505,7 +4258,7 @@ export type PutRepoVariantsErrors = {
      */
     428: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
     /**
@@ -4529,7 +4282,7 @@ export type UpdateRepoVariantData = {
     body: RepoVariantOverride;
     path: {
         /**
-         * Repo path including namespace. Its slashes may be sent as they are or percent-encoded.
+         * Repo path including namespace.
          */
         path: string;
         key: string;
@@ -4565,7 +4318,7 @@ export type UpdateRepoVariantErrors = {
      */
     409: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4604,7 +4357,7 @@ export type TriggerRepoProbeErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4663,17 +4416,11 @@ export type ListProbeRunsResponse = ListProbeRunsResponses[keyof ListProbeRunsRe
 export type LaunchProbeRunData = {
     body: {
         path: string;
-        /**
-         * Cluster to measure on; omitted picks the organization's least-loaded eligible one (the first eligible cell offering the class, when one is named).
-         */
         cluster?: string;
         /**
          * Compute variant key to run; omitted runs the version's default.
          */
         variant?: string;
-        /**
-         * Hardware class id to measure on (nvidia/l40s); omitted measures the class the chosen cell would run the variant on.
-         */
         class?: string;
         /**
          * Measure again even when a probe already settled this (variant, class) of the digest; omitted (false) returns the settled run instead.
@@ -4698,16 +4445,13 @@ export type LaunchProbeRunErrors = {
      * No such repo
      */
     404: ErrorResponse;
-    /**
-     * A probe for this slot is already in flight (conflict), the variant's requirements rule the class out (class_unsupported), or no eligible cluster offers it (no_eligible_cluster)
-     */
     409: ErrorResponse;
     /**
      * Submissions are paused for this organization; the message says until when
      */
     423: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4797,7 +4541,7 @@ export type CancelProbeRunErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4845,7 +4589,7 @@ export type CreateProbeRunArtifactLinkErrors = {
      */
     404: ErrorResponse;
     /**
-     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes. Retry after the Retry-After header's seconds. On evaluation and probe launches the code may instead name an exhausted organization admission limit, whose message says used, limit and reset.
+     * The caller's request rate budget is spent (code rate_limited): budgets are per credential (an API key, or a user in an organization) and per class (every write; run planning, toolbox and storage-provider calls; identity-provider calls), and an MCP tool call spends the budget of the request it makes.
      */
     429: ErrorResponse;
 };
@@ -4908,7 +4652,7 @@ export type ListRegistryRepositoriesData = {
     path?: never;
     query?: {
         /**
-         * Full repository path. Returns only this repo and its tags without listing the catalog; its namespace must be org-owned, or prebuilt for platform readers. If namespace is also supplied it must match. A missing repository returns 404.
+         * Full repository path.
          */
         repository?: string;
         namespace?: string;
