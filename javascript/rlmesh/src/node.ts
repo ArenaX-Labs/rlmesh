@@ -13,7 +13,52 @@ import type { WorkerLike } from './supervisor.js';
 import type { ConnectOptions, TrafficClass } from './types.js';
 
 export * from './index.js';
-export * from './native.js';
+// The native binding's API, by name: native.ts also exports what the unreleased lobby and scenes
+// (fleet.ts) reach into, which the package does not.
+export {
+  BindingRefused,
+  BindingTable,
+  Host,
+  Observation,
+  Policy,
+  Rate,
+  Robot,
+  SessionException,
+  SessionLost,
+  SessionRecorder,
+  SessionRefused,
+  SessionTimeout,
+  StartSkipped,
+  drive,
+  readRecording,
+  type ActionArray,
+  type Actions,
+  type BindOptions,
+  type DType,
+  type Due,
+  type EdgeClockRefusal,
+  type EdgeStats,
+  type Episode,
+  type HealthOptions,
+  type InputStats,
+  type InputValue,
+  type LinkHealth,
+  type LockstepStats,
+  type Meta,
+  type PolicyStats,
+  type Predict,
+  type RecordStats,
+  type RecordingSummary,
+  type Resume,
+  type RobotClock,
+  type RunMode,
+  type RunOptions,
+  type RunStats,
+  type SessionHealth,
+  type Step,
+  type Tensor,
+  type TypedArray,
+} from './native.js';
 
 /** A worker_threads Worker behind the browser Worker shape the supervisor uses. */
 class NodeWorker implements WorkerLike {

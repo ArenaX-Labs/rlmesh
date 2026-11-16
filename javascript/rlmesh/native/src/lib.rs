@@ -29,7 +29,7 @@ use napi::{Error, Result, Status, tokio};
 use napi_derive::napi;
 use rlmesh::lockstep::GymError;
 use rlmesh::realtime::{self, BoundPolicy, LockstepPolicy, LockstepRunError, RunSettings};
-use rlmesh_session::address::Address;
+use rlmesh_session::address::{Address, LEASE_GRACE};
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::edge::{Due, Rejection, Robot};
 use rlmesh_session::record::{RecordError, Recorder};
@@ -39,7 +39,7 @@ use rlmesh_session::spec::{BindError, Policy, RunOptions};
 use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, ReasonCode, RobotClock};
 use rlmesh_session::{
     Clock, Controller, ControllerError, Observation, ObserveError, Predictor, Resume, RunError,
-    RunEvent, RunMode, SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, Step,
+    RunEvent, RunMode, SendError, Sent, SessionError, SkipReason, Snapshot, Step,
     SystemMonotonicClock,
 };
 
@@ -200,11 +200,23 @@ fn observe_err(err: ObserveError) -> Error {
     }
 }
 
-/// A session address (`[host/][session]`); joining it puts
-/// capture times on `CLOCK_MONOTONIC`, `process.hrtime.bigint()`'s clock.
-fn address(text: &str) -> Result<SessionAddress> {
-    text.parse()
-        .map_err(|e: SessionError| invalid(e.to_string()))
+/// The session a session address (`[host/][session]`) names, placed by the
+/// hosting rule as Python's participants place it: joined, or hosted in this
+/// process when no host answers (`""`: the local host on the well-known
+/// port; a loopback `:port`: that port). Joining it puts capture times on
+/// `CLOCK_MONOTONIC`, `process.hrtime.bigint()`'s clock.
+async fn place(text: &str) -> Result<EmbeddedHost> {
+    let address = Address::session(text).map_err(|e| invalid(e.to_string()))?;
+    EmbeddedHost::start(&address, LEASE_GRACE)
+        .await
+        .map_err(session_err)
+}
+
+/// The addon's version, its crate's: the package refuses an addon whose
+/// version is not its own (a stale local build).
+#[napi]
+pub fn version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 fn timeout(seconds: f64) -> Result<Duration> {
@@ -503,6 +515,16 @@ pub struct RejectionCount {
     pub count: i64,
 }
 
+/// An edge refusing a participant's chunks for its clock's error.
+#[napi(object)]
+pub struct EdgeClockRefusal {
+    pub part: String,
+    pub participant: String,
+    pub error_ms: f64,
+    pub bound_ms: f64,
+    pub message: String,
+}
+
 /// The counters of one edge.
 #[napi(object)]
 pub struct EdgeStats {
@@ -510,10 +532,22 @@ pub struct EdgeStats {
     pub rejected: i64,
     /// The rejections by reason, those that occurred.
     pub rejected_by: Vec<RejectionCount>,
+    /// Set while the newest clock judgement refused a chunk.
+    pub clock_refused: Option<EdgeClockRefusal>,
     pub clamped: i64,
     pub handovers: i64,
     pub safe_reports: i64,
     pub modes: Vec<ModeCount>,
+    /// Chunks of this part that reached the edge, whatever became of them.
+    pub received: i64,
+    /// Gaps in the seqs of accepted chunks under one lease token.
+    pub lost: i64,
+    /// Accepted chunks by lateness against their first slot: `[0, 1)` ms,
+    /// then `[2^(i-1), 2^i)` ms, the last from 64 ms up.
+    pub late_ms: Vec<u32>,
+    pub late_max_ms: f64,
+    /// The longest time between two accepted chunks under one lease token.
+    pub gap_max_ms: f64,
 }
 
 /// A part whose edge refuses chunks for a clock error.
@@ -681,6 +715,8 @@ pub struct NativeRobot {
     /// Joins it again when the host drops it.
     keeper: Mutex<Option<tokio::task::JoinHandle<()>>>,
     encoder: Mutex<Option<Encoder>>,
+    /// The session, hosted here when no host answered.
+    session: EmbeddedHost,
 }
 
 /// A frame for the encoder thread: the part, its capture time, its pixels.
@@ -719,10 +755,10 @@ impl Encoder {
     }
 }
 
-/// Attaches as `name` (the robot's participant id), declares `robot_json`
-/// (the authored map) and starts its publishers and edges. When the
-/// host drops it (a network gap past its presence grace) it joins again on
-/// its own.
+/// Attaches as `name` (the robot's participant id) to the session
+/// `address` names, placed by the hosting rule, declares `robot_json` (the
+/// authored map) and starts its publishers and edges. When the host drops it
+/// (a network gap past its presence grace) it joins again on its own.
 #[napi]
 pub async fn connect_robot(
     address: String,
@@ -730,8 +766,9 @@ pub async fn connect_robot(
     robot_json: String,
     timeout_s: f64,
 ) -> Result<NativeRobot> {
-    let address = self::address(&address)?;
     let wait = timeout(timeout_s)?;
+    let session = place(&address).await?;
+    let address = session.address().clone();
     let robot = sdk::connect_robot(&address, &name, &robot_json, wait)
         .await
         .map_err(|err| match err {
@@ -745,6 +782,7 @@ pub async fn connect_robot(
         robot: slot,
         keeper: Mutex::new(Some(keeper)),
         encoder: Mutex::new(None),
+        session,
     })
 }
 
@@ -762,7 +800,7 @@ pub async fn robot_from_lobby(
     timeout_s: Option<f64>,
 ) -> Result<NativeRobot> {
     let wait = timeout_s.map(timeout).transpose()?;
-    let (robot, _) = sdk::robot_from_lobby(home.as_deref(), &name, &robot_json, wait)
+    let (robot, address) = sdk::robot_from_lobby(home.as_deref(), &name, &robot_json, wait)
         .await
         .map_err(|err| match err {
             rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
@@ -773,6 +811,7 @@ pub async fn robot_from_lobby(
         robot: Arc::new(Mutex::new(Some(Arc::new(robot)))),
         keeper: Mutex::new(None),
         encoder: Mutex::new(None),
+        session: EmbeddedHost::joined(address),
     })
 }
 
@@ -792,6 +831,13 @@ impl NativeRobot {
     #[napi(getter)]
     pub fn name(&self) -> String {
         self.name.clone()
+    }
+
+    /// The robot's participant address, `{ip}:{port}[/{session}]#{key}/{name}`:
+    /// its host's real port, and its key (a credential).
+    #[napi(getter)]
+    pub fn address(&self) -> String {
+        self.session.address().participant_invite(&self.name)
     }
 
     /// The parts as the host normalised them, in authored order.
@@ -992,8 +1038,24 @@ impl NativeRobot {
     /// The counters of the edge serving `path`.
     #[napi]
     pub fn edge_stats(&self, path: String) -> Result<EdgeStats> {
-        let stats = self.robot()?.edge_stats(&path).map_err(session_err)?;
+        let robot = self.robot()?;
+        let stats = robot.edge_stats(&path).map_err(session_err)?;
         let count = |n: u64| seq(n);
+        let clock_refused = stats.clock_refused.as_ref().map(|r| {
+            let part = robot.path_of(r.channel).unwrap_or(&path);
+            EdgeClockRefusal {
+                part: part.to_string(),
+                participant: r.participant.to_string(),
+                error_ms: r.error_ns as f64 * 1e-6,
+                bound_ms: r.bound_ns as f64 * 1e-6,
+                message: r.explain(robot.participant().id(), part),
+            }
+        });
+        // How this part's chunks arrived, on whichever path they rode.
+        let timing = robot
+            .part(&path)
+            .and_then(|part| stats.timing(part.channel).copied())
+            .unwrap_or_default();
         Ok(EdgeStats {
             accepted: count(stats.accepted),
             rejected: count(stats.rejected_total()),
@@ -1005,6 +1067,7 @@ impl NativeRobot {
                     count: count(stats.rejected(r)),
                 })
                 .collect(),
+            clock_refused,
             clamped: count(stats.clamped),
             handovers: count(stats.handovers),
             safe_reports: count(stats.safe_reports),
@@ -1019,10 +1082,16 @@ impl NativeRobot {
                     }
                 })
                 .collect(),
+            received: count(timing.received),
+            lost: i64::from(timing.lost),
+            late_ms: timing.late_ms.to_vec(),
+            late_max_ms: f64::from(timing.late_max_us) * 1e-3,
+            gap_max_ms: f64::from(timing.gap_max_us) * 1e-3,
         })
     }
 
-    /// Detaches: the edges and publishers go, the host drops the parts.
+    /// Detaches: the edges and publishers go, the host drops the parts, and
+    /// a session hosted here stops.
     #[napi]
     pub async fn close(&self) -> Result<()> {
         if let Some(keeper) = self.keeper.lock().ok().and_then(|mut k| k.take()) {
@@ -1035,14 +1104,13 @@ impl NativeRobot {
             let _ = tokio::task::spawn_blocking(move || thread.join()).await;
         }
         let taken = self.robot.lock().map(|mut r| r.take()).unwrap_or(None);
-        let Some(robot) = taken else {
-            return Ok(());
-        };
-        sdk::close_robot(robot).await.map_err(session_err)
+        if let Some(robot) = taken {
+            sdk::close_robot(robot).await.map_err(session_err)?;
+        }
+        self.session.close().await.map_err(session_err)
     }
 }
 
-#[cfg(feature = "fleet")]
 #[cfg(feature = "fleet")]
 #[napi]
 impl NativeRobot {
@@ -1460,6 +1528,10 @@ pub struct RunStats {
     pub latency_p99_ms: Option<f64>,
     pub latency_max_ms: Option<f64>,
     pub drifting: bool,
+    /// Per leased part refusing this policy's chunks for its clock, why.
+    pub clock_refused: Vec<String>,
+    /// What the policy waits for before it can command, else none.
+    pub waiting: Option<String>,
     /// The parts a higher class took, `robot:path`, kept from the policy
     /// until `resume()`.
     pub parked: Vec<String>,
@@ -1564,6 +1636,12 @@ fn run_stats(controller: &Controller) -> RunStats {
         latency_p99_ms: ms(stats.latency_p99),
         latency_max_ms: ms(stats.latency_max),
         drifting: stats.drifting,
+        clock_refused: controller
+            .clock_refusals()
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect(),
+        waiting: controller.waiting(),
         parked: controller.parked().into_iter().map(|p| p.part).collect(),
         inputs: stats
             .inputs
@@ -1724,9 +1802,12 @@ pub struct NativePolicy {
     published: Option<Arc<rlmesh_session::edge::Published>>,
     replies: Mutex<Option<SyncSender<Reply>>>,
     closing: Arc<AtomicBool>,
+    /// The session, hosted here when no host answered.
+    session: EmbeddedHost,
 }
 
-/// Attaches as `name` at `options.priority`, waits for `robot`'s parts
+/// Attaches as `name` at `options.priority` to the session `address`
+/// names, placed by the hosting rule, waits for `robot`'s parts
 /// (`null`: the session's view of every robot, each under its name), binds
 /// `policy_json` (the policy map) with the run-time options, and
 /// declares the binding, on the robot's clock as it declared it: a
@@ -1739,11 +1820,12 @@ pub async fn bind_policy(
     robot: Option<String>,
     options: BindOptions,
 ) -> Result<NativePolicy> {
-    let address = self::address(&address)?;
     let wait = timeout(options.timeout_s.unwrap_or(10.0))?;
     let class = priority(options.priority.as_deref().unwrap_or("model"))?;
     let run_options = run_options(&name, robot.as_deref(), &options)
         .map_err(|why| binding_refused(format!("binding refused: {why}")))?;
+    let session = place(&address).await?;
+    let address = session.address().clone();
     let (driving, published) = match options.publishes_json.as_deref() {
         Some(publishes) => {
             let (controller, published) = sdk::bind_policy_publishing(
@@ -1782,6 +1864,7 @@ pub async fn bind_policy(
         published,
         replies: Mutex::new(None),
         closing: Arc::new(AtomicBool::new(false)),
+        session,
     })
 }
 
@@ -2224,23 +2307,24 @@ impl NativePolicy {
             .collect())
     }
 
-    /// Gives the leases back and detaches.
+    /// Gives the leases back and detaches; a session hosted here stops.
     #[napi]
     pub async fn close(&self) -> Result<()> {
         let taken = self.controller.lock().map(|mut c| c.take()).unwrap_or(None);
-        let Some(driving) = taken else {
-            return Ok(());
-        };
-        // A `predict` waiting on JS gives up, so the run can return.
-        self.closing.store(true, Ordering::Relaxed);
-        match driving {
-            Driving::Wall(controller) => sdk::close_policy(controller).await.map_err(session_err),
-            Driving::Lockstep(policy) => {
-                policy.stop();
-                policy.close().await;
-                Ok(())
+        if let Some(driving) = taken {
+            // A `predict` waiting on JS gives up, so the run can return.
+            self.closing.store(true, Ordering::Relaxed);
+            match driving {
+                Driving::Wall(controller) => {
+                    sdk::close_policy(controller).await.map_err(session_err)?;
+                }
+                Driving::Lockstep(policy) => {
+                    policy.stop();
+                    policy.close().await;
+                }
             }
         }
+        self.session.close().await.map_err(session_err)
     }
 }
 
@@ -2303,10 +2387,13 @@ pub struct RecordStats {
 pub struct NativeRecorder {
     path: String,
     recorder: Mutex<Option<Recorder>>,
+    /// The session, hosted here when no host answered.
+    session: EmbeddedHost,
 }
 
-/// Attaches as observer `name` and starts recording every stream, chunk and
-/// authority change of the session into a new MCAP file at `path`.
+/// Attaches as observer `name` to the session `address` names, placed by
+/// the hosting rule, and starts recording every stream, chunk and authority
+/// change of the session into a new MCAP file at `path`.
 #[napi]
 pub async fn start_recorder(
     address: String,
@@ -2314,14 +2401,15 @@ pub async fn start_recorder(
     name: String,
     timeout_s: f64,
 ) -> Result<NativeRecorder> {
-    let address = self::address(&address)?;
     let wait = timeout(timeout_s)?;
-    let recorder = sdk::start_recorder(&address, &path, &name, wait)
+    let session = place(&address).await?;
+    let recorder = sdk::start_recorder(session.address(), &path, &name, wait)
         .await
         .map_err(record_err)?;
     Ok(NativeRecorder {
         path,
         recorder: Mutex::new(Some(recorder)),
+        session,
     })
 }
 
@@ -2333,7 +2421,8 @@ impl NativeRecorder {
         self.path.clone()
     }
 
-    /// Stops recording and finishes the file; none when already closed.
+    /// Stops recording and finishes the file (a session hosted here
+    /// stops); none when already closed.
     #[napi]
     pub async fn close(&self) -> Result<Option<RecordStats>> {
         let taken = self.recorder.lock().map(|mut r| r.take()).unwrap_or(None);
@@ -2341,6 +2430,7 @@ impl NativeRecorder {
             return Ok(None);
         };
         let stats = sdk::finish_recorder(recorder).await.map_err(record_err)?;
+        self.session.close().await.map_err(session_err)?;
         Ok(Some(RecordStats {
             path: stats.path.to_string_lossy().into_owned(),
             messages: seq(stats.messages),

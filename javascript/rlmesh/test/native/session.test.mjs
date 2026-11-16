@@ -5,17 +5,53 @@
 // stream timed chunks. A lockstep env, served by Python (`trials_env.py`, through `uv run`), is run
 // by episodes. Needs dist/node.js and the addon (`mise run test:js:native`).
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createSocket } from 'node:dgram';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { connect as tcpConnect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
-import { afterEach, beforeEach, test } from 'node:test';
+import { after, afterEach, beforeEach, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as rlmesh from '../../dist/node.js';
 
 const SPEC = new URL('../../../../crates/rlmesh-session-core/tests/', import.meta.url);
 const WAIT_MS = 10_000;
+
+/** A loopback port free for TCP and for UDP at the same number (a host binds both). */
+async function freePort() {
+  for (;;) {
+    const probe = createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const { port } = probe.address();
+    const udp = createSocket('udp4');
+    const free = await new Promise((resolve) => {
+      udp.once('error', () => resolve(false));
+      udp.bind(port, '127.0.0.1', () => resolve(true));
+    });
+    if (free) await new Promise((r) => udp.close(r));
+    await new Promise((r) => probe.close(r));
+    if (free) return port;
+  }
+}
+
+/** Whether something accepts TCP connections on the loopback `port`. */
+function listening(port) {
+  return new Promise((resolve) => {
+    const socket = tcpConnect(port, '127.0.0.1');
+    socket.once('connect', () => (socket.destroy(), resolve(true)));
+    socket.once('error', () => resolve(false));
+  });
+}
+
+// The local session of this file's own: a well-known port and a state directory (where a host on
+// loopback files its key) that no rlmeshd, other run or other test file shares.
+const LOCAL_PORT = await freePort();
+const STATE = mkdtempSync(join(tmpdir(), 'rlmesh-state-'));
+process.env.RLMESH_PORT = String(LOCAL_PORT);
+process.env.RLMESH_STATE_DIR = STATE;
+after(() => rmSync(STATE, { recursive: true, force: true }));
 
 const UR_JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'];
 const HOME = Float32Array.of(0, -1.57, 1.57, -1.57, -1.57, 0);
@@ -172,6 +208,8 @@ test('a Node policy drives a Node robot on loopback', async () => {
   const q = stats.inputs.find((i) => i.entry === 'q');
   assert.equal(q.part, 'ur10e:arm');
   assert.ok(q.received > 0 && q.lost >= 0, JSON.stringify(stats.inputs));
+  assert.deepEqual(stats.clockRefused, []);
+  assert.ok(stats.waiting === null || typeof stats.waiting === 'string', String(stats.waiting));
   assert.equal(policy.holds, false, 'a stopped run releases its leases');
 
   // predict saw what the binding table promises.
@@ -196,6 +234,12 @@ test('a Node policy drives a Node robot on loopback', async () => {
   assert.ok(edge.accepted > 0);
   assert.equal(edge.rejected, 0, JSON.stringify(edge.rejectedBy));
   assert.deepEqual(edge.modes.safe, [0, 0], 'a released lease never latches safe');
+  // How its chunks arrived: every accepted one in a lateness bucket.
+  assert.equal(edge.clockRefused, null);
+  assert.ok(edge.received >= edge.accepted && edge.lost >= 0, JSON.stringify(edge));
+  assert.equal(edge.lateMs.length, 8);
+  assert.equal(edge.lateMs.reduce((n, k) => n + k, 0), edge.accepted);
+  assert.ok(edge.lateMaxMs >= 0 && edge.gapMaxMs >= 0, JSON.stringify(edge));
 });
 
 test('drive binds and runs a policy in one call, closing it when the run ends', async () => {
@@ -573,7 +617,7 @@ test("the session's key is in the host's address, never in what inspecting shows
 async function serveTrials() {
   const { spawn } = await import('node:child_process');
   const { createInterface } = await import('node:readline');
-  const base = `127.0.0.1:${await freeBase()}`;
+  const base = `127.0.0.1:${await freePort()}`;
   const repo = new URL('../../../../', import.meta.url).pathname;
   const script = new URL('trials_env.py', import.meta.url).pathname;
   const proc = spawn('uv', ['run', '--no-sync', 'python', script, `${base}/trials`], {
@@ -644,83 +688,71 @@ test('a Node policy runs a lockstep env by episodes, each reset as a model run r
   assert.equal(env.resets.length, 0, 'nothing was reset');
 });
 
-/** A free loopback port (a daemon listens on it). */
-async function freeBase() {
-  const { createServer } = await import('node:net');
-  const probe = createServer();
-  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
-  const { port } = probe.address();
-  await new Promise((r) => probe.close(r));
-  return port;
-}
-
-/** A host with its lobby on loopback, whose `local.key` this process attaches with (`rlmesh host --lobby`). */
-async function startDaemon() {
-  const { spawn } = await import('node:child_process');
-  // Short: its local channel is a Unix socket in there.
-  const state = mkdtempSync('/tmp/rlmd-');
-  process.env.RLMESH_STATE_DIR = state;
-  const base = await freeBase();
-  const repo = new URL('../../../../', import.meta.url).pathname;
-  const proc = spawn('uv', ['run', '--no-sync', 'python', '-m', 'rlmesh', 'host', '--lobby', '--no-record', '--listen', `127.0.0.1:${base}`], {
-    cwd: repo,
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
-  await new Promise((resolve, reject) => {
-    proc.stdout.once('data', (line) => (String(line).includes('rlmesh host on') ? resolve() : reject(new Error(String(line)))));
-    proc.once('exit', (code) => reject(new Error(`rlmesh host exited with ${code}`)));
-  });
-  return {
-    home: `127.0.0.1:${base}`,
-    async [Symbol.asyncDispose]() {
-      proc.kill();
-      await new Promise((r) => proc.once('exit', r));
-      delete process.env.RLMESH_STATE_DIR;
-      rmSync(state, { recursive: true, force: true });
-    },
-  };
-}
-
-// The lobby and scenes are unreleased (`fleet`): only an addon built with it runs this.
-const fleetAddon = typeof createRequire(import.meta.url)(
-  process.env.RLMESH_NATIVE ?? `../../dist/rlmesh.${process.platform}-${process.arch}.node`,
-).runScene === 'function';
-test('a scene runs a lobby robot and a Node policy on one machine', { skip: !fleetAddon && 'needs an addon built with fleet' }, async () => {
-  await using daemon = await startDaemon();
-  const dir = mkdtempSync(join(tmpdir(), 'rlmesh-scene-'));
-  const path = join(dir, 'bench.toml');
-  writeFileSync(
-    path,
-    '[scene]\nformat = 1\nname = "bench"\nwait = "20s"\n\n[members.arm]\nrole = "robot"\n\n[members.pilot]\nrole = "controller"\ndevice = "local"\n',
-  );
-  const ARM = { arm: { kind: 'joints', count: 2, fields: ['pos'], hz: 100, command: 'position', safe: 'stop', hold_max_ms: 200 } };
-  const PILOT = {
-    hz: 20,
-    inputs: { q: { kind: 'joints', at: 'arm', fields: ['pos'] } },
-    actions: { arm: { kind: 'joints', at: 'arm', command: 'position', hz: 20, chunk: 2 } },
-  };
-  const robot = (async () => {
-    await using arm = await rlmesh.Robot.waitInLobby('arm', ARM, { home: daemon.home, timeout: 3 * WAIT_MS / 1000 });
-    while (arm.leaving === null) {
-      arm.publish('arm', { pos: new Float32Array(2) });
-      await sleep(10);
-    }
-    return arm.leaving;
-  })();
+// The hosting rule, as Python's participants follow it: a session address with no host, or a
+// loopback port with nothing listening, is hosted by the participant itself, in this process, until
+// it closes; one a host already listens on is joined.
+test('a robot with no session hosts the local one when nothing listens, and others join it', async () => {
+  assert.equal(await listening(LOCAL_PORT), false);
+  const robot = await rlmesh.Robot.connect('ur10e', fixture('robots', 'ur10e'));
   try {
-    await using scene = await rlmesh.runScene(path, { home: daemon.home });
-    const binding = await scene.waitUntil('binding', { timeout: WAIT_MS / 1000 });
-    assert.deepEqual(binding.members[0], { name: 'arm', stage: 'declared', error: null });
-    const policy = new rlmesh.Policy(PILOT, { session: await scene.address(), name: 'pilot' });
-    await policy.bind('arm');
-    assert.equal((await scene.waitUntil('running', { timeout: WAIT_MS / 1000 })).error, null);
-    const stats = await policy.run(() => ({ arm: { data: new Float32Array(4), shape: [2, 2] } }), { duration: 1 });
-    assert.ok(stats.starts > 0, JSON.stringify(stats));
-    await assert.rejects(rlmesh.runScene(path, { home: daemon.home }), (e) => e instanceof rlmesh.SessionRefused && e.status === 'ROBOT_BUSY');
-    await policy.close();
-    assert.equal((await scene.stop()).stage, 'ended');
-    assert.equal(await robot, 'scene_ended');
+    assert.ok(robot.address.startsWith(`127.0.0.1:${LOCAL_PORT}`) && robot.address.endsWith('/ur10e'), robot.address);
+    assert.equal(await listening(LOCAL_PORT), true);
+    // A policy given the local session joins the robot's host instead of hosting one of its own.
+    await using policy = new rlmesh.Policy(HOLD, { session: '', name: 'hold' });
+    await policy.bind('ur10e');
+    assert.equal(policy.binding.fingerprint.length, 16);
+  } finally {
+    await robot.close();
+  }
+  assert.equal(await listening(LOCAL_PORT), false, 'the robot stopped the session it hosted');
+});
+
+test('a recorder on a loopback port with nothing listening hosts the session a robot and a policy join', async () => {
+  const port = await freePort();
+  const session = `127.0.0.1:${port}`;
+  const dir = mkdtempSync(join(tmpdir(), 'rlmesh-hosted-'));
+  try {
+    const recorder = await rlmesh.SessionRecorder.start(join(dir, 'hosted.mcap'), { session });
+    assert.equal(await listening(port), true);
+    {
+      await using ur = await FakeUR10e.start(session);
+      assert.ok(ur.robot.address.startsWith(`${session}#`), ur.robot.address);
+      await using policy = new rlmesh.Policy(HOLD, { session, name: 'hold' });
+      await policy.bind('ur10e');
+      const stats = await policy.run((obs) => ({ arm: { data: new Float32Array(60).map((_, i) => obs.inputs.q.data[i % 6]), shape: [10, 6] } }), { duration: 1 });
+      assert.ok(stats.chunksSent > 0, JSON.stringify(stats));
+      await policy.close();
+      assert.equal(await listening(port), true, 'participants that joined leave the host running');
+    }
+    const stats = await recorder.close();
+    assert.ok(stats.messages > 0, JSON.stringify(stats));
+    assert.equal(await listening(port), false, 'the recorder stopped the session it hosted');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a robot joins the host already on its port and leaves it running', async () => {
+  const base = host.address.split('#')[0];
+  const robot = await rlmesh.Robot.connect('ur10e', fixture('robots', 'ur10e'), { session: base });
+  assert.equal(robot.address.split('#')[0], base);
+  await robot.close();
+  assert.equal(await listening(Number(base.split(':')[1])), true);
+});
+
+test('an addon of another version is refused, naming both versions', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rlmesh-stale-'));
+  try {
+    const stale = join(dir, 'stale.cjs');
+    writeFileSync(stale, "module.exports = { version: () => '0.0.1' };\n");
+    const node = new URL('../../dist/node.js', import.meta.url).href;
+    const r = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', `const { Rate } = await import(${JSON.stringify(node)}); try { new Rate(1); } catch (e) { console.log(e.name + ': ' + e.message); }`],
+      { env: { ...process.env, RLMESH_NATIVE: stale }, encoding: 'utf8' },
+    );
+    const { version } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+    assert.match(r.stdout, new RegExp(`^SessionException: the rlmesh native addon \\(.*stale\\.cjs\\) is version 0\\.0\\.1, but this rlmesh package is ${version.replaceAll('.', '\\.')}`), r.stdout + r.stderr);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
