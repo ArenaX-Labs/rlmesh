@@ -43,8 +43,8 @@ jobs:
           python: "true"
           rust-components: "true"
 
-      - name: Select C# checks from affected crates and files
-        id: csharp_changes
+      - name: Select C# and Windows checks from affected crates and files
+        id: affected
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
@@ -57,6 +57,28 @@ jobs:
       # remote dependency metadata during verification.
       - name: Static checks
         run: mise run --skip-tools check
+
+      # The Windows wheel is cross-built only at release. Type-check its crates
+      # for x86_64-pc-windows-msvc here with the same cargo-xwin and clang-cl,
+      # so code that only compiles on unix fails on the pull request. The MSVC
+      # CRT and SDK take minutes to download, so they are cached; they do not
+      # follow our lockfile, so the key is fixed (bump it to refresh them). Its
+      # own target dir keeps the Rust cache and the test builds' disk free of it.
+      - name: Restore the MSVC CRT and SDK for the Windows check
+        if: steps.affected.outputs.windows == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-xwin/xwin
+          key: xwin-${{ runner.os }}-v1
+
+      - name: Windows wheel compiles (x86_64-pc-windows-msvc)
+        if: steps.affected.outputs.windows == 'true'
+        timeout-minutes: 15
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/windows-check
+        run: |
+          mise run --skip-tools check:windows
+          rm -rf "$CARGO_TARGET_DIR"
 
       # Same entrypoint as local `mise run test:ci`: Rust, Python, C/C++ (zig),
       # API surface, examples, system harness, and the installed-wheel system
@@ -71,7 +93,7 @@ jobs:
           du -sh target/* 2>/dev/null | sort -rh | head -12
 
       - name: Install C# toolchain when affected
-        if: steps.csharp_changes.outputs.csharp == 'true'
+        if: steps.affected.outputs.csharp == 'true'
         run: |
           mise trust csharp/mise.toml
           mkdir -p "$HOME/.cache/rlmesh-csharp/tmp"
@@ -79,16 +101,16 @@ jobs:
 
       - name: C# interop, ownership and Python interoperability
         timeout-minutes: 10
-        if: steps.csharp_changes.outputs.csharp == 'true'
+        if: steps.affected.outputs.csharp == 'true'
         run: mise run --skip-tools test:csharp
 
       - name: C# NativeAOT serving supplement
-        if: steps.csharp_changes.outputs.csharp == 'true'
+        if: steps.affected.outputs.csharp == 'true'
         timeout-minutes: 5
         run: mise run --skip-tools test:csharp:aot
 
       - name: C# NuGet restore and Unity package structure
-        if: steps.csharp_changes.outputs.csharp == 'true'
+        if: steps.affected.outputs.csharp == 'true'
         timeout-minutes: 5
         run: mise run --skip-tools test:csharp:package
 

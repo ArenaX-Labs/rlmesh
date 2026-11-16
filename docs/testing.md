@@ -65,6 +65,13 @@ Linux job installs the scoped C# toolchain only when selected, then runs interop
 staleness, managed tests, NativeAOT and package checks. `test:ci` itself does not
 install dotnet.
 
+The Windows wheel is cross-built only at release, so the same planner selects
+`check:windows` for any change reaching the extension crate (and for workspace
+inputs, the task, `python/rlmesh/pyproject.toml` and the CI workflow). It
+type-checks the wheel's crates for `x86_64-pc-windows-msvc` with cargo-xwin, the
+release's cross toolchain, which needs `clang` on `PATH`; the first run
+downloads the MSVC CRT and SDK into `~/.cache/cargo-xwin`.
+
 Rust tests run under [cargo-nextest](https://nexte.st) (configured in `.config/nextest.toml`); doctests still run through `cargo test --doc`.
 
 A loopback host leaves its key and link-gate files in the runtime directory. On Unix, nextest (every repo task, and a bare `cargo nextest run`) points `RLMESH_RUNTIME_DIR` at `target/rlmesh-test-runtime` unless it is already set; the Python suites use a temporary one. A bare `cargo test` does not: its hosts write to your real runtime directory and remove their files when they close.

@@ -65,7 +65,7 @@ def test_python_only_change_skips_rust() -> None:
 def test_workspace_inputs_select_everything() -> None:
     assert plan(["Cargo.lock"], WORKSPACE) == Plan(rust=None, python=True)
     assert plan(["Cargo.lock"], WORKSPACE, ci=True) == Plan(
-        rust=None, python=True, csharp=True
+        rust=None, python=True, csharp=True, windows=True
     )
 
 
@@ -113,7 +113,24 @@ def test_ci_output_uses_broad_selection_and_appends(tmp_path: Path) -> None:
     output.write_text("existing=value\n")
     write_github_output(plan(["crates/rlmesh/src/env.rs"], WORKSPACE, ci=True), output)
     write_github_output(plan(["crates/rlmesh-viewer/src/lib.rs"], WORKSPACE), output)
-    assert output.read_text() == "existing=value\ncsharp=true\ncsharp=false\n"
+    assert output.read_text() == (
+        "existing=value\ncsharp=true\nwindows=false\ncsharp=false\nwindows=false\n"
+    )
+
+
+def test_windows_wheel_check_follows_the_extension_in_ci_only() -> None:
+    # spaces reaches the extension through runtime and session; viewer does not.
+    assert plan(["crates/rlmesh-spaces/src/box.rs"], WORKSPACE, ci=True).windows
+    assert not plan(["crates/rlmesh-spaces/src/box.rs"], WORKSPACE).windows
+    assert not plan(["crates/rlmesh-viewer/src/lib.rs"], WORKSPACE, ci=True).windows
+    assert not plan(["python/rlmesh/src/rlmesh/env.py"], WORKSPACE, ci=True).windows
+    assert not plan(["docs/testing.md"], WORKSPACE, ci=True).windows
+    for path in (
+        ".mise/tasks/check/windows",
+        ".github/workflows/ci.yml",
+        "python/rlmesh/pyproject.toml",
+    ):
+        assert plan([path], WORKSPACE, ci=True).windows, path
 
 
 def test_ci_only_inputs_do_not_require_local_dotnet() -> None:
