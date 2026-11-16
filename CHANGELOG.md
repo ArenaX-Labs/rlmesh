@@ -6,11 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+## [0.2.0-alpha.1] - 2026-11-15
+
 0.2 rebuilds RLMesh on real-time sessions: one protocol (`rlmesh-realtime-v1`, provisional until 0.2.0) carries robots and policies on a network and steps environments in lockstep. It is an alpha line, and anything may change before 0.2.0.
 
 **Upgrading from 0.1.** 0.1 and 0.2 do not talk to each other: the gRPC transport is gone, addresses changed, and images built for 0.1 need rebuilding. Stay on 0.1.x (maintained on the `release/0.1` branch for security fixes) until you can move both sides. Most names 0.1 exported and 0.2 dropped raise an error naming their replacement. [Upgrading from 0.1](docs/upgrading.md) walks through each change with before-and-after code.
 
-**What 0.2 publishes.** The Python package and the Rust crates. The C and C++ API, C#, Unity, Unreal, the npm package and the ESP32 board library are built and tested in this repository but not published; their entries below describe development APIs, and the C ABI generation is fixed only when they ship.
+**What 0.2 publishes.** The Python package. The Rust crates follow in a later 0.2 pre-release. The C and C++ API, C#, Unity, Unreal, the npm package and the ESP32 board library are built and tested in this repository but not published; their entries below describe development APIs, and the C ABI generation is fixed only when they ship.
 
 ### Breaking
 
@@ -396,5 +398,6 @@ RLMesh connects models to environments across process, dependency, and machine b
 - The describe envelope's `runtime` block advertises the edition handshake under the wire's names: `protocol_generation`, `supported_workflow_editions`, and `preferred_workflow_edition`, and `rlmesh.build_info().supported_workflow_editions` lists the editions a build can drive.
 - `python -m rlmesh.serve` warns at startup when the served model declares no `spec`: automated input synthesis requires a `ModelSpec`.
 
-[Unreleased]: https://github.com/ArenaX-Labs/rlmesh/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ArenaX-Labs/rlmesh/compare/v0.2.0-alpha.1...HEAD
+[0.2.0-alpha.1]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.2.0-alpha.1
 [0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0
