@@ -1,6 +1,6 @@
 # Release Process
 
-RLMesh is versioned, gated, and tagged from a maintainer's machine; pushing the tag hands off to CI (`.github/workflows/release.yml`), which builds the wheel matrix on Linux and macOS runners and publishes the Python wheels to PyPI and the Rust crates to crates.io. SemVer is the source of truth (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The version contract is in [versioning](versioning.md).
+RLMesh is versioned, gated, and tagged from a maintainer's machine; pushing the tag hands off to CI (`.github/workflows/release.yml`), which builds the wheel matrix on Linux and macOS runners and publishes the Python wheels to PyPI, the Rust crates to crates.io and, when switched on, the npm packages to npm. SemVer is the source of truth (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The version contract is in [versioning](versioning.md).
 
 The mechanical steps are scripted. You still own the changelog prose and the version number. The one irreversible action, pushing the tag, never runs without you asking.
 
@@ -17,14 +17,14 @@ The gate is `mise run release:check`. Among its steps, `test:sandbox:docker --re
 
 `release.py` refuses to proceed if the working tree is dirty, the `vX.Y.Z` tag already exists, the changelog still has `<!-- DRAFT -->` markers, or there is no `## [X.Y.Z]` changelog section.
 
-The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and publishes to crates.io and PyPI through trusted publishing, then creates the GitHub Release with the curated release notes. Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions. In 0.2 the GitHub Release has no native distribution assets.
+The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and publishes to crates.io and PyPI through trusted publishing, then creates the GitHub Release with the curated release notes. When npm is switched on, its own jobs build, pack and smoke-test the npm packages beside the wheels and publish them after that (see [npm](#npm)). Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions. In 0.2 the GitHub Release has no native distribution assets.
 
 ## Prerequisites
 
 - **Future Unity release gate (outside 0.2):** complete the [Unity release checklist](unity-release-checklist.md): Linux IL2CPP player smoke, Mono Editor reload, and failed-barrier reload. Unity support must not be claimed until all three pass; .NET tests and NativeAOT do not substitute for Unity verification.
 
-- Nothing local: no publish tokens. crates.io and PyPI authenticate via OIDC trusted publishing scoped to `release.yml` and the `release` GitHub environment; the GitHub Release uses the workflow's own token.
-- One-time registry setup: a trusted publisher configured on the PyPI `rlmesh` project and on each of the nine published `rlmesh*` crates (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`), plus the `release` environment created in the repository settings (add required reviewers there if you want a manual approval gate before publish).
+- Nothing local: no publish tokens. crates.io, PyPI and npm authenticate via OIDC trusted publishing scoped to `release.yml` and the `release` GitHub environment; the GitHub Release uses the workflow's own token.
+- One-time registry setup: a trusted publisher configured on the PyPI `rlmesh` project, on each of the nine published `rlmesh*` crates and on the npm `rlmesh` and five `@rlmesh/{platform}-{arch}` packages (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`), plus the `release` environment created in the repository settings (add required reviewers there if you want a manual approval gate before publish).
 - Break-glass local publish, from the tagged commit: no single host builds the full wheel matrix anymore, so first assemble `python/rlmesh/dist` from the release run's artifacts (`gh run download <run-id> -p 'wheels-*'`, then move the `.whl` files in) or build each half on its own host without re-running `release:python:prepare` in between (it wipes dist). Then `python scripts/release.py X.Y.Z --publish-crates` (needs `CARGO_REGISTRY_TOKEN`) and `--github-release` (needs `gh` auth); wheels would need a manual `twine upload`.
 
 ## Curate the changelog
@@ -72,14 +72,51 @@ RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are 
 
 ## Publish order
 
-The publish job uploads the wheels to PyPI first. When the `RLMESH_PUBLISH_CRATES` repository variable is `1`, it then runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh`, `rlmesh-cli`); otherwise it skips them with a notice. Last, it cuts the GitHub Release via `release.py --github-release`. Trusted publishing on crates.io can be configured only for a crate that already exists, so a crate never published before (in 0.2.0-alpha.1, `rlmesh-tether` and `rlmesh-cockpit`) is published once by hand with a token, its trusted publisher configured, and only then is `RLMESH_PUBLISH_CRATES` set to `1`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+The publish job uploads the wheels to PyPI first. When the `RLMESH_PUBLISH_CRATES` repository variable is `1`, it then runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh`, `rlmesh-cli`); otherwise it skips them with a notice. Last, it cuts the GitHub Release via `release.py --github-release`. When the `RLMESH_PUBLISH_NPM` repository variable is `1`, a separate `publish-npm` job then publishes the npm packages; otherwise the publish job skips them with a notice (see [npm](#npm)). Trusted publishing on crates.io can be configured only for a crate that already exists, so a crate never published before (in 0.2.0-alpha.1, `rlmesh-tether` and `rlmesh-cockpit`) is published once by hand with a token, its trusted publisher configured, and only then is `RLMESH_PUBLISH_CRATES` set to `1`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+
+## npm
+
+The `RLMESH_PUBLISH_NPM` repository variable switches the npm release, as `RLMESH_PUBLISH_CRATES` switches the crates: set it to `1` to build and publish the npm packages with the next tag, with no code change. Unset or anything else, a tag run builds no addons and publishes nothing to npm, and the publish job leaves a notice saying so.
+
+When it is `1`, a tag run adds the `npm-*` jobs beside the wheel jobs. `npm-linux` runs `build:js` (the wasm and the bundles) and `release:js:native` for `linux-x64`, `linux-arm64` (cargo-zigbuild, glibc 2.28, Node 22's own floor) and `win32-x64` (cargo-xwin); `npm-macos` adds `darwin-arm64` and `darwin-x64`. `npm-pack` runs `release:js:package --require-all`, which packs one `@rlmesh/{platform}-{arch}` per addon and `rlmesh` with those five as exact-version optional dependencies, all at the Cargo workspace version. npm installs only the addon whose `os`/`cpu`/`libc` match, and `native.ts` loads it. `npm-pack` then checks the tarballs (one version, no `fleet.js`, an addon only in each platform package, built for its target, the glibc floor) and installs and runs `examples/node/hold.mjs` from them on linux-x64 (`release:js:smoke`); `npm-smoke-macos` does the same on darwin-arm64.
+
+Last, `publish-npm` runs `release:js:publish`, which publishes the platform packages first, skips any version already on npm, and sends a pre-release to the `next` dist-tag so `npm install rlmesh` keeps the last stable release. It authenticates by trusted publishing, so it runs in the `release` environment with `id-token: write`; Node and npm come from `mise.lock` (npm 11.5.1 or newer is needed for trusted publishing). If the environment has required reviewers, `publish-npm` asks for its own approval.
+
+`publish-npm` waits for the publish job, so npm goes out after PyPI, the crates and the GitHub Release, and the publish job needs none of the npm jobs. A failed npm build, smoke test or publish therefore never holds up or undoes the other registries or the Release: the run ends red, and re-running its failed jobs retries only npm. npm goes after the GitHub Release, not before it, because otherwise an npm failure would either hold the Release back or have to be hidden with `continue-on-error`; the cost is a few minutes in which the Release is up and npm is not.
+
+npm configures a trusted publisher per package, and only on a package that already exists. `rlmesh` and each `@rlmesh/{platform}-{arch}` were reserved with a placeholder `0.0.1`, and each has a trusted publisher (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`). A new platform package needs the same before it ships.
+
+To rehearse it without publishing, dispatch the workflow on any branch with `gh workflow run release.yml --ref <branch> -f rehearse=npm`. Only `npm-linux`, `npm-macos`, `npm-pack` and `npm-smoke-macos` run, on a read-only token with no environment or secrets, with the same tasks as a release; `publish-npm` and the release jobs skip. `release:js:smoke` also runs locally after `release:js:package`. The tarballs stay on the run as `npm-packages` for three days.
+
+### First npm release
+
+1. Rehearse the release commit (`gh workflow run release.yml --ref <branch> -f rehearse=npm`) and check every `npm-*` job passes.
+2. Check that `rlmesh` and the five `@rlmesh/{platform}-{arch}` packages each list the trusted publisher above.
+3. Before pushing the tag, set the variable: `gh variable set RLMESH_PUBLISH_NPM --body 1`. A tag run that starts without it skips the npm jobs, and re-running its failed jobs does not add them.
+4. After `publish-npm`, check `npm view rlmesh dist-tags`: a pre-release is on `next`, and `latest` stays on the placeholder `0.0.1`.
+5. Point anyone who installs the placeholder at the pre-releases, from an npm account that owns `rlmesh` (trusted publishing only publishes):
+
+   ```bash
+   npm deprecate rlmesh@0.0.1 "placeholder: install rlmesh@next for the 0.2 pre-releases"
+   ```
+
+6. Install it from the registry in a scratch directory and open a host, which loads the addon through `rlmesh` and checks its version:
+
+   ```bash
+   mkdir /tmp/rlmesh-npm-smoke && cd /tmp/rlmesh-npm-smoke && npm init -y >/dev/null
+   npm install rlmesh@next
+   node --input-type=module -e "import { Host } from 'rlmesh'; const h = await Host.open(); console.log(h.address); await h.close();"
+   ```
+
+Leave the variable at `1` to publish npm with every release, or delete it (`gh variable delete RLMESH_PUBLISH_NPM`) to go back to Python only.
 
 ## GitHub Releases
 
 Every release gets a GitHub Release built from its tag and curated changelog.
-For 0.2, the published distributions are the Python wheels and, once
-`RLMESH_PUBLISH_CRATES` is on, the nine Rust crates above (0.2.0-alpha.1 ships
-the wheels only). C/C++, C#, Unity, Unreal, npm and board-library release assets are
+For 0.2, the published distributions are the Python wheels, the nine Rust
+crates above once `RLMESH_PUBLISH_CRATES` is on, and the six npm packages once
+`RLMESH_PUBLISH_NPM` is on (0.2.0-alpha.1 ships the wheels only). npm attaches
+nothing to the Release. C/C++, C#, Unity, Unreal and board-library release assets are
 fenced; their code and existing CI build/test coverage remain in the tree.
 C ABI 7 is cut only when the native bindings ship.
 
@@ -215,36 +252,6 @@ test. The submitted zip and all distributions contain the same signed dylib.
 Unity/IL2CPP execution remains a separate engine integration gate; NativeAOT is
 only a supplement.
 
-## npm
-
-When re-enabled, the Linux builder runs `build:js` (the wasm and the bundles) and
-`release:js:native` for `linux-x64`, `linux-arm64` (cargo-zigbuild, glibc 2.28,
-Node 22's own floor) and `win32-x64` (cargo-xwin); the macOS builder adds
-`darwin-arm64` and `darwin-x64`. Publish runs `release:js:package --require-all`,
-which packs one `@rlmesh/{platform}-{arch}` per addon and `rlmesh` with those
-five as exact-version optional dependencies, all at the Cargo workspace
-version. npm installs only the addon whose `os`/`cpu`/`libc` match, and
-`native.ts` loads it. `release:js:publish` publishes the platform packages
-first, skips any version already on npm, and sends a pre-release to the `next`
-dist-tag so `npm install rlmesh` keeps the last stable release.
-
-npm configures a trusted publisher per package, and only on a package that
-already exists. `rlmesh` was reserved with a placeholder `0.0.1`; before the
-first release, publish a placeholder `0.0.1` of each `@rlmesh/{platform}-{arch}`
-the same way, then add the trusted publisher (repository `ArenaX-Labs/rlmesh`,
-workflow `release.yml`, environment `release`) in each package's settings.
-
-To rehearse it without publishing, dispatch the workflow on any branch with
-`gh workflow run release.yml --ref <branch> -f rehearse=npm`. Only the
-`npm-rehearsal-*` jobs run, on a read-only token with no environment or
-secrets: they build all five addons and the bundles with the same tasks, pack
-them, check the tarballs (one version, no `fleet.js`, an addon only in each
-platform package, built for its target), and install and run
-`examples/node/hold.mjs` from the tarballs on linux-x64 and darwin-arm64
-(`mise run release:js:smoke`, which also runs locally after
-`release:js:package`). The tarballs stay on the run as `npm-rehearsal-packages`
-for three days.
-
 ## Post-publish smoke
 
 ```bash
@@ -264,4 +271,5 @@ The C++ reference uses C++20. Header extraction discovers system include paths t
 ## Recovery
 
 - A bad crates.io or PyPI publish cannot be deleted, only yanked. Yank it and ship a fixed patch release.
+- A bad npm publish: `npm deprecate` the version and ship a fixed one. npm restricts unpublishing (its unpublish policy) and never reuses a version number.
 - If the seal gate blocks the release, the edition metadata does not match the version: rerun `mise run bump X.Y.Z` and review `rlmesh.toml`, or keep the release a pre-release.
