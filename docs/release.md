@@ -72,13 +72,14 @@ RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are 
 
 ## Publish order
 
-The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh`, `rlmesh-cli`), then uploads the wheels to PyPI and cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+The publish job uploads the wheels to PyPI first. When the `RLMESH_PUBLISH_CRATES` repository variable is `1`, it then runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh`, `rlmesh-cli`); otherwise it skips them with a notice. Last, it cuts the GitHub Release via `release.py --github-release`. Trusted publishing on crates.io can be configured only for a crate that already exists, so a crate never published before (in 0.2.0-alpha.1, `rlmesh-tether` and `rlmesh-cockpit`) is published once by hand with a token, its trusted publisher configured, and only then is `RLMESH_PUBLISH_CRATES` set to `1`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
 
 ## GitHub Releases
 
 Every release gets a GitHub Release built from its tag and curated changelog.
-For 0.2, the published distributions are the Python wheels and the nine Rust
-crates above. C/C++, C#, Unity, Unreal, npm and board-library release assets are
+For 0.2, the published distributions are the Python wheels and, once
+`RLMESH_PUBLISH_CRATES` is on, the nine Rust crates above (0.2.0-alpha.1 ships
+the wheels only). C/C++, C#, Unity, Unreal, npm and board-library release assets are
 fenced; their code and existing CI build/test coverage remain in the tree.
 C ABI 7 is cut only when the native bindings ship.
 

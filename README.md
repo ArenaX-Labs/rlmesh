@@ -73,11 +73,11 @@ rlmesh host
 
 ## Rust
 
-Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the session protobuf messages are generated at build time.
+Grab the [`rlmesh`](crates/rlmesh/README.md) crate. 0.2.0-alpha.1 isn't on crates.io yet (it publishes the Python package only), so depend on this repository until a later 0.2 pre-release: `rlmesh = { git = "https://github.com/ArenaX-Labs/rlmesh", tag = "v0.2.0-alpha.1" }`. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the session protobuf messages are generated at build time.
 
 ## C and C++
 
-The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ API](crates/rlmesh-capi/README-cpp.md) (`rlmesh.hpp`, C++17, with RAII handles and exceptions) are fenced for 0.2: they stay built and tested in CI, but no prebuilt C/C++ package is published. Source builds retain CMake and pkg-config support. 0.2 publishes the Python wheels and Rust crates; C#, Unity, Unreal and npm publication is also fenced.
+The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ API](crates/rlmesh-capi/README-cpp.md) (`rlmesh.hpp`, C++17, with RAII handles and exceptions) are fenced for 0.2: they stay built and tested in CI, but no prebuilt C/C++ package is published. Source builds retain CMake and pkg-config support. 0.2 publishes the Python wheels (and the Rust crates from a later 0.2 pre-release); C#, Unity, Unreal and npm publication is also fenced.
 
 ```cpp
 rlmesh::Model model([](const rlmesh::Value&) { return rlmesh::Value(0); });
