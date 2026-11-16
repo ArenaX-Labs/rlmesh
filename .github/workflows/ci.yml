@@ -117,12 +117,16 @@ jobs:
         if: always()
         run: sccache --show-stats
 
+      # Not `always()`: both take uv's cache lock, which a cancelled run can
+      # leave held, and a hung step keeps the run alive.
       - name: Remove system-test venvs before the Rust cache walks target/
-        if: always()
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: mise run --skip-tools test:system:clean
 
       - name: Minimize uv cache
-        if: always()
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: uv cache prune --ci
 
   # The browser binding (javascript/rlmesh, its wasm core in javascript/rlmesh/wasm). No trigger or

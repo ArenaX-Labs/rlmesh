@@ -32,5 +32,6 @@ jobs:
         run: mise run --skip-tools test:python:floors
 
       - name: Minimize uv cache
-        if: always()
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: uv cache prune --ci
