@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["mujoco>=3.17,<3.18", "numpy", "pillow", "imageio[ffmpeg]"]
+# ///
 """Render a recorded agent run as a video: the agent's activity on top, LIBERO below.
 
 Inputs are the two logs a recorded run writes:
@@ -36,11 +40,23 @@ def load(path: str) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text().splitlines() if line]
 
 
-def font(size: int) -> ImageFont.ImageFont:
-    try:
-        return ImageFont.truetype("Menlo.ttc", size)
-    except OSError:
-        return ImageFont.load_default(size=size)
+# Monospace fonts with the arrows and dashes the agent writes: macOS first,
+# then common Linux ones. Pillow's built-in font has none of them.
+FONTS = (
+    "Menlo.ttc",
+    "DejaVuSansMono.ttf",
+    "LiberationMono-Regular.ttf",
+    "SourceCodePro-Regular.otf",
+)
+
+
+def font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    for name in FONTS:
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default(size=size)
 
 
 def policy_view(prev: str | None, code: str, version: int):
@@ -132,6 +148,7 @@ class Panel:
 
     def code_frames(self, scene: np.ndarray, fps: int) -> Iterator[np.ndarray]:
         """Hold the top of the code, scroll through it, hold the end."""
+        assert self.code is not None, "code_frames follows a write_policy event"
         extra = max(0, len(self.code) - self.rows)
         speed = max(CODE_SCROLL, extra / 10)
         pause, scroll = int(CODE_PAUSE * fps), int(extra / speed * fps)

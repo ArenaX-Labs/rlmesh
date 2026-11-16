@@ -10,7 +10,7 @@ Claude solves a LIBERO manipulation task the way RAX and FAEA do: it probes the 
 
 How a run goes:
 
-1. `describe`, `reset` and `step` let the agent explore the env through `rlmesh.RemoteEnv`.
+1. `describe`, `reset` and `step` let the agent explore the env through `rlmesh.numpy.RemoteEnv`.
 2. `write_policy` saves `workdir/policy.py`, which must define `predict(obs) -> action`.
 3. `evaluate` scores it with `Model(predict).run(address, seeds=...)` on layouts the agent never explored, and reports per-episode success.
 4. A policy that passes every episode is copied to `workdir/skills/<skill>.py`.

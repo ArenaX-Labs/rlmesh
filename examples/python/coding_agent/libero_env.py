@@ -23,7 +23,6 @@ import rlmesh
 os.environ.setdefault("MUJOCO_GL", "disable")
 
 DEFAULT_ADDRESS = "127.0.0.1:5555"
-SERVE_OPTIONS = rlmesh.ServeOptions(workflow_edition="2026.06")
 SETTLE_STEPS = 10  # objects drop into place after a reset
 NOOP = [0.0] * 6 + [-1.0]
 
@@ -119,7 +118,7 @@ def main() -> None:
     args = parser.parse_args()
 
     env = LiberoEnv(args.suite, args.task_id, args.max_steps, args.trace)
-    server = rlmesh.EnvServer(env, args.address, options=SERVE_OPTIONS)
+    server = rlmesh.EnvServer(env, args.address)
     print(
         f"serving {args.suite}[{args.task_id}] on {server.address}: {env.instruction}",
         flush=True,
