@@ -1104,10 +1104,13 @@ impl NativeRobot {
             let _ = tokio::task::spawn_blocking(move || thread.join()).await;
         }
         let taken = self.robot.lock().map(|mut r| r.take()).unwrap_or(None);
-        if let Some(robot) = taken {
-            sdk::close_robot(robot).await.map_err(session_err)?;
-        }
-        self.session.close().await.map_err(session_err)
+        let detached = match taken {
+            Some(robot) => sdk::close_robot(robot).await.map_err(session_err),
+            None => Ok(()),
+        };
+        // A session hosted here stops even when detaching failed.
+        let stopped = self.session.close().await.map_err(session_err);
+        detached.and(stopped)
     }
 }
 
@@ -2311,12 +2314,13 @@ impl NativePolicy {
     #[napi]
     pub async fn close(&self) -> Result<()> {
         let taken = self.controller.lock().map(|mut c| c.take()).unwrap_or(None);
+        let mut detached = Ok(());
         if let Some(driving) = taken {
             // A `predict` waiting on JS gives up, so the run can return.
             self.closing.store(true, Ordering::Relaxed);
             match driving {
                 Driving::Wall(controller) => {
-                    sdk::close_policy(controller).await.map_err(session_err)?;
+                    detached = sdk::close_policy(controller).await.map_err(session_err);
                 }
                 Driving::Lockstep(policy) => {
                     policy.stop();
@@ -2324,7 +2328,9 @@ impl NativePolicy {
                 }
             }
         }
-        self.session.close().await.map_err(session_err)
+        // A session hosted here stops even when detaching failed.
+        let stopped = self.session.close().await.map_err(session_err);
+        detached.and(stopped)
     }
 }
 
@@ -2429,8 +2435,11 @@ impl NativeRecorder {
         let Some(recorder) = taken else {
             return Ok(None);
         };
-        let stats = sdk::finish_recorder(recorder).await.map_err(record_err)?;
-        self.session.close().await.map_err(session_err)?;
+        let finished = sdk::finish_recorder(recorder).await.map_err(record_err);
+        // A session hosted here stops even when finishing the file failed.
+        let stopped = self.session.close().await.map_err(session_err);
+        let stats = finished?;
+        stopped?;
         Ok(Some(RecordStats {
             path: stats.path.to_string_lossy().into_owned(),
             messages: seq(stats.messages),
