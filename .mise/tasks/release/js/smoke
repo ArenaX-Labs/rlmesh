@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#MISE description="Check the packed npm release in target/npm-pkg (after release:js:package): versions, contents and each addon's target, then install rlmesh and this platform's addon from the tarballs, with no registry, and run examples/node/hold.mjs against them"
+#MISE dir="{{ config_root }}"
+#USAGE flag "--require-all" help="Fail unless all five platform packages are present"
+#USAGE flag "--max-glibc <version>" help="Fail if a Linux addon needs a newer glibc than this (release builds: 2.28)"
+#USAGE flag "--no-install" help="Check the tarballs only; install and run nothing"
+
+# The npm release rehearsal (release.yml, `rehearse: npm`) runs this on Linux and macOS.
+set -euo pipefail
+args=()
+[ "${usage_require_all:-false}" = true ] && args+=(--require-all)
+[ -n "${usage_max_glibc:-}" ] && args+=(--max-glibc "$usage_max_glibc")
+[ "${usage_no_install:-false}" = true ] && args+=(--no-install)
+node scripts/npm-smoke.mjs "${args[@]}"
