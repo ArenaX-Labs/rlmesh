@@ -76,7 +76,7 @@ cc -std=c11 -I crates/rlmesh-capi/include serve.c \
   -L target/release -lrlmesh_capi -Wl,-rpath,"$PWD/target/release" -lpthread -ldl -lm -o serve
 ```
 
-`mise run release:cxx:package` assembles a local native package (unpublished in 0.2) for the host platform, under `target/capi-pkg/`. `mise run release:cxx:package --target windows` cross-builds the Windows package from Linux or macOS with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), which needs `clang` and downloads the MSVC CRT and Windows SDK, accepting Microsoft's license for them.
+`mise run release:cxx:package` assembles a local native package (unpublished in 0.2) for the host platform, under `target/capi-pkg/`. `mise run release:cxx:package --target windows` cross-builds the Windows package from Linux or macOS with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), which needs `clang`; it adds the Rust toolchain's `llvm-tools` component for the archiver and downloads the MSVC CRT and Windows SDK, accepting Microsoft's license for them.
 
 ## Quickstart
 

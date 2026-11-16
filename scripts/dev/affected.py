@@ -58,10 +58,13 @@ CSHARP_CI_INPUTS = {
     ".mise/tasks/release/cxx/package",
     ".github/workflows/ci.yml",
 }
-# CI's Windows wheel check (check:windows) also runs when its own task, its
-# workflow step or the wheel's maturin features change.
+# CI's Windows check (check:windows: the wheel's and the Node addon's crates)
+# also runs when its own task, its cross toolchain, its workflow step or the
+# wheel's maturin features change.
+WINDOWS_PACKAGES = {EXTENSION_PACKAGE, "rlmesh-node"}
 WINDOWS_CI_INPUTS = {
     ".mise/tasks/check/windows",
+    "scripts/xwin-env.sh",
     ".github/workflows/ci.yml",
     "python/rlmesh/pyproject.toml",
 }
@@ -72,7 +75,7 @@ class Plan:
     rust: list[str] | None  # None means the whole workspace
     python: bool
     csharp: bool = False
-    windows: bool = False  # CI only: type-check the Windows wheel
+    windows: bool = False  # CI only: type-check the Windows wheel and addon
 
     def describe(self) -> str:
         rust = "all" if self.rust is None else (" ".join(self.rust) or "none")
@@ -177,7 +180,7 @@ def plan(
     windows = False
     if ci:
         csharp |= "rlmesh-capi" in selected
-        windows = EXTENSION_PACKAGE in selected or any(
+        windows = bool(WINDOWS_PACKAGES & selected) or any(
             path in WINDOWS_CI_INPUTS for path in changed
         )
     return Plan(rust=sorted(selected), python=python, csharp=csharp, windows=windows)

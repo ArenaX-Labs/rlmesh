@@ -3,16 +3,27 @@ name: Release
 # 0.2 publishes Python wheels and Rust crates via OIDC, plus release notes.
 # Native bindings, engine integrations and npm remain built/tested in CI; their
 # release steps are fenced until those distributions are ready to ship.
-# workflow_dispatch only runs on tags; re-run failed jobs to preserve built bytes.
+# A release runs on a tag push or a dispatch on a tag; re-run failed jobs to preserve built bytes.
+# `rehearse: npm` (any ref) runs only the npm-rehearsal-* jobs, which build,
+# pack and smoke-test the npm release and publish nothing (docs/release.md).
 
 on:
   workflow_dispatch:
+    inputs:
+      rehearse:
+        description: "npm: build, pack and smoke-test the npm release instead of releasing; publishes nothing"
+        type: choice
+        options:
+          - none
+          - npm
+        default: none
   push:
     tags:
       - "v*"
 
+# A rehearsal has a group of its own, so it never cancels a release on the same ref.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.rehearse == 'npm' && 'rehearse-npm-' || '' }}${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -27,7 +38,7 @@ env:
 jobs:
   wheels-linux:
     name: Linux + Windows wheels
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.rehearse == 'none')
     runs-on: depot-ubuntu-24.04-8
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
@@ -119,7 +130,7 @@ jobs:
 
   wheels-macos:
     name: macOS wheels
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.rehearse == 'none')
     runs-on: depot-macos-latest
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
@@ -298,7 +309,7 @@ jobs:
 
   publish:
     name: Publish PyPI + crates.io + GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.rehearse == 'none')
     runs-on: depot-ubuntu-24.04-4
     needs: [wheels-linux, wheels-macos]
     environment: release
@@ -432,3 +443,160 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/release.py "${GITHUB_REF_NAME#v}" --github-release
+
+  # ---- npm release rehearsal (`rehearse: npm`, any ref) ----------------------
+  # The fenced npm steps above, on the same runners and mise tasks, then the
+  # packed tarballs installed and run on linux-x64 and darwin-arm64
+  # (release:js:smoke). Read-only token, no environment, no secrets: nothing
+  # here can publish. The release jobs above skip on a rehearsal.
+
+  npm-rehearsal-linux:
+    name: npm rehearsal - wasm, bundles, Linux and Windows addons
+    if: github.event_name == 'workflow_dispatch' && inputs.rehearse == 'npm'
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        timeout-minutes: 20
+        uses: ./.github/actions/setup
+
+      # As wheels-linux's fenced npm step.
+      - name: Build the npm package and its Linux and Windows addons
+        timeout-minutes: 70
+        run: |
+          mise run --skip-tools build:js
+          for platform in linux-x64 linux-arm64 win32-x64; do
+            mise run --skip-tools release:js:native "$platform"
+          done
+
+      - name: Upload the npm build
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-rehearsal-linux
+          path: |
+            javascript/rlmesh/dist/
+            target/npm-native/*.node
+          if-no-files-found: error
+          retention-days: 1
+
+  npm-rehearsal-macos:
+    name: npm rehearsal - macOS addons
+    if: github.event_name == 'workflow_dispatch' && inputs.rehearse == 'npm'
+    runs-on: depot-macos-latest
+    timeout-minutes: 70
+    steps:
+      - name: Checkout repository
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        timeout-minutes: 20
+        uses: ./.github/actions/setup
+
+      # As wheels-macos's fenced npm step.
+      - name: Build the macOS Node addons
+        timeout-minutes: 40
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          mise run --skip-tools release:js:native darwin-arm64
+          mise run --skip-tools release:js:native darwin-x64
+
+      - name: Upload the macOS Node addons
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-rehearsal-macos
+          path: target/npm-native/*.node
+          if-no-files-found: error
+          retention-days: 1
+
+  npm-rehearsal-pack:
+    name: npm rehearsal - pack, check, smoke test on linux-x64
+    if: github.event_name == 'workflow_dispatch' && inputs.rehearse == 'npm'
+    needs: [npm-rehearsal-linux, npm-rehearsal-macos]
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        timeout-minutes: 15
+        uses: ./.github/actions/setup
+
+      # As the publish job's fenced npm steps, up to (not including) release:js:publish.
+      - name: Download the npm build
+        timeout-minutes: 5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-rehearsal-linux
+          path: .
+
+      - name: Download the macOS Node addons
+        timeout-minutes: 5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-rehearsal-macos
+          path: target/npm-native
+
+      - name: Pack the npm packages
+        timeout-minutes: 5
+        run: mise run --skip-tools release:js:package --require-all
+
+      # Contents and every addon's header (aarch64 ELF, PE32+ DLL, Mach-O, the
+      # glibc floor), then rlmesh and @rlmesh/linux-x64 installed and run.
+      - name: Check the tarballs and smoke test them on linux-x64
+        timeout-minutes: 10
+        run: mise run --skip-tools release:js:smoke --require-all --max-glibc 2.28
+
+      - name: Upload the npm tarballs
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-rehearsal-packages
+          path: target/npm-pkg/*.tgz
+          if-no-files-found: error
+          retention-days: 3
+
+  npm-rehearsal-smoke-macos:
+    name: npm rehearsal - smoke test on darwin-arm64
+    if: github.event_name == 'workflow_dispatch' && inputs.rehearse == 'npm'
+    needs: npm-rehearsal-pack
+    runs-on: depot-macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        timeout-minutes: 15
+        uses: ./.github/actions/setup
+
+      - name: Download the npm tarballs
+        timeout-minutes: 5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-rehearsal-packages
+          path: target/npm-pkg
+
+      - name: Smoke test the tarballs on darwin-arm64
+        timeout-minutes: 10
+        run: |
+          [ "$(uname -m)" = arm64 ] || { echo "error: expected an arm64 runner, got $(uname -m)" >&2; exit 1; }
+          mise run --skip-tools release:js:smoke --require-all

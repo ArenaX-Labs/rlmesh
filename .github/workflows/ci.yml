@@ -58,9 +58,10 @@ jobs:
       - name: Static checks
         run: mise run --skip-tools check
 
-      # The Windows wheel is cross-built only at release. Type-check its crates
-      # for x86_64-pc-windows-msvc here with the same cargo-xwin and clang-cl,
-      # so code that only compiles on unix fails on the pull request. The MSVC
+      # The Windows wheel and Node addon are cross-built only at release.
+      # Type-check their crates for x86_64-pc-windows-msvc here with the same
+      # cargo-xwin, clang-cl and llvm-lib (scripts/xwin-env.sh), so code or C
+      # dependencies that only build on unix fail on the pull request. The MSVC
       # CRT and SDK take minutes to download, so they are cached; they do not
       # follow our lockfile, so the key is fixed (bump it to refresh them). Its
       # own target dir keeps the Rust cache and the test builds' disk free of it.
@@ -71,7 +72,7 @@ jobs:
           path: ~/.cache/cargo-xwin/xwin
           key: xwin-${{ runner.os }}-v1
 
-      - name: Windows wheel compiles (x86_64-pc-windows-msvc)
+      - name: Windows wheel and Node addon compile (x86_64-pc-windows-msvc)
         if: steps.affected.outputs.windows == 'true'
         timeout-minutes: 15
         env:

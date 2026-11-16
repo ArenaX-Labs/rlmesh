@@ -65,12 +65,17 @@ Linux job installs the scoped C# toolchain only when selected, then runs interop
 staleness, managed tests, NativeAOT and package checks. `test:ci` itself does not
 install dotnet.
 
-The Windows wheel is cross-built only at release, so the same planner selects
-`check:windows` for any change reaching the extension crate (and for workspace
-inputs, the task, `python/rlmesh/pyproject.toml` and the CI workflow). It
-type-checks the wheel's crates for `x86_64-pc-windows-msvc` with cargo-xwin, the
-release's cross toolchain, which needs `clang` on `PATH`; the first run
-downloads the MSVC CRT and SDK into `~/.cache/cargo-xwin`.
+The Windows wheel and Node addon are cross-built only at release, so the same
+planner selects `check:windows` for any change reaching the extension crate or
+the addon crate (and for workspace inputs, the task, `scripts/xwin-env.sh`,
+`python/rlmesh/pyproject.toml` and the CI workflow). It type-checks both crates
+for `x86_64-pc-windows-msvc` with cargo-xwin, the release's cross toolchain, and
+runs their build scripts, so C dependencies compile and archive as they do at
+release. It needs `clang` on `PATH`; `scripts/xwin-env.sh` adds the Rust
+toolchain's `llvm-tools` component for the archiver (`llvm-lib`) and its
+`rust-lld` for the linker (`lld-link`). The first run downloads the MSVC CRT and
+SDK into `~/.cache/cargo-xwin`. A check does not link, so the addon's link and
+static CRT are first exercised by the release build.
 
 Rust tests run under [cargo-nextest](https://nexte.st) (configured in `.config/nextest.toml`); doctests still run through `cargo test --doc`.
 
