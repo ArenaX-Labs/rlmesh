@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-//MISE description="Regenerate rlmesh/managed's SDK (javascript/rlmesh/src/managed/gen) with Hey API from the managed platform's OpenAPI contract, keeping only its public paths"
+//MISE description="Regenerate rlmesh/managed's SDK (javascript/rlmesh/src/managed/gen) with Hey API from the managed platform's OpenAPI contract, keeping only its public paths and fields, with short descriptions"
 //MISE dir="{{ config_root }}"
 //USAGE arg "[source]" help="Contract URL or file (default https://api.rlmesh.dev/openapi.yaml)"
 
@@ -8,10 +8,10 @@
 // client is generated into gen/client and gen/core, so the package has no runtime dependency.
 // TODO: move the tools to devDependencies once @hey-api/openapi-ts runs on TypeScript 7.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const TOOLS = ['@hey-api/openapi-ts@0.99.0', 'typescript@5.9.3', 'js-yaml@4.1.0'];
@@ -19,7 +19,7 @@ const OUT = 'javascript/rlmesh/src/managed/gen';
 const BASE_URL = 'https://api.rlmesh.dev';
 const source = process.env.usage_source || `${BASE_URL}/openapi.yaml`;
 
-// The platform's public API: what a tenant needs to run and read evaluations. Admin
+// The platform's public API: what a user needs to run and read evaluations. Admin
 // (/v1/platform), clusters and their credentials, billing, members, audit, account, connections,
 // integrations, webhooks and the rest stay out; add a path here to expose it.
 const KEEP = [
@@ -40,6 +40,43 @@ const KEEP = [
 // cluster credential and join token prefixes. Generation fails if the kept surface still has any.
 const LEAKS = /ADR-\d|rlm_(c[srp]|jt)_/;
 
+// Deployment wording: how the service runs rather than what a caller sends and reads. A
+// description whose first sentence has any is left out, and generation fails if any reaches a
+// comment of the generated client.
+const INTERNAL =
+  /\b(clusters?|cells?|kubernetes|k8s|pods?|controllers?|schedulers?|sidecars?|tenants?|operators?|prometheus|workos)\b|\bagent[- ](authored|grpc|version)|versions\.agent|\/v1\/(platform|clusters)\b/i;
+// Lower-case node(s) as deployment wording; Node, the JavaScript runtime, and node: modules are not.
+const NODES = /\bnodes?\b(?![.:])/;
+// The RLMESH_* variables a user sets are the ones this repo reads; any other is the platform's.
+const PUBLIC_ENV = new Set(
+  execFileSync('git', ['grep', '-ohE', 'RLMESH_[A-Z0-9_]+', '--', '.', `:!${OUT}`, ':!.mise/tasks/js/managed'], { encoding: 'utf8' }).split('\n').filter(Boolean),
+);
+const internal = (text) =>
+  text.match(INTERNAL)?.[0] ?? text.match(NODES)?.[0] ?? text.match(/RLMESH_[A-Z0-9_]+/g)?.find((name) => !PUBLIC_ENV.has(name));
+const context = (text, term) => {
+  const at = text.indexOf(term);
+  return text.slice(Math.max(0, at - 80), at + term.length + 80).replace(/\s+/g, ' ');
+};
+
+// Fields only the service's own reads fill, or that describe its deployment rather than the
+// caller's runs. Each is left out of the client.
+const PLATFORM_ONLY = /\bplatform[- ](scoped|wide|routes|reads)\b/i;
+const DROP = { MeAccess: ['isPlatformOrganization'], RLMeshURLs: ['agentGrpc'], InfoResponse: ['outputStore'] };
+const dropped = [];
+const dropFields = (node, name) => {
+  if (Array.isArray(node)) return node.forEach((item) => dropFields(item, name));
+  if (!node || typeof node !== 'object') return;
+  if (node.properties && typeof node.properties === 'object') {
+    for (const [field, schema] of Object.entries(node.properties)) {
+      if (!DROP[name]?.includes(field) && !PLATFORM_ONLY.test(schema?.description ?? '')) continue;
+      delete node.properties[field];
+      if (Array.isArray(node.required)) node.required = node.required.filter((f) => f !== field);
+      dropped.push(`${name ?? '(inline)'}.${field}`);
+    }
+  }
+  for (const value of Object.values(node)) dropFields(value);
+};
+
 // Drop design-record citations from prose, keeping the sentence: "kept 90 days (ADR-NNNN);" reads
 // "kept 90 days;", "(ADR-NNNN: deleted ...)" reads "(deleted ...)", "ADR-NNNN retention class."
 // reads "Retention class." and "One ADR-NNNN record" reads "One record".
@@ -49,12 +86,28 @@ const uncite = (text) =>
     .replace(/\(ADR-\d+:\s*/g, '(')
     .replace(/(^|[.!?]\s+)ADR-\d+\s+(\w)/g, (_, before, first) => before + first.toUpperCase())
     .replace(/\bADR-\d+\s+/g, '');
+// The contract's descriptions are written for the platform's own maintainers as well as callers.
+// The client keeps each one's first sentence, the summary a caller needs, and none when that
+// sentence describes the platform's machinery.
+const brief = (text) => {
+  const first = uncite(text).split(/\n\s*\n/)[0].replace(/\s+/g, ' ').trim().split(/(?<![^\w](e\.g|i\.e|vs)\.)(?<=[.!?])\s+/)[0];
+  return internal(first) ? undefined : first;
+};
+const prose = { shortened: 0, removed: 0 };
 const strip = (node) => {
   if (Array.isArray(node)) return node.forEach(strip);
   if (!node || typeof node !== 'object') return;
   for (const [key, value] of Object.entries(node)) {
-    if ((key === 'description' || key === 'summary') && typeof value === 'string') node[key] = uncite(value);
-    else strip(value);
+    if ((key === 'description' || key === 'summary') && typeof value === 'string') {
+      const text = brief(value);
+      if (text === undefined) {
+        delete node[key];
+        prose.removed++;
+      } else if (text !== value.trim()) {
+        node[key] = text;
+        prose.shortened++;
+      }
+    } else strip(value);
   }
 };
 
@@ -69,46 +122,76 @@ try {
   const version = `${spec.info.title} ${spec.info.version}`;
   spec.servers = [{ url: BASE_URL }]; // the generated default client's base URL
   spec.paths = Object.fromEntries(Object.entries(spec.paths).filter(([path]) => KEEP.some((re) => re.test(path))));
-
   // Keep only the components the kept paths reach.
-  const reached = new Set();
-  const visit = (node) => {
-    if (Array.isArray(node)) return node.forEach(visit);
-    if (!node || typeof node !== 'object') return;
-    const ref = node.$ref;
-    if (typeof ref === 'string' && ref.startsWith('#/components/') && !reached.has(ref)) {
-      reached.add(ref);
-      const [, , kind, name] = ref.split('/');
-      visit(spec.components[kind]?.[name]);
+  const prune = () => {
+    const reached = new Set();
+    const visit = (node) => {
+      if (Array.isArray(node)) return node.forEach(visit);
+      if (!node || typeof node !== 'object') return;
+      const ref = node.$ref;
+      if (typeof ref === 'string' && ref.startsWith('#/components/') && !reached.has(ref)) {
+        reached.add(ref);
+        const [, , kind, name] = ref.split('/');
+        visit(spec.components[kind]?.[name]);
+      }
+      Object.values(node).forEach(visit);
+    };
+    visit(spec.paths);
+    // Security schemes are named in `security` requirements, not by $ref.
+    const operations = Object.values(spec.paths).flatMap((item) => Object.values(item));
+    for (const requirement of [...(spec.security ?? []), ...operations.flatMap((op) => op?.security ?? [])]) {
+      for (const name of Object.keys(requirement)) reached.add(`#/components/securitySchemes/${name}`);
     }
-    Object.values(node).forEach(visit);
+    for (const kind of Object.keys(spec.components)) {
+      spec.components[kind] = Object.fromEntries(Object.entries(spec.components[kind]).filter(([name]) => reached.has(`#/components/${kind}/${name}`)));
+    }
   };
-  visit(spec.paths);
-  // Security schemes are named in `security` requirements, not by $ref.
-  const operations = Object.values(spec.paths).flatMap((item) => Object.values(item));
-  for (const requirement of [...(spec.security ?? []), ...operations.flatMap((op) => op?.security ?? [])]) {
-    for (const name of Object.keys(requirement)) reached.add(`#/components/securitySchemes/${name}`);
-  }
-  for (const kind of Object.keys(spec.components)) {
-    spec.components[kind] = Object.fromEntries(Object.entries(spec.components[kind]).filter(([name]) => reached.has(`#/components/${kind}/${name}`)));
-  }
+  prune();
+  // Then leave out the platform-only fields, and the components only they reached.
+  dropFields(spec.paths);
+  for (const [name, schema] of Object.entries(spec.components.schemas ?? {})) dropFields(schema, name);
+  prune();
   strip(spec);
   const leak = JSON.stringify(spec).match(new RegExp(`.{0,80}(${LEAKS.source}).{0,80}`));
   if (leak) throw new Error(`the kept surface still mentions ${leak[1]}: …${leak[0]}…`);
 
   const input = join(tools, 'openapi.json');
+  const gen = join(tools, 'gen');
   writeFileSync(input, JSON.stringify(spec));
   await createClient({
     input,
-    output: { path: OUT, clean: true, importFileExtension: '.js' },
+    output: { path: gen, clean: true, importFileExtension: '.js' },
     plugins: ['@hey-api/client-fetch', '@hey-api/typescript', '@hey-api/sdk'],
     logs: { level: 'warn' },
   });
 
+  // Check the generated code before it replaces the package's: its comments must not describe the
+  // platform's machinery, and nothing in it may name a design record, a credential prefix, a
+  // platform route or a platform variable.
   const note = `// Generated by \`mise run js:managed:generate\` from ${source} (${version}), public paths only. Do not edit: regenerate.\n`;
-  const files = readdirSync(OUT, { recursive: true }).filter((f) => f.endsWith('.ts'));
-  for (const f of files) writeFileSync(join(OUT, f), note + readFileSync(join(OUT, f), 'utf8'));
-  console.log(`${OUT}: ${files.length} files, ${Object.keys(spec.paths).length} paths, ${Object.keys(spec.components.schemas ?? {}).length} schemas`);
+  const files = readdirSync(gen, { recursive: true }).filter((f) => f.endsWith('.ts'));
+  const texts = files.map((f) => readFileSync(join(gen, f), 'utf8'));
+  files.forEach((f, i) => {
+    for (const comment of texts[i].match(/\/\*[\s\S]*?\*\/|\/\/.*$/gm) ?? []) {
+      const term = internal(comment) ?? comment.match(LEAKS)?.[0];
+      if (term) throw new Error(`${join(OUT, f)} would describe the platform's internals (${term}): …${context(comment, term)}…`);
+    }
+    const term =
+      texts[i].match(LEAKS)?.[0] ??
+      texts[i].match(/\/v1\/(platform|clusters)\b/)?.[0] ??
+      texts[i].match(/RLMESH_[A-Z0-9_]+/g)?.find((name) => !PUBLIC_ENV.has(name));
+    if (term) throw new Error(`${join(OUT, f)} would name the platform's internals (${term}): …${context(texts[i], term)}…`);
+  });
+  rmSync(OUT, { recursive: true, force: true });
+  files.forEach((f, i) => {
+    mkdirSync(dirname(join(OUT, f)), { recursive: true });
+    writeFileSync(join(OUT, f), note + texts[i]);
+  });
+  console.log(
+    `${OUT}: ${files.length} files, ${Object.keys(spec.paths).length} paths, ${Object.keys(spec.components.schemas ?? {}).length} schemas;` +
+      ` ${dropped.length} platform-only fields left out (${dropped.join(', ')});` +
+      ` ${prose.shortened} descriptions cut to their first sentence, ${prose.removed} left out as internal`,
+  );
 } finally {
   rmSync(tools, { recursive: true, force: true });
 }

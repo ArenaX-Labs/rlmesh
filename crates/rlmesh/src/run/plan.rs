@@ -60,7 +60,7 @@ const PLATFORM_ONLY: &[(&str, &str)] = &[
     ("projectId", "projects scope evaluations on the platform"),
     (
         "managed",
-        "cluster placement and scaling (clusterId, maxParallelWorkloads, modelReplicas, \
+        "placement and scaling (clusterId, maxParallelWorkloads, modelReplicas, \
          accelerator, requireVerified) are the platform's",
     ),
     (

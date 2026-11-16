@@ -118,7 +118,7 @@ export type EvaluationStreamFrame =
       type: 'telemetry';
       /** Present only for the reader organization's dedicated capacity. */
       clusterId?: string;
-      /** Shared platform capacity; no cell identity is exposed. */
+      /** Shared platform capacity. */
       managed?: boolean;
       runId: string;
       workloadId?: string;

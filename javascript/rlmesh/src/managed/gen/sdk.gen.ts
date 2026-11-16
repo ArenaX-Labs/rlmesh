@@ -107,13 +107,7 @@ export const listEvaluationSweeps = <ThrowOnError extends boolean = false>(optio
 /**
  * Create an evaluation sweep
  *
- * Expands a base evaluation request over knob axes and submits every point
- * of the cartesian product as its own evaluation, named
- * `<name> · <axis=value, …>` and tagged `sweep=<sweepId>` plus one
- * `sweep.<path>` tag per axis. Points the catalog or cluster rejects are
- * reported under `skipped` instead of failing the sweep. Sweeps are capped
- * at 64 evaluations (400 for platform operators).
- *
+ * Expands a base evaluation request over knob axes and submits every point of the cartesian product as its own evaluation, named `<name> · <axis=value, …>` and tagged `sweep=<sweepId>` plus one `sweep.<path>` tag per axis.
  */
 export const createEvaluationSweep = <ThrowOnError extends boolean = false>(options: Options<CreateEvaluationSweepData, ThrowOnError>): RequestResult<CreateEvaluationSweepResponses, CreateEvaluationSweepErrors, ThrowOnError> => (options.client ?? client).post<CreateEvaluationSweepResponses, CreateEvaluationSweepErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -137,7 +131,7 @@ export const getEvaluationSweep = <ThrowOnError extends boolean = false>(options
 /**
  * Delete an evaluation
  *
- * Soft-deletes a finished (completed, failed or cancelled) evaluation. It disappears from all reads immediately and is restorable via the restore endpoint for 7 days, after which a purge sweep permanently removes its records and artifacts. An active evaluation (queued, provisioning, pending or running) is refused with 409 `evaluation_active`; cancel it first. The status check and the delete are one atomic write, so a concurrent retry cannot leave a live evaluation deleted.
+ * Soft-deletes a finished (completed, failed or cancelled) evaluation.
  */
 export const deleteEvaluation = <ThrowOnError extends boolean = false>(options: Options<DeleteEvaluationData, ThrowOnError>): RequestResult<DeleteEvaluationResponses, DeleteEvaluationErrors, ThrowOnError> => (options.client ?? client).delete<DeleteEvaluationResponses, DeleteEvaluationErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -147,8 +141,6 @@ export const deleteEvaluation = <ThrowOnError extends boolean = false>(options: 
 
 /**
  * Get an evaluation
- *
- * Tenant effectiveConfig exposes shared capacity as cluster: {managed: true}, without cell identity, inventory, or versions.agent. The reader organization's dedicated cluster may retain identity and agent version. Historical shared pins and cell ids in solver warnings are redacted. Platform routes retain stored configuration. A published showcase (demoPublishedAt set) is readable here and on its child routes by every organization, read-only; outside the owner, createdBy is omitted and environment variable values in the request, effectiveConfig and workload snapshots read "<redacted>". Such a read also carries no checkpoint URI (a request checkpoint given as a URI reads as its compiled name), no request metadata, no log lines, no pod records or node names, a failure's class in place of its error message, and lists and links only the files under episodes/.
  */
 export const getEvaluation = <ThrowOnError extends boolean = false>(options: Options<GetEvaluationData, ThrowOnError>): RequestResult<GetEvaluationResponses, GetEvaluationErrors, ThrowOnError> => (options.client ?? client).get<GetEvaluationResponses, GetEvaluationErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -181,7 +173,7 @@ export const cancelEvaluation = <ThrowOnError extends boolean = false>(options: 
 /**
  * Retry failed evaluation tasks
  *
- * Reruns the evaluation's tasks that did not complete (or the named ones) as new attempts. A retry is admitted like a submission: the organization's pause, active-evaluation cap and episode budget apply, and the episodes it reruns are charged to the 30-day budget when it is queued. A retry that would exceed the budget answers 429 episode_budget_exceeded.
+ * Reruns the evaluation's tasks that did not complete (or the named ones) as new attempts.
  */
 export const retryEvaluation = <ThrowOnError extends boolean = false>(options: Options<RetryEvaluationData, ThrowOnError>): RequestResult<RetryEvaluationResponses, RetryEvaluationErrors, ThrowOnError> => (options.client ?? client).post<RetryEvaluationResponses, RetryEvaluationErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -223,7 +215,7 @@ export const listEvaluationLogs = <ThrowOnError extends boolean = false>(options
 /**
  * Get evaluation telemetry history (windows and GPU samples)
  *
- * Durable telemetry series are operational data, kept 90 days from each row's creation; an evaluation's older rows are no longer served here. Its logs are customer content and stay until the evaluation is purged.
+ * Durable telemetry series are operational data, kept 90 days from each row's creation; an evaluation's older rows are no longer served here.
  */
 export const getEvaluationTelemetry = <ThrowOnError extends boolean = false>(options: Options<GetEvaluationTelemetryData, ThrowOnError>): RequestResult<GetEvaluationTelemetryResponses, GetEvaluationTelemetryErrors, ThrowOnError> => (options.client ?? client).get<GetEvaluationTelemetryResponses, GetEvaluationTelemetryErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -234,7 +226,7 @@ export const getEvaluationTelemetry = <ThrowOnError extends boolean = false>(opt
 /**
  * Get runner telemetry folded into wall-clock buckets across every worker
  *
- * The durable runner windows (telemetry.window, one per env worker per window) folded into fixed wall-clock buckets across all workers. Each bucket is shaped like a window so it folds with the same code: rows carry the summed count per op/metric and count-weighted means of avg/p50/p95/p99 (a mean of per-window percentiles, not a true percentile); windowSeconds is the summed worker-seconds in the bucket (divide a per-step total by it for per-step wall), bucketSeconds the wall span (divide env.step count by it for aggregate steps/s). A 400-worker run is a few hundred MB of raw windows and a few hundred KB here.
+ * The durable runner windows (telemetry.window, one per env worker per window) folded into fixed wall-clock buckets across all workers.
  */
 export const getEvaluationTelemetryBuckets = <ThrowOnError extends boolean = false>(options: Options<GetEvaluationTelemetryBucketsData, ThrowOnError>): RequestResult<GetEvaluationTelemetryBucketsResponses, GetEvaluationTelemetryBucketsErrors, ThrowOnError> => (options.client ?? client).get<GetEvaluationTelemetryBucketsResponses, GetEvaluationTelemetryBucketsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -244,8 +236,6 @@ export const getEvaluationTelemetryBuckets = <ThrowOnError extends boolean = fal
 
 /**
  * List the evaluation's aggregated artifact inventory
- *
- * Manifest-reconciled artifact rows (provenance "artifact") overlaid with in-flight sidecar uploads (provenance "live") for paths reconcile hasn't landed yet. Live rows that haven't finished uploading have an empty uri and zero sizeBytes; pass a row's uri to POST .../artifact-links for a signed download URL.
  */
 export const listEvaluationArtifacts = <ThrowOnError extends boolean = false>(options: Options<ListEvaluationArtifactsData, ThrowOnError>): RequestResult<ListEvaluationArtifactsResponses, ListEvaluationArtifactsErrors, ThrowOnError> => (options.client ?? client).get<ListEvaluationArtifactsResponses, ListEvaluationArtifactsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -256,8 +246,7 @@ export const listEvaluationArtifacts = <ThrowOnError extends boolean = false>(op
 /**
  * List reconciled attempt metrics
  *
- * Per-env-route scalar rollups derived from each task's latest attempt's telemetry windows at reconcile time. Rows appear once the attempt's artifacts have been reconciled; the row count is bounded by tasks x env routes, so the list is unpaginated.
- *
+ * Per-env-route scalar rollups derived from each task's latest attempt's telemetry windows at reconcile time.
  */
 export const listEvaluationMetrics = <ThrowOnError extends boolean = false>(options: Options<ListEvaluationMetricsData, ThrowOnError>): RequestResult<ListEvaluationMetricsResponses, ListEvaluationMetricsErrors, ThrowOnError> => (options.client ?? client).get<ListEvaluationMetricsResponses, ListEvaluationMetricsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -268,8 +257,7 @@ export const listEvaluationMetrics = <ThrowOnError extends boolean = false>(opti
 /**
  * Aggregate episode outcomes by group
  *
- * Episode counts, success rate, and mean score/steps/duration per group, over each task's latest attempt (the same scoping as the list-page successRate). Episode shards merge into their task; perturbation keys are the op names in pipeline order, or `none`.
- *
+ * Episode counts, success rate, and mean score/steps/duration per group, over each task's latest attempt (the same scoping as the list-page successRate).
  */
 export const getEvaluationScores = <ThrowOnError extends boolean = false>(options: Options<GetEvaluationScoresData, ThrowOnError>): RequestResult<GetEvaluationScoresResponses, GetEvaluationScoresErrors, ThrowOnError> => (options.client ?? client).get<GetEvaluationScoresResponses, GetEvaluationScoresErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -325,8 +313,7 @@ export const listRecentCheckpoints = <ThrowOnError extends boolean = false>(opti
 /**
  * Get the perturbation op catalog
  *
- * The op set the workload runner supports, with buckets, param names, and low/mid/high severity presets. Static per control-plane build.
- *
+ * The op set the workload runner supports, with buckets, param names, and low/mid/high severity presets.
  */
 export const getPerturbationCatalog = <ThrowOnError extends boolean = false>(options?: Options<GetPerturbationCatalogData, ThrowOnError>): RequestResult<GetPerturbationCatalogResponses, GetPerturbationCatalogErrors, ThrowOnError> => (options?.client ?? client).get<GetPerturbationCatalogResponses, GetPerturbationCatalogErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -372,7 +359,7 @@ export const renameProject = <ThrowOnError extends boolean = false>(options: Opt
 /**
  * Make a project the organization's default
  *
- * Organization administrators only. Requests that name no project use the default, and without one the oldest project.
+ * Organization administrators only.
  */
 export const setDefaultProject = <ThrowOnError extends boolean = false>(options: Options<SetDefaultProjectData, ThrowOnError>): RequestResult<SetDefaultProjectResponses, SetDefaultProjectErrors, ThrowOnError> => (options.client ?? client).put<SetDefaultProjectResponses, SetDefaultProjectErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -392,7 +379,7 @@ export const listPresets = <ThrowOnError extends boolean = false>(options?: Opti
 /**
  * Create a preset
  *
- * An eval preset (the default kind) needs models and environments and may carry settings, perturbations, and a recording policy; a model preset carries only models and checkpoints; an environment preset carries only environments; a warm preset carries only warm. Names are unique per kind.
+ * An eval preset (the default kind) needs models and environments and may carry settings, perturbations, and a recording policy; a model preset carries only models and checkpoints; an environment preset carries only environments; a warm preset carries only warm.
  */
 export const createPreset = <ThrowOnError extends boolean = false>(options: Options<CreatePresetData, ThrowOnError>): RequestResult<CreatePresetResponses, CreatePresetErrors, ThrowOnError> => (options.client ?? client).post<CreatePresetResponses, CreatePresetErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -425,7 +412,7 @@ export const getPreset = <ThrowOnError extends boolean = false>(options: Options
 /**
  * Update a preset
  *
- * Merges into the stored preset; its kind is fixed at creation. Perturbations with no ops clear the stored block; warm replaces the stored hold whole.
+ * Merges into the stored preset; its kind is fixed at creation.
  */
 export const updatePreset = <ThrowOnError extends boolean = false>(options: Options<UpdatePresetData, ThrowOnError>): RequestResult<UpdatePresetResponses, UpdatePresetErrors, ThrowOnError> => (options.client ?? client).patch<UpdatePresetResponses, UpdatePresetErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -440,7 +427,7 @@ export const updatePreset = <ThrowOnError extends boolean = false>(options: Opti
 /**
  * Restore a repository during its seven-day undo window
  *
- * Restores visibility and probe eligibility before hard-purge reservation. Refused after explicit erasure, undo expiry or organization offboarding.
+ * Restores visibility and probe eligibility before hard-purge reservation.
  */
 export const restoreRepo = <ThrowOnError extends boolean = false>(options: Options<RestoreRepoData, ThrowOnError>): RequestResult<RestoreRepoResponses, RestoreRepoErrors, ThrowOnError> => (options.client ?? client).post<RestoreRepoResponses, RestoreRepoErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -464,7 +451,7 @@ export const listRepos = <ThrowOnError extends boolean = false>(options?: Option
 /**
  * Delete a repo and its images
  *
- * Hides the repo and schedules its images and probe artifacts for purge after seven days. Restore through POST /v1/repo-restores during undo. Requires confirmImageLoss=true: deletion overrides image pins and can prevent historical evaluations being reproduced. Prebuilt repos require platform catalog access.
+ * Hides the repo and schedules its images and probe artifacts for purge after seven days.
  */
 export const deleteRepo = <ThrowOnError extends boolean = false>(options: Options<DeleteRepoData, ThrowOnError>): RequestResult<DeleteRepoResponses, DeleteRepoErrors, ThrowOnError> => (options.client ?? client).delete<DeleteRepoResponses, DeleteRepoErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -496,8 +483,6 @@ export const updateRepo = <ThrowOnError extends boolean = false>(options: Option
 
 /**
  * Get a repo's variant × hardware class compatibility matrix
- *
- * The current version's variants against the hardware classes the organization's clusters offer, with the verdict a probe reached in each slot. Repo paths nest, so a repo literally at the given path with a trailing /compatibility segment is served as that repo.
  */
 export const getRepoCompatibility = <ThrowOnError extends boolean = false>(options: Options<GetRepoCompatibilityData, ThrowOnError>): RequestResult<GetRepoCompatibilityResponses, GetRepoCompatibilityErrors, ThrowOnError> => (options.client ?? client).get<GetRepoCompatibilityResponses, GetRepoCompatibilityErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -508,7 +493,7 @@ export const getRepoCompatibility = <ThrowOnError extends boolean = false>(optio
 /**
  * Replace the current version's variant manifest
  *
- * Replaces every variant of the repo's current version with the given manifest, written as source=manifest rows. Entries may regroup and redeclare the images the version holds (its index children), never point at another image. If-Match must carry the current version digest; a re-probe of the version leaves an owner-written manifest alone. Owner-only: requires `catalog:write` in the organization that owns the namespace, plus platform catalog write for prebuilt.
+ * Replaces every variant of the repo's current version with the given manifest, written as source=manifest rows.
  */
 export const putRepoVariants = <ThrowOnError extends boolean = false>(options: Options<PutRepoVariantsData, ThrowOnError>): RequestResult<PutRepoVariantsResponses, PutRepoVariantsErrors, ThrowOnError> => (options.client ?? client).put<PutRepoVariantsResponses, PutRepoVariantsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -523,7 +508,7 @@ export const putRepoVariants = <ThrowOnError extends boolean = false>(options: O
 /**
  * Override one variant's requirements, priority or status
  *
- * Corrects one variant of the repo's current version (or of ?version=) without a rebuild. A re-probe of the same version keeps what this sets. Owner-only, like PUT.
+ * Corrects one variant of the repo's current version (or of ?version=) without a rebuild.
  */
 export const updateRepoVariant = <ThrowOnError extends boolean = false>(options: Options<UpdateRepoVariantData, ThrowOnError>): RequestResult<UpdateRepoVariantResponses, UpdateRepoVariantErrors, ThrowOnError> => (options.client ?? client).patch<UpdateRepoVariantResponses, UpdateRepoVariantErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -538,7 +523,7 @@ export const updateRepoVariant = <ThrowOnError extends boolean = false>(options:
 /**
  * Re-read one repo's tags through the push pipeline
  *
- * Re-extracts the labels of every tag on the repo. The runtime probe is its own object; launch one with POST /v1/probe-runs. Requires `catalog:write` and full access.
+ * Re-extracts the labels of every tag on the repo.
  */
 export const triggerRepoProbe = <ThrowOnError extends boolean = false>(options: Options<TriggerRepoProbeData, ThrowOnError>): RequestResult<TriggerRepoProbeResponses, TriggerRepoProbeErrors, ThrowOnError> => (options.client ?? client).post<TriggerRepoProbeResponses, TriggerRepoProbeErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -564,7 +549,7 @@ export const listProbeRuns = <ThrowOnError extends boolean = false>(options: Opt
 /**
  * Probe a repo's current version
  *
- * Starts a probe of the repo's current digest. Only the probed container runs. `variant` names the compute variant to run (the version's default when omitted) and `class` the hardware class to measure on (when omitted, the class the chosen cell would run the variant on); a class the variant's requirements rule out is refused (409 class_unsupported), and a class no eligible cluster offers is 409 no_eligible_cluster. Asking for a variant also queues its other untested classes for the probe scheduler. A probe already in flight for that (variant, class) on the chosen cluster is a conflict, not a second run. A (variant, class) of the digest a probe already settled (ready or failed) is not measured again: the response is 200 with the run that settled it and `reused: true`, unless `force` is set. Requires `catalog:write` and full access; refused while the organization's submissions (or the platform's) are paused, and while the organization already has its cap of probes of its other repos in flight (RLMESH_PROBE_MAX_LIVE_PER_ORG, default 4). Probes a registry push queues are never refused for budget: they wait in the scheduler's queue (GET /v1/platform/probe-runs/queue) until the organization is under the cap. A repo whose organization is being offboarded starts no probes (423 organization_offboarding).
+ * Starts a probe of the repo's current digest.
  */
 export const launchProbeRun = <ThrowOnError extends boolean = false>(options: Options<LaunchProbeRunData, ThrowOnError>): RequestResult<LaunchProbeRunResponses, LaunchProbeRunErrors, ThrowOnError> => (options.client ?? client).post<LaunchProbeRunResponses, LaunchProbeRunErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
@@ -610,7 +595,7 @@ export const createProbeRunArtifactLink = <ThrowOnError extends boolean = false>
 /**
  * Get registry connection information
  *
- * The registry host and the namespaces the caller can push to. An organization without the registry feature flag gets a 403 with code registry_not_enabled, so a login never reports a push target the registry would deny. A WorkOS failure reading the flag is a 502.
+ * The registry host and the namespaces the caller can push to.
  */
 export const getRegistryInfo = <ThrowOnError extends boolean = false>(options?: Options<GetRegistryInfoData, ThrowOnError>): RequestResult<GetRegistryInfoResponses, GetRegistryInfoErrors, ThrowOnError> => (options?.client ?? client).get<GetRegistryInfoResponses, GetRegistryInfoErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
