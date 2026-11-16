@@ -55,9 +55,16 @@ if [ "$zig" = 1 ]; then
   export ZIG_GLOBAL_CACHE_DIR="$repo_root/target/zig-cache"
   mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
 fi
-# Windows cross-builds from macOS need Homebrew LLVM's lld-link on PATH.
-if [ "$target" = windows ] && [ -d /opt/homebrew/opt/llvm/bin ]; then
-  export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+if [ "$target" = windows ]; then
+  # Windows cross-builds from macOS take clang from Homebrew LLVM.
+  if [ -d /opt/homebrew/opt/llvm/bin ]; then
+    export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+  fi
+  # maturin cross-builds with its embedded cargo-xwin, which runs llvm-lib and
+  # lld-link from PATH. xwin-env.sh puts the pinned toolchain's first, as for
+  # the other Windows cross-builds, so the wheel never archives with whatever
+  # LLVM the host happens to have.
+  . scripts/xwin-env.sh
 fi
 
 cd python/rlmesh

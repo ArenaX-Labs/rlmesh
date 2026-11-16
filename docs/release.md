@@ -66,7 +66,7 @@ One unscoped annotated tag per release: `vX.Y.Z`. The legacy `rust/v*` and `pyth
 RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are host-specific, and CI runs both halves in parallel:
 
 - macOS (`mise run release:python:wheels:macos`) builds the macOS arm64 and x86_64 wheels.
-- Linux (`mise run release:python:wheels:linux`) builds the Linux and Windows subset.
+- Linux (`mise run release:python:wheels:linux`) builds the Linux and Windows subset. The Windows wheels cross-build through maturin's embedded cargo-xwin and, like the other Windows cross-builds, archive and link with the pinned Rust toolchain's `llvm-tools` and `rust-lld` (`scripts/xwin-env.sh`); the host supplies only `clang`.
 
 `python scripts/check_python_wheels.py python/rlmesh/dist` validates ABI/platform tags and payload contents. Release validation rejects plain `linux_*` tags; uploadable Linux wheels use `manylinux` or `musllinux`. The publish job validates license payloads (`release:artifacts:licenses`) over the merged wheel matrix and freshly packaged crates before anything uploads.
 

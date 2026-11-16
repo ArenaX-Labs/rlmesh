@@ -1,7 +1,8 @@
 # Sourced (bash) by every task that cross-builds for x86_64-pc-windows-msvc
-# with cargo-xwin: check:windows, release:js:native win32-x64 and
-# release:cxx:package --target windows. Run it from the repo root under mise, so
-# rustc is the pinned toolchain.
+# with cargo-xwin: check:windows, release:js:native win32-x64,
+# release:cxx:package --target windows and build:python:wheel windows (maturin
+# embeds cargo-xwin, with the same PATH lookup). Run it from the repo root under
+# mise, so rustc is the pinned toolchain.
 #
 # cargo-xwin compiles C with clang-cl, archives with llvm-lib and links with
 # lld-link, and runs each from PATH. Only clang has to come from the host
