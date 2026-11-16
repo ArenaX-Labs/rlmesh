@@ -208,7 +208,7 @@ message ResetAdapterRequest {
 message ResetAdapterResponse {}
 
 // Request graceful shutdown of the model participant after the runtime reaches
-// a normal terminal condition. Fault paths may still rely on pod/runtime
+// a normal terminal condition. Fault paths may still rely on runtime
 // timeouts.
 message CloseParticipantRequest {
   string reason = 1;
