@@ -21,6 +21,7 @@ WORKSPACE = Workspace(
         "rlmesh-python": PurePosixPath("python/rlmesh/rust"),
         "rlmesh": PurePosixPath("crates/rlmesh"),
         "rlmesh-capi": PurePosixPath("crates/rlmesh-capi"),
+        "rlmesh-node": PurePosixPath("javascript/rlmesh/native"),
     },
     dependents={
         "rlmesh-spaces": {"rlmesh-runtime"},
@@ -30,6 +31,7 @@ WORKSPACE = Workspace(
         "rlmesh-session": {"rlmesh-python"},
         "rlmesh-viewer": set(),
         "rlmesh-python": set(),
+        "rlmesh-node": set(),
     },
 )
 
@@ -127,10 +129,16 @@ def test_windows_wheel_check_follows_the_extension_in_ci_only() -> None:
     assert not plan(["docs/testing.md"], WORKSPACE, ci=True).windows
     for path in (
         ".mise/tasks/check/windows",
+        "scripts/xwin-env.sh",
         ".github/workflows/ci.yml",
         "python/rlmesh/pyproject.toml",
     ):
         assert plan([path], WORKSPACE, ci=True).windows, path
+
+
+def test_windows_check_follows_the_node_addon() -> None:
+    assert plan(["javascript/rlmesh/native/src/lib.rs"], WORKSPACE, ci=True).windows
+    assert not plan(["javascript/rlmesh/native/src/lib.rs"], WORKSPACE).windows
 
 
 def test_ci_only_inputs_do_not_require_local_dotnet() -> None:
