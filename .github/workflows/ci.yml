@@ -196,8 +196,8 @@ jobs:
           # Board builds keep the existing runtime job and have their own path gate.
           if grep -qE '^(crates/rlmesh-(device|session|session-core|tether)/|integrations/esp32/|Cargo\.(toml|lock)$|mise\.(toml|lock)$|\.mise/tasks/(build/(esp32|zenoh-pico)|setup/esp32|test/esp32/)|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then esp32=true; else esp32=false; fi
           printf 'esp32=%s\n' "$esp32" >> "$GITHUB_OUTPUT"
-          # The Node binding's native addon, its wrapper and their tests, and the session crates it binds.
-          if grep -qE '^(javascript/rlmesh/(native/|src/(native|node|fleet)\.ts$|test/native/|build\.mjs$)|examples/node/|crates/rlmesh-session(-core)?/|Cargo\.(toml|lock)$|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then native=true; else native=false; fi
+          # The Node binding's native addon, its wrapper and their tests, and the crates it binds.
+          if grep -qE '^(javascript/rlmesh/(native/|src/(native|node|fleet)\.ts$|test/native/|build\.mjs$)|examples/node/|crates/rlmesh(-session(-core)?|-spaces|-adapters|-proto)?/|Cargo\.(toml|lock)$|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then native=true; else native=false; fi
           printf 'native=%s\n' "$native" >> "$GITHUB_OUTPUT"
           printf 'run=%s\nsansio=%s\ntether=%s\n' "$run" "$sansio" "$tether" | tee -a "$GITHUB_OUTPUT"
 
@@ -287,5 +287,6 @@ jobs:
         run: mise run --skip-tools test:js:native
 
       - name: Minimize uv cache
-        if: always() && steps.changes.outputs.native == 'true'
+        if: ${{ !cancelled() && steps.changes.outputs.native == 'true' }}
+        timeout-minutes: 5
         run: uv cache prune --ci
