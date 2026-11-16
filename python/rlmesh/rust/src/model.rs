@@ -1121,10 +1121,13 @@ impl PyModel {
                 let mut interrupted = None;
                 let result = loop {
                     tokio::select! {
-                        result = &mut serve => break match interrupted {
-                            Some(err) => Err(err),
-                            None => result.map_err(crate::lockstep::gym_err),
-                        },
+                        // The SIGINT watcher drains the serve on Ctrl-C too,
+                        // which can finish before the poll sees the signal:
+                        // look once more, so a Ctrl-C always ends in its
+                        // KeyboardInterrupt rather than a normal return.
+                        result = &mut serve => break interrupted
+                            .map_or_else(crate::client::check_signals, Err)
+                            .and_then(|()| result.map_err(crate::lockstep::gym_err)),
                         _ = poll.tick() => {
                             if let Err(err) = crate::client::check_signals() {
                                 // The first Ctrl-C drains: the predict in

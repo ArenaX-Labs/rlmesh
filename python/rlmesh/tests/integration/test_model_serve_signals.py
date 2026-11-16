@@ -32,15 +32,36 @@ def _catches(pid: int, signum: int) -> bool:
     return bool(int(caught.split()[1], 16) >> (signum - 1) & 1)
 
 
-def _serve(tmp_path: object) -> subprocess.Popen[str]:
+# The serve with a Ctrl-C that lands while its serving line is printed: the
+# ready hook runs on the main thread, so Python raises the KeyboardInterrupt
+# inside it, not where the serve polls for one.
+INTERRUPTED_MID_LINE = """
+import signal
+import sys
+
+import rlmesh.serve as serve
+
+print_serving_line = serve._print_serving_line
+
+
+def interrupted_mid_line(ready):
+    print_serving_line(ready)
+    signal.raise_signal(signal.SIGINT)
+
+
+serve._print_serving_line = interrupted_mid_line
+sys.exit(serve.main(sys.argv[1:]))
+"""
+
+
+def _serve(tmp_path: object, *launch: str) -> subprocess.Popen[str]:
     module = os.path.join(str(tmp_path), "sigmod.py")
     with open(module, "w", encoding="utf-8") as handle:
         handle.write(MODEL_SOURCE)
     proc = subprocess.Popen(
         [
             sys.executable,
-            "-m",
-            "rlmesh.serve",
+            *(launch or ("-m", "rlmesh.serve")),
             "sigmod:Policy",
             "--address",
             "127.0.0.1:0",
@@ -66,6 +87,17 @@ def test_a_served_model_exits_on_sigint(tmp_path: object) -> None:
     proc = _serve(tmp_path)
     try:
         proc.send_signal(signal.SIGINT)
+        code = proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert code == 130
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGINT"), reason="no SIGINT")
+def test_a_ctrl_c_during_the_serving_line_still_exits_130(tmp_path: object) -> None:
+    proc = _serve(tmp_path, "-c", INTERRUPTED_MID_LINE)
+    try:
         code = proc.wait(timeout=10)
     finally:
         if proc.poll() is None:

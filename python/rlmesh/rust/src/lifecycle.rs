@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
@@ -220,7 +221,13 @@ pub fn set_ready_hook(hook: Option<Py<PyAny>>) {
                     hook.call1(py, (info,))?;
                     Ok(())
                 };
-                if let Err(err) = call() {
+                let Err(err) = call() else { return };
+                // The serve polls for Ctrl-C and drains on it, and the hook
+                // runs on the serve's thread, the main one, where Python
+                // raises a SIGINT that lands mid-hook: hand it to the poll.
+                if err.is_instance_of::<PyKeyboardInterrupt>(py) {
+                    crate::client::defer_interrupt(err);
+                } else {
                     err.write_unraisable(py, None);
                 }
             });

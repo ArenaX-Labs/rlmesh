@@ -35,10 +35,34 @@ pub(crate) fn signal_poll() -> tokio::time::Interval {
     )
 }
 
-/// Poll for a pending Python signal from a thread blocked in native code.
+/// A Ctrl-C that Python code run from native code took, waiting for the next
+/// signal poll (see [`defer_interrupt`]).
+static DEFERRED_INTERRUPT: std::sync::Mutex<Option<PyErr>> = std::sync::Mutex::new(None);
+
+/// Hand `interrupt`, a `KeyboardInterrupt` raised in a callback native code
+/// cannot fail, to the next [`check_signals`]. Python runs its SIGINT handler
+/// in whatever Python code the main thread runs next, so a Ctrl-C that lands
+/// while a serve calls back into Python (its ready hook) is raised there, not
+/// at the serve's poll, which would otherwise never see it.
+pub(crate) fn defer_interrupt(interrupt: PyErr) {
+    let mut deferred = DEFERRED_INTERRUPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    deferred.get_or_insert(interrupt);
+}
+
+/// Poll for a pending Python signal from a thread blocked in native code,
+/// first raising a deferred interrupt (see [`defer_interrupt`]).
 /// A daemon thread can outlive the interpreter; once it has finalized there is
 /// no signal to see, and attaching would crash the exiting process.
 pub(crate) fn check_signals() -> PyResult<()> {
+    let deferred = DEFERRED_INTERRUPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(interrupt) = deferred {
+        return Err(interrupt);
+    }
     Python::try_attach(|py| py.check_signals()).unwrap_or(Ok(()))
 }
 
