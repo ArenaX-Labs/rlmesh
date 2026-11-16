@@ -3,7 +3,7 @@
 //
 //   import { Host, Robot, Policy, Rate } from 'rlmesh';
 //   const host = await Host.open();  // Node 24: `await using host = ...` closes it for you
-//   const robot = await Robot.connect('ur10e', UR10E, { session: host });
+//   const robot = await Robot.connect('ur10e', UR10E, { session: host });  // no session: the local one
 //   await robot.arm();
 //   const policy = new Policy(HOLD, { session: host, name: 'hold' });
 //   await policy.bind('ur10e');
@@ -18,7 +18,6 @@
 // `process.hrtime.bigint()`'s clock. `publish` copies its values before returning.
 
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import type { Priority } from './types.js';
 
@@ -113,8 +112,11 @@ interface NativeDue {
   basedOn: { path: string; seqFirst: number; seqLast: number }[];
 }
 interface NativeEdgeStats {
-  accepted: number; rejected: number; rejectedBy: { reason: string; count: number }[]; clamped: number; handovers: number; safeReports: number;
+  accepted: number; rejected: number; rejectedBy: { reason: string; count: number }[];
+  clockRefused?: EdgeClockRefusal | null;
+  clamped: number; handovers: number; safeReports: number;
   modes: { mode: string; ticks: number; entries: number }[];
+  received: number; lost: number; lateMs: number[]; lateMaxMs: number; gapMaxMs: number;
 }
 interface NativeStats {
   clock: 'wall';
@@ -122,7 +124,7 @@ interface NativeStats {
   starts: number; completions: number; skipped: { reason: string; count: number }[];
   chunksSent: number; shadowPredictions: number; sendErrors: number;
   latencyP50Ms?: number | null; latencyP99Ms?: number | null; latencyMaxMs?: number | null;
-  drifting: boolean; parked: string[];
+  drifting: boolean; clockRefused: string[]; waiting?: string | null; parked: string[];
   inputs: { entry: string; part: string; received: number; lost: number }[];
 }
 interface NativeLockstepStats {
@@ -131,8 +133,9 @@ interface NativeLockstepStats {
   episodes: { reward: number; steps: number; terminated: boolean; truncated: boolean }[];
 }
 interface NativeHost { readonly address: string; close(): Promise<void> }
-interface NativeRobot {
-  readonly name: string; readonly mode: string; readonly modeReason: string; readonly leaving?: string | null;
+/** @internal */
+export interface NativeRobot {
+  readonly name: string; readonly address: string; readonly mode: string; readonly modeReason: string;
   parts(): NativePart[];
   publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
   publishJpeg(path: string, jpeg: Uint8Array, captureNs?: bigint | null): void;
@@ -197,48 +200,53 @@ interface NativeStep {
 }
 interface NativeRate { sleep(): Promise<number>; readonly missed: number }
 interface NativeRecorder { readonly path: string; close(): Promise<RecordStats | null> }
-interface NativeScene {
-  readonly run: string;
-  address(): Promise<string | null>;
-  status(): Promise<RunState>;
-  waitUntil(stage: string, timeoutS: number): Promise<RunState>;
-  arm(): Promise<RunState>;
-  stop(timeoutS: number): Promise<RunState>;
-  close(timeoutS: number): Promise<void>;
-}
-interface Addon {
+/** @internal */
+export interface Addon {
+  version?(): string;
   openHost(address: string, leaseGraceMs: number): Promise<NativeHost>;
   connectRobot(address: string, name: string, robotJson: string, timeoutS: number): Promise<NativeRobot>;
-  // The lobby and scene runs: only in an addon built with the `fleet` feature (unreleased).
-  robotFromLobby?(home: string | null, name: string, robotJson: string, timeoutS: number | null): Promise<NativeRobot>;
-  runScene?(home: string | null, sceneToml: string, manualArm: boolean, timeoutS: number): Promise<NativeScene>;
   bindPolicy(address: string, name: string, policyJson: string, robot: string | null, options: object): Promise<NativePolicy>;
   NativeRate: new (hz: number) => NativeRate;
   startRecorder(address: string, path: string, name: string, timeoutS: number): Promise<NativeRecorder>;
   readRecording(path: string): Promise<RecordingSummary>;
 }
 
+/** This package's version, which build.mjs defines; the addon must be the same one. */
+declare const RLMESH_VERSION: string;
+
 let addon: Addon | undefined;
 
 /**
  * The addon for this platform: `RLMESH_NATIVE` if set, else `rlmesh.{platform}-{arch}.node` next to
  * this module (a local build), else the `@rlmesh/{platform}-{arch}` package npm installs as an
- * optional dependency. Loaded on first use, so `connect` (the gateway client) works without it.
+ * optional dependency. Loaded on first use, so `connect` (the gateway client) works without it. An
+ * addon of another version (a stale local build, a mismatched install) is refused.
+ * @internal
  */
-function native(): Addon {
+export function native(): Addon {
   if (addon) return addon;
   const require = createRequire(import.meta.url);
   const target = `${process.platform}-${process.arch}`;
   const local = new URL(`./rlmesh.${target}.node`, import.meta.url).pathname;
   const file = process.env.RLMESH_NATIVE ?? (existsSync(local) ? local : `@rlmesh/${target}`);
+  let loaded: Addon;
   try {
-    addon = require(file) as Addon;
+    loaded = require(file) as Addon;
   } catch (e) {
     throw new SessionException(
       `the rlmesh native addon is not available for ${target} (${file}): ${(e as Error).message}. ` +
         `Reinstall rlmesh without --no-optional, build it with \`mise run build:js:native\`, or join through a gateway with connect().`,
     );
   }
+  const ours = typeof RLMESH_VERSION === 'string' ? RLMESH_VERSION : null;
+  const theirs = typeof loaded.version === 'function' ? loaded.version() : 'unknown (it predates the version check)';
+  if (ours !== null && theirs !== ours) {
+    throw new SessionException(
+      `the rlmesh native addon (${file}) is version ${theirs}, but this rlmesh package is ${ours}. ` +
+        `Rebuild it with \`mise run build:js:native\`, or reinstall rlmesh so its @rlmesh/${target} matches.`,
+    );
+  }
+  addon = loaded;
   return addon;
 }
 
@@ -278,7 +286,8 @@ function rethrow(e: unknown): never {
   throw out;
 }
 
-function call<T>(f: () => T): T {
+/** @internal */
+export function call<T>(f: () => T): T {
   try {
     return f();
   } catch (e) {
@@ -286,7 +295,8 @@ function call<T>(f: () => T): T {
   }
 }
 
-async function wait<T>(p: () => Promise<T>): Promise<T> {
+/** @internal */
+export async function wait<T>(p: () => Promise<T>): Promise<T> {
   try {
     return await p();
   } catch (e) {
@@ -446,16 +456,41 @@ export interface Due {
   basedOn: [string, number, number][];
 }
 
-/** An edge's counters: accepted, rejected and clamped commands, and `[ticks, entries]` per mode. */
+/** An edge refusing a participant's chunks for its clock's error (`EdgeStats.clockRefused`). */
+export interface EdgeClockRefusal {
+  part: string;
+  participant: string;
+  errorMs: number;
+  boundMs: number;
+  /** Why, and what to do about it. */
+  message: string;
+}
+
+/**
+ * An edge's counters: accepted, rejected and clamped commands, `[ticks, entries]` per mode, and how
+ * the part's chunks arrived.
+ */
 export interface EdgeStats {
   accepted: number;
   rejected: number;
   /** The rejections by reason (`too_old`, `no_clock_mapping`, ...), those that occurred. */
   rejectedBy: Record<string, number>;
+  /** Set while the edge refuses a participant's chunks for its clock's error, else null. */
+  clockRefused: EdgeClockRefusal | null;
   clamped: number;
   handovers: number;
   safeReports: number;
   modes: Record<string, [number, number]>;
+  /** Chunks of this part that reached the edge, whatever became of them. */
+  received: number;
+  /** Gaps in the seqs of accepted chunks under one lease token. */
+  lost: number;
+  /** Accepted chunks by lateness against their first slot: `[0, 1)` ms, then `[2^(i-1), 2^i)` ms, the last from 64 ms up. */
+  lateMs: number[];
+  /** The latest any accepted chunk arrived. */
+  lateMaxMs: number;
+  /** The longest time between two accepted chunks under one lease token. */
+  gapMaxMs: number;
 }
 
 /**
@@ -597,6 +632,11 @@ function sample(
   });
 }
 
+type OnHandover = (group: string, from: string, to: string) => void;
+
+/** @internal What the unreleased lobby (fleet.ts) reaches into `Robot` for; set by the class. */
+export const robots = {} as { adopt(native: NativeRobot, onHandover?: OnHandover, timeout?: number): Robot; native(robot: Robot): NativeRobot };
+
 /**
  * One robot: its map declared, its parts published, its commands served. The robot's control loop
  * publishes its sensors and asks `due` what to dispatch on each control tick. `onHandover(group,
@@ -606,6 +646,11 @@ function sample(
 export class Robot implements AsyncDisposable {
   private fields = new Map<string, NativeField[]>();
   private kinds = new Map<string, string>();
+
+  static {
+    robots.adopt = (native, onHandover, timeout) => new Robot(native, onHandover, timeout);
+    robots.native = (robot) => robot.native;
+  }
 
   private constructor(
     private native: NativeRobot,
@@ -618,28 +663,19 @@ export class Robot implements AsyncDisposable {
     }
   }
 
-  /** Attach as `name`, declare `parts` (the robot map) and start its publishers and edges. */
+  /**
+   * Attach as `name`, declare `parts` (the robot map) and start its publishers and edges, in the
+   * session `session` names (a `Host`, or its address). With no session, or one on a loopback
+   * port, it follows the hosting rule: it joins the host listening there (the local host, on
+   * `RLMESH_PORT` or 7447, for none), or hosts the session in this process when nothing listens,
+   * until it closes.
+   */
   static async connect(
     name: string,
     parts: Record<string, unknown>,
-    opts: { session: Host | string; timeout?: number; onHandover?: (group: string, from: string, to: string) => void },
+    opts: { session?: Host | string; timeout?: number; onHandover?: OnHandover } = {},
   ): Promise<Robot> {
-    const robot = await wait(() => native().connectRobot(address(opts.session), name, JSON.stringify(parts), opts.timeout ?? 10));
-    return new Robot(robot, opts.onHandover, opts.timeout ?? 10);
-  }
-
-  /**
-   * Wait in the home rlmeshd's lobby (`home`: `'rig-pi.local'`; default this machine's) until a
-   * scene's run assigns this robot; it then joins the run and declares `parts`. A refused join (its
-   * pin, another map) is reported to the daemon and the wait goes on. Run until `leaving` is set,
-   * close, and wait again.
-   */
-  static async waitInLobby(
-    name: string,
-    parts: Record<string, unknown>,
-    opts: { home?: string; timeout?: number; onHandover?: (group: string, from: string, to: string) => void } = {},
-  ): Promise<Robot> {
-    const robot = await wait(() => fleet('robotFromLobby')(opts.home ?? null, name, JSON.stringify(parts), opts.timeout ?? null));
+    const robot = await wait(() => native().connectRobot(address(opts.session ?? ''), name, JSON.stringify(parts), opts.timeout ?? 10));
     return new Robot(robot, opts.onHandover, opts.timeout ?? 10);
   }
 
@@ -649,13 +685,11 @@ export class Robot implements AsyncDisposable {
   }
 
   /**
-   * Why this robot should leave its scene's run: `scene_ended` or `scene_failed` when the run
-   * closes, `robot_lost` when the host lost it (wait in the lobby again: its run re-sends its join),
-   * `superseded` when another process took its name over (stop); `null` while it is in the run, and
-   * outside a scene.
+   * The robot's participant address, with its host's real port. It carries its session's key: a
+   * credential, as `Host.address` says.
    */
-  get leaving(): string | null {
-    return call(() => this.native.leaving) ?? null;
+  get address(): string {
+    return this.native.address;
   }
 
   /** Each part's kind, by path, in authored order. */
@@ -777,14 +811,20 @@ export class Robot implements AsyncDisposable {
       accepted: s.accepted,
       rejected: s.rejected,
       rejectedBy: Object.fromEntries(s.rejectedBy.map((r) => [r.reason, r.count])),
+      clockRefused: s.clockRefused ?? null,
       clamped: s.clamped,
       handovers: s.handovers,
       safeReports: s.safeReports,
       modes: Object.fromEntries(s.modes.map((m) => [m.mode, [m.ticks, m.entries]])),
+      received: s.received,
+      lost: s.lost,
+      lateMs: s.lateMs,
+      lateMaxMs: s.lateMaxMs,
+      gapMaxMs: s.gapMaxMs,
     };
   }
 
-  /** Detach from the session. */
+  /** Detach from the session (and stop it, if this robot hosts it). */
   close(): Promise<void> {
     return wait(() => this.native.close());
   }
@@ -930,6 +970,10 @@ export interface PolicyStats {
   latencyP99Ms: number | null;
   latencyMaxMs: number | null;
   drifting: boolean;
+  /** Per leased part refusing this policy's chunks for its clock, why. */
+  clockRefused: string[];
+  /** What the policy waits for before it can command, else null. */
+  waiting: string | null;
   /** The parts a higher class took, `robot:path`, kept from the policy until `resume()`. */
   parked: string[];
   /** Each input bound to a part, in policy order, since the policy was last bound. */
@@ -993,6 +1037,8 @@ function runStats(s: NativeStats | NativeLockstepStats): RunStats {
     latencyP99Ms: s.latencyP99Ms ?? null,
     latencyMaxMs: s.latencyMaxMs ?? null,
     drifting: s.drifting,
+    clockRefused: s.clockRefused,
+    waiting: s.waiting ?? null,
     parked: s.parked,
     inputs: s.inputs.map((i) => ({ entry: i.entry, part: i.part, received: i.received, lost: i.lost })),
   };
@@ -1034,6 +1080,8 @@ export interface BindOptions {
 /**
  * A policy map and, once bound, the controller that runs it. `priority` is the lease class it
  * attaches with: `model` (default), `operator` (preempts models: teleop), `safety` or `scripted`.
+ * `session` is placed as `Robot.connect` places it: `''` (the local session) or a loopback port with
+ * nothing listening hosts the session in this process until the policy closes.
  */
 export class Policy implements AsyncDisposable {
   private native: NativePolicy | null = null;
@@ -1342,7 +1390,8 @@ export interface RecordingSummary {
  * An MCAP recording of the session, attached as an observer. Records every robot's streams
  * (`/{robot}/{path}`, with the edge's `/{robot}/{path}/_applied`), every action chunk sent to an
  * edge (`/{robot}/{path}/_chunks`), and the authority and binding changes (`/_session/authority`,
- * `/_session/bindings`), each envelope as it travelled. `close()` finishes the file.
+ * `/_session/bindings`), each envelope as it travelled. `close()` finishes the file. `session` is
+ * placed as `Robot.connect` places it.
  */
 export class SessionRecorder implements AsyncDisposable {
   /** The finished file's counters, once closed. */
@@ -1369,97 +1418,6 @@ export class SessionRecorder implements AsyncDisposable {
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close();
   }
-}
-
-/** A refusal in a run's state. */
-export interface Refusal {
-  status: string;
-  message: string;
-}
-
-/** A scene run's state: its stage, each member's, and why it failed. */
-export interface RunState {
-  run: string;
-  version: number;
-  stage: string;
-  members: { name: string; stage: string; error: Refusal | null }[];
-  error: Refusal | null;
-}
-
-/** A native run state, its absent errors `null`. */
-function runState(s: RunState): RunState {
-  return { ...s, members: s.members.map((m) => ({ ...m, error: m.error ?? null })), error: s.error ?? null };
-}
-
-/**
- * A scene's run on the home rlmeshd, started by `runScene`. Its members join `address()` (this
- * script's own policy among them). `close()` stops the run unless it ended.
- */
-export class Scene implements AsyncDisposable {
-  constructor(private native: NativeScene) {}
-
-  /** The run's id (`r-7k2m`), as `rlmesh scene stop` takes it. */
-  get run(): string {
-    return this.native.run;
-  }
-
-  /** Where the run's members join, once its host is up. */
-  address(): Promise<string | null> {
-    return wait(async () => (await this.native.address()) ?? null);
-  }
-
-  /** The run's state now. */
-  status(): Promise<RunState> {
-    return wait(async () => runState(await this.native.status()));
-  }
-
-  /** Resolve once the run is at `stage` (`'running'`); a run that ends first rejects with its error. */
-  waitUntil(stage: string, opts: { timeout?: number } = {}): Promise<RunState> {
-    return wait(async () => runState(await this.native.waitUntil(stage, opts.timeout ?? 30)));
-  }
-
-  /** Arm a run that waits for it (`arm: 'manual'`, or after a lost member rejoined). */
-  arm(): Promise<RunState> {
-    return wait(async () => runState(await this.native.arm()));
-  }
-
-  /** Stop the run and wait for it to end; this process's policies' runs return. */
-  stop(opts: { timeout?: number } = {}): Promise<RunState> {
-    return wait(async () => runState(await this.native.stop(opts.timeout ?? 10)));
-  }
-
-  /** Stop the run unless it ended, and leave the lobby. */
-  close(): Promise<void> {
-    return wait(() => this.native.close(10));
-  }
-
-  [Symbol.asyncDispose](): Promise<void> {
-    return this.close();
-  }
-}
-
-/**
- * Run the scene file at `path` on its robots' home rlmeshd (`home`; default this machine's). The
- * daemon checks it, claims its robots, assigns them from its lobby and arms once every member
- * declared and bound (`arm: 'manual'`: on `Scene.arm`). A refused scene rejects with
- * `SessionRefused` and its code (`INVALID_REQUEST`, `NOT_AUTHORIZED`, `ROBOT_BUSY`).
- */
-export async function runScene(
-  path: string,
-  opts: { home?: string; arm?: 'auto' | 'manual'; timeout?: number } = {},
-): Promise<Scene> {
-  const arm = opts.arm ?? 'auto';
-  if (arm !== 'auto' && arm !== 'manual') throw new RangeError(`arm ${String(arm)}: auto or manual`);
-  const text = await readFile(path, 'utf8');
-  return new Scene(await wait(() => fleet('runScene')(opts.home ?? null, text, arm === 'manual', opts.timeout ?? 10)));
-}
-
-/** A lobby or scene call of the addon, which only a `fleet` build has (unreleased). */
-function fleet<K extends 'robotFromLobby' | 'runScene'>(name: K): NonNullable<Addon[K]> {
-  const addon = native();
-  const f = addon[name];
-  if (f === undefined) throw new Error(`${name}: this rlmesh build has no lobby or scenes (the unreleased fleet feature)`);
-  return f.bind(addon) as NonNullable<Addon[K]>;
 }
 
 /** Read a recording back: messages per topic, time ordering, the lease timeline. */

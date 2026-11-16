@@ -5,8 +5,11 @@ RLMesh real-time sessions (protocol v2) for Node and the browser.
 > Experimental: the API may change in any 0.x release.
 
 ```bash
-npm install rlmesh
+npm install rlmesh@next
 ```
+
+The 0.2 pre-releases are published under the `next` tag; `npm install rlmesh`
+(the `latest` tag) still gets a deprecated `0.0.1` placeholder.
 
 - **Node 22+ and Electron** run a session host, robots and policies in-process
   over a native addon. npm installs the addon for your platform as an optional

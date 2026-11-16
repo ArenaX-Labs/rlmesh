@@ -5,13 +5,16 @@
 //   dist/worker.js    the class Worker, shared by both (bundles the wasm-bindgen glue)
 //   dist/managed.js, dist/managed.node.js  `rlmesh/managed` (pure TS over fetch; no wasm, no addon)
 //   dist/rlmesh_bg.wasm, dist/*.d.ts
-//   dist/rlmesh.{platform}-{arch}.node  the native addon (`mise run build:js:native`; kept across builds)
+//   dist/rlmesh.{platform}-{arch}.node  the native addon (`mise run build:js:native`; kept across builds,
+//                     and refused by dist/node.js unless its version is this package's)
+//   dist/fleet.js     dist/node.js plus the unreleased lobby and scenes (src/fleet.ts), for the native
+//                     tests only: no export condition names it, and npm-pack leaves it out
 //
 // Needs pkg/ (wasm-bindgen + wasm-opt output): `mise run build:js` builds it first. --node-only
 // bundles dist/node.js alone (the native addon's tests), with no wasm toolchain.
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 
 process.chdir(new URL('.', import.meta.url).pathname);
 const nodeOnly = process.argv.includes('--node-only');
@@ -21,11 +24,15 @@ if (!nodeOnly && !existsSync('pkg/rlmesh_bg.wasm')) {
 }
 const demo = process.argv.includes('--demo');
 const common = { bundle: true, format: 'esm', target: 'es2022', sourcemap: true, logLevel: 'warning' };
+// The loader checks the addon's version against this one (native.ts).
+const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+const node = { ...common, platform: 'node', define: { RLMESH_VERSION: JSON.stringify(version) } };
 const worker = { ...common, entryPoints: ['src/worker.ts'], platform: 'neutral', external: ['node:*'], mainFields: ['module', 'main'] };
 
 mkdirSync('dist', { recursive: true });
 for (const f of readdirSync('dist')) if (!f.endsWith('.node')) rmSync(`dist/${f}`, { recursive: true, force: true });
-await esbuild.build({ ...common, entryPoints: ['src/node.ts'], outfile: 'dist/node.js', platform: 'node' });
+await esbuild.build({ ...node, entryPoints: ['src/node.ts'], outfile: 'dist/node.js' });
+await esbuild.build({ ...node, entryPoints: ['src/fleet.ts'], outfile: 'dist/fleet.js' });
 await esbuild.build({ ...common, entryPoints: ['src/managed/index.ts'], outfile: 'dist/managed.js', platform: 'neutral' });
 await esbuild.build({ ...common, entryPoints: ['src/managed/node.ts'], outfile: 'dist/managed.node.js', platform: 'node' });
 if (nodeOnly) process.exit(0);

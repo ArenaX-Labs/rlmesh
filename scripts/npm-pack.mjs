@@ -88,9 +88,10 @@ if (!existsSync("javascript/rlmesh/dist/browser.js")) {
 }
 const dir = `${out}/rlmesh`;
 mkdirSync(dir);
+// No addon, and not the unreleased lobby and scenes (dist/fleet.js, a test bundle).
 cpSync("javascript/rlmesh/dist", `${dir}/dist`, {
   recursive: true,
-  filter: (f) => !f.endsWith(".node"),
+  filter: (f) => !f.endsWith(".node") && !/[\\/]fleet\.js(\.map)?$/.test(f),
 });
 cpSync("javascript/rlmesh/README.md", `${dir}/README.md`);
 const { private: _, scripts: __, devDependencies: ___, ...rest } = source;

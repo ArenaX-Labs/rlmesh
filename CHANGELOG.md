@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Changed
+
+#### Other bindings (not published)
+
+- JavaScript: Node's `Robot`, `Policy` and `SessionRecorder` follow Python's hosting rule. With no session or `''` (now `Robot.connect`'s default), or a loopback port that nothing listens on, the participant hosts the session in its own process until it closes, so a script ported from Python no longer waits for a host that never comes. `robot.address` is its participant address. `EdgeStats` gains `received`, `lost`, `lateMs`, `lateMaxMs`, `gapMaxMs` and `clockRefused`, and `PolicyStats` gains `clockRefused` and `waiting`, as in Python. The package refuses a native addon of another version, naming both. It no longer exports the unreleased lobby and scenes (`Robot.waitInLobby`, `robot.leaving`, `runScene`, `Scene`). See [the Node binding](docs/node.md).
+
 ## [0.2.0-alpha.1] - 2026-11-15
 
 0.2 rebuilds RLMesh on real-time sessions: one protocol (`rlmesh-realtime-v1`, provisional until 0.2.0) carries robots and policies on a network and steps environments in lockstep. It is an alpha line, and anything may change before 0.2.0.
