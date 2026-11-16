@@ -8,7 +8,7 @@
 #
 # RLMesh Managed runs the same tag. The container is driven by its own baked
 # config: SandboxModel(image://...) injects no bootstrap payload.
-FROM python:3.11-slim
+FROM python:3.15-slim
 
 # Pin rlmesh to the build your host runs against (the handshake checks
 # compatibility). Add your policy's framework + weights handling here.
