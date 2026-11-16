@@ -50,7 +50,9 @@ use rlmesh_session::pairing::PairService;
 use rlmesh_session::record::Rolling;
 use rlmesh_session::server::SessionServer;
 use rlmesh_session::transport::TransportTuning;
-use rlmesh_session::wire::{PairInfo, Role, TenantId};
+#[cfg(unix)]
+use rlmesh_session::wire::PairInfo;
+use rlmesh_session::wire::{Role, TenantId};
 use rlmesh_session::{HostConfig, SystemMonotonicClock};
 use zeroize::Zeroizing;
 
@@ -234,7 +236,9 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     };
     #[cfg(not(feature = "fleet"))]
     drop(config);
-    let (apply, mut applying) = tokio::sync::mpsc::channel(4);
+    // What the local pairing endpoint (unix only) asks to apply now: the
+    // sender it is answered on once the device table has reloaded.
+    let (apply, mut applying) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(4);
     #[cfg(unix)]
     let local = crate::pair::serve_local(crate::pair::Local {
         dir: dir.clone(),
