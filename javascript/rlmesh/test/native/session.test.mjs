@@ -271,7 +271,8 @@ test('an operator preempts the model, which stays stopped until resumed', async 
   await using _stopTeleop = { [Symbol.asyncDispose]: () => ((streaming = false), teleop) };
   await waitUntil('the operator driving', () => ur.driven((d) => first(d) === 0.75));
   assert.equal(ur.log.at(-1).leaseToken, tokens['ur10e:arm']);
-  assert.ok(model.stats().skipped.parked > 0, 'a preempted model stays warm, skips its starts');
+  // A preempted model stays warm and skips its starts (its next one may be a replan period away).
+  await waitUntil('the model skipping its parked starts', () => model.stats().skipped.parked > 0, state);
   assert.deepEqual(model.stats().parked, ['ur10e:arm']);
 
   // A model cannot take it back while the operator holds it.
