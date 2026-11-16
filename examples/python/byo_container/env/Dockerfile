@@ -4,7 +4,7 @@
 #
 #   docker build -t my-env:latest examples/python/byo_container/env
 #   python -c "import rlmesh; e=rlmesh.SandboxEnv('image://my-env:latest'); print(e.reset())"
-FROM python:3.11-slim
+FROM python:3.15-slim
 
 # Pin rlmesh to the build your host runs against. Add your env's own
 # dependencies here too.
