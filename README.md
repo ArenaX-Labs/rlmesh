@@ -16,6 +16,7 @@ Serve an environment in one process, drive it from another. Same `reset` / `step
 > sessions, and 0.1 and 0.2 do not talk to each other. This page describes
 > 0.2; a plain `pip install rlmesh` still gives 0.1, which is maintained on
 > the [`release/0.1`](https://github.com/ArenaX-Labs/rlmesh/tree/release/0.1) branch.
+> Moving a 0.1 project? See [upgrading from 0.1](docs/upgrading.md).
 
 ## Install
 
