@@ -320,12 +320,9 @@ class RemoteEnv(RemoteEnvBase[TorchValue, TorchValue], GymEnv):  # pyright: igno
     (see :func:`as_tensor`), so in-place ops never corrupt the wire buffer.
 
     Args:
-        address: Endpoint address such as ``"127.0.0.1:5555"``,
-            ``"127.0.0.1:5555"``, or ``"unix:///tmp/env.sock"``.
-        host: TCP host helper used when ``address`` is omitted.
-        port: TCP port helper used when ``address`` is omitted.
-        path: Unix socket path helper used when ``address`` is omitted.
-        transport: Explicit transport selector.
+        address: The env's session address: ``"127.0.0.1:5555"`` (short for
+            ``"127.0.0.1:5555/env"``), a named participant such as
+            ``"lab:7447/cartpole"``, or the address an ``EnvServer`` reports.
         connect_timeout_seconds: Optional dial timeout in seconds; ``None``
             uses the native default.
         request_timeout_seconds: Optional per-request (reset/step/render)
@@ -354,11 +351,9 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue], GymVectorEnv)
     terminations, and truncations decode into Torch values.
 
     Args:
-        address: Endpoint address such as ``"127.0.0.1:5555"``.
-        host: TCP host helper used when ``address`` is omitted.
-        port: TCP port helper used when ``address`` is omitted.
-        path: Unix socket path helper used when ``address`` is omitted.
-        transport: Explicit transport selector.
+        address: The env's session address: ``"127.0.0.1:5555"`` (short for
+            ``"127.0.0.1:5555/env"``), a named participant such as
+            ``"lab:7447/cartpole"``, or the address an ``EnvServer`` reports.
         connect_timeout_seconds: Optional dial timeout in seconds; ``None``
             uses the native default.
         request_timeout_seconds: Optional per-request (reset/step/render)
