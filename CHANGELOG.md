@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A session listens on one port (7447 by default; TCP, and UDP at the same number for boards) in place of 0.1's port 50051.
 - Remote shutdown is gone (`ServeOptions.allow_remote_shutdown` and the env client's `shutdown`).
 - Images built for 0.1 must be rebuilt: `SandboxEnv`, `SandboxModel` and `rlmesh check-image` refuse an image that advertises the 0.1 protocol.
-- 0.2 runs workflow edition `2026.10` (provisional until 0.2.0) and refuses a declaration of `2026.06`. See the [2026.10 edition](docs/editions/2026.10.md) for every behaviour it changes.
+- 0.2 runs workflow edition `2026.10` (provisional until 0.2.0) and refuses a declaration of `2026.06`, including one on an env or factory that a local run or binding serves in its own process. See the [2026.10 edition](docs/editions/2026.10.md) for every behaviour it changes.
 - Env and model errors read `[CODE] message` in every language, a deadline reads `operation timed out after 5s`, and both texts are the same whichever language raised them.
 - A `base_seed` derives each episode's seed from the base, a seed key and the episode's trial ordinal, so every model and every split of one total runs the same episodes; every `base_seed` run's seeds change once.
 

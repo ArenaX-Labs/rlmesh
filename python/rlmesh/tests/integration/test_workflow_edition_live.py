@@ -200,3 +200,118 @@ def test_the_env_var_pins_a_run_that_declares_nothing(
     finally:
         client.close()
     assert len(model().run(served_env, seeds=[0]).episodes) == 1
+
+
+#: The 0.1 edition, which this build no longer drives.
+RETIRED_EDITION = "2026.06"
+
+#: Serving's refusal of it, word for word.
+REFUSAL = (
+    f'runtime cannot drive workflow edition "{RETIRED_EDITION}"; this build implements'
+)
+
+
+class RetiredFactory(rlmesh.EnvFactory):
+    """A factory that still declares the retired edition."""
+
+    workflow_edition = RETIRED_EDITION
+
+    def __init__(self) -> None:
+        self.made = 0
+
+    def make(self) -> Any:
+        self.made += 1
+        return CountEnv()
+
+
+class RetiredEnv(CountEnv):
+    """An env class that still declares the retired edition on itself."""
+
+    workflow_edition = RETIRED_EDITION
+
+
+def retired_vector_env() -> Any:
+    import gymnasium as gym
+
+    class GymCountEnv(CountEnv, gym.Env[Any, Any]):
+        def __init__(self) -> None:
+            CountEnv.__init__(self)
+
+    class RetiredVectorEnv(gym.vector.SyncVectorEnv):
+        workflow_edition = RETIRED_EDITION
+
+    return RetiredVectorEnv([GymCountEnv, GymCountEnv])
+
+
+def drive(path: str, target: object, **kwargs: Any) -> None:
+    """Drive ``target`` locally down ``path``, raising what the run raises."""
+    if path == "run":
+        _ = model().run(target, seeds=[0], **kwargs)
+    elif path == "rlmesh.run":
+        _ = rlmesh.run(model(), target, episodes=1, **kwargs)
+    elif path == "random":
+        _ = rlmesh.Model(rlmesh.RANDOM_SAMPLE).run(target, episodes=1, **kwargs)
+    elif path == "bind":
+        with model().bind(target, **kwargs) as binding:
+            binding.reset()
+    else:
+        [outcome] = model().run_routes([target], episodes=1, **kwargs)
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+
+LOCAL_PATHS = ["run", "rlmesh.run", "random", "bind", "run_routes"]
+
+
+@pytest.mark.parametrize("path", LOCAL_PATHS)
+def test_a_local_run_refuses_a_factory_declaring_a_retired_edition(
+    undeclared: None, path: str
+) -> None:
+    factory = RetiredFactory()
+    with pytest.raises(ValueError, match=REFUSAL):
+        drive(path, factory)
+    # Refused before the factory built anything, as serving refuses it.
+    assert factory.made == 0
+
+
+@pytest.mark.parametrize("path", LOCAL_PATHS)
+def test_a_local_run_refuses_an_env_class_declaring_a_retired_edition(
+    undeclared: None, path: str
+) -> None:
+    with pytest.raises(ValueError, match=REFUSAL):
+        drive(path, RetiredEnv())
+
+
+@pytest.mark.parametrize("path", ["run", "random", "run_routes"])
+def test_a_local_run_refuses_a_vector_env_declaring_a_retired_edition(
+    undeclared: None, path: str
+) -> None:
+    env = retired_vector_env()
+    try:
+        with pytest.raises(ValueError, match=REFUSAL):
+            drive(path, env)
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("path", LOCAL_PATHS)
+def test_a_local_run_drives_a_factory_declaring_this_builds_edition(
+    undeclared: None, path: str
+) -> None:
+    class CurrentFactory(rlmesh.EnvFactory):
+        workflow_edition = current_workflow_edition()
+
+        def make(self) -> Any:
+            return CountEnv()
+
+    drive(path, CurrentFactory())
+
+
+def test_the_call_keyword_outranks_a_local_factory_declaration(
+    undeclared: None, declared_edition: str
+) -> None:
+    # As --workflow-edition / ServeOptions outrank a served factory's class
+    # declaration, the run's own keyword outranks a local one's.
+    factory = RetiredFactory()
+    drive("run", factory, workflow_edition=declared_edition)
+    assert factory.made == 1

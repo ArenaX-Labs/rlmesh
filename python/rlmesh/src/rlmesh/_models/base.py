@@ -1540,6 +1540,7 @@ class ModelBase(Generic[ObsT, ActT]):
             context,
             trust=trust_entrypoints,
             instruction=instruction,
+            workflow_edition=workflow_edition,
         )
         failed = True
         try:
@@ -1689,7 +1690,10 @@ class ModelBase(Generic[ObsT, ActT]):
         native_routes: list[tuple[object, dict[str, Any]]] = [
             (
                 EnvTarget(
-                    self, env, NativeRunContext(trust=bool(self._trust_entrypoints))
+                    self,
+                    env,
+                    NativeRunContext(trust=bool(self._trust_entrypoints)),
+                    workflow_edition=workflow_edition,
                 ),
                 {**options, "execution_horizon": horizon, "workflow_edition": edition},
             )
@@ -1795,7 +1799,9 @@ class ModelBase(Generic[ObsT, ActT]):
         view = resolve_view(view)
         declared = self._declared_workflow_edition(workflow_edition)
         horizon = self._execution_horizon(execution_horizon)
-        target_adapter = EnvTarget(self, target, binding=True)
+        target_adapter = EnvTarget(
+            self, target, binding=True, workflow_edition=workflow_edition
+        )
         native = self._install_worker().bind_facade(
             target_adapter, horizon, declared, close_env
         )

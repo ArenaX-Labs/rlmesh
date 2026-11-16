@@ -250,6 +250,7 @@ pub(crate) async fn run_route(
             execution_horizon,
             prefetch_lead,
             edition,
+            call_edition: workflow_edition,
             trial_index_base,
             route,
         };
@@ -360,6 +361,9 @@ struct Plan {
     execution_horizon: u32,
     prefetch_lead: u32,
     edition: Option<String>,
+    /// The call's own `workflow_edition`, the top rung of a local factory's
+    /// declaration as of the model's.
+    call_edition: Option<String>,
     trial_index_base: u64,
     route: RouteSpec,
 }
@@ -447,7 +451,12 @@ async fn run_body(
     // A factory-built env is this call's own: built only now that an
     // episode needs it, closed when the run ends.
     let mut made = OwnedMadeEnv::default();
+    let mut loopback_edition = plan.edition.clone();
     if let EnvKind::Factory(factory) = &mut env {
+        // Refused before the factory builds anything, as serving refuses it.
+        if let Some(own) = factory.local_edition(plan.call_edition.as_deref())? {
+            loopback_edition = Some(own);
+        }
         made.0 = Some(mode.call(|| factory.make())?);
     }
     let built = made.0.is_some();
@@ -473,7 +482,7 @@ async fn run_body(
                     LoopbackEnv::Vector(Box::new(LentVectorEnv::new(&**env, port.clone())))
                 }
             };
-            let server = EnvServer::loopback(lent, plan.edition.clone(), plan.beside.as_deref())?;
+            let server = EnvServer::loopback(lent, loopback_edition, plan.beside.as_deref())?;
             server.start()?;
             Dial {
                 address: server.address().to_string(),

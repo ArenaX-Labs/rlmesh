@@ -4,6 +4,7 @@
 #include <rlmesh.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 static atomic_int failures;
@@ -102,6 +103,38 @@ static void step_bound(RLMeshBinding* binding) {
   CHECK(rlmesh_binding_step(binding, NULL, &obs, &reward, &term, &trunc, &info) == RLMESH_OK);
   rlmesh_value_free(obs);
   rlmesh_value_free(info);
+}
+/* A local run or binding refuses a factory declaring an edition this build
+ * cannot drive, with serving's error, before the factory makes anything. */
+static void expect_retired_refusal(RLMeshStatus status) {
+  CHECK(status == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_VALUE_ERROR);
+  const char* message = rlmesh_last_error_message();
+  CHECK(message && strstr(message,
+                          "runtime cannot drive workflow edition \"2026.06\"; "
+                          "this build implements") == message);
+}
+static void refuse_retired_edition(State* state) {
+  /* Only a set RLMESH_WORKFLOW_EDITION outranks the factory's declaration. */
+  if (getenv("RLMESH_WORKFLOW_EDITION")) return;
+  RLMeshEnvFactoryAttributes attrs = RLMESH_ENV_FACTORY_ATTRIBUTES_INIT;
+  attrs.workflow_edition = "2026.06";
+  RLMeshEnvFactoryVtable vt = RLMESH_ENV_FACTORY_VTABLE_INIT;
+  vt.make = make;
+  RLMeshEnvFactory* retired = NULL;
+  CHECK(rlmesh_env_factory_new(&vt, state, &attrs, &retired) == RLMESH_OK);
+  int makes = atomic_load(&state->makes);
+  RLMeshRunResult* result = NULL;
+  RLMeshRunOptions options = RLMESH_RUN_OPTIONS_INIT;
+  expect_retired_refusal(
+      rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(retired), &options, &result));
+  CHECK(result == NULL);
+  RLMeshBinding* binding = NULL;
+  expect_retired_refusal(
+      rlmesh_bind(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(retired), NULL, &binding));
+  CHECK(binding == NULL);
+  CHECK(atomic_load(&state->makes) == makes);
+  rlmesh_env_factory_free(retired);
 }
 typedef struct Serving {
   State* state;
@@ -270,6 +303,7 @@ int main(void) {
   CHECK(rlmesh_env_factory_close(state.factory) == RLMESH_OK && state.closes == 1);
   rlmesh_env_factory_free(state.factory);
   CHECK(state.frees == 1 && state.closes == 1);
+  refuse_retired_edition(&state);
   rlmesh_space_free(state.space);
   if (failures) return 1;
   puts("c_factory OK");

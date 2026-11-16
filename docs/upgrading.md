@@ -93,7 +93,7 @@ as an RLMesh 0.1 (gRPC) server does. RLMesh 0.2 can't connect to 0.1; serve it w
 
 ## Workflow editions
 
-0.2 runs workflow edition `2026.10`, provisional until 0.2.0 seals it, and refuses `2026.06` wherever it is declared:
+0.2 runs workflow edition `2026.10`, provisional until 0.2.0 seals it, and refuses `2026.06` wherever it is declared. Serving refuses it, and so does a local run or binding: `model.run(MyEnvFactory())` or `model.bind(env)` with an env or factory that declares `2026.06` fails before the factory makes an env:
 
 ```text
 ValueError: runtime cannot drive workflow edition "2026.06"; this build implements [...]
@@ -109,6 +109,8 @@ Remove every declaration of `2026.06`:
 - `[tool.rlmesh] workflow_edition = "2026.06"` in `pyproject.toml`
 
 `rlmesh check module:Class` fails on a class or project that still declares it.
+
+A local run reads the env's declaration the way serving does: the run's own `workflow_edition=` comes first, then `RLMESH_WORKFLOW_EDITION`, then `workflow_edition` on the `EnvFactory` (or on the env's class), then the `pyproject.toml` of the env's project. An env that declares nothing takes the model's declaration.
 
 Leaving a per-serve or per-call value out (`ServeOptions`, `--workflow-edition`, `run(workflow_edition=...)`) lets the participant's own declaration apply: the one on its class or in its `pyproject.toml`. If nothing declares one, the participant runs at the newest edition its build offers.
 

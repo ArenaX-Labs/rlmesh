@@ -288,8 +288,12 @@ impl<'a> Binding<'a> {
                 &beside,
             )?,
             EnvKind::Factory(mut factory) => {
+                // Refused before the factory builds anything, as serving
+                // refuses it.
+                let own = factory.local_edition(workflow_edition.as_deref())?;
                 let made = OwnedMadeEnv(Some(factory.make()?), false);
-                binding.serve(Local::Made(made), &port, &edition, &beside)?
+                let served = own.or_else(|| edition.clone());
+                binding.serve(Local::Made(made), &port, &served, &beside)?
             }
         };
         let inner = binding.drive(crate::model::bind::Binding::connect(

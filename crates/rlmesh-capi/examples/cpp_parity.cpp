@@ -761,6 +761,37 @@ struct Identity : adapters::AdapterBase {
   Value transform_obs(const Value& v) override { return v; }
   Value transform_action(const Value& v) override { return v; }
 };
+struct RetiredFactory : EnvFactory<RetiredFactory> {
+  int builds = 0;
+  static std::optional<std::string> workflow_edition() { return "2026.06"; }
+  MadeEnv make(const Kwargs&) {
+    ++builds;
+    return Env(Counter{});
+  }
+};
+// A local run or binding refuses a factory declaring an edition this build
+// cannot drive, with serving's error, before the factory makes anything.
+void local_runs_refuse_a_retired_edition() {
+  // Only a set RLMESH_WORKFLOW_EDITION outranks the factory's declaration.
+  if (std::getenv("RLMESH_WORKFLOW_EDITION")) return;
+  const std::string refusal =
+      "runtime cannot drive workflow edition \"2026.06\"; this build implements";
+  RetiredFactory factory;
+  Model model(Greedy{});
+  try {
+    model.run(factory);
+    assert(false);
+  } catch (const ValueError& e) {
+    assert(std::string(e.what()).rfind(refusal, 0) == 0);
+  }
+  try {
+    auto b = model.bind(factory);
+    assert(false);
+  } catch (const ValueError& e) {
+    assert(std::string(e.what()).rfind(refusal, 0) == 0);
+  }
+  assert(factory.builds == 0);
+}
 void adapter_axis_presence() {
   using namespace adapters;
   State state{};
@@ -1197,6 +1228,7 @@ int main() try {
   exceptions();
   foreign_error_payloads();
   factories_remote_describe();
+  local_runs_refuse_a_retired_edition();
   adapter_axis_presence();
   adapter_callable_identity();
   adapter_dict_equality();

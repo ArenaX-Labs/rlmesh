@@ -68,6 +68,13 @@ impl fmt::Debug for ModelTarget<'_> {
 pub(crate) trait ErasedFactory {
     /// Call `prepare()`, then the stamping `make_env()` with no arguments.
     fn make(&mut self) -> Result<MadeEnv>;
+
+    /// What the env this factory makes declares when it is served in this
+    /// process, resolved as serving resolves it: the call's `workflow_edition`,
+    /// `RLMESH_WORKFLOW_EDITION`, then [`EnvFactory::workflow_edition`]. An
+    /// edition this build cannot drive is refused with serving's error;
+    /// `None` declares nothing and the loopback carries the model's.
+    fn local_edition(&self, call: Option<&str>) -> Result<Option<String>>;
 }
 
 struct Factory<'a, F>(&'a mut F);
@@ -76,6 +83,14 @@ impl<F: EnvFactory> ErasedFactory for Factory<'_, F> {
     fn make(&mut self) -> Result<MadeEnv> {
         self.0.prepare()?;
         self.0.make_env(&Kwargs::new())
+    }
+
+    fn local_edition(&self, call: Option<&str>) -> Result<Option<String>> {
+        crate::editions::resolve_native(crate::editions::EditionSources {
+            call,
+            option: None,
+            declared: F::workflow_edition().as_deref(),
+        })
     }
 }
 
