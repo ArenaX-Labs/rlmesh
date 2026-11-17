@@ -8,6 +8,8 @@
 
 #include "RLMeshEnvComponent.generated.h"
 
+RLMESHUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogRLMesh, Log, All);
+
 UCLASS(Abstract)
 class RLMESHUNREAL_API URLMeshEnvComponent : public UActorComponent
 {
