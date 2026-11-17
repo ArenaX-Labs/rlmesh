@@ -8,6 +8,9 @@
 
 #include "RLMeshEnvComponent.generated.h"
 
+// Exported so env components in other modules (a game, a sample) log under it too.
+RLMESHUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogRLMesh, Log, All);
+
 /**
  * Serves game state as an RLMesh env while the game plays: from BeginPlay until
  * EndPlay, any RLMesh model can connect to Address and call reset and step.
