@@ -1,11 +1,22 @@
 #include "RLMeshReachTargetComponent.h"
 
+#include "Components/SceneComponent.h"
+#include "GameFramework/Actor.h"
+
 #include <limits>
 
 void URLMeshReachTargetComponent::BeginPlay()
 {
+	AActor* Owner = GetOwner();
+	// Steps move the actor, which a Static root refuses.
+	USceneComponent* Root = Owner->GetRootComponent();
+	if (Root && Root->Mobility == EComponentMobility::Static)
+	{
+		Root->SetMobility(EComponentMobility::Movable);
+		UE_LOG(LogRLMesh, Log, TEXT("Reach Target: set %s to Movable so steps can move it"), *Owner->GetName());
+	}
 	// Remember the start before Super::BeginPlay starts serving.
-	Start = GetOwner()->GetActorLocation();
+	Start = Owner->GetActorLocation();
 	Random.GenerateNewSeed();
 	Super::BeginPlay();
 }
@@ -26,7 +37,10 @@ rlmesh::ResetResult URLMeshReachTargetComponent::ResetEnv(std::optional<int64_t>
 {
 	if (Seed)
 	{
-		Random.Initialize(static_cast<int32>(*Seed));
+		// FRandomStream takes an int32: fold in the seed's high half so seeds
+		// that differ only there still pick different targets.
+		const uint64 Bits = static_cast<uint64>(*Seed);
+		Random.Initialize(static_cast<int32>(Bits ^ (Bits >> 32)));
 	}
 	GetOwner()->SetActorLocation(Start);
 	Target = Random.FRandRange(-TargetRange, TargetRange);
