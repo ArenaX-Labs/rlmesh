@@ -1,0 +1,9 @@
+{
+  "name": "RLMesh.Unity.ReachTarget",
+  "rootNamespace": "RLMesh.Unity.Samples",
+  "references": ["RLMesh.Unity"],
+  "overrideReferences": true,
+  "precompiledReferences": ["RLMesh.dll"],
+  "autoReferenced": true,
+  "allowUnsafeCode": false
+}
