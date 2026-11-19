@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using RLMesh.Ext;
 using RLMesh.Spaces;
 using UnityEngine;
+using Space = RLMesh.Spaces.Space;
 
 namespace RLMesh.Unity
 {

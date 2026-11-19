@@ -4,7 +4,7 @@
 #include <string>
 #include <utility>
 
-DEFINE_LOG_CATEGORY_STATIC(LogRLMesh, Log, All);
+DEFINE_LOG_CATEGORY(LogRLMesh);
 
 URLMeshEnvComponent::URLMeshEnvComponent()
 {

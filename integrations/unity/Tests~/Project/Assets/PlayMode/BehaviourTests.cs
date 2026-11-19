@@ -12,9 +12,12 @@ namespace RLMesh.Unity.Verification
         public IEnumerator ExampleServesAndReturnsAnOffset()
         {
             var host = new GameObject("reach target test");
+            var goal = new GameObject("target");
             try
             {
-                var env = host.AddComponent<RLMeshReachTargetBehaviour>();
+                goal.transform.position = Vector3.right * 5f;
+                var env = host.AddComponent<Agent>();
+                env.target = goal.transform;
                 env.Address = ":0/env";
                 yield return null;
                 Assert.IsNotEmpty(env.GetServedAddress());
@@ -24,7 +27,7 @@ namespace RLMesh.Unity.Verification
                 var result = authored.Step(1);
                 Assert.LessOrEqual(result.Reward, 0);
                 string address = env.GetServedAddress();
-                env.Address = address; // Re-enable must await the old bind's drain.
+                env.Address = address;
                 env.StopServing();
                 env.enabled = false;
                 yield return null;
@@ -39,7 +42,11 @@ namespace RLMesh.Unity.Verification
                 Assert.AreEqual(address, env.GetServedAddress());
                 Assert.IsTrue(Application.runInBackground);
             }
-            finally { Object.Destroy(host); }
+            finally
+            {
+                Object.Destroy(host);
+                Object.Destroy(goal);
+            }
         }
     }
 }
