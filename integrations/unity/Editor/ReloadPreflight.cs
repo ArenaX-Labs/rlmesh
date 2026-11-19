@@ -80,8 +80,9 @@ namespace RLMesh.Unity.Editor
         private static void PlayModeChanged(PlayModeStateChange change)
         {
             if (change != PlayModeStateChange.ExitingEditMode) return;
-            if (EditorApplication.enterPlayModeOptionsEnabled &&
-                (EditorApplication.enterPlayModeOptions & EnterPlayModeOptions.DisableDomainReload) != 0) return;
+            // Unity 6+: enterPlayModeOptions* live on EditorSettings (were on EditorApplication).
+            if (EditorSettings.enterPlayModeOptionsEnabled &&
+                (EditorSettings.enterPlayModeOptions & EnterPlayModeOptions.DisableDomainReload) != 0) return;
             if (!State.IsLocked) return;
             // Play Mode transitions can unload even while the assembly reload
             // lock is held on some Unity versions. Defer the transition itself.
