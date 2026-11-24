@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from .._value_conversion import ValueBridge
     from ..adapters import Action
 
-# Cross-module surface for ``_eval.Session`` (see note in ``_connect``).
 __all__ = ["Reader", "env_image_roles", "resolve_read_adapter"]
 
 
@@ -102,8 +101,8 @@ def _read_leaf(item: object, env_tags: Any) -> tuple[str, Any]:
     if isinstance(item, str):
         node = _obs_tag_node(env_tags.observation, item)
         if isinstance(node, ImageTag):
-            # A bare image role keeps the env's native encoding -- carry the env's
-            # declared layout so the read does not transpose a chw frame to hwc.
+            # A bare image role keeps the env's declared layout so a chw
+            # frame is not transposed to hwc.
             return item, Image(item, layout=node.layout)
         if isinstance(node, (StateTag, Split)):
             return item, State(item)

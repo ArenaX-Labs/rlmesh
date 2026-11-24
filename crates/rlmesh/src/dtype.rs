@@ -39,7 +39,6 @@ pub enum DType {
 }
 
 impl DType {
-    /// Every dtype, in wire order.
     pub(crate) const ALL: [DType; 12] = [
         DType::Bool,
         DType::Uint8,
@@ -83,7 +82,6 @@ impl DType {
         }
     }
 
-    /// The facade dtype of a core one; `Unspecified` reads as `Float32`.
     pub(crate) fn from_core(dtype: CoreDType) -> DType {
         match dtype {
             CoreDType::Bool => DType::Bool,
@@ -101,7 +99,6 @@ impl DType {
         }
     }
 
-    /// Whether this is an integer or bool dtype (bounds are integers).
     pub(crate) fn is_integral(self) -> bool {
         self == DType::Bool || self.to_core().is_integer()
     }

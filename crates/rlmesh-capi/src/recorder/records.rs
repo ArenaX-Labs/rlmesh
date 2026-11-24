@@ -1,4 +1,3 @@
-//! Immutable, independently owned snapshots of facade recorder records.
 #![allow(unsafe_code)]
 use super::*;
 use crate::abi::status::guard_value;
@@ -43,8 +42,6 @@ pub struct RLMeshWorkloadRecordOptions {
 }
 macro_rules! record {
     ($ty:ident, $native:ident, $require:ident, $free:ident, $equals:ident, $repr:ident, $dict:ident) => {
-        /// # Safety
-        /// A non-NULL handle stays live for the returned reference's lifetime.
         unsafe fn $require<'a>(p: *const $ty) -> Result<&'a $native, CapiError> {
             unsafe { p.as_ref() }
                 .map(|h| &*h.0)

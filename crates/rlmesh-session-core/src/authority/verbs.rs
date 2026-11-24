@@ -9,8 +9,7 @@ use crate::wire::{
 };
 
 impl Authority {
-    /// Applies a verb as device `local`, generation 0: sans-IO tests and
-    /// simulations. The host applies every verb with [`Self::apply_from`].
+    /// Applies a verb as device `local`, generation 0: sans-IO tests and simulations.
     pub fn apply(&mut self, request: Request, now_ns: i64) -> Result<Applied, CtlError> {
         let local = Identity {
             device: crate::auth::LOCAL_DEVICE.into(),
@@ -19,8 +18,7 @@ impl Authority {
         self.apply_from(request, &local, now_ns)
     }
 
-    /// Applies a verb from `sender`. Accepted verbs that change state bump
-    /// the revision.
+    /// Applies a verb from `sender`.
     pub fn apply_from(
         &mut self,
         request: Request,
@@ -69,8 +67,6 @@ impl Authority {
             Command::Arm => self.on_arm(from, sender, now_ns, &mut applied)?,
             Command::Rearm { robot } => self.on_rearm(from, robot, sender, &mut applied)?,
             Command::Disarm => self.on_disarm(from, sender, &mut applied)?,
-            // The host checked `board_id` against the robot's pin before
-            // (`HostAuth::check_board`).
             Command::DeclareParts {
                 spec_version,
                 robot_json,
@@ -130,7 +126,6 @@ impl Authority {
             } => {
                 self.release(&from, &channels, token, to.as_ref(), &mut applied.events)?;
             }
-            // `at_ns` is on the edge's clock; the reason takes the host's.
             Command::Estop {
                 reason,
                 code,
@@ -157,19 +152,13 @@ impl Authority {
                     self.ticks.extend(ticks);
                 }
             }
-            // Key verbs change no authority state: the host's key schedule
-            // answers them.
             Command::KeysAck(_) | Command::GetKeys => {
                 self.require_attached(&from)?;
             }
-            // The host keeps the recording once the sender checks out:
-            // whoever may arm may keep.
             Command::Keep { .. } => {
                 self.require_attached(&from)?;
                 self.config.access.check_verb(&sender.device, Verb::Arm)?;
             }
-            // The home daemon's `_lobby` host answers these before they
-            // reach the authority; every other session refuses them.
             Command::LobbyWait(_)
             | Command::RunScene { .. }
             | Command::SceneStatus { .. }
@@ -188,8 +177,8 @@ impl Authority {
         Ok(applied)
     }
 
-    /// [`Self::apply_from`], minting `token` (from [`Self::reserve_token`])
-    /// if the verb mints one.
+    /// [`Self::apply_from`], minting `token` (from [`Self::reserve_token`]) if the verb mints
+    /// one.
     pub fn apply_minting(
         &mut self,
         request: Request,
@@ -237,19 +226,12 @@ impl Authority {
             .access
             .check_attach(&sender.device, &roles, priority)?;
         self.scene_admit(&from, sender, &roles, priority)?;
-        // A re-attach of the same generation (a reconnect) keeps the
-        // participant's leases; a new generation replaces the old.
         if self
             .roster
             .get(&from)
             .is_some_and(|p| p.generation != sender.generation)
         {
-            // A scene member's restart is its loss and rejoin, seen or not:
-            // SAFE, waited for
-            // until it declared again, and armed only when asked.
             if self.scene_member(&from) {
-                // The old generation ends as any replaced one does,
-                // not as a detach of the new one.
                 let before = applied.events.len();
                 self.lose(&from, &mut applied.events);
                 let mut at = 0;
@@ -261,9 +243,6 @@ impl Authority {
             }
             self.replace_generation(&from, &mut applied.events);
         }
-        // A robot back from a loss stays `left` until it declared
-        // again, whatever roles it attaches with; anyone else is
-        // back once attached.
         let left = self
             .roster
             .get(&from)
@@ -298,8 +277,6 @@ impl Authority {
                 hint_ns: None,
             },
         );
-        // A robot carries its latch into a new session: it
-        // starts in ESTOP.
         if let Some(latch) = estop.filter(|_| roles.contains(&Role::Embodiment)) {
             let code = match latch.code {
                 ReasonCode::EstopSignal => ReasonCode::EstopSignal,
@@ -391,7 +368,6 @@ impl Authority {
         if !self.held.contains_key(&robot) {
             return Ok(());
         }
-        // Acknowledged while gone, it would drive the moment it came back.
         if !info.present {
             return Err(CtlError::new(
                 CtlStatus::NotReady,
@@ -439,7 +415,6 @@ impl Authority {
         applied: &mut Applied,
     ) -> Result<(), CtlError> {
         let info = self.require_attached(&from)?;
-        // "Local clear": only an embodiment may release its latch.
         if !info.has_role(Role::Embodiment) {
             return Err(CtlError::new(
                 CtlStatus::Forbidden,
@@ -452,8 +427,6 @@ impl Authority {
                 "no latched e-stop to clear",
             ));
         }
-        // The robot that latched it clears it, or this machine's
-        // own robot process (`local`); no other robot can.
         if sender.device != crate::auth::LOCAL_DEVICE && self.estop_by.as_ref() != Some(&from) {
             let by = self
                 .estop_by
@@ -484,15 +457,10 @@ impl Authority {
         origin: Option<ParticipantId>,
         applied: &mut Applied,
     ) -> Result<(), CtlError> {
-        // Accepted from every member (the host authenticated it):
-        // refusing an e-stop is never safer. An edge reports its own
-        // latch; any other e-stop came through the host.
         let code = match code {
             ReasonCode::EstopLocal | ReasonCode::EstopSignal => code,
             _ => ReasonCode::EstopRemote,
         };
-        // An edge reporting a signal it latched names its sender,
-        // whom only the edge authenticated.
         let by = origin
             .filter(|_| code == ReasonCode::EstopSignal)
             .unwrap_or_else(|| from.clone());
@@ -500,21 +468,6 @@ impl Authority {
         Ok(())
     }
 
-    /// An embodiment's edge fell back to safe on its own (`QUEUE_DRY`,
-    /// `EDGE_LEASE_LAPSED`, `HANDOVER_TIMEOUT`, `DEVICE_WATCHDOG`): that
-    /// robot's leases end and it is held until a `Rearm` names it (unless
-    /// `rearm_robots`), whatever the cause.
-    ///
-    /// The hold is deliberate, also for a lapse caused by the holder going
-    /// silent: the edge cannot tell a crashed controller from a hung or
-    /// cut-off one, and a robot whose commands stopped is a fault for an
-    /// operator to look at before it moves again. Whether a silent holder
-    /// holds its robot depends on timing: when this host's lease grace runs
-    /// out first, the lease ends as a lost holder and the edge, seeing a
-    /// release, reports nothing, so no hold; when the edge's `hold_max` or
-    /// its own lease clock runs out first, its report lands here and holds
-    /// the robot. Both leave the robot safe; the race is accepted rather
-    /// than resolved to one outcome.
     fn on_enter_safe(
         &mut self,
         from: ParticipantId,
@@ -531,9 +484,6 @@ impl Authority {
         }
         let why = self.reason(code, &from, &reason);
         match self.mode {
-            // Only this robot stops: its leases end, and it waits to
-            // be re-armed by name (unless robots re-arm on their own).
-            // The session and the other robots go on.
             Mode::Active | Mode::Armed | Mode::Disarmed => {
                 self.stop_robot(&from, ReasonCode::VoidedBySafe, &why, &mut applied.events);
                 self.hold(&from, why, &mut applied.events);

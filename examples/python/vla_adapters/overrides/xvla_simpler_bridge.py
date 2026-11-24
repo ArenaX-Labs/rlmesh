@@ -15,8 +15,6 @@ import rlmesh.adapters as adapt
 
 
 class XVLABridgeAdapter(adapt.AdapterBase[Any]):
-    """From-scratch stateful adapter for X-VLA on the Bridge WidowX."""
-
     _WORKSPACE_ORIGIN = (0.30, 0.0, 0.10)
 
     def __init__(self) -> None:
@@ -26,7 +24,7 @@ class XVLABridgeAdapter(adapt.AdapterBase[Any]):
         import numpy as np
 
         rgb = np.asarray(raw_obs["rgb"])
-        crop = rgb[112:368, 192:448]  # calibrated 256x256 center crop
+        crop = rgb[112:368, 192:448]
         agent = raw_obs["agent"]
         pos = np.asarray(agent["eef_pos"], np.float32) - np.asarray(
             self._WORKSPACE_ORIGIN, np.float32
@@ -55,7 +53,6 @@ class XVLABridgeAdapter(adapt.AdapterBase[Any]):
         return np.clip(np.concatenate([out[:3] * 0.05, out[3:6], out[9:10]]), -1.0, 1.0)
 
     def reset(self) -> None:
-        """Forget episode state (call between episodes)."""
         self._step = 0
 
     def describe(self) -> str:

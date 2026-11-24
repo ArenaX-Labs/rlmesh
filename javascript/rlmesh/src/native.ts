@@ -1,5 +1,5 @@
 // Real-time sessions (protocol v2) in-process, over the native addon (Node >= 22, Electron, Bun):
-// a host, robots and policies on Zenoh directly, the twin of Python's `rlmesh.realtime`.
+// a host, robots and policies on Zenoh directly.
 //
 //   import { Host, Robot, Policy, Rate } from 'rlmesh';
 //   const host = await Host.open();  // Node 24: `await using host = ...` closes it for you
@@ -11,17 +11,12 @@
 //   // robot loop: robot.publish('arm', { pos, vel, effort }); const due = robot.due('arm'); await rate.sleep();
 //   await policy.run((obs) => ({ arm: { data: holdQ(obs), shape: [10, 6] } }), { duration: 5 });
 //
-// examples/node/hold.mjs runs this end to end.
-//
-// Every rule (normalisation, binding, conversions, leases, the edge, the run loop) runs in Rust;
-// this module converts typed arrays at the boundary. Times are `bigint` ns on
-// `process.hrtime.bigint()`'s clock. `publish` copies its values before returning.
+// Times are `bigint` ns on `process.hrtime.bigint()`'s clock. `publish` copies its values before returning.
 
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Priority } from './types.js';
 
-/** A declared element type. */
 export type DType =
   | 'bool' | 'uint8' | 'uint16' | 'uint32' | 'uint64'
   | 'int8' | 'int16' | 'int32' | 'int64'
@@ -52,7 +47,6 @@ export type Actions = Record<string, ActionArray | Record<string, ActionArray>>;
 /** Called at the replan rate with one inference in flight; may be async. */
 export type Predict = (obs: Observation) => Actions | Promise<Actions>;
 
-/** A real-time session failed. */
 export class SessionException extends Error {
   override name = 'SessionException';
 }
@@ -67,7 +61,6 @@ export class BindingRefused extends SessionException {
   /** `[code, 'input' | 'action', entry]` per problem. */
   problems: [string, string, string][] = [];
 }
-/** A policy start was skipped. */
 export class StartSkipped extends SessionException {
   override name = 'StartSkipped';
   /** `waiting_for`, `stale_input` or `window_gap`. */
@@ -82,12 +75,9 @@ export class SessionLost extends SessionException {
   /** `robot_lost` or `host_lost`. */
   reason = '';
 }
-/** The host did not answer in time. */
 export class SessionTimeout extends SessionException {
   override name = 'SessionTimeout';
 }
-
-// ---- the addon ------------------------------------------------------------------------------
 
 interface NativeTensor { name?: string | null; dtype: string; shape: number[]; data: Uint8Array }
 interface NativeEntry { entry: string; tensor?: NativeTensor | null; fields?: NativeTensor[] | null; text?: string | null }
@@ -252,7 +242,7 @@ export function native(): Addon {
 
 const KIND_PREFIX = 'rlmesh:';
 
-/** A native error as this module's class: its first line names the kind (lib.rs `error`). */
+/** A native error as this module's class: its first line names the kind. */
 function rethrow(e: unknown): never {
   if (!(e instanceof Error) || !e.message.startsWith(KIND_PREFIX)) throw e;
   const newline = e.message.indexOf('\n');
@@ -303,8 +293,6 @@ export async function wait<T>(p: () => Promise<T>): Promise<T> {
     return rethrow(e);
   }
 }
-
-// ---- arrays ---------------------------------------------------------------------------------
 
 type ArrayCtor = { new (n: number): TypedArray; new (b: ArrayBufferLike, off: number, len: number): TypedArray; BYTES_PER_ELEMENT: number };
 const Float16 = (globalThis as unknown as { Float16Array?: ArrayCtor }).Float16Array;
@@ -405,8 +393,6 @@ function input(e: NativeEntry): InputValue {
   return e.text ?? '';
 }
 
-// ---- the API --------------------------------------------------------------------------------
-
 /** A session host in this process, listening on a local TCP port. Participants connect to its `address`. */
 export class Host implements AsyncDisposable {
   private constructor(private native: NativeHost) {}
@@ -421,7 +407,6 @@ export class Host implements AsyncDisposable {
     return this.native.address;
   }
 
-  /** Stop the host. */
   close(): Promise<void> {
     return wait(() => this.native.close());
   }
@@ -679,7 +664,6 @@ export class Robot implements AsyncDisposable {
     return new Robot(robot, opts.onHandover, opts.timeout ?? 10);
   }
 
-  /** The robot's participant id. */
   get name(): string {
     return this.native.name;
   }
@@ -761,7 +745,6 @@ export class Robot implements AsyncDisposable {
     return wait(() => this.native.arm());
   }
 
-  /** Back to DISARMED. */
   disarm(): Promise<void> {
     return wait(() => this.native.disarm());
   }
@@ -790,7 +773,6 @@ export class Robot implements AsyncDisposable {
     call(() => this.native.reportSafe(reason));
   }
 
-  /** This robot's clock: `process.hrtime.bigint()`. */
   nowNs(): bigint {
     return call(() => this.native.nowNs());
   }
@@ -804,7 +786,6 @@ export class Robot implements AsyncDisposable {
     return wait(async () => sessionHealth(await this.native.health(opts.wait ?? false, opts.timeout ?? this.timeout)));
   }
 
-  /** The counters of the edge serving `path`. */
   edgeStats(path: string): EdgeStats {
     const s = call(() => this.native.edgeStats(path));
     return {
@@ -850,7 +831,6 @@ export interface Meta {
   skewNs: bigint;
   /** Per stream, `[streamId, seqFirst, seqLast]`: the chunk's `based_on`, by the ids of the binding in force (`policy.binding`). */
   basedOn: [number, number, number][];
-  /** The session time the snapshot was taken at. */
   timeNs: bigint;
 }
 
@@ -900,11 +880,9 @@ export type Resume = 'manual' | 'auto';
  */
 export type RobotClock = 'wall' | 'lockstep';
 
-/** A completed start, as `onStep` receives it. */
 export interface Step {
   /** A shadow start: its actions were checked and not sent. */
   shadow: boolean;
-  /** The session time of the start's snapshot. */
   timeNs: bigint;
   /** Each action entry's chunk as the part's edge receives it: one `[chunk, ...]` array per command field (null: dropped). */
   actions: Record<string, Record<string, Tensor> | null>;
@@ -983,7 +961,6 @@ export interface PolicyStats {
 /** One input bound to a part: the samples its subscription received and lost. */
 export interface InputStats {
   entry: string;
-  /** `robot:path`. */
   part: string;
   received: number;
   /** Samples missing between those received (seq gaps), dropped on the way. */
@@ -994,7 +971,6 @@ export interface InputStats {
 export interface Episode {
   /** Its rewards, summed. */
   return: number;
-  /** Lockstep steps taken. */
   steps: number;
   terminated: boolean;
   truncated: boolean;
@@ -1003,7 +979,6 @@ export interface Episode {
 /** A lockstep run's counters (`Policy.run` on a lockstep robot). */
 export interface LockstepStats {
   clock: 'lockstep';
-  /** Calls of `predict`. */
   starts: number;
   /** Chunks played, one per start (a chunk of H actions is H steps). */
   chunksSent: number;
@@ -1287,7 +1262,6 @@ export class Policy implements AsyncDisposable {
     }
   }
 
-  /** Ask a `run()` in progress to return. */
   stop(): void {
     call(() => this.nat().stop());
   }
@@ -1323,7 +1297,6 @@ export class Policy implements AsyncDisposable {
     return call(() => this.nat().events()).map((e) => Object.fromEntries(Object.entries(e).filter(([, v]) => v != null)));
   }
 
-  /** Release the leases and detach. */
   async close(): Promise<void> {
     if (this.native) await wait(() => this.native!.close());
   }
@@ -1350,13 +1323,11 @@ export class Rate {
     return wait(() => this.native.sleep());
   }
 
-  /** Periods skipped so far. */
   get missed(): number {
     return this.native.missed;
   }
 }
 
-/** A finished recording's counters. */
 export interface RecordStats {
   path: string;
   messages: number;
@@ -1394,7 +1365,6 @@ export interface RecordingSummary {
  * placed as `Robot.connect` places it.
  */
 export class SessionRecorder implements AsyncDisposable {
-  /** The finished file's counters, once closed. */
   stats: RecordStats | null = null;
 
   private constructor(private native: NativeRecorder) {}
@@ -1403,12 +1373,10 @@ export class SessionRecorder implements AsyncDisposable {
     return new SessionRecorder(await wait(() => native().startRecorder(address(opts.session), path, opts.name ?? 'recorder', opts.timeout ?? 10)));
   }
 
-  /** The MCAP file. */
   get path(): string {
     return this.native.path;
   }
 
-  /** Finish the file; resolves to its counters (also kept in `stats`). */
   async close(): Promise<RecordStats | null> {
     const stats = await wait(() => this.native.close());
     if (stats) this.stats = stats;

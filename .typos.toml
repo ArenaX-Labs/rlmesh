@@ -4,29 +4,18 @@ arange = "arange"
 fo = "fo"
 iterm = "iterm"
 mis = "mis"
-# MP4 (ISO BMFF) box fourccs used by the recorder muxer.
 trak = "trak"
 mdia = "mdia"
-# numpy's `ndarray.flags.writeable` spelling.
 writeable = "writeable"
-# Deliberately misspelled backend name in test_view.py.
 termnal = "termnal"
-# libclang's cursor-kind spelling.
 PARM = "PARM"
-# Unreal Engine's prefix (UE_LOG) in the Unreal plugin.
 UE = "UE"
 
-# C and C++ sources (the C API, the Chrono example's kinematics and ray
-# tracer) name vectors and points with two-letter math identifiers (`ba`,
-# `ot`) that the dictionary reads as misspellings. Exempt only whole two-letter
-# lowercase identifiers, so longer typos such as `teh` are still caught.
-# `*.h` is listed so headers get the same rule.
 [type.cpp]
 extend-glob = ["*.h"]
 extend-ignore-identifiers-re = ["^[a-z]{2}$"]
-# SPC-19 requires the upstream DLPack v1.0 block verbatim, including its typos.
+# The upstream DLPack v1.0 block is kept verbatim, including its typos.
 extend-ignore-re = ["(?s)#ifndef DLPACK_DLPACK_H_.*?#endif  // DLPACK_DLPACK_H_"]
 
-# Golden trace files are hashes and hex bit patterns, not prose.
 [files]
 extend-exclude = ["**/golden/**"]

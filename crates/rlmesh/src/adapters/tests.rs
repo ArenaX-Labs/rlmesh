@@ -614,7 +614,6 @@ fn unregister_compares_identity_and_keeps_resolved_routes_alive() {
         ResolveOptions::default().trust_entrypoints(true),
     )
     .unwrap();
-    // A cloned facade transform compares by Arc identity too.
     assert!(crate::ext::unregister_entrypoint(name, Some(&b.clone())).unwrap());
     drop(b);
     assert_eq!(frees.load(Ordering::SeqCst), 0);
@@ -675,7 +674,6 @@ fn registry_replace_resolve_and_unregister_complete_safely_under_contention() {
                 crate::ext::unregister_entrypoint(name, (i % 2 == 0).then_some(&expected)).unwrap();
             }
         });
-        // Resolve clones under the same lock; execution needs no registry lock.
         barrier.wait();
         let spec = ModelSpec::new(
             Custom {

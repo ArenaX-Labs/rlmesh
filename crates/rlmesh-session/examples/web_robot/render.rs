@@ -36,7 +36,7 @@ impl Renderer {
             rng: 0x9E37_79B9_7F4A_7C15,
         };
         for i in 0..r.noise.len() {
-            r.noise[i] = ((r.next() >> 59) as i8) - 16; // [-16, 15]
+            r.noise[i] = ((r.next() >> 59) as i8) - 16;
         }
         r
     }
@@ -49,7 +49,6 @@ impl Renderer {
     }
 
     pub fn render(&mut self, s: &Scene) -> &[u8] {
-        // Background: vertical gradient, floor, grid.
         for y in 0..H {
             let (r, g, b) = if y < 400 {
                 let k = y as f64 / 400.0;
@@ -71,15 +70,12 @@ impl Renderer {
                 row[x * 3 + 2] = b + d;
             }
         }
-        // Table.
         self.rect(380, 330, 600, 345, [120, 92, 64]);
         self.rect(395, 345, 405, 400, [90, 70, 50]);
         self.rect(575, 345, 585, 400, [90, 70, 50]);
-        // A cube on the table that slowly rotates colour.
         let hue = (s.t_ms / 40.0) as u32 % 255;
         self.rect(470, 300, 500, 330, [200, hue as u8, 80]);
 
-        // Arm: planar chain from joints 1..=5, base yaw (joint 0) foreshortens the chain.
         let base = (220.0f64, 400.0f64);
         let lens = [120.0, 100.0, 80.0, 45.0, 30.0];
         let yaw = s.q[0].cos().abs().max(0.25);
@@ -101,7 +97,6 @@ impl Renderer {
             self.disk(p.0, p.1, w * 0.8, [40, 44, 52]);
             p = n;
         }
-        // Gripper fingers, opened by the gripper (0..1).
         let open = 6.0 + 12.0 * s.gripper.clamp(0.0, 1.0);
         let (dx, dy) = (-(ang.sin()), ang.cos());
         for sgn in [-1.0, 1.0] {
@@ -110,7 +105,6 @@ impl Renderer {
             self.capsule(a, b, 4.0, [210, 210, 220]);
         }
 
-        // Border: the arm's edge mode.
         let mc = match s.edge {
             "driving" => [40, 200, 90],
             "hold" => [240, 180, 30],
@@ -122,14 +116,12 @@ impl Renderer {
         self.rect(0, 0, 6, H, mc);
         self.rect(W - 6, 0, W, H, mc);
 
-        // Text.
         self.text(18, 18, 3, &format!("FRAME {:06}", s.frame), [235, 235, 235]);
         self.text(18, 48, 2, &format!("MODE {} EDGE {}", s.mode, s.edge), mc);
         self.text(18, 66, 2, &format!("HOLDER {}", s.holder), [200, 200, 200]);
         let qs: Vec<String> = s.q.iter().map(|v| format!("{v:+.2}")).collect();
         self.text(18, 452, 2, &format!("Q {}", qs.join(" ")), [180, 190, 200]);
 
-        // Sensor noise (shifted per frame so it is not static and JPEG cannot fold it away).
         let off = (self.next() % 4096) as usize;
         for (i, px) in self.rgb.iter_mut().enumerate() {
             *px = px.saturating_add_signed(self.noise[i + off] / 2);

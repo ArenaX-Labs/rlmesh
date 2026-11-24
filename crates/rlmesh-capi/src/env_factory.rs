@@ -1,5 +1,4 @@
-//! C factory hooks projected through the facade's factory implementation.
-#![allow(unsafe_code)] // FFI pointers, callbacks and owned handles.
+#![allow(unsafe_code)]
 use crate::abi::{
     sizing,
     status::{CapiError, RLMeshStatus, guard, guard_value},
@@ -112,8 +111,6 @@ impl Drop for Busy {
         self.0.store(false, Ordering::Release);
     }
 }
-/// # Safety
-/// A non-NULL handle stays live for the returned reference's lifetime.
 unsafe fn require<'a>(ptr: *const RLMeshEnvFactory) -> Result<&'a RLMeshEnvFactory, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null factory"))
 }
@@ -128,10 +125,6 @@ fn enter(f: &RLMeshEnvFactory) -> Result<Busy, CapiError> {
     }
     Ok(Busy(Arc::clone(&f.busy)))
 }
-// EnvFactory's attributes are associated functions. A scoped, reentrant TLS
-// binding supplies this C instance while the facade invokes those functions.
-// Every C factory operation is sync; the facade runs its pre-serve hooks on
-// this calling thread. Nested calls on another factory restore the old scope.
 struct ScopeFrame {
     data: Arc<Data>,
     gates: Option<GateCollection>,
@@ -257,7 +250,6 @@ impl EnvFactory for Factory {
         let status =
             unsafe { d.vt.make.expect("validated make")(d.ud, &kwargs, &mut env, &mut vector) };
         let error = (status != 0).then(|| ffi::callback_error("env"));
-        // Always reclaim outputs, including rejected successful make results.
         let env = if env.is_null() {
             None
         } else {
@@ -643,7 +635,6 @@ pub unsafe extern "C" fn rlmesh_env_factory_serve(
         Ok(())
     })
 }
-/// Parse host fields before the facade begins preparation.
 fn factory_host(
     options: Option<&RLMeshEnvFactoryServeOptions>,
 ) -> Result<serde_json::Map<String, serde_json::Value>, CapiError> {
@@ -706,7 +697,7 @@ struct Entry {
     default_: RLMeshValue,
     choices: RLMeshValue,
 }
-#[allow(clippy::vec_box)] // Lent struct fields point into each stable heap allocation.
+#[allow(clippy::vec_box)]
 pub struct RLMeshTagParamList(Vec<Box<Entry>>);
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_env_factory_tag_params(
@@ -818,7 +809,6 @@ impl Drop for ServeDrain {
     }
 }
 
-/// Owns exclusive factory admission while a facade run/binding borrows it.
 pub(crate) struct FactoryBorrow {
     factory: Factory,
     data: Arc<Data>,

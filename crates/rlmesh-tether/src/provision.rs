@@ -1,9 +1,5 @@
 //! USB provisioning of a networked board: the tether's framing
 //! carries a device key one way and the home host's details the other.
-//!
-//! Errors and receivers are the tether's ([`MsgError`], [`Receiver`]): the
-//! daemon receives as the bridge does. Every frame goes out with a leading
-//! `0x00` ([`write()`]), since the port also carries the sketch's text.
 
 use crate::frame::{self, Frame, MAX_PAYLOAD};
 use crate::msg::{MsgError, Receiver};
@@ -225,7 +221,6 @@ pub fn decode<'a>(frame: &Frame<'a>, receiver: Receiver) -> Result<Prov<'a>, Msg
             if p[4] != VERSION {
                 return Err(MsgError::Version(p[4]));
             }
-            // magic, version, lib_version, arch, flags, key, host_id_len.
             if p.len() < 42 {
                 return Err(MsgError::Length);
             }
@@ -269,7 +264,6 @@ pub fn decode<'a>(frame: &Frame<'a>, receiver: Receiver) -> Result<Prov<'a>, Msg
             if p[0] != VERSION {
                 return Err(MsgError::Version(p[0]));
             }
-            // version, flags, key, host_id_len.
             if p.len() < 35 {
                 return Err(MsgError::Length);
             }
@@ -281,7 +275,6 @@ pub fn decode<'a>(frame: &Frame<'a>, receiver: Receiver) -> Result<Prov<'a>, Msg
             let name_end = 36 + host_len + name_len;
             let name = p.get(36 + host_len..name_end).ok_or(MsgError::Length)?;
             let count = usize::from(*p.get(name_end).ok_or(MsgError::Length)?);
-            // Walk the addresses: their lengths frame the payload.
             let mut at = name_end + 1;
             let mut list = [&[][..]; MAX_ADDRESSES];
             for i in 0..count {
@@ -368,7 +361,6 @@ pub fn payload(msg: &Prov<'_>, buf: &mut [u8; MAX_PAYLOAD]) -> Result<usize, Msg
             put(&d.lib_version.to_le_bytes())?;
             put(&[d.arch, d.flags])?;
             put(&d.device_key)?;
-            // Host id and participant id bounds checked above.
             put(&[d.host_id.len() as u8])?;
             put(d.host_id)?;
             put(&[d.name.len() as u8])?;
@@ -394,8 +386,6 @@ pub fn payload(msg: &Prov<'_>, buf: &mut [u8; MAX_PAYLOAD]) -> Result<usize, Msg
             utf8(p.host_id)?;
             put(&[VERSION, p.flags])?;
             put(&p.host_key)?;
-            // At most MAX_ID (32) bytes, MAX_ADDRESSES (4) addresses of at
-            // most MAX_ADDRESS (63) bytes: checked above.
             put(&[p.host_id.len() as u8])?;
             put(p.host_id)?;
             put(&[p.name.len() as u8])?;

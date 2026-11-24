@@ -2,7 +2,6 @@ name: CI
 
 on:
   workflow_dispatch:
-  # Draft PRs skip CI; marking one ready runs it once.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   push:
@@ -23,11 +22,7 @@ jobs:
     runs-on: depot-ubuntu-24.04-8
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
-      # One release-cohort wheel build serves the installed-artifact profiles.
       RLMESH_RELEASE_BUILD: "1"
-      # Line numbers in backtraces, without the full debug info that makes
-      # every test binary several times larger: two test builds (default and
-      # fenced features) with it fill the runner's disk.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
     steps:
@@ -53,18 +48,9 @@ jobs:
           if [[ "$base" =~ ^0+$ ]]; then base="$(git rev-parse HEAD^)"; fi
           python scripts/dev/affected.py --base "$base" --ci --dry-run --github-output "$GITHUB_OUTPUT"
 
-      # Setup installs the committed tool lock with --locked. Do not refresh
-      # remote dependency metadata during verification.
       - name: Static checks
         run: mise run --skip-tools check
 
-      # The Windows wheel and Node addon are cross-built only at release.
-      # Type-check their crates for x86_64-pc-windows-msvc here with the same
-      # cargo-xwin, clang-cl and llvm-lib (scripts/xwin-env.sh), so code or C
-      # dependencies that only build on unix fail on the pull request. The MSVC
-      # CRT and SDK take minutes to download, so they are cached; they do not
-      # follow our lockfile, so the key is fixed (bump it to refresh them). Its
-      # own target dir keeps the Rust cache and the test builds' disk free of it.
       - name: Restore the MSVC CRT and SDK for the Windows check
         if: steps.affected.outputs.windows == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -81,9 +67,6 @@ jobs:
           mise run --skip-tools check:windows
           rm -rf "$CARGO_TARGET_DIR"
 
-      # Same entrypoint as local `mise run test:ci`: Rust, Python, C/C++ (zig),
-      # API surface, examples, system harness, and the installed-wheel system
-      # profile against a wheel built from this checkout.
       - name: Tests
         run: mise run --skip-tools test:ci
 
@@ -115,9 +98,6 @@ jobs:
         timeout-minutes: 5
         run: mise run --skip-tools test:csharp:package
 
-      # Verify the distributable source, not just the workspace checkout. It
-      # recompiles every published crate (up to 3 minutes), so pull requests
-      # skip it: pushes to main run it, and the release workflow before it publishes.
       - name: Rust package verification
         if: github.event_name != 'pull_request'
         run: mise run --skip-tools release:rust:package
@@ -128,20 +108,14 @@ jobs:
           CXX: clang++
         run: mise run --skip-tools test:cxx:pkg
 
-      # `test` runs the C/C++ bindings under zig (clang, libc++) and the C++ ones
-      # under gcc (libstdc++) too, the most different toolchain; pushes to main and
-      # manual runs add real clang.
       - name: C/C++ bindings under clang
         if: github.event_name != 'pull_request'
         run: CC=clang CXX=clang++ mise run --skip-tools test:cxx
 
-      # RUSTC_WRAPPER=sccache comes from mise.toml; Depot runners point it at Depot Cache.
       - name: Compile cache stats
         if: always()
         run: sccache --show-stats
 
-      # Not `always()`: both take uv's cache lock, which a cancelled run can
-      # leave held, and a hung step keeps the run alive.
       - name: Remove system-test venvs before the Rust cache walks target/
         if: ${{ !cancelled() }}
         timeout-minutes: 5
@@ -152,22 +126,12 @@ jobs:
         timeout-minutes: 5
         run: uv cache prune --ci
 
-  # The browser binding (javascript/rlmesh, its wasm core in javascript/rlmesh/wasm). No trigger or
-  # matrix of its own: it rides this workflow's triggers and concurrency
-  # group, on the smallest Depot runner. The first step diffs against the
-  # base (as the C# selection above does); every later step is skipped unless
-  # a browser input changed (a tether-only change runs just the sans-IO guard
-  # and the Arduino codec's vectors), so an unaffected run costs a checkout
-  # and a `git diff`. The tools come from javascript/mise.toml (`setup:js`), so no
-  # other job installs them. The Node binding's native tests ride here too,
-  # behind their own path gate (`native`).
   browser:
     name: Browser (wasm + JS)
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 30
     env:
-      # The Python env the native tests' lockstep env runs in (Setup's uv cache).
       UV_CACHE_DIR: /tmp/.uv-cache
 
     steps:
@@ -190,14 +154,10 @@ jobs:
           paths='^(crates/rlmesh-session(-core)?/|javascript/|examples/web/|scripts/check-wasm\.mjs$|Cargo\.(toml|lock)$|mise\.(toml|lock)$|clippy\.toml$|\.mise/tasks/(setup/js|build/js|check/sans-io|test/js/)|\.github/(workflows/ci\.yml|actions/setup/))'
           changed="$(git diff --name-only "$base"...HEAD)"
           if grep -qE "$paths" <<<"$changed"; then run=true; else run=false; fi
-          # The tether crate needs only the sans-IO guard, not the browser build.
           if [ "$run" = true ] || grep -qE '^crates/rlmesh-tether/' <<<"$changed"; then sansio=true; else sansio=false; fi
-          # The Arduino codec runs the tether's conformance vectors (g++ only).
           if grep -qE '^(crates/rlmesh-tether/|integrations/arduino/|\.mise/tasks/test/tether/|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then tether=true; else tether=false; fi
-          # Board builds keep the existing runtime job and have their own path gate.
           if grep -qE '^(crates/rlmesh-(device|session|session-core|tether)/|integrations/esp32/|Cargo\.(toml|lock)$|mise\.(toml|lock)$|\.mise/tasks/(build/(esp32|zenoh-pico)|setup/esp32|test/esp32/)|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then esp32=true; else esp32=false; fi
           printf 'esp32=%s\n' "$esp32" >> "$GITHUB_OUTPUT"
-          # The Node binding's native addon, its wrapper and their tests, and the crates it binds.
           if grep -qE '^(javascript/rlmesh/(native/|src/(native|node|fleet)\.ts$|test/native/|build\.mjs$)|examples/node/|crates/rlmesh(-session(-core)?|-spaces|-adapters|-proto)?/|Cargo\.(toml|lock)$|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then native=true; else native=false; fi
           printf 'native=%s\n' "$native" >> "$GITHUB_OUTPUT"
           printf 'run=%s\nsansio=%s\ntether=%s\n' "$run" "$sansio" "$tether" | tee -a "$GITHUB_OUTPUT"
@@ -207,19 +167,12 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-components: "true"
-          # The native tests' lockstep env is a Python EnvServer (`uv run`).
           python: ${{ steps.changes.outputs.native }}
 
-      # wasm-bindgen and wasm-opt (javascript/mise.toml, locked), the
-      # wasm32-unknown-unknown target and the npm dev dependencies.
       - name: Browser toolchain
         if: steps.changes.outputs.sansio == 'true'
         run: mise run --skip-tools setup:js
 
-      # rlmesh-session-core and rlmesh-tether build for wasm32-unknown-unknown
-      # and, without std, for riscv32imac-unknown-none-elf; clippy denies
-      # clock reads, threads and sleeps (their clippy.toml), and no IO crate
-      # is a normal dependency on the wasm target.
       - name: Sans-IO guard
         if: steps.changes.outputs.sansio == 'true'
         run: mise run --skip-tools check:sans-io
@@ -232,37 +185,26 @@ jobs:
         if: steps.changes.outputs.esp32 == 'true'
         env:
           RLMESH_ESP32_REQUIRE_XTENSA: "1"
-        # `mise run --skip-tools` drops the exec'd arduino-cli from PATH: pass its path.
         run: ARDUINO_CLI="$(mise exec arduino-cli@1.5.1 -- which arduino-cli)" mise run --skip-tools build:esp32
 
       - name: Board transport command path on loopback
         if: steps.changes.outputs.esp32 == 'true'
         run: mise run --skip-tools test:esp32:host
 
-      # The Arduino tether codec, built on the host as a board would build it
-      # (C++11, no exceptions, RTTI or heap), against the same vectors.json
-      # the Rust crate checks: the two implementations can't drift apart.
       - name: Arduino tether codec against the vectors
         if: steps.changes.outputs.tether == 'true'
         env:
-          # g++ only: Setup also installs zig, whose run the local default adds.
           CXX: g++
         run: mise run --skip-tools test:tether:cpp
 
-      # wasm-bindgen-test under Node (no browser): decode, receive rules,
-      # leases, garbage input as an error, and the std::time::Instant canary.
       - name: rlmesh-wasm tests under Node
         if: steps.changes.outputs.run == 'true'
         run: mise run --skip-tools test:js:wasm
 
-      # cargo --profile wasm, wasm-bindgen --target web, wasm-opt -Oz, then
-      # the esbuild bundles and the .d.ts files.
       - name: Build the wasm and javascript/rlmesh
         if: steps.changes.outputs.run == 'true'
         run: mise run --skip-tools build:js
 
-      # The .wasm imports only wasm-bindgen glue (no env/WASI) and stays
-      # under its gzip budget.
       - name: wasm import check and size budget
         if: steps.changes.outputs.run == 'true'
         run: mise run --skip-tools check:js:wasm
@@ -271,17 +213,10 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         run: mise run --skip-tools typecheck:js
 
-      # Queue, backoff and reconnect, the Worker supervisor (trap -> respawn),
-      # the session (leases revoked on a disconnect or a Worker restart,
-      # peek/latest lifetimes). Fake Workers and sockets: no browser, robot or
-      # gateway.
       - name: JS unit tests
         if: steps.changes.outputs.run == 'true'
         run: mise run --skip-tools test:js:unit
 
-      # The Node binding over its native addon (profile node): a host,
-      # robots, policies and a recorder in one process, the hosting rule, a
-      # lockstep env served by Python, and examples/node/hold.mjs.
       - name: Node native addon tests
         if: steps.changes.outputs.native == 'true'
         timeout-minutes: 20

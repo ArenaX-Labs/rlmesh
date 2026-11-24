@@ -169,7 +169,6 @@ def thresholds_for(name: str) -> tuple[float, float, float | None]:
     ):
         return 0.15, 0.05, None
     if name.startswith(("tensor.jax.asarray", "tensor.jax.readonly")):
-        # XLA dispatch adds noise on top of the shared-buffer import.
         return 0.25, 0.10, None
     if name.startswith(
         (

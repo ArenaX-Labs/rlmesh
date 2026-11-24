@@ -8,8 +8,6 @@ from scripts.dev.python_synced import CHECK, HINT, SYNC, main
 
 
 class Runner:
-    """Answers the sync check with `checked`, recording every command."""
-
     def __init__(self, checked: int) -> None:
         self.checked = checked
         self.commands: list[list[str]] = []

@@ -5,22 +5,6 @@
 //! ```text
 //! cargo run -p rlmesh-session --example web_robot -- --listen-base 127.0.0.1:17600 --session-file session.id
 //! ```
-//!
-//! - **Host**: a `SessionHost` listening on TCP at `--listen-base`, lease
-//!   grace `--lease-grace-ms` (250 ms).
-//! - **Robot** `arm7` (`rlmesh_session::edge::Robot`): `arm` (7 joints, `pos` and `vel`
-//!   at 1 kHz, position commands, `safe: stop`, hold 100 ms), `gripper`
-//!   (100 Hz, position, `safe: hold`) and `scene/cam` (640x480 at 20 Hz, JPEG
-//!   q85; `--cam raw` sends the raw RGB). The control loop runs at 1 kHz; each
-//!   tick is the edge tick of each command group (`Robot::due`).
-//! - **Policy** (`--policy on`): a model-class controller that holds the
-//!   arm and sways it, re-requesting the lease whenever it loses it. An
-//!   operator (the browser) preempts it; when the operator releases, the
-//!   policy takes the arm back.
-//!
-//! A held lease whose heartbeats stop lapses after the grace: the session
-//! goes SAFE, the arm stops, and `arm` (any controller may) starts a fresh
-//! epoch. The robot prints its edge counters every 5 s.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -96,7 +80,6 @@ fn robot_map(cam: &str) -> String {
     )
 }
 
-/// Replans at 50 Hz, ten 10 ms actions per chunk: a slow sway of every joint.
 const POLICY: &str = r#"{
     "hz": 50,
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position", "hz": 100, "chunk": 10}}
@@ -145,7 +128,6 @@ fn read_f32s(bytes: &[u8], out: &mut [f64]) {
     }
 }
 
-/// What the camera thread draws.
 #[derive(Clone, Default)]
 struct View {
     q: [f64; JOINTS],
@@ -239,8 +221,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let controller = Arc::new(controller);
         let runner = controller.clone();
         std::thread::spawn(move || {
-            // Unattended: the browser binding releases plainly (it sends
-            // no hand-back), and no one is at this process to resume it.
             let config = RunConfig::default().resume(Resume::Auto);
             if let Err(err) = runner.run(&mut Sway, config) {
                 eprintln!("policy stopped: {err}");
@@ -252,8 +232,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(path) = &args.session_file {
-        // The session and its key, as the gateway's --session-file takes
-        // them: a credential, so for this user only.
         rlmesh_session::address::write_private(path, format!("{session}#{key}").as_bytes())?;
     }
     println!("SESSION {session}");
@@ -324,8 +302,6 @@ async fn terminate() {
     std::future::pending().await
 }
 
-/// 1 kHz: each tick is the edge tick of both groups, then the arm's sample;
-/// the gripper publishes every 10th tick.
 fn control_loop(robot: &Robot, stop: &AtomicBool, view: &Mutex<View>) {
     let clock = robot.participant().clock().clone();
     let now = || clock.now_ns();
@@ -399,15 +375,12 @@ fn control_loop(robot: &Robot, stop: &AtomicBool, view: &Mutex<View>) {
         tick += 1;
         next += PERIOD_NS;
         if now() - next > 50 * PERIOD_NS {
-            // Far behind (a stall): restart the grid instead of bursting.
             next = now();
         }
         sleep_until(now, next);
     }
 }
 
-/// 20 Hz: render the arm and offer the frame (the image publisher encodes it
-/// on its own thread).
 fn camera_loop(robot: &Robot, stop: &AtomicBool, view: &Mutex<View>) {
     let clock = robot.participant().clock().clone();
     let now = || clock.now_ns();

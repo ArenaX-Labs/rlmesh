@@ -1,12 +1,3 @@
-"""The happy path says nothing at warn or above, and a served peer says when it is ready.
-
-A complete local run, a served env driven by ``RemoteEnv``, and a driver
-stopped with Ctrl-C each end without a warning or an error line on either
-side: no undeclared-edition warning, no shutdown noise, no third-party
-source paths. ``RLMESH_READY_FILE`` appears once the served env answers and
-goes when it stops, without the session's key.
-"""
-
 from __future__ import annotations
 
 import json
@@ -88,8 +79,6 @@ DRIVER = textwrap.dedent(
     """
 )
 
-#: A tracing line at warn or above, a Python warning, or a source path from
-#: a dependency's build.
 NOISE = re.compile(r"\b(WARN|ERROR)\b|Warning:|\.cargo/registry|panicked at")
 
 
@@ -104,7 +93,6 @@ def _environment(tmp: Path) -> dict[str, str]:
         "PYTHONPATH": str(tmp),
         "RLMESH_STATE_DIR": str(tmp / "state"),
     }
-    # The suite floats deliberately; the happy path must be quiet without it.
     for name in ("RLMESH_WORKFLOW_EDITION", "RUST_LOG"):
         environment.pop(name, None)
     return environment
@@ -134,8 +122,6 @@ def test_a_local_run_is_quiet(project: Path) -> None:
 
 
 class _Served:
-    """``python -m rlmesh.serve --env served:Env`` on a launched address."""
-
     def __init__(self, project: Path, step_seconds: float = 0.0) -> None:
         from rlmesh import launch
         from rlmesh._rlmesh import sandbox_session_port
@@ -208,7 +194,6 @@ def test_a_served_env_and_its_driver_are_quiet_and_ready_says_so(
         key = served.address.split("#", 1)[1].split("/", 1)[0]
         assert key not in served.ready.read_text(encoding="utf-8")
         assert "#…/env" in ready["address"]
-        # The serving line comes once the env answers, with the same address.
         assert f"RLMesh serving env on {ready['address']} " in served.output()
 
         out, _ = served.driver(project, episodes=2).communicate(timeout=120)
@@ -231,7 +216,6 @@ def test_ctrl_c_of_a_driver_is_quiet_on_both_sides(project: Path) -> None:
         out, _ = driver.communicate(timeout=60)
         assert "INTERRUPTED" in out, out
         _quiet(out)
-        # The env keeps serving the next driver.
         out, _ = served.driver(project, episodes=1).communicate(timeout=120)
         assert "DONE" in out, out + served.output()
     finally:

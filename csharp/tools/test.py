@@ -36,7 +36,6 @@ def gate_tests(env):
     project = CSHARP / "tests/GateProbe/GateProbe.csproj"
     run([*DOTNET_BUILD, str(project)], env=env)
     probe = project.parent / "bin/Debug/net10.0/GateProbe.dll"
-    # A stub traps any value call when the gate should have refused admission.
     cases = {
         "missing": (None, ("rlmesh_capi", "Unable to load")),
         "bad_image": ("not an ELF image" * 20, ("rlmesh_capi", "invalid ELF")),
@@ -83,7 +82,6 @@ def gate_tests(env):
                 if name in ("generation", "version")
                 else source
             )
-            # Avoid the header prototype for the trap: use the real signature.
             file.write_text(
                 file.read_text().replace(
                     "void rlmesh_value_none(void)",
@@ -127,7 +125,7 @@ def gate_tests(env):
 
 
 def native_gate(env, project, assembly):
-    """The Gymnasium gate's rows over the project's env, driven from Python 0.2."""
+    """The Gymnasium gate's rows over the project's env, driven from Python."""
     run([*DOTNET_BUILD, str(project)], env=env)
     program = project.parent / "bin/Debug/net10.0" / assembly
     run(
@@ -179,9 +177,6 @@ def main():
         DOTNET_CLI_TELEMETRY_OPTOUT="1",
         DOTNET_NOLOGO="1",
     )
-    # Build a non-editable package in an isolated uv environment. It uses the
-    # project lock and the same release cohort as the C library, without writing
-    # to the author's in-tree extension or development environment.
     env.pop("VIRTUAL_ENV", None)
     env["UV_PROJECT_ENVIRONMENT"] = str(ROOT / "target/csharp-python")
     env["CARGO_TARGET_DIR"] = str(ROOT / "target/csharp-native")
@@ -194,8 +189,6 @@ def main():
             "--no-default-groups",
             "--group",
             "csharp",
-            # Rebuild the package even if uv cached a dev-cohort wheel from
-            # another task. Cargo still reuses this isolated build directory.
             "--reinstall-package",
             "rlmesh",
         ],
@@ -224,8 +217,7 @@ def main():
     )
     project = CSHARP / "tests/RLMesh.Tests/RLMesh.Tests.csproj"
     for target in ("net10.0", "netstandard2.1"):
-        # Separate output directories prevent stale project-reference resolution
-        # from causing the standard-target run to silently load net10.0.
+        # Separate output directories keep stale project-reference resolution from loading net10.0 in the standard-target run.
         output = ROOT / f"target/csharp-tests/{target}"
         run(
             [

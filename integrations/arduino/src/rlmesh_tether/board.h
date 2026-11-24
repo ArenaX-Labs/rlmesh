@@ -1,24 +1,3 @@
-// The board's runtime: the `HELLO` loop, the map, attach and
-// its generation fence, drive permits, the link watchdog, the hardware
-// watchdog and the pin e-stop.
-//
-// It is written against a `Hal`, so the same code runs on a board
-// (`arduino.h`) and in the host tests. A `Hal` provides:
-//
-//   uint32_t millis(); uint32_t micros();
-//   int read();                 // the next received byte, or -1
-//   void write(uint8_t byte);
-//   void watchdogArm();         // the MCU's watchdog, from the first poll()
-//   void watchdogFeed();
-//   bool estopConfigured();     // a sketch called estopPin()
-//   bool estopActive();         // the pin, now
-//   bool latchLoad();           // the stored latch; a read fault is latched
-//   void latchStore();          // a program-only write
-//   void latchClear();          // the erase
-//   uint16_t boot();            // differs from the previous boot
-//   uint8_t resetCause();       // `Status::reset`
-//   uint8_t arch();             // `Hello::arch`
-
 #ifndef RLMESH_TETHER_BOARD_H_
 #define RLMESH_TETHER_BOARD_H_
 
@@ -70,8 +49,7 @@ struct BoardSpec {
 enum class PartMode : uint8_t {
   // A permit is running.
   Driving,
-  // Safe for now: no permit, a `SAFE`, a trip or a detach. The next valid
-  // `COMMAND` resumes it.
+  // Safe for now: no permit, a `SAFE`, a trip or a detach.
   Safe,
   // Safe under the pin latch, until a local clear.
   Estop,
@@ -96,9 +74,8 @@ class Board {
   Board(Hal& hal, const BoardSpec& spec, PartSlot* slots, uint8_t* rx, uint16_t rxMax)
       : hal_(hal), spec_(spec), slots_(slots), rx_(rx, rxMax), rxMax_(rxMax) {}
 
-  // Puts every part in its safe state (`onSafe` once each), restores the
-  // stored e-stop latch, and sends the first `HELLO`. `watchdogMs` is
-  // clamped to 20–5000.
+  // Puts every part in its safe state (`onSafe` once each), restores the stored
+  // e-stop latch, and sends the first `HELLO`.
   void begin(SafeFn onSafe, CommandFn onCommand, void* ctx, uint16_t watchdogMs) {
     onSafe_ = onSafe;
     onCommand_ = onCommand;
@@ -108,8 +85,8 @@ class Board {
                                                 : watchdogMs;
     boot_ = hal_.boot();
     reset_ = hal_.resetCause();
-    // A sketch without a pin ignores storage: stale bytes from another
-    // sketch can't latch a board that has no button.
+    // A sketch without a pin ignores storage: stale bytes from another sketch
+    // can't latch a board that has no button.
     estop_ = hal_.estopConfigured();
     latched_ = estop_ && hal_.latchLoad();
     input_ = estop_ && hal_.estopActive();
@@ -128,12 +105,7 @@ class Board {
   }
 
   // Runs the board: call it from `loop()` at least every couple of
-  // milliseconds. Arms the hardware watchdog on the first call.
-  //
-  // From inside a callback it does nothing, not even feed the watchdog: a
-  // frame acted on there could safe a part the outer callback then drives.
-  // A callback that waits in `tether.delay()` past the hardware watchdog
-  // resets the board.
+  // milliseconds.
   void poll() {
     if (!started_ || polling_) return;
     polling_ = true;
@@ -142,9 +114,9 @@ class Board {
       armed_ = true;
     }
     hal_.watchdogFeed();
-    // Timers before each frame: a sketch that stalled past a permit or the
-    // link watchdog stops before anything buffered meanwhile is acted on,
-    // and a stream of frames can't hold a permit or the pin unchecked.
+    // Timers before each frame: a sketch that stalled past a permit or the link
+    // watchdog stops before anything buffered meanwhile is acted on, and a
+    // stream of frames can't hold a permit or the pin unchecked.
     for (uint8_t frames = 0; frames < kFramesPerPoll; ++frames) {
       timers(hal_.millis());
       if (!receiveFrame()) break;
@@ -155,8 +127,7 @@ class Board {
     polling_ = false;
   }
 
-  // Sends `part`'s dense sample, timestamped now. Only while attached, and
-  // only at the part's declared length.
+  // Sends `part`'s dense sample, timestamped now.
   bool publish(uint8_t part, const uint8_t* value, uint16_t len) {
     if (!attached_ || part >= spec_.partCount || spec_.parts[part].sampleLen != int16_t(len)) {
       return false;
@@ -165,8 +136,8 @@ class Board {
     return writeState(m, seq_++, sinkTo(hal_)) == Error::Ok;
   }
 
-  // Sends a `NOTE` (truncated to `kMaxNote` bytes), at most
-  // `kNotesPerSecond` a second.
+  // Sends a `NOTE` (truncated to `kMaxNote` bytes), at most `kNotesPerSecond` a
+  // second.
   bool note(uint8_t level, uint8_t code, const uint8_t* text, uint16_t len) {
     if (!started_) return false;
     uint32_t now = hal_.millis();
@@ -214,8 +185,7 @@ class Board {
     }
   }
 
-  // Reads up to the end of one frame, valid or not, and acts on it. False
-  // when the input ran dry first.
+  // Reads up to the end of one frame, valid or not, and acts on it.
   bool receiveFrame() {
     for (int b = hal_.read(); b >= 0; b = hal_.read()) {
       switch (rx_.push(static_cast<uint8_t>(b))) {
@@ -282,7 +252,7 @@ class Board {
         attached_ = false;
         sendHello(now);
         return;
-      default:  // PING feeds the watchdog, and that's all.
+      default:
         return;
     }
   }
@@ -293,8 +263,7 @@ class Board {
       if (a.boardId[i] != spec_.boardId.at(i)) return;
     }
     if (a.gen == gen_) {
-      // A retry of the current attach: confirm it again. Unattached, the
-      // last `gen` never comes back (a late retry from before a trip).
+      // A retry of the current attach: confirm it again.
       if (!attached_) return;
     } else {
       if (attached_) safeAll(PartMode::Safe);
@@ -302,8 +271,7 @@ class Board {
       attached_ = true;
       // The pin is read again here: it may have been pressed since.
       if ((a.flags & attach_flags::kClearEstop) && latched_ && !input_ && !hal_.estopActive()) {
-        // Storage first, then RAM, then `STATUS` (below). Storage that
-        // still reads as set (a failed erase, or none usable) keeps it.
+        // Storage first, then RAM, then `STATUS` (below).
         hal_.latchClear();
         latched_ = hal_.latchLoad();
         // The erase stalls the MCU: time the link from after it.
@@ -323,15 +291,14 @@ class Board {
   }
 
   void command(const Command& c, uint32_t now) {
-    // A pin latch drops every command; `ttl_ms` is clamped to
-    // [1, watchdog_ms].
+    // A pin latch drops every command; `ttl_ms` is clamped to [1, watchdog_ms].
     if (latched_) return;
     uint16_t ttl = c.ttlMs == 0 ? 1 : c.ttlMs > watchdogMs_ ? watchdogMs_ : c.ttlMs;
     PartSlot& s = slots_[c.part];
     s.mode = PartMode::Driving;
     s.until = now + ttl;
-    // The value is in the receive buffer, which the next byte overwrites:
-    // it is read before poll() reads on.
+    // The value is in the receive buffer, which the next byte overwrites: it is
+    // read before poll() reads on.
     onCommand_(ctx_, c.part, c.value.data, c.value.len, (c.flags & command_flags::kHold) != 0);
   }
 
@@ -348,8 +315,8 @@ class Board {
     if (input == input_) return;
     input_ = input;
     if (input && !latched_) {
-      // RAM and the parts, then `STATUS`, then storage: a reset
-      // before the store loses it, but the host already has the e-stop.
+      // RAM and the parts, then `STATUS`, then storage: a reset before the
+      // store loses it, but the host already has the e-stop.
       latched_ = true;
       safeAll(PartMode::Estop);
       sendStatus(now);
@@ -364,7 +331,6 @@ class Board {
   }
 
   // `onSafe` on each change: driving to safe, and into or out of the latch.
-  // A transient `SAFE` never takes a part out of `Estop`.
   void enterSafe(uint8_t p, PartMode why) {
     PartMode& mode = slots_[p].mode;
     if (mode == why || mode == PartMode::Estop) return;
@@ -444,4 +410,4 @@ class Board {
 }  // namespace tether
 }  // namespace rlmesh
 
-#endif  // RLMESH_TETHER_BOARD_H_
+#endif

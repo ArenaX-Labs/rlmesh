@@ -1,10 +1,4 @@
 //! Warnings with RLMesh's categories.
-//!
-//! A warning goes to the process-wide handler installed with
-//! [`set_warning_handler`], or by default to stderr as one line, `rlmesh:
-//! <Category>: <message>`, each distinct category and message once per
-//! process. A handler that fails aborts the operation that warned, which
-//! returns that error.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -58,7 +52,6 @@ pub struct Warning {
     pub message: String,
 }
 
-/// `<Category>: <message>`.
 impl fmt::Display for Warning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.category, self.message)
@@ -72,21 +65,18 @@ type SharedHandler = Arc<dyn Fn(&Warning) -> Result<()> + Send + Sync>;
 
 static HANDLER: RwLock<Option<SharedHandler>> = RwLock::new(None);
 
-/// Install the process-wide warning handler; `None` restores the default
-/// (stderr, each distinct warning once). An emission already running keeps
-/// the handler it started with, which is dropped once that call returns.
+/// Install the process-wide warning handler; `None` restores the default (stderr, each
+/// distinct warning once).
 pub fn set_warning_handler(handler: Option<WarningHandler>) {
     let handler: Option<SharedHandler> = handler.map(SharedHandler::from);
     let previous = {
         let mut slot = HANDLER.write().unwrap_or_else(|err| err.into_inner());
         std::mem::replace(&mut *slot, handler)
     };
-    // Dropped outside the lock: a handler's drop (a C `free_user_data`) may
-    // install another handler.
+    // Dropped outside the lock: a handler's drop (a C `free_user_data`) may install another handler.
     drop(previous);
 }
 
-/// Emit a warning to the current handler; its failure is the caller's error.
 pub(crate) fn warn(category: WarningCategory, message: impl Into<String>) -> Result<()> {
     let warning = Warning {
         category,
@@ -117,7 +107,6 @@ fn deliver(warning: &Warning) -> Result<()> {
     }
 }
 
-// The default handler is stderr by definition (R-23, D-13).
 #[allow(clippy::print_stderr)]
 fn default_handler(warning: &Warning) {
     static SEEN: Mutex<Option<HashSet<(WarningCategory, String)>>> = Mutex::new(None);
@@ -135,7 +124,6 @@ pub(crate) mod tests {
     use super::*;
     use crate::Error;
 
-    /// Serializes the tests that install a process-wide handler.
     pub(crate) static HANDLER_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -169,8 +157,6 @@ pub(crate) mod tests {
     }
 }
 
-// CPU work may emit warnings, but their handler belongs to the thread polling
-// the call. The same context follows work through the model's serialized queue.
 type WarningRequest = (Warning, std::sync::mpsc::SyncSender<Result<()>>);
 
 #[derive(Clone)]
@@ -206,8 +192,6 @@ pub(crate) fn with_work<R>(work: Option<WorkContext>, f: impl FnOnce() -> R) -> 
     f()
 }
 
-/// Offload host work while delivering its warnings on the polling thread and
-/// refusing callbacks that have not started when the awaiting future is dropped.
 pub(crate) async fn blocking<R: Send + 'static>(
     f: impl FnOnce() -> R + Send + 'static,
 ) -> Result<R> {

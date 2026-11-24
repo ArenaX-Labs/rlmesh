@@ -62,8 +62,6 @@ class Client:
         """The platform base URL."""
         return self._url or ""
 
-    # -- generic --------------------------------------------------------
-
     def get(self, path: str, **query: Any) -> Any:
         """``GET /v1/...``; ``query`` values may be lists for repeatable keys."""
         return self._request("GET", path, query=query)
@@ -75,8 +73,6 @@ class Client:
     def patch(self, path: str, body: Mapping[str, Any]) -> Any:
         """``PATCH /v1/...`` with a JSON body."""
         return self._request("PATCH", path, body=body)
-
-    # -- evaluations ----------------------------------------------------
 
     def preview(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Validate and size a request without launching it."""
@@ -153,8 +149,6 @@ class Client:
         """Throughput and timing rollups over every task."""
         return self.get(f"/v1/evaluations/{eval_id}/metrics")
 
-    # -- transport ------------------------------------------------------
-
     def _request(
         self,
         method: str,
@@ -186,7 +180,6 @@ class Client:
         return json.loads(raw) if raw else None
 
     def _refresh_from_cli(self) -> bool:
-        """Pull a fresh token (and the platform URL) from the signed-in CLI."""
         if os.environ.get("RLMESH_API_KEY"):
             return False
         argv = [sys.executable, "-m", "rlmesh", "token", "--json"]

@@ -1,6 +1,3 @@
-// Core C++ wrapper: build info, the current workflow edition, the describe and
-// reset constants, and the warning handler. Exits nonzero on the first failed
-// check.
 #include <cstdio>
 #include <iostream>
 #include <rlmesh.hpp>
@@ -22,7 +19,6 @@ void check(bool ok, const char* what, int line) {
 }  // namespace
 
 int main() {
-  // The Shape example.
   std::cout << rlmesh::build_info().version << " " << rlmesh::current_workflow_edition() << "\n";
 
   rlmesh::BuildInfo info = rlmesh::build_info();

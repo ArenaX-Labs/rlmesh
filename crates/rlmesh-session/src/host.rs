@@ -1,51 +1,29 @@
 //! The session host: the single writer of authority state.
 //!
-//! One task owns the [`Authority`] and serialises everything that touches it:
-//! handshakes, `ctl` queries, heartbeats, liveliness changes and the expiry
-//! tick. Presence is heartbeats only: a liveliness delete is a hint that
-//! makes the host check a participant's heartbeats sooner, never proof it
-//! left. Heartbeat echoes are sent from the Zenoh callback itself, off the
-//! task, so the host's hold time (t3 − t2) stays small and queueing cannot
-//! inflate the measured round trip. Their publishers are declared when a
-//! participant attaches, so the echo path never resolves a key per message.
+//! One task owns the [`Authority`] and serialises handshakes, `ctl` queries, heartbeats,
+//! liveliness changes and the expiry tick. Presence is heartbeats only: a liveliness delete
+//! only makes the host check a participant's heartbeats sooner. Heartbeat echoes are sent from
+//! the Zenoh callback, off the task, so queueing cannot inflate the measured round trip.
 //!
-//! **Who is speaking**: a participant attaches through the
-//! Noise IK handshake on `hs`, which gives each process (a generation) its
-//! own `k_up` and `k_down`. Every `ctl` request and heartbeat must be
-//! sealed under the `k_up` of the generation in effect, and every reply and
-//! echo is sealed under its `k_down`; anything else is `UNAUTHENTICATED`.
-//! A handshake makes a candidate, which takes effect when the host accepts
-//! its sealed `Attach`; a newer generation of a participant supersedes the
-//! older one. Request ids and a per-generation reply cache make a retried
-//! verb idempotent. `host/state` and `host/tick` are signed with the
-//! host's Ed25519 key, under the host instance and one publication counter.
+//! **Who is speaking**: a participant attaches through the Noise IK handshake on `hs`, which
+//! gives each process (a generation) its own `k_up` and `k_down`. Every `ctl` request and
+//! heartbeat must be sealed under the `k_up` of the generation in effect, and every reply and
+//! echo is sealed under its `k_down`; anything else is `UNAUTHENTICATED`. A newer generation
+//! supersedes the older one. Request ids and a per-generation reply cache make a retried verb
+//! idempotent. `host/state` and `host/tick` are signed with the host's Ed25519 key.
 //!
-//! **Keys**: the host draws every other key, delivers it on
-//! `p/{participant}/keys` sealed under the recipient's `k_down`, and
-//! retries until the recipient's `KeysAck` (its
-//! [`KeyIssuer`](crate::auth::KeyIssuer)). Each part's
-//! stream key goes to every member (and the host) and, once they installed
-//! it, to its robot to send under; a robot's new generation rotates it. A
-//! grant (or a rebind) that mints a token is prepared on a copy of the
-//! authority, its `k_cmd` and `k_obs` go to the robots, and the verb is
-//! applied, re-checked, only once every robot acknowledged: the holder gets
-//! its keys in the reply. Meanwhile the host keeps dispatching; a retry of
-//! the pending request joins it.
+//! **Keys**: the host draws every other key, delivers it on `p/{participant}/keys` sealed under
+//! the recipient's `k_down`, and retries until the recipient's `KeysAck`. A grant that mints a
+//! token is applied only once every robot acknowledged its `k_cmd` and `k_obs`; the holder gets
+//! its keys in the reply, and a retry of the pending request joins it.
 //!
-//! In a virtual-clock session the host also runs the tick barrier
-//! and publishes its ticks on `host/tick`.
+//! **Slow peers**: the host task never makes a send that could block on a link that stopped
+//! reading. What it publishes is dropped for a congested link and sent again; virtual ticks are
+//! the exception. The listening [`Transport`] cuts a link whose peer stopped reading.
 //!
-//! **Slow peers**: a Zenoh send runs on the calling thread and can wait on
-//! a link that stopped reading, so the host task never makes one that could.
-//! What it publishes is dropped for a congested link and sent again; replies
-//! and history subscriptions go out from other threads. Virtual ticks are
-//! the exception: the barrier needs every one. Zenoh still routes other
-//! participants' BLOCK traffic to such a peer from its own threads, so the
-//! host's listening [`Transport`] cuts a link whose peer stopped reading
-//! (see [`Transport::close`] and the transport's link guard).
-//!
-//! The host is a library ([`SessionHost::start`] on any [`Transport`]);
-//! `rlmesh host` runs one in the foreground.
+//! The host is a library ([`SessionHost::start`] on any [`Transport`]); `rlmesh host` runs one
+//! in the foreground. In a virtual-clock session it also runs the tick barrier and publishes
+//! `host/tick`.
 
 mod actor;
 mod config;
@@ -90,10 +68,7 @@ use crate::transport::{
 #[cfg(feature = "fleet")]
 use crate::wire::ReasonCode;
 
-/// Heartbeats queued between the Zenoh callback and the host task. Beyond
-/// this the host is overloaded and drops them (the echo was already sent).
 const HEARTBEAT_QUEUE: usize = 4096;
-/// How long a server asks whether a participant's token is declared.
 const PRESENCE_QUERY: Duration = Duration::from_millis(500);
 
 /// The operating system's RNG: host keys, handshake ephemerals and
@@ -109,7 +84,6 @@ impl Rng for OsRng {
     }
 }
 
-/// A lock that a panicked holder left behind is still the state to use.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -129,10 +103,8 @@ pub struct SessionHost {
     task: Option<JoinHandle<()>>,
 }
 
-/// A runtime change of the device table, and who is told it applied.
 type AccessChange = (Change, oneshot::Sender<Result<(), SessionError>>);
 
-/// One change of the device table.
 #[derive(Debug)]
 enum Change {
     /// A device's new entry.
@@ -174,8 +146,6 @@ impl SessionHost {
                 places: config.places.clone(),
                 #[cfg(feature = "fleet")]
                 scene: config.scene.clone(),
-                // The core's `scene`, when another crate turned its `fleet`
-                // on (a board's) and this crate's is off.
                 ..AuthorityConfig::default()
             },
         );
@@ -198,8 +168,7 @@ impl SessionHost {
         for (robot, pin) in &config.pins {
             auth.pin(robot, Some(pin.clone()));
         }
-        // Wall-clock sessions only: a virtual clock's barrier counts on every
-        // sample, which a datagram may lose.
+        // Wall-clock sessions only: a virtual clock's barrier counts on every sample, which a datagram may lose.
         let datagram = config
             .datagram
             .clone()
@@ -224,8 +193,6 @@ impl SessionHost {
                 }
             })
             .await?;
-        // Observer reports, sealed to the host: the newest per generation is
-        // relayed in `host/health`.
         let reports = transport
             .session(TrafficClass::Data)
             .declare_subscriber(keys.reports())
@@ -255,8 +222,6 @@ impl SessionHost {
             .congestion_control(CONTROL_CONGESTION)
             .express(true)
             .await?;
-        // Observers only: a dropped health message is replaced within a
-        // second, so it never blocks control traffic.
         let health_out = control
             .declare_publisher(keys.host_health())
             .congestion_control(zenoh::qos::CongestionControl::Drop)
@@ -277,8 +242,8 @@ impl SessionHost {
                 move |query| store.serve(&keys, &query)
             })
             .await?;
-        // Declared last: once a participant sees the token, every queryable
-        // above is reachable (Zenoh keeps declaration order per link).
+        // Declared last: once a participant sees the token, every queryable above is reachable
+        // (Zenoh keeps declaration order per link).
         let token = control
             .liveliness()
             .declare_token(keys.host_liveliness())
@@ -356,8 +321,6 @@ impl SessionHost {
                         presence,
                     )
                     .await;
-                // Withdraw presence first, so participants stop talking to a
-                // host that no longer answers, then the rest.
                 drop(token);
                 drop(heartbeats);
                 drop(reports);
@@ -566,9 +529,6 @@ struct HostActor {
     datagram: Option<actor::DatagramSession>,
 }
 
-/// Whether a liveliness token on `key` is declared: a participant that left
-/// and joined again under its key declares its new token before its old
-/// token's delete may arrive, so a delete alone does not mean it is gone.
 pub(crate) async fn token_declared(
     control: &zenoh::Session,
     key: &zenoh::key_expr::KeyExpr<'_>,

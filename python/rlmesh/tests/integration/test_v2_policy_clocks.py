@@ -1,16 +1,3 @@
-"""One ``Policy``, one ``predict``, on both clocks: the robot decides.
-
-- A robot declares its clock when it joins; a policy learns it at bind
-  (``Policy.clock``), before the robot serves a step.
-- On a lockstep robot ``run`` runs episodes, each from a reset seeded as a
-  model run seeds it; a chunk of H actions is H steps, rewards summed.
-- On a wall-clock robot the same ``predict`` drives it for a duration.
-- Each clock refuses the other's settings at once, and a policy binding a
-  lockstep robot among others is refused.
-- A Gym env served with ``EnvServer`` is a lockstep robot: a policy binds it
-  by kind, and resets it as a model run does (seeds, ``trial_index``).
-"""
-
 from __future__ import annotations
 
 import threading
@@ -34,7 +21,6 @@ ARM = {
 
 
 def reach(session: v2.Host | str, name: str = "reach") -> v2.Policy:
-    """Reads the arm, commands it 4 actions at a time at 100 Hz."""
     return v2.Policy(
         hz=25,
         inputs={"q": inputs.joints("arm", fields=["pos"])},
@@ -45,14 +31,11 @@ def reach(session: v2.Host | str, name: str = "reach") -> v2.Policy:
 
 
 def predict(obs: v2.Observation) -> dict[str, Any]:
-    """The one model: reach for 1 on both joints."""
     assert obs["q"].shape == (2,)
     return {"arm": np.ones((4, 2), np.float32)}
 
 
 class Sim:
-    """A lockstep arm: halfway to its target each step, cut at ``length`` steps."""
-
     def __init__(self, host: v2.Host, name: str = "sim", length: int = 10) -> None:
         self.robot = v2.Robot(name, ARM, session=host, clock=v2.Clock.LOCKSTEP)
         self.length = length
@@ -76,15 +59,12 @@ class Sim:
 
     def reset(self, seed: int | None, options: Any) -> None:
         self.seeds.append(seed)
-        # The seed sets where the arm starts.
         self.q = np.full(2, 0.0 if seed is None else (seed % 7) / 10, np.float32)
         self.t = 0
         self.robot.publish("arm", pos=self.q)
 
 
 class Arm:
-    """A wall-clock arm: publishes and plays what is due at 100 Hz."""
-
     def __init__(self, host: v2.Host, name: str = "ur10e") -> None:
         self.robot = v2.Robot(name, ARM, session=host)
         self.played = 0
@@ -114,7 +94,6 @@ def test_one_predict_runs_a_lockstep_robot_and_a_wall_clock_robot() -> None:
         sim = Sim(host)
         sim.serve()
         arm = Arm(host)
-        # The lockstep robot armed the session before the arm declared.
         arm.robot.rearm("ur10e")
         try:
             with reach(host) as policy:
@@ -156,11 +135,8 @@ def test_a_seed_runs_the_same_episodes_again() -> None:
                 again = policy.run(predict, episodes=3, seed=11)
                 assert again == first
                 assert sim.seeds == first_seeds
-                # Each episode's seed derives from the base, the robot's
-                # name and the episode's number, as a model run's does.
                 assert first_seeds == [episode_seed(11, "sim", i) for i in range(3)]
                 assert len(set(first_seeds)) == 3
-                # Unseeded resets without a seed.
                 sim.seeds = []
                 policy.run(predict)
                 assert sim.seeds == [None]
@@ -172,8 +148,6 @@ def test_a_seed_draws_the_episodes_a_model_run_draws(session_port: int) -> None:
     gym = pytest.importorskip("gymnasium")
 
     class Seeded(gym.Env):  # type: ignore[misc]
-        """Two steps an episode; records its reset seeds."""
-
         observation_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
         action_space = gym.spaces.Box(-1.0, 1.0, (2,), np.float32)
 
@@ -217,8 +191,6 @@ def test_a_seed_draws_the_episodes_a_model_run_draws(session_port: int) -> None:
 
 
 class _Trials:
-    """A local env of two steps an episode that records each reset's ``trial_index``."""
-
     metadata: ClassVar[dict[str, Any]] = {rlmesh.ENV_RESET_OPTIONS_KEY: ["trial_index"]}
 
     def __init__(self) -> None:
@@ -296,9 +268,6 @@ def test_a_chunk_of_four_is_four_steps_with_its_rewards_summed() -> None:
 
 
 def test_input_ages_are_session_time_and_never_stale() -> None:
-    # A camera published every 4th step: between, its age grows by one
-    # action period (10 ms at 100 Hz) a step, past its 25 ms bound, and it
-    # is never stale.
     cam = {
         "cam": parts.camera(4, 4, hz=50),
         "arm": ARM["arm"],
@@ -377,7 +346,6 @@ def test_each_clock_refuses_the_other_s_settings_at_once() -> None:
                 ]:
                     with pytest.raises(ValueError, match=says):
                         policy.run(predict, **given)
-                # Lockstep has no leases or sends to ask for.
             with reach(host, "reach-calls") as policy:
                 policy.bind("sim")
                 with pytest.raises(v2.SessionException, match="runs in lockstep"):
@@ -411,8 +379,6 @@ def test_a_policy_binding_a_lockstep_robot_among_others_is_refused() -> None:
 
 def test_a_lockstep_robot_is_known_by_its_declaration_before_it_serves() -> None:
     with v2.Host() as host:
-        # Attached and declared lockstep, nothing served: nothing answers
-        # its lockstep key, and its parts come with its serve.
         sim = Sim(host)
         bound: list[v2.Policy] = []
         policy = reach(host)
@@ -448,7 +414,6 @@ def test_a_served_gym_env_is_run_by_a_policy_binding_by_kind(session_port: int) 
         )
 
         def lean(obs: v2.Observation) -> dict[str, Any]:
-            # Push toward the side the pole leans to.
             return {"push": np.array([int(obs["x"][2] > 0)], np.int64)}
 
         with balance:
@@ -458,9 +423,7 @@ def test_a_served_gym_env_is_run_by_a_policy_binding_by_kind(session_port: int) 
         assert len(stats["episodes"]) == 2
         for episode in stats["episodes"]:
             assert episode["terminated"] or episode["truncated"]
-            # CartPole pays 1 a step.
             assert episode["return"] == episode["steps"] > 0
-        # The participant address read as a session names an empty session.
         with (
             v2.Policy(
                 hz=10,

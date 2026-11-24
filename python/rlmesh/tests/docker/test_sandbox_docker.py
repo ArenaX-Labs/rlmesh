@@ -1,14 +1,3 @@
-"""SandboxEnv and SandboxModel against real containers on this Docker host.
-
-The release gate for the sandbox (``mise run test:sandbox:docker``): every
-start joins, however long the container takes to listen behind Docker's
-port proxy; a wrong key is refused at once; a failing container reports its
-own error. Repeats are set by ``RLMESH_DOCKER_GATE_STARTS`` (starts of each
-sandbox, default 10) and ``RLMESH_DOCKER_GATE_RUNS`` (evaluations, default 3).
-
-Addresses carry keys, so no test prints one.
-"""
-
 from __future__ import annotations
 
 import os
@@ -37,16 +26,11 @@ pytestmark = pytest.mark.docker
 STARTS = int(os.environ.get("RLMESH_DOCKER_GATE_STARTS", "10"))
 RUNS = int(os.environ.get("RLMESH_DOCKER_GATE_RUNS", "3"))
 
-#: How long the join's probe waits for a port to hold a connection
-#: (``HOLD_PROBE`` in ``rlmesh-session``'s hosting rule).
 HOLD_PROBE = 0.25
-#: What the exits image's make() raises.
 EXITS_MARKER = "rlmesh-docker-gate: make() failed on purpose"
 
 
 class Started:
-    """When each container came up, so a join is timed from there."""
-
     def __init__(self, monkeypatch: pytest.MonkeyPatch, module: Any, name: str) -> None:
         self.at: list[float] = []
         inner: Callable[..., Any] = getattr(module, name)
@@ -66,7 +50,6 @@ def _failures(errors: list[tuple[int, BaseException]], what: str, total: int) ->
 
 
 def _rekeyed(address: str, key: str) -> str:
-    """``address`` with its key replaced by ``key``."""
     head, _, name = address.partition("/")
     return f"{head.partition('#')[0]}#{key}/{name}"
 
@@ -80,7 +63,7 @@ def test_sandbox_env_starts_every_time(
         t0 = time.monotonic()
         try:
             env = rlmesh.SandboxEnv(gate_images.env)
-        except Exception as err:  # counted, so one run reports every failure
+        except Exception as err:
             errors.append((i, err))
             continue
         joined = time.monotonic()
@@ -157,8 +140,6 @@ def test_a_wrong_key_is_refused_at_once(gate_images: GateImages) -> None:
 def test_a_wrong_key_is_refused_once_a_starting_host_listens(
     gate_images: GateImages,
 ) -> None:
-    """Dialled while the container starts: no refusal before the host
-    listens (the proxy drops links until then), a final one soon after."""
     info = sandbox_session.start_prebuilt_container(
         gate_images.env, requested_source=gate_images.env, name="env", binding={}
     )
@@ -175,8 +156,6 @@ def test_a_wrong_key_is_refused_once_a_starting_host_listens(
 
 
 def test_a_container_that_exits_reports_its_own_error(gate_images: GateImages) -> None:
-    """The exit leads, with its code and the container's last log lines: no
-    session timeout comes first, in the text or chained before it."""
     t0 = time.monotonic()
     with pytest.raises(RuntimeError) as failed:
         rlmesh.SandboxEnv(gate_images.exits)
@@ -196,8 +175,6 @@ def test_a_container_that_exits_reports_its_own_error(gate_images: GateImages) -
 def test_a_container_publishing_only_its_one_port_serves(
     gate_images: GateImages,
 ) -> None:
-    """A session host needs one published port: every traffic class of a
-    participant dials it."""
     identity, key = sandbox_host_identity()
     with sandbox_session._PORTS_LOCK:  # pyright: ignore[reportPrivateUsage]
         base = sandbox_session_port()
@@ -256,9 +233,6 @@ def test_two_sandboxes_start_at_once(gate_images: GateImages) -> None:
 
 
 def test_dockers_proxy_drops_an_unserved_link_fast(gate_images: GateImages) -> None:
-    """The join tells a host from Docker's port proxy by whether a port holds
-    a connection for HOLD_PROBE; the proxy, with nothing listening behind
-    it, must close one well within that."""
     container = docker(
         "run",
         "-d",
@@ -280,7 +254,7 @@ def test_dockers_proxy_drops_an_unserved_link_fast(gate_images: GateImages) -> N
             try:
                 link = socket.create_connection(("127.0.0.1", port), timeout=2.0)
             except OSError:
-                held.append(0.0)  # no userland proxy: refused outright
+                held.append(0.0)
                 continue
             t0 = time.monotonic()
             with link:
@@ -298,15 +272,12 @@ def test_dockers_proxy_drops_an_unserved_link_fast(gate_images: GateImages) -> N
     assert max(held) < HOLD_PROBE / 2, f"proxy held a link {max(held):.3f}s"
 
 
-#: What the raises image's predict prints before it raises.
 RAISES_MARKER = "rlmesh-docker-gate: predict failed on purpose"
 
 
 def test_a_model_whose_predict_raises_reports_its_cause(
     gate_images: GateImages,
 ) -> None:
-    """The model's empty AssertionError arrives named, with its traceback
-    and the container's last log lines, which go with the container."""
     with rlmesh.SandboxModel(gate_images.raises) as model:
         env = rlmesh.SandboxEnv(gate_images.env)
         try:
@@ -324,8 +295,6 @@ def test_a_model_whose_predict_raises_reports_its_cause(
 def test_doctor_shows_a_failed_predicts_cause(
     gate_images: GateImages, tmp_path: Any
 ) -> None:
-    """``rlmesh doctor`` reports the model's exception and its container's
-    last log lines on the failed check, before it removes the container."""
     import json
     import subprocess
     import sys

@@ -1,7 +1,3 @@
-//! A UR10e-shaped session for the cockpit's tests, sans-IO: the host's real
-//! authority state machine, a real binding from the binder, and synthetic
-//! traffic on one injected clock (the cockpit's, equal to session time).
-
 #![allow(dead_code)]
 
 use bytes::Bytes;
@@ -43,34 +39,23 @@ pub fn pid(s: &str) -> ParticipantId {
     ParticipantId::new(s).expect("id")
 }
 
-/// The session, the cockpit's model, and the clock.
 pub struct World {
     pub auth: Authority,
     pub model: Model,
     pub now: i64,
     seqs: std::collections::BTreeMap<ChannelId, u64>,
     chunk_seq: u64,
-    /// The policy's run counters so far.
     pub run: RunCounters,
-    /// Coalesced camera frames so far (the publisher's count).
     pub coalesced: u64,
-    /// Skip edge ticks while this is in the future (a CPU stall).
     pub stall_until: i64,
-    /// The edge mode `_applied` reports.
     pub edge_mode: EdgeMode,
-    /// Why, as `_applied` says.
     pub edge_reason: ReasonCode,
-    /// The robot's refused chunks, as the host relays them.
     pub rejected: Vec<(Rejection, u64)>,
     pub clock_refused: Vec<ClockRefusal>,
-    /// What a recorder would have written (snapshots, samples, chunks), by
-    /// receipt time, in ingest order.
     pub recorded: Vec<(i64, Input)>,
 }
 
 impl World {
-    /// robot, policy (model), operator and the cockpit attached; the
-    /// policy bound and holding the arm's lease; the session ACTIVE.
     pub fn ur10e() -> Self {
         let mut w = Self {
             auth: Authority::new(SessionId::new(), AuthorityConfig::default()),
@@ -151,7 +136,6 @@ impl World {
             w.verb("ur10e", Command::DemandAck { channel, revision })
                 .expect("ack");
         }
-        // The operator commands the arm by hand: an identity binding.
         let arm = w.channel("arm");
         w.verb(
             "operator",
@@ -227,7 +211,6 @@ impl World {
             .expect("stream")
     }
 
-    /// The host publishes its snapshot; the cockpit takes it in.
     pub fn publish_snapshot(&mut self) {
         let clocks = ["ur10e", "policy", "operator", "cockpit"]
             .iter()
@@ -262,7 +245,6 @@ impl World {
         Bytes::from(spec.layout.pack(&refs).expect("pack"))
     }
 
-    /// A sample of `channel` captured now, arriving `delay_ns` later.
     pub fn sample(&mut self, channel: ChannelId, applied: Option<Applied>, delay_ns: i64) {
         let spec = self.stream(channel);
         let seq = self.seqs.entry(channel).or_default();
@@ -291,12 +273,10 @@ impl World {
         );
     }
 
-    /// Skips the next seq of `channel` (a loss on the way).
     pub fn lose(&mut self, channel: ChannelId) {
         *self.seqs.entry(channel).or_default() += 1;
     }
 
-    /// The policy's chunk for the arm, published now, arriving 2 ms later.
     pub fn chunk(&mut self, source: &str, token: LeaseToken) {
         self.chunk_seq += 1;
         let arm = self.channel("arm");
@@ -335,7 +315,6 @@ impl World {
         self.model.ingest(input, at);
     }
 
-    /// The host's view of one participant's link.
     fn link(
         &self,
         who: &str,
@@ -357,10 +336,6 @@ impl World {
         }
     }
 
-    /// `ms` milliseconds of a healthy loop: arm, ft and `_applied` at
-    /// 500 Hz, the camera at 20 Hz (the publisher producing 30 and
-    /// coalescing 10), the policy's 50 Hz chunks, and every 250 ms the
-    /// heartbeats, the reports and a republished snapshot.
     pub fn run(&mut self, ms: i64) {
         let (arm, ft, cam) = (
             self.channel("arm"),
@@ -456,8 +431,6 @@ impl World {
                 );
             }
             if t % 50 == 0 {
-                // Holders' heartbeats renew their leases; the host
-                // republishes while leases are held (every lease_grace/4).
                 let epoch = self.auth.epoch();
                 for who in ["policy", "operator"] {
                     self.auth.heartbeat(&pid(who), epoch, self.now);

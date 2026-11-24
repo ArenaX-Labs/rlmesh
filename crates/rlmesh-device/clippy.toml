@@ -1,14 +1,11 @@
-# Clippy reads the nearest clippy.toml and does not merge files, so this
-# repeats the workspace's settings before the sans-IO bans.
+# Clippy does not merge clippy.toml files: repeat the workspace settings here.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-dbg-in-tests = true
 allow-print-in-tests = true
 
-# Sans-IO: time is always injected (`now_ns`), and nothing spawns or sleeps.
-# `std::time::Instant::now` compiles for wasm32-unknown-unknown and panics
-# at run time ("time not implemented on this platform").
 disallowed-methods = [
+  # `Instant::now` compiles for wasm32-unknown-unknown but panics at run time.
   { path = "std::time::Instant::now", reason = "sans-IO: take the time as a `now_ns` argument" },
   { path = "std::time::SystemTime::now", reason = "sans-IO: take the time as a `now_ns` argument" },
   { path = "std::thread::spawn", reason = "sans-IO: no threads" },

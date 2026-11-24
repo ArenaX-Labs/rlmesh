@@ -1,7 +1,4 @@
 //! Plumbing for the in-repo bindings (the Python extension and the C ABI).
-//!
-//! Hidden from the docs and exempt from semver: nothing here is part of the
-//! shared surface, and it changes with the bindings.
 
 /// Legacy DLPack capsules are Python protocol plumbing, not a native API.
 pub mod dlpack {
@@ -34,7 +31,7 @@ pub use rlmesh_proto::{
 /// and the `RLMESH_READY_FILE` a launcher waits on.
 pub use crate::ready::{Announce, READY_FILE_ENV, Ready, ready_file_from_env, set_ready_hook};
 
-/// Resolve a native participant's workflow edition (COR-6): rungs 1 to 4;
+/// Resolve a native participant's workflow edition: rungs 1 to 4;
 /// `None` when it floats.
 pub fn resolve_workflow_edition(sources: EditionSources<'_>) -> Result<Option<String>> {
     crate::editions::resolve_native(sources)
@@ -108,7 +105,7 @@ pub fn value_to_space(
     crate::value::space_codec::value_to_space(spec, value)
 }
 
-/// A [`Metadata`] encoded for the wire (COR-26).
+/// A [`Metadata`] encoded for the wire.
 pub fn metadata_to_wire(map: &Metadata) -> Result<rlmesh_spaces::MetaMap> {
     crate::value::meta_codec::metadata_to_wire(map)
 }
@@ -118,7 +115,7 @@ pub fn metadata_from_wire(map: rlmesh_spaces::MetaMap) -> Metadata {
     crate::value::meta_codec::metadata_from_wire(map)
 }
 
-/// One [`Value`] encoded for the wire (COR-26).
+/// One [`Value`] encoded for the wire.
 pub fn meta_value_to_wire(value: &Value) -> Result<rlmesh_spaces::MetaValue> {
     crate::value::meta_codec::value_to_wire(value)
 }
@@ -132,9 +129,7 @@ pub fn meta_value_from_wire(value: rlmesh_spaces::MetaValue) -> Value {
 pub use crate::run::runtime::TRIAL_INDEX_OPTION;
 
 /// The runtime driver's observer seam, its report and telemetry, and the
-/// driver's cancellation token: the bindings' native-loop plumbing (R-25).
-/// The shared surface is [`crate::RunHooks`], [`crate::RunResult`] and
-/// [`crate::ext::CancelToken`].
+/// driver's cancellation token: the bindings' native-loop plumbing.
 pub use crate::run::runtime::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, NoopRuntimeHooks,
     ObservationEmittedEvent, RunDirective, RuntimeHooks, RuntimeReport, SessionStartedEvent,
@@ -144,22 +139,19 @@ pub use tokio_util::sync::CancellationToken;
 
 /// Evaluation results over saved bundles: per-task, per-suite and overall
 /// success with Wilson intervals and merged telemetry. Drives the CLI's
-/// `eval report` and Python's Experimental `EvalReport` (R-25); C and C++
-/// are deferred.
+/// `eval report` and Python's `EvalReport`.
 pub mod report {
     pub use crate::run::report::*;
 }
 
-/// Evaluation plans: a request compiled into local workloads. Drives the CLI's `eval
-/// run` (R-25); the request file is the
-/// surface, the plan types are not.
+/// Evaluation plans: a request compiled into local workloads, driven by `eval run`.
 pub mod plan {
     pub use crate::run::plan::*;
 }
 
 /// Many routes against one model in one process: a start barrier, env
-/// connect retry, and a verdict per route. Drives Python's Experimental
-/// `Model.run_routes` and `RunResult.merge` (R-25); C and C++ are deferred.
+/// connect retry, and a verdict per route. Drives Python's
+/// `Model.run_routes` and `RunResult.merge`.
 pub mod routes {
     pub use crate::run::routes::{
         Route, in_route, merge_results, run_routes, run_routes_async, run_routes_prepared,
@@ -169,22 +161,21 @@ pub mod routes {
 /// The per-episode artifact tree (`episodes/epNNNNNN/`, the managed
 /// evaluation-artifacts layout), its records, invariants and the
 /// hardware stamp: [`crate::Recorder`]'s `record` capture and the managed
-/// runner write through it (R-25). C and C++ are deferred.
+/// runner write through it.
 pub mod artifacts {
     pub use crate::recorder::artifacts::*;
 }
 
 /// `rlmesh doctor` and `rlmesh bench`: checks and benchmarks on one machine,
 /// against a served env or model, reporting in the
-/// `probe-report.json` shape. Drives the CLI (R-25); no language binding
-/// reaches it in 0.2.
+/// `probe-report.json` shape. Drives the CLI.
 pub mod doctor {
     pub use crate::doctor::*;
 }
 
 /// The managed platform's profile store, session refresh and sign-in
 /// discovery behind [`crate::managed::Client`], for the CLI that signs in,
-/// lists and edits profiles (R-25). One store serves both, so `rlmesh login`
+/// lists and edits profiles. One store serves both, so `rlmesh login`
 /// signs in the library too.
 #[cfg(feature = "managed")]
 pub mod managed {
@@ -231,8 +222,6 @@ pub mod managed {
 pub use crate::run::runtime;
 
 /// The env envelope a served env publishes (ENV-13), for the C ABI:
-/// `qualname` overrides `native:<id>`; `component` and `language` name the
-/// describing host, `host_runtime` adds its runtime fields.
 pub fn env_describe_envelope(
     contract: &crate::EnvContract,
     qualname: Option<&str>,
@@ -434,7 +423,7 @@ pub fn model_declaration_describable(
 ) -> Result<crate::Describable<'static>> {
     crate::describe::Describable::from_declaration(decl)
 }
-/// COR-16's cached C/C++ server shorthand (no public Rust extra).
+/// The cached description of a served env, for the C and C++ bindings.
 pub fn env_server_native_describe_json(server: &crate::EnvServer) -> Result<String> {
     server.binding_description()
 }
@@ -459,15 +448,13 @@ pub fn env_factory_native_serve<F: crate::EnvFactory>(
 }
 
 /// Build and start a binding's factory server without installing signal handlers.
-/// All factory callbacks finish before return; the server owns a cancellation subscription until it stops.
 pub fn env_factory_native_start<F: crate::EnvFactory>(
     factory: &mut F,
     address: &str,
     mut options: crate::EnvFactoryServeOptions,
     host_runtime: serde_json::Map<String, serde_json::Value>,
 ) -> Result<crate::EnvServer> {
-    // Validate inputs before subscribing: a refused call must not consume a
-    // pre-fired token. These reads invoke no C factory hooks.
+    // Validate inputs before subscribing: a refused call must not consume a pre-fired token.
     crate::ext::ConnectAddress::env(address)?;
     if let Some(edition) = options
         .workflow_edition
@@ -477,9 +464,7 @@ pub fn env_factory_native_start<F: crate::EnvFactory>(
         crate::editions::validate_workflow_edition(edition)?;
     }
     crate::env::factory::bind_discriminants::<F>(&options.make_kwargs)?;
-    // The C binding has already acquired factory admission. Subscribe once
-    // before any hooks, consuming a pre-fired token here rather than polling
-    // its idle flag: other active operations may share the same token.
+    // Subscribe once before any hooks; other operations may share the token, so don't poll its idle flag.
     let subscription = options.cancel.take().map(|token| token.subscribe());
     if subscription
         .as_ref()
@@ -501,8 +486,7 @@ pub fn env_factory_native_start<F: crate::EnvFactory>(
         .as_ref()
         .is_some_and(crate::ext::CancelSubscription::fired)
     {
-        // Cancellation wins over cleanup errors; the binding's drain still
-        // closes every made env when a close callback fails.
+        // Cancellation wins over cleanup errors.
         let _ = server.shutdown();
         return Err(crate::Error::Cancelled);
     }

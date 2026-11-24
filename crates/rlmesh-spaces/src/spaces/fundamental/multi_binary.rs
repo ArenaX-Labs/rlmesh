@@ -49,11 +49,7 @@ pub(crate) fn validate_multibinary_at(spec: &SpaceSpec, path: &str) -> Result<()
     if spec.dtype == DType::Unspecified {
         return err_space!(path, "MultiBinary", "dtype must be set");
     }
-    // MultiBinary crosses the wire as one byte per bit, so its dtype must be a
-    // single-byte width (the canonical `uint8`, or `bool`/`int8`). A wider dtype
-    // would make the leaf byte count (`numel`) disagree with the raw batch
-    // stride (`numel * dtype_size`) and with the proto's "raw element bytes for
-    // the child dtype" contract.
+    // One byte per bit on the wire: a wider dtype would desync the leaf byte count from the stride.
     if crate::dtype_size(spec.dtype) != 1 {
         return err_space!(
             path,
@@ -71,8 +67,6 @@ pub(crate) fn validate_multibinary_at(spec: &SpaceSpec, path: &str) -> Result<()
         }
     }
 
-    // The MultiBinary marker carries no fields; the dimensions live entirely in
-    // `SpaceSpec.shape`, validated above.
     if !matches!(&spec.spec, Some(SpaceKind::MultiBinary(_))) {
         return err_space!(path, "MultiBinary", "spec.multi_binary must be set");
     }
@@ -94,9 +88,6 @@ pub(crate) fn contains_multibinary(
         return err_space!(path, "space is not MultiBinary");
     }
 
-    // The number of bits is the product of the shape dimensions. Fold with
-    // checked conversion/multiplication so a negative dim (which would cast to a
-    // huge `usize`) or an overflowing product is reported, never panicked on.
     let expected_size: usize = space
         .shape
         .iter()
@@ -121,7 +112,6 @@ pub(crate) fn contains_multibinary(
         );
     }
 
-    // Values are bools, always valid
     Ok(())
 }
 
@@ -143,8 +133,6 @@ mod tests {
     fn test_multibinary_requires_single_byte_dtype() {
         use crate::DType;
 
-        // MultiBinary crosses the wire as one byte per bit, so a wider dtype is
-        // rejected (it would desync the leaf byte count from the batch stride).
         assert!(
             MultiBinaryBuilder::scalar(3)
                 .dtype(DType::Int32)
@@ -157,7 +145,6 @@ mod tests {
                 .build()
                 .is_err()
         );
-        // The 1-byte dtypes are accepted.
         for dtype in [DType::Uint8, DType::Int8, DType::Bool] {
             assert!(
                 MultiBinaryBuilder::scalar(3).dtype(dtype).build().is_ok(),

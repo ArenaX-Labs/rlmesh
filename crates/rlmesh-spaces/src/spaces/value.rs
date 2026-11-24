@@ -1,8 +1,4 @@
 //! Space values and conformance.
-//!
-//! [`SpaceValue`] is the runtime value carried by a space. [`conform`] checks it
-//! against a [`SpaceSpec`] in one pass, separating structural deviations (always
-//! rejected) from range deviations the serving [`ValidationPolicy`] governs.
 
 use std::collections::BTreeMap;
 
@@ -41,12 +37,9 @@ pub enum SpaceValue {
 
 /// Classified outcome of checking a value against a space.
 ///
-/// Structural deviations — wrong shape, dtype, arity, or domain, a missing Dict
-/// key, a NaN element — are always rejected. Range deviations — Box bounds, Text
-/// charset and length — are governed by the serving side's validation policy.
-/// Structural outranks range: a structural deviation anywhere in the value masks
-/// any range deviation, so a NaN element is never delivered just because some
-/// other element happened to be out of bounds.
+/// Structural deviations (wrong shape, dtype, arity or domain, a missing Dict key, a NaN element)
+/// are always rejected. Range deviations (Box bounds, Text charset and length) are governed by
+/// [`ValidationPolicy`]. A structural deviation anywhere masks any range deviation.
 #[derive(Debug)]
 pub enum Conformance {
     /// The value is a full member of the space.
@@ -72,15 +65,15 @@ impl Conformance {
 }
 
 /// Validate that `value` belongs to `space`: structural and range conformance
-/// must both hold. This is the strict check used wherever a value must be a full
-/// member of its space (sampling, tests, internal invariants); the serving side
-/// instead inspects [`conform`] so it can apply its range policy.
+/// must both hold. The serving side inspects [`conform`] instead, to apply its
+/// [`ValidationPolicy`].
 pub fn contains(space: &SpaceSpec, value: &SpaceValue) -> Result<(), SpaceError> {
     conform(space, value).into_result()
 }
 
-/// Classify `value` against `space` in a single traversal, separating structural
-/// deviations (always rejected) from range deviations (policy-governed).
+/// Classify `value` against `space` in a single traversal, separating
+/// structural deviations (always rejected) from range deviations
+/// (policy-governed).
 pub fn conform(space: &SpaceSpec, value: &SpaceValue) -> Conformance {
     conform_at(space, value, "$")
 }
@@ -100,8 +93,6 @@ pub(crate) fn conform_at(space: &SpaceSpec, value: &SpaceValue, path: &str) -> C
     }
 }
 
-/// Lift an all-structural validator (one that produces no range deviations) into
-/// a [`Conformance`].
 fn structural(result: Result<(), SpaceError>) -> Conformance {
     match result {
         Ok(()) => Conformance::Ok,
@@ -110,11 +101,11 @@ fn structural(result: Result<(), SpaceError>) -> Conformance {
 }
 
 /// The serving side's policy for **range** deviations (Box bounds, Text charset
-/// and length). Structural deviations are always rejected and are unaffected by
-/// the policy. Observations and actions share one policy; the default is `Warn`.
+/// and length). Structural deviations are always rejected regardless. Observations and actions
+/// share one policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ValidationPolicy {
-    /// Deliver a range-deviant value and report a conformance warning. The default.
+    /// Deliver a range-deviant value and report a conformance warning.
     #[default]
     Warn,
     /// Reject a range-deviant value, as if it were structural.
@@ -123,15 +114,16 @@ pub enum ValidationPolicy {
     Off,
 }
 
-/// What the serving side should do with a value, given its [`Conformance`] and the
-/// active [`ValidationPolicy`].
+/// What the serving side should do with a value, given its [`Conformance`] and
+/// the active [`ValidationPolicy`].
 #[derive(Debug)]
 pub enum PolicyOutcome {
     /// Deliver the value with no warning.
     Accept,
     /// Deliver the value but report this range deviation as a conformance warning.
     Warn(SpaceError),
-    /// Reject the value: a structural deviation, or a range deviation under `Strict`.
+    /// Reject the value: a structural deviation, or a range deviation under
+    /// `Strict`.
     Reject(SpaceError),
 }
 
@@ -141,7 +133,6 @@ impl ValidationPolicy {
     pub fn evaluate(self, conformance: Conformance) -> PolicyOutcome {
         match conformance {
             Conformance::Ok => PolicyOutcome::Accept,
-            // Structural deviations are policy-immune: always rejected.
             Conformance::Structural(err) => PolicyOutcome::Reject(err),
             Conformance::Range(err) => match self {
                 ValidationPolicy::Warn => PolicyOutcome::Warn(err),

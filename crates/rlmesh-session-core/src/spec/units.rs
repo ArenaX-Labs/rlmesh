@@ -42,7 +42,6 @@ pub enum Quantity {
     None,
 }
 
-/// How one unit relates to its quantity's SI unit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct UnitDef {
     name: &'static str,
@@ -51,8 +50,6 @@ struct UnitDef {
     to_si: f64,
 }
 
-/// The linear units: quantity, name and factor to SI. The first of each
-/// quantity is its SI unit.
 const LINEAR: [UnitDef; 14] = [
     UnitDef {
         name: "rad",
@@ -279,7 +276,6 @@ mod tests {
             change(Quantity::Force, "N", "kPa"),
             UnitChange::Incompatible
         );
-        // Into a non-SI unit, and the other ways round.
         let UnitChange::Auto(f) = change(Quantity::AngularVelocity, "deg/s", "rad/s") else {
             panic!("deg/s -> rad/s is automatic");
         };

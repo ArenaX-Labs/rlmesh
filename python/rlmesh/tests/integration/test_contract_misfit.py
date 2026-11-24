@@ -1,10 +1,3 @@
-"""A model's action or an env's observation that does not fit its space.
-
-Either is the peer breaking its contract: a ``ValueError`` naming who (the
-model's or env's class, or a gym id) and what (the space and the misfit),
-the same in process and across a session, not an ``[INTERNAL]`` failure.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -42,8 +35,6 @@ class BoxEnv:
 
 
 class OneFloat(rlmesh.numpy.Model):
-    """Returns one float where the env's Box(4,) wants four."""
-
     def predict(self, observation: Any) -> Any:
         _ = observation
         return 0.0
@@ -94,13 +85,11 @@ def test_an_envs_misfit_observation_names_the_env_and_space() -> None:
             "shape and dtype require exactly 12"
         )
         assert str(failed.value) == text
-        # The env is to blame: its class says so beside ValueError.
         assert isinstance(failed.value, rlmesh.EnvironmentException)
 
         with pytest.raises(ValueError) as failed:
             Fits().run(server.address, episodes=1)
         assert text in str(failed.value)
-        # Only a closed connection gets the hint about one.
         assert "connection closed" not in str(failed.value)
     finally:
         server.shutdown()

@@ -1,4 +1,3 @@
-//! Typed C leaf inputs converted directly to facade values.
 #![allow(unsafe_code)]
 use super::*;
 pub(crate) unsafe fn parse_rotation(p: *const RLMeshRotation) -> Result<a::Rotation, CapiError> {

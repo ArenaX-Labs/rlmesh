@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Load and link the extracted distribution, including its final code signature.
 set -euo pipefail
 [[ "$(uname -s)" == Darwin ]] || { echo 'macOS package smoke requires Darwin' >&2; exit 1; }
 scratch_root="${RUNNER_TEMP:-$HOME/.cache/rlmesh-csharp/tmp}"
@@ -26,7 +25,6 @@ cat > "$scratch/smoke.c" <<'C'
 int main(void) { return rlmesh_abi_version() == RLMESH_ABI_VERSION ? 0 : 1; }
 C
 export PKG_CONFIG_PATH="$package/lib/pkgconfig"
-# pkg-config deliberately emits shell-separated compiler arguments.
 # shellcheck disable=SC2046
 cc "$scratch/smoke.c" $(pkg-config --cflags --libs rlmesh) -Wl,-rpath,"$package/lib" -o "$scratch/smoke"
 "$scratch/smoke"

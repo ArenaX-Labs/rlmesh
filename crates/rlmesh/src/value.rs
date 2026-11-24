@@ -9,15 +9,10 @@ pub(crate) mod space_codec;
 
 /// A value exchanged with a model or environment.
 ///
-/// Supported kinds: the six primitives, [`Tensor`], `list`, `tuple` and
-/// `dict`. A Discrete action is an `Int`, a Box observation a `Tensor`;
-/// `bool` is not an `Int`.
-///
+/// A Discrete action is an `Int`, a Box observation a `Tensor`; `bool` is not an `Int`.
 /// Reads are strict: [`as_float`](Self::as_float) refuses an `Int` and
-/// [`as_int`](Self::as_int) refuses a `Bool`, each with the TypeError class.
-/// Equality is kind-strict too: `Int(1) != Float(1.0)` and `Bool(true) !=
-/// Int(1)`; a `Float` compares as IEEE `f64` (NaN is unequal to itself), a
-/// `Dict` ignores order.
+/// [`as_int`](Self::as_int) a `Bool`, each with the TypeError class. Equality is kind-strict
+/// (`Int(1) != Float(1.0)`), a `Float` compares as IEEE `f64`, and a `Dict` ignores order.
 #[derive(Clone, PartialEq, Debug)]
 #[non_exhaustive]
 pub enum Value {
@@ -70,7 +65,6 @@ pub enum ValueKind {
 }
 
 impl ValueKind {
-    /// The diagnostic type name (`"int"`, `"Tensor"`, `"NoneType"`).
     pub(crate) fn python_name(self) -> &'static str {
         match self {
             ValueKind::None => "NoneType",
@@ -264,11 +258,10 @@ impl From<Metadata> for Value {
 
 /// An insertion-ordered string → [`Value`] map.
 ///
-/// Iteration follows insertion order; lookup and equality ignore order.
-/// [`insert`](Self::insert) on an existing key replaces the value in place
-/// and keeps its position; [`remove`](Self::remove) keeps the order of the
-/// remaining keys; collecting pairs with a repeated key keeps the first
-/// position and the last value.
+/// Iteration follows insertion order; lookup and equality ignore it.
+/// [`insert`](Self::insert) on an existing key replaces the value in place,
+/// [`remove`](Self::remove) keeps the remaining order, and collecting pairs with a repeated
+/// key keeps the first position and the last value.
 #[derive(Clone, Debug, Default)]
 pub struct Metadata(IndexMap<String, Value>);
 
@@ -336,7 +329,6 @@ impl Metadata {
     }
 }
 
-/// Order-insensitive equality; values compare kind-strictly.
 impl PartialEq for Metadata {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len()

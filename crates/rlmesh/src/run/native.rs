@@ -30,7 +30,6 @@ use crate::model::local::{LocalRun, drive_local};
 use crate::value::{meta_codec, space_codec};
 use crate::{EnvServer, Error, MadeEnv, Model, Result, Value};
 
-/// How a call waits: on the caller's thread in segments, or as a future.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
     Sync,
@@ -38,7 +37,6 @@ pub(crate) enum Mode {
 }
 
 impl Mode {
-    /// Drive `future`, running caller jobs as this mode does.
     pub(crate) async fn drive<F: std::future::Future>(
         self,
         future: F,
@@ -51,9 +49,6 @@ impl Mode {
         }
     }
 
-    /// Run a caller-side callback (a hook, a local env call) as this mode
-    /// does: a sync entry point runs it with the driving flag clear, even
-    /// inside its own library poll; an `_async` twin with the flag set.
     pub(crate) fn call<R>(self, f: impl FnOnce() -> R) -> R {
         match self {
             Mode::Sync => drive::as_caller(f),
@@ -62,9 +57,6 @@ impl Mode {
     }
 }
 
-/// What a run drives: a local [`Model`]'s engine, or a model served on a
-/// session (a [`RemoteModel`](crate::RemoteModel) at a session address),
-/// which the run invites into its env's session.
 pub(crate) enum Driven<'m> {
     Local(&'m Model),
     Served(&'m crate::RemoteModel),
@@ -72,11 +64,9 @@ pub(crate) enum Driven<'m> {
     Prepared(crate::binding::model::PreparedModel),
 }
 
-/// Makes the run's model handler, given the run's adapter context.
 type MakeHandler =
     Box<dyn FnOnce(Arc<LibraryContext>) -> Box<dyn crate::model::ModelHandler> + Send>;
 
-/// `Model::run` / `run_async`, and `run` of a served model.
 pub(crate) async fn run_model(
     model: Driven<'_>,
     env: EnvTarget<'_>,
@@ -86,7 +76,6 @@ pub(crate) async fn run_model(
     run_route(model, env, options, mode, RouteSpec::default()).await
 }
 
-/// [`run_model`] as one route of a multi-route run.
 pub(crate) async fn run_route(
     mut model: Driven<'_>,
     env: EnvTarget<'_>,
@@ -136,7 +125,6 @@ pub(crate) async fn run_route(
             "view= is not supported by the native run loop".into(),
         ));
     }
-    // RUN-5: what the options alone decide, before anything dials.
     let budget = episode_budget(episodes, seeds.as_deref())?;
     let native_chunk = match &model {
         Driven::Prepared(model) => model.native_chunk,
@@ -154,8 +142,6 @@ pub(crate) async fn run_route(
     }
     let caps = check_caps(max_episode_steps, max_episode)?;
     let prefetch_lead = check_prefetch(prefetch_lead)?;
-    // A run naming no horizon executes at the model's own (a served model's
-    // from its describe envelope), else 1.
     let execution_horizon = match (execution_horizon, &model) {
         (Some(horizon), _) => horizon,
         (None, Driven::Local(model)) => model.shared().decl.resolve_horizon(None)?,
@@ -164,8 +150,6 @@ pub(crate) async fn run_route(
                 model.address(),
                 model.connect_timeout().unwrap_or(SERVED_CONNECT),
             );
-            // The sync outer future is deliberately polled outside Tokio.
-            // Enter the library runtime only while this I/O probe is driven.
             match mode {
                 Mode::Sync => drive::block_on_library(probe),
                 Mode::Async => probe.await,
@@ -181,7 +165,6 @@ pub(crate) async fn run_route(
         )?,
     };
     check_horizon(execution_horizon, native_chunk)?;
-    // A local env is served on a served model's host, which it reaches.
     let beside = match &model {
         Driven::Served(model) => Some(model.address().to_string()),
         _ => None,
@@ -223,7 +206,6 @@ pub(crate) async fn run_route(
         .is_some()
         .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
     let outcome = async {
-        // COR-6: the call, RLMESH_WORKFLOW_EDITION, then the model's type.
         let edition = crate::editions::resolve_native(EditionSources {
             call: workflow_edition.as_deref(),
             option: None,
@@ -290,8 +272,6 @@ pub(crate) async fn run_route(
         }
     }
     .await;
-    // Detach atomically before selecting the error. A late firing must not
-    // replace the first hook error retained by the relay.
     let fired = watch.finish(Ok(())).is_err();
     context.set_presentation(None);
     if let Some(error) = relay.as_ref().and_then(|relay| relay.take_error()) {
@@ -303,12 +283,8 @@ pub(crate) async fn run_route(
     }
 }
 
-/// How long a run waits to reach a served model when its `RemoteModel` sets
-/// no connect timeout, as Python's `Model(address)`.
 pub(crate) const SERVED_CONNECT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Refuses what a served model cannot take from its driver: it owns its
-/// adapter, and its instruction is its own.
 pub(crate) fn served_options(
     trust_entrypoints: Option<bool>,
     instruction: Option<&str>,
@@ -326,8 +302,6 @@ pub(crate) fn served_options(
     Ok(())
 }
 
-/// A factory-made env remains owned until its explicit close, including on a
-/// dropped run future. Cleanup runs on a plain thread and outlives the future.
 #[derive(Default)]
 pub(crate) struct OwnedMadeEnv(pub(crate) Option<MadeEnv>, pub(crate) bool);
 
@@ -352,7 +326,6 @@ impl Drop for OwnedMadeEnv {
 struct Plan {
     ended: Arc<std::sync::atomic::AtomicBool>,
     make_handler: MakeHandler,
-    /// The served model's address, whose host serves a local env.
     beside: Option<String>,
     budget: u64,
     seeds: Vec<i64>,
@@ -361,18 +334,14 @@ struct Plan {
     execution_horizon: u32,
     prefetch_lead: u32,
     edition: Option<String>,
-    /// The call's own `workflow_edition`, the top rung of a local factory's
-    /// declaration as of the model's.
     call_edition: Option<String>,
     trial_index_base: u64,
     route: RouteSpec,
 }
 
-/// Where the driver dials, and what the run releases afterwards.
 struct Dial<'e> {
     address: String,
     loopback: Option<EnvServer>,
-    /// A served env to shut down afterwards (`close_env` on an `EnvServer`).
     shutdown: Option<&'e EnvServer>,
 }
 
@@ -390,7 +359,6 @@ async fn run_body(
         mode.call(|| hooks.on_run_start(context))?;
     }
     if plan.budget == 0 {
-        // Nothing runs, so the env is never dialed (or built).
         return Ok(RunResult::default());
     }
     let (port, mut queue) = caller_channel();
@@ -428,7 +396,6 @@ async fn run_body(
                 shutdown: None,
             })
         }
-        // An open client holds a session env's lease, which the run needs.
         EnvKind::Remote(handle) if crate::address::is_v2(handle.remote_address()) => {
             return Err(Error::Type(
                 "run(RemoteEnv(address)) is gone in rlmesh 0.2: an open RemoteEnv holds its \
@@ -436,7 +403,6 @@ async fn run_body(
                     .into(),
             ));
         }
-        // The native loop dials a caller's client's address itself.
         EnvKind::Remote(handle) => Some(Dial {
             address: handle.remote_address().to_string(),
             loopback: None,
@@ -448,12 +414,9 @@ async fn run_body(
         EnvKind::Server(server) if plan.close_env => Some(*server),
         _ => None,
     };
-    // A factory-built env is this call's own: built only now that an
-    // episode needs it, closed when the run ends.
     let mut made = OwnedMadeEnv::default();
     let mut loopback_edition = plan.edition.clone();
     if let EnvKind::Factory(factory) = &mut env {
-        // Refused before the factory builds anything, as serving refuses it.
         if let Some(own) = factory.local_edition(plan.call_edition.as_deref())? {
             loopback_edition = Some(own);
         }
@@ -503,7 +466,6 @@ async fn run_body(
         trial_index_base: Some(plan.trial_index_base),
         max_episode_steps: plan.caps.max_episode_steps,
         max_episode_seconds: plan.caps.max_episode_seconds,
-        // An address closes over the wire; a local env closes directly below.
         close_env: plan.close_env && over_wire,
         execution_horizon: plan.execution_horizon,
         prefetch_lead: plan.prefetch_lead,
@@ -537,8 +499,6 @@ async fn run_body(
         .drive(core, &mut queue, &mut side)
         .await
         .map_err(|err| match err {
-            // v1's Join stream and a v2 session's lease refuse a second
-            // driver alike.
             Error::Runtime(message) | Error::Connection(message)
                 if message.contains("active Join session")
                     || message.starts_with(crate::env::client::ENV_HELD) =>
@@ -552,8 +512,6 @@ async fn run_body(
             }
             other => other,
         });
-    // Drop the port's queue first: a lane still waiting on a relayed call
-    // fails at once instead of holding the loopback's drain.
     drop(queue);
     drop(port);
     let mut release: Result<()> = Ok(());
@@ -570,7 +528,6 @@ async fn run_body(
         };
         release = release.and(shut);
     }
-    // A caller's local env closes on the opt-in; one built here always.
     if is_local && (plan.close_env || built) {
         let closed = match side.env.as_mut() {
             Some(LocalEnv::Env(env)) => mode.call(|| env.close()),
@@ -579,9 +536,7 @@ async fn run_body(
         };
         release = release.and(closed);
     }
-    // Explicit close has run; disarm the cancellation cleanup.
     made.1 = true;
-    // Close the caller's remote session on the opt-in.
     if plan.close_env
         && let Some(handle) = remote_handle
     {
@@ -604,8 +559,6 @@ async fn run_body(
     let outcome = report.and_then(|report| {
         release.map(|()| {
             let mut result = results::from_report(&report);
-            // An in-process spec'd model's resolve reports through the run's
-            // context; a served one's through the report.
             let local = context.advisories();
             if !local.is_empty() {
                 result.advisories = local;
@@ -640,7 +593,6 @@ async fn run_body(
     }
 }
 
-/// Per-episode bookkeeping the relay keeps between events.
 struct Episode {
     index: i64,
     seed: Option<i64>,
@@ -651,7 +603,6 @@ struct Episode {
     step_ms: f64,
 }
 
-/// The facade value of each lane of a group, encoded back into wire leaves.
 fn encode_lanes(
     values: &[Value],
     space: &rlmesh_proto::spaces::v1::SpaceSpec,
@@ -666,7 +617,6 @@ fn encode_lanes(
         .map_err(|err| Error::Protocol(err.to_string()))
 }
 
-/// One lane group's in-flight step: what it observed, then what it did.
 struct Group {
     ids: Vec<String>,
     observations: Vec<Value>,
@@ -678,15 +628,10 @@ struct RelayState {
     episodes: HashMap<String, Episode>,
     groups: HashMap<i32, Group>,
     results: Vec<EpisodeResult>,
-    /// A group's observation and action as the transforms decoded (and
-    /// maybe replaced) them, so the events after them do not decode again.
     observed: HashMap<i32, Vec<Value>>,
     acted: HashMap<i32, Vec<Value>>,
 }
 
-/// Turns the runtime's events into [`RunHooks`] calls on the caller: each is
-/// awaited, so hooks run serially and the env is idle while one runs. The
-/// first hook error is kept and cancels the run.
 pub(crate) struct HookRelay {
     port: Mutex<Option<CallerPort>>,
     driver: CancellationToken,
@@ -694,7 +639,6 @@ pub(crate) struct HookRelay {
     state: Mutex<RelayState>,
     context: Arc<LibraryContext>,
     directive: Arc<Mutex<super::runtime::RunDirective>>,
-    /// The hooks' artifact writer, asked for at each session start.
     artifacts: Mutex<Option<ArtifactTap>>,
 }
 
@@ -702,7 +646,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-/// One facade value per lane from a group's wire leaves.
 fn decode_lanes(
     leaves: Vec<bytes::Bytes>,
     space: &rlmesh_proto::spaces::v1::SpaceSpec,
@@ -731,8 +674,6 @@ impl HookRelay {
         }
     }
 
-    /// Feed the hooks' artifact writer on the caller's thread. Recording is
-    /// best-effort: a failure warns and the run goes on.
     async fn record(
         &self,
         feed: impl FnOnce(&mut EpisodeArtifacts) -> Result<()> + Send + 'static,
@@ -766,14 +707,10 @@ impl HookRelay {
         self.driver.cancel();
     }
 
-    /// Run `call` on the caller's hooks and wait for it.
     async fn dispatch(&self, call: impl FnOnce(&mut dyn RunHooks) -> Result<()> + Send + 'static) {
         let _ = self.transform(call).await;
     }
 
-    /// Run `call` on the caller's hooks and hand back its value, `None` when
-    /// there is no caller to run it; a failure is kept, cancels the run and
-    /// fails the route.
     async fn transform<R: Send + 'static>(
         &self,
         call: impl FnOnce(&mut dyn RunHooks) -> Result<R> + Send + 'static,
@@ -790,15 +727,12 @@ impl HookRelay {
             .map_err(|err| self.fatal(err))
     }
 
-    /// Keep `err` as the run's error, cancel the run, and fail the route.
     fn fatal(&self, err: Error) -> HookError {
         let message = err.to_string();
         self.fail(err);
         HookError::Message(message)
     }
 
-    /// Each lane's `(episode, steps taken)`; `None` for a lane outside any
-    /// scored episode.
     fn lanes(&self, episode_ids: &[String]) -> Vec<Option<(i64, i64)>> {
         let state = lock(&self.state);
         episode_ids
@@ -807,10 +741,6 @@ impl HookRelay {
             .collect()
     }
 
-    /// Run a lane transform (`transform_observation` or `transform_action`)
-    /// over a group's leaves, decoded per lane: the lanes, transformed where
-    /// a hook replaced them, and the re-encoded leaves when one did. `None`
-    /// when no caller ran it.
     async fn transform_lanes(
         &self,
         episode_ids: &[String],
@@ -1100,7 +1030,6 @@ impl RuntimeHooks for HookRelay {
                 if event.autoreset_roll.get(lane).copied().unwrap_or(false) {
                     continue;
                 }
-                // RUN-21: the runtime always sends an action.
                 let Some(action) = group
                     .actions
                     .as_ref()

@@ -3,15 +3,12 @@
 //! lockstep exchange alone.
 //!
 //! A robot or a driver names the robot by its participant address
-//! (`[host/][session/]robot`, [`rlmesh_session::address`]); the session is
-//! placed by the hosting rule, so the first participant may host it in its
-//! own process. [`LockstepBinding::address`] is the robot's address with the
-//! host's real port, what drivers in other processes connect to.
+//! (`[host/][session/]robot`); the first participant may host the session in
+//! its own process. [`LockstepBinding::address`] is the robot's address with
+//! the host's real port, what drivers in other processes connect to.
 //!
-//! The lockstep class is its own Zenoh session per participant
-//! (RealTime, reliable, BLOCK, express), opened only when lockstep is
-//! used: it listens on any port and meets its peers through the host's
-//! control endpoint. A driver and an env in one process skip it: the
+//! The lockstep class is its own Zenoh session per participant, opened only
+//! when lockstep is used. A driver and an env in one process skip it: the
 //! driver calls the env's handler directly.
 
 use std::collections::{HashMap, HashSet};
@@ -50,10 +47,9 @@ pub const GYM_HZ: f64 = 1000.0;
 
 /// A lockstep robot's map with what lockstep lets it leave out filled in: a
 /// part without `hz` runs once per step (at the notional [`GYM_HZ`]) unless
-/// it is an event part (`text`, `reward`, `success`), which has no rate, and
-/// a part without `kind` is a custom part of its own, kind
-/// `local/{its last path segment}`, declared by its `fields`. A game or a
-/// classic-control env so needs no robot vocabulary.
+/// it is an event part (`text`, `reward`, `success`), which has no rate, and a
+/// part without `kind` is a custom part of kind `local/{its last path segment}`,
+/// declared by its `fields`.
 pub fn lockstep_robot_map(robot_json: &str) -> Result<String, GymError> {
     use serde_json::value::RawValue;
     type Decl = indexmap::IndexMap<String, Box<RawValue>>;
@@ -82,8 +78,6 @@ pub fn lockstep_robot_map(robot_json: &str) -> Result<String, GymError> {
     serde_json::to_string(&out).map_err(bad)
 }
 
-/// Parses a participant address; a malformed one (or an old form, with its
-/// upgrade) is a configuration error.
 fn participant_address(text: &str) -> Result<Address, GymError> {
     Address::participant(text).map_err(|e| match e {
         SessionError::Config(why) => GymError::Config(why),
@@ -101,21 +95,13 @@ pub struct LockstepAddress {
 }
 
 impl LockstepAddress {
-    /// Parses the participant address `text` and places its session by the
-    /// hosting rule; a `driver` given a key only joins.
     async fn place(text: &str, driver: bool) -> Result<(Self, Placed), GymError> {
         let address = participant_address(text)?;
         let robot = ParticipantId::new(address.participant.clone().unwrap_or_default())
             .map_err(|e| GymError::Config(e.to_string()))?;
-        // A key names the host that holds it. A driver retrying until its
-        // env listens must not host in that host's place under fresh keys:
-        // it would hold the port the env is about to bind. A server may
-        // (re)host at the address it printed.
         let placed = if driver && address.key.is_some() {
             Placed::joined(address.joining()?)
         } else if let Some(joining) = take_beside(&address)? {
-            // A run's env beside a served model: that model's host holds the
-            // port, and one not up yet is waited for, never hosted for.
             Placed::joined(joining)
         } else {
             place(&address, LEASE_GRACE).await?
@@ -129,8 +115,6 @@ impl LockstepAddress {
         ))
     }
 
-    /// The robot's key in this process's registry: named sessions recur
-    /// across hosts, so the host's endpoint is part of it.
     fn key(&self) -> String {
         format!(
             "{}/{}/{}/{}",
@@ -147,14 +131,12 @@ impl LockstepAddress {
     }
 }
 
-/// Without the key, for logs and errors.
 impl std::fmt::Display for LockstepAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.session, self.robot)
     }
 }
 
-/// Lockstep envs served in this process, for the direct link.
 fn local() -> &'static Mutex<HashMap<String, Weak<dyn LockstepHandler>>> {
     static LOCAL: OnceLock<Mutex<HashMap<String, Weak<dyn LockstepHandler>>>> = OnceLock::new();
     LOCAL.get_or_init(Mutex::default)
@@ -171,14 +153,10 @@ fn local_handler(key: &str) -> Option<Weak<dyn LockstepHandler>> {
 
 /// A fresh session on this process's shared in-process host, for a run's
 /// local env. The host starts once, on OS-assigned local ports, and lives
-/// for the process; each run's session stops when its participants leave,
-/// so many runs cost one host.
 pub fn local_run_session() -> Result<String, GymError> {
     static HOST: OnceLock<std::result::Result<SocketAddr, String>> = OnceLock::new();
     let base = HOST
         .get_or_init(|| {
-            // Its own thread and runtime: a caller inside an async context
-            // cannot block on it, and the host outlives every run.
             std::thread::spawn(|| {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(1)
@@ -195,7 +173,6 @@ pub fn local_run_session() -> Result<String, GymError> {
                     ))
                     .map_err(|e| e.to_string())?;
                 let base = placed.address.base;
-                // Both live for the process.
                 std::mem::forget(placed);
                 std::mem::forget(runtime);
                 Ok(base)
@@ -210,9 +187,8 @@ pub fn local_run_session() -> Result<String, GymError> {
 
 /// A fresh session for a run's local env on the host of the served model at
 /// `model` (a participant address), under the key it carries: the model then
-/// answers there on its own host, in its own process, so a model that can't
-/// reach this machine (one in a container, on another network) still drives
-/// the env, which this process reaches the way it reaches the model.
+/// answers on its own host, so a model that can't reach this machine still
+/// drives the env.
 pub fn run_session_beside(model: &str) -> Result<String, GymError> {
     let own = participant_address(model)?.joining()?;
     let session = SessionAddress {
@@ -226,15 +202,11 @@ pub fn run_session_beside(model: &str) -> Result<String, GymError> {
     Ok(session.invite())
 }
 
-/// The sessions [`run_session_beside`] made, by host and session, until an
-/// env server binds there.
 fn beside() -> &'static Mutex<HashSet<(SocketAddr, SessionId)>> {
     static BESIDE: OnceLock<Mutex<HashSet<(SocketAddr, SessionId)>>> = OnceLock::new();
     BESIDE.get_or_init(Mutex::default)
 }
 
-/// `address` resolved for joining, when it names a session made beside a
-/// served model (once: its server binds there once).
 fn take_beside(address: &Address) -> Result<Option<SessionAddress>, GymError> {
     if address.session.is_none() {
         return Ok(None);
@@ -249,7 +221,6 @@ fn take_beside(address: &Address) -> Result<Option<SessionAddress>, GymError> {
 
 /// Where a run serves its local env, in a session of its own: beside the
 /// served model at `model` ([`run_session_beside`]), else on this process's
-/// shared host ([`local_run_session`]).
 pub fn run_session(model: Option<&str>) -> Result<String, GymError> {
     match model {
         Some(model) => run_session_beside(model),
@@ -257,7 +228,6 @@ pub fn run_session(model: Option<&str>) -> Result<String, GymError> {
     }
 }
 
-/// Joins `session` as `id`.
 async fn join(
     session: &SessionAddress,
     id: ParticipantId,
@@ -276,19 +246,16 @@ fn listen_ip(base: SocketAddr) -> IpAddr {
     }
 }
 
-/// Whether `transport` opened links of its own, which its participant
-/// closes: not a shared session, nor an in-process host's it rides.
 pub(crate) fn owns_links(transport: &Transport) -> bool {
     !(transport.is_shared() || transport.is_in_process())
 }
 
 /// The lockstep class session of a participant of the session at
 /// `address`: the transport's own when it opens no links of its own
-/// (close it only when it does), else a link of its own to the host,
-/// presenting what the participant's links did. Zenoh closes a session
-/// whose last handle drops on the dropping thread, in a nested `block_on`:
-/// hold it with [`Transport::from_session`] to have that happen on a thread
-/// of its own.
+/// (close it only when it does), else a link of its own to the host. Zenoh
+/// closes a session whose last handle drops on the dropping thread, in a nested
+/// `block_on`: hold it with [`Transport::from_session`] to have that happen on
+/// a thread of its own.
 pub async fn lockstep_session(
     transport: &Transport,
     address: &SessionAddress,
@@ -301,16 +268,13 @@ pub async fn lockstep_session(
         listen: vec![format!("tcp/{}", SocketAddr::new(listen_ip(base), 0))],
         connect: vec![format!("tcp/{base}")],
     };
-    // A client participant's lockstep session is a client too.
     let tuning = TransportTuning {
         client: transport.is_client(),
         link: transport.link().cloned(),
         ..TransportTuning::default()
     };
     let mut config = zenoh_config(&endpoints, &tuning)?;
-    // Return once the host is connected rather than waiting out the scouting
-    // delay for gossiped peers: a driver probes the queryable it calls
-    // (`wait_ready`) before its first request anyway.
+    // Return once connected rather than waiting out the scouting delay; drivers probe the queryable before their first request.
     config
         .insert_json5("open/return_conditions/connect_scouted", "false")
         .map_err(|e| GymError::Config(e.to_string()))?;
@@ -319,9 +283,6 @@ pub async fn lockstep_session(
         .map_err(|e| GymError::Closed(e.to_string()))
 }
 
-/// [`lockstep_session`], held as a transport: Zenoh closes a session whose
-/// last handle drops in a nested `block_on` on the dropping thread, and a
-/// transport's last handle closes it on a thread of its own instead.
 pub(crate) async fn lockstep_transport(
     transport: &Transport,
     address: &SessionAddress,
@@ -344,8 +305,6 @@ pub struct ServeOptions {
 
 /// Checks that an env with `contract` maps to a robot before
 /// anything is served, so a refusal (a Text action, a space with no part
-/// layout) reaches the caller at once instead of surfacing later from the
-/// serve task.
 pub fn check(contract: rlmesh_spaces::EnvContract) -> Result<(), GymError> {
     let info = GymEnvInfo {
         contract,
@@ -356,7 +315,6 @@ pub fn check(contract: rlmesh_spaces::EnvContract) -> Result<(), GymError> {
     GymMap::new(info, GYM_HZ).map(|_| ())
 }
 
-/// What a served env tells a handshake, for its `gym_env`.
 fn env_info(env: &dyn Served, declared: Option<&str>) -> GymEnvInfo {
     let (workflow_edition, supported_workflow_editions) = crate::editions::offer(declared);
     GymEnvInfo {
@@ -373,7 +331,6 @@ fn env_info(env: &dyn Served, declared: Option<&str>) -> GymEnvInfo {
 
 /// A lockstep address bound for serving: the session joined or hosted,
 /// and the robot attached to it under its name, which no other live
-/// participant holds.
 pub struct LockstepBinding {
     address: LockstepAddress,
     placed: Placed,
@@ -391,11 +348,8 @@ impl std::fmt::Debug for LockstepBinding {
 
 /// Binds a robot's participant address for serving: places its session by
 /// the hosting rule and attaches the robot, so a name another participant
-/// holds is refused here.
 pub async fn bind(address: &str) -> Result<LockstepBinding, GymError> {
     let (address, mut placed) = LockstepAddress::place(address, false).await?;
-    // Its clock is declared at attach, so every participant knows it from
-    // the roster before the robot serves a step.
     let attached = address
         .session
         .join_with(
@@ -441,7 +395,6 @@ impl LockstepBinding {
 
     /// Attaches as the robot, declares the env's robot map, arms
     /// and serves the env over the lockstep exchange until `shutdown`
-    /// fires.
     pub async fn serve(
         self,
         env: Arc<dyn Served>,
@@ -457,8 +410,6 @@ impl LockstepBinding {
             }
         };
         let robot_json = map.robot_json.clone();
-        // A Gym env takes its actions as sent, as v1 served them: its parts
-        // declare no limits, and its own spaces bound it.
         self.serve_map(&robot_json, options, shutdown, false, move |declared| {
             let mut map = map;
             map.bind_channels(&declared.parts)?;
@@ -474,10 +425,10 @@ impl LockstepBinding {
 
     /// Attaches as the robot, declares `robot_json` (a v2 robot map),
     /// arms, and serves the handler `build` makes from the declared parts
-    /// over the lockstep exchange until `shutdown` fires. Every step is
-    /// checked against the robot's own authority view first, and its
-    /// commands go through the validation and limits a wall-clock edge
-    /// applies ([`Limited`]): the handler sees them clamped.
+    /// over the lockstep exchange until `shutdown` fires. Every step is checked
+    /// against the robot's authority view first, and its commands go through
+    /// the edge's validation and limits ([`Limited`]): the handler sees them
+    /// clamped.
     pub async fn serve_robot(
         self,
         robot_json: &str,
@@ -543,8 +494,6 @@ async fn serve_robot(
     };
     let gate = Gate::closed();
     gate.observe(&snapshot, &address.robot, &commands);
-    // Aborted however this ends, so it never outlives the serve holding
-    // the participant.
     let watcher = {
         let (gate, participant, robot) = (gate.clone(), participant.clone(), address.robot.clone());
         let commands = commands.clone();
@@ -555,9 +504,7 @@ async fn serve_robot(
                 let snapshot = watch.borrow_and_update().clone();
                 let Some(snapshot) = snapshot else { continue };
                 gate.observe(&snapshot, &robot, &commands);
-                // A run that went SAFE (its barrier stalled) re-arms once,
-                // so the next driver can attach, as a v1 env server serves
-                // one Join session after another. An e-stop stays latched.
+                // A run that went SAFE re-arms once so the next driver can attach; an e-stop stays latched.
                 let held = snapshot
                     .leases
                     .iter()
@@ -612,8 +559,6 @@ async fn serve_robot(
     .await;
     let (handler, lockstep) = match started {
         Ok(started) => started,
-        // A robot that never served leaves as one that did, so its name
-        // is free to bind again.
         Err(err) => {
             local()
                 .lock()
@@ -650,14 +595,12 @@ async fn serve_robot(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove(&local_key);
-    // Its clone of the participant goes first, so the robot leaves before
-    // its binding stops a host it runs.
+    // Drop the participant clone first so the robot leaves before its binding stops a host it runs.
     watcher.abort();
     let _ = watcher.await;
     if owns_links(participant.transport()) {
         let _ = lockstep.close().await;
     }
-    // The tee writes off the critical path: what it holds goes in first.
     handler.flush().await;
     if let Some(recorder) = recorder
         && let Err(err) = recorder.finish().await
@@ -691,8 +634,6 @@ fn own_parts(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> Vec<PartSpe
         .collect()
 }
 
-/// What a driver keeps alive for its run: its participant, its lockstep
-/// session, and the session's host when the driver hosts it.
 struct Held {
     participant: Participant,
     lockstep: Option<Transport>,
@@ -744,7 +685,6 @@ impl Default for ConnectOptions {
     }
 }
 
-/// A driver attached to a lockstep robot's session.
 struct Attached {
     participant: Participant,
     address: LockstepAddress,
@@ -752,7 +692,6 @@ struct Attached {
     placed: Placed,
 }
 
-/// Attaches a driver and waits for the robot's parts (`ready` decides).
 async fn attach_driver(
     address: &str,
     options: &ConnectOptions,
@@ -776,8 +715,6 @@ async fn attach_driver(
         .await
     {
         Ok(snapshot) => snapshot,
-        // Name the robots that did declare parts: a misspelt name reads as
-        // a robot not joined yet, which the session cannot tell apart.
         Err(SessionError::Timeout(waited, _)) => {
             let mut there: Vec<String> = participant
                 .authority()
@@ -811,22 +748,11 @@ async fn attach_driver(
     })
 }
 
-/// How long a driver keeps asking for an env's lease another driver holds:
-/// long enough for a dropped driver's background detach to land.
 const LEASE_BUSY_GRACE: Duration = Duration::from_secs(1);
 
-/// The time-to-live a lockstep driver asks for its lease. Lockstep has no
-/// deadline to guard: nothing moves between steps, so the lease only has to
-/// end when its driver is gone, which the host's presence check decides
-/// (lost heartbeats end a lost driver's leases). A real-time lease's short
-/// deadman would instead void a healthy run whenever the driver's process
-/// stalls for a moment (a loaded machine), leaving it in a stale epoch.
 const LOCKSTEP_LEASE_TTL: Duration = Duration::from_secs(10);
 
 impl Attached {
-    /// Declares a binding over `channels` (identity, no delivery contracts:
-    /// lockstep publishes no streams), takes one lease on them and opens
-    /// the link.
     async fn lease(
         self,
         table: String,
@@ -842,16 +768,9 @@ impl Attached {
             Fingerprint(bytes)
         });
         let participant = self.participant;
-        // Requested through the holder's lease state machine; the lease ends
-        // with the driver's detach.
         let mut group = LeaseGroup::new(participant.id(), &channels, 0);
-        // The robot may be re-arming after a stalled run (SAFE, then a
-        // fresh epoch): wait for an armed session and retry a verb that
-        // raced the new epoch.
+        // The robot may be re-arming after a stalled run: wait for an armed session and retry a verb that raced the new epoch.
         let deadline = tokio::time::Instant::now() + timeout;
-        // A driver dropped without closing detaches in the background (a
-        // binding left, a run ended, a client garbage-collected): its lease
-        // may still be held for a moment when the next driver asks.
         let busy_until = tokio::time::Instant::now() + LEASE_BUSY_GRACE.min(timeout);
         let leases = loop {
             participant
@@ -942,8 +861,6 @@ pub enum Driven {
     View(GymView),
 }
 
-/// Attaches a driver to the robot at the participant address `address`
-/// and waits for its parts.
 async fn attach_robot(
     address: &str,
     options: &ConnectOptions,
@@ -970,8 +887,6 @@ fn is_gym_env(parts: &[PartSpec]) -> bool {
 
 /// Connects a driver to the robot at the participant address `address`: a
 /// Gym env, rebuilt from its declaration,
-/// as a `LockstepClient`; any other robot as a [`GymView`] keyed by part
-/// path.
 pub async fn connect_driver(address: &str, options: ConnectOptions) -> Result<Driven, GymError> {
     let address = address.to_string();
     off_caller(async move {
@@ -988,8 +903,6 @@ pub async fn connect_driver(address: &str, options: ConnectOptions) -> Result<Dr
 
 /// Connects a driver to the lockstep Gym env at `address`: attaches as a
 /// controller, rebuilds the env's map from its declaration, takes one
-/// lease on its commandable parts and opens the link (direct when the env
-/// is in this process).
 pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepClient, GymError> {
     let address = address.to_string();
     off_caller(async move {
@@ -999,10 +912,6 @@ pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepC
     .await?
 }
 
-/// Runs `work` on the library's multi-thread runtime: zenoh opens and
-/// closes a session with `block_in_place`, which a caller on a
-/// current-thread runtime (`#[tokio::test]`,
-/// `#[tokio::main(flavor = "current_thread")]`) cannot run.
 async fn off_caller<T: Send + 'static>(
     work: impl Future<Output = T> + Send + 'static,
 ) -> Result<T, GymError> {
@@ -1028,7 +937,6 @@ async fn gym_client(
     map.bind_channels(&attached.parts)?;
     let channels: Vec<ChannelId> = map.action.parts.iter().map(|p| p.spec.channel).collect();
     let table = format!("{{\"lockstep\":{:?}}}", robot.to_string());
-    // Models the client invites join by it: the key goes with it.
     let session = attached.address.session.invite();
     let (link, epoch, token, held) = attached
         .lease(table, None, channels, options.direct, options.timeout)
@@ -1041,7 +949,6 @@ async fn gym_client(
 
 /// Connects a Gym view to the v2-native lockstep robot at
 /// `address`, through `policy` (a v2 policy map, JSON; `None`: every part
-/// by path).
 pub async fn connect_view(
     address: &str,
     policy: Option<(&rlmesh_session::spec::Policy, &str)>,
@@ -1062,7 +969,6 @@ pub struct PolicyView {
     pub seed_key: String,
     /// The reset option an episode's ordinal travels under, when the
     /// robot is a Gym env that declared it (`trial_index`, under its
-    /// edition's key); `None` sends none.
     pub trial_option: Option<String>,
 }
 
@@ -1096,9 +1002,6 @@ pub async fn connect_policy_view(
     })
 }
 
-/// The key a Gym env's resets carry their episode's ordinal under, as a
-/// run of the env sends it: its edition's `trial_index` key, only to an env
-/// whose contract declared it.
 fn trial_option(info: &GymEnvInfo) -> Option<String> {
     let key = rlmesh_proto::parse_retained_edition(&info.workflow_edition)
         .map_or(crate::run::runtime::TRIAL_INDEX_OPTION, |edition| {
@@ -1108,7 +1011,6 @@ fn trial_option(info: &GymEnvInfo) -> Option<String> {
     crate::run::runtime::declares_reset_option(&contract, key).then(|| key.to_string())
 }
 
-/// The Gym env a robot's parts declare, if it is one.
 fn gym_env_info(parts: &[PartSpec]) -> Option<Result<GymEnvInfo, GymError>> {
     parts
         .iter()
@@ -1183,7 +1085,6 @@ mod tests {
                 "command": "position", "safe": "stop", "max_action_age_ms": 1000}
     }"#;
 
-    /// Answers nothing: what is served does not matter here.
     struct Idle;
 
     #[async_trait::async_trait]
@@ -1218,14 +1119,12 @@ mod tests {
                 CancellationToken::new(),
                 |_| Ok(Arc::new(Idle) as Arc<dyn LockstepHandler>),
             ));
-            // Served over its own lockstep session once that answers.
             tokio::select! {
                 ended = &mut serving => panic!("the robot stopped serving: {ended:?}"),
                 () = host.answered(&key) => {}
             }
             (host, serving)
         });
-        // The serve is cancelled: its lockstep session goes unclosed.
         let dropped = timer_survives(async move { drop(serving) });
         assert!(
             dropped,
@@ -1234,8 +1133,6 @@ mod tests {
         drop(host);
     }
 
-    /// Event parts take no `hz`: the map leaves theirs out, and the
-    /// normaliser takes it.
     #[test]
     fn a_lockstep_map_gives_no_rate_to_an_event_part() {
         let map = lockstep_robot_map(

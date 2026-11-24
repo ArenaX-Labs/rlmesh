@@ -1,16 +1,11 @@
-//! The host also keeps the session's **history store**: for every
-//! declared stream (bulk streams only when configured) it subscribes to the
-//! samples and keeps a bounded ring per stream, in the current epoch only,
-//! served on `h/{robot}/{path}`. A controller queries it on attach, on a
-//! standby swap and to recover a gap, never per tick: steady-state windows
-//! are assembled from the live stream. A query names the epoch, an exclusive
-//! `after_seq`, an inclusive `until_seq` watermark taken from the live
-//! stream and a limit; the reply is one or more [`SampleBatch`] pages, the
-//! first carrying `truncated` (retention ran out before the range) and the
-//! gaps the store knows of. A query must be sealed under the requester's
-//! `k_up`, and its pages are sealed under its `k_down` with the query's
-//! request id; the store opens every sample under its stream's key
-//! and keeps only the session's current epoch.
+//! The host's history store: a bounded ring per declared stream, current
+//! epoch only, served on `h/{robot}/{path}` for a controller to catch up on
+//! attach, standby swap or a gap.
+//!
+//! A query names the epoch, an exclusive `after_seq`, an inclusive `until_seq` and a limit; the
+//! reply is one or more [`SampleBatch`] pages, the first carrying `truncated` (retention ran out
+//! before the range) and the known gaps. A query must be sealed under the requester's `k_up`, and
+//! its pages are sealed under its `k_down` with the query's request id.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,10 +31,8 @@ use crate::host::peer::SharedPeers;
 use crate::host::{HostActor, lock};
 use crate::transport::Transport;
 
-/// The most gap ranges a stream's history remembers.
 const MAX_GAPS: usize = 64;
 
-/// One stored sample.
 #[derive(Clone)]
 struct Stored {
     seq: u64,
@@ -49,7 +42,6 @@ struct Stored {
     payload: Bytes,
 }
 
-/// One stream's ring, in its newest epoch.
 struct RingState {
     epoch: Epoch,
     /// The first seq seen in this epoch: anything older was never here.
@@ -68,7 +60,6 @@ pub(super) struct Ring {
 }
 
 impl Ring {
-    /// Records a live sample, opened under its stream's key.
     fn record(&self, keys: &Mutex<Keyring>, keyexpr: &str, payload: &zenoh::bytes::ZBytes) {
         let bytes = payload.to_bytes().into_owned();
         let opened = lock(keys).open_sample(keyexpr, bytes, &self.spec.owner, self.spec.applied);
@@ -83,7 +74,7 @@ impl Ring {
         {
             return;
         }
-        // A forged future epoch can't reset the ring: only the session's.
+        // A forged future epoch can't reset the ring: only the session's epoch is kept.
         if sample.epoch != Epoch(self.epoch.load(Ordering::Relaxed)) {
             return;
         }
@@ -92,7 +83,6 @@ impl Ring {
             return;
         };
         if sample.epoch != state.epoch {
-            // A new epoch never seeds from an older one.
             *state = RingState {
                 epoch: sample.epoch,
                 first_seq: sample.seq,
@@ -130,7 +120,6 @@ impl Ring {
         }
     }
 
-    /// The pages answering `query`.
     fn pages(&self, query: &HistoryQuery, cap: usize, now_ns: i64) -> Vec<SampleBatch> {
         let Ok(state) = self.state.lock() else {
             return Vec::new();
@@ -146,8 +135,6 @@ impl Ring {
             request_id: 0,
         };
         if query.epoch != state.epoch {
-            // Another epoch's samples are never served: an empty page says
-            // which epoch the store is in.
             return vec![empty(state.epoch)];
         }
         let until = query.until_seq.unwrap_or(u64::MAX);
@@ -161,8 +148,6 @@ impl Ring {
             .collect();
         let selected = &selected[selected.len().saturating_sub(limit)..];
         let oldest = state.samples.front().map_or(u64::MAX, |s| s.seq);
-        // Retention ran out: the range starts before the oldest sample kept,
-        // and that sample is not the epoch's first.
         let truncated = query.after_seq.saturating_add(1) < oldest && oldest > state.first_seq;
         let (low, high) = (
             selected.first().map_or(query.after_seq, |s| s.seq),
@@ -212,9 +197,6 @@ impl Ring {
     }
 }
 
-/// History rings by `(robot, stream path)`, shared with the history
-/// queryable.
-/// A stream by `(robot, key path)`.
 pub(super) type StreamKey = (ParticipantId, String);
 
 #[derive(Clone)]
@@ -222,16 +204,11 @@ pub(super) struct HistoryStore {
     pub(super) depth: usize,
     pub(super) clock: Option<Arc<dyn Clock>>,
     pub(super) rings: Arc<RwLock<HashMap<StreamKey, Arc<Ring>>>>,
-    /// Requesters' keys: a query is sealed under its sender's `k_up`.
     pub(super) peers: SharedPeers,
-    /// Who may read what: the authority's, kept in step by the host.
     pub(super) access: Arc<RwLock<Access>>,
 }
 
 impl HistoryStore {
-    /// Replies to an `h/{robot}/{path}` query, sealed under the `k_up` of a
-    /// generation in effect, with its pages sealed under that generation's
-    /// `k_down`. Anything else is dropped unanswered.
     pub(super) fn serve(&self, keys: &SessionKeys, query: &Query) {
         let key = query.key_expr().as_str();
         let Some((robot, path)) = keys.history_of(key) else {
@@ -261,7 +238,6 @@ impl HistoryStore {
             debug!(%key, "a history query not sealed by a member refused");
             return;
         };
-        // Read permission, before producing anything.
         let reads = self
             .access
             .read()
@@ -337,18 +313,13 @@ impl HistoryStore {
     }
 }
 
-/// A recorded stream: its ring and the subscription feeding it.
 struct Recorded {
     channel: ChannelId,
     _subscriber: zenoh::pubsub::Subscriber<()>,
 }
 
-/// The streams to record, by key.
 type Wanted = BTreeMap<StreamKey, StreamSpec>;
 
-/// The history subscriptions, kept on their own thread: declaring or
-/// undeclaring one tells every linked peer, and a link that stopped reading
-/// can hold that for seconds.
 pub(super) struct HistorySync {
     wanted: mpsc::Sender<Wanted>,
     last: Wanted,
@@ -356,7 +327,6 @@ pub(super) struct HistorySync {
 }
 
 impl HistorySync {
-    /// Starts the thread feeding `store`, opening samples with `host_keys`.
     pub(super) fn start(
         transport: Transport,
         keys: SessionKeys,
@@ -383,7 +353,6 @@ impl HistorySync {
         })
     }
 
-    /// Hands over the streams to record, if they changed.
     fn set(&mut self, wanted: Wanted) {
         if wanted != self.last {
             self.last.clone_from(&wanted);
@@ -391,7 +360,6 @@ impl HistorySync {
         }
     }
 
-    /// Undeclares every subscription and stops the thread.
     pub(super) async fn stop(self) {
         drop(self.wanted);
         let worker = self.worker;
@@ -411,7 +379,6 @@ struct Subscriptions {
 impl Subscriptions {
     fn run(mut self, updates: &mpsc::Receiver<Wanted>) {
         while let Ok(mut wanted) = updates.recv() {
-            // Only the newest list matters.
             while let Ok(newer) = updates.try_recv() {
                 wanted = newer;
             }
@@ -419,8 +386,6 @@ impl Subscriptions {
         }
     }
 
-    /// Keeps one history subscription per recordable stream, re-subscribing
-    /// when a path's stream id changes.
     fn apply(&mut self, wanted: Wanted) {
         let store = &self.store;
         self.recorded.retain(|key, recorded| {
@@ -478,7 +443,6 @@ impl Subscriptions {
 }
 
 impl HostActor {
-    /// Tells the history thread which streams to record.
     pub(super) fn sync_history(&mut self) {
         let Some(history) = &mut self.history else {
             return;
@@ -567,23 +531,18 @@ mod tests {
             limit,
             request_id: 0,
         };
-        // Kept: 3, 6..=10 (depth 6), with 4..=5 known missing.
         let pages = ring.pages(&query(0, None, None), 1024, 0);
         assert_eq!(seqs(&pages), vec![3, 6, 7, 8, 9, 10]);
         assert!(pages[0].truncated, "1 and 2 were evicted");
         assert_eq!(pages[0].gaps, vec![SeqRange { first: 4, last: 5 }]);
         let split = pages[0].split(Some(8)).expect("split");
         assert_eq!(&split[1].payload[..], &6_u64.to_le_bytes());
-        // A watermark and a limit: the newest of the range.
         let pages = ring.pages(&query(5, Some(9), Some(2)), 1024, 0);
         assert_eq!(seqs(&pages), vec![8, 9]);
         assert!(!pages[0].truncated && pages[0].gaps.is_empty());
-        // Another epoch: an empty page naming the store's epoch.
         let pages = ring.pages(&HistoryQuery::default(), 1024, 0);
         assert!(pages[0].samples.is_empty());
         assert_eq!(pages[0].epoch, Epoch(2));
-        // Only the session's epoch is kept: a new one empties the ring, and
-        // it never seeds from the old one.
         ring.epoch.store(3, Ordering::Relaxed);
         put(&ring, 3, 1);
         let pages = ring.pages(

@@ -1,5 +1,3 @@
-"""``rlmesh.build_info()`` reports this build's identity (``__build__``, its 0.1 alias, is gone)."""
-
 from __future__ import annotations
 
 import re
@@ -7,7 +5,6 @@ import re
 import pytest
 import rlmesh
 
-#: A sealed workflow edition base: a year and a month.
 BASE = re.compile(r"^\d{4}\.(0[1-9]|1[0-2])$")
 
 STRING_FIELDS = (

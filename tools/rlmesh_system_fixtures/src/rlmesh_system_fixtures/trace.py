@@ -4,9 +4,8 @@ import hashlib
 from collections.abc import Mapping, Sequence
 
 VOLATILE_INFO_KEYS = {"episode_ids"}
-# Runtime-reserved info keys that newer clients report on every step with a
-# zero default and older ones leave out until they are nonzero. Dropping the
-# zero keeps one baseline valid across versions; a nonzero value still counts.
+# Runtime-reserved info keys that newer clients report on every step with a zero default and
+# older ones omit until nonzero; dropping the zero keeps one baseline valid across versions.
 ZERO_DEFAULT_INFO_KEYS = {"completed_episodes"}
 
 

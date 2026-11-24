@@ -1,13 +1,3 @@
-"""A model's lifecycle: serialized calls, terminal close, and declarations read once.
-
-Pins the language-parity Model changes (MDL-P1 to MDL-P9) on the local paths:
-the authored close runs once, close is terminal, every corner and hook call
-on one model is serialized and refuses re-entry, the episode store drops an
-env's entries on teardown, ``native_chunk`` is read once after ``load``, the
-declarations are checked before ``load``, a wrapped policy's declarations are
-the model's, and a tuple is one chunk frame.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -20,8 +10,6 @@ from rlmesh._models._episodes import EpisodeStore
 
 
 class _Env:
-    """A local env: three steps, then terminates."""
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -226,8 +214,6 @@ def test_a_loaded_native_chunk_is_checked_once_after_load() -> None:
 
 @pytest.mark.parametrize("super_first", [True, False])
 def test_load_runs_once_after_an_authored_init_returns(super_first: bool) -> None:
-    """``load()`` sees everything the authored ``__init__`` set, wherever in
-    it ``super().__init__()`` is called, and in a subclass chain too."""
     loads: list[tuple[str, str]] = []
 
     class Base(rlmesh.Model):
@@ -254,7 +240,6 @@ def test_load_runs_once_after_an_authored_init_returns(super_first: bool) -> Non
     Child()
     assert loads == [("base.pt", "<unset>"), ("child.pt", "set")]
 
-    # The served construction still loads once, with its binding.
     class Configured(rlmesh.Model):
         def __init__(self) -> None:
             super().__init__()
@@ -342,7 +327,6 @@ def test_load_parameters_as_constructor_keywords_name_from_config() -> None:
     with pytest.raises(TypeError, match=r"Noop.from_config\(variant=\.\.\.\)"):
         Noop(variant="b")  # pyright: ignore[reportCallIssue]
     assert Noop.from_config(variant="b").variant == "b"
-    # A keyword neither takes is Python's own refusal.
     with pytest.raises(TypeError, match="unexpected keyword"):
         Noop(nonsense=1)  # pyright: ignore[reportCallIssue]
 
@@ -356,7 +340,6 @@ def test_load_parameters_as_constructor_keywords_name_from_config() -> None:
         def predict(self, observation: Any) -> Any:
             return 0
 
-    # A keyword the authored __init__ takes is its own.
     assert Sized(size=3).size == 3
     with pytest.raises(TypeError, match=r"Sized.from_config\(variant=\.\.\.\)"):
         Sized(variant="b")  # pyright: ignore[reportCallIssue]

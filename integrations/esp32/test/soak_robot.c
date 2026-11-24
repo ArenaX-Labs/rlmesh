@@ -1,27 +1,3 @@
-/* The board's loop on Linux through many link losses: the device robot, with
- * two commanded parts, over rlmesh_zenoh against a real session host
- * (rlmesh-device's test host in its soak mode), reaching it through a proxy in
- * this process that resets every link at once, as a host cutting a stalled
- * link or a Wi-Fi outage does. After each cycle, once commands flow again, it
- * reads the bytes the process holds on its heap: the robot's, the
- * transport's and zenoh-pico's together, as a board's one heap holds them.
- *
- *   soak_robot <host:port#secret.hostkey> <cycles> <cut|hold|race|load> [max]
- *
- * `cut` resets every link; `hold` carries nothing for longer than the robot
- * waits for its host, then resets them (an outage the board notices first).
- * Either fails when a cycle does not end with commands flowing, or when the
- * heap held after the last two cycles exceeds that after the first two by more
- * than `max` bytes (default 2048). `race` publishes from two threads on
- * one zenoh-pico session while its links reset every 20 ms, for `cycles`
- * seconds: zenoh-pico clearing a failed link under a publisher crashes it.
- * `load` drives the board for `cycles` seconds as a policy does (30 chunks a
- * second to each part, its state published at 50 Hz and read at 200 Hz), every
- * link stalled for 1.5 s every 10 s, and fails if the heap ever held more than
- * `max` bytes. SOAK_CAP=<bytes> makes the heap that small, as a board's is:
- * past it an allocation fails, and one that aborts fails the run. SOAK_SITES
- * prints where the most was held at the peak; SOAK_TRACE the robot's state. */
-
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -46,7 +22,6 @@
 #include "rlmesh_device.h"
 #include "rlmesh_zenoh.h"
 
-/* Two commanded parts, as a two-axis gimbal board has. */
 static const char kMap[] =
     "{\"eyes\":{\"kind\":\"joints\",\"names\":[\"pan\",\"tilt\"],\"fields\":[\"pos\"],"
     "\"hz\":50,\"command\":\"position\",\"safe\":\"hold\","
@@ -55,8 +30,6 @@ static const char kMap[] =
     "\"hz\":50,\"command\":\"position\",\"safe\":\"hold\","
     "\"limits\":{\"pos\":[[-0.6,0.6],[-0.4,0.4]]}}}";
 #define PARTS 2
-/* The longest one rlmesh_zenoh_poll may take, link stalled or not: it never
- * waits on the network. */
 #define RLMESH_POLL_BOUND_US 20000
 
 static uint64_t now_us(void) {
@@ -75,8 +48,6 @@ static int fill_random(uint8_t* buf, size_t len) {
   return 0;
 }
 
-/* The proxy: one listener, each connection (one per class) paired with one
- * to the host's port. */
 #define MAX_PAIRS 32
 typedef struct {
   int listen;
@@ -90,15 +61,12 @@ typedef struct {
   atomic_int stop;
 } proxy_t;
 
-/* A small receive buffer for the proxy's side of the board's links: a proxy
- * that stops reading then fills the board's send buffer within seconds. */
 static int small_rcvbuf;
 
 static int listen_on(uint16_t port) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   int one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-  /* Accepted sockets inherit it. */
   if (small_rcvbuf) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &small_rcvbuf, sizeof small_rcvbuf);
   struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port)};
   a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -116,7 +84,6 @@ static uint16_t port_of(int fd) {
   return ntohs(a.sin_port);
 }
 
-/* A free port. */
 static int proxy_listen(proxy_t* p) {
   p->listen = listen_on(0);
   if (p->listen < 0) return -1;
@@ -124,7 +91,6 @@ static int proxy_listen(proxy_t* p) {
   return 0;
 }
 
-/* Resets a connection: the peer's next read or write fails. */
 static void reset(int fd) {
   struct linger l = {1, 0};
   setsockopt(fd, SOL_SOCKET, SO_LINGER, &l, sizeof l);
@@ -168,8 +134,6 @@ static void* proxy_task(void* arg) {
         p->pairs++;
       }
     }
-    /* Pairs from the poll above, newest first so dropping one keeps the
-     * indices of those not yet looked at. */
     for (int i = (n - 1) / 2 - 1; i >= 0; --i) {
       for (int side = 0; side < 2; ++side) {
         if (!(fds[1 + 2 * i + side].revents & (POLLIN | POLLHUP | POLLERR))) continue;
@@ -194,12 +158,6 @@ static void* proxy_task(void* arg) {
 }
 
 #ifndef __SANITIZE_ADDRESS__
-/* Every allocation in the process goes through these, so the bytes held are
- * counted exactly, on every thread (glibc's own statistics see one arena),
- * with the most ever held. SOAK_CAP=<bytes> makes the heap that small: an
- * allocation past it fails, as a board's would. SOAK_SITES=1 also records
- * where each live block was allocated, and prints the sites holding the most
- * at the peak. */
 extern void* __libc_malloc(size_t);
 extern void* __libc_calloc(size_t, size_t);
 extern void* __libc_realloc(void*, size_t);
@@ -291,8 +249,6 @@ static void print_sites(void) {
     }
     if (best < 0) break;
     printf("  %7ld B  site", sites_at_peak[best]);
-    /* Addresses in this executable (not position-independent), for
-     * addr2line; those in shared libraries are left out. */
     for (int f = 0; f < sites[best].depth; ++f) {
       Dl_info info;
       uintptr_t pc = (uintptr_t)sites[best].frames[f];
@@ -347,7 +303,6 @@ void free(void* p) {
 void* realloc(void* p, size_t n) {
   size_t before = p != NULL ? malloc_usable_size(p) : 0;
   if (n > before && over_cap(n - before)) return NULL;
-  /* Uncounted first: the block may move. */
   uncounted(p);
   void* q = __libc_realloc(p, n);
   if (q == NULL && n != 0) {
@@ -371,13 +326,12 @@ static size_t heap_live(void) { return (size_t)atomic_load(&live_bytes); }
 
 static void heap_watch(void) {
   void* warm[2];
-  backtrace(warm, 2); /* loads the unwinder before any hook needs it */
+  backtrace(warm, 2);
   if (getenv("SOAK_CAP") != NULL) heap_cap = atol(getenv("SOAK_CAP"));
   tracking = getenv("SOAK_SITES") != NULL;
 }
 static long heap_peak(void) { return atomic_load(&peak_bytes); }
 #else
-/* Under AddressSanitizer, its allocator is the one that counts. */
 static atomic_long live_blocks;
 static atomic_long refused_allocs;
 static atomic_long total_allocs;
@@ -387,8 +341,6 @@ static long heap_peak(void) { return 0; }
 static void print_sites(void) {}
 #endif
 
-/* Tasks zenoh-pico's port started and not yet ended (patch_zenoh_pico.py
- * counts them): the transport's own and one per open session at most. */
 void zp_rlmesh_tasks(uint32_t* started, uint32_t* ended);
 static uint32_t tasks_live(void) {
   uint32_t started = 0, ended = 0;
@@ -398,8 +350,6 @@ static uint32_t tasks_live(void) {
 #define MAX_TASKS (3 + RLMESH_DEVICE_CLASSES)
 
 #ifdef ESP32_PORT
-/* Built over zenoh-pico's ESP32 port (test/esp32_port): what FreeRTOS would
- * hold, a task left for the idle task to free counted as held. */
 #include "esp32_port.h"
 static uint32_t port_tasks_held(void) {
   esp32_port_tasks_t t;
@@ -413,9 +363,6 @@ static uint32_t port_tasks_held(void) {
 static uint32_t port_tasks_held(void) { return tasks_live(); }
 #endif
 
-/* `race`: one zenoh-pico session to the host through the proxy, publishing
- * from two threads as fast as they can while every link resets every 20 ms:
- * zenoh-pico's own handling of the failed link races the publishers. */
 static atomic_int race_stop;
 static void* race_put(void* arg) {
   const z_loaned_session_t* s = (const z_loaned_session_t*)arg;
@@ -460,7 +407,6 @@ static int race(proxy_t* proxy, int seconds) {
   return 0;
 }
 
-/* Every receive the robot dropped for want of memory. */
 static uint64_t dropped_no_memory(const rlmesh_device_robot_t* robot) {
   uint64_t n = 0;
   for (uint8_t what = 0; what < 4; ++what) n += rlmesh_device_robot_dropped(robot, what, 5);
@@ -469,7 +415,6 @@ static uint64_t dropped_no_memory(const rlmesh_device_robot_t* robot) {
 
 int main(int argc, char** argv) {
   heap_watch();
-  /* lwIP raises no SIGPIPE: the ESP32 port's sends, run here, don't ask. */
   signal(SIGPIPE, SIG_IGN);
   if (argc < 4) {
     fprintf(stderr,
@@ -479,7 +424,6 @@ int main(int argc, char** argv) {
   int cycles = atoi(argv[2]);
   bool hold = strcmp(argv[3], "hold") == 0;
   long max_growth = argc > 4 ? atol(argv[4]) : 2048;
-  /* The host's address, rewritten to the proxy's ports. */
   const char* colon = strrchr(argv[1], ':');
   const char* hash = strchr(argv[1], '#');
   if (colon == NULL || hash == NULL || hash < colon) {
@@ -523,26 +467,13 @@ int main(int argc, char** argv) {
   rlmesh_device_robot_status_t status;
   float position[PARTS][2] = {{0.1f, 0.2f}, {0.1f, 0.2f}};
   uint64_t start = now_us(), next_sample = 0;
-  /* Per cycle: the heap held once commands flowed again after it. */
   size_t* held = calloc((size_t)cycles + 1, sizeof *held);
   int cycle = 0, ok = 1;
-  /* Commands taken before the links last broke, and when they did: a cycle
-   * ends once commands flow again, attached anew or not. */
   uint64_t accepted_mark = 0, broke_at = now_us(), cycle_start = now_us();
-  /* Once commands flow again: the least held over a second (what is queued
-   * at any one moment varies). */
   uint64_t settle_until = 0;
   size_t least = SIZE_MAX;
   uint64_t hold_until = 0;
   const uint64_t cycle_limit = 30u * 1000000u;
-  /* `load`: driven for `cycles` seconds, every link stalled for 1.5 s every
-   * 10 s and then released (a weak link); the heap's peak and standing. */
-  /* `stall` and `vanish`: driven, then every link stalls for 8 s, the proxy
-   * still holding them but reading nothing (`stall`), or every packet of
-   * theirs dropped (`vanish`, by nftables: run it in a network namespace of
-   * its own); then the links come back. Fails if any poll() takes longer than
-   * RLMESH_POLL_BOUND_US, if a part is not safe within 500 ms of the stall, or
-   * if commands do not flow again within 20 s of the links' return. */
   bool vanish = strcmp(argv[3], "vanish") == 0;
   if (vanish || strcmp(argv[3], "stall") == 0) {
     char nft[512];
@@ -617,7 +548,6 @@ int main(int argc, char** argv) {
                     again_at - back_at <= 20000000u;
     rlmesh_zenoh_close(&z);
     rlmesh_device_robot_free(robot);
-    /* Every task the links' losses left behind is gone with them. */
     uint32_t tasks_left = port_tasks_held();
     printf("stall: %u tasks left once closed\n", tasks_left);
     if (tasks_left != 0 || tasks_live() != 0) ok_stall = false;
@@ -635,8 +565,6 @@ int main(int argc, char** argv) {
     size_t standing = SIZE_MAX;
     long driven_peak = 0, allocs_warm = 0;
     bool warmed = false;
-    /* SOAK_HOLD_LOOP_MS: once a second the loop is away from poll() this
-     * long, as a sketch printing its status at 115200 baud is. */
     long hold_loop_ms = getenv("SOAK_HOLD_LOOP_MS") != NULL ? atol(getenv("SOAK_HOLD_LOOP_MS")) : 0;
     uint64_t next_hold = warm;
     while (now_us() < end) {
@@ -662,7 +590,6 @@ int main(int argc, char** argv) {
                status.fault);
       }
       if (!warmed && now >= warm) {
-        /* The join's own allocations are not the burst's. */
         warmed = true;
         driven_peak = (long)heap_live();
         allocs_warm = atomic_load(&total_allocs);
@@ -696,7 +623,6 @@ int main(int argc, char** argv) {
       if (warmed) {
         size_t live = heap_live();
         if ((long)live > driven_peak) driven_peak = (long)live;
-        /* Standing: the least held while running, away from a stall. */
         if (status.phase == 4 && stall_end == 0 && now > released + 3000000u && live < standing) {
           standing = live;
         }
@@ -718,9 +644,6 @@ int main(int argc, char** argv) {
     bool ok_load =
         status.chunks_accepted > (uint64_t)cycles * 20u && (budget == 0 || peak <= budget);
     if (hold_loop_ms > 0) {
-      /* With the loop held up, a chunk the robot takes is never older than
-       * the newest of its part was: the one held behind it is replaced. 64
-       * ms is two chunk periods (30 a second) past the host relaying it. */
       uint64_t late = 0, expired = 0;
       for (int i = 0; i < PARTS; ++i) {
         rlmesh_device_chunk_timing_t timing;
@@ -775,7 +698,6 @@ int main(int argc, char** argv) {
         rlmesh_device_robot_publish(robot, (uint8_t)parts[i], now, (const uint8_t*)position[i],
                                     sizeof position[i], now);
 #ifdef RLMESH_DEVICE_LATE_BUCKETS
-        /* What a board's status line reads each period. */
         rlmesh_device_chunk_timing_t timing;
         rlmesh_device_robot_chunk_timing(robot, (uint8_t)parts[i], &timing);
 #endif
@@ -842,7 +764,6 @@ int main(int argc, char** argv) {
     nanosleep(&pause, NULL);
   }
   if (ok && cycles >= 6) {
-    /* The first cycles after the first attach, against the last. */
     size_t early = held[1] < held[2] ? held[1] : held[2];
     size_t late = held[cycles - 1] < held[cycles] ? held[cycles - 1] : held[cycles];
     long growth = (long)late - (long)early;

@@ -66,8 +66,6 @@ public sealed class BarrierTests
     }
 }
 
-// Invoked in a fresh collectible context: shutdown is terminal, including when
-// a fixture fails. No test-only feature is added to the public library surface.
 public static class BarrierFixtures
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(20);
@@ -127,12 +125,12 @@ public static class BarrierFixtures
         Assert.True(Lifetime.Shutdown(Deadline), string.Join("; ", Lifetime.Pending()));
         int calls = authored.Steps + authored.Closes;
         long frames = CallbackContext.EnteredFrames;
-        Assert.True(client.RawResetFails()); // Raw C client, after managed admission has closed.
+        Assert.True(client.RawResetFails());
         Thread.Sleep(50);
         Assert.Equal(calls, authored.Steps + authored.Closes);
         Assert.Equal(frames, CallbackContext.EnteredFrames);
         Assert.True(Lifetime.WaitFreed(server, TimeSpan.Zero));
-        server.Dispose(); // Exempt even after the terminal gate closes.
+        server.Dispose();
     }
     private static void Blocked()
     {
@@ -147,7 +145,7 @@ public static class BarrierFixtures
         Assert.Equal(LifetimeState.Incomplete, Lifetime.State);
         Assert.Contains(Lifetime.Pending(), s => s.Contains("EnvServer", StringComparison.Ordinal));
         Assert.Contains(Lifetime.Pending(), s => s.Contains("trampoline", StringComparison.Ordinal));
-        Assert.True(Lifetime.WaitFreed(other, Deadline)); // Independent teardown progresses.
+        Assert.True(Lifetime.WaitFreed(other, Deadline));
         Assert.False(Lifetime.WaitFreed(server, TimeSpan.Zero));
         env.Release.Set(); run.GetAwaiter().GetResult();
         Assert.True(Lifetime.Shutdown(Deadline), string.Join("; ", Lifetime.Pending()));
@@ -216,7 +214,6 @@ public static class BarrierFixtures
             Assert.False(Lifetime.Shutdown(Deadline));
             Assert.Contains(Lifetime.Pending(), s => s.Contains("notification", StringComparison.Ordinal));
         });
-        // Ordinary .NET pool threads are callers, not the library's own pool.
         Assert.True(Task.Run(() => Lifetime.Shutdown(Deadline)).GetAwaiter().GetResult());
         Assert.True(notified);
     }
@@ -273,7 +270,7 @@ public static class BarrierFixtures
             Assert.Contains(Lifetime.Pending(), s => s.Contains("finalizer collection", StringComparison.Ordinal));
             free.Set(); publish.Set();
             var late = constructing.GetAwaiter().GetResult();
-            Assert.True(Lifetime.WaitFreed(late, Deadline)); // Coordinator progresses while finalizers are stuck.
+            Assert.True(Lifetime.WaitFreed(late, Deadline));
             Assert.True(Lifetime.WaitFreed(first, Deadline));
         }
         finally

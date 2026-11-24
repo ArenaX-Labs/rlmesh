@@ -1,19 +1,13 @@
-#![allow(unsafe_code)] // FFI: no_mangle exports.
+#![allow(unsafe_code)]
 
 pub(crate) mod sizing;
 pub(crate) mod status;
 
-/// Ignore SIGPIPE in the host process, unless the host installed its own
-/// handler. Called when a model or env handle is created.
-///
-/// A Rust binary starts with SIGPIPE ignored, and so does Python, but a C/C++
-/// host keeps the default action: terminate. The session transport writes sockets
-/// with vectored writes, which (unlike `send`) cannot opt out of the signal, so
-/// a peer that hangs up mid-write would kill the host instead of failing that
-/// one write with `EPIPE`.
 pub(crate) fn ignore_sigpipe() {
     #[cfg(unix)]
     {
+        // A C/C++ host keeps the default SIGPIPE action (terminate), and vectored socket writes cannot opt out,
+        // so a peer hanging up mid-write would kill the host instead of failing the write with `EPIPE`.
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
             // SAFETY: querying and then setting the process signal disposition;
@@ -30,12 +24,7 @@ pub(crate) fn ignore_sigpipe() {
     }
 }
 
-/// Binary ABI generation, independent of the package semver. ABI 6 is the
-/// language-parity surface. Its options and callback records follow R-19.
-///
-/// ABI 6 grew after it was cut (the parity additions of `d70b81ad`) without a
-/// bump. The C ABI does not ship in 0.2, so it is not bumped now: the first
-/// release that ships it publishes these additions as ABI 7.
+/// Binary ABI generation, independent of the package semver.
 pub const RLMESH_ABI_VERSION: u32 = 6;
 
 /// The linked library's ABI generation (see [`RLMESH_ABI_VERSION`]). A consumer

@@ -8,8 +8,6 @@ use crate::spaces::{Space, SpaceSpec};
 use crate::{EnvContract, Error, InfoDict, Metadata, Result, Value, VectorSeed};
 
 /// A client for a remote vector env (two or more lanes stepped in lockstep):
-/// A remote vector environment. Observations and actions are one batched
-/// [`Value`]; rewards and flags are per-lane vectors.
 pub struct RemoteVectorEnv {
     core: Option<Box<EnvClientCore>>,
     shared: Shared,
@@ -94,7 +92,6 @@ impl RemoteVectorEnv {
 
     /// Reset every lane: the batched observation and the info (with one
     /// `episode_ids` entry per lane). An int seed is sent as a one-element
-    /// list.
     pub fn reset(
         &mut self,
         seed: Option<VectorSeed>,
@@ -144,7 +141,6 @@ impl RemoteVectorEnv {
 
     /// Apply one batched action: the batched observation, per-lane rewards,
     /// terminated and truncated flags, and the info (`completed_episodes` is
-    /// the count of lanes whose episode ended).
     #[allow(clippy::type_complexity)]
     pub fn step(
         &mut self,
@@ -201,7 +197,6 @@ impl RemoteVectorEnv {
     }
 }
 
-/// `ext::reset_lanes`' body.
 pub(crate) async fn reset_lanes_in(
     env: &mut RemoteVectorEnv,
     env_indices: &[u64],

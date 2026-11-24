@@ -1,6 +1,5 @@
-// The hand-written part of rlmesh/managed: credentials and the error class on a Hey API client
-// (gen/, generated). The SDK functions take `{ client, path, query, body }` and resolve to
-// `{ data, error, response }`; `error` is a `ManagedError` for every non-2xx answer.
+// Credentials and the error class on a Hey API client (`gen/` is generated). `error` is a
+// `ManagedError` for every non-2xx answer.
 
 import { createClient as createFetchClient, createConfig, type Client } from './gen/client/index.js';
 import type { ErrorDetail } from './gen/types.gen.js';

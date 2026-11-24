@@ -1,4 +1,3 @@
-// Executable ABI 5 C++17 parity fixtures. Built with GCC and Clang by test:cxx.
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -214,13 +213,12 @@ void runs_and_bindings() {
     assert(b.step(Value(3)) == StepResult(2, 1.0, true, false, {{"is_success", true}}));
     assert(b.done());
     try {
-      model.run(env);  // The binding holds the env.
+      model.run(env);
       assert(false);
     } catch (const RuntimeError&) {
     }
   }
   {
-    // A binding feeds hooks as a run does; a reset over a live episode truncates it.
     struct Seen : RunHooks {
       std::vector<std::string> calls;
       void on_run_start(std::shared_ptr<RunContext> c) override {
@@ -256,9 +254,9 @@ void runs_and_bindings() {
       auto copy = local;
       assert(copy.raw() != local.raw());
       return copy;
-    }();  // The copied C handle survives the original handle's destruction.
+    }();
     token_copy.cancel();
-    token_copy.cancel();  // Pending fires coalesce.
+    token_copy.cancel();
     auto cancellable = rlmesh::RunOptions{}.with_cancel(token);
     try {
       model.run(env, cancellable);
@@ -274,7 +272,7 @@ void runs_and_bindings() {
     assert(!assigned.raw() && moved.raw() == raw);
     assigned = std::move(moved);
     assert(!moved.raw() && assigned.raw() == raw);
-    assigned.cancel();  // The cloned token observes the re-armed shared state.
+    assigned.cancel();
     try {
       model.run(env, cancellable);
       assert(false);
@@ -311,7 +309,6 @@ void runs_and_bindings() {
   b.reset();
   b.step();
   assert(*seen == 3);
-  // A policy's reset_options reach the env's reset.
   struct Levelled {
     Value predict(const Value&) { return Value(0); }
     std::optional<InfoDict> reset_options(const InfoDict& episode) {
@@ -347,7 +344,6 @@ void missing_dict_action_keys() {
   } catch (const ValueError& e) {
     assert(std::string(e.what()) == "$.nested: missing key 'choice'");
   }
-  // The C entrypoint preserves the same class and text before any I/O.
   RLMeshValue *obs = nullptr, *info = nullptr;
   double reward = 0;
   bool terminated = false, truncated = false;
@@ -391,8 +387,6 @@ void binding_target_lifetimes() {
   }
   assert(closed == 3);
   Model served([](const Value&) { return 0; });
-  // The model joins the session of a host env; each target below is another
-  // session, which the served model is invited into.
   auto host = make_server();
   const auto address = host.address().substr(0, host.address().rfind('/')) + "/policy";
   ext::CancelToken stop;
@@ -475,7 +469,6 @@ void exceptions() {
     assert(e.tag == 29);
   }
   set_warning_handler({});
-  // One shared model, two calling threads: the exception follows the call.
   Model threaded([](const Value&, const PredictContext& c) -> Value {
     throw OwnError(static_cast<int>(*c.episode_seed));
   });
@@ -516,7 +509,7 @@ void foreign_error_payloads() {
           },
           &rlmesh::detail::exception_payload_tag);
     } else {
-      auto* p = new unsigned char(7);  // Too small to inspect as a C++ envelope.
+      auto* p = new unsigned char(7);
       auto release = [](void* value) {
         ++freed;
         delete static_cast<unsigned char*>(value);
@@ -769,10 +762,7 @@ struct RetiredFactory : EnvFactory<RetiredFactory> {
     return Env(Counter{});
   }
 };
-// A local run or binding refuses a factory declaring an edition this build
-// cannot drive, with serving's error, before the factory makes anything.
 void local_runs_refuse_a_retired_edition() {
-  // Only a set RLMESH_WORKFLOW_EDITION outranks the factory's declaration.
   if (std::getenv("RLMESH_WORKFLOW_EDITION")) return;
   const std::string refusal =
       "runtime cannot drive workflow edition \"2026.06\"; this build implements";
@@ -1080,7 +1070,6 @@ void adapters_readers_recorder() {
   } catch (const AdapterResolutionError& e) {
     assert(std::string(e.what()).find("unregistered custom input entrypoint") != std::string::npos);
   }
-  // X-16: owner identity, retained routes, and a live model using that route.
   {
     const auto name = "cpp:unregistered:input";
     auto owner = std::make_shared<int>(42);
@@ -1111,7 +1100,7 @@ void adapters_readers_recorder() {
       tag(live, tags);
       Model model([](const Value&) { return vector(0); },
                   rlmesh::ModelOptions{}.with_spec(missing).with_trust_entrypoints(true));
-      auto binding = model.bind(live);  // Resolves before removing the registry's reference.
+      auto binding = model.bind(live);
       binding.reset();
       binding.step();
       {

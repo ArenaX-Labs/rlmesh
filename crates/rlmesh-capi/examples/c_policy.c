@@ -1,4 +1,3 @@
-/* ABI 5 Model construction, load ordering, ownership, contexts and serving. */
 #include <rlmesh.h>
 #include <stdio.h>
 #include <string.h>
@@ -56,7 +55,7 @@ typedef struct PayloadState {
 static const char payload_tag;
 static void free_payload(void* p) {
   ++((PayloadState*)p)->frees;
-  (void)rlmesh_last_error_class(); /* owner deleters may reenter the library */
+  (void)rlmesh_last_error_class();
 }
 static RLMeshStatus payload_load(void* ud, const RLMeshValue* config) {
   (void)config;

@@ -1,25 +1,8 @@
 //! Host-side custom rotation encodings on the wire.
 //!
-//! A [`CustomEncoding`] is a rotation re-packing layered on a native `base`
-//! encoding: one or two `module:callable` entrypoint arms that convert
-//! `base <-> custom` at the field boundary (`from_base` on the observation side,
-//! `to_base` on the action side). On the wire it is an object in the `encoding`
-//! slot -- `{base, name?, from_base?, to_base?}` -- next to the bare-string and
-//! accept-set forms.
-//!
-//! **The arms are opaque references, never executed here.** Resolution shadows a
-//! custom encoding to its `base` for the structural negotiation (width, role,
-//! env conversion all run on `base`). A custom encoding is a
-//! describe/validate *schema*: the transform executes only in the process that
-//! defined its in-process callable (via the host-side
-//! [`EncodingTransform`](crate::v1::EncodingTransform) shim the Python layer
-//! builds). A serialized arm -- an entrypoint reference, or the host-local
-//! marker a callable serializes to -- is not run; execution stays pinned to the
-//! model layer.
-//!
-//! [`StateEncoding`] (obs) and [`ActionEncoding`] (action) are the "native or
-//! custom" wrappers the two carrier fields hold; both keep the bare-string /
-//! accept-set forms byte-identical for the common native case.
+//! A [`CustomEncoding`] is an object in the `encoding` slot, `{base, name?, from_base?,
+//! to_base?}`, next to the bare-string and accept-set forms. [`StateEncoding`] (observation)
+//! and [`ActionEncoding`] (action) hold either form; the native forms keep their wire bytes.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -34,34 +17,27 @@ fn default_name() -> String {
     "custom".to_owned()
 }
 
-/// The default display name is elided on the wire (byte-parity for the common
-/// unnamed case), like every other defaulted field.
 fn is_default_name(name: &str) -> bool {
     name == "custom"
 }
 
 /// A rotation re-packing layered on a native `base` encoding.
 ///
-/// See the module docs: the arms are `module:callable` references imported only
-/// by a trusted in-process resolve.
+/// The arms are `module:callable` references, never executed here: a custom encoding is a
+/// describe/validate schema, and its transform runs only in the process that defined the callable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CustomEncoding {
-    /// The native encoding this field resolves as. Role matching, range mapping,
-    /// and the env->base conversion all run on `base`; the custom arm is an
-    /// additional host-side repack that preserves the base width.
+    /// The native encoding this field resolves as. Role matching, range mapping and the
+    /// env conversion run on `base`; the custom arms repack it at the same width.
     pub base: RotationEncoding,
-    /// Display name surfaced by `describe`. Elided on the wire when the default
-    /// (`"custom"`).
+    /// Display name surfaced by `describe`.
     #[serde(default = "default_name", skip_serializing_if = "is_default_name")]
     pub name: String,
-    /// `base -> custom`, applied host-side on the observation side. A
-    /// `module:callable` entrypoint string. Absent when the encoding is
-    /// action-only.
+    /// `base -> custom`, applied host-side on the observation side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_base: Option<String>,
-    /// `custom -> base`, applied host-side on the action side. Absent when the
-    /// encoding is observation-only.
+    /// `custom -> base`, applied host-side on the action side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_base: Option<String>,
 }
@@ -73,8 +49,7 @@ impl CustomEncoding {
     }
 
     /// Structural invariant checked at parse: a custom encoding is meaningless
-    /// with neither arm. The *side-appropriate* arm (obs needs `from_base`,
-    /// action needs `to_base`) is checked at resolve, where the side is known.
+    /// with neither arm.
     pub fn validate(&self) -> Result<(), String> {
         if self.from_base.is_none() && self.to_base.is_none() {
             return Err(format!(
@@ -91,11 +66,9 @@ impl CustomEncoding {
 /// accept-set on the observation side, a single encoding on the rigid action
 /// side) or a host-side [`CustomEncoding`] object that shadows to its `base`.
 ///
-/// The native forms round-trip byte-identically to `N`'s own wire form; a JSON
-/// object is a [`CustomEncoding`]. `N`'s own reader decides list tolerance, so
-/// the observation side ([`StateEncoding`]) accepts an accept-set list while the
-/// rigid action side ([`ActionEncoding`]) rejects one, preserving the
-/// `no_action_accept_set` contract.
+/// A JSON object is a [`CustomEncoding`]; anything else is read by `N`, so the
+/// observation side ([`StateEncoding`]) accepts an accept-set list and the action side
+/// ([`ActionEncoding`]) rejects one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Encoding<N> {
     Native(N),
@@ -106,8 +79,7 @@ pub enum Encoding<N> {
 /// or a single host-side custom re-packing.
 pub type StateEncoding = Encoding<AcceptSet<RotationEncoding>>;
 
-/// Model action side: a single native encoding, or a custom re-packing. A JSON
-/// array is rejected (a producer and consumer are both fixed).
+/// Model action side: a single native encoding, or a custom re-packing.
 pub type ActionEncoding = Encoding<RotationEncoding>;
 
 impl<N> Encoding<N> {
@@ -215,7 +187,6 @@ mod tests {
         let custom: CustomEncoding =
             serde_json::from_str(r#"{"base":"rot6d","from_base":"m:f"}"#).unwrap();
         assert_eq!(custom.name, "custom");
-        // name==default and to_base==None are both omitted.
         assert_eq!(
             serde_json::to_string(&custom).unwrap(),
             r#"{"base":"rot6d","from_base":"m:f"}"#
@@ -242,7 +213,6 @@ mod tests {
 
     #[test]
     fn state_encoding_native_forms_round_trip() {
-        // Bare string and list both stay the plain AcceptSet wire form.
         let bare: StateEncoding = serde_json::from_str(r#""quat_xyzw""#).unwrap();
         assert!(matches!(bare, StateEncoding::Native(_)));
         assert_eq!(serde_json::to_string(&bare).unwrap(), r#""quat_xyzw""#);
@@ -282,9 +252,7 @@ mod tests {
         assert_eq!(custom.base(), RotationEncoding::EulerXyz);
         assert!(custom.custom().is_some());
 
-        // Rigid action side: a list is rejected (the no-accept-set contract).
         assert!(serde_json::from_str::<ActionEncoding>(r#"["rot6d","quat_wxyz"]"#).is_err());
-        // And an unknown bare encoding is rejected at parse.
         assert!(serde_json::from_str::<ActionEncoding>(r#""rot10d""#).is_err());
     }
 }

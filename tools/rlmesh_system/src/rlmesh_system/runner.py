@@ -156,13 +156,7 @@ def report_wheel_selection(
     wheel_dir: Path,
     renderer: Renderer,
 ) -> None:
-    """Print the wheel each Python version will install and warn if it is stale.
-
-    ``uv pip install --find-links`` silently installs whatever matching wheel
-    sits in ``wheel_dir``; a leftover pre-build wheel produces misleading
-    numbers. Surface the selection (and a loud warning when it predates the
-    sources) so a stale wheel never goes unnoticed.
-    """
+    """Print the wheel each Python version will install and warn if it is stale."""
     seen: set[str] = set()
     for environment in environments:
         if environment.python in seen:

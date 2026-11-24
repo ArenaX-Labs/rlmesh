@@ -49,7 +49,6 @@ pub(super) struct Capture {
     disabled: BTreeSet<String>,
     captured: BTreeSet<String>,
     video_path: Option<String>,
-    /// The workload's artifact tree writer, when it records one.
     tap: Option<super::ArtifactTap>,
 }
 impl Capture {
@@ -101,8 +100,6 @@ impl Capture {
             {
                 return Some(frame);
             }
-            // Resolve the lent render thunk within this dispatch window. Keeping a
-            // borrowed callable in the hooks would outlive a local env's loan.
             let ctx = self.context.as_ref()?;
             let mut sources = ctx.frame_sources().ok()?;
             return crate::view::frame(&sources.render.as_mut()?.call().ok()?);
@@ -115,8 +112,6 @@ impl Capture {
             let episode = state.workloads[self.index].episodes.len() as i64;
             let (staged, rel) =
                 state.stage(&self.prefix, episode, &format!("{}.mp4", sanitize(camera)))?;
-            // The encoder uses a u32 MP4 timebase. Saturating an unbounded fps
-            // only affects rates no physical stream can produce.
             let writer = super::video::VideoWriter::create(
                 &staged,
                 frame.width,
@@ -150,8 +145,6 @@ impl Capture {
             .map(|(prefix, _)| prefix.clone())
             .unwrap_or_default()
     }
-    /// The artifact tree's record of the episode that just ended: its files
-    /// join the bundle and its videos the episode's media.
     fn adopt_episode(&self) -> Vec<MediaRef> {
         let Some(tap) = &self.tap else {
             return Vec::new();
@@ -224,7 +217,6 @@ impl RunHooks for Capture {
             self.context = Some(context);
         }
         if let Some(tap) = &self.tap {
-            // Several runs into one workload continue its episode numbering.
             let recorded = lock(&self.state).workloads[self.index].episodes.len();
             lock(tap).set_episode_offset(u32::try_from(recorded).unwrap_or(u32::MAX));
         }

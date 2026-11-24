@@ -1,4 +1,3 @@
-//! Python-named run options and frozen by-value target unions.
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,

@@ -1,16 +1,3 @@
-"""Run the v1 adapter conformance vectors against this implementation.
-
-The vectors in crates/rlmesh-adapters/conformance/v1/ are the contract
-every adapter implementation (the Rust core, this binding stack, future
-bindings) must pass. See the README next to the vectors.
-
-Each resolve/apply vector carries the env *tags*, the observation
-and action *spaces* (as the adapters ``SpaceView`` projection), and the
-model spec. We rebuild gymnasium spaces from those views and drive the
-public Python API, exercising the full tag -> join -> resolve -> apply
-path the native core runs.
-"""
-
 from __future__ import annotations
 
 import json
@@ -35,12 +22,6 @@ CASE_PATHS = sorted(CASES_DIR.glob("*.json"))
 
 
 def gym_space_from_view(view: dict[str, Any]) -> gym.spaces.Space[Any]:
-    """Rebuild a gymnasium space from an adapters ``SpaceView`` projection.
-
-    The view is what ``SpaceView::from(&SpaceSpec)`` serializes; rebuilding a
-    gymnasium space that re-projects to the same view lets the vectors drive
-    the real ``parse_space`` -> ``SpaceView`` path through the binding.
-    """
     kind = view["kind"]
     if kind == "dict":
         return gym.spaces.Dict(
@@ -96,8 +77,6 @@ def assert_value(actual: Any, expected: dict[str, Any], atol: float) -> None:
         assert actual == expected["data"]
         return
     if expected["kind"] == "map":
-        # transform_obs now returns the assembled payload TREE; a `map` value is
-        # a Dict payload (or nested Dict) — recurse per key.
         assert isinstance(actual, dict), f"expected a dict payload, got {type(actual)}"
         assert sorted(actual) == sorted(expected["data"]), (
             f"payload keys {sorted(actual)} != expected {sorted(expected['data'])}"
@@ -109,12 +88,10 @@ def assert_value(actual: Any, expected: dict[str, Any], atol: float) -> None:
         assert isinstance(actual, list)
         data = expected["data"]
         if data and isinstance(data[0], dict) and "kind" in data[0]:
-            # A positional Tuple payload: each element is an encoded sub-value.
             assert len(actual) == len(data)
             for sub_actual, sub_expected in zip(actual, data, strict=True):
                 assert_value(sub_actual, sub_expected, atol)
         else:
-            # A numeric `container="list"` state value.
             np.testing.assert_allclose(actual, data, atol=atol)
         return
     assert expected["kind"] == "array"
@@ -146,22 +123,13 @@ def test_vector(path: Path) -> None:
         side = case["side"]
         doc = case["doc"]
         cls = adapt.EnvTags if side == "env" else adapt.ModelSpec
-        # Python dataclass round-trip (now itself routed through the Rust codec).
         assert cls.from_dict(doc).to_dict() == doc
-        # Direct cross-engine parity: the Rust codec's canonical form of the
-        # frozen vector equals the vector itself, so the Python binding and the
-        # native core cannot disagree on the v1 format.
         assert json.loads(adapters_spec_normalize(side, json.dumps(doc), True)) == doc
         return
 
     if case["kind"] == "resolve":
         expect = case["expect"]
         if "error_contains" in expect:
-            # `AdapterResolutionError` is a `ValueError`; the wider catch lets a
-            # binding reject a spec at *construction* instead, which is strictly
-            # earlier than the resolve-time failure the vector pins (the
-            # direction the vectors forbid is deferring it to apply). The
-            # message still has to match, so the two engines cannot drift.
             with pytest.raises(ValueError) as excinfo:
                 resolve_case(case)
             assert expect["error_contains"] in str(excinfo.value)
@@ -170,9 +138,6 @@ def test_vector(path: Path) -> None:
         return
 
     if case["kind"] == "role_policy":
-        # The publish-gate role tier, driven through the same binding the SDK's
-        # codec uses, so Python and the core cannot disagree on what a curated
-        # boundary accepts.
         expected = case["expect"].get("error_contains")
         doc = json.dumps(case["doc"])
         if expected is None:
@@ -184,9 +149,6 @@ def test_vector(path: Path) -> None:
         return
 
     if case["kind"] == "apply_sequence":
-        # A frame window only exists ACROSS steps: drive the whole sequence
-        # through one adapter (its windows are episode state) and compare the
-        # payload each step produced.
         adapter = resolve_case(case)
         atol = case["expect"]["atol"]
         for step, (observation, expected) in enumerate(
@@ -202,9 +164,6 @@ def test_vector(path: Path) -> None:
     assert case["kind"] == "apply"
     adapter = resolve_case(case)
     atol = case["expect"]["atol"]
-    # transform_obs now returns the assembled payload TREE (a nested dict / list /
-    # bare leaf); the vector's expect.payload is the encoded Value tree, so compare
-    # them structurally (assert_value recurses on map / tuple-list).
     payload = adapter.transform_obs(dec(case["observation"]))
     assert_value(payload, case["expect"]["payload"], atol)
     action = adapter.transform_action(dec(case["model_output"]))

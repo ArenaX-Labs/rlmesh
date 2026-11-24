@@ -18,18 +18,12 @@ use super::os;
 use super::schema::TrajectoryRecordSpec;
 use crate::Result;
 
-/// One observation or action: the JSON tree of its leaves, plus the raw
-/// pixels of its image leaves concatenated, which the tree points into. The
-/// pixels are shared, so a raw stream identical to the perturbed one clones
-/// the value without owning the frames twice.
 #[derive(Debug, Default, Clone)]
 pub(super) struct StepValue {
     pub(super) json: Vec<u8>,
     pub(super) images: Bytes,
 }
 
-/// One `trajectory.parquet` row. The videos are lossy and decoupled; these
-/// columns are the record of what the model actually saw and did.
 #[derive(Debug, Default, Clone)]
 pub(super) struct StepRow {
     pub(super) step: i64,
@@ -45,8 +39,6 @@ pub(super) struct StepRow {
 }
 
 impl StepRow {
-    /// Bytes this row keeps resident; pixels a raw/perturbed pair shares
-    /// count once.
     fn resident_bytes(&self) -> usize {
         fn pair(a: Option<&StepValue>, b: Option<&StepValue>) -> usize {
             let shared =
@@ -77,9 +69,6 @@ fn blob(row: &StepRow, get: fn(&StepRow) -> Option<&StepValue>) -> Option<&[u8]>
         .filter(|pixels: &&[u8]| !pixels.is_empty())
 }
 
-/// Columns follow the spec: `step`/`t_ns` always, the rest only when their
-/// stream is enabled, plus the `_images` blob column of every value column
-/// whose rows carry image leaves.
 fn fields(rows: &[StepRow], spec: &TrajectoryRecordSpec) -> Vec<Field> {
     let mut fields = vec![
         Field::new("step", DataType::Int64, false),
@@ -147,18 +136,9 @@ fn column(name: &str, rows: &[StepRow]) -> ArrayRef {
     }
 }
 
-/// Trajectory bytes an open episode buffers before they go to disk as one
-/// parquet row group, so what stays resident per episode is this budget, not
-/// the episode's length. The flush copies the chunk into Arrow once, so an
-/// episode mid-flush briefly holds twice this.
-// TODO: one fixed budget per episode; a runner-wide budget shared across
-// open episodes is the upgrade path if hundreds of image trajectories still
-// crowd the runner's RSS.
+// TODO: share one budget across open episodes instead of one per episode.
 pub(super) const CHUNK_BYTES: usize = 8 << 20;
 
-/// Camera frames are most of a trajectory's bytes and stored as raw pixels;
-/// zstd level 3 shrinks a LIBERO episode about 5x (111 MB to 21 MB) at the
-/// same write cost as snappy.
 fn writer_properties() -> WriterProperties {
     WriterProperties::builder()
         .set_compression(Compression::ZSTD(
@@ -167,11 +147,6 @@ fn writer_properties() -> WriterProperties {
         .build()
 }
 
-/// `trajectory.parquet` written a row group at a time to a `.rlmesh-tmp`
-/// sibling (which the file listing and the uploader skip), moved into place
-/// or removed at finish. The schema is fixed by the first row group: the
-/// `_images` columns exist when its rows carry pixels, which for one episode's
-/// observation space is every row or none.
 pub(super) struct TrajectoryWriter {
     path: PathBuf,
     spec: TrajectoryRecordSpec,
@@ -204,7 +179,6 @@ impl TrajectoryWriter {
         self.buffered >= CHUNK_BYTES
     }
 
-    /// Encodes the buffered rows as one row group. Blocking.
     pub(super) fn flush(&mut self) -> Result<()> {
         if self.rows.is_empty() {
             return Ok(());
@@ -236,9 +210,6 @@ impl TrajectoryWriter {
         Ok(())
     }
 
-    /// Writes the tail and closes the file, which lands at the trajectory
-    /// path only when `keep`; an episode that never closed a step leaves
-    /// nothing.
     pub(super) fn finish(mut self, keep: bool) -> Result<()> {
         self.flush()?;
         let Some((_, writer)) = self.file.take() else {
@@ -257,8 +228,6 @@ impl TrajectoryWriter {
 }
 
 impl Drop for TrajectoryWriter {
-    /// An unfinished writer (a discarded episode, a failed flush) leaves no
-    /// partial file behind.
     fn drop(&mut self) {
         if self.file.take().is_some() {
             let _ = std::fs::remove_file(self.tmp());
@@ -275,10 +244,6 @@ pub(super) fn step_value(value: &SpaceValue, space: &SpaceSpec, images: bool) ->
     }
 }
 
-/// Image leaves are appended to `images` verbatim and stand in the tree as
-/// `{shape, dtype, offset, len}`; every other leaf serializes inline. Without
-/// a buffer the pixels are dropped and the leaf keeps only `{shape, dtype}`,
-/// so a reader still sees what the model was given.
 fn leaves_to_json(value: &SpaceValue, space: &SpaceSpec, images: &mut Option<Vec<u8>>) -> Value {
     match (value, space.spec.as_ref()) {
         (SpaceValue::Box(tensor), _) if is_image_space(space) => {
@@ -398,7 +363,6 @@ mod tests {
         }
     }
 
-    /// A camera leaf plus a state leaf, the shape a VLA observation takes.
     fn image_and_state_observation() -> (SpaceSpec, SpaceValue, Vec<u8>) {
         let dict_space = SpaceSpec {
             shape: vec![],

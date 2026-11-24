@@ -1,18 +1,12 @@
 //! Consistent Overhead Byte Stuffing: a frame's bytes with every `0x00`
 //! removed, so `0x00` can delimit frames on the wire.
-//!
-//! [`encode`] reads its source as a chain of slices and looks ahead in
-//! place, so a frame is encoded straight from its header, payload and CRC
-//! without first copying them together: a board needs no transmit buffer.
-//! [`Decoder`] takes one byte at a time into a fixed buffer.
 
 /// Calls `out` with the COBS encoding of `src` (the slices read as one
 /// sequence), without the trailing `0x00` delimiter. At most
 /// `len + len / 254 + 1` bytes.
 ///
-/// The form is pinned: no code byte follows a final 254-byte
-/// block. [`Decoder`] also accepts the common variant that appends `0x01`
-/// there, so a board using another COBS library still interoperates.
+/// No code byte follows a final 254-byte block; the decoder also accepts the
+/// variant that appends `0x01` there.
 pub fn encode(src: &[&[u8]], mut out: impl FnMut(u8)) {
     let total: usize = src.iter().map(|s| s.len()).sum();
     let at = |mut i: usize| {
@@ -30,7 +24,6 @@ pub fn encode(src: &[&[u8]], mut out: impl FnMut(u8)) {
         while run < 254 && i + run < total && at(i + run) != 0 {
             run += 1;
         }
-        // run < 255 by the loop bound, so this is exact.
         out((run + 1) as u8);
         for k in 0..run {
             out(at(i + k));
@@ -40,7 +33,6 @@ pub fn encode(src: &[&[u8]], mut out: impl FnMut(u8)) {
             break;
         }
         if run < 254 {
-            // A zero ends this block: the code byte stands for it.
             i += 1;
         }
     }
@@ -114,7 +106,6 @@ impl<const N: usize> Decoder<N> {
         }
         self.started = true;
         if self.left == 0 {
-            // A code byte: emit the zero the previous block stood for.
             if self.zero && !self.put(0) {
                 return None;
             }
@@ -197,12 +188,10 @@ mod tests {
 
     #[test]
     fn long_runs_split_at_254() {
-        // 254 non-zero bytes: one full block, no trailing code.
         let run: [u8; 254] = core::array::from_fn(|i| (i % 255 + 1) as u8);
         let (out, n) = enc(&run);
         assert_eq!(n, 255);
         assert_eq!(out[0], 0xFF);
-        // 255: a full block, then a block of one.
         let mut longer = [1_u8; 255];
         longer[254] = 7;
         let (out, n) = enc(&longer);
@@ -254,8 +243,6 @@ mod tests {
 
     #[test]
     fn the_trailing_code_variant_decodes_the_same() {
-        // 254 non-zero bytes: this encoder gives `FF ‹254›`; PacketSerial and
-        // the Wikipedia reference give `FF ‹254› 01`. Both decode alike.
         let run: [u8; 254] = core::array::from_fn(|i| (i % 255 + 1) as u8);
         let (wire, n) = enc(&run);
         assert_eq!(n, 255, "no trailing code byte");
@@ -270,7 +257,6 @@ mod tests {
     #[test]
     fn a_bad_frame_never_costs_the_next_one() {
         let mut d = Decoder::<16>::new();
-        // A truncated block (code says 4 data bytes, 2 arrive), then a good frame.
         let wire = [0x05, 0xAA, 0xBB, 0x00, 0x03, 0x11, 0x22, 0x00];
         let mut results = [None, None];
         let mut k = 0;
@@ -296,7 +282,6 @@ mod tests {
             }
         }
         assert_eq!(results, [Some(Err(DecodeError::Overflow)), Some(Ok(1))]);
-        // Delimiters alone are not frames.
         assert!(d.push(0).is_none());
     }
 }

@@ -8,7 +8,6 @@ use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
-/// A non-success response: the request, its status and the server's message.
 #[derive(Debug)]
 pub(crate) struct HttpError {
     pub(crate) what: String,
@@ -63,9 +62,6 @@ pub fn require_trusted_endpoint(url: &str, what: &str) -> Result<()> {
     bail!("the {what} ({value}) is not https; refusing to send credentials to it")
 }
 
-/// Refuses a refresh when the platform's advertised token endpoint has
-/// moved to another host since sign-in: the stored refresh token only ever
-/// goes where the sign-in that minted it sent it.
 pub(crate) fn require_pinned_host(pinned: &str, advertised: &str, what: &str) -> Result<()> {
     if host_of(pinned) == host_of(advertised) {
         return Ok(());
@@ -78,8 +74,6 @@ pub(crate) fn require_pinned_host(pinned: &str, advertised: &str, what: &str) ->
     )
 }
 
-/// The lowercase host of a URL (or bare authority), without port, userinfo,
-/// path, or scheme.
 pub(crate) fn host_of(url: &str) -> Option<String> {
     let value = url.trim();
     let rest = value.split_once("://").map_or(value, |(_, rest)| rest);
@@ -132,9 +126,7 @@ fn extract_host(authority: &str) -> &str {
 /// The one HTTP client configuration: ring as the TLS provider, 10 s to
 /// connect and 30 s per request.
 pub fn http_client() -> Result<reqwest::Client> {
-    // reqwest is built with `rustls-no-provider` to keep aws-lc-rs (and its
-    // cmake/C toolchain requirement) out of clean builds; ring must therefore
-    // be installed as the process-wide provider before building a client.
+    // reqwest uses `rustls-no-provider`: install ring as the process-wide provider before building a client.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     reqwest::Client::builder()

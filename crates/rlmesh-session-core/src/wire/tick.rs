@@ -1,9 +1,4 @@
-//! The virtual-mode tick protocol: what the host publishes on
-//! `host/tick`. Embodiments answer with [`Command::Ready`], due controllers
-//! with [`Command::Decided`].
-//!
-//! [`Command::Ready`]: crate::wire::authority::Command::Ready
-//! [`Command::Decided`]: crate::wire::authority::Command::Decided
+//! The virtual-mode tick protocol: what the host publishes on `host/tick`.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

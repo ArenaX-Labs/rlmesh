@@ -1,5 +1,3 @@
-//! Experimental space constructors. Unlike the removed ABI 4 helpers these
-//! return Space handles and share their sampler on clone.
 #![allow(unsafe_code)]
 use crate::abi::status::{CapiError, RLMeshStatus, guard};
 use crate::space_handle::{RLMeshSpace, RLMeshStr, write_space};

@@ -1,7 +1,5 @@
-//! The participant's handshake: `Noise_IK_25519_ChaChaPoly_BLAKE2s`,
-//! participant as initiator, host as responder. msg 1 carries no payload;
-//! msg 2 carries the `HandshakeAccept` bytes. `k_up` and `k_down` are the
-//! raw split: the first half is initiator → responder (`k_up`).
+//! The participant's handshake: `Noise_IK_25519_ChaChaPoly_BLAKE2s`, participant as
+//! initiator, host as responder.
 
 use super::lp::{LpTooLong, push_lp};
 use super::noise::{self, Ephemeral};
@@ -18,8 +16,8 @@ pub const MSG1_LEN: usize = 32 + 48 + 16;
 /// msg 2's length over its payload (`e, ee, se` and the payload's tag).
 pub const MSG2_OVERHEAD: usize = 32 + 16;
 
-/// The prologue: `lp("rlmesh/v2 handshake") ‖ lp(tenant) ‖ lp(session) ‖
-/// u64 host_instance ‖ lp(participant)`.
+/// The prologue: `lp("rlmesh/v2 handshake") ‖ lp(tenant) ‖ lp(session) ‖ u64 host_instance
+/// ‖ lp(participant)`.
 ///
 /// # Errors
 /// [`LpTooLong`] if a field is over 65,535 bytes.
@@ -44,12 +42,12 @@ pub enum HandshakeError {
     /// The caller's RNG failed.
     #[error("the random number generator failed")]
     Rng,
-    /// A message failed to authenticate: another prologue, an unexpected
-    /// static key, or changed bytes.
+    /// A message failed to authenticate: another prologue, an unexpected static key, or changed
+    /// bytes.
     #[error("the handshake message failed to authenticate")]
     Rejected,
-    /// A key exchange gave the all-zero result: the other side sent a
-    /// low-order (non-contributory) static or ephemeral key.
+    /// A key exchange gave the all-zero result: the other side sent a low-order
+    /// (non-contributory) static or ephemeral key.
     #[error("a low-order key in the handshake")]
     LowOrder,
     /// A message of the wrong length.
@@ -66,18 +64,18 @@ pub enum HandshakeError {
     Internal,
 }
 
-/// The kinds the participant sends under `k_up`: ctl requests,
-/// heartbeats, participant reports, history queries and datagram probes.
+/// The kinds the participant sends under `k_up`: ctl requests, heartbeats, participant
+/// reports, history queries and datagram probes.
 pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15, 21]);
-/// The kinds the host sends under `k_down`: ctl replies, heartbeat
-/// echoes, key deliveries, history pages and sealed device views.
+/// The kinds the host sends under `k_down`: ctl replies, heartbeat echoes, key deliveries,
+/// history pages and sealed device views.
 pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10, 20]);
 
-/// The participant's result of an IK handshake ([`IkInitiator::finish`]):
-/// `k_up`, `k_down` and `h`. The keys leave only as the participant's
-/// sender (`k_up`) and receiver (`k_down`); the host's side has its own
-/// type ([`HostKeys`]), so neither side can make a second sender for the
-/// other's key.
+/// The participant's result of an IK handshake ([`IkInitiator::finish`]): `k_up`, `k_down`
+/// and `h`.
+///
+/// The keys leave only as a sender under `k_up` and a receiver under `k_down`; the host's side
+/// is [`HostKeys`], so neither side can make a sender for the other's key.
 ///
 /// ```compile_fail,E0599
 /// # fn f(keys: rlmesh_session_core::crypto::handshake::ParticipantKeys) {
@@ -97,8 +95,8 @@ impl ParticipantKeys {
         &self.handshake_hash
     }
 
-    /// A sender under `k_up` and a receiver under `k_down`, with the ids
-    /// from `HandshakeAccept`.
+    /// A sender under `k_up` and a receiver under `k_down`, with the ids from
+    /// `HandshakeAccept`.
     pub fn into_participant(self, up_key_id: u32, down_key_id: u32) -> (SealSender, SealReceiver) {
         (
             SealSender::new(up_key_id, self.up, UP, Security::Seal),
@@ -107,9 +105,8 @@ impl ParticipantKeys {
     }
 }
 
-/// The host's result of an IK handshake ([`IkResponder::accept`]): the
-/// keys leave only as the host's sender (`k_down`) and receiver (`k_up`).
-///
+/// The host's result of an IK handshake ([`IkResponder::accept`]): the keys leave only as
+/// the host's sender (`k_down`) and receiver (`k_up`).
 /// ```compile_fail,E0599
 /// # fn f(keys: rlmesh_session_core::crypto::handshake::HostKeys) {
 /// let _ = keys.into_participant(1, 2); // the host never sends under `k_up`
@@ -128,8 +125,8 @@ impl HostKeys {
         &self.handshake_hash
     }
 
-    /// A sender under `k_down` and a receiver under `k_up`, with the ids
-    /// the host put in `HandshakeAccept`.
+    /// A sender under `k_down` and a receiver under `k_up`, with the ids the host put in
+    /// `HandshakeAccept`.
     pub fn into_host(self, up_key_id: u32, down_key_id: u32) -> (SealSender, SealReceiver) {
         (
             SealSender::new(down_key_id, self.down, DOWN, Security::Seal),
@@ -138,7 +135,6 @@ impl HostKeys {
     }
 }
 
-/// (`h`, `k_up`, `k_down`) after the last message.
 fn split(hs: &mut snow::HandshakeState) -> Result<([u8; 32], Key, Key), HandshakeError> {
     let handshake_hash = noise::hash(hs)?;
     let (up, down) = noise::split(hs);
@@ -147,7 +143,6 @@ fn split(hs: &mut snow::HandshakeState) -> Result<([u8; 32], Key, Key), Handshak
 
 /// The participant's side, after sending msg 1.
 pub struct IkInitiator {
-    // Boxed: it is held across a round trip and moved through the callers.
     hs: Box<snow::HandshakeState>,
 }
 
@@ -158,8 +153,8 @@ impl core::fmt::Debug for IkInitiator {
 }
 
 impl IkInitiator {
-    /// Start a handshake with the host whose static key is `host_static`,
-    /// returning the state and msg 1. `rng` gives the ephemeral key.
+    /// Start a handshake with the host whose static key is `host_static`, returning the state
+    /// and msg 1.
     ///
     /// # Errors
     /// [`HandshakeError`].
@@ -182,9 +177,8 @@ impl IkInitiator {
 
     /// Read msg 2: the `HandshakeAccept` bytes and the keys.
     ///
-    /// Consumes the state: a forged or corrupted msg 2 ends this attempt,
-    /// and the participant starts a new handshake (doesn't ask for
-    /// more; the host's reply is a single query reply).
+    /// Consumes the state: after a forged or corrupted msg 2 the participant starts a new
+    /// handshake.
     ///
     /// # Errors
     /// [`HandshakeError`].
@@ -202,8 +196,8 @@ impl IkInitiator {
     }
 }
 
-/// The host's side, after reading msg 1: the participant's static key is
-/// known and must be checked before [`accept`](Self::accept).
+/// The host's side, after reading msg 1: the participant's static key is known and must be
+/// checked before [`accept`](Self::accept).
 pub struct IkResponder {
     hs: snow::HandshakeState,
     initiator_static: [u8; 32],
@@ -218,10 +212,8 @@ impl core::fmt::Debug for IkResponder {
 }
 
 impl IkResponder {
-    /// Read msg 1 under `prologue` (built from the request's participant
-    /// name and the host's own tenant, session and instance). `rng` gives
-    /// msg 2's ephemeral key. A low-order static or ephemeral key is
-    /// refused ([`HandshakeError::LowOrder`]).
+    /// Read msg 1 under `prologue` (built from the request's participant name and the host's
+    /// own tenant, session and instance).
     ///
     /// # Errors
     /// [`HandshakeError`]; `UnexpectedPayload` if msg 1 has a payload.
@@ -321,7 +313,6 @@ mod tests {
         assert_eq!(h_rx.open(ctl, &mut up).unwrap().body, b"attach");
         let mut down = h_tx.seal(Kind::CtlReply, ctl, b"ok").unwrap();
         assert_eq!(p_rx.open(ctl, &mut down).unwrap().body, b"ok");
-        // Each direction carries only its own kinds.
         assert!(p_tx.seal(Kind::CtlReply, ctl, b"").is_err());
         assert!(h_tx.seal(Kind::CtlRequest, ctl, b"").is_err());
         assert!(p_tx.seal(Kind::Heartbeat, ctl, b"").is_ok());
@@ -354,14 +345,12 @@ mod tests {
         let (participant, host) = keys();
         let impostor = StaticKeypair::from_private(&mut [3; 32]);
         let p = prologue_for("arm");
-        // The participant expects `host`; `impostor` can't read msg 1.
         let (_, msg1) =
             IkInitiator::start(&mut TestRng::new(1), &participant, host.public(), &p).unwrap();
         assert_eq!(
             IkResponder::read_request(&mut TestRng::new(2), &impostor, &p, &msg1).unwrap_err(),
             HandshakeError::Rejected
         );
-        // And a reply from anyone but the expected host fails at the participant.
         let (init, _) =
             IkInitiator::start(&mut TestRng::new(1), &participant, host.public(), &p).unwrap();
         let (_, msg1_imp) =

@@ -1,12 +1,10 @@
 //! Sending action chunks: the controller side of a commandable part.
 //!
-//! A controller holding a lease sends timed chunks through a
-//! [`ChunkPublisher`], which stamps its lease token, the lease's binding,
-//! the epoch, its own id as the source and a seq (increasing per token), and
-//! checks the actions against the part's command layout, and seals
-//! it under the lease's `k_cmd`, which only the holder and the
-//! robot have. The embodiment's edge ([`edge`](crate::edge)) opens, fences,
-//! validates, splices and applies them.
+//! A controller holding a lease sends timed chunks through a [`ChunkPublisher`], which stamps the
+//! lease token, the lease's binding, the epoch, its own id as the source and a seq (increasing per
+//! token), checks the actions against the part's command layout, and seals the chunk under the
+//! lease's `k_cmd`, which only the holder and the robot have. The embodiment's
+//! [`edge`](crate::edge) opens, fences, validates, splices and applies it.
 
 use std::sync::{Arc, Mutex};
 
@@ -48,7 +46,6 @@ pub struct ChunkDraft {
 /// Sends chunks for one commandable part under one lease.
 pub struct ChunkPublisher {
     publisher: zenoh::pubsub::Publisher<'static>,
-    /// The command key, which every sealed chunk is bound to.
     key: String,
     sealer: Sealer,
     spec: PartSpec,
@@ -57,8 +54,7 @@ pub struct ChunkPublisher {
     token: LeaseToken,
     binding: Fingerprint,
     epoch: Epoch,
-    /// The last seq; held across a chunk's seq, seal and send, so chunks
-    /// leave in order.
+    // The last seq; held across a chunk's seq, seal and send, so chunks leave in order.
     seq: Mutex<u64>,
     clock: Arc<dyn Clock>,
 }

@@ -1,20 +1,3 @@
-"""Execute the headless examples in ``examples/python`` as real subprocesses.
-
-Every example that runs with only the repository environment (no GPU, no
-Docker, no external weights) is exercised here, so a change that breaks one
-fails CI. The rest of the set is typechecked but not executed:
-
-- ``byo_container/``: Docker image entrypoints; the env/model servers block forever.
-- ``isaacsim/``: needs Docker, Isaac Sim and an RTX GPU; also excluded from
-  typechecking because its Kit imports need that runtime.
-- ``sandbox/``: starts owned Docker containers.
-- ``vla_adapters/``: model x simulator study; real runs need weights and simulators.
-- ``v2/session_bench.py``: a latency benchmark (30 s per run by default).
-
-``v2/ur10e_mujoco`` runs only where MuJoCo is installed (``uv sync --group
-mujoco``).
-"""
-
 from __future__ import annotations
 
 import json
@@ -35,8 +18,6 @@ SERVER_STARTUP_TIMEOUT = 30.0
 
 
 def _free_port() -> int:
-    """A free local port, on TCP and UDP both: a session host listens on it
-    (and offers boards UDP on the same number)."""
     for _ in range(64):
         with (
             socket.socket() as tcp,
@@ -69,10 +50,6 @@ def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:
 
 
 def _serve_example(relative: str, address: str | None = None) -> Iterator[str]:
-    """Start a server example hosting its session on a free port (or at
-    ``address``) and yield the env's address as the server announces it: on
-    loopback that carries the session's key (``host:port#key/env``), which
-    a client on another machine would need."""
     process = subprocess.Popen(
         [
             sys.executable,
@@ -97,7 +74,6 @@ def _serve_example(relative: str, address: str | None = None) -> Iterator[str]:
 
 
 def _announced_address(process: subprocess.Popen[str]) -> str:
-    """The address in the server's ``serving ... on ADDRESS`` line."""
     assert process.stdout is not None
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
@@ -119,21 +95,16 @@ def _announced_address(process: subprocess.Popen[str]) -> str:
 
 @pytest.fixture(scope="module")
 def counter_address() -> Iterator[str]:
-    """quickstart/serve.py: the dependency-light CounterEnv server."""
     yield from _serve_example("quickstart/serve.py")
 
 
 @pytest.fixture(scope="module")
 def cartpole_address() -> Iterator[str]:
-    """quickstart/serve_gymnasium.py: Gymnasium CartPole-v1 served over RLMesh."""
     yield from _serve_example("quickstart/serve_gymnasium.py")
 
 
 @pytest.fixture(scope="module")
 def bare_cartpole_address() -> Iterator[str]:
-    """quickstart/serve_gymnasium.py at an address a client names as the
-    README does, without the key it prints: another process of the same
-    user finds the key the loopback host leaves for it."""
     address = f"127.0.0.1:{_free_port()}/env"
     for announced in _serve_example("quickstart/serve_gymnasium.py", address):
         assert announced.split("#", 1)[0] == address.split("/", 1)[0], announced
@@ -199,7 +170,6 @@ def test_v2_loopback_robot_and_policy() -> None:
 
 
 def test_v2_ur10e_mujoco_teleop_and_mcap() -> None:
-    """The milestone demo, headless: policy, scripted takeover and hand-back, MCAP."""
     pytest.importorskip("mujoco", reason="uv sync --group mujoco")
     result = _run_example("v2/ur10e_mujoco/demo.py", "--seconds", "8", "--json")
     _assert_ok(result)

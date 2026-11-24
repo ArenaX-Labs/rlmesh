@@ -1,5 +1,3 @@
-//! The authority's tests, by topic, and the fixture they share.
-
 mod barrier;
 mod demand;
 mod handback;
@@ -22,8 +20,6 @@ fn pid(id: &str) -> ParticipantId {
     ParticipantId::new(id).expect("id")
 }
 
-/// Four ungrouped commandable parts, an `arm` group of two, and a
-/// sensor.
 fn robot_map(extra: &str) -> String {
     let cmd = |path: &str, group: &str| {
         format!(
@@ -48,8 +44,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// robot (embodiment), policy (model), operator, script, viewer; each
-    /// controller bound to every commandable part.
     fn new() -> Self {
         let mut auth = Authority::new(
             SessionId::new(),

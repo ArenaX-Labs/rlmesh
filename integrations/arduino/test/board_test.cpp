@@ -1,9 +1,3 @@
-// Runs the board runtime (`board.h`) against a fake clock, serial port,
-// watchdog and e-stop storage, as the bridge would drive it: attach, drive,
-// permits, the link watchdog, the generation fence and the pin e-stop.
-//
-//   board_test
-
 #include <stdio.h>
 #include <string.h>
 
@@ -32,8 +26,6 @@ const char* scenario = "";
 
 typedef std::vector<uint8_t> Buf;
 
-// Two parts: `eyes` (two f32 commands, two f32 samples) and `lid` (a
-// sample only).
 const uint8_t kMap[] = "{\"eyes\":{\"kind\":\"joints\"},\"lid\":{\"kind\":\"sensor\"}}";
 const uint8_t kBoardId[8] = {1, 2, 3, 4, 5, 6, 7, 8};
 const uint8_t kName[] = "eyes";
@@ -57,11 +49,8 @@ struct FakeHal {
   bool estopPin = true;
   bool input = false;
   bool stored = false;
-  // Milliseconds the clock moves per byte read (a slow link, or slow callbacks).
   uint32_t msPerRead = 0;
-  // Presses the e-stop after this many more reads (when positive).
   int pressAfterReads = 0;
-  // The erase fails: storage still reads as set.
   bool eraseFails = false;
   std::vector<std::string> events;
 
@@ -97,7 +86,6 @@ struct FakeHal {
   uint8_t arch() { return 1; }
 };
 
-// A board frame, kept with its own copy of the payload.
 struct Out {
   uint8_t type;
   uint8_t seq;
@@ -122,9 +110,7 @@ struct Rig {
   Board<FakeHal> board{hal, kSpec, slots, rx, 64};
   std::vector<std::string> calls;
   Buf lastValue;
-  // The clock at the last onSafe.
   uint32_t safeAt = 0;
-  // Run inside onCommand, as a sketch's handler would.
   void (*inCommand)(Rig&) = nullptr;
   uint8_t seq = 0;
   uint8_t gen = 0;
@@ -151,7 +137,6 @@ struct Rig {
   }
   void start(uint16_t watchdogMs = 250) { board.begin(&onSafe, &onCommand, this, watchdogMs); }
 
-  // Everything the board has sent since the last call.
   std::vector<Out> sent() {
     std::vector<Out> out;
     CobsDecoderBuffer<256> d;
@@ -177,7 +162,6 @@ struct Rig {
   void send(Error (*encode)(const M&, uint8_t, Sink), const M& m) {
     CHECK(encode(m, seq++, sinkTo(*this)) == Error::Ok);
   }
-  // `sinkTo(rig)` lands bridge bytes in the board's receive queue.
   void write(uint8_t b) { hal.rx.push_back(b); }
 
   void attach(uint8_t g, uint8_t flags = 0, uint16_t boot = kBoot) {
@@ -217,14 +201,12 @@ struct Rig {
   }
 
   void poll() { board.poll(); }
-  // Advances the clock by `ms`, polling each millisecond.
   void run(uint32_t ms) {
     for (uint32_t i = 0; i < ms; ++i) {
       ++hal.ms;
       board.poll();
     }
   }
-  // Attaches with `g` and drops what the board said.
   void attached(uint8_t g = 7) {
     attach(g);
     poll();
@@ -252,7 +234,6 @@ void beginSafesEveryPartAndSaysHello() {
   CHECK(!r.hal.armed);
   r.poll();
   CHECK(r.hal.armed && r.hal.feeds == 1);
-  // watchdog_ms is clamped into 20..=5000.
   Rig low(false), high(false);
   low.start(5);
   high.start(9000);
@@ -268,7 +249,6 @@ void helloRepeatsAndOnlyMapAndAttachAreAnswered() {
   r.run(1);
   std::vector<Out> out = r.sent();
   CHECK(out.size() == 1 && out[0].type == ty::kHello && out[0].seq == 1);
-  // Before attach: PING, COMMAND, SAFE and DETACH are ignored, not counted.
   r.gen = 9;
   r.ping();
   r.command(0, 50);
@@ -286,7 +266,7 @@ void theMapIsServedInSlicesFencedByBoot() {
   r.getMap(0, 10);
   r.getMap(10, 248);
   r.getMap(len, 5);
-  r.getMap(0, 10, kBoot + 1);  // another boot: ignored
+  r.getMap(0, 10, kBoot + 1);
   r.poll();
   std::vector<Out> out = r.sent();
   CHECK(out.size() == 3);
@@ -302,7 +282,7 @@ void attachChecksIdBootAndGen() {
   scenario = "attach";
   Rig r;
   r.sent();
-  r.attach(0);  // gen 0 is always refused
+  r.attach(0);
   r.attach(5, 0, kBoot + 1);
   Attach other;
   for (int i = 0; i < 8; ++i) other.boardId[i] = uint8_t(9 - i);
@@ -319,15 +299,12 @@ void attachChecksIdBootAndGen() {
   Status s = statusOf(st[0]);
   CHECK(s.boot == kBoot && s.gen == 5 && s.flags == status_flags::kAttached && s.reset == 3);
   CHECK(s.tUs == r.hal.ms * 1000);
-  // A retry of the same gen is confirmed again and feeds the watchdog.
   r.run(200);
   r.sent();
   r.attach(5);
   r.run(100);
   CHECK(r.board.attached());
   CHECK(statusOf(r.sentOf(ty::kStatus).front()).gen == 5);
-  // A new gen while attached: every part safes first (none were driving),
-  // then the board adopts it.
   r.calls.clear();
   r.command(0, 200);
   r.poll();
@@ -347,7 +324,6 @@ void commandsArePermitsThatExpire() {
   memcpy(&a, r.lastValue.data(), 4);
   memcpy(&b, r.lastValue.data() + 4, 4);
   CHECK(r.lastValue.size() == 8 && a == 1.5f && b == -0.5f);
-  // PING keeps the link up but never extends a permit.
   for (int i = 0; i < 5; ++i) {
     r.run(11);
     r.ping();
@@ -357,11 +333,9 @@ void commandsArePermitsThatExpire() {
   r.run(1);
   CHECK(r.calls.size() == 2 && r.calls[1] == "safe 0 how=1");
   CHECK(r.board.attached());
-  // The next command resumes the part.
   r.command(0, 60);
   r.poll();
   CHECK(r.calls.back() == "cmd 0");
-  // ttl is clamped to [1, watchdog_ms].
   r.calls.clear();
   r.command(0, 0);
   r.poll();
@@ -369,7 +343,7 @@ void commandsArePermitsThatExpire() {
   CHECK(r.calls.size() == 2 && r.calls[1] == "safe 0 how=1");
   r.calls.clear();
   r.command(0, 60000);
-  r.poll();  // received now: the permit is clamped to 250 ms from here
+  r.poll();
   for (int i = 0; i < 24; ++i) {
     r.run(10);
     r.ping();
@@ -393,7 +367,6 @@ void safeIsTransientAndReportedOnce() {
   r.command(0, 200);
   r.poll();
   CHECK(r.calls.back() == "cmd 0");
-  // A part beyond the map is ignored.
   r.safe(9);
   r.poll();
   CHECK(r.calls.size() == 3);
@@ -406,7 +379,6 @@ void theGenerationFenceDropsAndCounts() {
   r.command(0, 200, 0.5f, 0.5f, false, 8);
   r.poll();
   CHECK(r.calls.empty() && r.board.bad() == 1);
-  // A stale-gen PING doesn't feed the link watchdog.
   for (int i = 0; i < 25; ++i) {
     r.run(10);
     r.ping(6);
@@ -431,7 +403,6 @@ void theLinkWatchdogTripsAndRefusesTheOldGen() {
   CHECK(r.calls.size() == 1 && r.calls[0] == "safe 0 how=1");
   std::vector<Out> out = r.sent();
   CHECK(!out.empty() && out.back().type == ty::kHello && out.back().msg().hello.gen == 7);
-  // A late retry under the old gen can't re-attach; a fresh one can.
   r.attach(7);
   r.poll();
   CHECK(!r.board.attached());
@@ -447,7 +418,6 @@ void aStalledSketchTripsBeforeActingOnBufferedFrames() {
   r.command(0, 200);
   r.poll();
   r.calls.clear();
-  // The sketch blocks for 300 ms while a command arrives.
   r.hal.ms += 300;
   r.command(0, 200);
   r.poll();
@@ -470,7 +440,7 @@ void detachSafesAndSaysHelloAtOnce() {
 void statusIsPeriodicWhileAttached() {
   scenario = "status timing";
   Rig r(false);
-  r.start(60);  // period min(60 / 3, 100) = 20 ms
+  r.start(60);
   r.attached(7);
   int seen = 0;
   for (int i = 0; i < 10; ++i) {
@@ -479,7 +449,7 @@ void statusIsPeriodicWhileAttached() {
     seen += int(r.sentOf(ty::kStatus).size());
   }
   CHECK(seen == 5);
-  Rig slow;  // 250 ms: period 83 ms
+  Rig slow;
   slow.attached(7);
   slow.run(83);
   CHECK(slow.sentOf(ty::kStatus).size() == 1);
@@ -488,14 +458,12 @@ void statusIsPeriodicWhileAttached() {
 void lostAndBadAreCounted() {
   scenario = "counters";
   Rig r;
-  r.attached(7);  // ATTACH was seq 0
-  r.ping();       // 1
+  r.attached(7);
+  r.ping();
   r.seq = 4;
-  r.ping();  // 4: 2 lost
+  r.ping();
   r.poll();
   CHECK(r.board.lost() == 2);
-  // A bad CRC, an empty frame, a truncated block, an overflow and a frame
-  // of the wrong length are each one `bad`.
   Buf crc;
   Ping p = {7};
   struct Collect {
@@ -508,10 +476,10 @@ void lostAndBadAreCounted() {
   r.feed({0x01, 0x00});
   r.feed({0x05, 0xAA, 0x00});
   Buf big(80, 0x11);
-  big[0] = 0x51;  // one block of 80 bytes: more than rx_max
+  big[0] = 0x51;
   big.push_back(0);
   r.feed(big);
-  Buf len = {0x85, 0, 7, 7};  // PING with two payload bytes
+  Buf len = {0x85, 0, 7, 7};
   uint16_t crc16v = crc16(len.data(), uint16_t(len.size()));
   len.push_back(uint8_t(crc16v));
   len.push_back(uint8_t(crc16v >> 8));
@@ -542,13 +510,11 @@ void thePinLatchesStoresAfterStatusAndDropsCommands() {
   r.hal.events.clear();
   r.hal.input = true;
   r.poll();
-  // Safe, then STATUS, then the store.
   CHECK(r.hal.events.size() == 4);
   CHECK(r.hal.events[0] == "safe 0 how=1 estop" && r.hal.events[1] == "safe 1 how=0 estop");
   CHECK(r.hal.events[2] == "tx" && r.hal.events[3] == "store");
   std::vector<Out> st = r.sentOf(ty::kStatus);
   CHECK(st.size() == 1 && statusOf(st[0]).flags == 0x07);
-  // Commands are dropped but still feed the link; SAFE changes nothing.
   r.calls.clear();
   for (int i = 0; i < 30; ++i) {
     r.command(0, 200);
@@ -556,17 +522,14 @@ void thePinLatchesStoresAfterStatusAndDropsCommands() {
     r.run(10);
   }
   CHECK(r.calls.empty() && r.board.attached());
-  // Releasing the input reports bit 2 but keeps the latch.
   r.sent();
   r.hal.input = false;
   r.poll();
   st = r.sentOf(ty::kStatus);
   CHECK(st.size() == 1 && statusOf(st[0]).flags == 0x03 && r.board.estopLatched());
-  // "Clear" needs a new gen.
   r.attach(7, attach_flags::kClearEstop);
   r.poll();
   CHECK(r.board.estopLatched());
-  // ...and the input released.
   r.hal.input = true;
   r.poll();
   r.attach(8, attach_flags::kClearEstop);
@@ -597,12 +560,10 @@ void theLatchSurvivesAReset() {
   CHECK(r.calls[0] == "safe 0 how=1 estop" && r.calls[1] == "safe 1 how=0 estop");
   std::vector<Out> out = r.sent();
   CHECK(out.size() == 1 && out[0].msg().hello.flags == hello_flags::kEstop);
-  // A pressed button at boot latches and stores, whatever was stored.
   Rig pressed(false);
   pressed.hal.input = true;
   pressed.start();
   CHECK(pressed.board.estopLatched() && pressed.hal.stored);
-  // No pin: storage is ignored.
   Rig none(false);
   none.hal.estopPin = false;
   none.hal.stored = true;
@@ -618,7 +579,7 @@ void publishAndNotes() {
   scenario = "publish";
   Rig r;
   uint8_t v[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-  CHECK(!r.board.publish(0, v, 8));  // not attached
+  CHECK(!r.board.publish(0, v, 8));
   r.attached(7);
   CHECK(!r.board.publish(0, v, 7));
   CHECK(!r.board.publish(2, v, 1));
@@ -674,19 +635,17 @@ void aPollFromACallbackDoesNothing() {
   scenario = "re-entry";
   Rig r;
   r.attached(7);
-  // The handler waits with tether.delay(): it polls, while a DETACH waits.
   r.inCommand = [](Rig& g) {
     int feeds = g.hal.feeds;
     for (int i = 0; i < 5; ++i) {
       ++g.hal.ms;
       g.board.poll();
     }
-    CHECK(g.hal.feeds == feeds);  // not even the watchdog
+    CHECK(g.hal.feeds == feeds);
   };
   r.command(0, 200);
   r.detach();
   r.poll();
-  // The DETACH is acted on after the handler returned, never inside it.
   CHECK(r.calls.size() == 2 && r.calls[0] == "cmd 0" && r.calls[1] == "safe 0 how=1");
   CHECK(!r.board.attached());
 }
@@ -699,16 +658,12 @@ void aFloodCannotHoldAPermitOrThePin() {
   r.poll();
   uint32_t granted = r.hal.ms;
   r.calls.clear();
-  // PINGs arriving as fast as they are read, a millisecond a byte (7 bytes
-  // a frame): one poll() expires the permit at the first frame past 30 ms,
-  // and returns after kFramesPerPoll frames.
   r.hal.msPerRead = 1;
   for (int i = 0; i < 400; ++i) r.ping();
   r.poll();
   CHECK(r.calls.size() == 1 && r.calls[0] == "safe 0 how=1");
   CHECK(r.safeAt == granted + 35);
-  CHECK(r.hal.rx.size() == (400 - 8) * 7);  // kFramesPerPoll
-  // The pin is sampled between frames too.
+  CHECK(r.hal.rx.size() == (400 - 8) * 7);
   r.hal.pressAfterReads = 10;
   r.poll();
   CHECK(r.board.estopLatched() && r.hal.stored);
@@ -722,8 +677,6 @@ void theClearReadsThePinAgain() {
   r.poll();
   r.hal.input = false;
   r.poll();
-  // The button goes down while the clearing ATTACH is being read, after
-  // poll() sampled it: the clear reads the pin itself and refuses.
   r.attach(8, attach_flags::kClearEstop);
   r.hal.pressAfterReads = 3;
   r.poll();
@@ -751,7 +704,6 @@ void aFailedEraseKeepsTheLatch() {
   r.command(0, 100);
   r.poll();
   CHECK(r.calls.empty());
-  // Once the storage works, a later clear does.
   r.hal.eraseFails = false;
   r.attach(9, attach_flags::kClearEstop);
   r.poll();
@@ -763,7 +715,7 @@ void notesSurviveALongSilence() {
   Rig r;
   const uint8_t t[] = {'x'};
   CHECK(r.board.note(0, 0, t, 1) && r.board.note(0, 0, t, 1));
-  r.hal.ms += 0x80000000u;  // 24.8 days without a note
+  r.hal.ms += 0x80000000u;
   CHECK(r.board.note(0, 0, t, 1));
 }
 

@@ -1,51 +1,39 @@
 //! The controller's input cache and history windows, built into the
 //! controller runtime so users write no cache code.
 //!
-//! [`InputCache`] is sans-IO (it lives in `rlmesh-session-core` and is
-//! re-exported here): one slot per bound stream (shared by the
-//! entries bound to it) plus a ring as deep as the deepest window on it,
-//! fed sample by sample and snapshotted at each policy start:
+//! [`InputCache`] is sans-IO: one slot per bound stream plus a ring as deep as
+//! the deepest window on it, fed sample by sample and snapshotted at each
+//! policy start.
 //!
-//! - **Snapshot.** Every input's newest sample, its seq and its
-//!   **conservative age** `now − capture + ε_pub + ε_self`, taken
-//!   together but captured independently: the snapshot exposes each capture
-//!   time and the skew between them.
-//! - **Fresh** means a conservative age within the entry's bound. A sample
-//!   with no clock mapping, or stamped in the future beyond the error bound
+//! - **Snapshot.** Every input's newest sample, its seq and its conservative
+//!   age `now − capture + ε_pub + ε_self`, each capture time exposed.
+//! - **Fresh** means a conservative age within the entry's bound. A sample with
+//!   no clock mapping, or stamped in the future beyond the error bound
 //!   (`future_timestamp`), is never fresh.
-//! - **Stale required input:** with `allow: hold` it is delivered and
-//!   flagged; without, the start is skipped (`stale_input`).
-//! - **Never received** in this epoch: the start waits (`waiting_for`).
-//!   Blank inputs never wait.
-//! - **Windows** are the last `history` samples by seq, oldest first,
-//!   assembled from live samples. A seq gap inside the window skips
-//!   starts (`window_gap`) until the gap is filled (from the host store,
-//!   [`Inputs::recover`]) or a complete new window exists. An incomplete
+//! - **Stale required input:** with `allow: hold` it is delivered and flagged;
+//!   without, the start is skipped (`stale_input`).
+//! - **Never received** in this epoch: the start waits (`waiting_for`). Blank
+//!   inputs never wait.
+//! - **Windows** are the last `history` samples by seq, oldest first. A seq
+//!   gap inside the window skips starts (`window_gap`) until it is filled
+//!   ([`Inputs::recover`]) or a complete new window exists. An incomplete
 //!   window is never delivered: at episode start the start waits for a full
 //!   one, unless `allow: warmup` pads it by repeating the first sample.
-//! - **Epochs**. When the session's epoch advances (an `arm`),
-//!   every state stream is cleared ([`InputCache::advance`]) and a sample
-//!   from an older epoch is dropped, so nothing seeds the new epoch from the
-//!   old one. Episodic text and the other event streams keep their last
-//!   value (the session has no episodes on the wire yet, so an event value
-//!   lasts until a newer one replaces it).
+//! - **Epochs.** When the session's epoch advances (an `arm`), every state
+//!   stream is cleared ([`InputCache::advance`]) and samples from an older
+//!   epoch are dropped. Event streams keep their last value until a newer one
+//!   replaces it.
 //! - **Provenance.** Each snapshot records, per stream, the seq range used
 //!   (`based_on` for the chunks computed from it).
 //!
-//! On an applied stream a tick that dispatched nothing carries no
-//! value: the input keeps the previous dispatched value.
-//!
-//! [`Inputs`] is the network end: one subscription per bound stream,
-//! feeding the cache from the transport callback (which keeps draining
-//! while `predict` runs; windows and event streams warm from the host's
-//! history store on attach), converting capture times to session time through
-//! the publishers' clock mappings. [`Inputs::observe`] is a policy start:
-//! the snapshot, each sample it uses decoded (JPEG) and each entry's plan
-//! applied, so the values are what `predict` receives and the snapshot is
-//! `obs.meta`. [`Inputs::stats`] counts each input's samples received and
-//! lost (seq gaps), and a snapshot warns, at most once per input every
-//! [`LOSS_WARNING_GAP`], when an input that takes every sample (a window, or
-//! `every`) lost some.
+//! [`Inputs`] is the network end: one subscription per bound stream, feeding
+//! the cache from the transport callback (which keeps draining while `predict`
+//! runs; windows and event streams warm from the host's history store on
+//! attach). [`Inputs::observe`] is a policy start: the snapshot, each sample it
+//! uses decoded and each entry's plan applied, so the values are what
+//! `predict` receives. [`Inputs::stats`] counts each input's samples received
+//! and lost, and a snapshot warns, at most once per input every
+//! [`LOSS_WARNING_GAP`], when an input that takes every sample lost some.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -67,18 +55,13 @@ pub use rlmesh_session_core::cache::{Cached, InputCache, InputSnapshot, Skip, Sn
 /// The least time between two warnings of one input's lost samples.
 pub const LOSS_WARNING_GAP: Duration = Duration::from_secs(5);
 
-/// When one input's lost samples were last warned of.
 #[derive(Clone, Copy, Debug, Default)]
 struct LossWarning {
-    /// The input's `lost` at the last warning.
     warned: u64,
-    /// When, in session ns.
     at: Option<i64>,
 }
 
 impl LossWarning {
-    /// The samples lost since the last warning, when the input has lost
-    /// `lost` so far and a warning is due at `now_ns`.
     fn due(&mut self, lost: u64, now_ns: i64) -> Option<u64> {
         let gap = i64::try_from(LOSS_WARNING_GAP.as_nanos()).unwrap_or(i64::MAX);
         if lost <= self.warned || self.at.is_some_and(|at| now_ns.saturating_sub(at) < gap) {
@@ -140,17 +123,10 @@ pub struct Inputs {
     view: AuthorityView,
     me: crate::wire::ParticipantId,
     streams: Vec<SampleSubscriber>,
-    /// Per stream (as `streams`), when its losses were last warned of;
-    /// `None` for a stream the binding reads only the latest of, whose
-    /// losses are counted and never warned of.
     losses: Mutex<Vec<Option<LossWarning>>>,
-    /// Per input, the last decoded value of an encoded stream and the
-    /// samples it came from: a 30 fps JPEG camera read by a 100 Hz policy
-    /// is decoded and converted once per frame, not once per start.
     decoded: Mutex<Vec<Option<(Decoded, Value)>>>,
 }
 
-/// Which samples a decoded value came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Decoded {
     epoch: Epoch,
@@ -160,7 +136,6 @@ struct Decoded {
 
 impl Inputs {
     /// Subscribes to every stream `binding` reads, feeding a fresh cache.
-    /// Windowed and event streams warm from the host's history store.
     pub async fn open(participant: &Participant, binding: &Binding) -> Result<Self, SessionError> {
         let cache = Arc::new(Mutex::new(InputCache::new(binding)));
         let view = participant.authority_view();
@@ -198,10 +173,8 @@ impl Inputs {
                     }
                 }
             };
-            // The subscription's own window sizes the history warm-up. An
-            // event stream (the task text) warms too: it is published once
-            // per episode, so a controller attaching later would wait for
-            // it forever.
+            // An event stream warms too: it is published once per episode, so a
+            // controller attaching later would otherwise wait for it forever.
             let options = SubscribeOptions {
                 on_sample: Some(Arc::new(feed)),
                 window: depth,
@@ -209,7 +182,6 @@ impl Inputs {
             };
             streams.push(participant.subscribe_stream(stream, options).await?);
         }
-        // Only an input that takes every sample is short of one it lost.
         let losses = streams
             .iter()
             .map(|s| {
@@ -312,8 +284,6 @@ impl Inputs {
             .collect()
     }
 
-    /// Warns of the samples each input that takes every sample lost since
-    /// its last warning, at most once every [`LOSS_WARNING_GAP`].
     fn warn_losses(&self, now_session_ns: i64) {
         let Ok(mut losses) = self.losses.lock() else {
             return;

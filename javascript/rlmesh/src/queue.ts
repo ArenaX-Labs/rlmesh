@@ -3,7 +3,6 @@
 export interface Subscription<T> extends AsyncIterableIterator<T>, AsyncDisposable {
   /** Items dropped because the consumer fell more than `maxQueue` behind. */
   readonly dropped: number;
-  /** Items waiting. */
   readonly queued: number;
   readonly closed: boolean;
   close(): void;
@@ -46,7 +45,6 @@ export class BoundedQueue<T> implements Subscription<T> {
       this.head++;
       this._dropped++;
     }
-    // Compact occasionally so `head` does not grow without bound.
     if (this.head > 1024 && this.head * 2 > this.items.length) {
       this.items = this.items.slice(this.head);
       this.head = 0;

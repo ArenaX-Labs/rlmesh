@@ -97,10 +97,7 @@ fn f16_to_f64(bits: u16) -> f64 {
     }
 }
 
-/// Round to nearest even, through `f32` rounded to odd: an inexact cast to
-/// `f32` sets its low mantissa bit, so the `f32` is never an exact `f16`
-/// midpoint and the second rounding equals a direct one ("When double
-/// rounding is odd", Boldo and Melquiond).
+/// Round to nearest even through `f32` rounded to odd, so the double rounding equals a direct one.
 fn f64_to_f16(value: f64) -> u16 {
     let nearest = value as f32;
     let odd = if f64::from(nearest) == value || value.is_nan() {
@@ -135,11 +132,9 @@ fn f64_to_f16(value: f64) -> u16 {
         }
         return sign | round(mant | 0x80_0000, (14 - e) as u32) as u16;
     }
-    // A carry out of the mantissa rounds into the exponent (and to inf).
     sign | round(((e as u32) << 23) | mant, 13) as u16
 }
 
-/// Little-endian elements as `f64`.
 pub(crate) fn decode(dtype: DType, bytes: &[u8]) -> Vec<f64> {
     macro_rules! each {
         ($n:literal, $f:expr) => {
@@ -165,7 +160,6 @@ pub(crate) fn decode(dtype: DType, bytes: &[u8]) -> Vec<f64> {
     }
 }
 
-/// Integer rounding for casts: half away from zero, saturating, NaN to 0.
 fn int(value: f64, low: f64, high: f64) -> f64 {
     if value.is_nan() {
         0.0
@@ -174,7 +168,6 @@ fn int(value: f64, low: f64, high: f64) -> f64 {
     }
 }
 
-/// `values` as little-endian `dtype` elements.
 pub(crate) fn encode(dtype: DType, values: &[f64]) -> Vec<u8> {
     let mut out = Vec::with_capacity(values.len() * dtype.size() as usize);
     for &v in values {
@@ -201,12 +194,10 @@ pub(crate) fn encode(dtype: DType, values: &[f64]) -> Vec<u8> {
     out
 }
 
-/// One field's elements on their way through a plan.
 #[derive(Clone, Debug)]
 struct Field {
     name: String,
     shape: Vec<u32>,
-    /// Untouched bytes of `dtype`, until a step needs arithmetic.
     raw: Option<(DType, Vec<u8>)>,
     values: Vec<f64>,
 }
@@ -219,7 +210,6 @@ impl Field {
         &mut self.values
     }
 
-    /// Elements along the leading axis.
     fn rows(&self) -> usize {
         self.shape.first().copied().unwrap_or(1) as usize
     }
@@ -228,7 +218,6 @@ impl Field {
         self.shape.iter().skip(1).map(|d| *d as usize).product()
     }
 
-    /// Permutes the leading axis: row `i` takes source row `index[i]`.
     fn gather(&mut self, index: &[usize]) {
         let row = self.row_len();
         match &mut self.raw {
@@ -253,8 +242,6 @@ impl Field {
         }
     }
 
-    /// Scatters the leading axis: source row `i` lands at `index[i]` of
-    /// `rows` rows.
     fn scatter(&mut self, index: &[usize], rows: usize) {
         let row = self.row_len();
         let values = self.values();
@@ -276,7 +263,6 @@ impl Field {
     }
 }
 
-/// The fields of one packed value.
 fn unpack(fields: &[FieldSpec], payload: &[u8]) -> Result<Vec<Field>, ApplyError> {
     let layout = Layout::of(fields).map_err(err)?;
     if let Layout::Packed { stride, .. } = &layout
@@ -299,8 +285,6 @@ fn unpack(fields: &[FieldSpec], payload: &[u8]) -> Result<Vec<Field>, ApplyError
         .collect()
 }
 
-/// The declared affine over the delivered vector, one element index across
-/// its fields.
 fn affine(fields: &mut [Field], scale: &[f64], offset: &[f64]) {
     let mut index = 0;
     for field in fields {
@@ -326,8 +310,6 @@ fn convert_rotation(field: &mut Field, from: Rotation, to: Rotation) {
     }
 }
 
-/// Fields as the delivery shape says (one array, a concatenation or a
-/// dict), with a leading axis of `lead` stacked samples.
 fn deliver(delivers: &Delivery, samples: Vec<Vec<Field>>) -> Value {
     match delivers {
         Delivery::Text => Value::Text(String::new()),
@@ -468,7 +450,6 @@ impl InputRow {
         Ok(deliver(&self.delivers, stacked))
     }
 
-    /// One camera or depth sample through the plan, as delivered bytes.
     fn apply_image(
         &self,
         part: &PartSpec,
@@ -582,8 +563,6 @@ impl InputRow {
                 _ => {}
             }
         }
-        // Pixels no arithmetic touched stay bytes: a u8 image is delivered
-        // without a float round trip.
         if floats.is_none() && *dtype == DType::U8 {
             if !chw {
                 return Ok(image.data);
@@ -623,7 +602,6 @@ impl InputRow {
             let values: Vec<f64> = match fill.as_slice() {
                 [one] => vec![*one; n],
                 per => {
-                    // Per channel: the last axis (HWC) or the first (CHW).
                     let c = per.len();
                     let chw = d.shape.len() >= 3 && d.shape[d.shape.len() - 3] as usize == c;
                     let plane = if chw { n / c } else { 1 };
@@ -671,7 +649,6 @@ impl ActionRow {
         let layout = Layout::of(&command.fields).map_err(err)?;
         let stride = layout.stride().ok_or_else(|| err("a text command"))?;
         let chunk = self.chunk as usize;
-        // The model's per-action fields, in delivery order.
         let model_fields: Vec<(String, Vec<u32>)> = match &self.delivers {
             Delivery::Array { shape, concat, .. } if !concat.is_empty() => {
                 let _ = shape;
@@ -690,7 +667,6 @@ impl ActionRow {
                 .collect(),
             Delivery::Text => return Err(err("a text action")),
         };
-        // Split the model's value into per-action fields.
         let per_action: Vec<Vec<Field>> = match (value, &self.delivers) {
             (Value::Tensor(t), Delivery::Array { shape, .. }) => {
                 if &t.shape != shape {
@@ -895,8 +871,6 @@ mod tests {
             assert_eq!(f16_to_f64(f64_to_f16(x)), x, "{x}");
         }
         assert!(f16_to_f64(f64_to_f16(1e6)).is_infinite());
-        // 1 + 2^-11 + 2^-25 rounds up to 0x3C01 only when rounded once: an
-        // f32 rounded to nearest first lands on the 1 + 2^-11 midpoint.
         let above = 1.0 + 2f64.powi(-11) + 2f64.powi(-25);
         assert_eq!(f64_to_f16(above), 0x3C01);
         assert_eq!(decode(DType::I16, &(-7_i16).to_le_bytes()), [-7.0]);

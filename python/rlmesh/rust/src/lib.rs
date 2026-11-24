@@ -80,8 +80,6 @@ fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
     })
 }
 
-/// Whether a Python file object is an interactive terminal, defaulting to
-/// `false` when it does not implement `isatty` (e.g. a capture buffer).
 #[cfg(feature = "cli")]
 fn stream_isatty(py: Python<'_>, stream: &Py<pyo3::PyAny>) -> bool {
     stream
@@ -90,12 +88,6 @@ fn stream_isatty(py: Python<'_>, stream: &Py<pyo3::PyAny>) -> bool {
         .unwrap_or(false)
 }
 
-/// A `std::io::Write` sink that forwards to a Python file object (`sys.stdout`
-/// or `sys.stderr`), so the embedded CLI's output honors Python-level stream
-/// redirection (`contextlib.redirect_stderr`, pytest `capsys`, Jupyter kernel
-/// streams) instead of writing straight to the process file descriptor. Each
-/// write briefly reattaches the interpreter; the CLI writes whole lines
-/// infrequently, so per-write reattachment is not a hot path.
 #[cfg(feature = "cli")]
 struct PyStream {
     stream: Py<pyo3::PyAny>,
@@ -123,16 +115,6 @@ impl std::io::Write for PyStream {
     }
 }
 
-/// Ignore SIGPIPE unless the host installed its own handler (the same guard as
-/// `rlmesh-capi`'s `ignore_sigpipe`).
-///
-/// CPython ignores SIGPIPE at startup, but an embedded interpreter initialized
-/// without signal handlers (`Py_InitializeEx(0)`) keeps the default action:
-/// terminate. The session transport's vectored writes cannot opt out of the
-/// signal, so a peer hanging up mid-write would kill that host process instead
-/// of failing the write with `EPIPE`.
-// The libc signal calls are the only way to read and set the disposition; the
-// workspace otherwise denies `unsafe_code`.
 #[allow(unsafe_code)]
 fn ignore_sigpipe() {
     #[cfg(unix)]

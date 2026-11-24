@@ -1,21 +1,5 @@
 //! `rlmesh registry publish`: assemble pushed per-variant images into one OCI
-//! image index and push it as a version. The managed platform reads the index
-//! as the version and its non-attestation children as compute variants, each
-//! declared by the `variant` block of its `dev.rlmesh.package` label (see
-//! [`crate::variant`]).
-//!
-//! Registry access goes through `docker buildx imagetools` (inspect to read
-//! each source, create to assemble and push), so docker's own credential
-//! helpers, including `docker-credential-rlmesh`, authenticate it. Sources are
-//! pinned by digest before the index is created, so a tag moving underneath a
-//! publish cannot swap a child. A version tag (TARGET, `--tag`) is pushed
-//! only over a tag the registry said was absent when checked, or one already
-//! holding the same index (which is left alone); a different index, or a tag
-//! that cannot be read, needs `--force`. (The check and the push are separate
-//! registry calls, so a tag created between them is not caught.) The channel
-//! tag moves. The index is pushed to
-//! TARGET alone and checked as the registry stores it; only then are the
-//! other tags pointed at TARGET's digest, so every tag is one manifest.
+//! image index and push it as a version.
 
 mod build;
 mod imagetools;
@@ -85,11 +69,6 @@ pub(crate) fn publish_with(
     )
 }
 
-/// Build each variant of `rlmesh.toml` with its rendered label, push it to
-/// TARGET's repository as `<TARGET tag>-<variant key>`, then assemble those,
-/// pinned by digest, with the manifest's version-level keys as the index
-/// annotation. Under `--dry-run` nothing is built: the plan is printed
-/// (`--json`: the builds and labels).
 fn publish_manifest(
     tools: &impl Imagetools,
     builder: &impl Builder,
@@ -187,9 +166,6 @@ fn publish_manifest(
     writeln!(stdout)?;
     write_build_table(stdout, style, &manifest.variants)?;
 
-    // What the version and build tags hold decides, before anything is built
-    // (and under --dry-run too), whether this publish builds, finishes an
-    // earlier one from its builds, or is refused.
     if !args.force {
         let plan = manifest_plan(
             tools,
@@ -262,28 +238,17 @@ fn publish_manifest(
     assemble(tools, args, &sources, index, warnings, true, stdout, style)
 }
 
-/// What a publish from `rlmesh.toml` does, absent `--force`.
 #[derive(Debug)]
 enum ManifestPlan {
     /// Build every variant, then publish.
     Build,
-    /// TARGET already holds the index assembled from the builds at the build
-    /// tags (each labelled as the file renders it), as an earlier publish
-    /// that stopped before pointing every tag leaves it: publish from those
-    /// builds, pinned here, without building.
+    /// TARGET already holds the index assembled from the builds at the build tags
+    /// (each labelled as the file renders it), as an earlier publish that stopped
+    /// before pointing every tag leaves it: publish from those builds, pinned here,
+    /// without building.
     Finish(Vec<String>),
 }
 
-/// Read the version tags (TARGET, each `--tag`) and the build tags before
-/// building. A fresh build differs from any index already published, and
-/// overwrites its build tag, so each refusal is known now, not after
-/// building: a version tag holding any manifest, a build tag holding an image
-/// other than a build of its variant from this file (a separately published
-/// `1.0-cpu`, say), or either unreadable. A build tag holding an earlier
-/// build of the same variant (the same rendered label) is rebuilt over. When
-/// TARGET already holds exactly the index of the builds at the build tags,
-/// the publish is finished from them instead (the channel and `--tag` tags are
-/// then checked as in a SOURCE publish). Returns every refusal at once.
 #[allow(clippy::too_many_arguments)]
 fn manifest_plan(
     tools: &impl Imagetools,
@@ -386,8 +351,6 @@ fn manifest_plan(
     }
 }
 
-/// Whether `child` is a build of `variant`: its package label is the one the
-/// manifest renders for it.
 fn built_from(child: &Child, variant: &VariantBuild) -> bool {
     child
         .config
@@ -397,7 +360,6 @@ fn built_from(child: &Child, variant: &VariantBuild) -> bool {
         .is_some_and(|label| label == Value::Object(variant.label.clone()))
 }
 
-/// The error for a publish refused before pushing, listing every reason.
 fn cannot_publish(target: &str, errors: &[String]) -> anyhow::Error {
     anyhow::anyhow!(
         "cannot publish {target}:\n{}",
@@ -409,9 +371,6 @@ fn cannot_publish(target: &str, errors: &[String]) -> anyhow::Error {
     )
 }
 
-/// Assemble `sources` into the version and push it under every tag, with
-/// `index` (when set) as its annotation. `from_manifest` says the sources are
-/// the builds of `rlmesh.toml`, which changes how a rerun recovers.
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     tools: &impl Imagetools,
@@ -441,9 +400,6 @@ fn assemble(
     {
         errors.push(error);
     }
-    // A lone index source is republished as is, its own annotation included,
-    // so that annotation is the version's and is checked like --index-package.
-    // Anywhere else, docker assembles a new index without it.
     let inherits = annotation.is_none() && sources.len() == 1;
     for child in &children {
         let Some(raw) = &child.index_annotation else {
@@ -513,10 +469,6 @@ fn assemble(
         return Err(cannot_publish(&errors));
     }
 
-    // The index as docker will assemble it: printed under --dry-run, checked
-    // to carry the annotation, and compared with what each tag holds. Only
-    // --index-package is passed as an annotation; an inherited one rides
-    // along with its index.
     let explicit = index.as_deref();
     let preview = tools.create(&create_args(&tags, explicit, &variants, true))?;
     if args.dry_run {
@@ -566,12 +518,7 @@ fn assemble(
         return Ok(0);
     }
 
-    // The version is TARGET's digest: the one it holds when it already holds
-    // this index (never pushed again, since docker would re-serialize it),
-    // else that of the index pushed to TARGET alone and checked as stored.
-    // Only then do the other tags move, each pointed at that digest, which
-    // docker copies byte for byte, so every alias is the same manifest and a
-    // failed check leaves them where they were.
+    // The version tag is TARGET's digest; other tags move only after it is pushed and verified, each at that digest.
     let repository = &target.repository;
     let version = match &states[0] {
         TagState::Unchanged(digest) => digest.clone(),
@@ -611,7 +558,6 @@ fn assemble(
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            // The version tags this run moved only because of --force.
             let forced: Vec<&String> = tags[1..]
                 .iter()
                 .zip(&states[1..])
@@ -673,11 +619,6 @@ fn assemble(
     Ok(0)
 }
 
-/// Push the index to TARGET alone and check it as the registry stores it:
-/// the index assembled (the same manifests, annotations and media type),
-/// and, with `--index-package`, an OCI image index carrying that annotation.
-/// Returns its digest. On a failed check only TARGET has moved, and the error
-/// says how to recover from what it held `before`.
 fn push_target(
     tools: &impl Imagetools,
     repository: &str,

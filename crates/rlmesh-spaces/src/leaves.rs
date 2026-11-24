@@ -1,16 +1,14 @@
-//! Thin-bytes leaf codec: the replacement for the recursive `SpaceValueNode`
-//! tree. A value's bytes are a pure function of its route `SpaceSpec` —
-//! [`flatten_leaves`](crate::flatten_leaves)/[`leaf_specs`](crate::leaf_specs)/
-//! [`assemble_value`](crate::assemble_value) give the canonical pre-order;
-//! this module turns each fundamental leaf into raw little-endian bytes and
-//! back.
+//! Thin-bytes leaf codec: a value's bytes are a pure function of its route
+//! `SpaceSpec`. [`flatten_leaves`](crate::flatten_leaves),
+//! [`leaf_specs`](crate::leaf_specs) and [`assemble_value`](crate::assemble_value)
+//! give the canonical pre-order; this module turns each fundamental leaf into
+//! raw little-endian bytes and back.
 //!
-//! Single value: one `Bytes` per leaf, each the raw leaf bytes (Text = raw
-//! UTF-8, self-framed by the element length). Batch: one `Bytes` per leaf
-//! holding the row-major `(N, *shape)` slab — for fixed-stride leaves that is
-//! just the per-lane bytes concatenated (lane-contiguous); Text carries an
-//! explicit `[u64 count][u64 byte_len…]` header. **N is an authoritative input
-//! on decode, never recovered by division.**
+//! Single value: one `Bytes` per leaf (Text is raw UTF-8). Batch: one `Bytes`
+//! per leaf holding the row-major `(N, *shape)` slab, the per-lane bytes
+//! concatenated for fixed-stride leaves; Text carries an explicit
+//! `[u64 count][u64 byte_len…]` header. **N is an authoritative input on
+//! decode, never recovered by division.**
 
 use std::borrow::Cow;
 
@@ -37,9 +35,6 @@ pub enum LeafError {
     LengthMismatch(String),
 }
 
-/// Slab codecs fan out across leaves/lanes only past this many total bytes —
-/// image-bearing batches win multi-core decode, while small control-vector
-/// payloads keep the zero-overhead sequential path.
 const PARALLEL_SLAB_MIN_BYTES: usize = 64 * 1024;
 
 /// Encode a single typed value into one `Bytes` per canonical leaf.
@@ -73,7 +68,6 @@ pub fn decode_leaves(leaves: &[Bytes], spec: &SpaceSpec) -> Result<SpaceValue, L
 /// Encode `values.len()` lanes into one slab `Bytes` per canonical leaf.
 pub fn encode_leaf_slab(values: &[SpaceValue], spec: &SpaceSpec) -> Result<Vec<Bytes>, LeafError> {
     let specs = native::leaf_specs(spec);
-    // Per lane, canonical leaf values; then stack column-wise per leaf.
     let lanes = values
         .iter()
         .map(|value| native::flatten_leaves(spec, value))
@@ -85,11 +79,7 @@ pub fn encode_leaf_slab(values: &[SpaceValue], spec: &SpaceSpec) -> Result<Vec<B
         if matches!(leaf_spec.spec.as_ref(), Some(SpaceKind::Text(_))) {
             encode_text_slab(column, lanes.len())
         } else {
-            // Each lane MUST contribute exactly `stride` bytes. A fixed-stride
-            // slab carries no per-lane framing, so a wrong-arity/shape lane
-            // would otherwise be silently re-sliced across lane boundaries on
-            // decode (the aggregate length can still match when sizes
-            // compensate). Reject it here rather than corrupt the batch.
+            // A fixed-stride slab has no per-lane framing: a wrong-arity lane would be re-sliced across lanes on decode.
             let stride = leaf_stride(leaf_spec)?;
             let mut buf = Vec::with_capacity(stride.saturating_mul(lanes.len()));
             for (lane, leaf_value) in column.enumerate() {
@@ -156,7 +146,6 @@ pub fn decode_leaf_slab(
             .map(|(slab, &leaf_spec)| decode_leaf_column(slab, leaf_spec, n))
             .collect::<Result<_, _>>()?
     };
-    // per_lane[lane] collects this lane's leaf value for each leaf position.
     let mut per_lane: Vec<Vec<SpaceValue>> =
         (0..n).map(|_| Vec::with_capacity(specs.len())).collect();
     for column in columns {
@@ -173,10 +162,7 @@ pub fn decode_leaf_slab(
 fn encode_leaf(value: &SpaceValue, spec: &SpaceSpec) -> Result<Bytes, LeafError> {
     match (spec.spec.as_ref(), value) {
         (Some(SpaceKind::Box(_)), SpaceValue::Box(tensor)) => {
-            // The wire carries only raw bytes; shape/dtype are recovered from the
-            // spec on decode. A tensor that matches the spec by byte count but not
-            // by shape/dtype would silently reinterpret on decode (the same-byte
-            // class the spec-directed codec cannot catch), so pin both here.
+            // The wire carries raw bytes only: a same-byte-count tensor of another shape/dtype would reinterpret on decode.
             if tensor.dtype() != spec.dtype || tensor.shape() != spec.shape.as_slice() {
                 return Err(LeafError::Encode(format!(
                     "box leaf {:?}{:?} does not match spec {:?}{:?}",
@@ -189,7 +175,6 @@ fn encode_leaf(value: &SpaceValue, spec: &SpaceSpec) -> Result<Bytes, LeafError>
             Ok(tensor_wire_bytes(tensor))
         }
         (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(index)) => {
-            // THE FIX: encode at the declared dtype width, not a fixed 8 bytes.
             range_check(*index, spec.dtype)?;
             Ok(Bytes::from(encode_int_sequence(&[*index], spec.dtype)?))
         }
@@ -215,7 +200,6 @@ fn encode_leaf(value: &SpaceValue, spec: &SpaceSpec) -> Result<Bytes, LeafError>
 fn decode_leaf(bytes: &[u8], spec: &SpaceSpec) -> Result<SpaceValue, LeafError> {
     match spec.spec.as_ref() {
         Some(SpaceKind::Box(_)) => Ok(SpaceValue::Box(
-            // from_slice enforces byte_count == numel * dtype_size.
             native::Tensor::from_slice(bytes, &spec.shape, spec.dtype)
                 .map_err(|err| LeafError::Decode(format!("invalid box payload: {err}")))?,
         )),
@@ -229,7 +213,7 @@ fn decode_leaf(bytes: &[u8], spec: &SpaceSpec) -> Result<SpaceValue, LeafError> 
         }
         Some(SpaceKind::MultiBinary(_)) => {
             let numel = numel(spec)?;
-            exact_len(bytes.len(), numel, "multibinary")?; // one byte per element
+            exact_len(bytes.len(), numel, "multibinary")?;
             Ok(SpaceValue::MultiBinary(
                 bytes.iter().map(|b| *b != 0).collect(),
             ))
@@ -252,7 +236,6 @@ fn decode_leaf(bytes: &[u8], spec: &SpaceSpec) -> Result<SpaceValue, LeafError> 
     }
 }
 
-/// Split one leaf's slab into its `n` per-lane values.
 fn decode_leaf_column(
     slab: &[u8],
     spec: &SpaceSpec,
@@ -272,11 +255,9 @@ fn decode_leaf_column(
         )));
     }
     if stride == 0 {
-        // Zero-numel leaf: every lane is an empty leaf; N comes from the carrier.
         return (0..n).map(|_| decode_leaf(&[], spec)).collect();
     }
     if slab.len() >= PARALLEL_SLAB_MIN_BYTES && n > 1 {
-        // Chunks are exact: slab.len() == stride * n was validated above.
         return slab
             .par_chunks(stride)
             .map(|chunk| decode_leaf(chunk, spec))
@@ -287,7 +268,6 @@ fn decode_leaf_column(
         .collect()
 }
 
-/// Text batch framing: `[u64 count][u64 byte_len…]` + concatenated UTF-8.
 fn encode_text_slab<'a>(
     column: impl Iterator<Item = &'a SpaceValue>,
     n: usize,
@@ -342,9 +322,6 @@ fn decode_text_slab(slab: &[u8], n: usize) -> Result<Vec<SpaceValue>, LeafError>
     Ok(out)
 }
 
-/// Narrow a wire u64 length to `usize`, erroring (not truncating) when it does
-/// not fit — a remote peer can declare a length above `usize::MAX` on a 32-bit
-/// host, where a bare `as usize` would silently read the wrong window.
 fn usize_from_u64(v: u64) -> Result<usize, LeafError> {
     usize::try_from(v)
         .map_err(|_| LeafError::LengthMismatch("text slab length exceeds usize".into()))
@@ -373,9 +350,6 @@ fn exact_len(got: usize, want: usize, what: &str) -> Result<(), LeafError> {
     Ok(())
 }
 
-/// Per-lane byte length of a fixed-stride (non-Text) leaf: `numel * per_elem`.
-/// The single authority for both slab encode (length check) and slab decode
-/// (chunk size).
 fn leaf_stride(spec: &SpaceSpec) -> Result<usize, LeafError> {
     let per_elem = if matches!(spec.spec.as_ref(), Some(SpaceKind::MultiBinary(_))) {
         1
@@ -387,7 +361,6 @@ fn leaf_stride(spec: &SpaceSpec) -> Result<usize, LeafError> {
         .ok_or_else(|| LeafError::Decode("leaf stride overflow".into()))
 }
 
-/// Element count for a fixed-stride leaf (Text/composite have none).
 fn numel(spec: &SpaceSpec) -> Result<usize, LeafError> {
     let count = match spec.spec.as_ref() {
         Some(SpaceKind::Box(_) | SpaceKind::MultiBinary(_)) => shape_numel(&spec.shape),
@@ -410,12 +383,6 @@ fn decode_utf8(bytes: &[u8]) -> Result<String, LeafError> {
         .to_owned())
 }
 
-/// The tensor's element bytes as a wire-ready [`Bytes`].
-///
-/// A contiguous tensor shares its refcounted [`Storage`](native::Storage)
-/// with the message. No element bytes are copied until the message is
-/// serialized. Non-contiguous layouts gather into a fresh buffer, which
-/// `Bytes` then adopts without a further copy.
 fn tensor_wire_bytes(tensor: &native::Tensor) -> Bytes {
     match tensor.to_contiguous_bytes() {
         Cow::Borrowed(_) => {
@@ -427,8 +394,6 @@ fn tensor_wire_bytes(tensor: &native::Tensor) -> Bytes {
     }
 }
 
-/// Adapter giving [`Bytes::from_owner`] a view of a tensor's refcounted
-/// storage, keeping the allocation alive for the message's lifetime.
 struct SharedStorage(native::Storage);
 
 impl AsRef<[u8]> for SharedStorage {
@@ -448,8 +413,6 @@ fn decode_int_sequence(bytes: &[u8], dtype: native::DType) -> Result<Vec<i64>, L
             "cannot decode scalar bytes with unspecified dtype".to_string(),
         ));
     }
-    // No pre-trim: the leaf codec enforces exact length before decoding, so
-    // trailing bytes are a hard error, not silently dropped.
     native::decode_scalars(bytes, dtype)
         .map_err(|err| LeafError::Decode(err.to_string()))?
         .into_iter()
@@ -461,8 +424,6 @@ fn decode_int_sequence(bytes: &[u8], dtype: native::DType) -> Result<Vec<i64>, L
         .collect()
 }
 
-/// Convert a decoded float into an integer, rejecting fractional and
-/// non-finite values instead of silently truncating them or mapping NaN to 0.
 fn float_to_int(value: f64) -> Result<i64, LeafError> {
     if !value.is_finite() {
         return Err(LeafError::Decode(format!(
@@ -474,8 +435,7 @@ fn float_to_int(value: f64) -> Result<i64, LeafError> {
             "fractional value {value} is not a valid integer"
         )));
     }
-    // `i64::MAX as f64` rounds up to 2^63, which `as i64` would saturate to
-    // i64::MAX; the exclusive upper bound must therefore be 2^63 itself.
+    // `i64::MAX as f64` rounds up to 2^63, so the exclusive upper bound is 2^63.
     if value < i64::MIN as f64 || value >= -(i64::MIN as f64) {
         return Err(LeafError::Decode(format!(
             "value {value} is out of range for a 64-bit integer"
@@ -522,8 +482,6 @@ mod tests {
         }
     }
 
-    // Dict{ z: Discrete(int32), a: Tuple(MultiDiscrete(uint8), Text) } — keys
-    // deliberately non-sorted to lock declared-order traversal end to end.
     fn nested() -> SpaceSpec {
         SpaceSpec {
             spec: Some(SpaceKind::Dict(DictSpec {
@@ -560,7 +518,6 @@ mod tests {
         let spec = nested();
         let value = nested_value(300, (1, 2), "hi");
         let leaves = encode_leaves(&value, &spec).unwrap();
-        // z=Discrete(int32) -> 4 bytes (the dtype-width fix, not a fixed 8).
         assert_eq!(
             leaves[0].len(),
             4,
@@ -579,20 +536,15 @@ mod tests {
         ];
         let slab = encode_leaf_slab(&lanes, &spec).unwrap();
         assert_eq!(decode_leaf_slab(&slab, &spec, 3).unwrap(), lanes);
-        // Wrong N must hard-error, never silently re-slice a fixed-stride slab.
         assert!(decode_leaf_slab(&slab, &spec, 2).is_err());
     }
 
     #[test]
     fn batch_encode_rejects_wrong_arity_lane() {
-        // A lane whose arity doesn't match the spec stride must hard-error at
-        // encode, never silently concatenate into a slab the decoder re-slices
-        // across lane boundaries (the aggregate length can still match when two
-        // lanes' wrong sizes compensate, e.g. 3 + 1 == 2 + 2).
-        let spec = multidiscrete(DType::Uint8); // nvec=[4,4] -> stride 2
+        let spec = multidiscrete(DType::Uint8);
         let lanes = vec![
-            SpaceValue::MultiDiscrete(vec![1, 2, 3]), // 3 bytes, wrong arity
-            SpaceValue::MultiDiscrete(vec![0]),       // 1 byte
+            SpaceValue::MultiDiscrete(vec![1, 2, 3]),
+            SpaceValue::MultiDiscrete(vec![0]),
         ];
         assert!(matches!(
             encode_leaf_slab(&lanes, &spec),
@@ -602,7 +554,6 @@ mod tests {
 
     #[test]
     fn encode_rejects_out_of_dtype_range() {
-        // MultiDiscrete(uint8) with value 300 used to silently wrap 300 -> 44.
         let spec = multidiscrete(DType::Uint8);
         let value = SpaceValue::MultiDiscrete(vec![300, 0]);
         assert!(matches!(
@@ -613,10 +564,6 @@ mod tests {
 
     #[test]
     fn encode_rejects_box_shape_mismatch() {
-        // Same byte count (2 u8 elements) but a different shape: [1,2] tensor vs
-        // [2,1] spec. The spec-directed decode reads back at the spec shape and
-        // cannot catch this, so the encode must reject it rather than silently
-        // reinterpret the layout on the far side.
         let spec = crate::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![2, 1])
             .dtype(DType::Uint8)
             .build()
@@ -632,12 +579,11 @@ mod tests {
 
     #[test]
     fn decode_rejects_wrong_leaf_length() {
-        let spec = discrete(DType::Int32); // expects exactly 4 bytes
+        let spec = discrete(DType::Int32);
         assert!(matches!(
             decode_leaves(&[Bytes::from_static(&[0u8; 3])], &spec),
             Err(LeafError::LengthMismatch(_))
         ));
-        // MultiBinary must reject extra/truncated bytes (old decode ignored length).
         let mb = SpaceSpec {
             shape: vec![3],
             spec: Some(SpaceKind::MultiBinary(Default::default())),
@@ -645,7 +591,6 @@ mod tests {
         };
         assert!(decode_leaves(&[Bytes::from_static(&[1u8, 0, 1, 1])], &mb).is_err());
 
-        // MultiDiscrete: 2 elems x int16 = exactly 4 bytes; extra and truncated reject.
         let md = multidiscrete(DType::Int16);
         assert!(matches!(
             decode_leaves(&[Bytes::from_static(&[0u8; 6])], &md),
@@ -656,14 +601,11 @@ mod tests {
 
     #[test]
     fn float_to_int_rejects_two_pow_63_boundary() {
-        // `i64::MAX as f64` rounds up to 2^63; an exact 2^63 input must be
-        // rejected rather than saturated to i64::MAX by `as i64`.
-        let two_pow_63 = (i64::MAX as f64) + 1.0 - 1.0; // 2^63 exactly
+        let two_pow_63 = (i64::MAX as f64) + 1.0 - 1.0;
         assert_eq!(two_pow_63, 9223372036854775808.0);
         let err = float_to_int(two_pow_63).expect_err("2^63 is out of i64 range");
         assert!(err.to_string().contains("out of range"));
 
-        // The largest f64 strictly below 2^63 and i64::MIN itself both convert.
         let below = f64::from_bits(two_pow_63.to_bits() - 1);
         assert_eq!(float_to_int(below).unwrap(), below as i64);
         assert_eq!(float_to_int(i64::MIN as f64).unwrap(), i64::MIN);

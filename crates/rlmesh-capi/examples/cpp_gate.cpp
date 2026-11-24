@@ -1,5 +1,3 @@
-// The C++ gate program of python/rlmesh/tests/conformance/native_gate.py: the
-// Gymnasium gate's echo env, echo model and clients, on v2 sessions.
 #include "cpp_gate.hpp"
 
 #include <thread>

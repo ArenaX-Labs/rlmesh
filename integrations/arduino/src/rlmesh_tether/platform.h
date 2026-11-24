@@ -1,9 +1,3 @@
-// What the board runtime needs from the MCU: its watchdog, the e-stop
-// latch's raw storage, a per-boot value and the reset cause.
-// One implementation per architecture (`platform_avr.cpp`,
-// `platform_renesas.cpp`); any other fails to build instead of running
-// without a watchdog.
-
 #ifndef RLMESH_TETHER_PLATFORM_H_
 #define RLMESH_TETHER_PLATFORM_H_
 
@@ -25,8 +19,7 @@ const uint16_t kWatchdogMs = 500;
 void watchdogArm();
 void watchdogFeed();
 
-// The stored pin latch: set, or unreadable. Raw program-only writes, never
-// the core's EEPROM API.
+// The stored pin latch: set, or unreadable.
 bool latchLoad();
 void latchStore();
 void latchClear();
@@ -42,4 +35,4 @@ uint8_t arch();
 }  // namespace tether
 }  // namespace rlmesh
 
-#endif  // RLMESH_TETHER_PLATFORM_H_
+#endif

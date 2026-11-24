@@ -59,7 +59,6 @@ class SystemSpec:
 
 
 def load_specs(path: Path) -> SystemSpec:
-    """Load one profile TOML file or a directory of profile TOML files."""
     files = sorted(path.glob("*.toml")) if path.is_dir() else [path]
     if not files:
         raise SystemExit(f"no profile files found in {path}")

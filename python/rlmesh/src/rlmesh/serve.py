@@ -7,17 +7,6 @@ or a bare predict / make-env callable. Serves as ``RLMESH_NAME`` (default
 ``0.0.0.0:7447``, hosted here); point your Dockerfile ``ENTRYPOINT`` here
 instead of hand-writing a serve loop.
 
-Hosting beyond loopback, as the default ``0.0.0.0`` does, takes a host
-identity: whoever launches the container passes one in
-``RLMESH_HOST_IDENTITY`` (a secret, through the environment, never argv) and
-dials the keyed address its key forms. ``rlmesh host-identity new --address
-HOST:PORT --participant NAME`` makes both (``rlmesh.launch`` in Python); a
-sandbox does it for you. Without one, the process refuses to start and says
-so before it loads anything; ``RLMESH_ADDRESS=127.0.0.1:7447`` serves this
-machine only, with no identity. The serving line, printed once the env or
-model answers, never shows the key; ``RLMESH_READY_FILE`` names a file
-written at the same moment, for a launcher to wait on.
-
 Every option has a command-line flag and an ``RLMESH_*`` environment variable,
 so a container is configured through its environment alone; a flag wins over
 its variable, and a value that does not parse stops the process at startup,
@@ -51,28 +40,19 @@ from typing import TYPE_CHECKING, Any, cast
 from ._authoring import render_binding
 from ._entrypoint import resolve_entrypoint
 
-# Startup phase marks. Every mark is wall-clock milliseconds since the process
-# started (interpreter start plus the ``rlmesh`` import land before this module
-# does), so a model container's wait splits into imports, construction (weights),
-# and the listen point without a profiler. Printed on the serving line and
-# stamped on the handshake ``PeerInfo.extra`` as ``rlmesh.startup.<phase>_ms``;
-# the runtime's first ``endpoint.total`` sample is the first predict.
+# Startup phase marks: wall-clock ms since process start, printed on the serving line and
+# stamped on PeerInfo.extra as ``rlmesh.startup.<phase>_ms``.
 _ENTRY = time.monotonic()
 
 
 def _process_age_ms() -> int | None:
-    """Milliseconds this process had been alive when this module loaded.
-
-    Linux only (``/proc``); ``None`` elsewhere, and the marks then count from
-    this module's import instead.
-    """
+    """Milliseconds this process had been alive when this module loaded."""
     try:
         with open("/proc/self/stat", encoding="ascii") as stat:
             fields = stat.read().rsplit(")", 1)[1].split()
         with open("/proc/uptime", encoding="ascii") as uptime_file:
             uptime = float(uptime_file.read().split()[0])
-        # Field 22 of /proc/[pid]/stat is starttime in clock ticks since boot;
-        # after the ')' split the command name is gone, so it is index 19.
+        # Field 22 of /proc/[pid]/stat is starttime; after the ')' split the command name is gone, so it is index 19.
         started = int(fields[19]) / os.sysconf("SC_CLK_TCK")
         return max(0, int((uptime - started) * 1000))
     except (OSError, ValueError, IndexError, AttributeError):
@@ -84,7 +64,6 @@ _marks: dict[str, int] = {}
 
 
 def _mark(phase: str) -> int:
-    """Record ``phase`` as reached now; returns its millisecond mark."""
     since_entry = int((time.monotonic() - _ENTRY) * 1000)
     _marks[phase] = since_entry + (_PROCESS_AGE_MS or 0)
     return _marks[phase]
@@ -105,12 +84,6 @@ def _stamp_startup(
     *,
     options: ServeOptions | None = None,
 ) -> None:
-    """Mark the listen point and put the marks and the describe on the handshake.
-
-    ``options`` is what the server will serve with: its resolved
-    ``workflow_edition`` is what the handshake declares, so the envelope is
-    told the same value rather than re-resolving the class on its own.
-    """
     from ._peer_info import register_python_peer_info
     from ._rlmesh import DESCRIBE_METADATA_KEY
 
@@ -123,11 +96,6 @@ def _stamp_startup(
 
 
 def _print_serving_line(ready: Mapping[str, object]) -> None:
-    """The serving line, once the participant answers, at an address a peer can dial.
-
-    Stdout is a container's log, and the key a credential: the address
-    comes redacted.
-    """
     _mark("ready")
     phases = ", ".join(
         f"{phase} {ms / 1000:.1f}s"
@@ -144,7 +112,6 @@ def _print_serving_line(ready: Mapping[str, object]) -> None:
 
 @contextlib.contextmanager
 def _serving_line() -> Iterator[None]:
-    """Print the serving line when the served participant becomes ready."""
     from ._load_native import load_native
 
     set_ready_hook = load_native("set_ready_hook")
@@ -158,14 +125,6 @@ def _serving_line() -> Iterator[None]:
 def _handshake_describe(
     target: object, kind: str, served_env: object | None, workflow_edition: str
 ) -> str | None:
-    """The served target's describe envelope, for ``PeerInfo.extra``.
-
-    Clients can read it during the handshake even when an image carries no
-    describe label. ``workflow_edition`` is the declaration the server resolved (``""``
-    for none), so the envelope's ``runtime.preferred_workflow_edition`` is the
-    wire value. Best-effort: a target ``describe()`` cannot cover still
-    serves, without the envelope, and says so once on stderr.
-    """
     from ._describe import describe_json
 
     try:
@@ -190,9 +149,6 @@ if TYPE_CHECKING:
 
 __all__ = ["main", "serve_env", "serve_model", "startup_marks"]
 
-# Where a model or env serves by default: the default session, hosted in this
-# process on the well-known port, on all interfaces (a container's published
-# ports), which takes a host identity in RLMESH_HOST_IDENTITY.
 _ADDRESS = "0.0.0.0:7447"
 _HOST_IDENTITY_VAR = "RLMESH_HOST_IDENTITY"
 _READY_FILE_VAR = "RLMESH_READY_FILE"
@@ -203,14 +159,7 @@ class _NoHostIdentityError(ValueError):
 
 
 def _refuse_unlaunched_wide_bind(address: str) -> None:
-    """Refuse ``address`` before anything loads when it cannot host here.
-
-    A session hosted on all interfaces needs the launch identity its
-    launcher passes; without one the native host refuses to bind, and only
-    after a model's weights loaded. This mirrors the hosting rule for an
-    unspecified host (``0.0.0.0`` / ``[::]``, a container's) only, and lets
-    the process join when another host already listens on that port here.
-    """
+    """Refuse ``address`` before anything loads when it cannot host here."""
     if os.environ.get(_HOST_IDENTITY_VAR):
         return
     first = address.removeprefix("rlmesh://").split("/", 1)[0].split("#", 1)[0]
@@ -238,8 +187,6 @@ def _refuse_unlaunched_wide_bind(address: str) -> None:
     )
 
 
-# A served model's batching: each integer rlmesh.BatchOptions field, the
-# environment variable behind its flag, the least value it takes and its help.
 _BATCH_INTEGERS = (
     (
         "max_batch_size",
@@ -270,7 +217,7 @@ _BATCH_INTEGERS = (
     ),
 )
 _BATCH_RECORDS_VAR = "RLMESH_BATCH_RECORDS"
-# The largest value a batch setting takes (the native fields are 64-bit).
+# The native batch fields are 64-bit.
 _BATCH_MAX = 2**63 - 1
 
 
@@ -323,11 +270,7 @@ def _add_batching_arguments(parser: argparse.ArgumentParser) -> None:
 def _batching(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> BatchOptions | None:
-    """The batch options the flags and their variables set, else ``None``.
-
-    A flag wins over its variable; a variable that does not parse stops
-    startup, naming it.
-    """
+    """The batch options the flags and their variables set, else ``None``."""
     from ._models import BatchOptions
 
     values: dict[str, int] = {}
@@ -355,25 +298,16 @@ def _batching(
     )
 
 
-# Frameworks whose obs/action seam carries device tensors. numpy and the default
-# Auto backend have no device, so a device= is meaningless (and unsupported) there.
+# numpy and the default Auto backend have no device.
 _DEVICE_FRAMEWORKS = ("torch", "jax")
 
 
 def _framework_name(framework: str | ValueBridge | None) -> str | None:
-    # framework is a str, a ValueBridge (which carries .name), or None; normalize to
-    # the name string (or None) without importing the bridge at runtime.
     return cast("str | None", getattr(framework, "name", framework))
 
 
 def _normalize_framework(framework: str | None) -> str | None:
-    """Canonicalize a framework name the way ``resolve_bridge`` does.
-
-    ``resolve_bridge`` strips and lowercases the name, so the device and
-    vectorization guards must compare the same canonical value -- otherwise an
-    ambient ``RLMESH_FRAMEWORK=JAX`` would slip past them while still resolving
-    to the jax bridge.
-    """
+    """Canonicalize a framework name the way ``resolve_bridge`` does."""
     if isinstance(framework, str):
         return framework.strip().lower()
     return framework
@@ -382,9 +316,7 @@ def _normalize_framework(framework: str | None) -> str | None:
 def _gate_device(
     device: object | None, framework: str | ValueBridge | None
 ) -> object | None:
-    # --device defaults to RLMESH_DEVICE, so a GPU node's global default would reach
-    # a numpy/gym env and make EnvServer reject it at startup. The device only types
-    # the torch/jax seam; ignore it for anything else.
+    # --device defaults to RLMESH_DEVICE; a numpy/gym env would make EnvServer reject it, so ignore it there.
     if device is None:
         return None
     return device if _framework_name(framework) in _DEVICE_FRAMEWORKS else None
@@ -393,10 +325,7 @@ def _gate_device(
 def _reject_vectorized_framework(
     vectorized: bool, framework: str | ValueBridge | None
 ) -> None:
-    # gym vectorization concatenates observations with numpy, discarding the
-    # framework tensors (and crashing on GPU tensors), so a torch/jax env can't be
-    # fanned out that way. A natively batched env returning [N, ...] tensors is
-    # still fine at num_envs=1; this only blocks the gym fan-out.
+    # gym vectorization concatenates with numpy and breaks framework tensors; a natively batched env at num_envs=1 is fine.
     name = _framework_name(framework)
     if vectorized and name in _DEVICE_FRAMEWORKS:
         raise NotImplementedError(
@@ -508,9 +437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "RLMESH_BATCH_RECORDS) when serving an env"
         )
 
-    # Eval shape from the container env (start_prebuilt_container injects these for a
-    # SandboxVectorEnv): honor RLMESH_NUM_ENVS by fanning the factory out into a
-    # vector env, so a prebuilt EnvFactory image serves the requested lanes.
+    # Honor RLMESH_NUM_ENVS (set by start_prebuilt_container) by fanning the factory out into a vector env.
     num_envs = 1
     raw_num_envs = os.environ.get("RLMESH_NUM_ENVS")
     if raw_num_envs:
@@ -533,11 +460,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.env:
-            # num_envs / vectorization_mode / framework / device are serve controls
-            # (their own env vars / flags), not env make() kwargs; a binding key of any
-            # of those names would otherwise collide with serve_env's explicit args as
-            # an opaque "multiple values" TypeError. Point the operator at the right
-            # knob instead.
+            # These are serve controls, not make() kwargs; a binding key of the same name would collide as an opaque
+            # "multiple values" TypeError.
             control_collisions = {
                 "num_envs",
                 "vectorization_mode",
@@ -554,9 +478,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             env = resolve_entrypoint(args.env, label="env entrypoint")
             _mark("imports")
-            # The model's Image(render=...) size, which a sandbox driver that
-            # knows the model passes in: bound on the env's own camera dial,
-            # under the explicit binding.
             binding = render_binding(env, _render_size(parser)) | binding
             serve_env(
                 env,
@@ -582,16 +503,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except _NoHostIdentityError as exc:
         parser.error(str(exc))
     except KeyboardInterrupt:
-        # Ctrl-C is how an operator stops a served container: the serve loop has
-        # already drained and closed by the time the interrupt surfaces here, so
-        # report the conventional interrupted-by-SIGINT status instead of a
-        # traceback. Not 0: an interrupt during startup served nothing.
+        # The serve loop has already drained by now; report the SIGINT exit status, not 0
+        # (an interrupt during startup served nothing).
         return 130
     return 0
 
 
 def _render_size(parser: argparse.ArgumentParser) -> tuple[int, int] | None:
-    """``RLMESH_RENDER_SIZE`` (``"<height>x<width>"``) as a pair, or ``None``."""
     raw = os.environ.get("RLMESH_RENDER_SIZE")
     if not raw:
         return None
@@ -602,7 +520,6 @@ def _render_size(parser: argparse.ArgumentParser) -> tuple[int, int] | None:
 
 
 def _json_object(value: str) -> dict[str, Any]:
-    """Argparse type: parse a JSON object, rejecting non-objects."""
     try:
         parsed = cast("object", json.loads(value))
     except json.JSONDecodeError as exc:
@@ -641,10 +558,6 @@ def serve_model(
     model = _resolve_model(model_source, binding)
     _mark("model")
     _warn_without_spec(model)
-    # `--workflow-edition` is the ServeOptions rung of the precedence chain;
-    # the surfaces above it (the env var) and below it (the model class, the
-    # project manifest) are resolved here, once, before the envelope is
-    # stamped so both report the same declaration.
     options = serve_options_declaring(
         option=workflow_edition,
         declared=model._class_workflow_edition(),  # pyright: ignore[reportPrivateUsage]
@@ -656,13 +569,6 @@ def serve_model(
 
 
 def _warn_without_spec(model: object) -> None:
-    """Say once, on stderr, when the served model declares no ``ModelSpec``.
-
-    Serving still works (a spec-less model serves its own predict), but
-    ``rlmesh doctor`` cannot synthesize inputs for it without a reference
-    env. ``rlmesh check <module:Class>`` fails on the same condition before
-    the build.
-    """
     from .adapters.specs import ModelSpec
 
     if isinstance(getattr(model, "spec", None), ModelSpec):
@@ -679,24 +585,9 @@ def _warn_without_spec(model: object) -> None:
 def _resolve_model(
     model_source: object, binding: dict[str, Any] | None = None
 ) -> ModelBase[Any, Any]:
-    """Resolve a model source to a serveable ``Model`` without double-construction.
-
-    A ``Model`` subclass *class* is built by :meth:`rlmesh.Model.from_config`
-    with the binding (``load(**binding)`` runs once, after the binding is
-    resolved against the declared ``params``); an existing ``Model`` instance is
-    used as-is (it already built its worker); anything else (a bare predict
-    callable or a duck-typed policy object) is served as a NumPy framework
-    ``Model``: the documented default for a policy image, where the library's
-    ``run`` / ``session`` refuse to pick a framework for the caller. Bindings
-    require a :class:`rlmesh.Model` subclass *class* entrypoint -- the documented
-    authoring path -- so there is no double-construction of a wrapped policy.
-    """
     from rlmesh._models.base import ModelBase
 
     if isinstance(model_source, type) and issubclass(model_source, ModelBase):
-        # A Model subclass class is `from_config`'d -- even with no binding -- so
-        # declared required params are enforced before weights load, matching
-        # the env path (construct_authored_env always resolves).
         resolved_binding: dict[str, Any] = binding or {}
         return cast("ModelBase[Any, Any]", model_source.from_config(**resolved_binding))
     if binding:
@@ -749,14 +640,10 @@ def serve_env(
 
     _refuse_unlaunched_wide_bind(address)
     framework = _normalize_framework(framework)
-    # Lanes are the default for num_envs > 1; the gym fan-out only on request.
     gym_vectorized = num_envs > 1 and vectorization_mode is not None
     tags: object | None = None
     if hasattr(env_source, "make"):
-        # The framework rides the factory class (_bridge ClassVar); an explicit
-        # framework= overrides it. Unlike tags, it survives vectorization. Resolve
-        # it before constructing so a vectorized framework env is rejected up front
-        # rather than after a pointless gym fan-out.
+        # The framework rides the factory class; resolve it before constructing so a vectorized framework env is rejected up front.
         env_framework: str | ValueBridge | None = (
             framework
             if framework is not None
@@ -769,30 +656,20 @@ def serve_env(
             vectorization_mode=vectorization_mode,
             **make_kwargs,
         )
-        # Lanes are scalar envs, so tags publish per lane as on the scalar path.
-        # A gym vector env's batched spaces don't match the per-lane tags, so
-        # that path serves untagged. A branched factory already stamped the
-        # branch's own tags inside make(); re-publishing the ClassVar here would
-        # overwrite them with the default branch's contract, so leave them alone
-        # and let EnvServer validate what is published. The ClassVar read stays
-        # for the unstamped duck-typed source (a make-haver that is not an
-        # EnvFactory).
+        # A gym vector env's batched spaces don't match per-lane tags, so that path serves untagged;
+        # a branched factory's own stamped tags must not be overwritten by the ClassVar.
         tags = (
             None
             if gym_vectorized or getattr(env_source, "tag_params", ())
             else getattr(env_source, "tags", None)
         )
     else:
-        # A bare callable has no class to pin a framework, so honor only the
-        # explicit framework= (from --framework / RLMESH_FRAMEWORK).
         env_framework = framework
         _reject_vectorized_framework(gym_vectorized, env_framework)
         make_env = cast("Callable[..., EnvLike[Any, Any]]", env_source)
         if gym_vectorized:
             from ._bootstrap.gym_support import vectorize
 
-            # vectorize returns a gym Sync/Async vector env (VectorServerEnvLike);
-            # EnvServer auto-detects the vector shape.
             env = cast(
                 "EnvLike[Any, Any]",
                 vectorize(

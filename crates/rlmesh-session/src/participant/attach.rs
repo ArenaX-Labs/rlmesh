@@ -28,29 +28,11 @@ use crate::participant::tasks::{
 use crate::participant::{Participant, Shared, lock};
 use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, Transport};
 
-/// What a participant without the address's key is told.
 const NO_CREDENTIAL: &str = "no credential for this session: join with the address its host \
                              printed (it ends in #key), or set ParticipantConfig.credential";
 
-/// How long a refused handshake waits for the host's state to name another
-/// instance: an on-demand session restarting as this participant joins.
 const RESTART_WAIT: Duration = Duration::from_secs(1);
 
-/// Runs the handshake: reads the host instance from the public snapshot (a
-/// hint: a wrong one only fails the handshake), sends msg 1 on `hs` and
-/// reads msg 2. A session a host starts on demand stops when its last
-/// participant leaves and starts again, under a new instance, for the next
-/// one; a participant joining just then can read the old instance. So a
-/// refusal is retried once the state names another instance, within
-/// [`RESTART_WAIT`]; the same instance refusing again is final.
-///
-/// A host too busy to answer one of them within `ctl_timeout` (a loaded
-/// machine, a session just starting) is asked again while the join's own
-/// `host_timeout` lasts: nothing is attached yet, so asking twice is safe.
-///
-/// A host whose accept carries another wire revision, or none (an earlier
-/// 0.2 pre-release, which listened on four ports), is refused
-/// `INCOMPATIBLE`, named by `host` (`"the host at 10.0.0.2:7500"`).
 async fn handshake(
     control: &zenoh::Session,
     keys: &SessionKeys,
@@ -104,7 +86,6 @@ async fn handshake_once(
     }
 }
 
-/// The host instance the session's public state names.
 async fn host_instance(
     control: &zenoh::Session,
     keys: &SessionKeys,
@@ -155,7 +136,6 @@ async fn handshake_with(
     })
 }
 
-/// The first reply to a query on `key`.
 pub(super) async fn ask(
     control: &zenoh::Session,
     key: &str,
@@ -181,8 +161,6 @@ pub(super) async fn ask(
     Err(SessionError::NoReply(timeout))
 }
 
-/// Whether `transport` reaches another Zenoh session within `timeout`: at
-/// once for one sharing a session, or riding a host of this process.
 async fn linked(transport: &Transport, timeout: Duration) -> bool {
     let control = transport.control();
     if transport.is_shared() || transport.is_in_process() {
@@ -209,14 +187,8 @@ async fn linked(transport: &Transport, timeout: Duration) -> bool {
     }
 }
 
-/// How often a wait for the host asks for its token again, so that the
-/// wait never rests on one event (the history reply, a later declaration, or
-/// the wakeup either sends) for the whole of its timeout.
 pub(crate) const HOST_RECHECK: Duration = Duration::from_millis(250);
 
-/// Waits until `present` says the host is there, asking for its liveliness
-/// token `key` every [`HOST_RECHECK`] meanwhile (setting `present` when it
-/// answers).
 pub(crate) async fn host_seen(
     control: &zenoh::Session,
     key: String,
@@ -237,7 +209,6 @@ pub(crate) async fn host_seen(
     }
 }
 
-/// Whether a live participant holds the liveliness token `key`.
 async fn live(control: &zenoh::Session, key: String) -> bool {
     match control
         .liveliness()
@@ -256,18 +227,12 @@ async fn live(control: &zenoh::Session, key: String) -> bool {
     }
 }
 
-/// Resolves when the host this transport reaches can never serve
-/// `session`: it hosts other sessions, and is no multi-session host of
-/// `tenant` (which would start `session` for this participant). Pending
-/// while no host answers at all, so a host still starting is waited for.
 async fn not_served(
     control: &zenoh::Session,
     tenant: &TenantId,
     session: SessionId,
 ) -> SessionError {
     use crate::wire::keys::{session_hosts, session_server};
-    // Whether any queryable answers `key` (queries reach every matching
-    // queryable, where liveliness tokens reach only declared interests).
     let answers = |key: String| async move {
         match control.get(key).timeout(Duration::from_millis(500)).await {
             Ok(replies) => {
@@ -282,7 +247,6 @@ async fn not_served(
     };
     let own = SessionKeys::new(tenant, session).host_state();
     loop {
-        // Give a multi-session host time to see this participant first.
         tokio::time::sleep(Duration::from_millis(300)).await;
         if answers(session_server(tenant)).await || answers(own.clone()).await {
             return std::future::pending().await;
@@ -349,8 +313,6 @@ impl Participant {
             run: Arc::default(),
         });
 
-        // Subscriptions first: nothing the host sends after the
-        // handshake can be missed. Until it completes, nothing verifies.
         let state = control
             .declare_subscriber(keys.host_state())
             .callback({
@@ -429,8 +391,6 @@ impl Participant {
                     let lost_ns = if present {
                         i64::MIN
                     } else {
-                        // A participant that closed first sees its own
-                        // process's host stop: a normal end.
                         if closing.is_cancelled() {
                             debug!(participant = %shared.id, "session host liveliness lost");
                         } else {
@@ -443,8 +403,6 @@ impl Participant {
                 }
             })
             .await?;
-        // Once linked, this transport sees every live participant's token:
-        // another one under this id is refused, never shared.
         let key = keys.participant(&config.id);
         if linked(&transport, config.host_timeout).await && live(&control, key.clone()).await {
             return Err(SessionError::Config(format!(
@@ -453,11 +411,10 @@ impl Participant {
                 config.id
             )));
         }
-        // A multi-session host starts the session when it sees this token.
         let liveliness = control.liveliness().declare_token(key).await?;
-        // The host declares its queryables before its liveliness token, and
-        // Zenoh keeps declaration order per link, so once the token is seen
-        // the first `ctl` query cannot miss the host.
+        // The host declares its queryables before its liveliness token, and Zenoh
+        // keeps declaration order per link, so once the token is seen the first
+        // `ctl` query cannot miss the host.
         let seen = host_seen(&control, keys.host_liveliness(), &shared.host_present);
         tokio::select! {
             found = tokio::time::timeout(config.host_timeout, seen) => {
@@ -512,8 +469,6 @@ impl Participant {
                 estop: config.estop.clone().or_else(|| shared.estop.reason()),
             })
             .await?;
-        // A robot process latches every member's e-stop signal at once,
-        // with or without a host.
         if config.roles.contains(&Role::Embodiment) {
             if let Some(reason) = config.estop.clone() {
                 shared.latch(reason);

@@ -1,5 +1,3 @@
-//! Observation payload access helpers.
-
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -8,10 +6,6 @@ use crate::error::ApplyError;
 use crate::path::{NodePath, PathSeg};
 use crate::plans::{OBS_ROOT_KEY, envelope_key};
 
-/// Render a borrowed `[PathSeg]` slice exactly like [`NodePath`]'s `Display`
-/// (`<root>` for empty, dotted `Key`s, bracketed `Index`es) without allocating a
-/// `NodePath` to wrap it — so the resolve walk can take a slice (no per-call
-/// clone of the source path) yet keep identical path text in its error messages.
 struct PathDisplay<'a>(&'a [PathSeg]);
 
 impl fmt::Display for PathDisplay<'_> {
@@ -34,17 +28,6 @@ impl fmt::Display for PathDisplay<'_> {
     }
 }
 
-/// Walk a structured path into a `Value` tree, shared by the shared-ref and
-/// mutable-ref resolvers. The two differ only in the borrow (`get` vs `get_mut`)
-/// and their error wording, so this macro is the single source of the descent
-/// logic: each invocation supplies the map/list accessor and the error
-/// expressions, keeping the deliberately distinct `observation`/`payload`
-/// messages intact while the navigation cannot drift between them.
-///
-/// `$path` is a `&[PathSeg]` slice so the immutable resolver can be handed the
-/// source's `rest()` (or whole) segments without cloning a `NodePath`. The
-/// out-of-range error expression receives the list `len`, captured before the
-/// element borrow so the mutable `get_mut` arm still type-checks.
 macro_rules! resolve_walk {
     (
         $root:expr, $path:expr,
@@ -73,10 +56,8 @@ macro_rules! resolve_walk {
 /// Resolve a [`NodePath`] source against the raw-obs *envelope*: the top-level
 /// `BTreeMap` whose entries are keyed by the first path segment (a Dict-rooted
 /// source) or by the reserved root key (an empty or Tuple-rooted source whose
-/// whole `Value` is one envelope entry — see `envelope_key`).
-///
-/// This is the apply-side successor to the old dotted-string `lookup`: it selects
-/// the envelope entry, then walks the remaining segments via [`resolve_source`].
+/// whole `Value` is one envelope entry — see `envelope_key`), then walk the
+/// remaining segments with [`resolve_source`].
 pub fn resolve_in_obs<'obs>(
     raw_obs: &'obs BTreeMap<String, Value>,
     source: &NodePath,
@@ -89,11 +70,6 @@ pub fn resolve_in_obs<'obs>(
             available.join(", ")
         ))
     })?;
-    // The envelope entry is the value at the first segment (Dict-rooted) or the
-    // whole obs (root/Tuple-rooted, under the reserved key). For a Dict-rooted
-    // source the first segment has been consumed by the key selection, so walk
-    // only the rest; otherwise walk the full path against the whole-obs value.
-    // Both are borrowed slices of `source` -- no `NodePath` clone per step.
     let remaining: &[PathSeg] = if key == OBS_ROOT_KEY {
         &source.0
     } else {
@@ -104,11 +80,9 @@ pub fn resolve_in_obs<'obs>(
 
 /// Resolve a structured path into a (possibly nested) value tree.
 ///
-/// An empty path returns the value itself (the root / single leaf), a `Key` step
-/// descends a [`Value::Map`], and an `Index` step descends a [`Value::List`]. A
-/// shape that cannot take the next step is a typed error rather than a silent
-/// miss. The path is a borrowed `[PathSeg]` slice so callers can pass a sub-path
-/// of a [`NodePath`] without cloning it.
+/// An empty path returns the value itself, a `Key` step descends a
+/// [`Value::Map`] and an `Index` step a [`Value::List`]; a shape that cannot
+/// take the next step is an error, never a silent miss.
 pub fn resolve_source<'obs>(
     root: &'obs Value,
     path: &[PathSeg],
@@ -148,8 +122,7 @@ pub fn resolve_source<'obs>(
 
 /// Mutable variant of [`resolve_source`]: walk a [`NodePath`] into a `Value`
 /// tree, returning a mutable reference to the addressed node (the whole tree for
-/// the root/empty path). Used by frame-stacking to read-and-replace a stacked
-/// payload leaf in place.
+/// the root/empty path).
 pub fn resolve_source_mut<'obs>(
     root: &'obs mut Value,
     path: &NodePath,
@@ -179,7 +152,6 @@ pub fn resolve_source_mut<'obs>(
     )
 }
 
-/// A short human label for a [`Value`]'s kind, for path-mismatch errors.
 fn value_kind(value: &Value) -> &'static str {
     match value {
         Value::Tensor(_) => "a tensor",

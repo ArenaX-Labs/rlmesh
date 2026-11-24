@@ -11,8 +11,7 @@ A deliberately non-standard role goes under the ``x/`` escape (for example
 role with no ``/`` names no kind at all; it is still accepted, but it skips
 the kind check and draws an advisory recommending a kind prefix or ``x/``.
 
-There is no registered goal role yet: by convention, a goal or target
-position is ``x/target_pos``.
+A goal or target position is by convention ``x/target_pos``.
 
 The registry ships three domains:
 
@@ -23,28 +22,21 @@ The registry ships three domains:
   ``gravity_xyz`` encoding of ``BASE_ROT``; the base linear velocity is
   deliberately unregistered (a real robot only has an estimate of it).
 
-Registry policy: a domain earns its roles here when its first real env/model
-pair lands; until then its specs use ``x/`` roles. Role strings are wire
-format -- they are matched verbatim between independently authored specs and
-must never be renamed once released. The prefix names a feature kind, not a
-domain: domains sharing a role (e.g. ``proprio/joint_pos`` in both
-manipulation and locomotion) is intentional.
+Role strings are wire format: they are matched verbatim between independently
+authored specs and must never be renamed once released. The prefix names a
+feature kind, not a domain, so domains may share a role (e.g.
+``proprio/joint_pos`` in both manipulation and locomotion).
 
 Width conventions: the author always pins ``dim`` explicitly; a registered role
 with a fixed canonical width (e.g. ``eef_pos``/``delta_eef_pos`` are 3-D
-Cartesian) now *validates* that declared dim and rejects a mismatch, but never
+Cartesian) validates that declared dim and rejects a mismatch, but never
 supplies it. Rotation widths follow the declared encoding (see
 ``ROTATION_DIMS``); other widths vary by embodiment, which is what
 ``dim``/``index`` selection on components is for.
 
 Multiple arms: a role repeats under a ``part`` (see :mod:`.parts`), so a second
 arm is ``EEF_POS`` under ``part=RIGHT_ARM``. When an env has two leaves of one
-role, a model must name the part it wants. By convention
-``eef_pos``/``delta_eef_pos`` are 3-D Cartesian; gripper widths vary by
-embodiment.
-
-Values are defined once, in the ``rlmesh-adapters`` crate (``src/roles/``);
-this module re-exports them through the native bindings.
+role, a model must name the part it wants.
 """
 
 from ..._rlmesh import (

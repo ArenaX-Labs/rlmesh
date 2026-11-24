@@ -1,5 +1,4 @@
-//! Opaque tensors backed by the Rust facade; all storage stays read-only.
-#![allow(unsafe_code)] // FFI: raw pointers and DLPack ownership transfer.
+#![allow(unsafe_code)]
 
 use super::dtype::{dtype_from_c, dtype_to_c};
 use super::handle::write_out;
@@ -10,8 +9,6 @@ use rlmesh::Tensor;
 use std::ffi::c_void;
 
 pub struct RLMeshTensor(pub(crate) Tensor);
-/// # Safety
-/// A non-NULL tensor handle stays live for the returned reference's lifetime.
 pub(crate) unsafe fn tensor_ref<'a>(tensor: *const RLMeshTensor) -> Result<&'a Tensor, CapiError> {
     Ok(&unsafe { tensor.as_ref() }
         .ok_or_else(|| CapiError::invalid_arg("null tensor"))?

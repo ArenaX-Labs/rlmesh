@@ -1,42 +1,27 @@
-//! The host's key schedule, sans-IO: every key it drew,
-//! who holds it, what each member still has to acknowledge, stream key
-//! rotations and the pending grants whose keys are on their way to the
-//! robots.
+//! The host's key schedule, sans-IO: every key it drew, who holds it, what each member
+//! still has to acknowledge, stream key rotations and the pending grants whose keys are on
+//! their way to the robots.
 //!
-//! - **Deliveries.** Each member has an outbox of keys to install (or to
-//!   send under) and keys to retire. [`KeyIssuer::deliveries`] hands out a
-//!   `KeyDelivery` per member with something new, and again every
-//!   [`RETRY_NS`] until its `KeysAck` clears it. A missed acknowledgement
-//!   never detaches anyone and never counts as one: the step waits, and
-//!   [`KeyIssuer::pending`] says who it waits for. The host's own receivers
-//!   are one more outbox ([`KeyIssuer::host_delivery`]).
-//! - **Stream keys** (`k_stream`, one slot per part) go to the members
-//!   whose device may read the part ([`Access::may_read`]), and rotate only
-//!   when the slot's sender changes (a robot's new generation) or a device
-//!   that holds one loses read permission ([`KeyIssuer::reauthorize`]):
-//!   install the new
-//!   version at every receiver (the host first, then at most
-//!   [`INSTALL_WAIT_NS`] for the rest), send it to the robot, then retire
-//!   the older versions everywhere. A new part gets version 1 the same way,
-//!   with nothing to retire; a removed part's keys are retired.
-//! - **Grants.** A grant's `k_cmd` (per robot and transport priority) and
-//!   `k_obs` (per robot) go to each robot first; once every robot
-//!   acknowledged, the host re-checks the grant and commits it, handing the
-//!   holder its keys in the reply ([`KeyIssuer::commit_grant`]), or refuses
-//!   it and retires them ([`KeyIssuer::refuse_grant`]). One device has at
-//!   most [`DEVICE_PENDING`] grants pending and one robot
-//!   [`ROBOT_PENDING`]; a full robot evicts the newest pending grant of the
-//!   lowest class below the new one (`PREEMPTED`).
+//! - **Deliveries.** [`KeyIssuer::deliveries`] hands each member with something new a
+//!   `KeyDelivery`, again every [`RETRY_NS`] until its `KeysAck` clears it. A missed
+//!   acknowledgement never detaches anyone: the step waits, and [`KeyIssuer::pending`] says for
+//!   whom. The host's own receivers are one more outbox ([`KeyIssuer::host_delivery`]).
+//! - **Stream keys** go to the members whose device may read the part ([`Access::may_read`]),
+//!   and rotate only when the sender changes or a holder loses read permission
+//!   ([`KeyIssuer::reauthorize`]): the new version is installed at every receiver (the host
+//!   first, then at most [`INSTALL_WAIT_NS`] for the rest), sent to the robot, then older
+//!   versions are retired.
+//! - **Grants.** A grant's `k_cmd` and `k_obs` go to each robot first; once every robot
+//!   acknowledged, the host commits it ([`KeyIssuer::commit_grant`]) or refuses it and retires
+//!   them ([`KeyIssuer::refuse_grant`]). A device has at most [`DEVICE_PENDING`] grants pending
+//!   and a robot [`ROBOT_PENDING`]; a full robot evicts the newest pending grant of the lowest
+//!   class below the new one (`PREEMPTED`).
+//! - **E-stop keys.** Each generation gets a `k_estop` in its `Attach` reply
+//!   ([`KeyIssuer::estop_key`]) and every robot member receives it. Nothing waits on those
+//!   acknowledgements: an edge without the key drops the signal, and the ctl `Estop` still stops
+//!   the session.
 //!
-//! - **E-stop keys.** Each generation gets a `k_estop` when it takes
-//!   effect: it sends under it (the key comes back in its `Attach` reply,
-//!   [`KeyIssuer::estop_key`]) and every robot member receives it, so its
-//!   edges latch the member's signal with no host. Nothing waits
-//!   on their acknowledgements: until an edge has the key, it drops the
-//!   signal and the ctl `Estop` still stops the session.
-//!
-//! Every key is 32 random bytes from the caller's [`Rng`], under an id from
-//! one counter per host instance (shared with the handshake's keys).
+//! Every key is 32 random bytes from the caller's [`Rng`].
 
 use alloc::collections::{BTreeMap, BTreeSet};
 
@@ -52,8 +37,8 @@ mod delivery;
 mod grants;
 mod streams;
 
-/// How long a rotation waits for receivers to install a new version after
-/// the host did, before it switches the sender.
+/// How long a rotation waits for receivers to install a new version after the host did,
+/// before it switches the sender.
 pub const INSTALL_WAIT_NS: i64 = 500_000_000;
 /// How long a grant waits for its robots to install its keys.
 pub const GRANT_WAIT_NS: i64 = 2_000_000_000;
@@ -121,13 +106,13 @@ pub struct GrantRequest {
     pub token: LeaseToken,
     /// The parts under that token.
     pub parts: Vec<GrantPart>,
-    /// The robots whose every part the holder's device may read: only they
-    /// get a `k_obs` for it (lockstep replies).
+    /// The robots whose every part the holder's device may read: only they get a `k_obs` for it
+    /// (lockstep replies).
     pub reads_all: Vec<ParticipantId>,
 }
 
-/// A prepared grant: its id, and the pending grants it evicted (each to be
-/// refused `PREEMPTED`).
+/// A prepared grant: its id, and the pending grants it evicted (each to be refused
+/// `PREEMPTED`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prepared {
     /// The grant.
@@ -164,18 +149,14 @@ pub struct PendingStep {
 struct Member {
     generation: u32,
     device: String,
-    /// It embodies a robot: its edges receive every member's `k_estop`.
     robot: bool,
-    /// Its generation's `k_estop`.
     estop: u32,
 }
 
 #[derive(Clone, Debug, Default)]
 struct Outbox {
-    /// Key id → deliver it with `send`.
     install: BTreeMap<u32, bool>,
     retire: BTreeSet<u32>,
-    /// When it was last sent; `None`: something new to send.
     sent_ns: Option<i64>,
 }
 
@@ -223,9 +204,7 @@ struct Rotation {
     key_id: u32,
     stage: Stage,
     started_ns: i64,
-    /// The receivers frozen when the stage began.
     receivers: BTreeSet<ParticipantId>,
-    /// The newest older version's key, retired at the end.
     retire: Option<u32>,
 }
 
@@ -237,22 +216,15 @@ struct Slot {
 
 #[derive(Clone, Debug)]
 struct SlotState {
-    /// The part's path (its stream's read permission).
     path: String,
     security: Security,
-    /// The devices some version went to: a narrowing that takes one's read
-    /// permission rotates the slot.
     readers: BTreeSet<String>,
-    /// Version → key id, oldest first.
     versions: BTreeMap<u32, u32>,
-    /// The robot generation the newest version is for.
     sender_generation: u32,
-    /// The key the robot was told to send under.
     sending: Option<u32>,
     rotation: Option<Rotation>,
 }
 
-/// Who a lease key belongs to.
 #[derive(Clone, Debug)]
 struct LeaseKey {
     holder: ParticipantId,
@@ -341,7 +313,6 @@ impl KeyIssuer {
         }
     }
 
-    /// Forgets keys, and every delivery of them not yet acknowledged.
     fn forget(&mut self, ids: &[u32]) {
         for id in ids {
             self.keys.remove(id);
@@ -353,9 +324,8 @@ impl KeyIssuer {
     }
 
     /// A participant generation took effect ([`Joining`]): it gets every stream key its device
-    /// may read and a `k_estop` of its own, a robot also every member's
-    /// `k_estop`, and a robot's streams rotate to it. Returns the pending
-    /// grants an older generation's end failed.
+    /// may read and a `k_estop` of its own, a robot also every member's `k_estop`, and a
+    /// robot's streams rotate to it.
     ///
     /// # Errors
     /// [`CtlError`] when no key could be drawn.
@@ -422,9 +392,8 @@ impl KeyIssuer {
         Ok(failed)
     }
 
-    /// `participant`'s generation ended (detached, superseded or lost): it
-    /// leaves every pending set at once, as if it had acknowledged. Returns
-    /// the pending grants that needed it (as holder or robot), now failed.
+    /// `participant`'s generation ended (detached, superseded or lost): it leaves every pending
+    /// set at once, as if it had acknowledged.
     pub fn detach(&mut self, participant: &ParticipantId) -> Vec<GrantId> {
         if let Some(member) = self.members.remove(participant) {
             self.forget(&[member.estop]);

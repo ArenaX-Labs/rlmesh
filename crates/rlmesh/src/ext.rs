@@ -1,7 +1,4 @@
 //! Additional native utilities and interoperability features.
-//!
-//! Nothing here is inherent on a shared type: these are extension traits and
-//! free items, keeping the shared types focused on their core operations.
 
 //! Native endpoint helpers are available through this module.
 //!
@@ -27,7 +24,6 @@
 //! ```compile_fail
 //! use rlmesh::remove_stale_socket;
 //! ```
-//!
 use crate::spaces::Space;
 use crate::tensor::{dims_i64, tensor_error};
 use crate::value::space_codec;
@@ -37,9 +33,9 @@ use crate::{DType, Error, Result, Tensor, Value};
 /// dependency of its own on the session crate.
 ///
 /// Start from [`DEFAULT_LOG_FILTER`](logging::DEFAULT_LOG_FILTER) when
-/// `RUST_LOG` is unset, and add [`may_record`](logging::may_record) as a
-/// global filter layer whatever the level: below `INFO`, Zenoh logs a
-/// session's config, which holds a gated host's link password.
+/// `RUST_LOG` is unset, and add [`may_record`](logging::may_record) as a global
+/// filter layer whatever the level: below `INFO`, Zenoh logs a session's
+/// config, which holds a gated host's link password.
 ///
 /// ```no_run
 /// use rlmesh::ext::logging::{DEFAULT_LOG_FILTER, may_record};
@@ -190,16 +186,14 @@ impl SpaceExt for Space {
 /// class (`ConnectionError`, `TimeoutError`, a recoverable failure).
 pub trait ErrorExt {
     /// Whether retrying the same call can succeed: a recoverable failure
-    /// ([`Error::is_recoverable`]), a transport failure
-    /// ([`Error::Connection`]) or a deadline ([`Error::Timeout`]). Every
-    /// other class is final: the same call meets it again (a key the host
-    /// refuses, an edition the env does not run, a malformed address).
+    /// ([`Error::is_recoverable`]), a transport failure ([`Error::Connection`]) or a
+    /// deadline ([`Error::Timeout`]). Every other class is final: the same call
+    /// meets it again.
     ///
     /// The runtime records a model or env failure as recoverable when this
-    /// holds, and a run's env connect retries while it does. A model
-    /// handler signals a failure worth retrying with
-    /// [`Error::model_recoverable`], or [`Error::Connection`] /
-    /// [`Error::Timeout`] for its own transport; any other error is final.
+    /// holds, and a run's env connect retries while it does. A model handler
+    /// signals a retryable failure with [`Error::model_recoverable`], or
+    /// [`Error::Connection`] / [`Error::Timeout`] for its own transport.
     fn is_transient(&self) -> bool;
 }
 
@@ -222,32 +216,28 @@ pub struct EnvServerOptions {
 /// [`ModelServeOptions::ext`](crate::ModelServeOptions::ext).
 #[derive(Clone, Debug, Default)]
 pub struct ModelServeOptions {
-    /// How many Join-stream requests the served model processes at once per
-    /// connection; `None` is the build's default cap. `Some(0)` is the
-    /// ValueError class. Corner calls stay serialized either way.
+    /// How many Join-stream requests the served model processes at once per connection;
+    /// `None` is the build's default cap. `Some(0)` is the ValueError class.
     pub predict_concurrency: Option<usize>,
 }
 
 /// `EnvTags` from its wire JSON (the form
-/// [`EnvTags::to_dict`](crate::adapters::EnvTags::to_dict) writes), checked
-/// for unknown fields. A convenience alias for
-/// [`EnvTags::from_json`](crate::adapters::EnvTags::from_json).
+/// [`EnvTags::to_dict`](crate::adapters::EnvTags::to_dict) writes), checked for unknown
+/// fields.
 pub fn env_tags_from_json(json: &str) -> Result<crate::adapters::EnvTags> {
     crate::adapters::EnvTags::from_json(json)
 }
 
 /// `ModelSpec` from its wire JSON (the form
-/// [`ModelSpec::to_dict`](crate::adapters::ModelSpec::to_dict) writes),
-/// checked for unknown fields. A convenience alias for
-/// [`ModelSpec::from_json`](crate::adapters::ModelSpec::from_json).
+/// [`ModelSpec::to_dict`](crate::adapters::ModelSpec::to_dict) writes), checked for
+/// unknown fields.
 pub fn model_spec_from_json(json: &str) -> Result<crate::adapters::ModelSpec> {
     crate::adapters::ModelSpec::from_json(json)
 }
 
-/// Partial reset: reset the listed lanes (an empty slice resets all of them;
-/// a per-lane seed list aligns with `env_indices`) and return the batched
-/// observation of every lane and the info with every lane's `episode_ids`.
-/// An index above `u32::MAX` is the ValueError class before any I/O.
+/// Partial reset: reset the listed lanes (an empty slice resets all of them; a per-lane
+/// seed list aligns with `env_indices`) and return the batched observation of every
+/// lane and the info with every lane's `episode_ids`.
 pub fn reset_lanes(
     env: &mut crate::RemoteVectorEnv,
     env_indices: &[u64],
@@ -279,11 +269,10 @@ pub async fn reset_lanes_async(
     .await
 }
 
-/// Cancellation reported as `KeyboardInterrupt`. Every clone is the same
-/// token, so [`cancel`] on any copy fires it. One `cancel()` fails the call
-/// in flight on the token or, when none is, the next call made with it, at
-/// its start; the token then re-arms. Repeated `cancel()` before that call
-/// fails counts once.
+/// Cancellation reported as `KeyboardInterrupt`. Every clone is the same token, so
+/// [`cancel`] on any copy fires it. One `cancel()` fails the call in flight on the
+/// token or, when none is, the next call made with it, at its start; the token then
+/// re-arms. Repeated `cancel()` before that call fails counts once.
 ///
 /// [`cancel`]: CancelToken::cancel
 #[derive(Clone, Debug, Default)]
@@ -329,7 +318,6 @@ impl CancelToken {
         }
     }
 
-    /// Consume one idle firing at a synchronous admission boundary.
     pub(crate) fn take(&self) -> bool {
         let mut state = self.0.lock().unwrap_or_else(|err| err.into_inner());
         std::mem::take(&mut state.pending)
@@ -349,8 +337,6 @@ impl CancelSubscription {
                     != self.generation)
     }
 
-    /// Observe the final generation and detach under the same token lock.
-    /// A firing after this boundary is idle (or reaches other subscribers).
     pub(crate) fn finish(&self) -> bool {
         let mut state = self.token.0.lock().unwrap_or_else(|err| err.into_inner());
         if self.active.swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -381,7 +367,6 @@ pub fn register_entrypoint(name: &str, transform: crate::adapters::ObsTransform)
 /// Remove a trusted entrypoint when its transform has `expected`'s construction
 /// identity, or remove any registration when `expected` is `None`. Resolved
 /// routes keep their clones. Empty names are refused; unknown names return false.
-/// The removed transform is released outside the registry lock.
 pub fn unregister_entrypoint(
     name: &str,
     expected: Option<&crate::adapters::ObsTransform>,
@@ -422,7 +407,6 @@ mod cancellation_regressions {
         );
         assert!(matches!(result, Err(crate::Error::Cancelled)));
         assert_eq!(token.0.lock().unwrap().subscribers, 0);
-        // A constructor that returns early must release even its fired input.
         token.cancel();
         assert!(token.take());
         assert!(!token.take());

@@ -14,7 +14,6 @@ use crate::{Error, Result};
 /// episode.
 #[derive(Default)]
 pub struct RandomSampleHandler {
-    /// Each live episode's predicts so far.
     predicts: HashMap<String, u64>,
 }
 

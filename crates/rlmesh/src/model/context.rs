@@ -10,10 +10,8 @@ use super::types::predict_seed;
 use crate::spaces::SpaceSpec;
 use crate::{EnvContract, Error, Result};
 
-/// The live episodes a model tracks before a new one is refused.
 pub(crate) const EPISODE_CAPACITY: usize = 65_536;
 
-/// The environment variable overriding [`EPISODE_CAPACITY`].
 pub(crate) const EPISODE_CAPACITY_ENV: &str = "RLMESH_EPISODE_CAPACITY";
 
 /// One episode's free state, holding any `Send` value per key. It lives
@@ -116,8 +114,6 @@ pub struct PredictContext<'a> {
 /// One context per row of a batched corner.
 pub type BatchPredictContext<'a> = [PredictContext<'a>];
 
-/// A row's context, owned while its corner runs: the store lends the
-/// episode's state out for the call and takes it back after.
 #[derive(Debug)]
 pub(crate) struct OwnedContext {
     episode_id: String,
@@ -143,13 +139,11 @@ impl OwnedContext {
         }
     }
 
-    /// This context on the env `env` (the row's route's).
     pub(crate) fn on(mut self, env: Option<Arc<EnvContract>>) -> OwnedContext {
         self.env = env;
         self
     }
 
-    /// A throwaway context for an anonymous row (or a fused spec-less call).
     pub(crate) fn anonymous(episode_seed: Option<i64>) -> OwnedContext {
         OwnedContext {
             episode_id: String::new(),
@@ -170,15 +164,11 @@ struct Entry {
     state: Option<EpisodeState>,
 }
 
-/// One model's episode store: entries keyed by `episode_id`, tagged with
-/// the env that created them, never evicted.
 pub(crate) struct EpisodeStore {
     capacity: usize,
     entries: HashMap<String, Entry>,
 }
 
-/// The capacity `RLMESH_EPISODE_CAPACITY` sets: a non-digit value is
-/// ignored and `0` is clamped to `1`.
 pub(crate) fn capacity_from(raw: Option<&str>) -> usize {
     match raw.map(str::trim) {
         Some(raw) if !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()) => {
@@ -189,7 +179,6 @@ pub(crate) fn capacity_from(raw: Option<&str>) -> usize {
 }
 
 impl EpisodeStore {
-    /// A store whose capacity is read once from the environment.
     pub(crate) fn from_env() -> EpisodeStore {
         let raw = std::env::var(EPISODE_CAPACITY_ENV).ok();
         EpisodeStore::with_capacity(capacity_from(raw.as_deref()))
@@ -207,9 +196,6 @@ impl EpisodeStore {
         self.entries.len()
     }
 
-    /// The context for one predict of `episode_id`, advancing its
-    /// `predict_index`. A new episode past capacity is the builtin
-    /// `RuntimeError` class; live episodes are untouched.
     pub(crate) fn begin(
         &mut self,
         episode_id: &str,
@@ -256,7 +242,6 @@ impl EpisodeStore {
         })
     }
 
-    /// Take a context's state back after its corner returned.
     pub(crate) fn finish(&mut self, context: OwnedContext) {
         if !context.stored {
             return;
@@ -268,17 +253,14 @@ impl EpisodeStore {
         }
     }
 
-    /// Drop `episode_id`'s entry (its destructors run here).
     pub(crate) fn end(&mut self, episode_id: &str) {
         self.entries.remove(episode_id);
     }
 
-    /// Drop every entry `env_id` created, silently.
     pub(crate) fn drop_env(&mut self, env_id: &str) {
         self.entries.retain(|_, entry| entry.env_id != env_id);
     }
 
-    /// Drop every entry.
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }
@@ -307,7 +289,6 @@ mod tests {
         assert_eq!(first.predict_seed, Some(predict_seed(3, 0)));
         *first.view().state.get_or_insert_with("n", || 0u32).unwrap() += 5;
         store.finish(first);
-        // The seed is fixed at the first predict.
         let second = store.begin("a", "env", Some(99)).unwrap();
         assert_eq!(second.predict_index, 1);
         assert_eq!(second.episode_seed, Some(3));

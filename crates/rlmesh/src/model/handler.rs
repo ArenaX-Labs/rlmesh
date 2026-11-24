@@ -8,20 +8,15 @@ use crate::{Result, binding::spaces};
 /// Resolves per-env adapter state (e.g. an env→model adapter) when an adapter is
 /// resolved.
 ///
-/// Obtained once from [`ModelHandler::route_setup`] when serving begins and
-/// shared (`Arc`) across every env, so the server can run it at `ResolveAdapter`
-/// **without** taking the predict-serialization lock: resolving one env's adapter
-/// never blocks on an in-flight `predict` on another. Implementations must
-/// therefore synchronize their own state. Resolution happens before any `predict`
-/// on the env, and per-env ordering guarantees an adapter is fully resolved
-/// before that env's first predict — so an adapter is never re-resolved while its
-/// own predict is in flight.
+/// Obtained once from [`ModelHandler::route_setup`] and shared across every env, it runs
+/// without the predict lock, so implementations synchronize their own state. An env's
+/// adapter is resolved before that env's first predict and never re-resolved while one of
+/// its predicts is in flight.
 #[async_trait]
 pub trait ModelRouteSetup: Send + Sync {
-    /// Resolve and cache the adapter for `env_id` from its `env_contract`, and
-    /// answer what the resolved route needs back.
-    /// Returning an error fails adapter resolution, so the client never predicts
-    /// against an unresolved adapter. Idempotent upsert: a later call updates it.
+    /// Resolve and cache the adapter for `env_id` from its `env_contract`, and answer what
+    /// the resolved route needs back. An error fails resolution, so the route never predicts.
+    /// A later call for the same `env_id` replaces the adapter.
     async fn resolve_adapter(
         &self,
         env_id: &str,
@@ -29,20 +24,16 @@ pub trait ModelRouteSetup: Send + Sync {
         options: ResolveOptions,
     ) -> Result<RouteNeeds>;
 
-    /// Drop the route-local per-episode adapter state (an engine's episode-keyed
-    /// frame windows) for `env_id`'s ended `episode_ids` at `ResetAdapter` —
-    /// empty means all of the env's. Runs **off** the predict lock, before
-    /// [`ModelHandler::reset_adapter`] fires the model's own hook under it, so
-    /// a forward in flight on another env does not gate the cleanup. Per-env
-    /// ordering still holds: this never overlaps a predict on the same env.
-    /// Defaults to a no-op.
+    /// Drop the route-local per-episode adapter state (an engine's episode-keyed frame
+    /// windows) for `env_id`'s ended `episode_ids` at `ResetAdapter` — empty means all of
+    /// the env's. Runs off the predict lock, before [`ModelHandler::reset_adapter`], and never
+    /// overlaps a predict on the same env. Defaults to a no-op.
     async fn reset_adapter(&self, _env_id: &str, _episode_ids: &[String]) -> Result<()> {
         Ok(())
     }
 
-    /// Tear down the adapter cached for `env_id` at `ReleaseAdapter`, so a
-    /// long-lived server does not retain per-env state for every session it ever
-    /// served. Defaults to a no-op.
+    /// Tear down the adapter cached for `env_id` at `ReleaseAdapter`, so a long-lived
+    /// server does not retain per-env state for every session it ever served.
     async fn release_adapter(&self, _env_id: &str) -> Result<()> {
         Ok(())
     }
@@ -50,21 +41,16 @@ pub trait ModelRouteSetup: Send + Sync {
 
 /// The runtime-pinned knobs a route resolves against, carried on
 /// `ResolveAdapter`.
-///
-/// Runtime-local scheduling decisions, not part of the model spec: the model
-/// reads them, it does not choose them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ResolveOptions {
-    /// How many actions of each predicted chunk the runtime executes before
-    /// re-planning (1 = no chunking). The model returns its NATIVE chunk and the
-    /// runtime executes a prefix of it, so an autoregressive head can read this
-    /// to decode exactly that many. Bounded by
+    /// How many actions of each predicted chunk the runtime executes before re-planning (1
+    /// = no chunking). The model returns its native chunk and the runtime executes this
+    /// prefix of it. At most
     /// [`MAX_EXECUTION_HORIZON`](rlmesh_adapters::v1::MAX_EXECUTION_HORIZON).
     pub execution_horizon: u32,
-    /// Whether the runtime will deliver observation-history frames on `Predict`
-    /// (every env step it executed from a replayed chunk without predicting).
-    /// A runtime that does not is refused a stacked adapter at a horizon above
-    /// 1, since the window would hold only decision-point frames.
+    /// Whether the runtime will deliver observation-history frames on `Predict` (every env
+    /// step it executed from a replayed chunk without predicting). Without it, a stacked
+    /// adapter is refused at a horizon above 1.
     pub delivers_history: bool,
     /// The workflow edition the run executes at, which a model served
     /// elsewhere is pinned to (`None`: unpinned).
@@ -75,9 +61,8 @@ pub struct ResolveOptions {
 /// `ResolveAdapterResponse`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RouteNeeds {
-    /// The model's native chunk length K: how many per-step actions one chunk
-    /// corner call returns. `None` = undeclared (the elastic contract — the
-    /// runtime takes the `min(len, horizon)` prefix of whatever comes back).
+    /// The model's native chunk length K: how many per-step actions one chunk corner call
+    /// returns.
     pub native_chunk: Option<u32>,
     /// Set when the runtime offered observation history
     /// ([`ResolveOptions::delivers_history`]) and this route's adapter keeps a
@@ -101,17 +86,12 @@ pub struct HistoryNeeds {
 }
 
 /// One predict's per-lane action plus any open-loop chunk replay frames.
-///
-/// `actions` is frame 0 — one action per lane (`len == num_envs`), applied this
-/// step. `replay` is the future-step frames the runtime buffers and applies
-/// WITHOUT re-calling the model (action chunking): `replay[j]` is the per-lane
-/// actions for future step `j + 1` (each `len == num_envs`). An empty `replay`
-/// means the model is not chunking — one action this step, re-plan next step.
 #[derive(Debug)]
 pub struct PredictFrames {
     /// Frame 0: one action per lane, applied this step.
     pub actions: Vec<spaces::SpaceValue>,
-    /// Future-step frames (`replay[step][lane]`); empty when not chunking.
+    /// Future-step frames (`replay[step][lane]`), applied without calling the model again;
+    /// `replay[j]` is for step `j + 1`. Empty when not chunking.
     pub replay: Vec<Vec<spaces::SpaceValue>>,
 }
 
@@ -128,44 +108,22 @@ pub struct HeldState {
 
 /// User policy plus episode lifecycle hooks.
 ///
-/// Implement [`predict`](ModelHandler::predict) to map an observation to encoded
-/// action bytes. The default hooks let stateful policies track resets, episode
-/// ends, and shutdown. Drive the handler with
-/// [`ModelWorker::run_local`](crate::binding::model::ModelWorker::run_local) or serve it
-/// on a session with `lockstep::ModelService`.
+/// The handler is never invoked concurrently: `predict` and the hooks take `&mut self`,
+/// one call at a time.
 #[async_trait]
 pub trait ModelHandler: Send {
     /// Produce an action for `observation`.
     ///
-    /// Read the observation with
-    /// [`decoded_lanes`](ModelObservation::decoded_lanes) (or
-    /// [`decoded`](ModelObservation::decoded) for a single-env route) and return
-    /// **one typed action per row** — `Vec` length `== observation.num_envs`
-    /// (`== route.episode_ids.len()`); a single-env route returns a 1-element
-    /// `Vec`. The codec turns the typed values into wire leaves; policy code
-    /// never touches bytes.
-    ///
-    /// Return [`Error::model`](crate::Error::model) or
-    /// [`Error::model_recoverable`](crate::Error::model_recoverable) when the
-    /// policy declines a request.
-    ///
-    /// # Concurrency
-    ///
-    /// The handler is never invoked concurrently: `predict` and the lifecycle
-    /// hooks take `&mut self`, one call at a time.
+    /// Read it with [`decoded_lanes`](ModelObservation::decoded_lanes) (or
+    /// [`decoded`](ModelObservation::decoded) for a single-env route) and return one action
+    /// per lane: the `Vec`'s length is `observation.num_envs`. Return
+    /// [`Error::model`](crate::Error::model) or
+    /// [`Error::model_recoverable`](crate::Error::model_recoverable) to decline a request.
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>>;
 
     /// Produce an action for `observation` plus any open-loop chunk replay frames
-    /// (action chunking).
-    ///
-    /// The default emits no replay frames — behaviorally identical to
-    /// [`predict`](ModelHandler::predict) — so a non-chunking handler needs no
-    /// change. The stateful engine overrides this to split a chunked policy's
-    /// output into per-step frames. The runtime driver calls this and replays the
-    /// frames itself; the served endpoint packs them into the ordered
-    /// `PredictResponse.actions` list (frame 0 first, replay frames after).
-    /// `PredictFrames::actions` keeps the same `== num_envs` length contract as
-    /// `predict`.
+    /// (action chunking). The default calls [`predict`](Self::predict) and emits no replay
+    /// frames; [`PredictFrames::actions`] keeps its one-per-lane length.
     async fn predict_chunked(&mut self, observation: ModelObservation) -> Result<PredictFrames> {
         Ok(PredictFrames {
             actions: self.predict(observation).await?,
@@ -175,24 +133,11 @@ pub trait ModelHandler: Send {
 
     /// Produce action frames for a batch of routed observations in one call.
     ///
-    /// The server calls this for a `GroupedPredictRequest` — a caller-grouped
-    /// batch where each observation belongs to a *different* configured
-    /// route (and so a different env spec/adapter). The default fans out to
-    /// [`predict_chunked`](ModelHandler::predict_chunked) per group,
-    /// sequentially, which is behaviorally identical to handling each group as
-    /// its own predict — including action chunking: a group whose route pinned
-    /// an `execution_horizon > 1` returns frame 0 plus replay frames, and each
-    /// group's horizon stays its own (routes pin independently at
-    /// `ResolveAdapter`). A handler overrides this to fuse the groups into ONE
-    /// forward pass (e.g. a single batched GPU inference across env types) —
-    /// this is the only seam a fusing model must implement.
-    ///
-    /// The returned `Vec` aligns 1:1 and in order with `observations`; each
-    /// element is that group's own `Result`, so one group's failure is reported
-    /// per-group and never sinks the others. An override MUST preserve that
-    /// length and order. A non-chunking group returns an empty
-    /// [`PredictFrames::replay`], keeping `PredictFrames::actions`'s
-    /// `== num_envs` lane contract per group.
+    /// Each observation belongs to a different route, with its own adapter and horizon. The
+    /// default calls [`predict_chunked`](Self::predict_chunked) per group in order; override
+    /// it to fuse the groups into one forward. The result aligns 1:1 and in order with
+    /// `observations`, each group with its own `Result`, so one group's failure does not
+    /// fail the others.
     async fn predict_grouped(
         &mut self,
         observations: Vec<ModelObservation>,
@@ -204,83 +149,55 @@ pub trait ModelHandler: Send {
         results
     }
 
-    /// Whether [`predict_grouped`](Self::predict_grouped) fuses its groups
-    /// into one forward, so a served model gains from coalescing requests
-    /// into one call. Defaults to `false`: the default runs the groups one
-    /// at a time.
+    /// Whether [`predict_grouped`](Self::predict_grouped) fuses its groups into one
+    /// forward, so a served model gains from coalescing requests into one call.
     fn fuses_groups(&self) -> bool {
         false
     }
 
-    /// Engine-held per-episode adapter state (frame-stack windows) at this
-    /// endpoint, summed across routes — the state that grows with concurrent
-    /// episodes and shrinks on episode-end GC. `None` for a handler that keeps
-    /// no such accounting; `Some` with zeros when it does and holds nothing.
+    /// Engine-held per-episode adapter state (frame-stack windows) at this endpoint, summed
+    /// across routes — the state that grows with concurrent episodes and shrinks on
+    /// episode-end GC.
     fn held_state(&self) -> Option<HeldState> {
         None
     }
 
-    /// Adapter time (obs assembly + action apply) inside the last
-    /// predict-family call, in nanoseconds — the share of the handler's own
-    /// work that was RLMesh adapter transform rather than the model's forward.
-    /// Read-and-clear: the caller drains it once per request. Defaults to `0`
-    /// for a handler that does not measure it.
+    /// Adapter time (obs assembly + action apply) inside the last predict-family call, in
+    /// nanoseconds — the share of the handler's own work that was RLMesh adapter transform
+    /// rather than the model's forward.
     fn take_adapter_ns(&mut self) -> u64 {
         0
     }
 
-    /// What a model served elsewhere measured answering the last
-    /// predict-family call: its own total and phases (decode, user, encode,
-    /// queue, in flight), each its request's share of a batch it fused.
-    /// Read-and-clear, drained after [`take_adapter_ns`](Self::take_adapter_ns)
-    /// and [`held_state`](Self::held_state). `None` (the default) for a
-    /// handler answering here, which the caller times around its own call.
+    /// What a model served elsewhere measured answering the last predict-family call: its
+    /// own total and phases (decode, user, encode, queue, in flight), each its request's
+    /// share of a batch it fused. Read-and-clear. `None` (the default) for a handler
+    /// answering in process, which the caller times itself.
     fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
         None
     }
 
-    /// How many lanes rode the forward the last predict-family call was
-    /// answered in, when this handler knows it better than its caller: one
-    /// in front of a batching pool, which fused this call's groups with
-    /// other callers' rows. Recorded as the `group.size` metric.
-    /// Read-and-clear, drained with [`take_endpoint_timing`](Self::take_endpoint_timing).
-    /// `None` (the default): the runtime records the number of groups in the
-    /// call, when more than one.
+    /// How many lanes rode the forward the last predict-family call was answered in, when
+    /// this handler knows it better than its caller: one in front of a batching pool, which
+    /// fused this call's groups with other callers' rows. Recorded as the `group.size`
+    /// metric; read-and-clear. `None` (the default) records the number of groups in the call.
     fn take_group_size(&mut self) -> Option<u64> {
         None
     }
 
-    /// Per-route setup invoked at `ResolveAdapter`, before any `predict` on the
-    /// route. Returns a cheaply-cloned, independently-synchronized handle (or
-    /// `None` for no per-route setup), obtained once when serving begins so the
-    /// server runs it **off** the predict-serialization lock — see
-    /// [`ModelRouteSetup`].
-    ///
-    /// A spec'd model returns a setup that resolves and caches its env→model
-    /// adapter per route (from the contract's spaces and adapter tags) for
-    /// `predict` to apply. Defaults to `None`. The served path runs it at
-    /// `ResolveAdapter`; the in-process
-    /// [`run_local`](crate::binding::model::ModelWorker::run_local) path runs it once at
-    /// connect, before driving.
+    /// Per-route setup invoked at `ResolveAdapter`, before any `predict` on the route.
+    /// Obtained once when serving begins and run off the predict lock (see
+    /// [`ModelRouteSetup`]). `None` (the default) means no per-route setup.
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
         None
     }
 
     /// Drop per-episode policy/adapter state for the given episodes (the explicit
-    /// `ResetAdapter` op). The runtime fires this when episodes end, keyed by
-    /// `env_id`; with `episode_ids` empty it means "evict ALL of this env's
-    /// episode state". The adapter itself stays resolved (see
-    /// [`ModelRouteSetup::release_adapter`] for full teardown).
-    ///
-    /// Defaults to a no-op. Because episode ids never repeat (UUIDv7), a missed
-    /// `reset_adapter` only leaks memory — it can never alias a new episode — so
-    /// a stateful policy lazy-seeds per-episode state on first `predict` and
-    /// evicts it here, with no position-diffing.
-    ///
-    /// This runs under the predict lock, so it is the place for a hook that
-    /// must not overlap a forward. State a [`ModelRouteSetup`] owns per route
-    /// is dropped through [`ModelRouteSetup::reset_adapter`] instead, off the
-    /// lock and before this fires.
+    /// `ResetAdapter` op), fired when episodes end. Empty `episode_ids` means all of the
+    /// env's episodes; the adapter stays resolved (see
+    /// [`ModelRouteSetup::release_adapter`]). Runs under the predict lock, after
+    /// [`ModelRouteSetup::reset_adapter`]. Episode ids never repeat, so a missed call only
+    /// leaks memory. Defaults to a no-op.
     async fn reset_adapter(&mut self, _env_id: &str, _episode_ids: Vec<String>) -> Result<()> {
         Ok(())
     }
@@ -290,32 +207,28 @@ pub trait ModelHandler: Send {
         Ok(())
     }
 
-    /// The session a run drives in (a session address), before its route
-    /// resolves: a model served elsewhere is invited into it, so its
-    /// predicts stay there. Defaults to nothing.
+    /// The session a run drives in (a session address), before its route resolves: a model
+    /// served elsewhere is invited into it, so its predicts stay there.
     async fn join(&mut self, _session: &str) -> Result<()> {
         Ok(())
     }
 
-    /// The workflow editions a model served elsewhere declared in its
-    /// session, after [`join`](Self::join): a run executes at the floor
-    /// across the env, the model and itself. Defaults to `None`, which
-    /// leaves the run at the env's edition.
+    /// The workflow editions a model served elsewhere declared in its session, after
+    /// [`join`](Self::join): a run executes at the floor across the env, the model and
+    /// itself.
     async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
         Ok(None)
     }
 
-    /// The options this model adds to the env resets that start its
-    /// episodes, obtained once when a run begins and called off the predict
-    /// lock (see [`ModelResetOptions`]). Defaults to `None`: it adds none.
+    /// The options this model adds to the env resets that start its episodes, obtained once
+    /// when a run begins and called off the predict lock (see [`ModelResetOptions`]).
     fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
         None
     }
 }
 
-/// The options a model adds to the env reset that starts one of its
-/// episodes, merged under the runtime's own reserved keys. A NEXT_STEP
-/// autoreset restarts lanes inside the env, with no reset to carry them.
+/// The options a model adds to the env reset that starts one of its episodes, merged
+/// under the runtime's own reserved keys.
 #[async_trait]
 pub trait ModelResetOptions: Send + Sync {
     /// The options for `episode`, which a reset is about to start as trial
@@ -327,7 +240,6 @@ pub trait ModelResetOptions: Send + Sync {
     ) -> Result<Option<rlmesh_spaces::MetaMap>>;
 }
 
-/// Forwards every call to the handler behind the pointer.
 macro_rules! forward_handler {
     ($($ty:ty),*) => {$(
 #[async_trait]
@@ -394,6 +306,4 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
     )*};
 }
 
-// A boxed handler is what a binding holds when its model is local or served;
-// a borrowed one is what a run drives.
 forward_handler!(Box<H>, &mut H);

@@ -1,4 +1,4 @@
-"""Build and execute all four E-3 runners using the CI-installed toolchain."""
+"""Build and execute all four runners using the CI-installed toolchain."""
 
 from __future__ import annotations
 
@@ -13,13 +13,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def run(command, **kwargs):
-    """Run an argv without a shell, propagating failures and diagnostics."""
     print("+", shlex.join(map(str, command)), flush=True)
     subprocess.run(command, cwd=ROOT, check=True, **kwargs)
 
 
 def main():
-    """Compile once, or reuse the binaries for repeated stress runs."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--native-only", action="store_true")
@@ -80,9 +78,7 @@ def main():
                 env=build_env,
             )
     test_env = {**os.environ, "RLMESH_PARITY_BIN": str(out)}
-    # Python tests need the system temp directory: some contracts run outside a checkout.
     test_env.pop("TMPDIR", None)
-    # One bounded worker stays inside the task's heavy lock; it is always reaped.
     load = None
     if args.load:
         load = subprocess.Popen(

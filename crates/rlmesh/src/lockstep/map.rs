@@ -1,37 +1,13 @@
 //! A Gym env as a robot: its spaces and v1 tags become a robot map,
 //! and its observation and action leaves become part slabs.
 //!
-//! Every leaf of the observation space lands in exactly one part, so the
-//! v1 bytes of an observation are recoverable bit for bit from the parts:
-//!
-//! | Gym leaf | Part |
-//! |---|---|
-//! | `Dict` key nesting, `Tuple` item i | path segments ([`escape`](mod@crate::lockstep::escape)) |
-//! | untagged `Box` | `gym/box`, field `value` |
-//! | `Discrete`, `MultiDiscrete`, `MultiBinary` | `gym/discrete`, `gym/multi_discrete`, `gym/multi_binary`, field `value` |
-//! | `Text` | `text` (per step, as v1) |
-//! | `image/*` tag on a `uint8 [H, W, 3]` HWC `Box` | `camera` at `scene/cam`, `scene/cam_side`, `wrist/cam` |
-//! | `proprio/joint_pos`, `joint_vel`, `x/joint_torque` | one `joints` part `arm`, fields `pos`, `vel`, `effort` |
-//! | `proprio/gripper` | `gripper` (one value) or `joints` `gripper/fingers` (two) |
-//! | `proprio/eef_wrench` with a `frame` | `wrench` at `wrist/ft` |
-//! | `text/instruction` | `task` (text) |
-//!
-//! A tag `part` is a path prefix (`left_arm` → `left/arm`). A tagged leaf
-//! whose role has no row here, or whose leaf does not fit the kind's
-//! layout (a CHW image, a pose without a child frame, a split leaf), keeps
-//! the custom kind of its space at its key path, with the tag in
-//! `env_tags`: it travels bit-exact, only without a core kind.
-//!
-//! Actions keep the `action` part (`gym/box`, `command: "value"`; one part
-//! per leaf below `action/` for a `Dict` or `Tuple` action space), so the
-//! wrapper never has to reassemble or fill a flat vector; a `Text` action leaf is a
-//! `gym/text` part of one
-//! `utf8` field. Per-component action parts are deferred.
-//!
-//! Each part carries its original space (`gym_space`), keys (`gym_key`)
-//! and tag (`env_tags`) in `attrs`; the robot's first part carries the
-//! whole contract and handshake (`gym_env`), from which the driver
-//! rebuilds the exact spaces and this same map.
+//! Every observation leaf lands in exactly one part, so the v1 bytes of an observation are
+//! recoverable bit for bit from the parts. A tagged leaf whose role has no core kind, or whose
+//! leaf does not fit the kind's layout, keeps the custom kind of its space at its key path,
+//! with the tag in `env_tags`. Each part carries its original space (`gym_space`), keys
+//! (`gym_key`) and tag (`env_tags`) in `attrs`; the robot's first part carries the whole
+//! contract and handshake (`gym_env`), from which the driver rebuilds the exact spaces and this
+//! same map.
 
 use std::collections::BTreeMap;
 
@@ -47,7 +23,6 @@ use crate::lockstep::meta_json;
 
 /// What a driver needs to drive a Gym env it cannot handshake with: the
 /// contract and the handshake answers, carried in `gym_env` as plain JSON
-/// (spaces in their describe form, metadata as tagged meta JSON).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GymEnvInfo {
     /// The v1 env contract (spaces, metadata and tags, `num_envs`,
@@ -165,8 +140,6 @@ pub fn contract_from_json(c: &Value) -> Result<EnvContract, GymError> {
     })
 }
 
-/// A space as its JSON form, with each Dict's key order (`details.keys`),
-/// which a JSON object does not keep.
 fn space_json(spec: &SpaceSpec) -> Value {
     let mut value = space_spec_to_json(spec).unwrap_or(Value::Null);
     if let Some(SpaceKind::Dict(dict)) = &spec.spec
@@ -223,7 +196,6 @@ pub struct PartMap {
     /// One source per field, in payload order.
     pub sources: Vec<FieldSource>,
     /// The slab is the leaf's own bytes (one whole leaf, 8-aligned lanes):
-    /// no copy either way.
     pub zero_copy: bool,
 }
 
@@ -249,22 +221,15 @@ pub struct GymMap {
     pub info: GymEnvInfo,
 }
 
-/// Authored keys of one part, in order, each with its JSON text.
 type DeclKeys = Vec<(&'static str, String)>;
 
-/// A part being assembled: its authored keys and its fields.
 struct Draft {
     path: String,
-    /// Authored keys in order, as JSON text.
     keys: DeclKeys,
-    /// (field name, source), in any order: matched to the normalised fields.
     fields: Vec<(String, FieldSource)>,
-    /// Leaves this part reads (for `gym_key` / `gym_space` / `env_tags`).
     leaves: Vec<usize>,
-    /// The first leaf's keys, for messages.
     origin: String,
     tags: Vec<Value>,
-    /// Joints merging: count and dtype.
     joints: Option<(usize, DType)>,
 }
 
@@ -276,7 +241,6 @@ fn json_text(value: &Value) -> String {
     value.to_string()
 }
 
-/// `[dtype, shape]`-ready names and shapes.
 fn wire_dtype(dtype: rlmesh_spaces::DType) -> Result<DType, GymError> {
     DType::from_code(dtype as u32).ok_or_else(|| bad(format!("dtype {dtype:?} has no v2 code")))
 }
@@ -288,7 +252,6 @@ fn shape_u32(shape: &[i64]) -> Result<Vec<u32>, GymError> {
         .collect()
 }
 
-/// Bytes per lane of a leaf, as v1 packs it (`None` for text).
 fn lane_bytes(spec: &SpaceSpec) -> Result<Option<usize>, GymError> {
     let numel = |shape: &[i64]| -> Result<usize, GymError> {
         shape.iter().try_fold(1_usize, |n, d| {
@@ -341,7 +304,6 @@ pub fn leaves(spec: &SpaceSpec) -> Result<Vec<Leaf>, GymError> {
     Ok(out)
 }
 
-/// The tag over `keys`, if the tag tree has one.
 fn tag_at<'t>(node: &'t ObsNode, keys: &[KeySeg]) -> Option<&'t ObsLeaf> {
     match (node, keys.split_first()) {
         (ObsNode::Leaf(leaf), None) => Some(leaf),
@@ -360,7 +322,6 @@ pub fn contract_tags(contract: &EnvContract) -> Option<EnvTags> {
     serde_json::from_value(native_json(value)).ok()
 }
 
-/// A native metadata value as plain JSON.
 fn native_json(value: &rlmesh_spaces::MetaValue) -> Value {
     use rlmesh_spaces::MetaValue as M;
     match value {
@@ -380,7 +341,6 @@ fn native_json(value: &rlmesh_spaces::MetaValue) -> Value {
     }
 }
 
-/// `left_arm` → `left/arm/`.
 fn part_prefix(part: Option<&str>) -> String {
     match part {
         Some(part) if !part.is_empty() => {
@@ -395,8 +355,6 @@ fn part_prefix(part: Option<&str>) -> String {
     }
 }
 
-/// The custom (or text) kind of an untagged leaf, its authored keys and
-/// its one field.
 fn custom_kind(leaf: &Leaf, hz: f64) -> Result<(String, DeclKeys), GymError> {
     let dtype = wire_dtype(leaf.spec.dtype)?;
     let (kind, dtype, shape) = match &leaf.spec.spec {
@@ -411,7 +369,6 @@ fn custom_kind(leaf: &Leaf, hz: f64) -> Result<(String, DeclKeys), GymError> {
                 shape_u32(&leaf.spec.shape)?
             },
         ),
-        // One byte per element on the v1 wire, whatever the dtype.
         Some(SpaceKind::MultiBinary(_)) => {
             ("gym/multi_binary", DType::I8, shape_u32(&leaf.spec.shape)?)
         }
@@ -500,8 +457,6 @@ impl GymMap {
             let path = escape::path(&["action"], &leaf.keys);
             let (kind, mut keys) = custom_kind(leaf, hz)?;
             if kind == "text" {
-                // A Text action is a custom part of one utf8 field (the v1
-                // text slab), commanded whole.
                 keys = vec![
                     ("kind", json_text(&json!("gym/text"))),
                     ("hz", json_text(&json!(hz))),
@@ -532,8 +487,6 @@ impl GymMap {
             )?;
         }
 
-        // The authored map, in declaration order (a JSON object's order is
-        // the parts' order, so it is written by hand).
         let mut entries = Vec::with_capacity(drafts.len());
         for (n, draft) in drafts.iter().enumerate() {
             let side_leaves = if n < obs_count {
@@ -569,7 +522,6 @@ impl GymMap {
         }
         let robot_json = format!("{{{}}}", entries.join(","));
 
-        // Normalise here: the exact field layout, as the host will have it.
         let robot = ParticipantId::new("gym").map_err(|e| bad(e.to_string()))?;
         let specs = rlmesh_session::spec::normalise(
             &robot,
@@ -611,9 +563,6 @@ impl GymMap {
         by_path: &mut BTreeMap<String, usize>,
         mut draft: Draft,
     ) -> Result<(), GymError> {
-        // Keys that escape alike (`Pos` and `pos`), or an observation key
-        // under the action root, keep apart: the later one's last segment
-        // takes the hash of its original keys.
         let commanded = draft.keys.iter().any(|(key, _)| *key == "command");
         let under_action = draft.path == "action" || draft.path.starts_with("action/");
         if by_path.contains_key(&draft.path) || (under_action && !commanded) {
@@ -636,8 +585,6 @@ impl GymMap {
         Ok(())
     }
 
-    /// Maps a tagged leaf onto a core kind, merging joints; `false` when
-    /// it does not fit (the leaf then keeps its custom kind).
     fn core_part(
         drafts: &mut Vec<Draft>,
         by_path: &mut BTreeMap<String, usize>,
@@ -746,8 +693,6 @@ impl GymMap {
                             existing.fields.push((field.into(), whole));
                             existing.leaves.push(index);
                             existing.tags.push(tag_json);
-                            // `fields` lists what is published; the normaliser
-                            // packs them in table order.
                             let names: Vec<&str> = ["pos", "vel", "effort"]
                                 .into_iter()
                                 .filter(|f| existing.fields.iter().any(|(g, _)| g == f))
@@ -837,7 +782,6 @@ impl GymMap {
             _ => return Ok(false),
         };
         if by_path.contains_key(&draft.path) {
-            // Two leaves claim one core part: the later one keeps its key path.
             return Ok(false);
         }
         by_path.insert(draft.path.clone(), drafts.len());

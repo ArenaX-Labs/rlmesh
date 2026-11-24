@@ -161,7 +161,7 @@ def embodiment(args: argparse.Namespace, host: realtime.Host | str) -> dict[str,
     if camera is not None:
         camera.join()
     edge = robot.edge_stats("cmd")
-    time.sleep(1.0)  # let the controller see the stream end
+    time.sleep(1.0)
     robot.close()
 
     anchor = ticks[0][0]
@@ -207,7 +207,6 @@ def controller(args: argparse.Namespace) -> dict[str, Any]:
     chunk = args.chunk
 
     def predict(obs: realtime.Observation) -> dict[str, Any]:
-        # The "model": hold the first six floats of the wrench.
         return {"cmd": np.broadcast_to(obs["ft"][:6], (chunk, 6))}
 
     with realtime.Policy(

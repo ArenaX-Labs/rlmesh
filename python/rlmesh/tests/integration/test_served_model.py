@@ -1,5 +1,3 @@
-"""A model served on a session, driven elsewhere through ``Model(address)``."""
-
 from __future__ import annotations
 
 import threading
@@ -12,8 +10,6 @@ import pytest
 
 @contextmanager
 def _served(model: Any, port: int) -> Iterator[str]:
-    """Serve ``model`` on a session at ``port`` in a thread; yield the address
-    that reaches it."""
     session = f"127.0.0.1:{port}"
     thread = threading.Thread(
         target=model.serve, args=(session,), kwargs={"name": "policy"}
@@ -28,8 +24,6 @@ def _served(model: Any, port: int) -> Iterator[str]:
 
 
 class ThreeStepEnv:
-    """Terminates after three steps, so an episode spans several predicts."""
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -126,9 +120,6 @@ def test_a_served_model_ends_each_episode_once_and_seeds_as_a_local_one(
 def test_a_served_model_reads_its_previous_action_through_replayed_history(
     session_port: int,
 ) -> None:
-    """At each re-plan the served model sees the frame executed the step
-    before (frame 3 of the last chunk at execution_horizon 4): the route
-    negotiates history and every replayed step rides as a numbered row."""
     import gymnasium as gym
     import numpy as np
     import rlmesh.adapters as adapt
@@ -183,8 +174,6 @@ def test_a_served_model_reads_its_previous_action_through_replayed_history(
 
     with _served(Walk(), session_port) as address:
         Model(address).run(adapt.tag(JointEnv(), tags), episodes=1, execution_horizon=4)
-    # Re-plans at steps 0, 4 and 8: the fill, then frame 3 of the chunk
-    # executed before each (4 and 104), never that chunk's frame 0.
     assert seen == [0.0, 4.0, 104.0]
 
 
@@ -200,8 +189,6 @@ def test_old_model_shapes_say_what_replaced_them() -> None:
 
 
 def _perturbed_run(inner: Any) -> list[Any]:
-    """Run a Perturb wrapper around ``inner`` for one episode on a Box env;
-    return the actions the env received."""
     import gymnasium as gym
     import numpy as np
     import rlmesh
@@ -254,10 +241,8 @@ def test_a_wrapper_predicts_through_a_served_inner_model(session_port: int) -> N
     with _served(Policy(), session_port) as address:
         inner = rlmesh.numpy.Model(address)
         actions = _perturbed_run(inner)
-        # Outside a run of the model that holds it, a served model refuses.
         with pytest.raises(TypeError, match="served elsewhere"):
             inner.predict(np.zeros(2, np.float32))
-    # The inner model saw the perturbed observations, per step of the episode.
     assert seen == [[0.5, 0.5], [1.5, 1.5], [2.5, 2.5]]
     assert actions == [[1.0, 1.0], [3.0, 3.0], [5.0, 5.0]]
 
@@ -310,7 +295,6 @@ def test_reset_options_reach_each_episode_reset(
 
 @contextmanager
 def _sandbox_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
-    """A SandboxEnv whose "container" is an env served in this process."""
     import rlmesh
     from rlmesh._sandbox import session as sandbox
 
@@ -349,7 +333,6 @@ def test_a_run_or_binding_borrows_a_sandbox_env_and_hands_it_back(
         with rlmesh.Model(lambda obs: 0).bind(env) as binding:
             binding.reset(seed=0)
             assert binding.step()[1] == 1.0
-            # A second loan is refused, leaving the binding's lease alone.
             with pytest.raises(RuntimeError, match="held by another driver"):
                 rlmesh.run(rlmesh.Model(lambda obs: 0), env)
             assert binding.step()[1] == 1.0
@@ -368,7 +351,6 @@ def test_a_sandboxed_model_joins_a_sandbox_env_where_its_container_reaches_it(
         _sandbox_env(monkeypatch) as env,
     ):
         model = rlmesh.Model(address)
-        # What SandboxModel sets: the model lives in a container.
         model._env_session = address.rsplit("/", 1)[0]  # pyright: ignore[reportPrivateUsage]
         monkeypatch.setattr(
             sandbox, "peer_session", lambda info: info.address.rsplit("/", 1)[0]
@@ -377,7 +359,6 @@ def test_a_sandboxed_model_joins_a_sandbox_env_where_its_container_reaches_it(
         with model.bind(env) as binding:
             binding.reset(seed=0)
             assert [binding.step()[2] for _ in range(3)] == [False, False, True]
-        # The invitation is the peer session, not the one this driver dialed.
         monkeypatch.setattr(
             sandbox, "peer_session", lambda _info: "nowhere.invalid:7447"
         )
@@ -529,7 +510,6 @@ def test_horizon_defaults_use_rust_selection_and_preserve_action_bytes(
             return np.arange(3, dtype=np.float32).reshape(3, 1)
 
     model = Walk()
-    # Post-load mutations do not change a checkpoint declaration.
     model.execution_horizon = 1
     if loaded is not None:
         assert rlmesh.describe(model)["execution_horizon"] == loaded
@@ -541,7 +521,6 @@ def test_horizon_defaults_use_rust_selection_and_preserve_action_bytes(
         first = list(world.actions)
         assert seen == [expected] * (6 // expected)
         seen.clear()
-        # Holding the chosen horizon fixed keeps the exact action bytes.
         policy.run(adapt.tag(world, tags), episodes=1, execution_horizon=expected)
         assert world.actions == first
         assert seen == [expected] * (6 // expected)
@@ -599,10 +578,6 @@ for _ in range(4):
 def test_many_routes_of_one_process_drive_a_model_another_process_hosts(
     session_port: int,
 ) -> None:
-    # Each route joins the model's host from a session of its own. Joined as
-    # Zenoh peers, the host's gossip meshed every route of every session with
-    # the others, and runs slowed down and then lost replies until they hung.
-    # The driver runs in a process of its own, so a hang fails the test.
     import subprocess
     import sys
 
@@ -630,15 +605,11 @@ def test_many_routes_of_one_process_drive_a_model_another_process_hosts(
 def test_a_served_models_failure_names_its_exception_and_where_it_raised(
     session_port: int,
 ) -> None:
-    """A served model's exception crosses the wire as its type, message and
-    the tail of its traceback from the model's own code: an ``assert``,
-    whose message is empty, no longer arrives as a bare ``[INTERNAL] ``."""
     import rlmesh
 
     class Asserting(rlmesh.Model):
         def predict(self, observation: object, context: dict[str, Any]) -> int:
             _ = observation, context
-            # A failed `assert` (pytest rewrites the ones in this file).
             raise AssertionError
 
     class Raising(rlmesh.Model):
@@ -654,7 +625,6 @@ def test_a_served_models_failure_names_its_exception_and_where_it_raised(
     assert head == "[INTERNAL] AssertionError", text
     assert traceback.startswith("Traceback (most recent call last):\n  File "), text
     assert __file__ in traceback and "raise AssertionError" in traceback, text
-    # The glue that called the model is not the model's traceback.
     assert "_models" not in traceback, text
 
     with _served(Raising(), session_port) as address:
@@ -662,6 +632,5 @@ def test_a_served_models_failure_names_its_exception_and_where_it_raised(
             rlmesh.Model(address).run(ThreeStepEnv(), episodes=1)
     assert str(failed.value).startswith("[INTERNAL] KeyError: 'camera'\n"), failed.value
 
-    # In process, the model's own exception is raised, as before.
     with pytest.raises(AssertionError):
         Asserting().run(ThreeStepEnv(), episodes=1)

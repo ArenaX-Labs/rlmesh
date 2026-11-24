@@ -3,22 +3,19 @@
 //! one leaves.
 //!
 //! The server watches every participant's liveliness token in its tenant
-//! (`{tenant}/s/*/p/*`). A participant declares its token before it waits
-//! for its session's host, so the server sees it, starts that session's
-//! host on the same transport, and the participant then finds the host as
-//! it would a host started ahead of it. The server's queryable
-//! (`{tenant}/server`) tells a participant that a host here will serve its
-//! session, so one that finds only other sessions' hosts fails at once.
+//! (`{tenant}/s/*/p/*`) and starts that session's host on the same transport,
+//! so a participant finds it as it would a host started ahead of it. The
+//! server's queryable (`{tenant}/server`) tells a participant a host here will
+//! serve its session, so one that finds only other sessions' hosts fails at
+//! once.
 //!
-//! A session started explicitly (`SessionServer::start_session`: the
-//! home daemon's lobby, a scene's run) is kept however its participants
-//! come and go, until [`SessionServer::stop`]; once stopped, it is never
-//! started again for a straggler.
+//! A session started explicitly (`SessionServer::start_session`) is kept
+//! however its participants come and go, until [`SessionServer::stop`]; once
+//! stopped, it is never started again for a straggler.
 //!
-//! With recording on ([`SessionServer::start_recording`]), each session
-//! also gets an always-on recorder that joins as the observer
-//! [`RECORDER`]. It never counts as a member: the session still stops when
-//! its last other participant leaves, after the recorder has finished.
+//! With recording on ([`SessionServer::start_recording`]), each session also
+//! gets a recorder that joins as the observer [`RECORDER`]. It never counts as
+//! a member: the session still stops when its last other participant leaves.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -43,13 +40,8 @@ use crate::wire::{PriorityClass, Role};
 
 type Hosts = Arc<Mutex<HashMap<SessionId, SessionHost>>>;
 
-/// The sessions started explicitly: running (`true`, never stopped for
-/// want of members) or stopped (`false`, never started again).
 type Kept = Arc<std::sync::Mutex<HashMap<SessionId, bool>>>;
 
-/// The devices and pins every session starts with ([`HostConfig::devices`],
-/// [`HostConfig::pins`]); changed only while the hosts are locked, so a
-/// session starts with the table every other one has.
 type Table = Arc<std::sync::Mutex<(Vec<Device>, BTreeMap<ParticipantId, Pin>)>>;
 
 /// The id the server's own recorder joins each session as.
@@ -58,7 +50,6 @@ pub const RECORDER: &str = "_recorder";
 #[cfg(feature = "record")]
 type Recorders = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<Option<Recorder>>>>>;
 
-/// A participant's liveliness token appeared (`true`) or left.
 type Presence = (bool, SessionId, String);
 
 /// A running multi-session host. Dropping it stops its sessions; prefer
@@ -67,13 +58,10 @@ pub struct SessionServer {
     hosts: Hosts,
     kept: Kept,
     table: Table,
-    /// The sessions started with their own devices and pins
-    /// ([`Self::host_session`]), which [`Self::set_devices`] leaves alone.
     #[cfg(feature = "fleet")]
     own_tables: std::sync::Mutex<HashSet<SessionId>>,
     #[cfg(feature = "fleet")]
     transport: Transport,
-    /// What its own participants attach with.
     #[cfg(feature = "fleet")]
     own: (
         crate::wire::TenantId,
@@ -82,25 +70,15 @@ pub struct SessionServer {
     ),
     #[cfg(feature = "record")]
     recorders: Recorders,
-    /// How many sessions it hosts at most ([`Self::limit_sessions`]).
     limit: Arc<std::sync::atomic::AtomicUsize>,
-    /// How long, in ns, a session started for a token waits for a
-    /// participant ([`Self::stop_unclaimed_after`]).
     unclaimed_ns: Arc<std::sync::atomic::AtomicU64>,
     reaper: tokio::task::JoinHandle<()>,
     _server: zenoh::query::Queryable<()>,
     _watch: zenoh::pubsub::Subscriber<()>,
 }
 
-/// How long a session started for a liveliness token waits for a
-/// participant to attach (the handshake proves its device) before it stops:
-/// a token alone, which anyone on the network can declare, keeps no
-/// session.
 const UNCLAIMED: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Removes `key` from `members` when its token left: not when its
-/// participant rejoined and its new token is declared ahead of the old one's
-/// late delete, however many other members the session has.
 async fn member_left(members: &mut HashSet<String>, key: &str, control: &zenoh::Session) -> bool {
     if members.contains(key)
         && let Ok(expr) = zenoh::key_expr::KeyExpr::try_from(key)
@@ -141,7 +119,6 @@ impl SessionServer {
         #[cfg_attr(not(feature = "record"), allow(unused_mut))] mut config: HostConfig,
         #[cfg(feature = "record")] rolling: Option<Rolling>,
     ) -> Result<Self, SessionError> {
-        // Every session it hosts answers Keep from its recording.
         #[cfg(feature = "record")]
         if let Some(rolling) = rolling.clone() {
             config.keep = Some(Arc::new(move |session, label| {
@@ -164,7 +141,6 @@ impl SessionServer {
         )));
         #[cfg(feature = "record")]
         let recorders: Recorders = Arc::default();
-        // Only a recording server's own recorder is not a member.
         #[cfg(feature = "record")]
         let recording = rolling.is_some();
         #[cfg(not(feature = "record"))]
@@ -215,8 +191,6 @@ impl SessionServer {
         let unclaimed_ns = Arc::new(std::sync::atomic::AtomicU64::new(
             u64::try_from(UNCLAIMED.as_nanos()).unwrap_or(u64::MAX),
         ));
-        // When each session started for a token, until a participant
-        // attaches to it.
         let unclaimed: Arc<std::sync::Mutex<HashMap<SessionId, std::time::Instant>>> =
             Arc::default();
         // Presence changes are applied in order, by one task.
@@ -312,8 +286,6 @@ impl SessionServer {
                 let _ = presence.send((joined, session, key.to_string()));
             })
             .await?;
-        // A session started for a token stops unless a participant attached
-        // within UNCLAIMED.
         let reaper = tokio::spawn({
             let (hosts, kept, unclaimed) = (hosts.clone(), kept.clone(), unclaimed.clone());
             let after = unclaimed_ns.clone();
@@ -391,11 +363,9 @@ impl SessionServer {
         })
     }
 
-    /// Hosts at most `max` sessions: a participant naming another session
-    /// past it finds no host. Every session started for a participant's
-    /// token stops within 10 s unless a participant attached to it (a
-    /// device the handshake admitted), so a token alone, which anyone on
-    /// the network can declare, keeps no session.
+    /// Hosts at most `max` sessions: a participant naming another session past
+    /// it finds no host. A session started for a participant's token stops
+    /// within 10 s unless a participant attached to it.
     pub fn limit_sessions(&self, max: usize) {
         self.limit
             .store(max.max(1), std::sync::atomic::Ordering::Relaxed);
@@ -614,8 +584,6 @@ impl SessionServer {
     }
 }
 
-/// Changes `host`'s device table from `old` to `new`: revocations first, so a
-/// key moved to another id is free when it is admitted.
 async fn apply(
     host: &SessionHost,
     (old, old_pins): (&[Device], &BTreeMap<ParticipantId, Pin>),
@@ -646,8 +614,6 @@ async fn apply(
     Ok(())
 }
 
-/// Finishes `session`'s recorder, if it has one, so its last segment is
-/// complete before the host stops.
 #[cfg(feature = "record")]
 async fn finish_recorder(recorders: &Recorders, session: SessionId) {
     let started = recorders.lock().await.remove(&session);
@@ -679,24 +645,18 @@ mod tests {
             .expect("transport");
         let control = transport.control();
         let (a, b) = ("rlmesh/test/members/a", "rlmesh/test/members/b");
-        // A rejoined: its new token is declared when its old one's delete lands.
         let token = control.liveliness().declare_token(a).await.expect("token");
         let mut members: HashSet<String> = [a.to_string(), b.to_string()].into();
         assert!(!member_left(&mut members, a, control).await);
         assert!(members.contains(a), "a rejoined member stays tracked");
-        // B left for good: no token of its own.
         assert!(member_left(&mut members, b, control).await);
         assert_eq!(members, HashSet::from([a.to_string()]));
-        // Then A leaves for good: its replacement token's delete removes it.
         token.undeclare().await.expect("undeclare");
         assert!(member_left(&mut members, a, control).await);
         assert!(members.is_empty(), "{members:?}");
         transport.close().await.expect("close");
     }
 
-    /// A liveliness token, which anyone on the network can declare, starts
-    /// at most `limit` sessions, and none of them outlives the unclaimed
-    /// wait without a participant.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_token_alone_keeps_no_session_and_sessions_stop_at_the_limit() {
         let (transport, _) = open_local_listener(IpAddr::from(Ipv4Addr::LOCALHOST))

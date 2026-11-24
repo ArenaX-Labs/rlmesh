@@ -21,7 +21,6 @@ fn shape_example_round_trips() {
     assert_eq!(obs.seed(Some(7)), 7);
     let x = obs.sample().unwrap();
     assert!(obs.contains(&x));
-    // Keys sort at construction, as Python's builder does.
     assert_eq!(obs.keys().collect::<Vec<_>>(), ["id", "pos"]);
     assert_eq!(
         obs["pos"].as_box().unwrap().low(),
@@ -43,11 +42,9 @@ fn seeding_reproduces_and_clones_share_the_rng() {
     other.seed(Some(3));
     let b = space.sample().unwrap();
     assert_eq!(a, b, "a clone seeds the same RNG");
-    // A fresh space from the same spec with the same seed matches too.
     let fresh = space.spec().to_space();
     fresh.seed(Some(3));
     assert_eq!(fresh.sample().unwrap(), a);
-    // `seed(None)` draws a seed, applies it and returns it.
     let drawn = space.seed(None);
     let first = space.sample().unwrap();
     space.seed(Some(drawn));
@@ -63,8 +60,6 @@ fn dict_children_keep_their_own_rng_and_are_shared() {
     child.seed(Some(9));
     obs.seed(Some(1));
     let _ = obs.sample().unwrap();
-    // The parent's seed and sample leave the child's stream alone, and a
-    // clone of the Dict sees the same child.
     let clone = obs.clone();
     assert_eq!(clone["a"].sample().unwrap(), expected);
 }
@@ -208,7 +203,6 @@ fn samples_are_values_of_python_kinds() {
     obs.seed(Some(1));
     let value = obs.sample().unwrap();
     let map = value.as_dict().unwrap();
-    // A Dict samples in the space's declaration order.
     assert_eq!(
         map.keys().collect::<Vec<_>>(),
         obs.keys().collect::<Vec<_>>()
@@ -234,9 +228,7 @@ fn contains_takes_the_values_python_accepts() {
     )
     .unwrap();
     assert!(ints.contains(&Value::List(vec![Value::Int(1), Value::Bool(true)])));
-    // Integer dtypes never take a float, even an integral one.
     assert!(!ints.contains(&Value::List(vec![Value::Float(1.0), Value::Int(1)])));
-    // The exact shape: a bare number is no member of a (2,) Box.
     assert!(!ints.contains(&Value::Int(1)));
     assert!(!ints.contains(&Value::List(vec![Value::Int(9), Value::Int(1)])));
     let floats = unit_box();

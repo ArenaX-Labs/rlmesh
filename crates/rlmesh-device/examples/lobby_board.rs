@@ -1,17 +1,3 @@
-//! A board waiting in its home's lobby, with this program
-//! as its transport: rehearses the lobby against a real `rlmesh daemon`
-//! without a board. It prints each phase as it reaches it, until killed.
-//!
-//! ```sh
-//! cargo run -p rlmesh-device --example lobby_board -- <home host:port> <local.key> \
-//!     [<satellite host:port>=<its local.key> ...]
-//! ```
-//!
-//! It holds the daemon's `local.key`, so it attaches as device `local` and
-//! presents the loopback link gate; a board on the LAN holds its own key.
-//! A run on a satellite is followed there: its key file only opens that
-//! daemon's loopback gate (the run's own host key comes with the join).
-
 #![allow(clippy::print_stdout, clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
@@ -55,7 +41,6 @@ async fn main() {
         .trim()
         .parse()
         .expect("a key");
-    // The loopback gates' keys, by base address.
     let mut gates: BTreeMap<String, AddressKey> = BTreeMap::new();
     gates.insert(home.clone(), key.clone());
     for extra in args {
@@ -121,7 +106,6 @@ async fn main() {
                 Action::Reset => {
                     subscribers.clear();
                     tokens.clear();
-                    // A run elsewhere, or another home address: a link there.
                     let (host, port) = robot.host();
                     let target = format!("{host}:{port}");
                     if target != linked {
@@ -190,8 +174,6 @@ async fn main() {
                 } => {
                     let _ = transport.session(class(c)).put(key, payload).await;
                 }
-                // This rehearsal carries no datagram path: a host that
-                // offers one gets the board's parts over its links.
                 Action::DatagramOpen { .. } | Action::Datagram { .. } => {
                     robot.datagram_failed(now_us());
                 }
@@ -217,8 +199,6 @@ async fn main() {
     }
 }
 
-/// A transport to the session host at `base`, through its loopback gate when
-/// `gates` holds its key.
 async fn link(base: &str, gates: &BTreeMap<String, AddressKey>) -> rlmesh_session::Transport {
     let address = rlmesh_session::address::SessionAddress {
         key: gates.get(base).cloned(),

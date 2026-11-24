@@ -40,12 +40,8 @@ where
     }
 
     /// Runs the session, attributing any cancellation of `cancellation` to
-    /// `reason`.
-    ///
-    /// The reason is carried into [`RuntimeError::RouteCancelled`], the
-    /// `session_failed` hook event, and the `ReleaseAdapter` reason, so callers
-    /// (e.g. an owner that cancels for Ctrl+C, a deadline, or a sibling-route
-    /// failure) can supply an accurate cause instead of a hardcoded one.
+    /// `reason`. The reason is carried into [`RuntimeError::RouteCancelled`], the
+    /// `session_failed` hook event and the `ReleaseAdapter` reason.
     pub async fn run_with_cancellation_reason(
         mut self,
         cancellation: CancellationToken,
@@ -53,20 +49,11 @@ where
     ) -> Result<RuntimeReport, RuntimeError> {
         self.cancellation_reason = reason.into();
         self.spec.validate().map_err(RuntimeError::InvalidSpec)?;
-        // validate() confirmed both spaces are present; cache them as shared
-        // Arcs so per-step hook events clone a pointer, not the whole spec.
         self.action_space = Arc::new(self.spec.action_space_validated().clone());
         self.observation_space = Arc::new(self.spec.observation_space_validated().clone());
         self.instruction_leaf = instruction_leaf(&self.contract);
         let mut state = RouteState::new(&self.spec);
-        // Telemetry lives here, not in run_loop, so the final Session snapshot is
-        // delivered on EVERY exit (including aborts). The background ticker only
-        // ever pushes Window snapshots (the live tier); the cumulative Session
-        // total is pushed once below and returned on the report (the durable
-        // tier), so a late ticker tick cannot race or supersede it.
         let telemetry = Arc::new(Mutex::new(Aggregator::default()));
-        // A zero window disables live streaming (it would otherwise be a 1ms hot
-        // loop); the final session push below still fires.
         let ticker = (!self.spec.limits.telemetry_window.is_zero()).then(|| {
             TelemetryTicker::spawn(
                 Arc::clone(&telemetry),
@@ -87,9 +74,6 @@ where
                 &mut predicts,
             )
             .await;
-        // Whatever ended the loop, let the predicts still in flight land
-        // before the route releases the model; a hung predict is abandoned
-        // after the close timeout.
         env_ops.abort_all();
         let mut abandoned = false;
         if !predicts.is_empty() {
@@ -103,16 +87,6 @@ where
             }
         }
         drop(predicts);
-        // A route ending mid-episode (a failure, a cancellation, a sibling
-        // lane cut by the episode budget) still has episodes the model has
-        // predicted on and never heard the end of; its per-episode state (a
-        // Python model's episode store) ends through the same hook a completed
-        // episode's does, so end them here, once, before the release. Together
-        // with the evictions held behind those predicts and any queued since
-        // the last loop turn, they go out on the shutdown budget, cancelled or
-        // not — but never to an endpoint that just missed the close deadline:
-        // it is provably hung, so the flush would only burn its own deadline,
-        // and the deadline-bounded release below frees that state anyway.
         if abandoned {
             self.pending_evictions.clear();
             self.held_evictions.clear();
@@ -128,9 +102,6 @@ where
             )
             .await;
         }
-        // Stop the ticker (it only emits Window snapshots, so it cannot contend
-        // this Session push), then deliver the durable session total exactly once
-        // on every exit path.
         drop(ticker);
         let final_snapshot = lock_agg(&telemetry).snapshot(Horizon::Session);
         fan_out_event!(
@@ -173,10 +144,6 @@ where
         }
     }
 
-    /// Session/route-level span: lets an OpenTelemetry subscriber attach
-    /// to `rlmesh.route`; inert under the default
-    /// subscriber. Created once per session, not per step; `skip_all` records only
-    /// the cheap ids. Any future per-step span MUST be trace-level + target-gated.
     #[tracing::instrument(
         name = "rlmesh.route",
         level = "info",
@@ -226,9 +193,7 @@ where
             {
                 return Ok("completed requested episodes");
             }
-            // A predict future parked in `predicts` is not polled while this
-            // await runs, and a local model's eviction shares its handler lock
-            // with predict: flushing here would wait out the predict timeout.
+            // A predict parked in `predicts` is not polled during this await, and a local model's eviction shares its handler lock with predict: flushing here would wait out the predict timeout.
             if predicts.is_empty() {
                 self.flush_evictions(
                     state,
@@ -240,15 +205,9 @@ where
             }
             self.dispatch_steps(&mut groups, state, env_ops, telemetry)
                 .await?;
-            // With nothing else in flight, a waiting group must be predicted now
-            // or the route would sit forever; the scheduler's plan is advisory
-            // only while something else can wake the loop.
             let force = env_ops.is_empty() && predicts.is_empty();
             self.dispatch_predict(&mut groups, state, predicts, force);
             if env_ops.is_empty() && predicts.is_empty() {
-                // Nothing in flight and no group could be advanced: a live group
-                // with neither a frame nor an observation, which the transitions
-                // above never produce.
                 return Err(RuntimeError::Protocol(format!(
                     "route {} stalled with no operation in flight",
                     state.env_id()
@@ -290,10 +249,6 @@ where
         }
     }
 
-    /// Releases the model's route and, when the session owns them, closes
-    /// the model and the env, each within the close timeout: the driver
-    /// enforces it, so a close that blocks (an RPC on a hung connection)
-    /// cannot hang the run's shutdown.
     async fn shutdown_terminal_route(&mut self, state: &RouteState, reason: &str) {
         let timeout = self.spec.limits.service_close_timeout;
         let released = release(&self.model, state.env_id().to_string());

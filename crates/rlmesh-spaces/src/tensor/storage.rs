@@ -1,15 +1,13 @@
 use std::sync::Arc;
 
-/// Alignment guaranteed for buffers allocated by [`Storage`] itself.
 const ALIGN: usize = 64;
 
 /// Reference-counted, immutable byte storage shared by one or more
 /// [`Tensor`](super::Tensor) views.
 ///
-/// Buffers allocated by `Storage` ([`from_slice`](Storage::from_slice),
-/// [`zeroed`](Storage::zeroed)) are 64-byte aligned. Buffers adopted from a
-/// caller ([`from_vec`](Storage::from_vec)) keep their original allocation and
-/// carry no alignment guarantee.
+/// Buffers allocated here ([`from_slice`](Storage::from_slice),
+/// [`zeroed`](Storage::zeroed)) are 64-byte aligned; a buffer adopted with
+/// [`from_vec`](Storage::from_vec) keeps its allocation and has no alignment guarantee.
 #[derive(Debug, Clone)]
 pub struct Storage(Inner);
 
@@ -22,7 +20,7 @@ enum Inner {
 }
 
 impl Storage {
-    /// Adopt an existing buffer without copying. No alignment guarantee.
+    /// Adopt an existing buffer without copying.
     pub fn from_vec(data: Vec<u8>) -> Self {
         Storage(Inner::Adopted(Arc::new(data)))
     }
@@ -38,8 +36,8 @@ impl Storage {
     }
 
     /// Build a 64-byte-aligned buffer by letting `fill` append exactly `len`
-    /// payload bytes. `fill` must only append; growing past the reserved
-    /// capacity would reallocate and lose the alignment.
+    /// payload bytes. `fill` must only append: growing past the reserved capacity
+    /// would reallocate and lose the alignment.
     pub(crate) fn aligned_with(len: usize, fill: impl FnOnce(&mut Vec<u8>)) -> Self {
         let mut bytes = AlignedBytes::with_aligned_offset(len);
         fill(&mut bytes.buf);
@@ -75,8 +73,6 @@ impl Storage {
     }
 }
 
-/// Owned bytes positioned at a 64-byte-aligned offset inside an
-/// over-allocated `Vec`.
 #[derive(Debug)]
 struct AlignedBytes {
     buf: Vec<u8>,
@@ -85,10 +81,6 @@ struct AlignedBytes {
 }
 
 impl AlignedBytes {
-    /// Reserve capacity for `len` payload bytes plus alignment padding and
-    /// fill the padding. The reserved capacity guarantees later appends of up
-    /// to `len` bytes never reallocate, so the offset computed from the heap
-    /// pointer stays aligned.
     fn with_aligned_offset(len: usize) -> Self {
         let mut buf = Vec::with_capacity(len + ALIGN - 1);
         let addr = buf.as_ptr() as usize;

@@ -1,15 +1,3 @@
-/* The board's loop on Linux: the device robot over rlmesh_zenoh, against a
- * real session host (rlmesh-device's test host), with Linux's clock and randomness where a
- * board has esp_timer and its RNG. Passes once the robot has joined, had 20
- * heartbeats echoed, applied two distinct controller targets, and published
- * the applied values under its delivered stream key.
- *
- *   host_robot <host:port#secret.hostkey> [seconds] [udp]
- *
- * The address is what a host prints, with its key, for its default session.
- * With `udp` the host offers its datagram path, and the commands must have
- * come over it. */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,8 +70,6 @@ int main(int argc, char** argv) {
       if (phase == 4 && joined == 0) joined = now_us();
     }
     if (status.phase == 4 && now_us() >= next_sample) {
-      /* A sample of the eyes, sealed under the stream key the host delivered:
-       * NOT_READY until it arrives. */
       rlmesh_device_tick_t tick;
       int result = rlmesh_device_robot_tick(robot, (uint8_t)eyes, now_us(), &tick);
       if (result == 1 && tick.has_action) {
@@ -137,7 +123,6 @@ int main(int argc, char** argv) {
     printf("the datagram path was not offered\n");
     ok = 0;
   }
-  /* A subscription or token the transport couldn't declare fails it too. */
   if (z.failed != 0) ok = 0;
   rlmesh_zenoh_close(&z);
   rlmesh_device_robot_free(robot);

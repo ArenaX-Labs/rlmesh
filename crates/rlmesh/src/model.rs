@@ -23,8 +23,6 @@ pub use policy::{Corners, LoadKey, NO_ADAPTER, Policy, SpecArg, WithContext, wit
 pub use remote::{RemoteModel, RemoteModelOptions};
 pub use types::predict_seed;
 
-// The engine plumbing, public through `binding` (R-25); named here for the
-// crate's own tests.
 #[allow(unused_imports)]
 pub(crate) use engine::AdaptedModelHandler;
 #[allow(unused_imports)]

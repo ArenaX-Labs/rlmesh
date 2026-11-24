@@ -1,5 +1,3 @@
-"""0.1 options a session cannot honor raise at construction, naming the 0.2 form."""
-
 from __future__ import annotations
 
 import pytest

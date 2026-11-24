@@ -1,6 +1,5 @@
 use crate::dtype::DType;
 
-/// DLPack data type codes (`DLDataTypeCode`).
 mod code {
     pub const INT: u8 = 0;
     pub const UINT: u8 = 1;
@@ -19,7 +18,7 @@ pub struct DLPackType {
     pub lanes: u16,
 }
 
-/// Map a dtype to its DLPack data type. `Unspecified` has no DLPack form.
+/// Map a dtype to its DLPack data type.
 pub fn dlpack_type(dtype: DType) -> Option<DLPackType> {
     let (code, bits) = match dtype {
         DType::Unspecified => return None,
@@ -43,8 +42,7 @@ pub fn dlpack_type(dtype: DType) -> Option<DLPackType> {
     })
 }
 
-/// Map a DLPack data type back to a dtype. Returns `None` for unsupported
-/// codes or widths and for vectorized types (`lanes != 1`).
+/// Map a DLPack data type back to a dtype.
 pub fn dtype_from_dlpack(ty: DLPackType) -> Option<DType> {
     if ty.lanes != 1 {
         return None;
@@ -112,7 +110,6 @@ mod tests {
 
     #[test]
     fn test_dtype_from_dlpack_rejects_unsupported() {
-        // Vectorized types.
         assert_eq!(
             dtype_from_dlpack(DLPackType {
                 code: 2,
@@ -121,7 +118,6 @@ mod tests {
             }),
             None
         );
-        // Unknown width.
         assert_eq!(
             dtype_from_dlpack(DLPackType {
                 code: 0,
@@ -130,7 +126,6 @@ mod tests {
             }),
             None
         );
-        // Unknown code (e.g. complex = 5).
         assert_eq!(
             dtype_from_dlpack(DLPackType {
                 code: 5,

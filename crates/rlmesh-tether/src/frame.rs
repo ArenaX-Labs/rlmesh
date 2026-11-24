@@ -52,8 +52,6 @@ impl<'a> Frame<'a> {
 }
 
 /// Writes one frame to `out`: COBS-encoded, with the trailing `0x00`.
-/// `payload` is read in pieces (a message header, then a value), so nothing
-/// is copied together first.
 ///
 /// # Panics
 ///
@@ -62,7 +60,6 @@ impl<'a> Frame<'a> {
 /// first, so only a direct caller can hit this.
 pub fn write(ty: u8, seq: u8, payload: &[&[u8]], mut out: impl FnMut(u8)) {
     let len: usize = payload.iter().map(|p| p.len()).sum();
-    // No formatted message: a board build shouldn't link `core::fmt` for it.
     assert!((1..=MAX_PAYLOAD).contains(&len));
     let head = [ty, seq];
     let crc = payload
@@ -125,7 +122,6 @@ mod tests {
             .iter()
             .find_map(|&b| d.push(b).map(|r| r.map(|f| f.len())));
         assert_eq!(got, Some(Ok(MAX_DECODED)));
-        // One byte more doesn't fit a MAX_DECODED buffer.
         let mut small = Decoder::<{ MAX_DECODED - 1 }>::new();
         let got = buf[..n]
             .iter()

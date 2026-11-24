@@ -1,44 +1,3 @@
-"""The Gymnasium gate's rows over envs, models and clients written in another
-language, served and dialed on v2 sessions against Python 0.2.
-
-Each native language's test task runs this file with the command of its gate
-program::
-
-    RLMESH_NATIVE_GATE="<command>" uv run pytest python/rlmesh/tests/conformance/native_gate.py
-
-The rows, spaces and fixtures are the gate's own (``test_gym_conformance``);
-the program only serves or drives them. It answers:
-
-``<command> env <row> <address>``
-    Serve the echo env of ``row`` at ``address``, print ``listening on
-    <participant address>`` and stop at stdin EOF.
-``<command> model <address>``
-    Print ``serving`` and serve the echo model at the participant ``address``
-    until stdin EOF.
-``<command> remote-env <address>``, ``<command> run <address>``
-    Drive the env at ``address`` for two episodes (seeds 0 and 1), each
-    step's action the last observation: by hand through the language's remote
-    env, or as a run of its echo model. Print ``episodes=2``.
-``<command> remote-model <model address> <env address>``
-    Run the served model at the first address against the env at the second
-    for two episodes; print ``episodes=2``.
-
-Any call may print ``unsupported: <why>`` and exit 0 instead: the row is
-skipped with that reason, which names what the language lacks.
-
-The echo env's observation and action space are ``SPACES[row]`` (a ``float32``
-``Box(-1, 1, (3,))`` for the other rows). ``reset(seed, options)`` returns any
-value of the space with ``{"options": options}`` as its info when options are
-given (else ``{}``); ``step(action)`` returns the action as the observation,
-reward ``t`` (the step count), terminated at ``t >= 3`` and info ``{"t": t}``.
-Row ``info`` returns ``rich_info(t)`` as the step info, ``both_done`` also
-truncates when it terminates, ``error_reset`` / ``error_step`` raise the
-language's ValueError ``boom in reset`` / RuntimeError ``boom in step``,
-``render`` renders a ``uint8`` ``(4, 5, 3)`` frame whose channel 0 is ``t``,
-and ``scalar_box``'s space is a shape-``()`` Box, refused before it serves.
-The echo model's action is its observation.
-"""
-
 from __future__ import annotations
 
 import os
@@ -96,14 +55,12 @@ def first_line(child: subprocess.Popen[str]) -> str:
 
 
 def stop(child: subprocess.Popen[str]) -> str:
-    """Close the program's stdin, its cue to stop; its exit must be clean."""
     out, err = child.communicate(timeout=30)
     assert child.returncode == 0, err
     return out
 
 
 def call(*args: str) -> str:
-    """One driving call: its output, or the row skipped as unsupported."""
     done = subprocess.run(
         [*COMMAND, *args], capture_output=True, text=True, timeout=60, check=False
     )
@@ -115,7 +72,6 @@ def call(*args: str) -> str:
 
 @contextmanager
 def native_env(row: str) -> Iterator[Any]:
-    """The program's echo env for ``row``, as the RemoteEnv a Gym user dials."""
     child = program("env", row, ADDRESS)
     try:
         line = first_line(child)
@@ -204,8 +160,6 @@ def test_a_scalar_box_is_refused_at_once_by_name() -> None:
 
 
 class Echoed(gym.Wrapper):  # type: ignore[misc]
-    """Records each action beside the observation it answered, and the resets."""
-
     def __init__(self, env: Any) -> None:
         super().__init__(env)
         self.pairs: list[tuple[Any, Any]] = []
@@ -223,7 +177,6 @@ class Echoed(gym.Wrapper):  # type: ignore[misc]
 
 
 def assert_echoed(env: Echoed) -> None:
-    """Every action was the observation before it, bit-exact."""
     assert env.resets == 2 and env.pairs
     observations, actions = zip(*env.pairs, strict=True)
     assert difference(list(observations), list(actions), scalars=True) is None
@@ -242,7 +195,6 @@ CLIENT_SPACES = [
 
 @contextmanager
 def python_env(name: str) -> Iterator[tuple[Echoed, Any]]:
-    """The gate's SpaceEnv on ``SPACES[name]`` both ways, served from Python."""
     space = SPACES[name]
     env = Echoed(SpaceEnv(space, space))
     server = rlmesh.EnvServer(env, ADDRESS, options=EDITION)
@@ -263,7 +215,6 @@ def test_a_native_client_drives_a_python_env(verb: str, name: str) -> None:
 
 @contextmanager
 def native_model(session: str) -> Iterator[str]:
-    """The program's echo model, joined to ``session`` as ``policy``."""
     address = f"{session}/policy"
     child = program("model", address)
     try:

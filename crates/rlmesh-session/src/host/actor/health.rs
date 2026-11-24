@@ -17,8 +17,6 @@ impl HostActor {
         heartbeat: crate::wire::Heartbeat,
         t2: i64,
     ) {
-        // Only attached participants are tracked; attach precedes the first
-        // heartbeat.
         let Some(link) = self.links.get_mut(&id) else {
             return;
         };
@@ -44,10 +42,6 @@ impl HostActor {
         self.authority.heartbeat(&id, heartbeat.epoch, t2);
     }
 
-    /// Liveliness never makes anyone present (anyone on the network can
-    /// declare a token); a delete only has the expiry tick check the
-    /// participant's heartbeats sooner. A participant that rejoined under its
-    /// id keeps heartbeating, so its old token's late delete loses nothing.
     pub(super) fn on_presence(&mut self, sample: &zenoh::sample::Sample) {
         let Some(id) = self.keys.participant_of(sample.key_expr().as_str()) else {
             return;
@@ -58,7 +52,6 @@ impl HostActor {
         }
     }
 
-    /// What `host/health` says now.
     fn health(&self, now: i64) -> HostHealth {
         let peers = self.peers.read().ok();
         let links = self
@@ -102,8 +95,6 @@ impl HostActor {
         }
     }
 
-    /// Signs and publishes `host/health`: every attached participant's link
-    /// as measured here, its edge counters and its latest observer report.
     pub(super) async fn publish_health(&mut self) {
         let now = self.now();
         let health = self.health(now);
@@ -149,8 +140,6 @@ impl HostActor {
             .collect()
     }
 
-    /// Declares the echo publisher of `id`'s generation in effect, and
-    /// returns that generation.
     pub(super) async fn declare_echo(&self, id: &ParticipantId) -> u32 {
         let Some(peer) = self
             .peers

@@ -174,8 +174,6 @@ class Image:
     optional: bool = False
     fill: int | None = None
     stack: int = 1
-    # Keyword-only and appended after `stack`: the positional prefix through
-    # `stack` is frozen, so specs written against it keep constructing.
     crop: float | None = field(default=None, kw_only=True)
     crop_area: float | None = field(default=None, kw_only=True)
     crop_mode: CropMode = field(default="zoom", kw_only=True)
@@ -186,14 +184,9 @@ class Image:
     stack_pad: StackPad = field(default="first", kw_only=True)
     part: str | None = field(default=None, kw_only=True)
     size: InitVar[int | None] = None
-    # Kw-only like the fields it sugars, so the positional signature stays
-    # exactly what specs were written against.
     stride: InitVar[int | None] = field(default=None, kw_only=True)
 
     def __post_init__(self, size: int | None, stride: int | None) -> None:
-        # size= is construction sugar (sets both height and width). The
-        # non-negative bounds (height/width/lead_dims) and the stack 1..=64 bound
-        # are enforced by the Rust codec at serialize/normalize (u32 + de_stack).
         if size is not None:
             if self.height is not None or self.width is not None:
                 raise ValueError(
@@ -201,9 +194,7 @@ class Image:
                 )
             object.__setattr__(self, "height", size)
             object.__setattr__(self, "width", size)
-        # crop and crop_area are one box said two ways; declaring both leaves
-        # no honest precedence rule, so it is a construction error rather than
-        # a silent winner. The bound matches the Rust codec's wire guard.
+        # crop and crop_area are one box said two ways; declaring both is an error.
         if self.crop is not None and self.crop_area is not None:
             raise ValueError(
                 f"Image {self.role!r}: pass crop (a side fraction) or crop_area "
@@ -220,17 +211,11 @@ class Image:
                     f"got {fraction}"
                 )
             object.__setattr__(self, name, fraction)
-        # The IJG scale the encoder is written on; matches the Rust codec's
-        # wire guard, so a spec rejected here is rejected there too.
         if self.jpeg_quality is not None and not 1 <= self.jpeg_quality <= 100:
             raise ValueError(
                 f"Image {self.role!r}: jpeg_quality must be between 1 and 100, "
                 f"got {self.jpeg_quality}"
             )
-        # A square int is shorthand for the (height, width) pair the wire
-        # carries; normalizing here means the field has one shape everywhere
-        # (mirrors `normalize`'s pair coercion). The bound matches the Rust
-        # codec's wire guard.
         if self.render is not None:
             render = self.render
             if isinstance(render, int):
@@ -251,11 +236,7 @@ class Image:
                         f"and 4096, got {value}"
                     )
             object.__setattr__(self, "render", render)
-        # stride= is construction sugar for an evenly spaced window; offsets is
-        # the general form. Declaring both leaves no honest precedence rule.
-        # The window LAW (non-positive, increasing, ending at 0, agreeing with
-        # stack, within the span ceiling) is enforced once, by the Rust resolver,
-        # so both engines can only ever say the same thing about it.
+        # The window law is enforced once, by the Rust resolver.
         if stride is not None:
             if self.offsets is not None:
                 raise ValueError(
@@ -277,12 +258,7 @@ class Image:
                 f"Image {self.role!r}: fill only applies to an optional camera; "
                 "set optional=True or drop fill"
             )
-        # A single fit stays a string; a preference list normalizes to a tuple
-        # (hashable, round-trips by value) -- mirrors the rotation accept-set.
         object.__setattr__(self, "fit", one_or_many(self.fit))
-        # normalize overloads a bool with a (low, high) range. A pair coerces to a
-        # validated float tuple (finite, low <= high), mirroring the Rust codec's
-        # range guard; a bool passes through, and False stays the off-switch.
         norm = self.normalize
         if norm is not True and norm is not False:
             try:
@@ -486,12 +462,9 @@ class State:
     reshape: tuple[int, ...] | None = None
     container: Literal["array", "list"] = "array"
     clip: tuple[float, float] | None = field(default=None, kw_only=True)
-    # dim/index/pad_to >= 0 is enforced by the Rust codec (u32) at serialize.
 
     def __post_init__(self) -> None:
-        # index selects one element, dim truncates to the leading N; the resolver
-        # applies index and ignores dim when both are set, so reject the ambiguous
-        # pairing here (matching the Rust codec guard).
+        # The resolver applies index and ignores dim, so reject setting both.
         if self.dim is not None and self.index is not None:
             raise ValueError(
                 f"State {self.role!r}: set dim or index, not both "
@@ -502,10 +475,7 @@ class State:
                 f"State {self.role!r}: source must be 'observation' or 'action', "
                 f"got {self.source!r}"
             )
-        # An action-source part reads the model's own raw output for the role:
-        # no env feature is consulted, so nothing that maps one applies, and
-        # `fill` is what it reads before the episode's first action (matching
-        # the Rust codec guard).
+        # An action-source part reads the model's own output: no env feature applies.
         if self.source == "action" and (
             self.encoding is not None
             or self.index is not None
@@ -522,8 +492,7 @@ class State:
                 "output and carries only part/labels/dim/fill; drop encoding/index/"
                 "range/optional/post_rotate/scale/offset/frame/provenance"
             )
-        # `fill` is what an absent part contributes; a non-optional part always
-        # has an env source, so a non-zero fill there could never fire.
+        # A non-optional part always has an env source, so a non-zero fill could never fire.
         if self.fill != 0.0 and not self.optional and self.source == "observation":
             raise ValueError(
                 f"State {self.role!r}: fill applies only to an optional part; a "
@@ -589,8 +558,6 @@ def Previous(  # noqa: N802 -- a part constructor, read like the leaf classes
     return State(role, part=part, fill=fill, source="action")
 
 
-# A part of a :class:`Concat`: a bare role string, a :class:`State` whose part
-# fields are taken, or a :class:`Constant` block.
 ConcatPart: TypeAlias = "str | State | Constant"
 
 
@@ -645,17 +612,13 @@ class Concat:
                     f"blocks; got {type(part).__name__!r}. Pass a role constant "
                     "(e.g. Concat(EEF_POS, GRIPPER_POS)) or wrap it in State(...)"
                 )
-        # A state of only constants is a fabricated tensor pretending to be an
-        # observation (the Rust codec refuses it too).
+        # A state of only constants is a fabricated observation.
         if all(isinstance(part, Constant) for part in parts):
             raise ValueError(
                 "a state input of only constant parts reads nothing from the env; "
                 "give it at least one roled part"
             )
-        # A State used as a part contributes only its part fields; its container
-        # fields (pad_to/dtype/reshape/container) belong on the Concat. Catch a
-        # non-default one at construction rather than letting it be silently
-        # dropped (the wire codec also rejects it, but later and less obviously).
+        # Container fields belong on the Concat; reject a non-default one rather than dropping it.
         for part in parts:
             if isinstance(part, State) and (
                 part.pad_to is not None
@@ -731,10 +694,7 @@ class Custom:
             )
 
 
-# A model input leaf.
 ModelLeaf: TypeAlias = Image | State | Concat | Text | Custom
-# A recursive model input tree: a leaf, a Dict, or a Tuple. The container type
-# *is* the payload container the model's predict receives.
 InputNode: TypeAlias = "ModelLeaf | Mapping[str, InputNode] | tuple[InputNode, ...]"
 
 __all__ = [

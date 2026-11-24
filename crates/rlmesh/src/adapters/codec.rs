@@ -262,8 +262,6 @@ pub(crate) fn metadata(j: Json) -> Result<Metadata> {
         _ => Err(err("expected a metadata dictionary")),
     }
 }
-/// Canonical JSON formatting: sorted UTF-8 keys, compact separators, serde's
-/// finite numeric spelling, and signed zero retained.
 pub(crate) fn format_json(j: &Json) -> Result<String> {
     serde_json::to_string(&sorted(j.clone())).map_err(err)
 }

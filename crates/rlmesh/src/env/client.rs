@@ -14,8 +14,6 @@ macro_rules! client_common {
                 })
             }
 
-            /// Run one I/O call on the core, cancellable through the handle's
-            /// token.
             async fn io<T>(
                 &mut self,
                 op: impl for<'c> FnOnce(
@@ -131,7 +129,6 @@ macro_rules! client_common {
 
             /// Close this client's session (idempotent); the server keeps
             /// running. Errors other than a lost connection or an expired
-            /// bound are returned.
             pub fn close(&mut self) -> Result<()> {
                 refuse_in_async_context(concat!($name, "::close"))?;
                 block_on_library(self.close_in())
@@ -202,16 +199,11 @@ pub use single::RemoteEnv;
 pub use vector::RemoteVectorEnv;
 pub(crate) use vector::reset_lanes_in;
 
-/// How long `close` waits for the server when the client has no request
-/// timeout: past it the client detaches locally.
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
 
-/// The runtime-reserved info keys.
 const RUNTIME_INFO_KEYS: [&str; 2] = ["episode_ids", "completed_episodes"];
 
 /// Options for connecting to a single or vector environment.
-///
-/// `address` names a session participant. A zero timeout means no timeout.
 #[derive(Clone, Default)]
 pub struct RemoteEnvOptions {
     /// A session participant address, such as `localhost:5555/env`.
@@ -265,21 +257,15 @@ impl RemoteEnvOptions {
     }
 }
 
-/// Normalize an env's connect address: one connect string from an address
-/// (a lone `host:port` is short for `host:port/env`), every refusal the
-/// ValueError class.
 pub(crate) fn normalize_connect_address(address: Option<&str>) -> Result<String> {
     let address = address.ok_or_else(|| Error::invalid_argument("address is required"))?;
     Ok(ConnectAddress::env(address)?.as_str())
 }
 
-/// Zero means no timeout, as `None` does.
 pub(crate) fn normalize_timeout(timeout: Option<Duration>) -> Option<Duration> {
     timeout.filter(|timeout| !timeout.is_zero())
 }
 
-/// A timeout given in seconds (the bindings' `*_timeout_seconds`): `None`
-/// and zero are no timeout; negative or non-finite is the ValueError class.
 pub(crate) fn timeout_from_secs(value: Option<f64>, field: &str) -> Result<Option<Duration>> {
     match value {
         None => Ok(None),
@@ -293,8 +279,6 @@ pub(crate) fn timeout_from_secs(value: Option<f64>, field: &str) -> Result<Optio
     }
 }
 
-/// Bound `future` by `timeout`: a reply handled at or after the deadline is
-/// discarded and the call fails with the TimeoutError class.
 async fn bounded<T>(
     timeout: Option<Duration>,
     future: impl std::future::Future<Output = Result<T>>,
@@ -310,8 +294,6 @@ async fn bounded<T>(
     }
 }
 
-/// What both clients keep outside the per-call core, so accessors never wait
-/// on a call.
 struct Shared {
     address: String,
     env_id: String,
@@ -338,13 +320,8 @@ impl Shared {
     }
 }
 
-/// The client half a session can borrow: its core moves into the session for
-/// the borrow and comes back when the session ends.
 pub(crate) trait Lendable {
-    /// The handle's canonical connect string.
     fn remote_address(&self) -> &str;
-    /// Move the core out for a run's borrow.
     fn lend(&mut self) -> Result<Box<EnvClientCore>>;
-    /// Return a lent core.
     fn give_back(&mut self, core: Box<EnvClientCore>);
 }

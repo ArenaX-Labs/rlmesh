@@ -1,5 +1,3 @@
-"""Internal space helpers: spec accessors plus the native-value bridge."""
-
 from __future__ import annotations
 
 import math
@@ -10,7 +8,6 @@ from typing import Any, cast
 from .._value_conversion import ValueBridge, identity_bridge
 from ..specs import SpaceSpec
 
-# The native value bridge: spaces sample/contain RLMesh ``Value`` trees as-is.
 NATIVE_VALUE_BRIDGE: ValueBridge = identity_bridge
 
 EMPTY_SPACE_MAPPING: Mapping[str, object] = MappingProxyType({})
@@ -31,8 +28,7 @@ def shape(shape: Sequence[int] | None) -> list[int]:
 def require_float(value: float | str | None, name: str) -> float:
     if value is None:
         raise TypeError(f"{name} is required")
-    # float() accepts 'inf'/'-inf' (valid Box bounds) but also 'nan'; a NaN bound
-    # makes every contains()/clamp comparison False, so reject it at the boundary.
+    # float() accepts 'nan'; a NaN bound makes every contains()/clamp comparison False, so reject it.
     result = float(value)
     if math.isnan(result):
         raise ValueError(f"{name} must be a real number, not NaN")
@@ -49,10 +45,7 @@ def dtype_name(dtype: object) -> str:
     """
     if isinstance(dtype, str):
         return dtype
-    # numpy-fluent users write dtype=float / int (numpy reads these as float64 /
-    # int64). The __name__ probe below would yield 'float'/'int', which the Rust
-    # DType validator rejects, so map the builtins explicitly. (bool already
-    # resolves: bool.__name__ == 'bool' is a valid dtype name.)
+    # Map builtin dtype=float/int explicitly: their __name__ is not a valid DType name.
     builtin = {float: "float64", int: "int64"}.get(dtype)  # type: ignore[arg-type]
     if builtin is not None:
         return builtin

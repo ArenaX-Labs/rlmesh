@@ -1,4 +1,3 @@
-//! Mutable Variant values and callback catalog sinks.
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,
@@ -30,8 +29,6 @@ pub struct RLMeshVariantOptions {
     pub struct_size: usize,
     pub metadata: *const RLMeshValue,
 }
-/// # Safety
-/// A non-NULL handle stays live for the returned reference's lifetime.
 unsafe fn require<'a>(ptr: *const RLMeshVariant) -> Result<&'a RLMeshVariant, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null variant"))
 }

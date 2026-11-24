@@ -1,5 +1,5 @@
-//! Without the `fleet` feature a session runs no scene: each of the scene's
-//! rules in [`Authority`] is a no-op (`scene.rs` has them).
+//! Without the `fleet` feature a session runs no scene: each of the scene's rules in
+//! [`Authority`] is a no-op (`scene.rs` has them).
 
 use super::{Authority, Identity};
 use crate::prelude::*;

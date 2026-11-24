@@ -23,7 +23,6 @@ def main():
         ["mise", "where", "zig"], cwd=CSHARP, text=True
     ).strip()
     subprocess.run(["dotnet", "tool", "restore"], cwd=CSHARP, check=True)
-    # Keep generator scratch in the checkout, not the host's small /tmp tmpfs.
     scratch = ROOT / "target/csharp-interop"
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=scratch) as directory:
@@ -67,9 +66,7 @@ def main():
             capture_output=True,
             text=True,
         )
-        # 21.1.8.4 returns the diagnostic count (truncated to 8 bits on POSIX).
-        # Visibility affects exports, not their ABI; accept only this exact
-        # known diagnostic, independent of the number of exported functions.
+        # 21.1.8.4 returns the diagnostic count (truncated to 8 bits on POSIX); accept only this exact known diagnostic.
         warnings = [line for line in result.stdout.splitlines() if "Warning (" in line]
         if result.returncode and not (
             result.returncode

@@ -14,8 +14,6 @@ use crate::env::wire::{WireEnvAdapter, WireLaneAdapter};
 use crate::env::{Env, VectorEnv};
 use crate::{Error, Result, ServeOptions};
 
-/// The foreground job runner of a lane or a vector env, if this serve keeps
-/// one on the calling thread.
 enum Runner {
     None,
     Lane(ActorRunner<Box<dyn Env + Send>>),
@@ -32,8 +30,6 @@ impl Runner {
     }
 }
 
-/// A background factory serve owns its cancellation subscription until serving
-/// ends. Joining the serve thread releases the watcher before returning its result.
 pub(super) struct CancelProbe {
     pub(super) subscription: crate::ext::CancelSubscription,
     pub(super) trigger: ShutdownTrigger,
@@ -49,9 +45,7 @@ impl CancelProbe {
 }
 impl Shared {
     pub(super) fn trigger_shutdown(&self, reason: &str) {
-        // A firing before this call must compete synchronously, even between
-        // watcher polls. Once another trigger wins, later firings cannot alter
-        // the serve result, including firings during drain/close.
+        // A firing before this call must compete synchronously; once a trigger wins, later firings cannot alter the result.
         if let Some(probe) = lock(&self.background_cancel).upgrade() {
             probe.sample();
         }
@@ -83,8 +77,6 @@ impl BackgroundCancel {
                     watched.sample();
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                // Retain the subscription through drain/close, so later firings
-                // remain consumed without changing the selected serve result.
             })
             .map_err(|err| {
                 Error::Internal(format!("failed to spawn cancellation watcher: {err}"))
@@ -112,9 +104,6 @@ impl Drop for BackgroundCancel {
     }
 }
 
-/// Serve until the shutdown trigger fires, then drain and close. In the
-/// foreground the calling thread runs lane 0's (or the vector env's) jobs
-/// while the transport runs on a helper thread.
 pub(super) fn run(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Result<()> {
     run_inner(resources, shared, foreground)
 }
@@ -181,7 +170,6 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
     }
 }
 
-/// What the transport needs to serve one env.
 struct ServeParts {
     runtime: tokio::runtime::Runtime,
     listener: Listener,
@@ -192,13 +180,9 @@ struct ServeParts {
     announce: Option<crate::binding::Announce>,
 }
 
-/// What [`drive`] serves: a transport env, natively too with the `lockstep`
-/// feature.
 trait Driven: crate::lockstep::Served {}
 impl<E: crate::lockstep::Served> Driven for E {}
 
-/// Serve `environment`; with a foreground runner, the transport runs on a
-/// helper thread while this thread runs the runner's jobs.
 fn drive<E: Driven + Send + Sync + 'static>(
     environment: E,
     runner: Runner,
@@ -239,8 +223,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
                     served
                 }
             };
-            // A transport failure also begins stopping before close callbacks.
-            // Later token firings cannot replace that selected serve error.
+            // A transport failure begins stopping before close callbacks; later token firings cannot replace it.
             shutdown.trigger("serve ended");
             let close_result = if close_env_on_shutdown {
                 let close = async { crate::lockstep::Served::close(&*environment).await };
@@ -255,8 +238,6 @@ fn drive<E: Driven + Send + Sync + 'static>(
             } else {
                 Ok(())
             };
-            // The env (and with it the lane threads and a foreground actor)
-            // drops here, which ends a foreground runner.
             drop(environment);
             serve_failure(serve_result, close_result)
         })
@@ -277,7 +258,6 @@ fn drive<E: Driven + Send + Sync + 'static>(
     })
 }
 
-/// The one serve-failure text: `serve failed: <message>`.
 fn serve_failure(serve: Result<()>, close: Result<()>) -> Result<()> {
     let text = |err: Error| match err {
         Error::Internal(message) => message,
@@ -296,8 +276,6 @@ fn serve_failure(serve: Result<()>, close: Result<()>) -> Result<()> {
     }
 }
 
-/// Release a never-served server: release the listener (stopping a session host it runs) and close the envs (when
-/// `close_env_on_shutdown`), bounded by `close_timeout`.
 pub(super) fn cleanup_ready(resources: Resources, shared: &Arc<Shared>) -> Result<()> {
     let Resources {
         served,

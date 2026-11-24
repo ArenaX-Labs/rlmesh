@@ -22,8 +22,6 @@ use crate::report::RunSource;
 use crate::sample::{SampleSubscriber, SubscribeOptions};
 use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY};
 
-/// A refusal for a policy whose entries name `me`, its own participant: its
-/// own parts are never bound to it, so it would wait for itself.
 fn names_itself(policy: &Policy, options: &RunOptions, me: &ParticipantId) -> Option<BindError> {
     let inputs = policy.inputs.iter().map(|i| ("input", &i.entry));
     let actions = policy.actions.iter().map(|a| ("action", &a.entry));
@@ -185,10 +183,9 @@ impl Participant {
     /// host normalises it and assigns channel ids. Re-declaring identically
     /// is a no-op; the parts are part of the authority snapshot.
     ///
-    /// This runtime can seal every part, so the session's choice of level
-    /// stands. Returns once the host's keys for every part reached this
-    /// process (or after `ctl_timeout`, with a warning): samples published
-    /// before then are dropped unsent.
+    /// Returns once the host's keys for every part reached this process (or
+    /// after `ctl_timeout`, with a warning); samples published before then are
+    /// dropped unsent.
     pub async fn declare_parts(&self, robot_json: &str) -> Result<AuthoritySnapshot, SessionError> {
         let seal = crate::spec::normalise(&self.shared.id, SPEC_VERSION, robot_json)
             .map(|parts| parts.iter().map(|p| p.path.to_string()).collect())
@@ -235,7 +232,6 @@ impl Participant {
     /// command, a table and a fingerprint, without delivery contracts or
     /// action grids (a controller that commands paths directly). A new
     /// fingerprint re-issues this controller's leases under a fresh token.
-    /// [`Self::declare_bound`] declares what the binder produced.
     pub async fn declare_binding(
         &self,
         fingerprint: Fingerprint,
@@ -270,9 +266,6 @@ impl Participant {
         let view = self.shared.view.borrow();
         match view.as_ref() {
             Some(state) => {
-                // A policy's own parts (its annotations) are never bound to
-                // it: they neither make a session several robots nor stand
-                // in for the one it drives.
                 let me = &self.shared.id;
                 if state.parts.iter().any(|p| &p.owner == me) {
                     let others: Vec<PartSpec> = state

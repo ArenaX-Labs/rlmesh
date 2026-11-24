@@ -1,5 +1,3 @@
-//! Pair one model image input with an env camera and derive its plan.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -19,8 +17,6 @@ use crate::spec::role::roles::registry;
 use crate::spec::role::state::part_suffix;
 use crate::wire::part::DType;
 
-/// The most consecutive frames a frame window may span (the window is held
-/// per live episode).
 const MAX_STACK_SPAN: i32 = 128;
 
 pub(super) fn plan_image(
@@ -32,9 +28,6 @@ pub(super) fn plan_image(
     projections: &mut Projections,
 ) -> Result<ImagePlan> {
     let at = quoted(&placement.to_string());
-    // `fill` only colors the zero-filled frame an `optional` camera
-    // produces when the env lacks it; without `optional` it can never take
-    // effect, so a set-but-inert fill is a spec error, not a silent no-op.
     if model_input.fill.is_some() && !model_input.optional {
         return Err(err(
             ErrorCode::Unsupported,
@@ -59,22 +52,12 @@ pub(super) fn plan_image(
         None => (None, model_input.part.clone()),
     };
     if env_image.is_none() {
-        // The role's data is present but under a kind this core can't read: fail
-        // loud before any fallback (lone-camera bind, optional zero-fill) papers
-        // over it. A role the env genuinely lacks passes through to the fallbacks.
         crate::spec::role::bind::reject_referenced_unknown(
             &model_input.role,
             &placement,
             unknown_roles,
         )?;
     }
-    // The lone-camera fallback binds a role-mismatched input to the env's
-    // single camera -- but only for a sanctioned (registered or `x/`) role, so
-    // a typo'd role name fails loudly instead of silently feeding the camera,
-    // and only under the named projection `rebind_camera`: a wrist input fed a
-    // third-person view is a different image. An `optional` input has opted
-    // into zero-filling instead; that wins. A named part never rebinds: it
-    // would quietly feed one arm's view to an input asking for another's.
     let mut role_rebound = None;
     if env_image.is_none()
         && !model_input.optional
@@ -102,9 +85,6 @@ pub(super) fn plan_image(
         role_rebound = Some((model_input.role.clone(), only.role.clone()));
     }
     let Some(env_image) = env_image else {
-        // An optional camera the env does not provide is zero-filled (a black
-        // frame), not a hard error -- the image-side analogue of an optional
-        // state component.
         if model_input.optional {
             return zero_fill_image_plan(model_input, placement);
         }
@@ -118,10 +98,6 @@ pub(super) fn plan_image(
             ),
         ));
     };
-    // A channel-count mismatch (e.g. RGB vs grayscale) is not converted; left
-    // unchecked it silently feeds the model a wrong-shaped tensor, so reject it.
-    // Only checked when the model declares its expected channels and the env's
-    // channel count was derivable.
     if let Some(expected) = model_input.channels
         && env_image.channels != 0
         && env_image.channels != expected
@@ -135,12 +111,6 @@ pub(super) fn plan_image(
             ),
         ));
     }
-    // `render` is an assertion about the camera, not a request the core can
-    // satisfy: a caller can set the env's camera dial from it before the run,
-    // and this is the check that the dial actually moved. Checked against the
-    // camera that was *bound* (a lone-camera rebind included), and only when the
-    // env's resolution was derivable -- an undeclared camera size is not
-    // evidence of a mismatch.
     let render = model_input.render.filter(|_| known_size(env_image));
     if let Some((height, width)) = render
         && (env_image.height, env_image.width) != (height, width)
@@ -156,9 +126,6 @@ pub(super) fn plan_image(
             ),
         ));
     }
-    // When the model declares only one target axis, fill the other from the
-    // env's native resolution (derived into the env image by `join`) rather
-    // than silently skipping the resize.
     let size = match (model_input.height, model_input.width) {
         (Some(height), Some(width)) => Some((height, width)),
         (Some(height), None) => Some((height, env_image.width)),
@@ -166,10 +133,6 @@ pub(super) fn plan_image(
         (None, None) => None,
     };
     let swap_rb = model_input.bgr;
-    // Both are 3-channel ops -- there is no red/blue pair, and no YCbCr to
-    // subsample, in a grayscale or RGBA frame. A wrong-shaped feed would
-    // silently get its bytes reordered (or fail per-step in apply), so reject
-    // it here.
     if let Some(channels) = model_input
         .channels
         .or(Some(env_image.channels))
@@ -194,8 +157,6 @@ pub(super) fn plan_image(
     let crop = crop_plan(model_input, env_image);
     let fit = resolve_fit(model_input, &at, env_image, size, crop.as_ref())?;
     let offsets = stack_window(model_input, &at)?;
-    // The frame the model actually gets: its declared target, else the integer
-    // box a `slice` crop cuts, else the camera's own resolution.
     let processed = match size {
         Some(size) => Some(size),
         None => match crop.as_ref().and_then(|crop| crop.cut) {
@@ -236,26 +197,16 @@ pub(super) fn plan_image(
     })
 }
 
-/// Whether `join` could derive this camera's pixel resolution from the
-/// observation space (`0` on an axis means it could not).
 fn known_size(env_image: &EnvImage) -> bool {
     env_image.height != 0 && env_image.width != 0
 }
 
-/// Resolve `crop` / `crop_area` / `crop_mode` into the center box to keep.
-///
-/// The two fractions say the same thing two ways — a side fraction and an area
-/// fraction — so declaring both is a spec error rather than a silent
-/// precedence rule. The plan carries the side fraction; `area` rides along only
-/// so describe can echo the form the author wrote.
 fn crop_plan(model_input: &Image, env_image: &EnvImage) -> Option<CropPlan> {
     let Crop {
         fraction,
         area,
         slice,
     } = model_input.crop?;
-    // The integer cut at the env's declared resolution, for the describe text;
-    // apply recomputes it from the frame it is handed, through the same helper.
     let cut = (slice && env_image.height != 0 && env_image.width != 0).then(|| {
         (
             crop_cut(env_image.height as usize, fraction) as u32,
@@ -270,11 +221,6 @@ fn crop_plan(model_input: &Image, env_image: &EnvImage) -> Option<CropPlan> {
     })
 }
 
-/// Build a zero-fill (black-frame) plan for an optional image the env lacks.
-///
-/// The blank is sized from the model's declared `height`/`width`/`channels`
-/// (there is no env image to derive them from), then run through the normal
-/// normalize/dtype/layout/lead steps so it matches a real black frame.
 fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<ImagePlan> {
     let offsets = stack_window(model_input, &quoted(&placement.to_string()))?;
     let (Some(height), Some(width), Some(channels)) =
@@ -305,14 +251,9 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         stack: model_input.stack,
         zero_fill: Some((height, width, channels)),
         fill: model_input.fill.unwrap_or(0),
-        // A synthesized frame is one flat level: cropping, re-encoding, or
-        // swapping its channels cannot change a pixel, so none of the three
-        // steps is planned.
         crop: None,
         jpeg_quality: None,
         swap_rb: false,
-        // There is no camera here to assert anything about: a zero-filled frame
-        // is synthesized by the adapter, not rendered by the env.
         render: None,
         offsets,
         stack_pad: model_input.stack_pad,
@@ -322,10 +263,6 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
     })
 }
 
-/// Bytes of one *processed* frame: `height x width x channels x dtype`.
-///
-/// `0` when the frame's shape was not derivable — a caller
-/// budgeting a frame window reads that as "unknown", never as "free".
 fn frame_bytes(dtype: DType, size: Option<(u32, u32)>, channels: Option<u32>) -> u64 {
     let (Some((height, width)), Some(channels)) = (size, channels) else {
         return 0;
@@ -333,19 +270,7 @@ fn frame_bytes(dtype: DType, size: Option<(u32, u32)>, channels: Option<u32>) ->
     u64::from(height) * u64::from(width) * u64::from(channels) * dtype.size()
 }
 
-/// Validate the declared frame window and return its offsets.
-///
-/// The offsets are a *law*, not a vocabulary: non-positive (a window reaches
-/// backwards), strictly increasing (oldest first), ending at `0` (the current
-/// frame is always in the stack), exactly `stack` long (the two are never
-/// inferred from each other), and spanning no more than [`MAX_STACK_SPAN`]
-/// consecutive frames (the window is held per live episode). Checked here, at
-/// resolve, rather than at the codec door, so a spec a newer core understands
-/// still parses and relays.
 fn stack_window(model_input: &Image, at: &str) -> Result<Option<Vec<i32>>> {
-    // `stack_pad` only fills a window, so without one it can never take effect;
-    // a set-but-inert pad is a spec error, not a silent no-op (the same rule
-    // `fill` follows for a non-optional camera).
     if model_input.stack_pad != StackPad::First && model_input.stack <= 1 {
         return Err(err(
             ErrorCode::Unsupported,
@@ -393,13 +318,6 @@ fn stack_window(model_input: &Image, at: &str) -> Result<Option<Vec<i32>>> {
     Ok(Some(offsets.clone()))
 }
 
-/// Choose the fit mode for this env from the model's permitted modes.
-///
-/// The model declares an ordered preference list (a single mode is a one-entry
-/// list); per env, the first mode that does not need a *disallowed* upscale wins,
-/// so one spec can crop a large camera and letterbox a small one. Both the
-/// aspect guard (an aspect-changing resize with no fit declared) and the upscale
-/// guard (a resize that scales up without `allow_upscale`) live here.
 fn resolve_fit(
     model_input: &Image,
     at: &str,
@@ -408,13 +326,8 @@ fn resolve_fit(
     crop: Option<&CropPlan>,
 ) -> Result<Fit> {
     let Some((target_height, target_width)) = size else {
-        return Ok(Fit::Stretch); // no resize
+        return Ok(Fit::Stretch);
     };
-    // A crop is what the resize actually reads, so the upscale guard measures
-    // against the box, not the whole camera -- otherwise a spec could crop a
-    // 12x12 camera to 6x6 and "downscale" it to 8x8, inventing detail behind
-    // the guard's back. The box keeps the camera's aspect, so that check is
-    // unaffected.
     let (env_height, env_width) = match crop {
         Some(crop) => (
             crop_cut(env_image.height as usize, crop.fraction) as u32,
@@ -422,13 +335,8 @@ fn resolve_fit(
         ),
         None => (env_image.height, env_image.width),
     };
-    // The env's native resolution is derived by `join`; if it could not be
-    // determined (0), do not block on size — there is nothing to compare against.
     let known = env_height != 0 && env_width != 0;
 
-    // Whether `mode` must scale the env image *up* to reach the target. Crop
-    // covers, so any axis short of the target upscales; pad only contains, so it
-    // upscales only when both axes are short; stretch scales each axis directly.
     let upscales = |mode: Fit| -> bool {
         if !known {
             return false;
@@ -443,8 +351,6 @@ fn resolve_fit(
         && u64::from(env_height) * u64::from(target_width)
             != u64::from(env_width) * u64::from(target_height);
 
-    // Permitted modes in preference order; unrecognized (future) modes are
-    // skipped so an old core degrades gracefully. `None` = no fit declared.
     let permitted: Vec<Fit> = model_input
         .fit
         .as_ref()
@@ -459,8 +365,6 @@ fn resolve_fit(
         if let Some(mode) = first_usable {
             return Ok(mode);
         }
-        // Nothing usable: distinguish "no fit", "fit unrecognized", and "every
-        // declared fit would upscale" so the author knows what to change.
         let message = match &model_input.fit {
             None => format!(
                 "model input {at}: target {target_height}x{target_width} changes the env's \
@@ -482,11 +386,6 @@ fn resolve_fit(
         return Err(err(ErrorCode::Unsupported, message));
     }
 
-    // Aspect matches (or is unknown): every mode is the same uniform scale. A
-    // declared fit that names only modes this build doesn't recognize is still
-    // rejected here (consistent with the aspect-differs branch) -- it signals a
-    // version/typo mismatch the author should fix, not silently ignore. A missing
-    // fit (`None`) still defaults to a plain scale.
     if let Some(set) = &model_input.fit
         && permitted.is_empty()
     {
@@ -510,16 +409,9 @@ fn resolve_fit(
             ),
         ));
     }
-    // With a known, matching aspect every mode is the same uniform scale, so
-    // the plan records the plain scale: crop drops no pixels and pad adds no
-    // borders, and the describe advisory for either would report a step that
-    // never happens. An unknown camera size keeps the declared mode, since the
-    // aspect (and so the step) is decided per frame.
     Ok(if known { Fit::Stretch } else { mode })
 }
 
-/// What the upscale guard measured, for its error: the env camera, or -- when
-/// the model crops -- the crop box, named against the camera it is cut from.
 fn upscale_source(
     env_image: &EnvImage,
     crop: Option<&CropPlan>,
@@ -542,8 +434,6 @@ fn upscale_source(
     }
 }
 
-/// How to clear the upscale guard. The knob lives on the *model's* Image
-/// input, not the env; the env's side of the fix is a larger camera.
 fn upscale_remedy(crop: Option<&CropPlan>) -> String {
     let crop_less = if crop.is_some() { ", or crop less" } else { "" };
     format!(
@@ -570,7 +460,6 @@ mod image_resolve_tests {
     use crate::spec::role::{Error, ErrorCode};
     use crate::wire::part::DType;
 
-    /// Resolve at the root placement (the common single-leaf-payload case).
     fn plan(
         model: &Image,
         images: &BTreeMap<LeafKey, &EnvImage>,
@@ -585,7 +474,6 @@ mod image_resolve_tests {
         )
     }
 
-    /// A declared `fit` list.
     fn fits(names: &[&str]) -> Accept<Fit> {
         let known = |name: &str| match name {
             "stretch" => Some(Fit::Stretch),
@@ -650,7 +538,6 @@ mod image_resolve_tests {
         let error = plan(&model_image(256, 256, false), &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         let message = &error.message;
-        // Actionable: the knob is on the model's Image input, or the env grows.
         assert!(message.contains("the env's 128x128 camera"), "{message}");
         assert!(message.contains("allow_upscale=True"), "{message}");
         assert!(message.contains(r#""allow_upscale": true"#), "{message}");
@@ -688,7 +575,6 @@ mod image_resolve_tests {
     #[test]
     fn a_frame_window_budgets_its_processed_frame_and_takes_its_limits() {
         let env = env_image(8, 8);
-        // Bytes of one processed frame: its size, channels and dtype.
         let mut model = model_image(4, 4, false);
         model.dtype = DType::F32;
         assert_eq!(
@@ -702,7 +588,6 @@ mod image_resolve_tests {
         );
         let unknown = env_image(0, 0);
         assert_eq!(plan(&model, &images(&unknown)).expect("ok").frame_bytes, 0);
-        // The window: strictly increasing to 0, spanning at most 128 frames.
         let window = |offsets: &[i32]| {
             let mut model = model_image(8, 8, false);
             model.stack = u32::try_from(offsets.len()).expect("small");
@@ -726,14 +611,12 @@ mod image_resolve_tests {
             plan(&model, &images(&env))
                 .unwrap_or_else(|e| panic!("{height}x{width}: {}", e.message));
         }
-        // Pad only upscales when both axes are short of the target.
         for (height, width) in [(128, 256), (64, 256), (256, 128)] {
             let mut model = model_image(height, width, false);
             model.fit = Some(fits(&["pad"]));
             plan(&model, &images(&env))
                 .unwrap_or_else(|e| panic!("pad {height}x{width}: {}", e.message));
         }
-        // A camera with one underivable axis is not compared at all.
         let half = env_image(0, 128);
         plan(&model_image(256, 256, false), &images(&half)).expect("nothing to compare");
         let mut model = model_image(224, 224, false);
@@ -755,15 +638,10 @@ mod image_resolve_tests {
 
     #[test]
     fn a_matching_aspect_records_a_plain_scale_whatever_fit_says() {
-        // Crop, pad, and stretch are the same uniform scale when the aspect
-        // already matches, so the plan says so and no letterbox/crop advisory
-        // can fire for a step that never happens.
         let env = env_image(256, 256);
         let mut model = model_image(256, 256, false);
         model.fit = Some(fits(&["pad"]));
         assert_eq!(plan(&model, &images(&env)).expect("ok").fit, Fit::Stretch);
-        // An unknown camera size keeps the declared mode: the aspect is only
-        // known per frame, so the step (and its advisory) still apply.
         let unknown = env_image(0, 0);
         assert_eq!(plan(&model, &images(&unknown)).expect("ok").fit, Fit::Pad);
     }
@@ -771,7 +649,6 @@ mod image_resolve_tests {
     #[test]
     fn aspect_mismatch_without_fit_is_a_resolve_error() {
         let env = env_image(8, 8);
-        // 3x4 changes the 1:1 aspect; with no fit declared this is rejected.
         let error = plan(&model_image(3, 4, false), &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
@@ -793,22 +670,16 @@ mod image_resolve_tests {
     #[test]
     fn matching_aspect_needs_no_fit() {
         let env = env_image(8, 8);
-        // 4x4 preserves the 1:1 aspect -> no fit required, defaults to stretch.
         let plan = plan(&model_image(4, 4, false), &images(&env)).expect("ok");
         assert_eq!(plan.fit, Fit::Stretch);
     }
 
     #[test]
     fn fit_list_picks_first_usable_per_env() {
-        // fit=[crop, pad]: crop must cover (upscales a too-small env), pad only
-        // contains. The same spec therefore crops a large camera and letterboxes
-        // a small one -- chosen per env, not pre-committed.
         let mut model = model_image(100, 100, false);
         model.fit = Some(fits(&["crop", "pad"]));
-        // Large enough to crop-cover by downscaling -> crop (first preference).
         let big = env_image(200, 150);
         assert_eq!(plan(&model, &images(&big)).expect("ok").fit, Fit::Crop);
-        // Too short to crop-cover without upscaling -> falls back to pad.
         let small = env_image(50, 150);
         assert_eq!(plan(&model, &images(&small)).expect("ok").fit, Fit::Pad);
     }
@@ -835,7 +706,6 @@ mod image_resolve_tests {
     fn aspect_mismatch_with_only_unrecognized_fit_is_a_resolve_error() {
         let env = env_image(8, 8);
         let mut model = model_image(3, 4, false);
-        // A future/typo'd mode parses (tolerated) but resolves to no usable fit.
         model.fit = Some(fits(&["squish"]));
         let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
@@ -848,8 +718,6 @@ mod image_resolve_tests {
 
     #[test]
     fn matching_aspect_with_only_unrecognized_fit_is_a_resolve_error() {
-        // Same unrecognized-fit spec as above but with a matching (1:1) aspect:
-        // this used to silently degrade to stretch; now it is rejected too.
         let env = env_image(8, 8);
         let mut model = model_image(4, 4, false);
         model.fit = Some(fits(&["squish"]));
@@ -864,7 +732,6 @@ mod image_resolve_tests {
 
     #[test]
     fn normalize_range_overload_maps_into_the_declared_range() {
-        // A `[min, max]` normalize maps pixels into that range.
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
         model.normalize = Some((-1.0, 1.0));
@@ -891,9 +758,9 @@ mod image_resolve_tests {
     #[test]
     fn channel_mismatch_is_a_resolve_error() {
         let mut env = env_image(8, 8);
-        env.channels = 1; // grayscale env
+        env.channels = 1;
         let mut model = model_image(8, 8, false);
-        model.channels = Some(3); // model wants RGB
+        model.channels = Some(3);
         let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.message.contains("channel"), "got: {}", error.message);
@@ -901,7 +768,7 @@ mod image_resolve_tests {
 
     #[test]
     fn matching_channels_resolve() {
-        let env = env_image(8, 8); // 3 channels
+        let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
         model.channels = Some(3);
         assert!(plan(&model, &images(&env)).is_ok());
@@ -911,7 +778,6 @@ mod image_resolve_tests {
     fn undeclared_channels_skip_the_check() {
         let mut env = env_image(8, 8);
         env.channels = 1;
-        // model declares no channel count -> the check is skipped (back-compat).
         assert!(plan(&model_image(8, 8, false), &images(&env)).is_ok());
     }
 
@@ -928,11 +794,9 @@ mod image_resolve_tests {
 
     #[test]
     fn optional_image_with_absent_role_zero_fills_even_with_one_camera() {
-        // Regression: the lone-camera fallback must not bind an optional input
-        // whose role is absent to an unrelated single camera -- it must zero-fill.
-        let env = env_image(8, 8); // role "image/primary"
+        let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
-        model.role = "image/overhead".to_owned(); // absent from the single-camera env
+        model.role = "image/overhead".to_owned();
         model.optional = true;
         model.channels = Some(3);
         let plan = plan(&model, &images(&env)).expect("ok");
@@ -943,7 +807,7 @@ mod image_resolve_tests {
     #[test]
     fn optional_image_without_channels_is_an_error() {
         let mut model = model_image(8, 8, false);
-        model.optional = true; // height+width set, channels None -> cannot size
+        model.optional = true;
         let empty: BTreeMap<LeafKey, &EnvImage> = BTreeMap::new();
         let error = plan(&model, &empty).expect_err("err");
         assert_eq!(error.code, ErrorCode::MissingWidth);
@@ -958,8 +822,6 @@ mod image_resolve_tests {
 
     #[test]
     fn fill_without_optional_is_a_resolve_error() {
-        // A fill level set without `optional` can never take effect; reject it
-        // rather than silently ignoring the configured value.
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
         model.fill = Some(128);
@@ -974,9 +836,7 @@ mod image_resolve_tests {
 
     #[test]
     fn typo_role_with_one_camera_is_a_resolve_error() {
-        // A role outside the registry (and not an `x/` escape) never rides the
-        // lone-camera fallback: a typo fails loudly instead of feeding the camera.
-        let env = env_image(8, 8); // role "image/primary"
+        let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
         model.role = "image/priamry".to_owned();
         let error = plan(&model, &images(&env)).expect_err("err");
@@ -985,7 +845,7 @@ mod image_resolve_tests {
 
     #[test]
     fn sanctioned_role_with_one_camera_binds_and_records_the_rebind() {
-        let env = env_image(8, 8); // role "image/primary"
+        let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
         model.role = "image/wrist".to_owned();
         let plan = plan(&model, &images(&env)).expect("ok");
@@ -1010,7 +870,6 @@ mod image_resolve_tests {
 
     #[test]
     fn render_matching_the_bound_camera_resolves() {
-        // The dial moved: the camera renders exactly what the model asserts.
         let env = env_image(448, 448);
         let mut model = model_image(224, 224, false);
         model.render = Some((448, 448));
@@ -1020,9 +879,6 @@ mod image_resolve_tests {
 
     #[test]
     fn render_disagreeing_with_the_bound_camera_is_a_render_mismatch() {
-        // The dial did not move (or moved somewhere else). Loud, and its own
-        // code so callers can distinguish a binding failure from a
-        // generic unsupported-option error.
         let env = env_image(256, 256);
         let mut model = model_image(224, 224, false);
         model.render = Some((448, 448));
@@ -1038,9 +894,6 @@ mod image_resolve_tests {
 
     #[test]
     fn render_asserts_nothing_when_the_camera_size_is_underivable() {
-        // `join` writes 0 when the observation space does not pin the camera's
-        // resolution; an unknown size is not evidence of a mismatch, and the
-        // plan records that nothing was checked.
         let env = env_image(0, 0);
         let mut model = model_image(224, 224, false);
         model.render = Some((448, 448));
@@ -1050,10 +903,7 @@ mod image_resolve_tests {
 
     #[test]
     fn render_is_checked_against_the_rebound_camera() {
-        // The lone-camera fallback binds a different role than the model asked
-        // for; the assertion follows the camera that was actually bound, not the
-        // role that was requested.
-        let env = env_image(256, 256); // role "image/primary"
+        let env = env_image(256, 256);
         let mut model = model_image(224, 224, false);
         model.role = "image/wrist".to_owned();
         model.render = Some((448, 448));
@@ -1064,7 +914,6 @@ mod image_resolve_tests {
             "got: {}",
             error.message
         );
-        // ... and passes when the lone camera does render at the asserted size.
         let env = env_image(448, 448);
         let plan = plan(&model, &images(&env)).expect("ok");
         assert_eq!(plan.render, Some((448, 448)));
@@ -1073,8 +922,6 @@ mod image_resolve_tests {
 
     #[test]
     fn render_on_an_absent_optional_camera_asserts_nothing() {
-        // A zero-filled frame is synthesized by the adapter, not rendered by the
-        // env: there is no camera to disagree with.
         let mut model = model_image(224, 224, false);
         model.optional = true;
         model.channels = Some(3);
@@ -1087,8 +934,6 @@ mod image_resolve_tests {
 
     #[test]
     fn crop_area_resolves_to_its_side_fraction() {
-        // The two fractions are one box said two ways: an area fraction is the
-        // square of the side fraction the plan carries.
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
         model.crop = Some(Crop {
@@ -1100,7 +945,7 @@ mod image_resolve_tests {
         assert!((crop.fraction - 0.9f64.sqrt()).abs() < 1e-12);
         assert_eq!(crop.area, Some(0.9));
         assert!(!crop.slice);
-        assert_eq!(crop.cut, None); // a zoom takes no integer cut
+        assert_eq!(crop.cut, None);
     }
 
     #[test]
@@ -1119,9 +964,6 @@ mod image_resolve_tests {
 
     #[test]
     fn a_crop_that_shrinks_the_source_below_the_target_needs_allow_upscale() {
-        // The guard measures the box the resize actually reads: 12x12 cropped
-        // to 6x6 and "downscaled" to 8x8 is an upscale, whatever the camera's
-        // own resolution says.
         let env = env_image(12, 12);
         let mut model = model_image(8, 8, false);
         model.crop = Some(Crop {
@@ -1142,7 +984,6 @@ mod image_resolve_tests {
             "{message}"
         );
         assert!(!message.contains("  "), "{message:?}");
-        // Without the crop the same target is an honest downscale.
         assert!(plan(&model_image(8, 8, false), &images(&env)).is_ok());
     }
 
@@ -1160,7 +1001,7 @@ mod image_resolve_tests {
             error.message
         );
 
-        let rgb = env_image(8, 8); // 3 channels
+        let rgb = env_image(8, 8);
         assert!(plan(&model, &images(&rgb)).expect("ok").swap_rb);
     }
 }

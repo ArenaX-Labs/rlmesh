@@ -1,4 +1,3 @@
-/* Factory start ownership/failures, factory host identity, and model serve signals. */
 #define _POSIX_C_SOURCE 200809L
 #include <arpa/inet.h>
 #include <pthread.h>
@@ -161,7 +160,6 @@ static RLMeshEnvFactory* factory(State* s) {
   rlmesh_value_free(choices);
   return f;
 }
-/* Steps one episode of a binding. */
 static void step_bound(RLMeshBinding* binding) {
   RLMeshValue *obs = NULL, *info = NULL;
   CHECK(rlmesh_binding_reset(binding, NULL, NULL, &obs, &info) == RLMESH_OK);
@@ -187,7 +185,6 @@ static void stop(RLMeshEnvServer* server) {
   CHECK(rlmesh_env_server_wait(server, &timeout, &stopped) == RLMESH_OK && stopped);
   rlmesh_env_server_free(server);
 }
-/* Keep a live listener to force a bind failure after all envs have been made. */
 static int occupied(char* address, size_t cap) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   struct sockaddr_in sa = {0};
@@ -199,7 +196,6 @@ static int occupied(char* address, size_t cap) {
   snprintf(address, cap, "127.0.0.1:%u/env", (unsigned)ntohs(sa.sin_port));
   return fd;
 }
-/* The real old allocation, rather than a new struct with a shorter size. */
 typedef struct OldFactoryOptions {
   size_t struct_size;
   int64_t num_envs;
@@ -278,7 +274,6 @@ static void rejected_output_tests(State* original) {
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", NULL, &server) == RLMESH_ERR_ENVIRONMENT &&
         !server);
   CHECK(s.env_closes == 3 && s.env_frees == 3);
-  /* Foreground and binding borrows retain their existing free-only behaviour. */
   s.fail_after_make = s.makes + 1;
   CHECK(rlmesh_env_factory_serve(f, ":0/env", NULL) == RLMESH_ERR_ENVIRONMENT);
   CHECK(s.env_closes == 3 && s.env_frees == 4);
@@ -297,7 +292,7 @@ static void rejected_output_tests(State* original) {
   RLMeshEnvServer* owner = NULL;
   CHECK(rlmesh_env_server_new(&env, 1, &opts, &owner) == RLMESH_OK);
   CHECK(rlmesh_env_server_start(owner) == RLMESH_OK);
-  s.returned_env = env; /* Transfers the handle while the server holds its lease. */
+  s.returned_env = env;
   s.fail_after_make = s.makes + 1;
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", NULL, &server) == RLMESH_ERR_ENVIRONMENT &&
         !server);
@@ -328,7 +323,6 @@ static void start_tests(State* s) {
   CHECK(strstr(text, "csharp") && strstr(text, "unity"));
   free(text);
   rlmesh_bytes_free(json);
-  /* The second start must not steal the first server's drain. */
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &b) == RLMESH_OK);
   drive(a);
   drive(b);
@@ -336,7 +330,6 @@ static void start_tests(State* s) {
   drive(b);
   stop(b);
   CHECK(s->env_closes == 2 && s->env_frees == 2);
-  /* Hook reentry refuses without disturbing the outer start or its scope. */
   s->reentrant = f;
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", NULL, &a) == RLMESH_OK);
   s->reentrant = NULL;
@@ -356,9 +349,8 @@ static void start_tests(State* s) {
   CHECK(pthread_join(driver_thread, NULL) == 0);
   rlmesh_ext_cancel_token_free(foreground_cancel);
   drive(a);
-  rlmesh_env_server_free(a); /* Free alone must stop and close its owned envs. */
+  rlmesh_env_server_free(a);
   CHECK(s->env_closes == s->makes && s->env_frees == s->makes);
-  /* A binding's admission must refuse without replacing its gate slot. */
   RLMeshBinding* binding = NULL;
   CHECK(rlmesh_bind(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(f), NULL, &binding) ==
         RLMESH_OK);
@@ -366,7 +358,6 @@ static void start_tests(State* s) {
   step_bound(binding);
   rlmesh_binding_free(binding);
   CHECK(s->env_closes == s->makes && s->env_frees == s->makes);
-  /* No invalid input may consume this firing, including a host extension. */
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
   o.cancel = s->cancel;
   const char* invalid[] = {"[]", "{\"unexpected\":1}",
@@ -405,7 +396,6 @@ static void start_tests(State* s) {
   rlmesh_value_free(bad);
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_CANCELLED && !a);
   CHECK(s->prepares == prepares);
-  /* Every partial build is drained exactly once, and admission is released. */
   int made = s->makes;
   for (int failure = 0; failure < 6; ++failure) {
     int before = s->env_closes;
@@ -434,7 +424,6 @@ static void start_tests(State* s) {
     CHECK(s->env_closes == s->env_frees);
   }
   CHECK(s->makes > made);
-  /* shutdown consumes the same background result as wait, exactly once. */
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
   CHECK(rlmesh_env_server_shutdown(a) == RLMESH_ERR_CANCELLED);
@@ -444,18 +433,14 @@ static void start_tests(State* s) {
   CHECK(rlmesh_env_server_wait(a, &stopped_timeout, &stopped) == RLMESH_OK && stopped);
   rlmesh_env_server_free(a);
   CHECK(s->env_closes == s->env_frees);
-  /* A firing during slow close loses to an earlier plain shutdown. */
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   s->cancel_close = true;
   stop(a);
   s->cancel_close = false;
   CHECK(s->env_closes == s->env_frees);
-  /* With no firing, the caller's own shutdown is successful. */
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   stop(a);
   CHECK(s->env_closes == s->env_frees);
-  /* Preparation must observe a firing even when another server is already
-   * subscribed, so cancel() does not set the token's idle pending flag. */
   int closed_before = s->env_closes;
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   s->cancel_make = s->makes + 2;
@@ -467,8 +452,6 @@ static void start_tests(State* s) {
   stop(a);
   CHECK(s->env_closes == closed_before + 4 && s->env_closes == s->env_frees);
   CHECK(rlmesh_env_factory_prepare(f) == RLMESH_OK);
-  /* A shared token broadcasts to both live subscriptions, rather than one
-   * server consuming an idle firing intended for both. */
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &b) == RLMESH_OK);
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
@@ -476,8 +459,6 @@ static void start_tests(State* s) {
   wait_cancelled(b);
   stop(a);
   stop(b);
-  /* Every failed preparation and terminal serve released its subscription:
-   * an idle firing must now fail the next start before any prepare hook. */
   prepares = s->prepares;
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_CANCELLED && !a);
@@ -488,7 +469,6 @@ static void start_tests(State* s) {
   drive(a);
   stop(a);
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
-  /* The server owns both its env drain and its token subscription. */
   RLMeshExtCancelToken* alias = NULL;
   CHECK(rlmesh_ext_cancel_token_clone(s->cancel, &alias) == RLMESH_OK);
   rlmesh_env_factory_free(f);
@@ -507,11 +487,8 @@ static volatile sig_atomic_t host_ints;
 static void host_signal(int sig) {
   if (sig == SIGINT) ++host_ints;
 }
-/* The participant address the model serves at, once its host session is up. */
 static char served_at[256];
 static atomic_bool hosting;
-/* A run through the served model returns only once its serve has joined, past
- * where it installs (or skips) its signal handlers. */
 static void wait_served(State* s) {
   struct timespec poll = {0, 10000000};
   while (!atomic_load(&hosting)) nanosleep(&poll, NULL);
@@ -531,7 +508,7 @@ static void wait_served(State* s) {
 typedef struct Commands {
   RLMeshExtCancelToken* cancel;
   bool no_handlers;
-  State* model; /* set when a served model is probed */
+  State* model;
 } Commands;
 static void* commands(void* u) {
   Commands* c = (Commands*)u;
@@ -548,7 +525,7 @@ static void* commands(void* u) {
       CHECK(host_ints == (c->no_handlers ? 1 : 0));
       puts("checked signals");
       fflush(stdout);
-      if (!c->no_handlers) return NULL; /* SIGINT alone must stop the serve. */
+      if (!c->no_handlers) return NULL;
     } else if (command == 'q')
       break;
   }
@@ -622,7 +599,6 @@ int main(int argc, char** argv) {
       stop(server);
       rlmesh_env_free(env);
     } else {
-      /* The model joins a session this process hosts on argv[2]. */
       RLMeshEnv* host_env = NULL;
       RLMeshVectorEnv* host_vector = NULL;
       CHECK(make(&state, NULL, &host_env, &host_vector) == RLMESH_OK);

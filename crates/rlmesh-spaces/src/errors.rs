@@ -35,9 +35,8 @@ pub enum EnvRuntimeError {
     InvalidValue(String),
     #[error("runtime error: {0}")]
     Runtime(String),
-    /// A runtime failure the env survives: the request fails but the session
-    /// stays usable for further requests (unlike [`Self::Runtime`], which
-    /// ends it).
+    /// A runtime failure the env survives: the request fails but the session stays
+    /// usable for further requests (unlike [`Self::Runtime`], which ends it).
     #[error("recoverable runtime error: {0}")]
     Recoverable(String),
     /// A runtime failure the env raised as a builtin exception class
@@ -65,7 +64,6 @@ impl EnvRuntimeError {
 }
 
 macro_rules! err_space {
-    // err_space!(path, msg)
     ($path:expr, $msg:expr) => {
         Err(SpaceError::Invalid {
             path: $path.into(),
@@ -73,7 +71,6 @@ macro_rules! err_space {
         })
     };
 
-    // err_space!(path, name, msg)
     ($path:expr, $name:expr, $msg:expr) => {
         Err(SpaceError::Invalid {
             path: $path.into(),

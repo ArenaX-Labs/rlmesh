@@ -1,5 +1,3 @@
-"""RUN-7/RUN-30 render access is scoped independently of retained read access."""
-
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor

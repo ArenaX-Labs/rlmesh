@@ -1,7 +1,6 @@
 [[repos]]
 repo = "local"
 
-# Rust
 [[repos.hooks]]
 id = "cargo-fmt"
 name = "cargo fmt"
@@ -18,7 +17,6 @@ entry = "mise run lint:rust"
 pass_filenames = false
 types = ["rust"]
 
-# Python
 [[repos.hooks]]
 id = "ruff-format"
 name = "ruff format"
@@ -35,7 +33,6 @@ entry = "mise run lint:python"
 pass_filenames = false
 types = ["python"]
 
-# C / C++ (rlmesh-capi bindings)
 [[repos.hooks]]
 id = "clang-format"
 name = "clang-format"
@@ -44,7 +41,6 @@ entry = "mise run fmt:check:cxx"
 pass_filenames = false
 types_or = ["c", "c++"]
 
-# Protobuf
 [[repos.hooks]]
 id = "buf-lint"
 name = "buf lint"
@@ -61,7 +57,6 @@ entry = "mise run fmt:check:proto"
 pass_filenames = false
 files = "\\.proto$"
 
-# Docs and config
 [[repos.hooks]]
 id = "config-format"
 name = "config format"
@@ -70,7 +65,6 @@ entry = "mise run fmt:check:config"
 pass_filenames = false
 files = "\\.(md|toml|ya?ml|jsonc?)$"
 
-# Spelling
 [[repos.hooks]]
 id = "typos"
 name = "typos"
@@ -78,7 +72,6 @@ language = "system"
 entry = "mise run lint:spelling"
 pass_filenames = false
 
-# Dependencies
 [[repos.hooks]]
 id = "cargo-deny"
 name = "cargo deny"
@@ -87,13 +80,6 @@ entry = "mise run lint:deps:deny"
 pass_filenames = false
 files = "^(Cargo\\.(toml|lock)|deny\\.toml|crates/[^/]+/Cargo\\.toml|python/rlmesh/rust/Cargo\\.toml)$"
 
-# Native extension — the editable install imports the compiled _rlmesh.abi3.so
-# straight from the source tree, and `maturin build` never refreshes it, so a
-# pull or branch switch that touched Rust leaves the CLI on a stale binary.
-# post-checkout/post-merge hooks receive no changed-file list, so the guard
-# lives in the script: it rebuilds only when a Rust source is newer than the
-# built .so, and is a cheap no-op otherwise. always_run because there are no
-# filenames to match on for these stages.
 [[repos.hooks]]
 id = "rebuild-rlmesh-ext"
 name = "rebuild _rlmesh extension"

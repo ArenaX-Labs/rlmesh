@@ -1,17 +1,15 @@
 //! The lobby: the session `_lobby` on a robot's home
 //! daemon, where idle robots wait for a run and clients run scenes.
 //!
-//! - [`LobbyService`]: what the `_lobby` host hands the lobby verbs to
-//!   (rlmeshd's runs). A verb it can't answer at once (a robot's wait, a
-//!   status poll) stays pending in the host, under its request id, and never
-//!   blocks the sender's other verbs.
-//! - [`LobbyClient`]: a client in the lobby (`cli.<8 hex>`, an observer):
-//!   run, follow, stop and arm scenes, and list the robots waiting.
+//! - [`LobbyService`]: what the `_lobby` host hands the lobby verbs to. A verb
+//!   it can't answer at once (a robot's wait, a status poll) stays pending under
+//!   its request id and never blocks the sender's other verbs.
+//! - [`LobbyClient`]: a client in the lobby (an observer): run, follow, stop and
+//!   arm scenes, and list the robots waiting.
 //! - [`wait_for_join`]: a robot process in the lobby until a run assigns it.
 //! - [`SatelliteClient`]: a satellite daemon taking its home's orders.
 //!
-//! The robot's own rules (what it reports, which order it takes, when it
-//! leaves a run) are sans-IO in [`rlmesh_session_core::lobby`], shared
+//! The robot's own rules are sans-IO in [`rlmesh_session_core::lobby`], shared
 //! with boards.
 
 use std::net::ToSocketAddrs;
@@ -75,7 +73,6 @@ pub fn is_lobby_verb(command: &Command) -> bool {
 
 /// The lobby of the home daemon `home` names (`rig-pi.local`,
 /// `10.0.0.5:7447`; `None`: the one on this machine's well-known port).
-/// [`find_home`] also takes a host id.
 ///
 /// # Errors
 /// [`SessionError::Config`] for an address that doesn't parse.
@@ -109,7 +106,6 @@ pub async fn find_home(home: Option<&str>) -> Result<SessionAddress, SessionErro
         )));
     }
     let credential = crate::pairing::HostFile::read(&path)?.credential();
-    // The host proves its key at an address before it is used or kept.
     let (_, lobby) = discovery::locate(&path, |base| {
         let credential = credential.clone();
         async move {
@@ -131,9 +127,9 @@ pub async fn find_home(home: Option<&str>) -> Result<SessionAddress, SessionErro
 /// Where a run's session is, for a member of the home daemon whose lobby
 /// is `lobby`: at the lobby's own host when its
 /// static key is `host_key` (the home daemon hosts the run), else at the
-/// first of `addresses` that resolves (a satellite's), attached with the
-/// same device key against `host_key`, which this process keeps for the
-/// session ([`remember_credential`]).
+/// first of `addresses` that resolves (a satellite's), attached with the same
+/// device key against `host_key`, which this process keeps for the session
+/// ([`remember_credential`]).
 ///
 /// # Errors
 /// No credential for the lobby, or no address of a satellite's run that
@@ -184,9 +180,6 @@ pub fn run_address(
     }
 }
 
-/// `command`'s reply, however long the host keeps it pending: past the
-/// participant's ctl timeout the request goes on being re-sent under its id, and the
-/// retry joins the pending verb. A refusal is an error.
 async fn long_poll(
     participant: &Participant,
     command: Command,
@@ -217,8 +210,6 @@ fn run_of(reply: CtlReply) -> Result<RunState, SessionError> {
     })
 }
 
-/// The runs this process stopped: their policies' runs return rather than
-/// raise when the run closes.
 fn stopped() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
     static STOPPED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();
@@ -413,7 +404,6 @@ impl LobbyClient {
     }
 }
 
-/// How long [`LobbyClient::rearm`] waits to join the run's host.
 const REARM_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A satellite daemon's id in its home's lobby: `rlmeshd.` and its device.
@@ -424,8 +414,6 @@ pub const SATELLITE_PREFIX: &str = "rlmeshd.";
 /// unsigned liveliness token says.
 pub const HOME_SILENT: Duration = Duration::from_secs(3);
 
-/// Resolves once `participant`'s host has gone [`HOME_SILENT`] without an
-/// authenticated echo, or its liveliness went away.
 async fn home_gone(participant: &Participant) {
     let mut present = participant.host_present();
     let silent = async {
@@ -444,8 +432,6 @@ async fn home_gone(participant: &Participant) {
 }
 
 /// A satellite daemon in its home daemon's lobby:
-/// `rlmeshd.<device>`, an observer that takes its home's orders one at a
-/// time and answers a host order.
 pub struct SatelliteClient {
     participant: Participant,
 }
@@ -534,7 +520,6 @@ impl SatelliteClient {
 
 /// Waits in `lobby` as robot `lobby`'s robot until a run assigns it (or
 /// `timeout`), then leaves the lobby: the [`Join`] and the run's session.
-/// The wait reports the robot's last failed join ([`Lobby::failed`]).
 ///
 /// # Errors
 /// What attaching or waiting failed with; an order that isn't this robot's

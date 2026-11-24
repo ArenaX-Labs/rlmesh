@@ -1,27 +1,3 @@
-//! v1 and v2 trace equivalence (the wave 5 release gate's
-//! "semantically equivalent" half).
-//!
-//! A catalog-style env and a model run over v2 (the env as a lockstep robot
-//! in a session, at its participant address), and every trace must match
-//! what the v1 runtime left for the same env and model (the env behind the
-//! gRPC Join stream), kept as golden files in `tests/golden/lockstep`:
-//!
-//! - what the env received and answered, per lane: reset seeds and options,
-//!   the exact action bytes, the observation leaf bytes, rewards (bit
-//!   patterns) and the done flags;
-//! - what the model's `predict` corners received after the v1 adapter
-//!   engine (`ModelSpec` resolved against the env's v1 tags: image resize
-//!   and layout, rotation conversion, text) and what they returned;
-//! - every step event (action, reward bits, flags, info) and episode result
-//!   (seed, steps, reward bits, termination, success).
-//!
-//! The shapes: a scalar env with chunking (execution horizon 3) and
-//! prefetch; a 4-lane vector env with NEXT_STEP autoreset and one batched
-//! predict per step; a 3-lane lane endpoint with DISABLED autoreset, so
-//! the driver resets lanes one by one (partial resets, per-lane seeds) and
-//! chunks per lane; and the managed shape, a model served on a session
-//! driving a lockstep env as v1's gRPC model server did.
-
 #![allow(clippy::unwrap_used, clippy::print_stderr)]
 
 mod common;
@@ -42,7 +18,6 @@ fn fnv(text: &str) -> u64 {
     })
 }
 
-/// A deterministic model: its action is a hash of what it was given.
 struct CatalogPolicy {
     log: Arc<Mutex<Vec<String>>>,
 }
@@ -126,7 +101,6 @@ impl RunHooks for Hooks {
     }
 }
 
-/// Everything one run left behind.
 #[derive(Debug, PartialEq)]
 struct Traces {
     env: BTreeMap<usize, Vec<String>>,
@@ -143,7 +117,6 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-/// Serves `env` as a lockstep robot and returns its address.
 fn serve(rt: &tokio::runtime::Runtime, env: CatalogEnv) -> String {
     let binding = rt.block_on(rlmesh::lockstep::bind(":0/catalog")).unwrap();
     let address = binding.address();
@@ -167,7 +140,6 @@ struct Shape {
     seeds: Option<Vec<i64>>,
     horizon: u32,
     prefetch: u64,
-    /// Lane-order-free comparison (a lane endpoint's lanes race).
     unordered: bool,
 }
 
@@ -214,8 +186,6 @@ fn run_once(shape: &Shape) -> Traces {
     }
     let mut env = std::mem::take(&mut *trace.lock().unwrap());
     if shape.unordered {
-        // Which lane runs which seed is a race between lanes that end on
-        // the same step: compare the multiset of episode transcripts.
         let mut episodes: Vec<String> = env
             .values()
             .flat_map(|lines| {
@@ -244,8 +214,6 @@ fn run_once(shape: &Shape) -> Traces {
     }
 }
 
-/// Checks `traces` against the golden file `name`: the traces the v1
-/// runtime left before it was deleted.
 fn golden(name: &str, traces: &Traces) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden/lockstep")
@@ -315,17 +283,10 @@ fn a_lane_endpoint_with_partial_resets_and_per_lane_seeds_runs_unchanged_on_lock
     );
 }
 
-// --- the managed shape: a model served on a session, driven by the runtime -
-
 use rlmesh::binding::model::{LockstepEnv, ResolveOptions};
 use rlmesh::binding::runtime::{NoopRuntimeHooks, RuntimeDriver, RuntimeSessionSpec};
 use rlmesh::lockstep::{ModelBinding, ModelService, ServedModel};
 
-/// The runtime drives the lockstep env at
-/// `env_address` with the model served at `model_address`, under the
-/// session id, env id and base seed the v1 runtime ran it with. Its golden
-/// was re-recorded when base seeds became paired: the env's episodes follow
-/// from their seeds, and the v1 runtime mixed the session id into them.
 async fn drive_managed(
     env_address: &str,
     model_address: &str,

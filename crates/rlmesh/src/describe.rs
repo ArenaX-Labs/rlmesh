@@ -1,10 +1,4 @@
 //! An env factory's or a model's metadata envelope.
-//!
-//! Natives have no module, qualname or signature to reflect, so the four
-//! reflected pieces have one native spelling each: `target.qualname` is
-//! `rust:<type name>`, `params` lists a model's `LOAD_KEYS` or a factory's
-//! `tag_params`, `runtime` is this host's `PeerInfo` plus the edition offer,
-//! and an `env_spec` badge's `error_type` is the error-class name.
 
 use std::fmt;
 
@@ -75,12 +69,11 @@ pub struct DescribeJsonOptions<'a> {
 /// What can be described: a model or env factory type, or an instance.
 pub struct Describable<'a>(Target<'a>);
 
-#[allow(clippy::large_enum_variant)] // Built once per describe call.
+#[allow(clippy::large_enum_variant)]
 enum Target<'a> {
     Model {
         decl: PolicyDecl,
         spec: Option<SpecArg>,
-        /// A built model's: the horizon its `load()` chose.
         execution_horizon: Option<u32>,
     },
     Factory(Box<dyn FactoryForm + 'a>),
@@ -96,7 +89,6 @@ impl fmt::Debug for Describable<'_> {
 }
 
 impl Describable<'static> {
-    /// An in-repo binding's type-level declarations; runs no policy slot.
     pub(crate) fn from_declaration(decl: PolicyDecl) -> Result<Describable<'static>> {
         decl.validate()?;
         let spec = decl.spec.clone();
@@ -129,7 +121,6 @@ impl<'a> Describable<'a> {
     }
 }
 
-/// A built model: its policy's type-level items plus the model's own spec.
 impl<'a> From<&'a Model> for Describable<'a> {
     fn from(model: &'a Model) -> Describable<'a> {
         Describable::built(model.shared())
@@ -137,7 +128,6 @@ impl<'a> From<&'a Model> for Describable<'a> {
 }
 
 impl Describable<'static> {
-    /// A built model's envelope target, from its resolved declarations.
     pub(crate) fn built(shared: &crate::model::facade::Shared) -> Describable<'static> {
         let decl = &shared.decl;
         Describable(Target::Model {
@@ -156,15 +146,12 @@ impl Describable<'static> {
     }
 }
 
-/// A factory instance: its builds run `prepare()` and `make()` on it.
 impl<'a, F: EnvFactory> From<&'a mut F> for Describable<'a> {
     fn from(factory: &'a mut F) -> Describable<'a> {
         Describable(Target::Factory(Box::new(InstanceForm(factory))))
     }
 }
 
-/// An env factory behind the describe seam: its type-level items and its
-/// builds.
 trait FactoryForm {
     fn type_name(&self) -> &'static str;
     fn tags(&self) -> Option<Json>;
@@ -173,7 +160,6 @@ trait FactoryForm {
     fn tags_for(&self, branch: &Kwargs) -> Json;
     fn catalog(&self) -> Option<Result<Json>>;
     fn workflow_edition(&self) -> Option<String>;
-    /// One representative build's `env_spec` (or a badge).
     fn env_spec(&mut self, branch: &Kwargs, native: bool) -> BuiltSpec;
 }
 
@@ -205,7 +191,6 @@ fn catalog_json<F: EnvFactory>() -> Option<Result<Json>> {
     }
 }
 
-/// The badge a failed build or space read becomes.
 fn badge(err: &Error) -> Json {
     json!({ "error": err.to_string(), "error_type": err.class().name() })
 }
@@ -214,7 +199,6 @@ fn space_json(space: &crate::spaces::Space) -> Result<Json> {
     space_spec_to_json(space.spec().wire()).map_err(|err| Error::invalid_argument(err.to_string()))
 }
 
-/// The `env_spec` of one env (scalar or vector).
 fn made_spec(made: &MadeEnv) -> Result<Json> {
     match made {
         MadeEnv::Env(env) => Ok(json!({
@@ -243,7 +227,6 @@ fn served_spec(served: &ServedRead<'_>) -> Result<Json> {
     }
 }
 
-/// A representative env's spaces and native identity, from the same build.
 struct BuiltSpec {
     spec: Json,
     id: String,
@@ -253,7 +236,6 @@ fn native_id(id: Option<String>) -> String {
         .unwrap_or_else(|| "UnknownEnv-v1".into())
 }
 
-/// Build one env on `factory` for `branch`, read its spaces and close it.
 fn build_spec<F: EnvFactory>(factory: &mut F, branch: &Kwargs, native: bool) -> BuiltSpec {
     let built = factory.prepare().and_then(|()| factory.make_env(branch));
     let mut made = match built {
@@ -335,7 +317,6 @@ impl<F: EnvFactory> FactoryForm for InstanceForm<'_, F> {
     }
 }
 
-/// Who is describing, for the envelope's `runtime`.
 pub(crate) struct Host {
     pub(crate) component: &'static str,
     pub(crate) language: &'static str,
@@ -352,9 +333,6 @@ impl Host {
     }
 }
 
-/// The envelope's `runtime`: the host's `PeerInfo` plus the edition offer.
-/// `preferred` is the declared edition (`None`: this build's cohort);
-/// `workflow_edition_floats` marks an undeclared float for the checks.
 pub(crate) fn runtime_json(host: &Host, offer: Offer) -> Json {
     let Offer {
         preferred,
@@ -391,18 +369,12 @@ pub(crate) fn runtime_json(host: &Host, offer: Offer) -> Json {
     runtime
 }
 
-/// The edition half of an envelope's `runtime`.
 pub(crate) struct Offer {
     preferred: Option<String>,
     error: Option<String>,
-    /// Nothing declares an edition and the environment variable does not
-    /// float deliberately.
     floats: bool,
 }
 
-/// A given edition is used as given (blank: none); `None` runs the
-/// environment variable and the declaration, never warning, and records a
-/// refusal instead of failing.
 fn offer(declared: Option<&str>, given: Option<&str>) -> Offer {
     if let Some(given) = given {
         let given = given.trim();
@@ -460,7 +432,6 @@ fn model_pieces(
     edition: Option<&str>,
     host: &Host,
 ) -> Result<Json> {
-    // A static declaration construction refuses is refused here too (COR-13).
     if let Some(native) = decl.native_chunk {
         if !decl.corners.has_chunk() {
             return Err(Error::Type(
@@ -589,7 +560,6 @@ fn factory_pieces(
     Ok(pieces)
 }
 
-/// The canonical envelope string for `obj`, described by `host`.
 pub(crate) fn envelope(
     obj: Describable<'_>,
     options: DescribeJsonOptions<'_>,

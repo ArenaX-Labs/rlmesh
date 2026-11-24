@@ -13,9 +13,6 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from .._value_conversion import ValueBridge
 
-# The cross-module surface this private module offers its siblings;
-# ``__all__`` marks these underscore helpers as exported so
-# the type checker does not read sibling imports as private-symbol leakage.
 __all__ = [
     "adapter_env_bridge",
     "classify_env_target",
@@ -106,9 +103,8 @@ def local_contract(env: object) -> Any:
 
 
 def _num_envs(env: object) -> int:
-    # A single env has no ``num_envs``; only a vector env does. Probe the type /
-    # instance __dict__ (not a plain getattr) so a gymnasium env does not emit its
-    # deprecated wrapper-attribute forwarding warning, same as _native_contract.
+    # Probe the type / instance __dict__, not getattr: a gymnasium env warns on
+    # wrapper-attribute forwarding.
     if getattr(type(env), "num_envs", None) is not None or (
         "num_envs" in getattr(env, "__dict__", {})
     ):
@@ -157,8 +153,8 @@ def shutdown_env(target: object) -> None:
     Calls the first of ``shutdown``/``close`` the target exposes, with no
     arguments (a remote owner's ``shutdown(reason=...)`` keeps its default).
     """
-    # A sandbox session's close() stops its container; its inherited shutdown() is the
-    # remote owner-shutdown, so close() is the right teardown for an owned sandbox.
+    # close() stops a sandbox session's container; its inherited shutdown() is the
+    # remote owner-shutdown.
     from .._sandbox.session import SandboxLifecycle
 
     if isinstance(target, SandboxLifecycle):

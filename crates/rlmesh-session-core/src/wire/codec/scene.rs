@@ -34,7 +34,6 @@ pub(super) fn board_id_from_pb(
         .map_err(|_| WireError::malformed(what, format!("a {}-byte board_id", raw.len())))
 }
 
-/// An optional 32-byte key: empty is none.
 fn key32_from_pb(what: &'static str, raw: &[u8]) -> Result<Option<[u8; 32]>, WireError> {
     (!raw.is_empty())
         .then(|| bytes32(what, "host_key", raw))
@@ -182,7 +181,6 @@ const MEMBER_STAGES: [(MemberStage, pb::MemberStage); 7] = [
     (MemberStage::Returned, pb::MemberStage::Returned),
 ];
 
-/// The wire value of `value` in `table` (every value is listed).
 fn enum_to_pb<T: PartialEq, P: Copy + Into<i32>>(table: &[(T, P)], value: &T) -> i32 {
     table
         .iter()

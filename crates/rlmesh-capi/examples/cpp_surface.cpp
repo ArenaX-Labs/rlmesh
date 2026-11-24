@@ -1,5 +1,3 @@
-// Compile-only Shapes and optional authoring signatures. Runtime cases live in
-// cpp_parity.cpp. This translation unit also instantiates every policy corner.
 #include <rlmesh.hpp>
 #include <unordered_set>
 
@@ -98,7 +96,6 @@ void instantiate_corners() {
       e(BatchOnly{}), f(PlainChunkBatch{});
 }
 
-// Requires-expression parameters are lvalues: retain that detection behavior.
 struct BatchReferences {
   std::vector<rlmesh::Value> predict_batch(rlmesh::Span<const rlmesh::Value>& values,
                                            rlmesh::BatchPredictContext&) {

@@ -1,5 +1,3 @@
-//! PyEnvironment - Rust adapter for Python gymnasium environments.
-
 use async_trait::async_trait;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -35,15 +33,12 @@ use crate::spaces::{
 use crate::telemetry::ProfileCollector;
 use crate::types::space_value_size as native_value_size;
 
-/// One value-conformance warning surfaced in the info map.
 struct ConformanceWarning {
     kind: String,
     path: String,
     detail: String,
 }
 
-/// Resolve the serving-side validation policy. `RLMESH_VALIDATION_POLICY` may
-/// select `strict` or `off`; the default (and any other value) is `warn`.
 fn validation_policy_from_env() -> ValidationPolicy {
     let raw = match std::env::var("RLMESH_VALIDATION_POLICY") {
         Ok(raw) => raw,
@@ -52,15 +47,11 @@ fn validation_policy_from_env() -> ValidationPolicy {
     match raw.trim().to_ascii_lowercase().as_str() {
         "strict" => ValidationPolicy::Strict,
         "off" => ValidationPolicy::Off,
-        // An unrecognized value defaults to warn, matching the env wire path
-        // (crates/rlmesh/src/env/wire.rs); no stderr print (clippy::print_stderr
-        // is denied workspace-wide).
+        // Unrecognized values default to warn; no stderr print (clippy::print_stderr is denied).
         _ => ValidationPolicy::Warn,
     }
 }
 
-/// Merge conformance warnings into an info map under the reserved key, once per
-/// `(kind, path)` per session.
 fn inject_conformance_warnings(info: &mut Option<MetaMap>, warnings: Vec<ConformanceWarning>) {
     if warnings.is_empty() {
         return;
@@ -75,9 +66,6 @@ fn inject_conformance_warnings(info: &mut Option<MetaMap>, warnings: Vec<Conform
             ]))
         })
         .collect();
-    // The runtime's edition pin lands on the wire adapter wrapping this env
-    // (`Environment::pin_workflow_edition`) and does not cross the facade
-    // traits; this inner layer keys off the build's own edition.
     info.get_or_insert_with(BTreeMap::new).insert(
         rlmesh_proto::defaults(rlmesh_proto::Edition::current())
             .conformance_warning_info_key
@@ -87,45 +75,23 @@ fn inject_conformance_warnings(info: &mut Option<MetaMap>, warnings: Vec<Conform
 }
 
 /// A Rust wrapper around a Python gymnasium environment.
-///
-/// Wraps a Python gymnasium environment for the RLMesh protocol.
-/// Manages GIL acquisition, numpy array encoding, and async execution.
 pub struct PyEnvironment {
-    /// The Python environment object (cached)
     env: Py<PyAny>,
-    /// Cached observation space (parsed once at construction)
     observation_space: SpaceSpec,
-    /// Cached action space (parsed once at construction)
     action_space: SpaceSpec,
-    /// Cached spaces spec
     env_contract: EnvContract,
-    /// Number of parallel environments (1 for single env)
     num_envs: usize,
-    /// Whether the wrapped Python object uses the Gymnasium vector-env API.
     uses_vector_api: bool,
-    /// Per-process profiling summary
     profiler: Arc<ProfileCollector>,
-    /// Phase split of the last op, drained by the wire layer for the response.
     last_phases: EndpointPhases,
-    /// Serving-side validation policy for observation/action range deviations.
     policy: ValidationPolicy,
-    /// Conformance-warning dedup: `(kind, path)` already reported this session.
     warned: HashSet<(String, String)>,
-    /// Value codec backend for this env's obs/action seam. `Auto` (numpy if
-    /// present, else native) is the default; `Native` is set when a Python
-    /// framework bridge owns the conversion (see `rlmesh._server._BridgedEnv`),
-    /// so Rust hands/keeps native Tensor leaves and never touches numpy/torch.
     value_backend: ValueBackend,
     dispatch: Dispatch,
-    /// The server this env is served by (0 before one is built), so a
-    /// `shutdown()` from inside its own callback only triggers the drain.
     server_id: u64,
-    /// What errors call the env ([`env_name`]).
     name: Arc<str>,
 }
 
-/// What errors call `env`: its gym id (`CartPole-v1`), else the class of
-/// the env it wraps (`unwrapped`), else its own class.
 fn env_name(env: &Bound<'_, PyAny>) -> String {
     let id = env
         .getattr("spec")
@@ -144,9 +110,6 @@ fn env_name(env: &Bound<'_, PyAny>) -> String {
         .unwrap_or_else(|_| "env".to_owned())
 }
 
-/// The env's contract failure for an observation (`err` encoding it) that
-/// does not fit its declared observation space: a `ValueError` naming the
-/// env and the space.
 fn observation_misfit(name: &str, space: &SpaceSpec, err: &PyErr) -> PyErr {
     let detail = crate::types::py_err_text(err);
     let detail = detail
@@ -159,7 +122,6 @@ fn observation_misfit(name: &str, space: &SpaceSpec, err: &PyErr) -> PyErr {
 }
 
 thread_local! {
-    /// The server whose env callback this thread is running (0 when none).
     static IN_SERVER_CALLBACK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -168,7 +130,6 @@ pub fn in_server_callback(id: u64) -> bool {
     id != 0 && IN_SERVER_CALLBACK.with(std::cell::Cell::get) == id
 }
 
-/// Run `work` marked as a callback of server `id`.
 fn as_server_callback<R>(id: u64, work: impl FnOnce() -> R) -> R {
     let previous = IN_SERVER_CALLBACK.with(|cell| cell.replace(id));
     let result = work();
@@ -206,23 +167,16 @@ pub(crate) fn with_facade_caller<R>(
 /// Where an env's Python calls run.
 #[derive(Clone)]
 pub enum Dispatch {
-    /// Tokio's blocking pool: any thread, so a call may hop between threads.
     Pool,
     Facade(
         rlmesh::binding::model::CallerJobs,
         crate::model::LastPyError,
     ),
-    /// Inline on the calling thread. A lane actor sets this so a lane's env
-    /// always executes on its own OS thread (what OSMesa/Vulkan contexts expect).
+    // Inline on the calling thread: a lane's env always runs on its own OS thread, as OSMesa/Vulkan contexts expect.
     Pinned,
-    /// Queued to the thread running [`run_foreground`]: the thread that built
-    /// the env (the Python main thread under a blocking `serve()`), for a
-    /// simulator that only works from the thread that created it.
     Foreground(std::sync::mpsc::Sender<ForegroundJob>),
 }
 
-/// How often the foreground loop yields to `on_idle` while no call is queued:
-/// the Python signal poll, so Ctrl-C reaches an otherwise idle main thread.
 const FOREGROUND_IDLE_POLL: Duration = Duration::from_millis(100);
 
 /// Run queued foreground calls on the current thread until every sender is
@@ -242,10 +196,7 @@ pub struct PySingleEnv(PyEnvironment);
 pub struct PyVectorEnv(PyEnvironment);
 
 pub enum PyServerEnv {
-    /// One or more scalar envs served as the lanes of one endpoint (a single
-    /// env is the one-lane case). Never empty.
     Lanes(Vec<PySingleEnv>),
-    /// A natively batched env (gymnasium.vector shape) stepped as one.
     Vector(Box<PyVectorEnv>),
 }
 
@@ -392,10 +343,6 @@ impl PyEnvironment {
         self.num_envs == 1 && !self.uses_vector_api
     }
 
-    /// Validate one observation or action against `space` under the active
-    /// policy. Returns an `EnvError` to reject (structural always; a range
-    /// deviation under `strict`); records a deduped conformance warning to
-    /// `warnings` for a range deviation under `warn`; otherwise accepts.
     fn enforce(
         policy: ValidationPolicy,
         warned: &mut HashSet<(String, String)>,
@@ -511,8 +458,6 @@ pub fn build_lane_server_env(envs: Vec<Py<PyAny>>, native_values: bool) -> PyRes
                  a natively vectorized environment.",
             ));
         }
-        // Surface a lane that disagrees with lane 0 here, at EnvServer(...),
-        // rather than from the serve thread; LaneEnv::new re-checks at bind.
         if let Some(first) = lanes.first()
             && first.0.env_contract != env.env_contract
         {
@@ -553,11 +498,6 @@ fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
     }
 }
 
-/// Whether a Python exception leaves the session usable: an
-/// `EnvironmentException` with a truthy `is_recoverable`
-/// (`RecoverableEnvironmentException`, or one re-raised from a remote env that
-/// was recoverable). Another class carrying the flag, such as a
-/// `ModelException(is_recoverable=True)`, is not an env's recoverable failure.
 fn py_err_is_recoverable(error: &PyErr) -> bool {
     Python::attach(|py| {
         let value = error.value(py);
@@ -569,8 +509,6 @@ fn py_err_is_recoverable(error: &PyErr) -> bool {
     })
 }
 
-/// The builtin exception class (`ValueError`) an env raised, when it raised
-/// one: what a client raises beside `EnvironmentException`.
 fn builtin_class(error: &PyErr) -> Option<String> {
     Python::attach(|py| {
         let value = error.value(py);
@@ -583,10 +521,6 @@ fn builtin_class(error: &PyErr) -> Option<String> {
     })
 }
 
-/// Run `work` under the GIL where `dispatch` says, mapping a lost reply or a
-/// `PyErr` through `into_err` (with whether the error is recoverable, and the
-/// builtin class it raised). Wraps
-/// the boilerplate every reset/step/render/close body shares.
 async fn spawn_py<T, E, W, M>(
     dispatch: Dispatch,
     server_id: u64,
@@ -643,7 +577,6 @@ where
             })?
         }
     };
-    // ENV-35: `{phase} failed: {message}`, the message without a class name.
     result.map_err(|e: PyErr| {
         into_err(
             format!("{phase} failed: {}", crate::types::py_err_text(&e)),
@@ -653,19 +586,8 @@ where
     })
 }
 
-/// Reset `options` reached an env whose `reset` takes no such parameter; latched
-/// so the backstop warns once per process rather than once per episode.
 static RESET_OPTIONS_WARNED: std::sync::Once = std::sync::Once::new();
 
-/// Whether `env.reset` can take an `options=` keyword -- a declared parameter or
-/// a `**kwargs` catch-all.
-///
-/// The runtime only sends a reserved option to an env that declared it, but a
-/// hand-driven client forwards whatever `options` it is given
-/// (`rlmesh/_client/_remote_env.py`), so a plain `reset(self, seed=None)` must
-/// degrade to an unoptioned reset instead of raising `TypeError` mid-run. An env
-/// whose signature cannot be read (a C-implemented `reset`) keeps today's
-/// behavior: the options are passed through.
 fn reset_accepts_options(py: Python<'_>, env_ref: &Bound<'_, PyAny>) -> bool {
     let probe = || -> PyResult<bool> {
         let inspect = py.import("inspect")?;
@@ -686,8 +608,6 @@ fn reset_accepts_options(py: Python<'_>, env_ref: &Bound<'_, PyAny>) -> bool {
     probe().unwrap_or(true)
 }
 
-/// Add `options=` to a reset call, or drop it (warning once) for an env whose
-/// `reset` cannot take it.
 fn set_reset_options(
     py: Python<'_>,
     env_ref: &Bound<'_, PyAny>,
@@ -706,7 +626,6 @@ fn set_reset_options(
     Ok(())
 }
 
-/// The builtin class rides in `debug_info` to [`env_error_to_runtime_error`].
 fn internal_env_err(message: String, recoverable: bool, class: Option<String>) -> EnvError {
     EnvError {
         is_recoverable: recoverable,
@@ -1132,12 +1051,6 @@ impl PyEnvironment {
                 let env_ref = env.bind(py);
 
                 let decode_guard = profiler.start("server.step.decode_action");
-                // Under Native a Python framework bridge owns the conversion, so
-                // fuse the N lanes into one `(N, *shape)` native Tensor (the path
-                // the model's batched corner uses) instead of handing back a
-                // Python list of N per-lane values: `bridge.decode` then yields a
-                // single `{key: tensor[N, ...]}` batch. (Non-array leaves such as
-                // Discrete still arrive as a list of N -- same as the model.)
                 let action = if matches!(value_backend, ValueBackend::Native) {
                     batched_space_values_to_py_neutral(py, &actions, &action_space)?
                 } else {
@@ -1459,7 +1372,6 @@ env = Env()
                 assert_eq!(err.code, EnvErrorCode::InvalidAction);
                 assert!(err.is_recoverable);
                 assert_eq!(err.message, text);
-                // The vector path checks every lane before decoding/calling too.
                 let err = env
                     .step_vector(EnvStepRequest {
                         actions: vec![action],
@@ -1471,7 +1383,6 @@ env = Env()
                     matches!(err, EnvRuntimeError::InvalidValue(ref message) if message == text)
                 );
             }
-            // A rejected action leaves the env usable.
             assert!(
                 env.step_single(SingleStepRequest {
                     action: None,

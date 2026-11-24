@@ -13,9 +13,6 @@ use crate::host::peer::Peer;
 use crate::host::{HostActor, OsRng, lock};
 
 impl HostActor {
-    /// A verb that may mint a lease token (a grant, a rebind): tried on a
-    /// copy of the authority with a reserved token. Minting nothing, it is
-    /// applied at once; otherwise its keys go to its robots and it waits.
     pub(super) async fn mint(
         &mut self,
         peer: &Arc<Peer>,
@@ -113,9 +110,6 @@ impl HostActor {
         }
     }
 
-    /// Grant `id`'s robots all installed its keys: re-check it against the
-    /// current state (the holder's and robots' generations, the epoch, and
-    /// every grant check) and commit it, or refuse it.
     pub(super) async fn commit_grant(
         &mut self,
         id: GrantId,
@@ -192,7 +186,6 @@ impl HostActor {
         Ok((leases, committed.keys))
     }
 
-    /// Answers every query waiting on grant `id`, once.
     pub(super) async fn finish_grant(
         &mut self,
         id: GrantId,

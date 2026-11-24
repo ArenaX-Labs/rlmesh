@@ -10,7 +10,6 @@ layout(location = 2) flat in vec4 color;
 
 layout(location = 0) out vec4 out_color;
 
-// 1 when `p` sees the light, 0 in shadow.
 float lit(vec3 p) {
   vec4 clip = frame.light_view_proj * vec4(p, 1.0);
   vec3 ndc = clip.xyz / clip.w;
@@ -29,7 +28,6 @@ void main() {
   if (is_floor) {
     ivec2 cell = ivec2(floor(world_position.xz * 5.0));
     albedo = ((cell.x + cell.y) & 1) == 0 ? vec3(0.82, 0.82, 0.80) : vec3(0.62, 0.63, 0.62);
-    // Fade the floor into the horizon.
     float fade = clamp(length(world_position - frame.eye.xyz) / 6.0, 0.0, 1.0);
     albedo = mix(albedo, kHorizon, fade);
   }

@@ -1,5 +1,3 @@
-"""Per-episode context: the bounded store, the corner-synthesis matrix, the end edge."""
-
 from __future__ import annotations
 
 from typing import Any, cast
@@ -13,11 +11,7 @@ from rlmesh.numpy import Model
 
 
 def raw(episode_id: str = "ep", seed: int | None = 7) -> dict[str, Any]:
-    """One raw native context, as the engine hands a corner."""
     return {"episode_id": episode_id, "episode_seed": seed}
-
-
-# ---------------------------------------------------------------- store semantics
 
 
 def test_store_counts_predicts_and_derives_a_seed_per_predict() -> None:
@@ -74,13 +68,10 @@ def test_store_end_drops_the_entry_and_fires_the_hook() -> None:
 
     assert ended == ["a"]
     assert len(store) == 0
-    # A fresh episode under the same id starts clean.
     assert store.context(raw("a"))["state"] == {}
 
 
 def test_store_keeps_every_live_episode_past_the_old_eviction_cap() -> None:
-    # F17: 4,800 live episodes revisited in order. Every one keeps its state and
-    # its ordinal, and no end hook fires for an episode that never ended.
     ended: list[str] = []
     store = EpisodeStore(ended.append)
     ids = [f"live-{i}" for i in range(4800)]
@@ -93,7 +84,6 @@ def test_store_keeps_every_live_episode_past_the_old_eviction_cap() -> None:
     assert all(context["predict_index"] == 1 for context in second)
     assert ended == []
     assert len(store) == 4800
-    # An explicit end still releases exactly that episode.
     store.end("live-7")
     assert ended == ["live-7"]
     assert len(store) == 4799
@@ -108,12 +98,10 @@ def test_store_refuses_a_new_episode_at_capacity_instead_of_evicting() -> None:
     with pytest.raises(RuntimeError, match="RLMESH_EPISODE_CAPACITY"):
         store.context(raw("c"))
 
-    # The live episodes are untouched: no end hook, state and ordinal intact.
     assert ended == []
     revisit = store.context(raw("a"))
     assert revisit["state"] == {"plan": 1}
     assert revisit["predict_index"] == 1
-    # Ending one makes room again.
     store.end("a")
     assert store.context(raw("c"))["predict_index"] == 0
 
@@ -125,9 +113,6 @@ def test_store_capacity_reads_the_env_override(
     assert EpisodeStore()._capacity == 3
     monkeypatch.setenv("RLMESH_EPISODE_CAPACITY", "not a number")
     assert EpisodeStore()._capacity == EPISODE_STATE_CAPACITY
-
-
-# ------------------------------------------------------------------- arity sniff
 
 
 def test_accepts_episode_id_reads_the_hook_signature() -> None:
@@ -183,9 +168,6 @@ def test_episode_end_drops_the_store_entry_for_that_episode() -> None:
     assert len(model._episodes) == 0
 
 
-# ------------------------------------------------- corner-synthesis context matrix
-
-
 def test_chunk_batch_corner_receives_a_context_per_row() -> None:
     rows: list[Any] = []
 
@@ -220,14 +202,11 @@ def test_derived_single_lane_corner_hands_down_a_one_element_list() -> None:
             return np.zeros((n, horizon, 2), dtype=np.float32)
 
     model = Policy()
-    # predict_chunk and predict are both derived from the batched chunk corner;
-    # each runs it as a batch of one, so the context list has exactly one row.
     cast("Any", model._raw_predict_chunk)({"x": np.zeros(3)}, 4, raw("a", 1))
     cast("Any", model._raw_predict)({"x": np.zeros(3)}, raw("a", 1))
 
     assert [len(batch) for batch in rows] == [1, 1]
     assert [batch[0]["episode_id"] for batch in rows] == ["a", "a"]
-    # Both calls are the same episode, so the ordinal keeps counting.
     assert [batch[0]["predict_index"] for batch in rows] == [0, 1]
 
 
@@ -251,8 +230,6 @@ def test_chunk_corner_without_a_horizon_keeps_its_context() -> None:
             return np.zeros((3, 2), dtype=np.float32)
 
     model = Policy()
-    # The internal contract is always (obs, horizon[, context]); a corner that
-    # declared a context but no horizon must not read the horizon as its context.
     cast("Any", model._raw_predict_chunk)(np.zeros(3), 4, raw("a", 5))
 
     assert seen[0]["episode_id"] == "a"
@@ -260,8 +237,6 @@ def test_chunk_corner_without_a_horizon_keeps_its_context() -> None:
 
 
 class _Env:
-    """A local env: a Box observation, a Discrete action, two steps."""
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -287,8 +262,6 @@ class _Env:
 def test_an_adapterless_model_reads_its_envs_spaces_from_the_context(
     chunked: bool,
 ) -> None:
-    """A ``NO_ADAPTER`` model answers in the env's own action space, so its
-    context names that space (and the observation space) on every predict."""
     from rlmesh import spaces
 
     seen: list[tuple[object, object]] = []
@@ -314,8 +287,6 @@ def test_an_adapterless_model_reads_its_envs_spaces_from_the_context(
         assert action_space.n == 5
         assert isinstance(observation_space, spaces.Box)
         assert tuple(observation_space.shape) == (3,)
-    # One space object per env, not one per predict.
     assert len({id(action) for _, action in seen}) == 1
-    # Called directly, no env is known.
     model = Sampler()
     assert model._episodes.context(raw())["action_space"] is None  # pyright: ignore[reportPrivateUsage]

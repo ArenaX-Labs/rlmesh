@@ -19,8 +19,6 @@ use crate::transport::LinkAuth;
 use crate::wire::SessionId;
 use crate::wire::{CtlError, CtlStatus};
 
-/// The credentials this process holds for sessions on hosts that aren't
-/// its home's, by base and session ([`remember_credential`]).
 #[cfg(feature = "fleet")]
 type Remembered = HashMap<(SocketAddr, SessionId), Credential>;
 
@@ -35,7 +33,6 @@ pub(super) fn remembered() -> &'static std::sync::Mutex<Remembered> {
 /// (which never carries a device key) joins with it too: a satellite's run,
 /// whose address a binding passes to its controller as text.
 // TODO: kept until the process exits; forget ended runs if a long-lived
-// process runs thousands of satellite-hosted scenes.
 #[cfg(feature = "fleet")]
 pub fn remember_credential(address: &SessionAddress, credential: Credential) {
     remembered()
@@ -44,21 +41,20 @@ pub fn remember_credential(address: &SessionAddress, credential: Credential) {
         .insert((address.base, address.session), credential);
 }
 
-/// This machine's key from pairing with the host at `base`.
 fn paired(base: SocketAddr) -> Option<Credential> {
     crate::pairing::hosts_dir().and_then(|dir| crate::pairing::paired_credential(&dir, base))
 }
 
-/// The credential of a participant of the host at `base`: `key` (an
-/// address's), else the key of a host on this machine (one this process
-/// runs, one this user's other process left on file for its loopback
-/// address, or rlmeshd's), else this machine's key from pairing with the
-/// host ([`crate::pairing::paired_credential`]). A key file this user may
-/// not trust is an error, not passed over.
+/// The credential of a participant of the host at `base`: `key`, else the key
+/// of a host on this machine, else this machine's key from pairing with the
+/// host ([`crate::pairing::paired_credential`]). A host on this machine is one
+/// this process runs, one this user's other process left on file for its
+/// loopback address, or rlmeshd.
+///
+/// # Errors
+///
+/// A key file this user may not trust is an error, not passed over.
 pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credential, SessionError> {
-    // The file names this very address, where rlmeshd's key stands in for
-    // any loopback port: the file first. One its host outlived is passed
-    // over, so rlmeshd taking the port later is still joined.
     let filed = match key.cloned().or_else(|| hosted_key(base)) {
         Some(key) => Some(key),
         None => filed_key(base)?.map(|filed| filed.key),
@@ -79,14 +75,12 @@ pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credenti
         })
 }
 
-/// What a link to the host at `base` presents, on any network: the
-/// password `key` (the address's) derives, else that of a host this process
-/// runs there or this user's other process left on file for it; without
-/// any, nothing (rlmeshd, a paired host). Never
-/// rlmeshd's key, which is this machine's and gates no link. Presenting it
-/// to a host that isn't the key's owner gives that host no password (Zenoh
-/// `usrpwd` answers a nonce with an HMAC), and the handshake that follows
-/// refuses a host without the address's host key.
+/// What a link to the host at `base` presents: the password `key` derives,
+/// else that of a host this process runs there or this user's other process
+/// left on file for it; without any, nothing (rlmeshd, a paired host). Never
+/// rlmeshd's key, which gates no link. Presenting it to a host that isn't the
+/// key's owner reveals no password (the link answers a nonce with an HMAC), and
+/// the handshake that follows refuses a host without the address's host key.
 pub fn link_auth(base: SocketAddr, key: Option<&AddressKey>) -> Option<LinkAuth> {
     let key = key
         .cloned()
@@ -98,7 +92,6 @@ pub fn link_auth(base: SocketAddr, key: Option<&AddressKey>) -> Option<LinkAuth>
     })
 }
 
-/// The key of a host this process runs at `base`.
 pub(super) fn hosted_key(base: SocketAddr) -> Option<AddressKey> {
     local_hosts()
         .lock()
@@ -127,7 +120,6 @@ pub fn daemon_dir() -> Option<std::path::PathBuf> {
     Some(dir.join("rlmesh").join("daemon"))
 }
 
-/// rlmeshd's `local` key, when this user can read it.
 fn daemon_key() -> Option<AddressKey> {
     let text = Zeroizing::new(std::fs::read_to_string(daemon_dir()?.join(LOCAL_KEY)).ok()?);
     text.parse().ok()

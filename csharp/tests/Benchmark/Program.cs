@@ -33,8 +33,6 @@ static unsafe class Program
             try
             {
                 Status.Check(Native.rlmesh_binding_step(binding, action, &observation, &reward, &terminated, &truncated, &info));
-                // Same ownership adoption as a public Value return. Keep it live
-                // through the iteration, then let its SafeHandle finalize.
                 Value result = new(observation); observation = null;
                 GC.KeepAlive(result);
             }
@@ -60,8 +58,6 @@ static unsafe class Program
             Checkpoint();
             if (args.Length != 0 && args[0] == "--timing")
             {
-                // One long-lived JIT process. The parent alternates this batch
-                // with the C++ process and sends the next request on stdin.
                 Console.WriteLine("ready");
                 while (Console.ReadLine() != null)
                 {

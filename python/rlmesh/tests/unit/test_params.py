@@ -1,5 +1,3 @@
-"""Declared construction parameters: resolve boundary table, describe, wiring."""
-
 from __future__ import annotations
 
 import warnings
@@ -33,12 +31,7 @@ def _spec(extra: str = "forbid") -> ParamSpec:
     )
 
 
-# --- resolve: the boundary table ---------------------------------------------
-
-
 def test_resolve_keeps_supplied_and_defers_defaults_to_signature() -> None:
-    # Unsupplied optionals are left out of the binding; the constructor applies
-    # its own signature defaults (task_id=0, cam_width=256).
     assert resolve(_spec(), _make, {"suite": "a"}) == {"suite": "a"}
 
 
@@ -85,7 +78,6 @@ def test_resolve_passthrough_without_kwargs_target_raises() -> None:
 def test_resolve_derived_signature_arg_is_type_checked() -> None:
     def target(*, gain: int = 1) -> None: ...
 
-    # No Param for ``gain`` (signature-derived tier), but the annotation is checked.
     assert resolve(ParamSpec(), target, {"gain": 5}) == {"gain": 5}
     with pytest.raises(ParamError, match="gain"):
         resolve(ParamSpec(), target, {"gain": "nope"})
@@ -99,9 +91,6 @@ def test_resolve_none_spec_is_blind_passthrough() -> None:
 
 
 def test_resolve_warns_on_misnamed_param_without_a_value() -> None:
-    """Merely declared (no value supplied): the authoring-time warning fires;
-    the param is then reported missing because it has no signature default."""
-
     def target(*, suite: str) -> None: ...
 
     with warnings.catch_warnings(record=True) as caught:
@@ -112,17 +101,10 @@ def test_resolve_warns_on_misnamed_param_without_a_value() -> None:
 
 
 def test_resolve_rejects_supplied_value_for_unreachable_param() -> None:
-    """A supplied value targeting a Param the constructor cannot receive used
-    to crash the constructor with a bare TypeError; it now fails at resolve,
-    naming the param and the accepted keyword args."""
-
     def target(*, suite: str) -> None: ...
 
     with pytest.raises(ParamError, match=r"typo.*accepted keyword args: suite"):
         resolve(ParamSpec(Param("typo", str)), target, {"suite": "a", "typo": "x"})
-
-
-# --- describe ----------------------------------------------------------------
 
 
 def test_describe_separates_declared_from_signature_tier() -> None:
@@ -135,15 +117,12 @@ def test_describe_separates_declared_from_signature_tier() -> None:
         ],
         "extra": "forbid",
     }
-    # ``gain`` is presented for free (signature tier), inferred as int from default.
     assert schema["signature_tier"] == [
         {"name": "gain", "type": "int", "default": 1, "required": False}
     ]
 
 
 def test_describe_fills_declared_default_from_signature() -> None:
-    # A declared Param with no default inherits make()'s default rather than
-    # being presented as required -- the default is declared once, in the signature.
     def target(*, robot: str = "panda") -> None: ...
 
     schema = describe(
@@ -163,9 +142,6 @@ def test_describe_fills_declared_default_from_signature() -> None:
     }
 
 
-# --- to_metadata -------------------------------------------------------------
-
-
 def test_to_metadata_marks_passthrough_tail_unvalidated() -> None:
     resolved = resolve(_spec("passthrough"), _make, {"suite": "a", "horizon": 5})
     meta = cast(
@@ -175,9 +151,6 @@ def test_to_metadata_marks_passthrough_tail_unvalidated() -> None:
     assert meta["binding"]["horizon"] == 5
     assert meta["validated"]["suite"] is True
     assert meta["validated"]["horizon"] is False
-
-
-# --- construction wiring -----------------------------------------------------
 
 
 class _Env(rlmesh.EnvFactory):
@@ -222,12 +195,7 @@ def test_load_env_from_spec_factory_kind_builds_a_binding() -> None:
     assert (env.suite, env.task_id) == ("b", 1)
 
 
-# --- regression: validation gaps the review surfaced -------------------------
-
-
 def test_resolve_rejects_non_finite_float() -> None:
-    # A construction param is never legitimately NaN/inf; the float coercion
-    # rejects them outright.
     spec = ParamSpec(Param("lr", "float"))
 
     def target(*, lr: float = 0.1) -> None: ...
@@ -247,17 +215,14 @@ def test_resolve_enum_choices_do_not_accept_bool_as_int() -> None:
 
 
 def test_optional_param_defers_to_signature_default() -> None:
-    # A declared Param whose signature supplies a default is optional; omitting it
-    # leaves the binding empty and lets make() apply its own default.
     spec = ParamSpec(Param("task"))
 
     def target(*, task: str = "reach") -> None: ...
 
-    assert resolve(spec, target, {}) == {}  # omitted => make() uses its own default
+    assert resolve(spec, target, {}) == {}
 
 
 def test_to_metadata_preserves_structured_binding() -> None:
-    # A structured (dict) binding must read back as itself, not a repr string.
     spec = ParamSpec(Param("cfg", "enum"))
 
     def target(*, cfg: object = None) -> None: ...
@@ -271,9 +236,6 @@ def test_to_metadata_preserves_structured_binding() -> None:
 
 
 def test_construct_authored_env_makes_lanes_or_a_gym_vector_env() -> None:
-    # num_envs>1 runs make() once per lane (a list the server hosts as lanes);
-    # an explicit vectorization_mode fans make() out into a self-describing gym
-    # vector env instead.
     g = pytest.importorskip("gymnasium")
 
     class _GymEnv(g.Env):
@@ -303,9 +265,6 @@ def test_construct_authored_env_makes_lanes_or_a_gym_vector_env() -> None:
     assert hasattr(vec, "single_observation_space")
 
 
-# --- Vector type -------------------------------------------------------------
-
-
 def _vec_target(
     *,
     cam_pos: object = (0.0, 0.0, 0.0),
@@ -320,11 +279,10 @@ def test_vector_accepts_tuple_and_coerces_ints_to_float() -> None:
         resolve(spec, _vec_target, {"cam_pos": (1, 2, 3)})["cam_pos"],
     )
     assert coerced == (1.0, 2.0, 3.0)
-    assert all(isinstance(x, float) for x in coerced)  # proves coercion, not just ==
+    assert all(isinstance(x, float) for x in coerced)
 
 
 def test_vector_canonicalizes_json_list_to_tuple() -> None:
-    # The binding path hands a JSON list; it must arrive as a tuple.
     spec = ParamSpec(Param("cam_quat", type=Vector(4)))
     out = resolve(spec, _vec_target, {"cam_quat": [1.0, 0.0, 0.0, 0.0]})
     assert out["cam_quat"] == (1.0, 0.0, 0.0, 0.0)
@@ -385,8 +343,6 @@ def test_vector_choices_sweep_over_whole_vectors() -> None:
 
 
 def test_vector_choices_authored_as_lists_match() -> None:
-    """Choice entries go through the same coercion as the value, so a
-    JSON-shaped (list) choice matches the canonicalized tuple value."""
     presets = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
     spec = ParamSpec(Param("cam_pos", type=Vector(3), choices=presets))
     out = resolve(spec, _vec_target, {"cam_pos": (0.0, 1.0, 0.0)})

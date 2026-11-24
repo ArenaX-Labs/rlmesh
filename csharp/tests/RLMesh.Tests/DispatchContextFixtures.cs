@@ -10,8 +10,6 @@ using Xunit;
 
 namespace RLMesh.Tests;
 
-// Each case runs inside BarrierTests' fresh collectible context, over a real
-// native server/client. A dedicated managed thread stands in for the engine.
 internal static class DispatchContextFixtures
 {
     internal static void Run(string scenario)
@@ -52,7 +50,7 @@ internal static class DispatchContextFixtures
                 var shutdown = Task.Run(() => Lifetime.Shutdown(TimeSpan.FromMilliseconds(100)));
                 Assert.True(SpinWait.SpinUntil(() => Lifetime.ShuttingDown.IsCancellationRequested, TimeSpan.FromSeconds(5)));
                 Value value = 7;
-                Assert.Equal(7, value.AsInt()); // callback admission survives the closed gate.
+                Assert.Equal(7, value.AsInt());
                 Assert.False(shutdown.GetAwaiter().GetResult());
             }
             return new StepResult(1, 1, true, false, new Metadata());
@@ -65,8 +63,7 @@ internal static class DispatchContextFixtures
         queue.CompleteAdding();
         Assert.True(host.Join(TimeSpan.FromSeconds(5)));
         client.Dispose();
-        // Shutdown may cancel the remote run; assertion failures in the callback
-        // must never be confused with that expected terminal cancellation.
+        // Shutdown may cancel the remote run; do not confuse callback assertion failures with that cancellation.
         Assert.Null(env.Failure);
         if (scenario == "refusal") Assert.Null(failure);
         Assert.True(Lifetime.Shutdown(TimeSpan.FromSeconds(10)), string.Join("; ", Lifetime.Pending()));

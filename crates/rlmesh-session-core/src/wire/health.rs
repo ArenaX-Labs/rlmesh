@@ -1,7 +1,6 @@
 //! What the host tells observers about every participant's link and edge
-//! (`host/health`, signed): the heartbeats and reports participants seal to
-//! the host, so the cockpit and recordings can show why a robot is or isn't
-//! moving.
+//! (`host/health`, signed): the heartbeats and reports participants seal to the
+//! host, so the cockpit and recordings can show why a robot is or isn't moving.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

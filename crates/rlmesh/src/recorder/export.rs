@@ -33,11 +33,6 @@ fn transfer(input: &mut impl Read, output: &mut impl Write) -> Result<()> {
     }
 }
 
-// Python's json.dumps accepts tuples and nonfinite floats, but refuses bytes
-// and tensors. The wire metadata codec instead turns bytes/tensors into arrays
-// and serde_json turns nonfinite floats into null: neither preserves this
-// bundle contract. Quote strings with serde_json and write the JSON-native
-// container/number kinds directly, including Python's NaN/Infinity tokens.
 fn json(value: &Value, depth: usize) -> Result<String> {
     let quote = |text: &str| serde_json::to_string(text).expect("strings serialize");
     let container = |open: char, close: char, items: Vec<String>| {

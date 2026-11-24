@@ -1,5 +1,3 @@
-"""Checks a live result against its ``TypedDict``: every key, and each value's type, all the way down."""
-
 from __future__ import annotations
 
 import types
@@ -15,7 +13,6 @@ from typing import (
 
 
 def check(value: Any, hint: Any, where: str = "result") -> None:
-    """Fail when ``value`` has a key ``hint`` lacks, lacks one it has, or holds another type."""
     origin = get_origin(hint)
     if is_typeddict(hint):
         assert isinstance(value, dict), f"{where}: {value!r} is not a dict"
@@ -33,7 +30,7 @@ def check(value: Any, hint: Any, where: str = "result") -> None:
             assert type(None) in options, f"{where}: None is not {hint}"
             return
         typed = [o for o in options if is_typeddict(o)]
-        if len(typed) > 1:  # an event: told apart by its kind
+        if len(typed) > 1:
             [match] = [
                 o
                 for o in typed

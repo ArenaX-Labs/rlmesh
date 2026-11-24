@@ -139,8 +139,7 @@ def sandbox_reap_orphans() -> None: ...
 #[pyfunction]
 #[pyo3(signature = ())]
 pub fn sandbox_reap_orphans(py: Python<'_>) -> PyResult<()> {
-    // Best-effort hygiene: sweep containers orphaned by a prior hard kill. A
-    // reaper failure is swallowed so a serve start is never blocked by it.
+    // A reaper failure must never block a serve start.
     py.detach(|| {
         let _ = super::reap_orphaned_containers();
     });

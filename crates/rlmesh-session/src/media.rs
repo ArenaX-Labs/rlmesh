@@ -1,20 +1,16 @@
 //! Image parts: JPEG encoding, a bitrate budget and newest-wins skipping.
 //!
-//! An [`ImagePublisher`] wraps a [`SamplePublisher`] for a part whose single
-//! field is a uint8 `[H, W, 3]` image. Each [`ImagePublisher::offer`] of a
-//! captured frame:
+//! An [`ImagePublisher`] wraps a [`SamplePublisher`] for a part whose single field is a uint8
+//! `[H, W, 3]` image. Each [`ImagePublisher::offer`] of a captured frame:
 //!
-//! 1. is skipped outright when the stream's publication plan (or its `send`
-//!    rate ceiling) would coalesce it, or while the bitrate budget (`send:
-//!    latest(max_mbps=…)`) is spent, before any encoding work. The
-//!    bucket refills at the budget; its capacity is the larger of 100 ms of
-//!    budget and one maximum-size frame, a frame is admitted while the
-//!    bucket is positive, and its actual bytes are then subtracted (debt);
+//! 1. is skipped before any encoding when the stream's publication plan (or its `send` rate
+//!    ceiling) would coalesce it, or while the bitrate budget (`send: latest(max_mbps=…)`) is
+//!    spent. The budget is a token bucket holding the larger of 100 ms of budget and one
+//!    maximum-size frame; a frame is admitted while it is positive and its actual bytes are then
+//!    subtracted;
 //! 2. is encoded as the part declares (`jpeg` at its quality, or `raw`);
-//! 3. lands in a one-frame mailbox that a sender thread drains. When the
-//!    link is congested the sender is still blocked on the previous frame,
-//!    and the new frame replaces the unsent one: the newest frame wins and
-//!    no queue of stale frames builds up behind the link.
+//! 3. lands in a one-frame mailbox that a sender thread drains: while the link is congested a
+//!    new frame replaces the unsent one, so no queue of stale frames builds up.
 //!
 //! Subscribers decode with [`decode_image`].
 
@@ -31,7 +27,6 @@ use tracing::warn;
 use crate::error::SessionError;
 use crate::sample::SamplePublisher;
 
-/// The token bucket holds this much of the budget.
 const BUCKET_NS: i64 = 100_000_000;
 
 /// What happened to one offered frame.
@@ -79,7 +74,6 @@ pub struct MediaStats {
 
 #[derive(Debug)]
 struct Bucket {
-    /// Bytes per second; `None`: no cap.
     rate: Option<f64>,
     tokens: f64,
     capacity: f64,
@@ -87,7 +81,6 @@ struct Bucket {
 }
 
 impl Bucket {
-    /// A bucket for `max_bitrate_bps`, holding at least one `max_frame`.
     fn new(max_bitrate_bps: Option<u64>, max_frame: usize, now_ns: i64) -> Self {
         let rate = max_bitrate_bps.map(|bps| bps as f64 / 8.0);
         let capacity = rate.map_or(0.0, |r| (r * BUCKET_NS as f64 / 1e9).max(max_frame as f64));
@@ -320,7 +313,6 @@ impl ImagePublisher {
         Ok(Offer::Queued { bytes: len })
     }
 
-    /// Counts the offer; the skip, when the plan or the budget skips it.
     fn admit(&self) -> Option<Offer> {
         let inner = &self.inner;
         inner.bump(|s| s.offered += 1);
@@ -342,7 +334,6 @@ impl ImagePublisher {
         None
     }
 
-    /// Hands `bytes` to the sender; whether it replaced an unsent frame.
     fn enqueue(&self, capture_ns: i64, bytes: Bytes) -> bool {
         let inner = &self.inner;
         if let Ok(mut bucket) = inner.bucket.lock() {
@@ -364,7 +355,6 @@ impl ImagePublisher {
     }
 }
 
-/// What a JPEG's start-of-frame header says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct JpegHeader {
     width: u16,
@@ -372,8 +362,6 @@ struct JpegHeader {
     components: u8,
 }
 
-/// Reads the start-of-frame header of a JPEG, without decoding it: the
-/// markers up to the first SOFn, skipping each segment by its length.
 fn jpeg_header(jpeg: &[u8]) -> Option<JpegHeader> {
     if !jpeg.starts_with(&[0xFF, 0xD8]) {
         return None;
@@ -418,7 +406,6 @@ impl Drop for ImagePublisher {
         self.inner.stop.store(true, Ordering::Relaxed);
         self.inner.ready.notify_all();
         if let Some(sender) = self.sender.take() {
-            // A sender blocked on a congested link returns once Zenoh does.
             let _ = sender.join();
         }
     }
@@ -521,10 +508,8 @@ mod tests {
 
     #[test]
     fn the_bucket_skips_frames_over_budget_and_refills_at_the_cap() {
-        // 8 Mbit/s = 1 MB/s; the bucket holds 100 kB.
         let mut bucket = Bucket::new(Some(8_000_000), 50_000, 0);
         let mut sent = 0_usize;
-        // 50 kB frames offered at 100 Hz for one second: twice the budget.
         for i in 0..100_i64 {
             if bucket.has_budget(i * 10_000_000) {
                 bucket.spend(50_000);
@@ -535,8 +520,6 @@ mod tests {
         assert!((1_000_000..=1_150_000).contains(&rate), "{sent} frames");
         let mut free = Bucket::new(None, 0, 0);
         assert!(free.has_budget(0));
-        // A raw VGA frame (921 600 B) is larger than 100 ms at 8 Mbit/s: the
-        // bucket holds one anyway, so frames still flow at about 1 Hz.
         let mut raw = Bucket::new(Some(8_000_000), 921_600, 0);
         let sent = (0..300_i64)
             .filter(|i| {
@@ -563,7 +546,6 @@ mod tests {
                 components: 3
             })
         );
-        // Fill bytes before a marker, and a progressive frame header (SOF2).
         let mut padded = vec![0xFF, 0xD8, 0xFF, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00];
         padded.extend([0xFF, 0xC2, 0x00, 0x0B, 0x08, 0x00, 0x10, 0x00, 0x20, 0x01]);
         assert_eq!(

@@ -1,9 +1,4 @@
 //! Human-readable, Gymnasium-style [`Display`] for space specs.
-//!
-//! Renders e.g. `Box(-1.0, 1.0, (3,), float32)`, `Discrete(4, start=-1)`, or a
-//! nested `Dict('obs': Box(...), 'flag': Discrete(2))` — for error messages and
-//! logs, where the `Debug` form is unreadable. Spec-shape only; this carries no
-//! values.
 
 use core::fmt;
 
@@ -73,7 +68,6 @@ impl fmt::Display for SpaceSpec {
     }
 }
 
-/// Python-style shape tuple: `()`, `(3,)`, `(2, 3)`.
 fn fmt_shape(shape: &[i64]) -> String {
     let mut out = String::from("(");
     for (i, dim) in shape.iter().enumerate() {
@@ -89,8 +83,6 @@ fn fmt_shape(shape: &[i64]) -> String {
     out
 }
 
-/// A representative `(low, high)` string pair for a Box's bounds. Elementwise
-/// and per-element typed bounds are abbreviated rather than expanded.
 fn box_bounds_summary(spec: &BoxSpec, dtype: DType) -> (String, String) {
     match &spec.bounds {
         Some(BoxBounds::Uniform(bounds)) => (fmt_f64(bounds.low), fmt_f64(bounds.high)),
@@ -112,8 +104,6 @@ fn typed_one(bytes: &[u8], dtype: DType) -> String {
     }
 }
 
-/// Format a bound so integers read like floats (`-1.0`, not `-1`), matching the
-/// Gymnasium repr, and infinities read as `inf`/`-inf`.
 fn fmt_f64(value: f64) -> String {
     if value.is_infinite() {
         return if value < 0.0 { "-inf" } else { "inf" }.to_string();

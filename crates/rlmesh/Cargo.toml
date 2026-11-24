@@ -14,14 +14,11 @@ categories = { workspace = true }
 keywords = { workspace = true }
 publish = { workspace = true }
 
-# docs.rs renders an "Examples found in repository" block on the API items each
-# example calls. Scraping is nightly-only; docs.rs builds nightly, the stable
-# local/CI `cargo doc` does not, so this flag stays out of the local doc build.
+# Example scraping is nightly-only; docs.rs builds nightly, the stable local/CI `cargo doc` does not.
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
-# The managed-platform client (feature `managed`).
 anyhow = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
 keyring = { workspace = true, optional = true }
@@ -29,7 +26,6 @@ reqwest = { workspace = true, features = ["form", "json", "query"], optional = t
 rustls = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 async-trait = { workspace = true }
-# Session transport and token claims.
 base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
@@ -37,24 +33,19 @@ thiserror = { workspace = true }
 zenoh = { workspace = true }
 rlmesh-spaces = { workspace = true }
 rlmesh-adapters = { workspace = true }
-# The v2 lockstep transport (`lockstep://` env addresses).
 rlmesh-session = { workspace = true, features = ["record"] }
 rlmesh-proto = { workspace = true }
 prost = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 tempfile = { workspace = true }
-# Reads zips the Python recorder deflates.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 futures = { workspace = true }
 image = { workspace = true, features = ["png"] }
-# The recorder's in-process AV1 episode videos.
 rav1e = { workspace = true }
-# The recorder's per-episode trajectories (`trajectory.parquet`).
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 half = { workspace = true }
 parquet = { workspace = true }
-# The live viewer (feature `viewer`): terminal and HTTP backends.
 crossterm = { version = "0.29", optional = true }
 tiny_http = { version = "0.12", optional = true }
 indexmap = { workspace = true, features = ["serde"] }
@@ -80,9 +71,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [features]
 default = ["managed", "viewer"]
-# The managed-platform client (`managed`), sharing the CLI's profiles.
 managed = ["dep:anyhow", "dep:dirs", "dep:keyring", "dep:reqwest", "dep:rustls", "dep:toml"]
-# The live terminal/HTTP viewer behind `View`.
 viewer = ["dep:crossterm", "dep:tiny_http", "image/jpeg"]
 
 [lints]

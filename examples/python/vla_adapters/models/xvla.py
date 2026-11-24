@@ -21,7 +21,6 @@ from typing import Any
 import rlmesh.adapters as adapt
 
 SPEC = adapt.ModelSpec(
-    # This study deliberately permits the projections described in README.md.
     allow=("select_state", "drop_action"),
     input={
         "image": adapt.Image(adapt.IMAGE_PRIMARY, size=256, fit="stretch"),
@@ -44,7 +43,6 @@ SPEC = adapt.ModelSpec(
 
 
 def load_predict_fn() -> Callable[[Mapping[str, Any]], Any]:
-    """Return the checkpoint's raw predict callable (stubbed; see smolvla.py)."""
     import numpy as np
 
     def predict(payload: Mapping[str, Any]) -> Any:

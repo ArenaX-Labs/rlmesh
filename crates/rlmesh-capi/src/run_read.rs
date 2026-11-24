@@ -1,5 +1,4 @@
-//! Adapter-dependent readers and owned frame-source shells over the facade.
-#![allow(unsafe_code)] // C callbacks and documented owner-borrowing render thunks.
+#![allow(unsafe_code)]
 use crate::abi::{
     sizing,
     status::{CapiError, RLMeshStatus, guard, guard_value},

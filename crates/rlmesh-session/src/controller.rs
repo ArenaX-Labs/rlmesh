@@ -2,84 +2,46 @@
 //! loop. Language bindings wrap it; users write
 //! `predict` and nothing else.
 //!
-//! - [`Controller::bind`] waits for the robot's parts, binds the policy
-//!   (refuse-and-explain), declares the binding and opens its inputs
-//!   ([`Inputs`]).
-//! - **Leases.** A background keeper holds the binding's leases while they
-//!   are wanted, as one [`LeaseGroup`] (the holder state machine the
-//!   browser binding runs too, with its local deadline): it requests them,
-//!   re-requests them after a lapse, a disarm or a re-arm (each with a fresh
-//!   token), and declares a chunk sender per granted lease.
-//! - **Parked.** A part a higher class takes from it (preempted: an
-//!   operator jumping in) is not asked for again when that holder lets go,
-//!   detaches or is lost: it is parked, with the parts of its command group,
-//!   until [`Controller::resume`] (or [`Controller::acquire`]), so a robot
-//!   never starts moving because someone released a controller or their
-//!   process died. The edge takes the part through its released-part path
-//!   meanwhile. A run reports it once ([`RunEvent::Parked`]) and skips its
-//!   starts as `parked`. [`Resume::Auto`] keeps the old behaviour: the part
-//!   is asked for again as soon as it is free.
+//! - [`Controller::bind`] waits for the robot's parts, binds the policy (refuse-and-explain),
+//!   declares the binding and opens its inputs ([`Inputs`]).
+//! - **Leases.** A background keeper holds the binding's leases while they are wanted, as one
+//!   [`LeaseGroup`]: it requests them, re-requests them after a lapse, a disarm or a re-arm (each
+//!   with a fresh token), and declares a chunk sender per granted lease.
+//! - **Parked.** A part a higher class takes from it (an operator jumping in) is not asked for
+//!   again when that holder lets go, detaches or is lost: it is parked, with the parts of its
+//!   command group, until [`Controller::resume`] or [`Controller::acquire`], so a robot never
+//!   starts moving because someone else released it. A run reports it once
+//!   ([`RunEvent::Parked`]) and skips its starts as `parked`. [`Resume::Auto`] asks for the part
+//!   again as soon as it is free.
 //! - **Hand-back.** The holder that took it may give it back explicitly
-//!   ([`Controller::release_to`]): its release names this controller
-//!   (`lease.handback`), and the parts that release names (with their
-//!   command group) are resumed as by [`Controller::resume`], those parts
-//!   only, reported as [`RunEvent::HandedBack`]. The keeper asks for them in
-//!   the same pass that sees the release, so they are unheld for one
-//!   notice and one grant, as when a resumed controller asks for a free
-//!   part; the edge runs its release ladder meanwhile. On the wall clock it waits until the
-//!   host has mapped this controller's clock and its robots' (an edge
-//!   rejects chunks until then). [`Controller::acquire`] takes them at
-//!   once (an operator taking over), once those clocks are mapped;
-//!   [`Controller::release`] gives them back.
-//! - [`Controller::send`] packs `predict`'s output per action entry
-//!   (`ActionRow::pack`) and sends one timed chunk per commanded part:
-//!   `t0` at the snapshot (or at send, `t0: "send"`), the binding's action
-//!   grid, `valid_until = t0 + min(chunk × dt, ttl)`, `replace_from = t0`
-//!   and the snapshot's `based_on`.
-//! - [`Controller::run`] runs the policy loop: starts on the replan
-//!   grid, one inference in flight, skipped starts with their reasons, warm
-//!   before authority (leases are requested only once a first snapshot of
-//!   the required inputs is complete), window gaps recovered from the
-//!   host's history store, and reporting through [`StartSchedule`].
-//!   On the wall clock the grid is phased just after the publication of
-//!   one sampled input ([`PhaseAlign`]), so a snapshot reads a sample about
-//!   a millisecond old rather than up to a full replan period old.
-//!   If `predict` fails, the controller stops sending and releases its
-//!   leases; the edge holds, then goes safe. If its robot is lost
-//!   (`ROBOT_LOST`) or the host is (`HOST_LOST`), the run stops with
-//!   [`RunError::Lost`]. In a scene's run a lost robot may rejoin: the loop
-//!   keeps going without a lease (`no_lease`) and asks for its leases again
-//!   once the run is re-armed; only the run closing stops it, and a run this
-//!   process stopped returns. A run on a session that is not armed waits
-//!   for it, and says so once each time the session leaves ARMED or ACTIVE
-//!   ([`RunEvent::WaitingToArm`], [`Controller::waiting`]).
-//! - **Shadow runs** ([`RunMode::Shadow`]). A start that cannot command (no
-//!   lease held: the session not armed, preempted, its robot held) still
-//!   runs `predict` on the same grid and freshness rules, and packs its
-//!   actions as for sending, so a failing model or an action the binding
-//!   refuses ends the run as it would while commanding; nothing is sent.
-//!   The run commands from the first start whose inputs were read with a
-//!   lease held, and says so on each change ([`RunEvent::Shadowing`],
-//!   [`RunEvent::Commanding`]). [`Predictor::step`] sees every start's
-//!   converted actions, marked shadow or sent.
-//! - **Rebinding.** A background watcher follows every robot the binding
-//!   reads or commands, and the robots its selectors name. When one comes
-//!   back, restarts, declares its parts again or appears, the controller
-//!   binds the policy again against the session's current parts: a changed
-//!   table is declared (the host re-issues the leases it holds under a fresh
-//!   token, which the keeper takes over without asking again) and the inputs
-//!   are opened afresh, so a restarted publisher's samples are taken from its
-//!   first. An input whose publisher is gone reports it once
-//!   ([`RunEvent::InputLost`]), its skipped starts count as
-//!   `publisher_gone`, and coming back reports [`RunEvent::Rebound`]. A
-//!   robot it uses that left with all its parts (closed, or restarting) is
-//!   waited for the same way, its only robot too: the run never ends for
-//!   it. If a
-//!   part the binding uses comes back as something the policy cannot bind to,
-//!   the run stops with [`RunError::Rebind`] naming it.
+//!   ([`Controller::release_to`]); the parts that release names (with their command group) are
+//!   resumed as by [`Controller::resume`] and reported as [`RunEvent::HandedBack`].
+//! - [`Controller::send`] packs `predict`'s output per action entry and sends one timed chunk per
+//!   commanded part: `t0` at the snapshot (or at send, `t0: "send"`), the binding's action grid,
+//!   `valid_until = t0 + min(chunk × dt, ttl)`, `replace_from = t0` and the snapshot's
+//!   `based_on`.
+//! - [`Controller::run`] runs the policy loop: starts on the replan grid, one inference in
+//!   flight, skipped starts with their reasons, leases requested only once a first snapshot of
+//!   the required inputs is complete, window gaps recovered from the host's history store, and
+//!   reporting through [`StartSchedule`]. On the wall clock the grid is phased just after one
+//!   sampled input's publication ([`PhaseAlign`]). If `predict` fails, the controller stops
+//!   sending and releases its leases; the edge holds, then goes safe. If its robot or the host
+//!   is lost, the run stops with [`RunError::Lost`]; in a scene's run a lost robot may rejoin,
+//!   and the loop continues without a lease until the run is re-armed. A run on a session that
+//!   is not armed waits for it ([`RunEvent::WaitingToArm`], [`Controller::waiting`]).
+//! - **Shadow runs** ([`RunMode::Shadow`]). A start that cannot command (no lease held) still
+//!   runs `predict` and packs its actions, so a failing model or a refused action ends the run as
+//!   it would while commanding; nothing is sent. The run commands from the first start whose
+//!   inputs were read with a lease held ([`RunEvent::Shadowing`], [`RunEvent::Commanding`]), and
+//!   [`Predictor::step`] sees every start's actions, marked shadow or sent.
+//! - **Rebinding.** When a robot the binding uses comes back, restarts, redeclares its parts or
+//!   appears, the controller binds the policy again against the current parts and reopens the
+//!   inputs. A gone publisher reports [`RunEvent::InputLost`] once and its skipped starts count
+//!   as `publisher_gone`; its return reports [`RunEvent::Rebound`]. If a part comes back as
+//!   something the policy cannot bind to, the run stops with [`RunError::Rebind`].
 //!
-//! [`Controller::run`] and [`Controller::send`] block: call them from a
-//! plain thread, not from inside the async runtime.
+//! [`Controller::run`] and [`Controller::send`] block: call them from a plain thread, not from
+//! inside the async runtime.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -110,28 +72,19 @@ use crate::participant::Participant;
 use crate::report::run_counters;
 use crate::schedule::{PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
 
-/// Events kept for [`Controller::drain_events`].
 const EVENTS: usize = 256;
-/// How long the run loop sleeps at most between checks of its stop flag.
 const IDLE_SLICE_NS: i64 = 20_000_000;
-/// The least time between two history-store recoveries of a window gap.
 const RECOVER_GAP_NS: i64 = 100_000_000;
-/// The least time between two lease requests.
 const REQUEST_GAP: Duration = Duration::from_millis(50);
 
-/// How long a bind waits in silence before it says what it waits for.
 const BIND_NOTICE_AFTER: Duration = Duration::from_secs(3);
 
-/// A bind's wait for robots: past [`BIND_NOTICE_AFTER`] it logs what it
-/// waits for (a warning, so a caller who configured no logging sees it),
-/// and again whenever that changes.
 struct BindWait<'p> {
     policy: &'p ParticipantId,
     notice_at: tokio::time::Instant,
     said: Option<String>,
 }
 
-/// Why [`BindWait::next`] stopped waiting.
 enum WaitEnd {
     Closed,
     TimedOut,
@@ -155,8 +108,6 @@ impl<'p> BindWait<'p> {
         }
     }
 
-    /// Waits for the next view, or until `deadline`, saying it waits for
-    /// `waiting` once the notice is due.
     async fn next(
         &mut self,
         view: &mut tokio::sync::watch::Receiver<Option<AuthoritySnapshot>>,
@@ -402,7 +353,6 @@ pub struct HandBack {
     pub taken: bool,
 }
 
-/// Who a held lease took its part from: the holder it preempted.
 #[derive(Clone, Debug)]
 struct Taken {
     token: LeaseToken,
@@ -470,10 +420,8 @@ pub struct Step {
     pub actions: Vec<StepAction>,
 }
 
-/// One action entry packed for sending.
 struct Packed {
     entry: String,
-    /// The part it commands; `None` for a dropped entry.
     part: Option<(ChannelId, String)>,
     draft: ChunkDraft,
     fields: Vec<FieldSpec>,
@@ -528,38 +476,22 @@ pub trait Predictor {
     }
 }
 
-/// The lease keeper's shared state: the binding's leases as one
-/// [`LeaseGroup`] (the holder state machine the browser binding runs too),
-/// and a chunk sender per granted token.
 struct Leases {
     group: Mutex<LeaseGroup>,
     publishers: Mutex<BTreeMap<ChannelId, ChunkPublisher>>,
     want: AtomicBool,
-    /// Serialises grants and releases between the keeper and explicit
-    /// calls.
     request: tokio::sync::Mutex<()>,
     wake: Notify,
     ttl: Option<Duration>,
-    /// Ask again for a part a higher class took, once it is free
-    /// ([`Resume::Auto`]).
     auto_resume: AtomicBool,
-    /// The parts a higher class took, not asked for until resumed.
     parked: Mutex<Vec<Parked>>,
-    /// Per held part, who its lease preempted: who it may be handed back to.
     taken: Mutex<BTreeMap<ChannelId, Taken>>,
-    /// The revision of the newest lease end looked at for a hand-back.
     ends_seen: AtomicU64,
-    /// The controller's events, for [`RunEvent::HandedBack`].
     events: Arc<Mutex<VecDeque<RunEvent>>>,
-    /// Serialises what the authority's answers do to the leases (parking a
-    /// part, resuming one handed back) between the threads that apply them:
-    /// the keeper, the run loop and every caller that looks.
     settle: Mutex<()>,
 }
 
 impl Leases {
-    /// The state of a binding commanding `channels`, as `me`: nothing held
-    /// or wanted yet.
     fn new(
         me: &ParticipantId,
         channels: &[ChannelId],
@@ -612,13 +544,10 @@ impl Leases {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Whether `part` (`robot:path`) is parked.
     fn is_parked(&self, part: &str) -> bool {
         self.parked().iter().any(|p| p.part == part)
     }
 
-    /// Parks `channel`, taken by `by`, and the binding's parts in its
-    /// command group (only one member of a group is ever leased).
     fn park(&self, snapshot: &AuthoritySnapshot, channel: ChannelId, by: &Lease) {
         let parts = self.with_group(snapshot, channel);
         let mut parked = self.parked();
@@ -634,8 +563,6 @@ impl Leases {
         }
     }
 
-    /// The binding's parts that are `channel` or in its command group,
-    /// `robot:path`.
     fn with_group(&self, snapshot: &AuthoritySnapshot, channel: ChannelId) -> Vec<String> {
         let group = |c: ChannelId| {
             let part = snapshot.part(c)?;
@@ -650,9 +577,6 @@ impl Leases {
             .collect()
     }
 
-    /// Resumes the parked parts a release in `snapshot` handed back to
-    /// `me` (`LeaseEnd.to`), as [`Controller::resume`] would, those parts
-    /// only. Each end is looked at once.
     fn take_hand_backs(&self, snapshot: &AuthoritySnapshot, me: &ParticipantId) {
         let seen = self.ends_seen.load(Ordering::Relaxed);
         let newest = snapshot.ended.iter().map(|e| e.reason.revision).max();
@@ -695,10 +619,6 @@ impl Leases {
         self.wake.notify_one();
     }
 
-    /// Applies the current authority view: renews the held leases, and
-    /// drops what it no longer backs (lost to a preemption, lapsed, or
-    /// voided by a new epoch) with its chunk sender. A part a higher class
-    /// took is parked, unless the run resumes on its own.
     fn sync(&self, participant: &Participant) {
         // Taken under the lock: a view fetched before it could be older
         // than one another thread applied meanwhile.
@@ -711,10 +631,6 @@ impl Leases {
         self.apply(participant.id(), &snapshot, clock.as_ref(), now);
     }
 
-    /// [`Self::sync`] with `snapshot`, as `me`, at `now`; the caller holds
-    /// the settle lock. Whole, or another thread could take a hand-back's end
-    /// before the preemption it undoes is parked, and the part would stay
-    /// parked.
     fn apply(
         &self,
         me: &ParticipantId,
@@ -728,17 +644,9 @@ impl Leases {
                 self.lost(me, snapshot, channel, &reason, now);
             }
         }
-        // After parking: one snapshot may show both the preemption and the
-        // hand-back.
         self.take_hand_backs(snapshot, me);
     }
 
-    /// The host's `reply` to a request for `channels`. A part asked for
-    /// again that a higher class took meanwhile (the refusal shows it before
-    /// any snapshot did) is lost as a preemption, not merely refused. One a
-    /// snapshot showed taken while the request was out was lost then, and a
-    /// hand-back in that snapshot may have resumed it already: it is not
-    /// parked again.
     fn on_grant_reply(
         &self,
         me: &ParticipantId,
@@ -768,8 +676,6 @@ impl Leases {
         }
     }
 
-    /// `channel`'s lease is gone for `reason`: parked when a higher class
-    /// took it, and its sender dropped.
     fn lost(
         &self,
         me: &ParticipantId,
@@ -787,8 +693,6 @@ impl Leases {
         {
             self.park(snapshot, channel, &by);
         }
-        // A rebind may have taken the part over under a new token
-        // meanwhile: only a sender of no held token goes.
         let held = self.group().lease(channel, now).map(|l| l.token);
         let mut publishers = self.publishers();
         if publishers
@@ -799,10 +703,6 @@ impl Leases {
         }
     }
 
-    /// Takes over the leases the host re-issued for `binding` when it was
-    /// declared (`state`, the reply): a lease group over its parts holding
-    /// them, and a chunk sender per token. The parts not re-issued are
-    /// left to the keeper.
     async fn rebind(
         &self,
         participant: &Participant,
@@ -818,8 +718,6 @@ impl Leases {
         for lease in state.leases.iter().filter(|l| {
             &l.holder == me && l.binding == binding.fingerprint && channels.contains(&l.channel)
         }) {
-            // Sent a full ttl ago: the local deadline is the host expiry's
-            // bound alone, never one this side made up.
             let ttl = i64::try_from(lease.ttl_ns).unwrap_or(i64::MAX);
             let _ = group.request_some(&[lease.channel], binding.fingerprint, None, now - ttl);
             let reply = CtlReply {
@@ -835,7 +733,6 @@ impl Leases {
         }
         let held = group.held(now);
         *self.group() = group;
-        // The host re-issued them under a fresh token: what they took stays.
         for lease in &held {
             if let Some(taken) = self.taken().get_mut(&lease.channel) {
                 taken.token = lease.token;
@@ -864,8 +761,6 @@ impl Leases {
         self.group().holds_all(participant.clock().now_ns())
     }
 
-    /// The parts not held that the keeper may ask for: every one not
-    /// parked.
     fn wanted(&self, participant: &Participant) -> Vec<ChannelId> {
         let unheld = self.group().unheld(participant.clock().now_ns());
         if self.parked().is_empty() {
@@ -885,8 +780,6 @@ impl Leases {
             .collect()
     }
 
-    /// Whether the host has mapped this controller's clock and the clock of
-    /// every present robot it commands (see [`unmapped_clocks`]).
     fn clocks_mapped(&self, participant: &Participant) -> bool {
         let channels = self.group().channels();
         participant.authority_view().with(|view| {
@@ -894,8 +787,6 @@ impl Leases {
         })
     }
 
-    /// Waits until the clocks are mapped, or the session stops being armed
-    /// (the grant then says why).
     async fn wait_for_clocks(
         &self,
         participant: &Participant,
@@ -931,9 +822,6 @@ impl Leases {
         }
     }
 
-    /// Waits until the publisher of every stream this binding has a
-    /// contract on has installed its delivery plan (the host grants no lease
-    /// before), or the session stops being armed (the grant then says why).
     async fn wait_for_plans(
         &self,
         participant: &Participant,
@@ -968,18 +856,12 @@ impl Leases {
         }
     }
 
-    /// Requests the leases not held, robot by robot, so a robot that is
-    /// gone or stopped on its own never keeps the others from moving, and
-    /// declares a sender per new token. Fails only when no robot granted
-    /// any.
     async fn grant(
         &self,
         participant: &Participant,
         keeper: bool,
     ) -> Result<Vec<Lease>, SessionError> {
         let _request = self.request.lock().await;
-        // A release (or hand-back) that ran while the keeper waited for the
-        // lock: nothing is wanted any more.
         if keeper && !self.want.load(Ordering::Relaxed) {
             return Ok(Vec::new());
         }
@@ -987,7 +869,6 @@ impl Leases {
             .ttl
             .map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
         let unheld = self.wanted(participant);
-        // One request per robot, for its present parts.
         let mut robots: Vec<(ParticipantId, Vec<ChannelId>)> = Vec::new();
         participant.authority_view().with(|view| {
             let Some(view) = view else {
@@ -1056,9 +937,6 @@ impl Leases {
         Ok(granted)
     }
 
-    /// Records whom each lease a grant's `reply` issued took its part from:
-    /// the preemptions its state's ring shows (the grant's own are the
-    /// newest).
     fn note_taken(&self, me: &ParticipantId, reply: &CtlReply) {
         let mut taken = self.taken();
         for lease in reply.leases.iter().filter(|l| &l.holder == me) {
@@ -1088,11 +966,6 @@ impl Leases {
         }
     }
 
-    /// Hands every held lease back to the `to`-class policy it took its part
-    /// from (`ReleaseLease.to`): one release per lease token and policy.
-    /// Checked here first, all of them before any is sent (the host checks
-    /// again): a part taken from nobody or from another class, a held robot,
-    /// a host without the feature.
     async fn hand_back(
         &self,
         participant: &Participant,
@@ -1165,7 +1038,6 @@ impl Leases {
                 }
             }
         }
-        // From here the keeper asks for nothing: the parts go to the model.
         let wanted = self.want.swap(false, Ordering::Relaxed);
         let mut handed: Vec<(ParticipantId, Vec<ChannelId>)> = Vec::new();
         for (token, holder, channels) in sends {
@@ -1180,7 +1052,6 @@ impl Leases {
             };
             if let Some(err) = refused {
                 if handed.is_empty() {
-                    // Nothing went: the keeper keeps them as before.
                     self.want.store(wanted, Ordering::Relaxed);
                     return Err(err);
                 }
@@ -1204,21 +1075,17 @@ impl Leases {
         Ok(handed)
     }
 
-    /// Gives every held lease back.
     async fn release(&self, participant: &Participant) -> Result<(), SessionError> {
         let _request = self.request.lock().await;
         let commands = self.group().release();
         self.publishers().clear();
         for command in commands {
-            // A refusal means it is already gone (preempted, lapsed, a new
-            // epoch): nothing to give back.
             participant.command(command).await?;
         }
         Ok(())
     }
 }
 
-/// A priority class as the SDKs name it (`model`).
 fn class_name(class: PriorityClass) -> &'static str {
     match class {
         PriorityClass::Safety => "safety",
@@ -1228,11 +1095,6 @@ fn class_name(class: PriorityClass) -> &'static str {
     }
 }
 
-/// Who still needs a clock mapping before `me` can command `channels`: an
-/// edge rejects a chunk until its robot's clock and its sender's are mapped
-/// (`NoClockMapping`), so leases taken earlier only produce rejected chunks.
-/// A ticked session needs none, and a robot that is gone is asked for no
-/// lease, so it never keeps the others waiting.
 fn unmapped_clocks<'a>(
     view: &'a AuthoritySnapshot,
     me: &'a ParticipantId,
@@ -1256,10 +1118,6 @@ fn unmapped_clocks<'a>(
     unmapped
 }
 
-/// The streams `me`'s binding has a contract on whose present publisher has
-/// not installed the current delivery plan: the host grants `me` no lease
-/// until it has. A robot that is gone keeps nobody waiting: the grant says
-/// why.
 fn uninstalled_plans(view: &AuthoritySnapshot, me: &ParticipantId) -> Vec<ChannelId> {
     let Some(binding) = view.binding(me) else {
         return Vec::new();
@@ -1280,7 +1138,6 @@ fn uninstalled_plans(view: &AuthoritySnapshot, me: &ParticipantId) -> Vec<Channe
         .collect()
 }
 
-/// Keeps the leases while they are wanted (see the module docs).
 async fn keep_leases(
     participant: Arc<Participant>,
     leases: Arc<Leases>,
@@ -1317,8 +1174,6 @@ async fn keep_leases(
     }
 }
 
-/// Reports an inference pending past the configured bound (a timer,
-/// not an average over completions).
 async fn watch_pending(
     participant: Arc<Participant>,
     schedule: Arc<Mutex<StartSchedule>>,
@@ -1351,16 +1206,11 @@ async fn watch_pending(
     }
 }
 
-/// A binding and the inputs opened for it, swapped together when the
-/// controller binds again.
 struct Bound {
     binding: Arc<Binding>,
     inputs: Inputs,
 }
 
-/// One robot a binding reads, commands or names, as the authority state
-/// shows it: present or not, its process (generation) and its parts'
-/// streams.
 #[derive(Clone, Debug, PartialEq)]
 struct Source {
     present: bool,
@@ -1369,7 +1219,6 @@ struct Source {
 }
 
 impl Source {
-    /// `robot` in `view`; `None` when the session has never heard of it.
     fn of(view: &AuthoritySnapshot, robot: &ParticipantId) -> Option<Self> {
         let info = view.participant(robot);
         let parts: Vec<(String, ChannelId)> = view
@@ -1389,7 +1238,6 @@ impl Source {
     }
 }
 
-/// An input whose publisher is gone.
 #[derive(Clone, Debug, PartialEq)]
 struct Gone {
     entry: String,
@@ -1397,18 +1245,13 @@ struct Gone {
     why: String,
 }
 
-/// What the watcher knows of the binding's sources.
 #[derive(Default)]
 struct Sources {
-    /// Each watched robot as it was last looked at.
     seen: BTreeMap<ParticipantId, Option<Source>>,
-    /// The inputs whose publisher is gone.
     gone: Vec<Gone>,
-    /// Why the binding no longer stands: ends a run.
     failed: Option<String>,
 }
 
-/// Binds the policy again when its sources change (see the module docs).
 struct Rebinder {
     policy: Policy,
     options: RunOptions,
@@ -1430,9 +1273,6 @@ impl Rebinder {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The robots to follow: those `binding` reads or commands, the robots
-    /// the policy's selectors (and the run's `at` overrides) name, and the
-    /// robot it was bound to.
     fn watched(&self, binding: &Binding) -> BTreeSet<ParticipantId> {
         let mut robots = BTreeSet::new();
         robots.insert(binding.robot.clone());
@@ -1479,7 +1319,6 @@ impl Rebinder {
         })
     }
 
-    /// Takes the sources as they are now as the ones bound against.
     fn settle(&self, participant: &Participant) {
         let bound = self.bound();
         if let Some(seen) = self.look(participant, &bound.binding) {
@@ -1487,9 +1326,6 @@ impl Rebinder {
         }
     }
 
-    /// Looks at the sources again: reports inputs whose publisher went away,
-    /// and binds again when one came back, restarted, declared its parts
-    /// again or appeared.
     async fn check(
         &self,
         participant: &Participant,
@@ -1525,7 +1361,6 @@ impl Rebinder {
         {
             Ok(rebound) => rebound,
             Err(Failed::Transient(err)) => {
-                // Looked at again on the next view.
                 warn!(participant = %participant.id(), %err, "binding again failed; retrying");
                 return;
             }
@@ -1543,8 +1378,6 @@ impl Rebinder {
         let mut sources = self.sources();
         sources.seen = now;
         let reported: Vec<String> = sources.gone.iter().map(|g| g.entry.clone()).collect();
-        // A part declared again in one step is bound again at once: only
-        // what stays gone, or went blank, was lost.
         for lost in gone_before.iter().filter(|g| !reported.contains(&g.entry)) {
             let blank = current
                 .binding
@@ -1579,10 +1412,6 @@ impl Rebinder {
         }
     }
 
-    /// Binds the policy against the current parts when a robot it follows
-    /// changed; declares the table when it changed, and opens the inputs
-    /// afresh when a part moved or a robot it reads restarted. The event to
-    /// report, if it bound again.
     async fn rebind(
         &self,
         participant: &Participant,
@@ -1596,9 +1425,6 @@ impl Rebinder {
         let next = match participant.bind(&self.policy, &self.options) {
             Ok(next) => next,
             Err(err) if err.waiting_for().is_some() => return Ok(None),
-            // A robot it uses left with its parts (it closed, or its
-            // process is restarting): its inputs are lost meanwhile, and it
-            // binds again once the robot declares its parts.
             Err(_)
                 if participant
                     .authority_view()
@@ -1622,8 +1448,6 @@ impl Rebinder {
                 )));
             }
         };
-        // A robot it reads whose process changed: its seqs start over, so
-        // its streams are subscribed afresh.
         let restarted: Vec<&ParticipantId> = changed
             .iter()
             .filter(|robot| {
@@ -1671,15 +1495,11 @@ impl Rebinder {
     }
 }
 
-/// Why binding again did not happen.
 enum Failed {
-    /// Tried again on the next view.
     Transient(SessionError),
-    /// The binding no longer stands.
     Stands(String),
 }
 
-/// Every part a binding reads or commands, by entry.
 fn rows(binding: &Binding) -> impl Iterator<Item = (&str, &PartSpec)> {
     binding
         .inputs
@@ -1693,8 +1513,6 @@ fn rows(binding: &Binding) -> impl Iterator<Item = (&str, &PartSpec)> {
         )
 }
 
-/// The robots `binding` reads or commands that declare no part in `view`:
-/// gone from the session, or not declaring their parts yet.
 fn gone_robots<'a>(view: &AuthoritySnapshot, binding: &'a Binding) -> Vec<&'a ParticipantId> {
     let mut gone: Vec<&ParticipantId> = Vec::new();
     for (_, part) in rows(binding) {
@@ -1706,8 +1524,6 @@ fn gone_robots<'a>(view: &AuthoritySnapshot, binding: &'a Binding) -> Vec<&'a Pa
     gone
 }
 
-/// The inputs of `binding` whose publisher `view` shows gone: absent, or no
-/// longer declaring the part.
 fn gone_inputs(view: &AuthoritySnapshot, binding: &Binding) -> Vec<Gone> {
     binding
         .inputs
@@ -1737,8 +1553,6 @@ fn gone_inputs(view: &AuthoritySnapshot, binding: &Binding) -> Vec<Gone> {
         .collect()
 }
 
-/// How the parts `old` binds on the `changed` robots differ in `view`:
-/// `robot:path` and what changed, for a refusal.
 fn what_changed(view: &AuthoritySnapshot, old: &Binding, changed: &[ParticipantId]) -> String {
     let mut seen: Vec<&str> = Vec::new();
     let mut said = Vec::new();
@@ -1799,9 +1613,6 @@ fn what_changed(view: &AuthoritySnapshot, old: &Binding, changed: &[ParticipantI
     said.join("; ")
 }
 
-/// The parts bound again: those that moved to another stream, those a
-/// restarted robot publishes, and the inputs and actions that bound where
-/// they were blank or dropped.
 fn rebound_parts(old: &Binding, next: &Binding, restarted: &[&ParticipantId]) -> Vec<String> {
     let mut parts = Vec::new();
     for (entry, part) in rows(next) {
@@ -1814,7 +1625,6 @@ fn rebound_parts(old: &Binding, next: &Binding, restarted: &[&ParticipantId]) ->
     parts
 }
 
-/// What binding again did, in words.
 fn rebound_message(
     old: &Binding,
     next: &Binding,
@@ -1860,7 +1670,6 @@ fn rebound_message(
     format!("policy {} bound again: {}", next.policy, said.join("; "))
 }
 
-/// Follows the binding's sources until cancelled (see the module docs).
 async fn watch_sources(
     participant: Arc<Participant>,
     rebinder: Arc<Rebinder>,
@@ -1889,13 +1698,8 @@ fn push_event(events: &Mutex<VecDeque<RunEvent>>, event: RunEvent) {
     events.push_back(event);
 }
 
-/// How long a probe of a robot's lockstep key waits for an answer.
 const LOCKSTEP_PROBE: Duration = Duration::from_millis(500);
 
-/// Whether something answers the lockstep exchange on `key` (an
-/// `l/{robot}`). Only for a robot of another session, whose roster this
-/// participant cannot read; in its own session a robot's clock is its
-/// declaration ([`AuthoritySnapshot::clock_of`]).
 pub(crate) async fn serves_lockstep(participant: &Participant, key: &str) -> bool {
     let Ok(replies) = participant
         .transport()
@@ -1909,8 +1713,6 @@ pub(crate) async fn serves_lockstep(participant: &Participant, key: &str) -> boo
     replies.recv_async().await.is_ok()
 }
 
-/// `robot`, or else the one robot that declared parts, when it runs in
-/// lockstep.
 fn lone_lockstep_robot(
     participant: &Participant,
     robot: Option<&ParticipantId>,
@@ -1935,9 +1737,6 @@ fn lone_lockstep_robot(
     (view.clock_of(&target) == Some(RobotClock::Lockstep)).then_some(target)
 }
 
-/// The one robot of `robots` (those a binding reads or commands) that runs
-/// in lockstep, by its declaration. A lockstep robot among several is
-/// refused: stepping several together needs a rule for who advances time.
 fn lockstep_robot(
     participant: &Participant,
     robots: &BTreeSet<&ParticipantId>,
@@ -1977,14 +1776,9 @@ pub struct Controller {
     schedule: Arc<Mutex<StartSchedule>>,
     events: Arc<Mutex<VecDeque<RunEvent>>>,
     runtime: tokio::runtime::Handle,
-    /// How long [`Self::acquire`] waits for the clocks to be mapped, and
-    /// [`Self::release_to`] for the hand-back.
     wait_timeout: Duration,
     stop: AtomicBool,
-    /// The run loop's current phase offset (ns after the replan grid).
     phase_offset_ns: AtomicI64,
-    /// Bumped by every run, so a stop request reaches only the run it was
-    /// meant for.
     runs: AtomicU64,
     cancel: CancellationToken,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -1992,22 +1786,24 @@ pub struct Controller {
 
 impl Controller {
     /// Waits for `robot`'s parts, binds `policy` to them, declares the
-    /// binding and opens its inputs. Only a robot that has not appeared yet
-    /// is waited for (a [`SessionError::Timeout`] naming it, past the bind
-    /// timeout); any other refusal returns at once. Call it on a Tokio
-    /// runtime: the controller's background tasks run there.
+    /// binding and opens its inputs. Call it on a Tokio runtime: the
+    /// controller's background tasks run there.
+    ///
+    /// # Errors
+    ///
+    /// Only a robot that has not appeared yet is waited for
+    /// ([`SessionError::Timeout`] naming it, past the bind timeout); any other
+    /// refusal returns at once.
     pub async fn bind(
         participant: Arc<Participant>,
         policy: &Policy,
         options: &RunOptions,
         config: ControllerConfig,
     ) -> Result<Self, ControllerError> {
-        // What no robot could fix is refused before waiting for any.
         crate::spec::bind::refuse_regardless(policy, options)?;
         let robot: Option<ParticipantId> = options.robot.clone();
         let me = participant.id().clone();
         let deadline = crate::clock::deadline_after(config.bind_timeout);
-        // Entries that name their robots name them from the start.
         let first = match &robot {
             Some(r) => format!("robot {r} to declare its parts"),
             None => crate::spec::bind::waiting_before_any(policy, options)
@@ -2028,24 +1824,17 @@ impl Controller {
                 .await
                 .map_err(|e| e.into_error(config.bind_timeout, &first))?;
         }
-        // A lockstep robot is bound through its own exchange, under its
-        // clock's rules.
         if let Some(lockstep) = robot
             .as_ref()
             .and_then(|robot| lone_lockstep_robot(&participant, Some(robot)))
         {
             return Err(ControllerError::Lockstep(lockstep));
         }
-        // Robots declare one by one: a binding that names robots not
-        // declared yet is tried again on each new view until it stands or
-        // the timeout passes. Anything else it is refused for stands.
         let binding = loop {
             match participant.bind(policy, options) {
                 Ok(binding) => break binding,
                 Err(err) => {
                     let Some(waiting) = err.waiting_for() else {
-                        // Refused under the wall clock's rules: a lone
-                        // lockstep robot is bound under its own.
                         if let Some(lockstep) = lone_lockstep_robot(&participant, None) {
                             return Err(ControllerError::Lockstep(lockstep));
                         }
@@ -2058,8 +1847,6 @@ impl Controller {
                 }
             }
         };
-        // A lockstep robot publishes nothing on the session and steps only
-        // when driven: it is run through its lockstep exchange instead.
         let robots: BTreeSet<&ParticipantId> = binding
             .inputs
             .iter()
@@ -2250,7 +2037,6 @@ impl Controller {
         }
     }
 
-    /// Reports what the run waits for, once each time it changes.
     fn report_waiting(&self, reported: &mut Option<String>) {
         let now = self.waiting();
         if let Some(message) = &now
@@ -2266,7 +2052,6 @@ impl Controller {
         *reported = now;
     }
 
-    /// Reports each robot held since the last look (`reported`).
     fn report_held(&self, reported: &mut Vec<ParticipantId>) {
         let now = self.held_refusals();
         for (robot, message) in &now {
@@ -2306,8 +2091,6 @@ impl Controller {
         })
     }
 
-    /// Reports each part that began refusing for its clock since the last
-    /// look (`refused`).
     fn report_clock_refusals(&self, refused: &mut Vec<ChannelId>) {
         let now = self.clock_refusals();
         for (channel, message) in &now {
@@ -2333,7 +2116,6 @@ impl Controller {
 
     /// Hands the parked parts back to this controller: the keeper asks for
     /// them again (once their holder lets go, when it still holds them).
-    /// Returns the parts, `robot:path`.
     pub fn resume(&self) -> Vec<String> {
         let resumed: Vec<String> = std::mem::take(&mut *self.leases.parked())
             .into_iter()
@@ -2346,7 +2128,6 @@ impl Controller {
         resumed
     }
 
-    /// Reports each part parked since the last look (`reported`).
     fn report_parked(&self, reported: &mut Vec<String>) {
         let now = self.parked();
         for parked in &now {
@@ -2364,15 +2145,16 @@ impl Controller {
         *reported = now.into_iter().map(|p| p.part).collect();
     }
 
-    /// Takes the binding's leases now (all or none), preempting a lower
-    /// class; from then on the keeper holds them, parked or not. First
-    /// waits for the host to map the clocks an edge needs, so a chunk sent
-    /// right after is not rejected, and for the robots' publishers to
-    /// install the delivery plans of the streams it reads, which the host
-    /// needs before any grant (each a [`SessionError::Timeout`] naming what
-    /// is missing, past the wait timeout). A refusal
-    /// (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) leaves the keeper as
-    /// it was, parked parts too.
+    /// Takes the binding's leases now (all or none), preempting a lower class;
+    /// from then on the keeper holds them, parked or not. First waits for the
+    /// host to map the clocks an edge needs and for the robots' publishers to
+    /// install the delivery plans of the streams it reads.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Timeout`] naming what is missing, past the wait timeout.
+    /// A refusal (`LEASE_BUSY`, `GROUP_BUSY`, `NOT_READY`, ...) leaves the keeper
+    /// as it was, parked parts too.
     pub async fn acquire(&self) -> Result<Vec<Lease>, SessionError> {
         let started = std::time::Instant::now();
         self.leases
@@ -2398,16 +2180,17 @@ impl Controller {
         self.leases.release(&self.participant).await
     }
 
-    /// Gives the leases back to the `to`-class policy they took the parts
-    /// from (an operator handing the robot back to the model it preempted),
-    /// and stops the keeper from re-requesting them. That policy resumes
-    /// those parts as by its own [`Self::resume`], with a
-    /// [`RunEvent::HandedBack`]; a plain [`Self::release`] leaves it parked.
-    /// Waits, up to the wait timeout, for it to hold them again
-    /// ([`HandBack::taken`]). Refused, with nothing released, when a lease
-    /// took its part from nobody or from another class, when the robot is
-    /// held (a hand-back never clears a hold), when that policy does not
-    /// support `lease.handback`, or when the host does not.
+    /// Gives the leases back to the `to`-class policy they took the parts from,
+    /// and stops the keeper from re-requesting them. That policy resumes those
+    /// parts as by its own [`Self::resume`], with a [`RunEvent::HandedBack`]; a
+    /// plain [`Self::release`] leaves it parked. Waits, up to the wait timeout,
+    /// for it to hold them again ([`HandBack::taken`]).
+    ///
+    /// # Errors
+    ///
+    /// Refused, with nothing released, when a lease took its part from nobody or
+    /// from another class, when the robot is held, or when that policy or the
+    /// host does not support `lease.handback`.
     pub async fn release_to(&self, to: PriorityClass) -> Result<Vec<HandBack>, SessionError> {
         let handed = self.leases.hand_back(&self.participant, to).await?;
         let view = self.participant.authority().ok_or(SessionError::Closed)?;
@@ -2455,8 +2238,6 @@ impl Controller {
         Ok(packed.into_iter().map(|p| p.entry).zip(sent).collect())
     }
 
-    /// Packs `values` per action entry into a timed chunk draft, as
-    /// [`Self::send`] sends it.
     fn pack(
         &self,
         values: &[(String, Value)],
@@ -2522,7 +2303,6 @@ impl Controller {
         Ok(packed)
     }
 
-    /// Sends each packed chunk under the lease held on its part.
     fn publish(&self, packed: &[Packed]) -> Result<Vec<Sent>, SendError> {
         let mut sent = Vec::with_capacity(packed.len());
         for p in packed {
@@ -2542,8 +2322,6 @@ impl Controller {
             {
                 Some(publisher) => match publisher.send(p.draft.clone()) {
                     Ok(seq) => Sent::Seq(seq),
-                    // Its key went with a token that just ended, before
-                    // the lease group saw it: no lease.
                     Err(SessionError::Key(_)) => Sent::NoLease,
                     Err(err) => return Err(err.into()),
                 },
@@ -2581,7 +2359,6 @@ impl Controller {
         let mut parked = Vec::new();
         let mut waiting = None;
         let mut state = None;
-        // Wall clock only: virtual and lockstep starts stay on their ticks.
         let wall = self
             .participant
             .authority_view()
@@ -2599,7 +2376,6 @@ impl Controller {
                 break Ok(());
             }
             if let Some(reason) = self.lost() {
-                // A run this process stopped ends its policies' runs.
                 if reason.code == ReasonCode::SceneEnded && self.stopped_here() {
                     break Ok(());
                 }
@@ -2634,8 +2410,6 @@ impl Controller {
                 Err(ObserveError::Skipped(skip)) => {
                     let reason = self.skip_reason(&skip);
                     self.skip(t - off, reason);
-                    // A gap inside a window: ask the host's store to fill it
-                    // (recovery), at most every 100 ms.
                     if reason == SkipReason::WindowGap
                         && recovered_at.is_none_or(|at| t - at >= RECOVER_GAP_NS)
                     {
@@ -2660,13 +2434,9 @@ impl Controller {
             if let Some(phase) = phase.as_mut() {
                 phase.sample(&observation.meta, snapshot_ns);
             }
-            // Warm before authority: the first complete snapshot asks for
-            // the leases.
             self.want_leases();
             self.report_held(&mut held);
             self.report_parked(&mut parked);
-            // Any lease held is enough: a robot that is gone or stopped on
-            // its own never starves the others (its actions go unsent).
             let shadow = if shadow_mode {
                 !held_before
             } else {
@@ -2760,9 +2530,6 @@ impl Controller {
         result
     }
 
-    /// Why this controller cannot command now, in words, after a key that
-    /// changes only when the reason does (`pending` while its leases are
-    /// asked for and not yet granted).
     fn shadow_reason(&self) -> (String, String) {
         if let Some(waiting) = self.waiting() {
             return (waiting.clone(), waiting);
@@ -2811,9 +2578,6 @@ impl Controller {
         )
     }
 
-    /// Reports a shadow run's change between shadowing and commanding, and
-    /// a new reason it cannot command (`reported`: the last said; `None`
-    /// once commanding).
     fn report_state(&self, shadow: bool, reported: &mut Option<Option<String>>) {
         if !shadow {
             if *reported != Some(None) {
@@ -2878,14 +2642,12 @@ impl Controller {
         })
     }
 
-    /// Whether this process stopped the scene's run this controller is in.
     #[cfg(not(feature = "fleet"))]
     #[allow(clippy::unused_self)]
     fn stopped_here(&self) -> bool {
         false
     }
 
-    /// Whether this process stopped the scene's run this controller is in.
     #[cfg(feature = "fleet")]
     fn stopped_here(&self) -> bool {
         self.participant.authority_view().with(|view| {
@@ -2900,8 +2662,6 @@ impl Controller {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Why a start is skipped: `publisher_gone` when an input it waits for
-    /// or finds stale has no publisher any more.
     fn skip_reason(&self, skip: &crate::cache::Skip) -> SkipReason {
         let reason = skip.reason();
         if reason == SkipReason::WindowGap {
@@ -3074,9 +2834,6 @@ mod tests {
         }
     }
 
-    /// A model holding the part, asking for it again (its lease expired
-    /// here), and what the host says meanwhile: the operator took the part
-    /// (revision 2), then handed it back to the model (revision 3).
     struct Race {
         model: ParticipantId,
         leases: Leases,
@@ -3125,9 +2882,6 @@ mod tests {
             .count()
     }
 
-    /// The view shows the preemption and the hand-back before the refused
-    /// request's reply is taken in (another thread applied it while the
-    /// request was out): the reply must not park the part again.
     #[test]
     fn a_refusal_taken_in_after_the_hand_back_leaves_the_part_resumed() {
         let Race {
@@ -3145,7 +2899,6 @@ mod tests {
         assert_eq!(handed_back(&leases), 1);
     }
 
-    /// The refusal first: it parks the part, and the hand-back resumes it.
     #[test]
     fn a_refusal_taken_in_before_the_hand_back_parks_until_it() {
         let Race {

@@ -1,11 +1,3 @@
-"""Lossy metadata sanitizer mirroring the native metadata codec's acceptance.
-
-:func:`sanitize_metadata` normalizes an env ``info``/metadata mapping into the
-exact value vocabulary the native codec (``value_codec/metadata.rs`` plus its
-``normalization.rs`` wrapper unwrapping) accepts, stringifying what it would
-reject.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -56,24 +48,18 @@ def sanitize_metadata(info: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _unwrap(value: Any) -> Any:
-    """Apply the codec's wrapper normalization: ``_asdict``, ``tolist``, ``item``.
-
-    Mirrors ``normalization.rs``: the first matching method wins, so namedtuples
-    become dicts and numpy/torch arrays and scalars become plain containers or
-    scalars before type dispatch.
-    """
     for method in ("_asdict", "tolist", "item"):
         unwrapper = getattr(value, method, None)
         if callable(unwrapper):
             return unwrapper()
-    from ._rlmesh import Tensor  # lazy: the native module loads on first use
+    from ._rlmesh import Tensor
 
     if isinstance(value, Tensor):
         return _tensor_tolist(value)
     return value
 
 
-#: ``struct`` codes of the tensor dtypes, little-endian as tensor bytes are.
+#: ``struct`` codes of the tensor dtypes, little-endian.
 _STRUCT_CODES = {
     "bool": "?",
     "uint8": "B",
@@ -91,10 +77,6 @@ _STRUCT_CODES = {
 
 
 def _tensor_tolist(tensor: Any) -> Any:
-    """An ``rlmesh.Tensor`` as the codec encodes it, NumPy's ``tolist`` form.
-
-    Nested lists by shape in C order; a 0-d tensor is its bare element.
-    """
     import struct
 
     shape = list(tensor.shape)
@@ -122,12 +104,7 @@ def _tensor_tolist(tensor: Any) -> Any:
 def _sanitize(
     value: Any, path: tuple[str, ...], seen: frozenset[int], *, strict: bool
 ) -> Any:
-    """Sanitize one value; ``strict`` raises :class:`_UnsupportedError` instead of str().
-
-    The strict mode exists for the enum ``value`` probe: the codec only takes an
-    enum's ``value`` when that value converts cleanly, falling back to ``name``
-    otherwise, so the probe must fail rather than stringify.
-    """
+    """Sanitize one value; ``strict`` raises :class:`_UnsupportedError` instead of str()."""
     value = _unwrap(value)
     if value is None or isinstance(value, bool):
         return value
@@ -172,6 +149,5 @@ def _sanitize(
 def _check_cycle(
     container: object, path: tuple[str, ...], seen: frozenset[int]
 ) -> None:
-    """Reject a container that is its own (transitive) ancestor."""
     if id(container) in seen:
         raise ValueError(f"reference cycle in metadata at {'.'.join(path) or '<root>'}")

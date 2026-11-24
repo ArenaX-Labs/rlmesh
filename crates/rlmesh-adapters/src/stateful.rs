@@ -1,22 +1,11 @@
-//! Per-episode host state around a Gym binding: episode-keyed frame-stacking and the
-//! per-lane assemble/apply seam.
+//! Per-episode host state around a Gym binding: episode-keyed frame-stacking and the per-lane
+//! assemble/apply seam.
 //!
-//! Frame-stacking is per-episode state that used to live host-side in the
-//! Python binding. It lives here, keyed by `episode_id`, so a vectorized serve
-//! route frame-stacks each lane correctly without the state ever crossing the
-//! network or living in Python — and so the in-process path stacks through the
-//! same ring rather than a host-side copy of it.
-//!
-//! [`assemble_obs`] and [`apply_actions`] are the frozen per-lane seam the core
-//! handler drives once per lane. They are deliberately single-sample: a future
-//! fused forward pass stacks N `assemble_obs` outputs into one call, but the
-//! per-lane transform is the ground-truth unit and never grows a batch axis.
-//!
-//! The two genuinely host-language holes cross via traits the binding
-//! implements (so a pure-Rust handler inherits the same engine): custom inputs
-//! via [`CustomTransform`](crate::apply::CustomTransform), and host-side custom
-//! *encodings* (rotation re-packings the native core represents only as a base
-//! encoding) via [`EncodingTransform`].
+//! Frame-stacking lives here keyed by `episode_id`, so a vectorized serve route stacks each lane
+//! correctly and the in-process path shares the same ring. [`assemble_obs`] and [`apply_actions`]
+//! are the per-lane seam the core handler drives once per lane; they never grow a batch axis.
+//! The host-language holes cross via traits the binding implements: custom inputs via
+//! [`CustomTransform`], and host-side custom encodings via [`EncodingTransform`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
@@ -30,34 +19,24 @@ use crate::path::NodePath;
 use crate::plans::{Binding as ResolvedAdapter, ImagePlan, ObsPlan, StackedPlacement};
 use rlmesh_session_core::spec::role::input::StackPad;
 
-/// Upper bound on frame-stack depth (mirrors the spec's `MAX_STACK`). A raw
-/// native caller must not buffer an unbounded window and exhaust memory; the
-/// spec deserializer already enforces this at the wire, the assert guards the
-/// in-process path.
+// Mirrors the spec's `MAX_STACK`; bounds in-process callers so a window cannot grow without limit.
 const MAX_STACK: usize = 64;
 
 /// Host-language hook applying custom *encodings* the native core left in a base
 /// encoding (e.g. a rotation re-packing the spec declared as a `CustomEncoding`,
-/// which resolution shadows to a native base encoding). Distinct from
-/// [`CustomTransform`](crate::apply::CustomTransform), which fills whole custom
-/// *inputs*: an encoding transform repacks an existing payload key (obs) or
-/// action segment in place. The implementor owns which keys/segments it touches.
+/// which resolution shadows to a native base encoding).
+///
+/// Distinct from [`CustomTransform`], which fills whole custom inputs: an encoding transform
+/// repacks an existing payload key (obs) or action segment in place, and owns which keys or
+/// segments it touches.
 pub trait EncodingTransform {
-    /// Repack any custom-encoded observation payload entries, in place,
-    /// **before** frame-stacking (so a stacked input stacks the model's
-    /// representation). A no-op for routes with no observation encoding shims.
-    /// The payload is a [`Value`] tree (`Map`/`List`/leaf); the implementor
-    /// walks to whichever entries it owns.
     fn repack_obs(&self, payload: &mut Value) -> Result<(), ApplyError>;
 
-    /// Repack the model action's custom-encoded segments back to their base
-    /// encoding, in place, **before** the native action conversion. A no-op for
-    /// routes with no action encoding shims.
     fn repack_action(&self, action: &mut Value) -> Result<(), ApplyError>;
 }
 
 /// An [`EncodingTransform`] that touches nothing — for fully declarative routes
-/// (no custom encodings). Parallels [`NoCustoms`](crate::apply::NoCustoms).
+/// (no custom encodings).
 pub struct NoEncodings;
 
 impl EncodingTransform for NoEncodings {
@@ -73,35 +52,26 @@ impl EncodingTransform for NoEncodings {
 /// Per-route, episode-keyed frame-history buffers:
 /// `episode_id -> placement -> rolling window` (window `maxlen = depth`).
 ///
-/// The handler holds one of these per `route_key`, with an edge-driven
-/// lifecycle: an episode's entry appears lazily on first use and is dropped at
-/// episode END ([`evict`](Self::evict)) or on close ([`clear`](Self::clear)) —
-/// never on absence.
-///
-/// The key is the `episode_id` (a UUIDv4), **not** the lane index:
-/// - autoreset reuses a lane's index across episodes, but `episode_id` is fresh
-///   per episode, so old and new entries never collide;
-/// - grouped predict can migrate an episode's slot index between groups, but
-///   `episode_id` is stable, so the entry follows the episode, not the index.
+/// An episode's entry appears on first use and is dropped only at episode end
+/// ([`evict`](Self::evict)) or on close ([`clear`](Self::clear)), never on absence. Keyed by
+/// `episode_id`, not lane index, so autoreset reusing a lane and grouped predict moving an
+/// episode between slots both keep each episode's window intact.
 #[derive(Default)]
 pub struct FrameBuffers {
+    // Keyed by `episode_id`, not lane index: autoreset reuses a lane's index across episodes,
+    // and grouped predict can move an episode between slots.
     inner: HashMap<String, EpisodeWindows>,
 }
 
-/// One episode's frame windows plus the step counter its last frame carried,
-/// for the continuity check a history-delivering runtime is held to, and the
-/// action window an action-source part reads.
 #[derive(Default)]
 struct EpisodeWindows {
     windows: BTreeMap<NodePath, Window>,
     last_step: Option<i64>,
     /// The raw model action executed at each step, in model order, recorded
     /// by [`record_action`]; an observation at step `s` reads row `s - 1`.
-    /// Rows behind the last read are pruned, so it holds at most one chunk.
     actions: BTreeMap<i64, Vec<f32>>,
     /// The step of the episode's first assembled observation, which reads the
-    /// parts' `fill` (no action has executed yet). Every later step needs its
-    /// row, so a missed tick is loud.
+    /// parts' `fill` (no action has executed yet).
     first_step: Option<i64>,
 }
 
@@ -167,10 +137,8 @@ impl FrameBuffers {
 
     /// The step at which the next chunk this episode returns starts executing:
     /// one past its last recorded action, or the last observed step when none
-    /// is recorded yet. The two differ under an async prefetch lead, where the
-    /// request's own observation is `lead` steps before the chunk it asks for
-    /// begins (the frames still queued execute first); the recorded rows know
-    /// where that queue ends, the observation does not.
+    /// is recorded yet. The two differ under an async prefetch lead, where the request's
+    /// observation is `lead` steps before the chunk it asks for begins.
     #[must_use]
     pub fn chunk_start(&self, episode_id: &str) -> i64 {
         let Some(episode) = self.inner.get(episode_id) else {
@@ -191,12 +159,6 @@ impl FrameBuffers {
         self.last_step(episode_id).map_or(0, |last| last + 1)
     }
 
-    /// The raw action row an observation at `step` reads: `None` at the
-    /// episode's first assembled step (the parts read their `fill`), row
-    /// `step - 1` after that, and an error when that row was never recorded,
-    /// so an executed action that skipped [`record_action`] fails loud rather
-    /// than feeding the policy a stale command. Rows behind the read are
-    /// dropped.
     fn previous_action(
         &mut self,
         episode_id: &str,
@@ -220,14 +182,13 @@ impl FrameBuffers {
     }
 
     /// Record that the episode's next frame carries `step`, holding a runtime
-    /// that delivers history to consecutive steps.
+    /// that delivers history to consecutive steps. Call before pushing the frame, once per
+    /// (episode, step).
     ///
-    /// An episode the buffers already hold must advance by exactly one: a gap
-    /// means a replayed step's frame was never delivered, a repeat means one was
-    /// delivered twice, and either would stack a wrong window silently. An
-    /// episode not yet held accepts any step (its window starts here), so a
-    /// cold start or a re-attach mid-episode is fine. Call before pushing the
-    /// frame, once per (episode, step).
+    /// # Errors
+    ///
+    /// An episode already held must advance by exactly one; a gap or a repeat is an error. An
+    /// episode not yet held accepts any step, so a cold start or a mid-episode re-attach is fine.
     pub fn advance_step(&mut self, episode_id: &str, step: i64) -> Result<(), ApplyError> {
         let episode = self.inner.entry(episode_id.to_owned()).or_default();
         if let Some(last) = episode.last_step
@@ -244,32 +205,17 @@ impl FrameBuffers {
         Ok(())
     }
 
-    /// The per-key window map for an episode, created lazily if absent.
     fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<NodePath, Window> {
         &mut self.inner.entry(episode_id.to_owned()).or_default().windows
     }
 }
 
-/// One input's rolling frame window: the `span` most recent processed frames,
-/// oldest first.
-///
-/// `span` is what the window *holds*; the stacked tensor is what the plan's
-/// offsets *gather* out of it. For a contiguous stack the two coincide (hold 4,
-/// stack all 4); a strided stack holds every frame in its reach and gathers a
-/// few (hold 7, stack frames `-6, -4, -2, 0`). One ring, both cases.
 #[derive(Debug, Default)]
 struct Window {
     frames: VecDeque<Tensor>,
 }
 
 impl Window {
-    /// Push one processed frame, padding the start of an episode so the window
-    /// is full from step zero.
-    ///
-    /// The pad is the first observed frame ([`StackPad::First`], the default) or
-    /// a black frame ([`StackPad::Black`]) — raw 8-bit `0` as the plan would
-    /// have produced it, so under `normalize = [-1, 1]` a black pad really is
-    /// `-1.0`.
     fn push(
         &mut self,
         frame: Tensor,
@@ -298,10 +244,6 @@ impl Window {
         Ok(())
     }
 
-    /// Stack the window's frames onto a new leading axis, oldest first.
-    ///
-    /// A contiguous stack takes the whole window; a strided one gathers the
-    /// declared offsets back from the newest frame.
     fn gather(&mut self, entry: &StackedPlacement) -> Result<Tensor, ApplyError> {
         let stacked = match &entry.offsets {
             None => Tensor::stack(self.frames.make_contiguous()),
@@ -340,13 +282,6 @@ impl<const N: usize> From<[Tensor; N]> for Window {
     }
 }
 
-/// A black frame the shape and dtype of a processed one.
-///
-/// Raw 8-bit `0` pushed through the plan is a constant frame, and every step
-/// after the normalize map (channel swap, layout transpose, lead dims) either
-/// permutes or reshapes it — so the level alone reconstructs it exactly:
-/// `normalize`'s low end when the plan normalizes, `0` when it does not. The
-/// `as f32` round trip matches `finalize_dtype`'s own arithmetic bit for bit.
 fn black_frame(frame: &Tensor, plan: &ImagePlan) -> Result<Tensor, ApplyError> {
     let level = plan.normalize.map_or(0.0, |(low, _)| f64::from(low as f32));
     crate::apply::value::encode_f64_to(
@@ -357,24 +292,16 @@ fn black_frame(frame: &Tensor, plan: &ImagePlan) -> Result<Tensor, ApplyError> {
 }
 
 /// Upper bound on the runtime's execution horizon `h` (how many actions of one
-/// predicted chunk are executed before re-planning). A pin above this is a
-/// configuration error, not a capability question: the replay buffer is held in
-/// memory per lane, and a four-digit horizon is always a mis-set knob rather than
-/// a real open-loop plan. Enforced at engine resolve and at the SDK session seam.
+/// predicted chunk are executed before re-planning). Enforced at engine resolve and at the SDK
+/// session seam; a larger pin is a configuration error.
 pub const MAX_EXECUTION_HORIZON: u32 = 1024;
 
 /// Split a chunked model action into its per-step actions (the leading axis is
-/// the chunk axis). A `Value::Tensor` of shape `[chunk, ..]` unstacks along axis
-/// 0 into per-step tensors; a scalar (0-d) tensor has no chunk axis and is a
-/// degenerate single-step "chunk" (matching the run(env) path, which treats a 0-d
-/// output as one step); a `Value::List` is already a list of per-step actions; any
-/// other leaf is a single-step chunk. Called only when the runtime pins a replay
-/// horizon > 1, so the leading axis is taken as the chunk. A mis-shaped multi-dim
-/// output (e.g. a
-/// flat `[dim]` action where `dim > 1`) splits into per-step scalars that fail the
-/// action-space reshape downstream; a flat `[1]` against a dim-1 action space,
-/// however, splits cleanly and is accepted — shape inference cannot catch that
-/// degenerate case, so a model that forgets the chunk axis is the caller's bug.
+/// the chunk axis).
+///
+/// A `Value::Tensor` of shape `[chunk, ..]` unstacks along axis 0; a 0-d tensor or any other
+/// leaf is a single-step chunk; a `Value::List` is already per-step. A model that omits the chunk
+/// axis is not always caught: a flat `[1]` against a dim-1 action space splits cleanly.
 pub fn split_chunk(raw_action: Value) -> Result<Vec<Value>, ApplyError> {
     match raw_action {
         Value::Tensor(tensor) if tensor.shape().is_empty() => Ok(vec![Value::Tensor(tensor)]),
@@ -385,11 +312,6 @@ pub fn split_chunk(raw_action: Value) -> Result<Vec<Value>, ApplyError> {
             .map(Value::Tensor)
             .collect()),
         Value::List(actions) => Ok(actions),
-        // A Dict-space action chunk carries the horizon as each leaf's leading axis
-        // (e.g. {"arm": tensor[H, ...], "gripper": tensor[H, ...]}); split every
-        // leaf and zip into H per-step Maps. Mirrors the Python `_first_frame`
-        // Mapping recursion and the batched `_dechunk` tree_map, so a Dict action
-        // replays its whole horizon instead of being treated as one frame.
         Value::Map(map) => {
             let mut fields: Vec<(String, Vec<Value>)> = Vec::with_capacity(map.len());
             let mut horizon: Option<usize> = None;
@@ -424,18 +346,12 @@ pub fn split_chunk(raw_action: Value) -> Result<Vec<Value>, ApplyError> {
 
 /// Assemble one lane's model-input payload from its raw observation at `step`.
 ///
-/// Pipeline order (matching the Python truth, `adapter.py:179-205`):
-/// 1. declarative native transform (customs dispatched inside it), with any
-///    action-source part reading the action recorded for `step - 1` (its
-///    `fill` at the episode's first step; a missing row is an error),
-/// 2. observation encoding-shim repack ([`EncodingTransform::repack_obs`]),
-/// 3. per-episode frame-stacking for keys in [`ResolvedAdapter::stacks`].
-///
-/// `step` is read only by an adapter that
-/// [reads its previous action](ResolvedAdapter::reads_previous_action); a
-/// caller that stamps none counts the episode's steps itself
-/// ([`FrameBuffers::next_step`]). Frozen so a future fused path can stack N
-/// `assemble_obs` outputs into one forward pass without re-shaping callers.
+/// In order: the declarative transform (customs dispatched inside it, an action-source part
+/// reading the action recorded for `step - 1`, or its `fill` at the first step; a missing row is
+/// an error), the observation encoding repack ([`EncodingTransform::repack_obs`]), then
+/// per-episode frame-stacking. `step` is read only by an adapter that
+/// [reads its previous action](ResolvedAdapter::reads_previous_action); otherwise a caller can
+/// count steps with [`FrameBuffers::next_step`].
 pub fn assemble_obs(
     adapter: &ResolvedAdapter,
     raw_obs: &BTreeMap<String, Value>,
@@ -459,10 +375,6 @@ pub fn assemble_obs(
         previous.as_deref(),
     )?;
     encodings.repack_obs(&mut payload)?;
-    // Frame-stacking runs as a post-scatter pass over the single precomputed
-    // stacking list ([`ResolvedAdapter::stacked_placements`]): walk the assembled
-    // tree to each stacked placement and stack in place, keyed (in the
-    // per-episode window) by the structured placement.
     let stacked = adapter.stacked_placements();
     if !stacked.is_empty() {
         let windows = buffers.episode(episode_id);
@@ -474,14 +386,9 @@ pub fn assemble_obs(
                     entry.key
                 )));
             }
-            // Move the frame out of the payload slot (overwritten with the
-            // stacked result below) so it lands in the window without a per-step
-            // tensor copy.
             let Value::Tensor(frame) = std::mem::replace(slot, Value::Number(0.0)) else {
                 unreachable!("frame confirmed a tensor above")
             };
-            // After the first frame the window exists, so the steady-state path is a
-            // borrow with no key clone; only the first-frame insert pays the clone.
             let window = if windows.contains_key(&entry.placement) {
                 windows
                     .get_mut(&entry.placement)
@@ -501,11 +408,8 @@ pub fn assemble_obs(
 
 /// Advance one lane's frame windows from a raw observation, assembling nothing.
 ///
-/// The observe tick: an env step that replays a queued action still happened, so
-/// every frame window has to see its frame or the history the next predict
-/// stacks would be the decision points rather than the steps. Pushes exactly the
-/// frames of the stacked image plans and returns; a route with no stacked
-/// input does nothing at all.
+/// Call it for an env step that replays a queued action, so the windows hold every step rather
+/// than only the decision points. A route with no stacked input does nothing.
 pub fn observe_obs(
     adapter: &ResolvedAdapter,
     raw_obs: &BTreeMap<String, Value>,
@@ -533,13 +437,8 @@ pub fn observe_obs(
 /// Convert one lane's model action into the env action [`SpaceValue`], and
 /// record it as the action executed at `step`.
 ///
-/// Runs the action encoding-shim repack ([`EncodingTransform::repack_action`])
-/// **before** the native conversion, matching `adapter.py:318-327`, then encodes
-/// the resulting env-action tensor into the route's `action_space`. Each chunk
-/// frame is applied under the step it executes at (`step + k` for frame `k`),
-/// so the observation at the next step reads it back through an action-source
-/// part ([`record_action`]). Frozen so a future externalize-scatter inserts
-/// here without re-shaping callers.
+/// Runs the action encoding repack ([`EncodingTransform::repack_action`]) before the native
+/// conversion. For chunk frame `k`, the caller passes `step + k`.
 pub fn apply_actions(
     adapter: &ResolvedAdapter,
     raw_action: Value,
@@ -560,9 +459,8 @@ pub fn apply_actions(
 /// Record the raw model action executed at `step` for the episode's
 /// action-source parts: the action as the action plan reads it (after any
 /// host-side encoding repack, before any scale, offset, range or scatter), in
-/// model order. A no-op for an adapter with no such part, so a route without
-/// one holds nothing. The record half of [`apply_actions`], for a caller that
-/// converts the action itself (the in-process binding).
+/// model order. A no-op for an adapter with no such part. The record half of
+/// [`apply_actions`], for a caller that converts the action itself.
 pub fn record_action(
     adapter: &ResolvedAdapter,
     raw_action: &Value,
@@ -591,13 +489,6 @@ pub fn record_action(
     Ok(())
 }
 
-/// Encode an env-action tensor into the action [`SpaceValue`] for `space`.
-///
-/// The inverse of [`space_value_to_value`] for the action side, mirroring the
-/// binding's `py_any_to_space_value` semantics: a `Box` casts to the space dtype
-/// and shape; a `Discrete`/`MultiDiscrete` rejects non-integral values rather
-/// than truncating; a `MultiBinary` takes `!= 0`. The native action transform
-/// always yields a float32 vector, so the cast restores the space's dtype.
 fn tensor_to_space_value(action: Tensor, space: &SpaceSpec) -> Result<SpaceValue, ApplyError> {
     let integral = |values: Vec<f64>, kind: &str| -> Result<Vec<i64>, ApplyError> {
         values
@@ -649,9 +540,7 @@ fn tensor_to_space_value(action: Tensor, space: &SpaceSpec) -> Result<SpaceValue
 
 /// Max absolute elementwise difference between two model action values, or
 /// `None` if their shapes/types do not line up (the registration probe treats an
-/// unmeasurable comparison conservatively). Numeric leaves (`Tensor`, `Number`)
-/// diff elementwise; `List`/`Map` take the max over children; other leaves and
-/// shape mismatches return `None`.
+/// unmeasurable comparison conservatively).
 pub fn value_max_abs_diff(left: &Value, right: &Value) -> Option<f64> {
     match (left, right) {
         (Value::Tensor(a), Value::Tensor(b)) => {
@@ -691,11 +580,9 @@ pub fn value_max_abs_diff(left: &Value, right: &Value) -> Option<f64> {
 }
 
 /// Convert a decoded env-observation [`SpaceValue`] leaf into the adapter
-/// [`Value`] payload model. Reproduces the binding's
-/// `decode_value(space_value_to_py_neutral(..))` composition natively (no numpy,
-/// no Python): a `Box` keeps its tensor; a `Discrete` becomes a number; a
-/// `MultiBinary`/`MultiDiscrete` becomes the space's dtyped tensor; `Dict`/
-/// `Tuple` recurse into a map/list.
+/// [`Value`] payload model: a `Box` keeps its tensor, a `Discrete` becomes a number,
+/// `MultiBinary`/`MultiDiscrete` become the space's dtyped tensor, and `Dict`/`Tuple` recurse
+/// into a map/list.
 pub fn space_value_to_value(value: &SpaceValue, space: &SpaceSpec) -> Result<Value, ApplyError> {
     match value {
         SpaceValue::Box(tensor) => Ok(Value::Tensor(tensor.clone())),
@@ -744,16 +631,12 @@ pub fn space_value_to_value(value: &SpaceValue, space: &SpaceSpec) -> Result<Val
 }
 
 /// Bridge a decoded env-observation [`SpaceValue`] into the adapter's raw-obs
-/// envelope, keeping only the top-level entries `referenced` selects. Mirrors
-/// the binding's `decode_referenced_obs`: a `Dict` env yields the selected
-/// top-level entries (keyed by their Dict key); any flat (non-`Dict`) env yields
-/// the single whole-obs leaf under the reserved `OBS_ROOT_KEY`.
+/// envelope, keeping only the top-level entries `referenced` selects.
 ///
-/// `referenced` carries *envelope keys* (see `envelope_key`): a
-/// Dict-rooted source's first path segment, or `OBS_ROOT_KEY` for a root/
-/// Tuple-rooted source. The caller selects the keys: a declarative-only route
-/// passes [`ResolvedAdapter::referenced_obs_keys`]; a route with custom holes
-/// passes all top-level keys so the custom callback sees the full observation.
+/// A `Dict` env yields the selected entries under their keys; any other env yields the whole
+/// observation under the reserved root key. A declarative-only route passes
+/// [`ResolvedAdapter::referenced_obs_keys`]; a route with custom inputs passes every top-level key
+/// so the custom callback sees the full observation.
 pub fn space_value_to_obs_map(
     value: &SpaceValue,
     space: &SpaceSpec,
@@ -772,12 +655,8 @@ pub fn space_value_to_obs_map(
                 if referenced.contains(key.as_str())
                     && let Some(child) = values.get(key)
                 {
-                    // A referenced Dict-space top-level key must not equal the
-                    // reserved whole-observation envelope key, or it would
-                    // silently collide with the root/Tuple-rooted source's
-                    // envelope entry. Only referenced keys are checked: an unused
-                    // env key never aborts a step (it is dropped, not inserted),
-                    // matching `referenced_obs_keys`.
+                    // A referenced key equal to the reserved envelope key would collide with the root source's
+                    // entry; unreferenced keys are dropped, never checked.
                     if key == OBS_ROOT_KEY {
                         return Err(ApplyError::new(format!(
                             "env observation has a top-level key '{OBS_ROOT_KEY}', which collides \
@@ -789,8 +668,6 @@ pub fn space_value_to_obs_map(
             }
         }
         _ => {
-            // A flat (non-Dict) env is a single leaf, presented under the
-            // reserved envelope key a root/Tuple-rooted source references.
             out.insert(OBS_ROOT_KEY.to_owned(), space_value_to_value(value, space)?);
         }
     }
@@ -803,7 +680,6 @@ mod tests {
     use rlmesh_spaces::{DType, DictSpec, SpaceKind, SpaceSpec};
 
     fn frame(base: u8) -> Tensor {
-        // A trivial 2-element uint8 "image" frame.
         Tensor::from_vec(vec![base, base + 1], vec![2], DType::Uint8).expect("frame")
     }
 
@@ -818,15 +694,12 @@ mod tests {
     #[test]
     fn advance_step_holds_an_episode_to_consecutive_steps() {
         let mut buffers = FrameBuffers::new();
-        // A cold episode accepts any step (re-attach mid-episode is fine).
         buffers.advance_step("ep", 7).expect("first step");
         buffers.advance_step("ep", 8).expect("next step");
-        // A repeat or a gap is a delivery bug, not something to stack over.
         let repeat = buffers.advance_step("ep", 8).unwrap_err().to_string();
         assert!(repeat.contains("step 8 arrived after step 8"), "{repeat}");
         let gap = buffers.advance_step("ep", 11).unwrap_err().to_string();
         assert!(gap.contains("expected 9"), "{gap}");
-        // Another episode is its own sequence; eviction forgets the counter.
         buffers
             .advance_step("other", 0)
             .expect("independent episode");
@@ -847,7 +720,6 @@ mod tests {
             .episode("ep-2")
             .insert(NodePath::root().push_key("image"), Window::from([frame(3)]));
         assert_eq!(buffers.episodes(), 2);
-        // Three 2-byte uint8 frames held across the two episodes.
         assert_eq!(buffers.state_bytes(), 6);
 
         buffers.evict("ep-1");
@@ -858,8 +730,6 @@ mod tests {
 
     #[test]
     fn split_chunk_unstacks_a_tensor_leading_axis() {
-        // A [3, 2] uint8 chunk splits into 3 per-step [2] actions, dtype + values
-        // preserved (the zero-copy unstack view materializes correctly).
         let chunk = Tensor::from_vec(vec![0, 1, 2, 3, 4, 5], vec![3, 2], DType::Uint8).unwrap();
         let steps = split_chunk(Value::Tensor(chunk)).expect("split");
         assert_eq!(steps.len(), 3);
@@ -876,23 +746,17 @@ mod tests {
             .collect();
         assert_eq!(bytes, vec![vec![0u8, 1], vec![2, 3], vec![4, 5]]);
 
-        // A List is already per-step; a bare leaf is a degenerate single-step chunk.
         let listed =
             split_chunk(Value::List(vec![Value::Number(1.0), Value::Number(2.0)])).expect("list");
         assert_eq!(listed.len(), 2);
         assert_eq!(split_chunk(Value::Number(7.0)).expect("leaf").len(), 1);
 
-        // A scalar (0-d) tensor has no chunk axis: one step, not an unstack error
-        // (matches the run(env) path, which treats a 0-d output as a single step).
         let scalar = Tensor::from_vec(vec![9], vec![], DType::Uint8).unwrap();
         assert_eq!(split_chunk(Value::Tensor(scalar)).expect("scalar").len(), 1);
     }
 
     #[test]
     fn split_chunk_unstacks_a_map_per_leaf() {
-        // A Dict-space action chunk carries the horizon inside each leaf:
-        // {"arm": [2, 2], "grip": [2, 1]} splits into 2 per-step Maps, each leaf
-        // unstacked along its leading axis (not treated as a single frame).
         let arm = Tensor::from_vec(vec![0, 1, 2, 3], vec![2, 2], DType::Uint8).unwrap();
         let grip = Tensor::from_vec(vec![7, 8], vec![2, 1], DType::Uint8).unwrap();
         let chunk = Value::Map(BTreeMap::from([
@@ -925,7 +789,6 @@ mod tests {
             }
         }
 
-        // Leaves that disagree on horizon are a clear error, not a silent zip.
         let three = Tensor::from_vec(vec![0, 1, 2], vec![3], DType::Uint8).unwrap();
         let two = Tensor::from_vec(vec![0, 1], vec![2], DType::Uint8).unwrap();
         let ragged = Value::Map(BTreeMap::from([
@@ -979,7 +842,6 @@ mod tests {
                 spaces: vec![flat(vec![2], DType::Uint8), flat(vec![1], DType::Uint8)],
             })),
         };
-        // Reference only "cam": "unused" must be dropped (never materialized).
         let referenced: BTreeSet<String> = ["cam".to_owned()].into_iter().collect();
 
         let map = space_value_to_obs_map(&value, &space, &referenced).expect("bridge");
@@ -996,7 +858,6 @@ mod tests {
                 values,
             ))
         };
-        // Equal values -> zero drift; differing values -> the max abs delta.
         assert_eq!(
             value_max_abs_diff(&Value::Number(1.0), &Value::Number(1.0)),
             Some(0.0)
@@ -1013,20 +874,14 @@ mod tests {
             value_max_abs_diff(&tensor(&[1.0, 2.0]), &tensor(&[1.0, 5.0])),
             Some(3.0)
         );
-        // Shape and type mismatches are unmeasurable (the probe handles None).
         assert!(value_max_abs_diff(&tensor(&[1.0]), &tensor(&[1.0, 2.0])).is_none());
         assert!(value_max_abs_diff(&Value::Number(1.0), &tensor(&[1.0])).is_none());
     }
 
-    /// A pass-through (no resize/normalize) single-image adapter that stacks
-    /// `stack` consecutive frames of a 1x1x3 camera `cam`.
     fn stacked_adapter(stack: u32) -> ResolvedAdapter {
         strided_adapter(stack, None, StackPad::First, None)
     }
 
-    /// The same adapter with a declared window: `offsets` gathers, `stack_pad`
-    /// fills the start of an episode, `normalize` (a `(low, high)` pair) is what
-    /// a black pad frame has to land on.
     fn strided_adapter(
         stack: u32,
         offsets: Option<Vec<i32>>,
@@ -1050,8 +905,6 @@ mod tests {
         images_adapter(&[("cam", "cam", image)])
     }
 
-    /// Model image inputs `(placement keys dotted into a tree, source key,
-    /// input)`, each camera a 1x1x3 uint8 leaf of its own role.
     fn images_adapter(inputs: &[(&str, &str, serde_json::Value)]) -> ResolvedAdapter {
         let roles = ["image/primary", "image/secondary"];
         let mut tags = serde_json::Map::new();
@@ -1096,7 +949,6 @@ mod tests {
         crate::lower::resolve(&tags, &obs, &act, &spec, false).expect("resolves")
     }
 
-    /// A 1x1x3 uint8 frame whose every byte is `tag` — a per-step fingerprint.
     fn tagged_obs(tag: u8) -> BTreeMap<String, Value> {
         let image = Tensor::from_vec(vec![tag, tag, tag], vec![1, 1, 3], DType::Uint8)
             .expect("tagged frame");
@@ -1105,7 +957,6 @@ mod tests {
             .collect()
     }
 
-    /// The stacked `cam` tensor's shape and bytes out of an assembled payload.
     fn cam_stack(payload: &Value) -> (Vec<i64>, Vec<u8>) {
         let Value::Map(map) = payload else {
             panic!("payload not a map: {payload:?}");
@@ -1173,12 +1024,6 @@ mod tests {
     fn contiguous_stack_bytes_are_frozen() {
         use crate::apply::NoCustoms;
 
-        // GOLDEN LOCK. A contiguous stack (no declared offsets, first-frame pad)
-        // is the behaviour every spec written before strided history depends on:
-        // oldest-first on a new leading axis, the start of an episode padded with
-        // copies of the first frame, a `maxlen = depth` sliding window. These
-        // bytes are the contract — the window internals may be rebuilt around
-        // them, but they may not move.
         let adapter = stacked_adapter(3);
         let mut buffers = FrameBuffers::new();
         let step = |adapter: &ResolvedAdapter, tag: u8, buffers: &mut FrameBuffers| {
@@ -1196,27 +1041,22 @@ mod tests {
             )
         };
 
-        // (depth, *frame) on a new leading axis.
         assert_eq!(
             step(&adapter, 10, &mut buffers),
             (vec![3, 1, 1, 3], vec![10; 9])
         );
-        // [f0, f0, f1]
         assert_eq!(
             step(&adapter, 11, &mut buffers).1,
             vec![10, 10, 10, 10, 10, 10, 11, 11, 11]
         );
-        // [f0, f1, f2]
         assert_eq!(
             step(&adapter, 12, &mut buffers).1,
             vec![10, 10, 10, 11, 11, 11, 12, 12, 12]
         );
-        // [f1, f2, f3] — the oldest frame is evicted at depth.
         assert_eq!(
             step(&adapter, 13, &mut buffers).1,
             vec![11, 11, 11, 12, 12, 12, 13, 13, 13]
         );
-        // [f2, f3, f4]
         assert_eq!(
             step(&adapter, 14, &mut buffers).1,
             vec![12, 12, 12, 13, 13, 13, 14, 14, 14]
@@ -1227,10 +1067,6 @@ mod tests {
     fn a_strided_window_gathers_the_rldx_frame_table() {
         use crate::apply::NoCustoms;
 
-        // rldx's hand-rolled history: a 7-deep buffer sampled at
-        // `FRAME_INDICES = [0, 2, 4, 6]`, i.e. offsets [-6, -4, -2, 0] off the
-        // current step. The table below is that arithmetic, clamped at the start
-        // of an episode exactly as its `max(end, 0)` does.
         let adapter = strided_adapter(4, Some(vec![-6, -4, -2, 0]), StackPad::First, None);
         let mut buffers = FrameBuffers::new();
         let step = |tag: u8, buffers: &mut FrameBuffers| {
@@ -1247,8 +1083,6 @@ mod tests {
                 .expect("assemble"),
             )
         };
-        // Frames are tagged by their step number, so the expected table reads as
-        // the frame indices upstream would have taken.
         let table: [(u8, [u8; 4]); 9] = [
             (0, [0, 0, 0, 0]),
             (1, [0, 0, 0, 1]),
@@ -1272,11 +1106,6 @@ mod tests {
     fn a_black_pad_lands_on_the_plan_s_normalized_floor() {
         use crate::apply::NoCustoms;
 
-        // hy-vla's window: 6 frames at stride 5, and the slots whose un-clipped
-        // index is negative are BLACK, not a replayed first frame. Under
-        // `normalize = [-1, 1]` "black" is raw 8-bit 0 pushed through the plan,
-        // so the pad frames read -1.0 — the name says what the pixels are, never
-        // what the tensor holds.
         let adapter = strided_adapter(
             6,
             Some(vec![-25, -20, -15, -10, -5, 0]),
@@ -1302,10 +1131,8 @@ mod tests {
         };
         assert_eq!(stacked.shape(), &[6, 1, 1, 3]);
         let values = crate::apply::value::to_f64_vec(stacked);
-        // Five black pad slots at the normalize floor, then the real frame at 1.0.
         assert_eq!(&values[..15], &[-1.0f64; 15]);
         assert_eq!(&values[15..], &[1.0f64; 3]);
-        // The window holds the whole 26-frame span even though it stacks 6.
         assert_eq!(buffers.state_bytes(), 26 * 3 * 4);
     }
 
@@ -1313,10 +1140,6 @@ mod tests {
     fn observing_a_step_advances_the_window_exactly_like_assembling_one() {
         use crate::apply::NoCustoms;
 
-        // The horizon invariant, at the seam: a step whose action was replayed
-        // still pushes its frame. A window ticked by `observe_obs` on the steps
-        // between predicts must therefore stack the same frames as one that
-        // assembled every step.
         let adapter = strided_adapter(3, Some(vec![-4, -2, 0]), StackPad::First, None);
         let assembled = |buffers: &mut FrameBuffers, tag: u8| {
             cam_stack(
@@ -1334,14 +1157,12 @@ mod tests {
             .1
         };
 
-        // Every step assembles (execution_horizon = 1).
         let mut every_step = FrameBuffers::new();
         let mut expected = Vec::new();
         for tag in 0..8u8 {
             expected.push(assembled(&mut every_step, tag));
         }
 
-        // Every third step assembles; the two in between only observe.
         let mut chunked = FrameBuffers::new();
         for tag in 0..8u8 {
             if tag % 3 == 0 {
@@ -1352,8 +1173,6 @@ mod tests {
         }
     }
 
-    /// A model reading a scalar env state and its own previous 2-d joint
-    /// command (fill -1 before the first action), driving a 3-d env action.
     fn previous_adapter() -> ResolvedAdapter {
         let tags: crate::spec::EnvTags = serde_json::from_str(
             r#"{"observation":{"g":{"type":"state","role":"proprio/gripper"}},
@@ -1386,7 +1205,6 @@ mod tests {
         ))
     }
 
-    /// The assembled bare-tensor payload at `step`, for a `g` reading of 9.
     fn assembled(adapter: &ResolvedAdapter, buffers: &mut FrameBuffers, step: i64) -> Vec<f32> {
         use crate::apply::NoCustoms;
         let raw = [("g".to_owned(), vector(&[9.0]))].into_iter().collect();
@@ -1428,18 +1246,13 @@ mod tests {
     fn a_previous_action_part_reads_the_fill_then_the_raw_action_of_the_step_before() {
         let adapter = previous_adapter();
         let mut buffers = FrameBuffers::new();
-        // Step 0: no action has executed, so the part reads its fill.
         assert_eq!(assembled(&adapter, &mut buffers, 0), [9.0, -1.0, -1.0]);
-        // The row is the raw model output, in model order, before any
-        // conversion the env action underwent.
         let env_action = executed(&adapter, &mut buffers, &[0.5, 7.0, 8.0], 0);
         assert!(matches!(env_action, SpaceValue::Box(_)));
         assert_eq!(assembled(&adapter, &mut buffers, 1), [9.0, 7.0, 8.0]);
         executed(&adapter, &mut buffers, &[0.5, 9.0, 10.0], 1);
         assert_eq!(assembled(&adapter, &mut buffers, 2), [9.0, 9.0, 10.0]);
-        // Rows behind the read are pruned; the window holds one row here.
         assert_eq!(buffers.state_bytes(), 3 * 4);
-        // The window clears with the episode.
         buffers.evict("ep");
         assert_eq!(assembled(&adapter, &mut buffers, 0), [9.0, -1.0, -1.0]);
     }
@@ -1465,7 +1278,6 @@ mod tests {
             err.contains("episode ep: the observation at step 1 reads the previous action but no action was recorded for step 0"),
             "{err}"
         );
-        // A row of the wrong width never lands.
         let err = record_action(&adapter, &vector(&[1.0]), &mut buffers, "ep", 0)
             .expect_err("width")
             .to_string();
@@ -1477,8 +1289,6 @@ mod tests {
 
     #[test]
     fn chunk_frames_recorded_under_their_steps_feed_the_replan() {
-        // execution_horizon 4: the predict at step 0 applies four frames under
-        // steps 0..3, and the re-plan at step 4 reads frame 3, not frame 0.
         let adapter = previous_adapter();
         let mut buffers = FrameBuffers::new();
         assembled(&adapter, &mut buffers, 0);
@@ -1488,8 +1298,6 @@ mod tests {
         }
         assert_eq!(buffers.state_bytes(), 4 * 3 * 4);
         assert_eq!(assembled(&adapter, &mut buffers, 4), [9.0, 13.0, 23.0]);
-        // A chunk cut short (the runtime re-planned at step 6) leaves stale
-        // future rows, which the next chunk overwrites before they are read.
         for frame in 0..4 {
             let k = frame as f32;
             executed(
@@ -1517,8 +1325,6 @@ mod tests {
     fn assemble_obs_stacks_each_episode_independently_across_autoreset() {
         use crate::apply::NoCustoms;
 
-        // A frame-stacking (depth-2) single-image adapter that passes the image
-        // through unchanged, so the stacked bytes are exactly the input frames.
         let adapter = stacked_adapter(2);
         let stack =
             |adapter: &ResolvedAdapter, tag: u8, episode: &str, buffers: &mut FrameBuffers| {
@@ -1533,18 +1339,14 @@ mod tests {
                 )
                 .unwrap();
                 let (shape, bytes) = cam_stack(&payload);
-                assert_eq!(shape, vec![2, 1, 1, 3]); // (depth, *frame)
+                assert_eq!(shape, vec![2, 1, 1, 3]);
                 bytes
             };
 
-        // Two lanes (episodes ep-a, ep-b) share ONE FrameBuffers, keyed by
-        // episode_id — the property that makes vectorized stateful correct.
         let mut buffers = FrameBuffers::new();
 
-        // Step 0: each episode first-frame-pads independently.
         assert_eq!(stack(&adapter, 10, "ep-a", &mut buffers), vec![10; 6]);
         assert_eq!(stack(&adapter, 20, "ep-b", &mut buffers), vec![20; 6]);
-        // Step 1: each episode slides independently (no cross-contamination).
         assert_eq!(
             stack(&adapter, 11, "ep-a", &mut buffers),
             vec![10, 10, 10, 11, 11, 11]
@@ -1554,12 +1356,8 @@ mod tests {
             vec![20, 20, 20, 21, 21, 21]
         );
 
-        // Lane A autoresets: the old episode ends (evict) and a NEW episode_id
-        // begins — the engine's per-lane reset edge.
         buffers.evict("ep-a");
-        // The rolled lane first-frame-pads fresh: no leak from ep-a's history.
         assert_eq!(stack(&adapter, 30, "ep-c", &mut buffers), vec![30; 6]);
-        // ...and the still-running lane B continues uncontaminated by either roll.
         assert_eq!(
             stack(&adapter, 22, "ep-b", &mut buffers),
             vec![21, 21, 21, 22, 22, 22]

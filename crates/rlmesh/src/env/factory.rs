@@ -15,7 +15,6 @@ use crate::{
     ENV_RESET_OPTIONS_KEY, Error, InfoDict, Kwargs, Metadata, Result, ServeOptions, Value,
 };
 
-/// The most contract branches a factory may declare.
 const MAX_TAG_BRANCHES: usize = 8;
 
 /// One contract discriminant of a branched factory, including its default
@@ -61,10 +60,9 @@ impl fmt::Debug for MadeEnv {
 
 /// Builds environments.
 ///
-/// Override the associated functions to declare the factory's contract.
-/// Implement [`make`](Self::make); the provided [`EnvFactoryExt::make_env`]
-/// stamps what it returns (tags, branch, reset options), and every library
-/// path uses it.
+/// Implement [`make`](Self::make) and override the associated functions to declare the factory's
+/// contract. The provided [`EnvFactoryExt::make_env`] stamps what `make` returns (tags, branch,
+/// reset options), and every library path uses it.
 pub trait EnvFactory: Sized {
     /// The contract's tags (default `None`).
     fn tags() -> Option<EnvTags> {
@@ -89,7 +87,6 @@ pub trait EnvFactory: Sized {
     }
 
     /// The tags of one discriminant binding (default [`tags`](Self::tags)).
-    /// Override it only alongside [`tag_params`](Self::tag_params).
     fn tags_for(params: &Kwargs) -> Result<Option<EnvTags>> {
         let _ = params;
         Ok(Self::tags())
@@ -108,7 +105,6 @@ pub trait EnvFactory: Sized {
 
     /// Construct an env. `kwargs` holds every discriminant, its default
     /// applied. The returned env is unstamped; library paths call
-    /// [`EnvFactoryExt::make_env`].
     fn make(&mut self, kwargs: &Kwargs) -> Result<MadeEnv>;
 
     /// Release resources (default nothing). The library never closes a
@@ -153,9 +149,6 @@ impl Default for EnvFactoryServeOptions {
 pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
     /// `make` with the kwargs bound (each discriminant's default applied;
     /// a value outside its choices is the ValueError class before `make`
-    /// runs), then stamped: the branch's tags, the branch under
-    /// `ENV_BRANCH_METADATA_KEY`, and `reset_options` under
-    /// `ENV_RESET_OPTIONS_KEY`.
     fn make_env(&mut self, kwargs: &Kwargs) -> Result<MadeEnv> {
         check_branch_table::<Self>()?;
         let (bound, branch) = bind_discriminants::<Self>(kwargs)?;
@@ -180,7 +173,6 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
 
     /// This factory type's describe envelope. Best-effort: each build
     /// default-constructs a factory, and a failed build or space read is an
-    /// `env_spec` badge.
     fn describe() -> Result<Metadata>
     where
         Self: Default,
@@ -196,16 +188,12 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
 
     /// Host this factory's env on `address`, blocking. Runs the branch check
     /// and `prepare()`, makes one env (or `num_envs` lanes), resolves the
-    /// edition, publishes the describe envelope on the handshake, and serves
-    /// in the foreground. The factory is not closed.
     fn serve(&mut self, address: &str, options: EnvFactoryServeOptions) -> Result<()> {
         serve_host(self, address, options, &crate::describe::Host::rust())
     }
 
     /// The async twin of [`serve`](Self::serve): the pre-serve hooks run on
     /// the polling thread inside the first poll, then every lane serves from
-    /// library threads; dropping the future stops the server and closes the
-    /// envs it made.
     fn serve_async(
         &mut self,
         address: &str,
@@ -227,7 +215,6 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
 
 impl<F: EnvFactory> EnvFactoryExt for F {}
 
-/// The in-repo bindings select their describing host without duplicating serve.
 pub(crate) fn serve_host<F: EnvFactory>(
     factory: &mut F,
     address: &str,
@@ -250,7 +237,6 @@ pub(crate) fn serve_host<F: EnvFactory>(
     }
 }
 
-/// Steps 0 to 5 of a factory serve: the built, bound server.
 pub(crate) fn prepare_serve<F: EnvFactory>(
     factory: &mut F,
     address: &str,
@@ -268,8 +254,6 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
     check_branch_table::<F>()?;
     factory.prepare()?;
     let num_envs = options.num_envs.max(1);
-    // Step 3: the edition, resolved once here (env var, the option, the
-    // type) and handed to the server as the caller's answer.
     let edition = crate::editions::resolve_native(EditionSources {
         call: None,
         option: options.workflow_edition.as_deref(),
@@ -281,7 +265,6 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
             workflow_edition: edition.clone(),
             ..ServeOptions::default()
         }),
-        // ENV-18: a branched factory's stamped tags stand.
         tags: if F::tag_params().is_empty() {
             F::tags()
         } else {
@@ -289,8 +272,6 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
         },
         ..EnvServerOptions::default()
     };
-    // Step 5: the full describe envelope, read off the served env (its
-    // default branch) and the resolved edition; best-effort.
     let describe_with = |factory: &mut F, served: crate::env::ServedEnv<'_>| {
         crate::describe::envelope(
             factory.into(),
@@ -337,9 +318,6 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
     Ok(server)
 }
 
-/// A variant catalog as describe's `variants.catalog`: `{id, params,
-/// metadata}` entries; a missing or repeated id is the ValueError class
-/// (describe records it as `catalog_error`).
 pub(crate) fn catalog_entries(variants: &[Variant]) -> Result<serde_json::Value> {
     let mut seen = std::collections::HashSet::new();
     let mut entries = Vec::with_capacity(variants.len());
@@ -368,7 +346,6 @@ fn variant_json(variant: &Variant) -> Result<serde_json::Value> {
     }))
 }
 
-/// Polls a factory serve's cancel token and stops the server when it fires.
 struct CancelWatcher {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fired: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -403,7 +380,6 @@ impl CancelWatcher {
         }
     }
 
-    /// Stop watching; whether the token fired.
     fn stop(mut self) -> bool {
         use std::sync::atomic::Ordering;
         self.stop.store(true, Ordering::SeqCst);
@@ -414,8 +390,6 @@ impl CancelWatcher {
     }
 }
 
-/// Bind `kwargs` with each discriminant's default; the branch binding when
-/// the factory declares discriminants.
 pub(crate) fn bind_discriminants<F: EnvFactory>(
     kwargs: &Kwargs,
 ) -> Result<(Kwargs, Option<Kwargs>)> {
@@ -453,7 +427,6 @@ fn short_type_name<F>() -> &'static str {
     name.rsplit("::").next().unwrap_or(name)
 }
 
-/// Every branch the discriminants declare, the default branch first.
 pub(crate) fn branches<F: EnvFactory>() -> Vec<Kwargs> {
     let params = F::tag_params();
     let mut branches = vec![Kwargs::new()];
@@ -474,13 +447,11 @@ pub(crate) fn branches<F: EnvFactory>() -> Vec<Kwargs> {
             .iter()
             .all(|param| branch.get(&param.name) == Some(&param.default_))
     };
-    // A stable sort keeps the product order after the default branch.
+    // Stable sort keeps the product order after the default branch.
     branches.sort_by_key(|branch| !is_default(branch));
     branches
 }
 
-/// The branch table's checks, each a TypeError. Rust cannot see whether
-/// `tags_for` was overridden.
 pub(crate) fn check_branch_table<F: EnvFactory>() -> Result<()> {
     let params = F::tag_params();
     if params.is_empty() {
@@ -543,7 +514,6 @@ fn kwargs_repr(binding: &Kwargs) -> String {
         .join(", ")
 }
 
-/// Stamp a made env: tags (unvalidated) and a metadata fragment.
 fn stamp(made: MadeEnv, tags: Option<EnvTags>, fragment: Metadata) -> Result<MadeEnv> {
     if tags.is_none() && fragment.is_empty() {
         return Ok(made);
@@ -570,7 +540,6 @@ fn stamp(made: MadeEnv, tags: Option<EnvTags>, fragment: Metadata) -> Result<Mad
     })
 }
 
-/// A vector env serving stamped metadata.
 struct StampedVector {
     env: Box<dyn VectorEnv + Send>,
     metadata: Metadata,
@@ -645,7 +614,6 @@ impl Variant {
     }
 }
 
-/// Text representation: `Variant(id='a', params={'task': 1}, metadata={})`.
 impl fmt::Display for Variant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -664,7 +632,6 @@ impl fmt::Debug for Variant {
     }
 }
 
-/// Format a value with quoted strings and explicit kind spellings.
 pub(crate) fn py_repr(value: &Value) -> String {
     match value {
         Value::None => "None".to_string(),

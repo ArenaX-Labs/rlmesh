@@ -119,8 +119,6 @@ class _FakeNativeClient:
 def test_accessors_read_state_cached_at_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # env_id, num_envs and selected_workflow_edition never borrow the native
-    # client, so they work while another thread holds it in a call (RMT-P5).
     from rlmesh._native import RemoteVectorEnv
 
     fake = _FakeNativeClient(num_envs=3)
@@ -135,8 +133,6 @@ def test_accessors_read_state_cached_at_construction(
 def test_client_timeouts_pass_through_to_native(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # connect_timeout_seconds / request_timeout_seconds ride the constructor
-    # down to the native client instead of being hardcoded to None.
     from rlmesh._native import RemoteVectorEnv
 
     captured: dict[str, Any] = {}

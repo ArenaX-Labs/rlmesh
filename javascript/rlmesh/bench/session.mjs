@@ -1,9 +1,5 @@
-// The native binding's costs on loopback, the twin of bench/session.py (run both: `mise run bench:js:native`).
-//
-// One process: a host, the UR10e and a policy. The robot's control loop runs at 1 kHz
-// (publish the arm, the wrench and the gripper, tick both edges, sleep); its cameras publish
-// 640x480 and 1280x720 frames at 30 Hz. The policy reads the joints, the wrench, the wrist camera
-// (resized to 96x96) and the task at 50 Hz and holds the arm. Prints one JSON line:
+// The native binding's costs on loopback, the twin of bench/session.py (`mise run bench:js:native`).
+// Prints one JSON line:
 //
 //   loop_work_us    one control tick's publish + due calls
 //   loop_late_us    how late each tick woke (Rate.sleep's return), and periods missed
@@ -90,7 +86,6 @@ stop = true;
 const missed = await control;
 await cameras;
 
-// publish alone, in a tight loop (the edge is idle: no lease).
 await policy.release();
 const n = 100_000;
 const zeros = new Float32Array(6);

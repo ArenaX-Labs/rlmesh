@@ -6,22 +6,18 @@ use std::fmt;
 use crate::env::factory::{py_float, py_repr, py_str};
 use crate::{InfoDict, Result, Value};
 
-/// Format an optional float, using `None` when absent.
 fn py_opt_float(value: Option<f64>) -> String {
     value.map_or_else(|| "None".to_string(), py_float)
 }
 
-/// Format an optional integer, using `None` when absent.
 fn py_opt_int(value: Option<i64>) -> String {
     value.map_or_else(|| "None".to_string(), |value| value.to_string())
 }
 
-/// Format a boolean as `True` or `False`.
 fn py_bool(value: bool) -> &'static str {
     if value { "True" } else { "False" }
 }
 
-/// Format a float with a fixed number of decimal places.
 fn py_fixed(value: f64, digits: usize) -> String {
     if value.is_nan() {
         "nan".to_string()
@@ -153,17 +149,10 @@ impl Default for RunResultSaveOptions {
     }
 }
 
-/// The success rate: successes over counted
-/// episodes, an episode whose env reported no outcome (`unknown`) counting as
-/// a failure. `None` when no episode reported an outcome, so an env without
-/// the signal reads as unknown rather than 0%. Errored episodes are not
-/// counted at all (`includedInMetrics: false`); truncated ones are, as
-/// failures unless the env reported a success.
 pub(crate) fn success_rate(successes: u64, unknown: u64, episodes: u64) -> Option<f64> {
     (unknown < episodes).then(|| successes as f64 / episodes as f64)
 }
 
-/// [`success_rate`] over per-episode outcomes.
 pub(crate) fn success_rate_of(outcomes: impl IntoIterator<Item = Option<bool>>) -> Option<f64> {
     let (mut successes, mut unknown, mut episodes) = (0, 0, 0);
     for outcome in outcomes {
@@ -176,10 +165,9 @@ pub(crate) fn success_rate_of(outcomes: impl IntoIterator<Item = Option<bool>>) 
 
 impl RunResult {
     /// Write this result as an `rlmesh.result.v1` bundle and return its path:
-    /// one workload of `options.model` on `options.env`, a folder, or a zip
-    /// when `path` ends `.zip`. The bundle keeps each episode's outcome, not
-    /// its trial ordinal or latency; the run's telemetry rows are kept beside
-    /// the workload.
+    /// one workload of `options.model` on `options.env`, a folder, or a zip when
+    /// `path` ends `.zip`. The bundle keeps each episode's outcome, not its trial
+    /// ordinal or latency; the run's telemetry rows are kept beside the workload.
     pub fn save(
         &self,
         path: impl AsRef<std::path::Path>,
@@ -200,13 +188,15 @@ impl RunResult {
         written
     }
 
-    /// The result the `rlmesh.result.v1` bundle at `path` holds: a bundle
-    /// (folder or zip) of one or several workloads, or a folder of bundles
-    /// read in name order. The workloads' counted episodes come back in
-    /// order with the fields the bundle keeps, indexed afresh from 0 (one
-    /// left out of the metrics, `includedInMetrics: false`, is dropped), and their
-    /// telemetry merged per series (counts add; `avg` and percentiles are
-    /// count-weighted means). Workloads of several models are refused.
+    /// The result the `rlmesh.result.v1` bundle at `path` holds: a bundle (folder
+    /// or zip) of one or several workloads, or a folder of bundles read in name
+    /// order. Counted episodes come back in order, indexed afresh from 0 (one
+    /// excluded from the metrics is dropped), and telemetry is merged per series
+    /// (counts add; `avg` and percentiles are count-weighted means).
+    ///
+    /// # Errors
+    ///
+    /// Workloads of several models are refused.
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<RunResult> {
         super::report::merge(&super::report::read_bundles([path])?)
     }
@@ -365,7 +355,6 @@ impl fmt::Display for StepEvent {
     }
 }
 
-/// The facade result of a native run's report (0-based index, seconds).
 pub(crate) fn from_report(report: &crate::run::runtime::RuntimeReport) -> RunResult {
     RunResult {
         advisories: report
@@ -397,7 +386,6 @@ pub(crate) fn episode_from_summary(
     }
 }
 
-/// One row per `(op, component, metric)` of a telemetry snapshot.
 pub(crate) fn telemetry_rows(
     snapshot: &crate::run::runtime::telemetry::Snapshot,
 ) -> Vec<TelemetryRow> {

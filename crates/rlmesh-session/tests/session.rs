@@ -1,7 +1,3 @@
-//! A session host and several participants in one process, each with its own
-//! transport (one Zenoh session per traffic class), linked over TCP on
-//! localhost.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -42,8 +38,6 @@ const WAIT: Duration = Duration::from_secs(5);
 const GRACE: Duration = Duration::from_millis(300);
 const FT_MAX_AGE: Duration = Duration::from_millis(40);
 
-/// The robot: joint commands in (a group with a Cartesian alternative),
-/// force/torque and a camera out.
 fn robot_map(camera: &str) -> String {
     format!(
         r#"{{
@@ -74,7 +68,6 @@ fn robot_id() -> ParticipantId {
     ParticipantId::new("robot").expect("id")
 }
 
-/// A fingerprint unique to a participant (the binder computes real ones).
 fn fingerprint_of(p: &Participant, revision: u64) -> Fingerprint {
     let id = p
         .id()
@@ -152,7 +145,6 @@ impl World {
         config
     }
 
-    /// A participant whose clock reads the host's plus `shift_ns`.
     async fn join(
         &self,
         id: &str,
@@ -168,7 +160,6 @@ impl World {
         .expect("attach")
     }
 
-    /// The embodiment, with its parts declared.
     async fn robot(&self) -> Participant {
         let robot = self
             .join("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0)
@@ -177,7 +168,6 @@ impl World {
         robot
     }
 
-    /// A controller bound to every commandable part of the robot.
     async fn controller(&self, id: &str, priority: PriorityClass) -> Participant {
         let p = self.join(id, vec![Role::Controller], priority, 0).await;
         let view = p
@@ -211,9 +201,6 @@ fn channel(p: &Participant, path: &str) -> ChannelId {
     p.part(&robot_id(), path).expect(path).channel
 }
 
-/// Arms through `by` and waits until `others` see the new epoch: a lease
-/// request carries its sender's epoch, so one sent from a view that has not
-/// caught up with the arm is refused (`StaleEpoch`), by design.
 async fn arm_seen_by(by: &Participant, others: &[&Participant]) {
     let armed = by.arm().await.expect("arm");
     for p in others {
@@ -238,7 +225,6 @@ async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// The OS RNG, for the hand-rolled handshakes.
 struct Os;
 
 impl Rng for Os {
@@ -250,7 +236,6 @@ impl Rng for Os {
     }
 }
 
-/// The first reply to a query on `key`, as bytes.
 async fn ask(transport: &Transport, key: &str, payload: Option<Vec<u8>>) -> Vec<u8> {
     let mut get = transport.control().get(key).timeout(WAIT);
     if let Some(payload) = payload {
@@ -270,7 +255,6 @@ async fn ask(transport: &Transport, key: &str, payload: Option<Vec<u8>>) -> Vec<
         .into_owned()
 }
 
-/// Every reply to a query on `key` within a second.
 async fn replies(transport: &Transport, key: &str, payload: Vec<u8>) -> Vec<Vec<u8>> {
     let replies = transport
         .session(TrafficClass::Data)
@@ -288,10 +272,6 @@ async fn replies(transport: &Transport, key: &str, payload: Vec<u8>) -> Vec<Vec<
     out
 }
 
-/// A participant built from the wire up, as a board runs one: the
-/// handshake on `hs`, then an [`auth::Link`] sealing verbs with the request
-/// ids it picks. The SDK never sends these (a retry with a fresh seq, a
-/// second process under a live name).
 struct Raw {
     transport: Transport,
     ctl: String,
@@ -300,15 +280,12 @@ struct Raw {
 }
 
 impl World {
-    /// Runs the handshake as `id` with `credential`: the refusal, or a
-    /// candidate not yet attached.
     async fn handshake(&self, id: &str, credential: &Credential) -> Result<Raw, CtlStatus> {
         self.handshake_on(id, credential, WIRE_REVISION)
             .await
             .map_err(|refusal| refusal.status)
     }
 
-    /// [`Self::handshake`], its hello carrying `wire_revision`.
     async fn handshake_on(
         &self,
         id: &str,
@@ -318,7 +295,6 @@ impl World {
         let transport = self.transport().await;
         let keys = self.host.keys();
         wait_for_host(&transport, keys, WAIT).await.expect("host");
-        // The host instance, unverified: a wrong one only fails the handshake.
         let state = ask(&transport, &keys.host_state(), None).await;
         let instance = signed::peek(&state).expect("signed").header.host_instance;
         let id = ParticipantId::new(id).expect("id");
@@ -351,7 +327,6 @@ impl World {
         })
     }
 
-    /// [`Self::handshake`] with the host's credential, then `Attach`.
     async fn raw(&self, id: &str, role: Role) -> Raw {
         let mut raw = self
             .handshake(id, &self.host.credential())
@@ -378,14 +353,12 @@ fn attach(name: &str, role: Role) -> Command {
 }
 
 impl Raw {
-    /// Seals `command` as request `request_id` under a fresh seq.
     fn seal(&mut self, request_id: u64, command: Command) -> Vec<u8> {
         self.link
             .resend(&self.ctl, request_id, None, &command)
             .expect("seal")
     }
 
-    /// Sends sealed bytes: the host's answer, or its plain refusal.
     async fn send(&mut self, request_id: u64, sealed: Vec<u8>) -> Result<CtlReply, CtlError> {
         let mut reply = ask(&self.transport, &self.ctl, Some(sealed)).await;
         match self.link.reply(&self.ctl, &mut reply, request_id, 0) {
@@ -400,7 +373,6 @@ impl Raw {
         self.send(request_id, sealed).await.expect("an answer")
     }
 
-    /// [`Self::call`] as a robot that takes its device view reads replies.
     async fn call_view(&mut self, request_id: u64, command: Command) -> ViewReply {
         let sealed = self.seal(request_id, command);
         let mut reply = ask(&self.transport, &self.ctl, Some(sealed)).await;
@@ -428,7 +400,6 @@ async fn attach_arm_and_grant_a_lease() {
     assert_eq!(lease.holder, *policy.id());
     assert_eq!(lease.binding, fingerprint_of(&policy, 0));
 
-    // The embodiment learns of it through the published update.
     let view = robot
         .wait_for("lease visible to the robot", WAIT, |s| {
             s.lease(arm).is_some()
@@ -439,7 +410,6 @@ async fn attach_arm_and_grant_a_lease() {
     view.check_fence(arm, lease.token, view.epoch)
         .expect("fence");
 
-    // An embodiment cannot take a lease.
     assert_eq!(
         status(robot.grant_lease(arm, None).await.expect_err("refused")),
         CtlStatus::Forbidden
@@ -481,7 +451,6 @@ async fn operator_preempts_the_model_and_fences_its_token() {
     view.check_fence(arm, human.token, view.epoch)
         .expect("new token");
 
-    // The model's stale token is refused, and it cannot take the lease back.
     assert_eq!(
         status(policy.release_lease(&model).await.expect_err("refused")),
         CtlStatus::StaleToken
@@ -497,7 +466,6 @@ async fn operator_preempts_the_model_and_fences_its_token() {
         .await
         .expect("model view");
 
-    // Handing back: the operator releases and the model is granted anew.
     operator.release_lease(&human).await.expect("release");
     let again = policy.grant_lease(arm, None).await.expect("again");
     assert!(again.token > human.token);
@@ -512,7 +480,6 @@ async fn a_rebinding_reissues_the_lease_under_a_fresh_token() {
     policy.arm().await.expect("arm");
     let lease = policy.grant_lease(arm, None).await.expect("grant");
 
-    // A new binding table (another fingerprint) over the same part.
     let view = policy
         .declare_binding(fingerprint_of(&policy, 1), r#"{"rev": 2}"#, vec![arm], 0.0)
         .await
@@ -537,8 +504,6 @@ async fn a_rebinding_reissues_the_lease_under_a_fresh_token() {
             .map(|b| b.table_json.as_str()),
         Some(r#"{"rev": 2}"#)
     );
-    // A grant under the old fingerprint is no longer bound; a renewal under
-    // the new one keeps the fresh token.
     let renewed = policy.grant_lease(arm, None).await.expect("renew");
     assert_eq!(renewed.token, rebound.token);
 }
@@ -572,8 +537,6 @@ async fn a_command_group_holds_one_member_and_switches_atomically() {
     assert!(switched[0].token > joint.token);
     let view = policy.authority().expect("view");
     assert!(view.lease(arm).is_none() && view.lease(tcp).is_some());
-    // The operator takes the joint member: the model's Cartesian lease goes
-    // in the same revision.
     let revision = view.revision;
     operator.grant_lease(arm, None).await.expect("preempt");
     let view = operator.authority().expect("view");
@@ -590,7 +553,6 @@ async fn heartbeat_loss_lapses_the_lease_alone() {
     policy.arm().await.expect("arm");
     let lease = policy.grant_lease(arm, None).await.expect("grant");
 
-    // Heartbeats keep it alive well past the grace.
     tokio::time::sleep(GRACE * 3).await;
     assert_eq!(world.host.snapshot().mode, Mode::Active);
 
@@ -605,8 +567,6 @@ async fn heartbeat_loss_lapses_the_lease_alone() {
     assert!(elapsed >= GRACE - Duration::from_millis(30), "{elapsed:?}");
     assert!(elapsed < GRACE * 3, "lapse took {elapsed:?}");
 
-    // Still present: only its heartbeats stopped. It leases again without
-    // an arm, under a fresh token.
     assert!(view.participant(policy.id()).is_some());
     policy.set_heartbeats_enabled(true);
     let again = policy.grant_lease(arm, None).await.expect("grant");
@@ -635,8 +595,6 @@ async fn a_vanished_holder_ends_its_lease_alone() {
         .await
         .expect("gone");
     assert_eq!(view.mode, Mode::Armed);
-    // Its lease lapses, or it is lost first: heartbeats decide, either way.
-    // Why it ended left the state with its holder.
     assert!(!view.ended.iter().any(|e| e.lease.holder == id));
     let code = loop {
         match events.try_recv().expect("the lease's end was told") {
@@ -671,8 +629,6 @@ async fn a_lost_robot_stays_in_the_roster_and_a_lost_host_is_reported() {
     let transport = robot.transport().clone();
     drop(robot);
     transport.close().await.expect("close");
-    // Only the robot stops: its lease ends, and the session, with no lease
-    // left, is ARMED again.
     let view = policy
         .wait_for("the robot lost", WAIT, |s| {
             s.participant(&id).is_some_and(|p| !p.present)
@@ -712,8 +668,6 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
     arm_seen_by(&operator, &[&policy]).await;
     policy.grant_lease(arm, None).await.expect("grant");
 
-    // A signal forged under a made-up key, or sealed by a non-member, is
-    // dropped at the edge.
     let key = world.host.keys().estop(policy.id());
     let signal = codec::encode_estop_signal(&EstopSignal {
         reason: "forged".into(),
@@ -733,8 +687,6 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!robot.estop_latched(), "never latched");
 
-    // A member's signal: the robot's edge latches it by itself, by the
-    // policy, and the host goes ESTOP.
     policy.estop("test button").await.expect("estop");
     wait_until("the robot latched the signal", || robot.estop_latched()).await;
     let latch = robot.local_estop().expect("latched");
@@ -748,7 +700,6 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
         .expect("the host latched");
     assert!(stopped.leases.is_empty());
     assert_eq!(stopped.mode_reason.by, "policy");
-    // The host authenticated the policy itself only for its own Estop.
     assert_eq!(
         stopped.mode_reason.verified,
         stopped.mode_reason.code == ReasonCode::EstopRemote
@@ -769,8 +720,6 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
         CtlStatus::Forbidden
     );
 
-    // The robot's local clear: its Estop reaches the host first, then the
-    // Clear, so the host ends ESTOP and unlatched.
     robot.clear_estop();
     let cleared = operator
         .wait_for("the local clear", WAIT, |s| !s.estop_latched)
@@ -792,7 +741,6 @@ async fn a_late_observer_gets_the_snapshot_by_query() {
     policy.arm().await.expect("arm");
     let lease = policy.grant_lease(arm, None).await.expect("grant");
 
-    // A fresh transport that never attaches.
     let transport = world.transport().await;
     let started = Instant::now();
     wait_for_host(&transport, world.host.keys(), WAIT)
@@ -809,7 +757,6 @@ async fn a_late_observer_gets_the_snapshot_by_query() {
     );
     assert_eq!(snapshot.lease(arm).map(|l| l.token), Some(lease.token));
 
-    // Attaching as an observer works the same way and is never a controller.
     let viewer = world
         .join("twin", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
@@ -827,11 +774,6 @@ async fn a_late_observer_gets_the_snapshot_by_query() {
     );
 }
 
-/// A state too large for a board's transport (zenoh-pico reassembles at most
-/// 4096 bytes and drops the rest unseen) is followed by its signed header
-/// alone, which a board reads the host instance from. Every other reader
-/// keeps the full state: the first reply, and the one Zenoh's default
-/// consolidation keeps.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_state_too_large_for_a_board_is_followed_by_its_header_alone() {
     let world = World::start().await;
@@ -863,7 +805,6 @@ async fn a_state_too_large_for_a_board_is_followed_by_its_header_alone() {
             out
         }
     };
-    // A small state: one reply, as ever.
     let small = all(ConsolidationMode::None).await;
     assert_eq!(small.len(), 1);
     assert!(small[0].len() < 2048, "{} bytes", small[0].len());
@@ -893,12 +834,10 @@ async fn a_state_too_large_for_a_board_is_followed_by_its_header_alone() {
         codec::decode_state(header.body).is_err(),
         "a header alone is no state to anyone who reads one"
     );
-    // A reader keeping the latest reply per key keeps the full state.
     let latest = all(ConsolidationMode::Latest).await;
     assert_eq!(latest.len(), 1);
     let kept = codec::decode_state(signed::peek(&latest[0]).expect("signed").body);
     assert!(kept.is_ok_and(|s| s.bindings.iter().any(|b| b.table_json == table)));
-    // The SDK's own readers take the state.
     let fetched = policy.fetch_authority().await.expect("fetched");
     assert!(fetched.bindings.iter().any(|b| b.table_json == table));
     let queried = query_authority(&transport, world.host.keys(), WAIT)
@@ -910,7 +849,6 @@ async fn a_state_too_large_for_a_board_is_followed_by_its_header_alone() {
 #[tokio::test(flavor = "multi_thread")]
 async fn heartbeats_estimate_each_participants_clock_offset_within_bound() {
     let world = World::start().await;
-    // Clock domains 5 s ahead of and 2.5 s behind the host.
     let ahead = world
         .join(
             "ahead",
@@ -950,7 +888,6 @@ async fn heartbeats_estimate_each_participants_clock_offset_within_bound() {
         );
         let (session_ns, _) = mapping.to_session_ns(0);
         assert!((session_ns - true_offset).unsigned_abs() <= mapping.error_ns);
-        // The participant converts its own clock through the same mapping.
         let local = participant.clock().now_ns();
         assert!(
             (participant.to_session_ns(local) - (local + true_offset)).unsigned_abs()
@@ -980,12 +917,10 @@ async fn heartbeats_estimate_each_participants_clock_offset_within_bound() {
 async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
     let world = World::start().await;
     let robot = world.robot().await;
-    // Re-declaring the same map is a no-op.
     let revision = world.host.snapshot().revision;
     robot.declare_parts(&raw_camera()).await.expect("redeclare");
     assert_eq!(world.host.snapshot().revision, revision);
 
-    // A late joiner learns the parts with the rest of the snapshot.
     let twin = world
         .join("twin", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
@@ -1001,8 +936,6 @@ async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
         "commandable: an applied stream"
     );
 
-    // Only embodiments declare parts; a malformed map is refused with the
-    // path named; a merge policy that is Later is UNSUPPORTED.
     assert_eq!(
         status(
             twin.declare_parts(&raw_camera())
@@ -1029,7 +962,6 @@ async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
         CtlStatus::Unsupported
     );
 
-    // Leases need a commandable part inside the requester's binding.
     let policy = world.policy().await;
     policy.arm().await.expect("arm");
     assert_eq!(
@@ -1058,7 +990,6 @@ async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
         CtlStatus::NotBound
     );
 
-    // Detaching the owner removes its parts.
     robot.detach().await.expect("detach");
     twin.wait_for("parts removed", WAIT, |s| s.parts.is_empty())
         .await
@@ -1100,7 +1031,6 @@ async fn a_second_participant_under_a_live_id_is_refused_until_the_first_leaves(
         .expect("the id is free again");
 }
 
-/// A policy windowing the force/torque stream and commanding the arm.
 const WINDOWED: &str = r#"{
     "hz": 50,
     "inputs": {"ft": {"kind": "x/ft", "at": "ft", "fields": {"wrench": ["float32", [18]]},
@@ -1133,7 +1063,6 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
     arm_seen_by(&policy, &[&robot]).await;
     let arm = channel(&policy, "arm");
 
-    // Install before authority: no publisher has installed ft's plan yet.
     let err = policy.grant_lease(arm, None).await.expect_err("not ready");
     assert_eq!(status(err), CtlStatus::NotReady);
     let ft = robot.publisher("ft").await.expect("publisher");
@@ -1158,7 +1087,6 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
         "the action grid rides the binding record"
     );
 
-    // Every sample of the window travels at once, one per message.
     let sub = policy
         .subscribe(
             &robot_id(),
@@ -1170,9 +1098,6 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
         )
         .await
         .expect("subscribe");
-    // Probes until the subscription takes one: a sample published before it
-    // has propagated never reaches it. The seqs below count from the last
-    // probe, `base`.
     let started = Instant::now();
     while sub.stats().received == 0 {
         assert!(started.elapsed() < WAIT, "no probe reached the subscriber");
@@ -1184,9 +1109,6 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
     let base = ft.last_seq();
     wait_until("the last probe", || sub.stats().last_seq == base).await;
     let probed = sub.stats();
-    // One at a time: a realtime stream drops what its transmit queue cannot
-    // take at once (a burst on a starved machine), and every one of these
-    // counts.
     for i in 1..=25_u8 {
         let seq = ft
             .publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
@@ -1208,7 +1130,6 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
         (base + 16..=base + 25).collect::<Vec<_>>()
     );
 
-    // The controller leaving withdraws its demand: every sample again.
     policy.detach().await.expect("detach");
     robot
         .wait_for("the demand withdrawn", WAIT, |s| {
@@ -1219,8 +1140,6 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sa
     wait_until("the default plan", || ft.plan() == (None, 0)).await;
 }
 
-/// The signed state's lists: its size with the counters, the mode and the
-/// clock estimates (which vary in any live session) set aside.
 fn listed_size(state: &AuthoritySnapshot) -> usize {
     let mut state = state.clone();
     state.revision = 0;
@@ -1233,10 +1152,6 @@ fn listed_size(state: &AuthoritySnapshot) -> usize {
     codec::encode_state(&state).len()
 }
 
-/// Nothing a departed policy leaves behind (its binding, its demands, why
-/// its leases ended, its clock) stays in the session's state: after a
-/// policy binds, drives and leaves, cleanly or lost, ten times over, the
-/// state is the size it started at.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_returns_to_its_state_size_after_policies_bind_drive_and_leave() {
     let world = World::start_with(|c| c.presence_grace = Duration::from_millis(400)).await;
@@ -1311,7 +1226,6 @@ async fn a_session_returns_to_its_state_size_after_policies_bind_drive_and_leave
         if round % 2 == 0 {
             policy.detach().await.expect("detach");
         } else {
-            // Gone without a word: lost once the presence grace runs out.
             policy.close().await;
         }
         let gone = |s: &AuthoritySnapshot| {
@@ -1344,8 +1258,6 @@ async fn a_session_returns_to_its_state_size_after_policies_bind_drive_and_leave
             listed_size(&initial),
             "round {round}: {state:?}"
         );
-        // Whole, it is the size the first departure left it at (which says
-        // why the mode is what it is), give or take its counters' varints.
         let size = codec::encode_state(&state).len();
         let first = *first.get_or_insert(size);
         assert!(
@@ -1375,14 +1287,10 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         )
         .await
         .expect("subscribe");
-    // A second subscription in the same process: its own replay window.
     let early_again = early
         .subscribe(&robot_id(), "ft", SubscribeOptions::default())
         .await
         .expect("subscribe");
-    // Probes until both subscriptions take one: a sample published before
-    // a subscription has propagated never reaches it. The seqs below count
-    // from the last probe, `base`.
     let started = Instant::now();
     while early_ft.stats().received == 0 || early_again.stats().received == 0 {
         assert!(started.elapsed() < WAIT, "no probe reached the subscribers");
@@ -1396,8 +1304,6 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
     })
     .await;
     let (probed, probed_again) = (early_ft.stats(), early_again.stats());
-    // One at a time: a realtime stream drops what its queue cannot take at
-    // once (a burst on a starved machine), and every one of these counts.
     for i in 1..=6_u8 {
         let seq = base + u64::from(i);
         let published = ft
@@ -1430,13 +1336,11 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         (base + 3..=base + 6).collect::<Vec<_>>(),
         "a window of four"
     );
-    // A value that does not fit the stride is refused at the publisher.
     assert!(matches!(
         ft.publish(0, Bytes::from(vec![0_u8; 8])),
         Err(SessionError::InvalidValue { .. })
     ));
 
-    // The store pages by epoch, watermark and limit.
     let stream = early
         .part(&robot_id(), "ft")
         .expect("ft")
@@ -1478,9 +1382,6 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         .expect("history");
     assert!(other_epoch.iter().all(|p| p.samples.is_empty()));
 
-    // A query sealed under one member's `k_up` is answered under its
-    // `k_down`, encrypted: no other member opens the pages. An unsealed
-    // query is never answered.
     let mut reader = world.raw("reader", Role::Observer).await;
     let mut other = world.raw("other", Role::Observer).await;
     let (history, data) = (
@@ -1509,7 +1410,6 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
             .is_empty()
     );
 
-    // A late joiner is served the host's history, then live samples.
     let late = world
         .join("late", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
@@ -1529,7 +1429,6 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
     assert_eq!(stats.last_seq, base + 6);
     assert_eq!((stats.received, stats.from_history), (4, 4), "the window");
     assert_eq!(stats.lost, 0, "history starts the seq count");
-    // Live samples follow, once the subscription has propagated.
     let started = Instant::now();
     while late_ft.stats().last_seq == base + 6 {
         assert!(started.elapsed() < WAIT, "{:?}", late_ft.stats());
@@ -1543,7 +1442,6 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
     })
     .await;
 
-    // Heartbeats report the newest seq seen per stream.
     let mut health = world.host.watch_health();
     tokio::time::timeout(
         WAIT,
@@ -1558,8 +1456,6 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
     .expect("reported in time")
     .expect("health");
 
-    // The robot's process restarts (its parts kept): its seqs start over
-    // under a newer stream key, and the live subscriber takes them from 1.
     drop(ft);
     drop(robot);
     let started = Instant::now();
@@ -1580,7 +1476,6 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         let _ = ft.publish(robot.clock().now_ns(), ft_payload(8.0));
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Taken from 1 again: no seq of the old process's.
     assert!(
         late_ft.stats().last_seq <= ft.last_seq(),
         "{:?}",
@@ -1590,7 +1485,6 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_late_subscriber_gets_an_event_published_once_from_its_publisher() {
-    // No host store: only the publisher can answer for the event.
     let world = World::start_with(|config| config.history.enabled = false).await;
     let robot = world
         .join("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0)
@@ -1651,7 +1545,6 @@ async fn seq_gaps_count_as_losses_and_old_samples_go_stale() {
         .expect("subscribe");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Raw samples on the stream's key, skipping seqs 3 and 4.
     let raw = world.transport().await;
     let key = robot.keys().data(robot.id(), "ft");
     let channel = ft.spec().channel;
@@ -1705,8 +1598,6 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
         .expect("declare");
     let policy = world.policy().await;
 
-    // Four distinct Zenoh sessions, each linked to the host's session of the
-    // same class (and only to it).
     let transport = robot.transport();
     assert!(!transport.is_shared());
     let mut zids: Vec<_> = TrafficClass::ALL
@@ -1759,8 +1650,6 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
     let pixels = decode_image(cam_sub.spec(), &sample).expect("decode");
     assert_eq!(pixels.len(), 64 * 48 * 3);
     assert!(sample.payload.len() < pixels.len() / 2, "compressed");
-    // Offered at 50 Hz against a 30 Hz ceiling: the ceiling coalesces some
-    // before they are encoded.
     let stats = images.stats();
     assert!(stats.sent >= 5, "{stats:?}");
     assert!(
@@ -1768,7 +1657,6 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
         "{stats:?}"
     );
 
-    // A frame the camera already encoded goes out as it is, byte for byte.
     synthetic_frame(64, 48, 11, &mut frame);
     let jpeg = bytes::Bytes::from(encode_jpeg(&frame, 64, 48, 70).expect("encode"));
     let before = frames.lock().map(|f| f.len()).unwrap_or(0);
@@ -1789,7 +1677,6 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
         .expect("frame");
     assert_eq!(passed.payload, jpeg);
     assert_eq!(images.stats().passed_through, 1);
-    // One of another size is refused before it is sent.
     synthetic_frame(32, 24, 0, &mut frame);
     let small = bytes::Bytes::from(encode_jpeg(&frame, 32, 24, 70).expect("encode"));
     let refused = images
@@ -1821,7 +1708,6 @@ async fn a_virtual_session_steps_through_the_tick_barrier() {
         .join("policy", vec![Role::Controller], PriorityClass::Model, 0)
         .await;
     let arm = channel(&policy, "arm");
-    // A 500 Hz policy on 1 ms ticks: due every second tick.
     policy
         .declare_binding(fingerprint_of(&policy, 0), "{}", vec![arm], 500.0)
         .await
@@ -1876,7 +1762,6 @@ async fn a_virtual_session_steps_through_the_tick_barrier() {
         (policy, decided)
     });
 
-    // The embodiment: publish, ready, wait for the step, repeat.
     let mut steps = Vec::new();
     for k in 0..6_u64 {
         let seq = ft
@@ -1913,7 +1798,6 @@ async fn a_virtual_session_steps_through_the_tick_barrier() {
         vec![0, 2, 4],
         "due on even ticks"
     );
-    // With one tick of latency, the decision of tick k is delivered at k + 1.
     for (k, reference) in &decided {
         let (_, chunks) = &steps[usize::try_from(k + 1).expect("tick")];
         assert_eq!(chunks, &vec![*reference], "tick {}", k + 1);
@@ -1930,8 +1814,6 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
     let observer = world
         .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
-    // Reports are sealed to the host: nothing an observer reads off the
-    // wire decodes as one.
     let plaintext = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let _raw = observer
         .transport()
@@ -1949,7 +1831,6 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
         })
         .await
         .expect("subscribe");
-    // The host relays each participant's newest one in its signed health.
     let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
     let _health = observer
         .host_health({
@@ -1988,7 +1869,6 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
         from_robot && from_policy
     })
     .await;
-    // A pure observer has nothing to report.
     assert!(
         !reports
             .lock()
@@ -2006,8 +1886,6 @@ async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_
     let policy = world.policy().await;
     let host_static = *world.host.credential().host_static();
 
-    // A device key the host never enrolled, and a stale address (another
-    // host's static key): no handshake, so no attach.
     let stranger = Credential::new(StaticKeypair::generate(&mut Os).expect("key"), host_static);
     let other = HostIdentity::generate(&mut Os).expect("identity");
     for credential in [stranger, other.local_credential()] {
@@ -2020,8 +1898,6 @@ async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_
         assert_eq!(status(err), CtlStatus::Unauthenticated);
     }
 
-    // An unsealed verb (any old build, or anyone on the network) is
-    // refused, and nothing changes.
     let transport = world.transport().await;
     let keys = world.host.keys();
     let forged = Request {
@@ -2043,7 +1919,6 @@ async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_
     );
     assert_eq!(world.host.snapshot().mode, Mode::Disarmed);
 
-    // A captured sealed verb replayed as is: its seq is spent.
     let mut twin = world.raw("twin", Role::Observer).await;
     let arm = twin.seal(2, Command::Arm);
     assert!(
@@ -2061,8 +1936,6 @@ async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_
     );
     assert_eq!(world.host.snapshot().revision, armed.revision);
 
-    // Anyone can answer `ctl` or publish on `host/state`: an unsealed reply
-    // and an unsigned snapshot never reach a view.
     let mut fake = armed.clone();
     fake.mode = Mode::Estop;
     fake.revision += 1_000;
@@ -2106,8 +1979,6 @@ async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_
 #[tokio::test(flavor = "multi_thread")]
 async fn a_grant_that_outlives_its_call_stays_pending_and_resolves_with_its_keys() {
     let world = World::start_with(|c| c.presence_grace = Duration::from_secs(30)).await;
-    // A robot that acknowledges its keys only when told: until then the
-    // grant waits for it.
     let mut robot = world.raw("robot", Role::Embodiment).await;
     let keys = world.host.keys().participant_keys(&robot_id());
     let deliveries = robot
@@ -2145,8 +2016,6 @@ async fn a_grant_that_outlives_its_call_stays_pending_and_resolves_with_its_keys
     let SessionError::Pending { pending, .. } = err else {
         panic!("expected a pending request, got {err}");
     };
-    // The robot acknowledges: the grant commits, and the retry takes the
-    // cached reply, keys and all.
     let reply = tokio::spawn(pending.reply());
     let mut request_id = 3;
     while !reply.is_finished() {
@@ -2181,15 +2050,11 @@ async fn a_grant_that_outlives_its_call_stays_pending_and_resolves_with_its_keys
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
-    // Hand-rolled participants send no heartbeats: keep them present.
     let world = World::start_with(|c| c.presence_grace = Duration::from_secs(30)).await;
     let _robot = world.robot().await;
     let policy = world.policy().await;
     let arm = channel(&policy, "arm");
 
-    // A retry keeps its request id and takes a fresh seq: the host answers
-    // it from its reply cache (applied again, this Arm would arm the
-    // disarmed session). Below the window, an id is never applied.
     let mut twin = world.raw("twin", Role::Observer).await;
     let first = twin.call(2, Command::Arm).await;
     assert!(first.result.is_ok());
@@ -2205,8 +2070,6 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
         CtlStatus::Expired
     );
 
-    // A controller's new process: the old one's lease ends, nothing else
-    // stops for it, and the old process is no longer heard.
     policy
         .wait_for("the armed epoch", WAIT, |s| s.epoch == first.state.epoch)
         .await
@@ -2241,9 +2104,6 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
         CtlStatus::Unauthenticated
     );
 
-    // A robot's new process: its own leases end (it may be another
-    // embodiment), and with no lease left ACTIVE becomes ARMED (never
-    // more). The epoch stays: other robots never stop for it.
     let rearmed = twin.call(71, Command::Arm).await.state;
     let binding = rearmed
         .binding(policy.id())
@@ -2255,8 +2115,6 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
         binding,
         ttl_ns: Some(30_000_000_000),
     };
-    // The grant's reply is lost: its retry gets the cached reply, keys
-    // included, and the lease is usable.
     let first = restarted.seal(2, grant.clone());
     let _lost = ask(&restarted.transport, &restarted.ctl, Some(first)).await;
     let granted = restarted.call(2, grant).await;
@@ -2278,8 +2136,6 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     }));
 }
 
-/// A view is dropped for a congested link: only the next one repairs that,
-/// so an idle robot's must keep coming.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_idle_robots_device_view_keeps_coming() {
     let world = World::start().await;
@@ -2317,7 +2173,6 @@ async fn an_idle_robots_device_view_keeps_coming() {
 async fn a_robot_that_asks_gets_its_signed_view_and_one_that_does_not_gets_none() {
     let world = World::start().await;
     let keys = world.host.keys();
-    // Anyone can read the views; the eye's link holds the host's key.
     let eye = world.raw("eye", Role::Observer).await;
     let views = Arc::new(std::sync::Mutex::new(Vec::new()));
     let _sub = eye
@@ -2350,8 +2205,6 @@ async fn a_robot_that_asks_gets_its_signed_view_and_one_that_does_not_gets_none(
     policy.arm().await.expect("arm");
     let lease = policy.grant_lease(arm, None).await.expect("grant");
 
-    // Every view verifies in order, and one comes to show the lease with
-    // its holder's clock.
     let mut verifier = eye.link.host_verifier();
     let mut latest = None;
     wait_until("the robot's view of the lease", || {
@@ -2376,7 +2229,6 @@ async fn a_robot_that_asks_gets_its_signed_view_and_one_that_does_not_gets_none(
     eprintln!("signed device view of a 4-part robot under one lease: {size} bytes");
     assert!(size < 1024, "{size} bytes");
 
-    // Recovery by query: the robot's view, and none for the twin.
     let key = keys.host_view(&robot_id());
     let recovered = auth::open_view(
         &mut eye.link.host_verifier(),
@@ -2399,8 +2251,6 @@ async fn a_robot_that_asks_gets_its_signed_view_and_one_that_does_not_gets_none(
         );
     }
 
-    // Its ctl replies carry its view in place of the state, read without
-    // the state's decoder.
     let mut board = world
         .handshake("board", &world.host.credential())
         .await
@@ -2417,7 +2267,6 @@ async fn a_robot_that_asks_gets_its_signed_view_and_one_that_does_not_gets_none(
     );
     let declare = Command::DeclareParts {
         spec_version: rlmesh_session::wire::version::SPEC_VERSION,
-        // Sensors only: the session is ACTIVE.
         robot_json: r#"{"cam": {"kind": "camera", "width": 64, "height": 48, "hz": 10}}"#.into(),
         seal: Vec::new(),
         board_id: None,
@@ -2486,7 +2335,6 @@ async fn a_devices_entry_bounds_its_class_verbs_and_reads_and_a_change_detaches_
         config
     };
 
-    // Above its cap, and a verb it lacks: NOT_AUTHORIZED.
     let config = as_laptop("spy", vec![Role::Controller], PriorityClass::Operator);
     let err = Participant::attach(world.transport().await, config)
         .await
@@ -2502,7 +2350,6 @@ async fn a_devices_entry_bounds_its_class_verbs_and_reads_and_a_change_detaches_
         CtlStatus::NotAuthorized
     );
 
-    // It reads the robot's streams, as a local observer does.
     let local = world
         .join("local", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
@@ -2530,9 +2377,6 @@ async fn a_devices_entry_bounds_its_class_verbs_and_reads_and_a_change_detaches_
     publish_until("the first samples", 5).await;
     assert!(eye_ft.stats().received > 0, "the laptop reads ur10e");
 
-    // Its entry narrows to another robot: it is detached, and the stream
-    // key rotates past it, so the robot's later samples are the local
-    // observer's alone.
     let mut narrowed = DeviceAccess::new(Some(PriorityClass::Model));
     narrowed.parts = vec!["ur5/**".into()];
     world
@@ -2598,7 +2442,6 @@ device = "local"
         .await;
     right.declare_parts(EYE).await.expect("declare");
 
-    // Only members attach, but anyone may watch.
     let rogue = Participant::attach(
         world.transport().await,
         world.config("rogue", vec![Role::Controller], PriorityClass::Model, 0),
@@ -2609,7 +2452,6 @@ device = "local"
     assert_eq!(status(rogue), CtlStatus::NotAuthorized);
     let cockpit = world.raw("cockpit", Role::Observer).await;
 
-    // One policy binds both placed eyes, and one grant spans them.
     let tracker = world
         .join("tracker", vec![Role::Controller], PriorityClass::Model, 0)
         .await;
@@ -2667,7 +2509,6 @@ device = "local"
         scene.closing.as_ref().map(|r| r.code),
         Some(ReasonCode::SceneEnded)
     );
-    // The robot that asked for its view reads `closing` there.
     let key = world.host.keys().host_view(&eye_l);
     let view = auth::open_view(
         &mut cockpit.link.host_verifier(),
@@ -2683,7 +2524,6 @@ device = "local"
 
 #[tokio::test(flavor = "multi_thread")]
 async fn keep_is_a_host_verb_rate_limited_and_refused_by_a_host_that_records_nothing() {
-    // A host that records nothing.
     let world = World::start().await;
     let cockpit = world
         .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
@@ -2716,7 +2556,6 @@ async fn keep_is_a_host_verb_rate_limited_and_refused_by_a_host_that_records_not
         *kept.lock().expect("kept"),
         [(world.session, "eye-2 froze".to_string())]
     );
-    // At most every 5 s, and a label of at most 64 bytes.
     assert_eq!(
         status(cockpit.keep("again").await.expect_err("too soon")),
         CtlStatus::NotReady
@@ -2728,8 +2567,6 @@ async fn keep_is_a_host_verb_rate_limited_and_refused_by_a_host_that_records_not
     assert_eq!(kept.lock().expect("kept").len(), 1);
 }
 
-/// A host admits a hello on its own wire revision or on none (a board
-/// flashed before revisions were sent), and refuses another by name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_admits_its_own_wire_revision_or_none_and_refuses_another() {
     let world = World::start().await;
@@ -2761,11 +2598,6 @@ async fn a_host_admits_its_own_wire_revision_or_none_and_refuses_another() {
     world.host.shutdown().await;
 }
 
-/// A participant joining a host of an earlier 0.2 pre-release, which sends
-/// no wire revision, refuses it by name as soon as its handshake answers,
-/// well within the join's wait. The stand-in answers what such a host
-/// answers on its base port before the attach: its liveliness, its signed
-/// state and the handshake, with an accept that carries no revision.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_participant_refuses_a_host_that_sends_no_wire_revision_at_once_and_by_name() {
     use zenoh::Wait as _;

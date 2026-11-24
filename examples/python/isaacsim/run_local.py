@@ -18,8 +18,7 @@ def predict(obs):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    # The address carries the session's key: take it from the environment,
-    # since the command line is readable by every user of the machine.
+    # The address carries the session's key: read it from the environment, not the command line.
     parser.add_argument(
         "--address",
         default=os.environ.get("RLMESH_ENV_ADDRESS"),

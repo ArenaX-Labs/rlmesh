@@ -1,21 +1,13 @@
 //! Signal handling for a foreground `serve()`.
 //!
-//! A native foreground serve saves the process's SIGINT and SIGTERM
-//! dispositions on entry and restores both when it returns, by any path, so
-//! it does not use `tokio::signal` (whose handlers can never be removed).
-//! Concurrent foreground serves share one reference-counted installation per
-//! signal: the first to enter saves and installs, a signal stops every
-//! foreground server then serving that asked for it, and the last to return
-//! restores. SIGINT stops a server (it drains and closes its env, then
-//! `serve()` fails with the cancellation class); a second SIGINT while the
-//! stop runs restores the default SIGINT disposition and re-raises it.
-//! SIGTERM stops a server gracefully: it waits for the env or model call in
-//! progress, then closes. A second SIGTERM while the stop runs (a call that
-//! will not return) restores the default SIGTERM disposition and re-raises
-//! it, so the process ends at once.
+//! A foreground serve saves the SIGINT and SIGTERM dispositions on entry and restores them
+//! when it returns, by any path. Concurrent foreground serves share one reference-counted
+//! installation per signal: the first to enter installs, the last to return restores.
 //!
-//! Windows has no SIGTERM; its console-control form is not implemented yet,
-//! so a native foreground serve there installs nothing.
+//! SIGINT stops every foreground server (it drains and closes its env, and `serve()` fails
+//! with the cancellation class); SIGTERM stops gracefully, waiting for the env or model call
+//! in progress. A second signal of either kind while the stop runs restores that signal's
+//! default disposition and re-raises it. On Windows nothing is installed.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,13 +29,10 @@ impl SignalScope {
     }
 }
 
-/// Register a foreground serve that SIGINT and SIGTERM stop.
 pub(crate) fn enter(trigger: ShutdownTrigger) -> SignalScope {
     enter_with(trigger, true)
 }
 
-/// Register a foreground serve that SIGTERM stops, and SIGINT too when
-/// `sigint` (the Python binding handles SIGINT itself).
 pub(crate) fn enter_with(trigger: ShutdownTrigger, sigint: bool) -> SignalScope {
     let interrupted = Arc::new(AtomicBool::new(false));
     #[cfg(unix)]
@@ -58,8 +47,6 @@ pub(crate) fn enter_with(trigger: ShutdownTrigger, sigint: bool) -> SignalScope 
     }
 }
 
-/// Ends the process as an unhandled SIGINT does (status 128 + 2 where a
-/// shell reports it): the default SIGINT disposition, re-raised.
 pub(crate) fn end_by_interrupt() -> ! {
     #[cfg(unix)]
     unix::raise_default(libc::SIGINT);
@@ -83,12 +70,9 @@ mod unix {
 
     use crate::lifecycle::ShutdownTrigger;
 
-    /// Monotonic delivery generations, independent of handler installations.
     static SIGINTS: AtomicUsize = AtomicUsize::new(0);
     static SIGTERMS: AtomicUsize = AtomicUsize::new(0);
-    /// SIGINTs since this installation: the second forces termination.
     static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
-    /// SIGTERMs since this installation: the second forces termination.
     static TERMINATIONS: AtomicUsize = AtomicUsize::new(0);
 
     struct Server {
@@ -148,7 +132,6 @@ mod unix {
         }
     }
 
-    /// Restores `signal`'s default disposition and raises it.
     pub(super) fn raise_default(signal: libc::c_int) {
         // SAFETY: plain libc calls with a valid signal number.
         unsafe {
@@ -253,7 +236,6 @@ mod unix {
         *STATE.lock().unwrap() = None;
     }
 
-    /// Turn received signals into server stops, off the handler.
     fn watch(stop: &AtomicBool, mut ints: usize, mut terms: usize) {
         while !stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(20));

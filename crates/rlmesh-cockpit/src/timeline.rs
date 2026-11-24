@@ -1,14 +1,6 @@
 //! The authority timeline: what changed between consecutive authority
 //! snapshots, and lanes of state over time (session mode, each part's lease
 //! holder, each edge's mode).
-//!
-//! The host publishes snapshots, not its events, so the cockpit derives
-//! the events by diffing them. A lease that disappeared is classed by what
-//! else changed in the same revision: revoked when the mode left
-//! ARMED/ACTIVE or the epoch moved, expired when the snapshot is past its
-//! expiry, voided when the session went SAFE (an edge fell back), released
-//! otherwise. That inference is the cockpit's: the snapshot carries no
-//! reasons.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -106,9 +98,6 @@ fn class(lease: &Lease) -> &'static str {
     }
 }
 
-/// What changed from `old` to `new`, as `(kind, tone, text)`. With no
-/// `old` (the cockpit just attached), the state found.
-/// ` (reason)`, or nothing when none was given.
 fn why(reason: &Reason) -> String {
     if reason.code == ReasonCode::Unspecified {
         String::new()
@@ -533,7 +522,6 @@ mod tests {
             vec![lease("policy", PriorityClass::Model, 7, 100)],
             50,
         );
-        // Preempted by a higher class.
         let taken = snapshot(
             Mode::Active,
             2,
@@ -544,7 +532,6 @@ mod tests {
             texts(&held, &taken)[0]
                 .contains("preempted: operator (operator) took it from policy (model), t8")
         );
-        // Rebound by the same holder.
         let rebound = snapshot(
             Mode::Active,
             2,
@@ -552,31 +539,26 @@ mod tests {
             60,
         );
         assert!(texts(&held, &rebound)[0].contains("rebound by policy: t7 -> t9"));
-        // Gone past its expiry: expired.
         let lapsed = snapshot(Mode::Safe, 2, vec![], 150);
         assert!(
             texts(&held, &lapsed)
                 .iter()
                 .any(|t| t.contains("expired: policy t7"))
         );
-        // Gone early as the session went SAFE: an edge fell back.
         let fell_back = snapshot(Mode::Safe, 2, vec![], 60);
         assert!(
             texts(&held, &fell_back)
                 .iter()
                 .any(|t| t.contains("voided"))
         );
-        // Gone early, nothing else changed: released.
         let released = snapshot(Mode::Active, 2, vec![], 60);
         assert!(texts(&held, &released)[0].contains("released"));
-        // Gone with a disarm: revoked.
         let disarmed = snapshot(Mode::Disarmed, 2, vec![], 60);
         assert!(
             texts(&held, &disarmed)
                 .iter()
                 .any(|t| t.contains("revoked (DISARMED)"))
         );
-        // A grant.
         let free = snapshot(Mode::Armed, 2, vec![], 0);
         assert!(
             texts(&free, &held)

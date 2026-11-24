@@ -1,55 +1,31 @@
 //! The transport: one Zenoh session per traffic class.
 //!
-//! A congested link must never delay control. Zenoh multiplexes every
-//! priority of one session over one link per peer, so over TCP a camera
-//! filling the socket buffer delays heartbeats, lease renewals and commands
-//! behind it (spike step 3: false lease lapses on one shared link). Zenoh's
-//! own fix, several links pinned to priority ranges, needs its
-//! `transport_multilink` feature, which pulls `rsa` (RUSTSEC-2023-0071).
-//!
-//! Instead, a participant's [`Transport`] opens **one Zenoh client session
-//! per [`TrafficClass`]**, each its own TCP connection to the host, so each
-//! class can only starve itself:
+//! A congested link must never delay control. Zenoh multiplexes every priority
+//! of one session over one link per peer, so a camera filling the socket buffer
+//! would delay heartbeats, lease renewals and commands behind it. A
+//! participant's [`Transport`] therefore opens one Zenoh client session per
+//! [`TrafficClass`], each its own connection to the host, so each class can
+//! only starve itself:
 //!
 //! | Class | Zenoh priority | Reliability | Congestion | Express | Carries |
 //! |---|---|---|---|---|---|
-//! | [`TrafficClass::Control`] | RealTime | reliable | BLOCK | yes | liveliness, `ctl`, virtual ticks, the authority state, device views, key deliveries, heartbeats and echoes (those five DROP, see below), chunks of `priority: control` parts |
+//! | [`TrafficClass::Control`] | RealTime | reliable | BLOCK | yes | liveliness, `ctl`, virtual ticks, the authority state, device views, key deliveries, heartbeats and echoes (those five DROP), chunks of `priority: control` parts |
 //! | [`TrafficClass::Realtime`] | InteractiveHigh | best effort | DROP | yes | small state samples, chunks, `_applied` |
 //! | [`TrafficClass::Data`] | Data | best effort; reliable for events | DROP; BLOCK for events | no | small custom kinds, events, history replies |
 //! | [`TrafficClass::Bulk`] | DataLow | best effort | DROP | no | cameras, depth, large custom kinds |
 //!
-//! Every session, the host's included, queues up to
-//! [`REALTIME_QUEUE_BATCHES`] transmit batches per link for the Realtime
-//! class's priority, where Zenoh's default of 2 drops samples in bursts.
+//! The host listens on one port with one session, which every class session
+//! of every participant dials. Each key belongs to one class, so each class
+//! session subscribes only its own class's keys. [`stream_qos`] applies these
+//! settings per publisher; in a virtual-clock session every data stream is
+//! reliable with BLOCK (the tick barrier counts on seqs). Heartbeats, echoes
+//! and the host's state, views and key deliveries are DROP: a stale timing
+//! sample is worthless, the echo is sent from a transport callback that must
+//! never block, and the host's broadcasts are resent until they land.
 //!
-//! The host listens on **one** port with one session, which every class
-//! session of every participant dials: a host is one routing domain. Each
-//! key belongs to one class (both ends pick its session by the same rule),
-//! so each class session subscribes only its own class's keys and the host
-//! sends each message only on the connection of the class it belongs to.
-//!
-//! These settings are applied per publisher by
-//! [`stream_qos`]. Two refinements: in a virtual-clock session every data
-//! stream is reliable with BLOCK (the tick barrier counts on seqs);
-//! and heartbeats and their echoes are DROP rather than BLOCK, because a
-//! stale timing sample is worthless and the echo is sent from a transport
-//! callback, which must never block. The host's own state, views and key
-//! deliveries are DROP too: Zenoh fans a put out to every subscriber from the
-//! calling thread, so BLOCK would let one peer that stopped reading hold the
-//! host task, and each is sent again until it lands. Zenoh 1.10 treats
-//! reliability as a marker that selects the link (a reliable link for reliable data, a
-//! best-effort link such as UDP when one exists); over the TCP and Unix
-//! socket links the session uses, every message rides a reliable link, so
-//! best-effort streams get their real-time behaviour from DROP congestion
-//! control and from never being retransmitted at the session level.
-//!
-//! [`Layout::Shared`] uses one session for every class instead: the host's
-//! listener, in-process tests, Unix sockets, and QUIC (whose multistream
-//! already gives every priority its own stream inside one connection).
-//! Priorities are still set on every message, so the shared layout keeps
-//! Zenoh's own ordering.
-//!
-//! The lockstep class arrives with the Gym view (wave 5).
+//! [`Layout::Shared`] uses one session for every class instead (the host's
+//! listener, in-process tests, Unix sockets, QUIC); priorities are still set
+//! on every message.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -69,9 +45,6 @@ mod links;
 
 use links::{Cut, LinkGuard};
 
-/// How long [`Transport::close`] waits on Zenoh before each step that
-/// forces it: cutting the links with bytes waiting, then every link, then
-/// returning without it.
 const CLOSE_STEP: Duration = Duration::from_secs(1);
 
 /// A traffic class: a separate Zenoh session in [`Layout::PerClass`].
@@ -176,7 +149,6 @@ pub fn stream_qos(spec: &StreamSpec, clock: ClockMode) -> ClassQos {
     qos
 }
 
-/// Declares a publisher on `key` in `class`'s session with `qos`.
 pub(crate) async fn declare_publisher(
     transport: &Transport,
     class: TrafficClass,
@@ -193,18 +165,9 @@ pub(crate) async fn declare_publisher(
         .await?)
 }
 
-/// Heartbeats and their echoes: dropped rather than queued under congestion
-/// (a stale timing sample is worthless, and the echo callback must never
-/// block), sent at once.
 pub(crate) const HEARTBEAT_CONGESTION: CongestionControl = CongestionControl::Drop;
-/// Control verbs and virtual ticks: never dropped.
 pub(crate) const CONTROL_CONGESTION: CongestionControl = CongestionControl::Block;
-/// What the host task publishes and sends again until it lands (the
-/// authority state, device views, key deliveries): dropped for a link that
-/// stopped reading rather than waited on, which would hold up every other
-/// participant.
 pub(crate) const RESENT_CONGESTION: CongestionControl = CongestionControl::Drop;
-/// The Zenoh priority of session control traffic.
 pub(crate) const CONTROL_PRIORITY: Priority = Priority::RealTime;
 
 /// The Zenoh priority a stream's class maps to.
@@ -253,7 +216,6 @@ pub struct TransportTuning {
     pub client: bool,
     /// How long a client's open keeps dialing a host that does not listen
     /// yet before it fails; `None` fails at once, as Zenoh clients do.
-    /// Peers always keep dialing in the background.
     pub connect_timeout: Option<Duration>,
     /// How long one link's open (its handshake, once the TCP connection is
     /// up) may take before Zenoh gives up on it; `None` keeps Zenoh's 10 s.
@@ -362,19 +324,12 @@ impl TransportConfig {
 }
 
 /// Transmit batches each link may queue for [`TrafficClass::Realtime`]
-/// traffic (Zenoh's most, against its default of 2).
-///
-/// Realtime samples are express, so each takes a batch of its own, and a
-/// DROP sample that finds none free within the drop wait is dropped, after
-/// which Zenoh drops the samples behind it while the queue stays congested:
-/// a burst of a few dozen samples back to back lost several on loopback with
-/// 2 batches. Batches are allocated as a burst first needs them and kept, a
-/// batch being the link's batch size (64 KiB on TCP): up to 1 MiB per link
-/// that carries Realtime traffic, 896 KiB more than the default. Only the
-/// Realtime priority's queue grows; the other classes keep Zenoh's 2.
+/// traffic (Zenoh's most, against its default of 2), so a burst of express
+/// samples is not dropped. Batches are allocated as a burst first needs them
+/// and kept: up to 1 MiB per link with 64 KiB TCP batches. The other classes
+/// keep Zenoh's 2.
 pub const REALTIME_QUEUE_BATCHES: usize = 16;
 
-/// The key of `priority`'s queue under `transport/link/tx/queue/size`.
 fn queue_name(priority: Priority) -> &'static str {
     match priority {
         Priority::RealTime => "real_time",
@@ -419,8 +374,6 @@ pub fn zenoh_config(
             .unwrap_or(u64::MAX)
             .max(1);
         set(&mut config, "connect/timeout_ms", timeout_ms.to_string())?;
-        // Zenoh's first retry comes after a second; a host coming up is
-        // usually there sooner.
         set(
             &mut config,
             "connect/retry",
@@ -548,8 +501,6 @@ impl Transport {
                 })
             }
             Layout::PerClass(classes) => {
-                // Class sessions that listen nowhere are clients: as peers,
-                // the host's gossip would link them to each other.
                 let tuning = TransportTuning {
                     client: config.tuning.client
                         || classes.iter().all(|class| class.listen.is_empty()),
@@ -608,7 +559,6 @@ impl Transport {
         self.in_process
     }
 
-    /// This transport, ridden by a participant of the host it serves.
     pub(crate) fn ridden(&self) -> Self {
         Self {
             in_process: true,
@@ -627,9 +577,6 @@ impl Transport {
         self.link.as_ref()
     }
 
-    /// Where its control session dials the host, without the protocol
-    /// (`10.0.0.2:7500`): what a message about that host names it by. `None`
-    /// for a transport that dials nothing, or rides a host this process runs.
     pub(crate) fn dialed(&self) -> Option<&str> {
         self.dialed.as_deref().filter(|_| !self.in_process)
     }
@@ -651,13 +598,10 @@ impl Transport {
 
     /// Closes every session (once each, in the shared layout).
     ///
-    /// A listening transport's close returns within 3 s whatever its peers
-    /// do: Zenoh closes each link with a last message queued behind what the
-    /// link still holds, and waits for it without a deadline on a link
-    /// nothing reads. So the sessions close on a thread of their own; a link
-    /// still holding bytes after a second is cut at the socket (which ends
-    /// that wait), every remaining link after another, and after a third the
-    /// close returns and leaves Zenoh to finish.
+    /// A listening transport's close returns within 3 s whatever its peers do:
+    /// the sessions close on a thread of their own, a link still holding bytes
+    /// after a second is cut at the socket, every remaining link after another,
+    /// and after a third the close returns and leaves Zenoh to finish.
     pub async fn close(&self) -> Result<(), SessionError> {
         let sessions: &[zenoh::Session] = if self.shared {
             &self.sessions.all()[..1]
@@ -701,7 +645,6 @@ impl Transport {
     }
 }
 
-/// The first endpoint `endpoints` dials, without its protocol.
 fn first_dialed(endpoints: &Endpoints) -> Option<String> {
     let endpoint = endpoints.connect.first()?;
     let address = endpoint
@@ -710,9 +653,6 @@ fn first_dialed(endpoints: &Endpoints) -> Option<String> {
     Some(address.to_string())
 }
 
-/// A transport's sessions, closed on a thread of their own when the last
-/// handle goes: Zenoh closes a session whose last handle drops in a nested
-/// `block_on` on the dropping thread (see [`off_thread`]).
 struct Sessions(Option<[zenoh::Session; 4]>);
 
 impl Sessions {
@@ -728,10 +668,8 @@ impl Drop for Sessions {
         let Some(sessions) = self.0.take() else {
             return;
         };
-        // A thread of its own rather than the runtime's blocking pool: a
-        // pool that is shutting down drops what it is handed in place,
-        // holding a lock Zenoh's close then takes. A thread that cannot
-        // start drops them here.
+        // A thread of its own rather than the runtime's blocking pool: a pool that is shutting down
+        // drops what it is handed in place, holding a lock Zenoh's close then takes.
         let _ = std::thread::Builder::new()
             .name("rlmesh-close".into())
             .spawn(move || drop(sessions));
@@ -741,14 +679,10 @@ impl Drop for Sessions {
 /// Runs `work`, which blocks on Zenoh, on the blocking pool and waits for
 /// it.
 ///
-/// Zenoh resolves an open (and a close, and a few queries of its state) with
-/// a nested `block_on` on the calling thread. On a thread that is itself
-/// blocking on a future (a program's main future, a binding's call, a test),
-/// that nested `block_on` parks on the same thread parker as the outer one
-/// and takes every wakeup meant for the futures the outer one polls: a reply,
-/// a timer or a watch that fires meanwhile is lost, and a future waiting on
-/// it is never polled again. A thread of the blocking pool runs no other
-/// future, so nothing there can be lost.
+/// Zenoh resolves an open (and a close, and a few state queries) with a nested
+/// `block_on` on the calling thread; on a thread already blocking on a future
+/// that nested call steals the outer one's wakeups, and a future waiting on
+/// them is never polled again. A blocking-pool thread runs no other future.
 pub async fn off_thread<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, SessionError> {
@@ -757,8 +691,6 @@ pub async fn off_thread<T: Send + 'static>(
         .map_err(|err| SessionError::Zenoh(format!("a blocking Zenoh call failed: {err}").into()))
 }
 
-/// Whether `runtime` has a blocking pool Zenoh runs on: Zenoh refuses a
-/// current-thread runtime anyway.
 fn multi_thread(runtime: &tokio::runtime::Handle) -> bool {
     runtime.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread
 }
@@ -770,8 +702,6 @@ pub async fn open_session(config: zenoh::Config) -> Result<zenoh::Session, Sessi
         .map_err(SessionError::from)
 }
 
-/// Watches the links `sessions` accept on their TCP listeners, when they
-/// listen (see [`links`]).
 async fn guard(sessions: &[zenoh::Session], config: &TransportConfig) -> Option<Arc<LinkGuard>> {
     let listens = match &config.layout {
         Layout::Shared(endpoints) => !endpoints.listen.is_empty(),
@@ -841,7 +771,6 @@ pub fn frame_zbytes(encoded: Encoded) -> ZBytes {
     writer.finish()
 }
 
-/// Owns a contiguous `ZBytes` for [`Bytes::from_owner`].
 struct ZOwner(ZBytes);
 
 impl AsRef<[u8]> for ZOwner {

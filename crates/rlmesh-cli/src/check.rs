@@ -1,10 +1,5 @@
 //! `rlmesh check`, `rlmesh check-image`, and `rlmesh describe`: the pre-push
-//! checks. The image-config checks are the pure functions in
-//! [`crate::image_check`]; everything that needs the Python gatherer (describe
-//! envelopes, class-level checks, the deep label check) shells out to
-//! `python -m rlmesh._describe`, the same bridge a bake uses. `RLMESH_PYTHON`
-//! names the interpreter (the `python -m rlmesh` entrypoint sets it to its
-//! own), else `python3`, else `python`.
+//! checks.
 
 use crate::cli::{CheckArgs, CheckImageArgs, DescribeArgs};
 use crate::image_check::{
@@ -27,10 +22,6 @@ pub(crate) fn check_image(
     let config = docker_inspect(&args.image)?;
     let (target, against) = edition_target(args)?;
     let mut report = image_check::check_image(&config, target.as_ref());
-    // The deep label checks (the envelope's class-level checks, the package
-    // label's checkpoints) live in rlmesh._describe; run them whenever either
-    // label is present, and say which validation was skipped when no Python
-    // with rlmesh is reachable.
     let present: Vec<&str> = [DESCRIBE_LABEL, PACKAGE_LABEL]
         .into_iter()
         .filter(|label| config.labels.contains_key(*label))
@@ -62,12 +53,6 @@ pub(crate) fn check_image(
     )
 }
 
-/// Fold the Python label report into the image report without saying things
-/// twice: Python re-reports the label wrappers (JSON, `schema_version`,
-/// `kind`, the package label's shape), so the Rust findings on those go; the
-/// Rust side owns the edition verdict in `check-image` (it applies the
-/// image's own `--workflow-edition` and the edition target), so Python's
-/// `runtime:` lines go. Everything else from both sides is kept.
 fn merge_deep(report: &mut CheckReport, mut deep: CheckReport) {
     let rust_wrapper = |message: &String| message.starts_with("labels: dev.rlmesh.");
     report.failed.retain(|message| !rust_wrapper(message));
@@ -79,8 +64,6 @@ fn merge_deep(report: &mut CheckReport, mut deep: CheckReport) {
     };
     deep.failed.retain(|message| !python_runtime(message));
     deep.warnings.retain(|message| !python_runtime(message));
-    // The missing-describe-label note is Rust's too (a package-only image
-    // still gets the deep check for its checkpoints).
     deep.not_checked.retain(|message| {
         !python_runtime(message) && !message.starts_with(&format!("no {DESCRIBE_LABEL} label"))
     });
@@ -101,8 +84,6 @@ pub(crate) fn describe(
     describe_with(python_command()?, &args.target, args.label, stdout, stderr)
 }
 
-/// Pass `python -m rlmesh._describe TARGET [--label]` through: its stdout,
-/// its stderr, and its exit code are the command's.
 fn describe_with(
     mut python: Command,
     target: &str,
@@ -126,9 +107,6 @@ fn describe_with(
     Ok(output.status.code().unwrap_or(1))
 }
 
-/// What to check editions against: `--platform-editions`, else
-/// `--platform-version` (only this CLI's own version is known; any other is
-/// `None`, reported as not checked), else the rlmesh this CLI was built with.
 fn edition_target(args: &CheckImageArgs) -> Result<(Option<EditionTarget>, String)> {
     if !args.platform_editions.is_empty() {
         let offer = image_check::platform_offer(&args.platform_editions);
@@ -178,9 +156,6 @@ pub(crate) fn docker_inspect(image: &str) -> Result<ImageConfig> {
         .map_err(anyhow::Error::msg)
 }
 
-/// Run `python -m rlmesh._describe <args>` and parse the JSON report it prints
-/// on stdout. The exit code is not consulted: a report with failures exits
-/// nonzero there and is still a report here.
 fn run_python_report(args: &[&str], stdin: Option<&str>) -> Result<CheckReport> {
     run_python_report_with(python_command()?, args, stdin)
 }
@@ -232,15 +207,12 @@ fn tail(stderr: &str) -> String {
     format!(":\n{}", lines[start..].join("\n"))
 }
 
-/// The interpreter carrying the rlmesh package: `RLMESH_PYTHON`, else the
-/// first of `python3` / `python` that imports `rlmesh`.
+/// The interpreter carrying the rlmesh package: `RLMESH_PYTHON`, else the first
+/// of `python3` / `python` that imports `rlmesh`.
 pub(crate) fn python_command() -> Result<Command> {
     python_command_from(std::env::var_os("RLMESH_PYTHON"), imports_rlmesh)
 }
 
-/// The discovery rule behind [`python_command`]: a non-empty `configured`
-/// (`RLMESH_PYTHON`) is taken as is, unprobed; otherwise the first candidate
-/// on PATH for which `imports_rlmesh` holds.
 fn python_command_from(
     configured: Option<OsString>,
     imports_rlmesh: impl Fn(&str) -> bool,
@@ -270,8 +242,6 @@ fn imports_rlmesh(candidate: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Print a report: one line per finding, worst first, then a one-line
-/// summary. Exit 1 when anything failed.
 fn render(
     report: &CheckReport,
     subject: &str,
@@ -318,8 +288,6 @@ fn render(
 mod tests {
     use super::*;
 
-    /// A stand-in interpreter: a shell script that behaves like
-    /// `python -m rlmesh._describe` would for the test at hand.
     #[cfg(unix)]
     fn fake_python(dir: &tempfile::TempDir, body: &str) -> Command {
         use std::os::unix::fs::PermissionsExt;
@@ -336,7 +304,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(configured.get_program(), "/opt/venv/bin/python");
-        // Empty RLMESH_PYTHON means unset.
         let probed = python_command_from(Some(OsString::new()), |c| c == "python").unwrap();
         assert_eq!(probed.get_program(), "python");
         let first = python_command_from(None, |_| true).unwrap();
@@ -364,7 +331,6 @@ mod tests {
     #[test]
     fn python_report_is_parsed_from_stdout_regardless_of_exit_code() {
         let dir = tempfile::tempdir().unwrap();
-        // Echo stdin back inside the report so the labels round trip is visible.
         let python = fake_python(
             &dir,
             r#"read input; printf '{"failed":["x: %s"],"warnings":[],"not_checked":[],"passed":[]}
@@ -374,7 +340,6 @@ mod tests {
             run_python_report_with(python, &["--check-labels", "-", "--json"], Some("labels\n"))
                 .unwrap();
         assert_eq!(report.failed, ["x: labels"]);
-        // No JSON on stdout: an error that carries the tail of stderr.
         let python = fake_python(&dir, r#"echo "Traceback" >&2; exit 1"#);
         let error =
             run_python_report_with(python, &["--check-entrypoint", "pkg:X"], None).unwrap_err();
@@ -393,8 +358,6 @@ mod tests {
             platform_version: version.map(str::to_owned),
             json: false,
         };
-        // With no flag, the target is this build, named as one: no platform
-        // is involved.
         let (target, against) = edition_target(&args(&[], None)).unwrap();
         assert_eq!(target, Some(EditionTarget::this_build()));
         assert_eq!(

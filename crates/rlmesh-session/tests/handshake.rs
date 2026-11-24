@@ -1,7 +1,4 @@
 #![cfg(feature = "gateway")]
-//! Real WebSocket handshakes against the gateway's security layer (no
-//! session needed): the same `security::guard` middleware and
-//! `security::limit` upgrade settings the gateway uses, on an echo route.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use axum::Router;
@@ -55,7 +52,6 @@ fn app(p: Arc<Policy>) -> Router {
         .with_state(p)
 }
 
-/// Bind first so the default origin can use the real port.
 async fn serve() -> (SocketAddr, Arc<Policy>) {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
@@ -77,9 +73,6 @@ fn request(url: &str, origin: Option<&str>, protocols: Option<&str>) -> http::Re
     r
 }
 
-/// The close code a refused upgrade is closed with: the handshake succeeds
-/// (a browser could not read a refused one's status), then the gateway
-/// closes before any route sees the connection.
 async fn refused_with(req: http::Request<()>) -> u16 {
     let (mut ws, _) = tokio_tungstenite::connect_async(req)
         .await
@@ -108,7 +101,6 @@ async fn rejected_without_token() {
         refused_with(request(&url, Some(&good_origin), Some(&wrong))).await,
         4401
     );
-    // The page itself is not behind the token.
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
     c.write_all(b"GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
@@ -126,7 +118,6 @@ async fn rejected_without_token() {
 async fn rejected_from_bad_origin() {
     let (addr, _) = serve().await;
     let url = format!("ws://{addr}/control");
-    // DNS-rebinding shape: right port, hostile name.
     assert_eq!(
         refused_with(request(
             &url,
@@ -159,14 +150,12 @@ async fn accepted_from_good_origin_with_token_and_limits_apply() {
             tokio_tungstenite::connect_async(request(&url, Some(&origin), Some(&with_token())))
                 .await
                 .unwrap();
-        // Only rlmesh.v2 is selected; the token is never echoed.
         assert_eq!(
             resp.headers().get("sec-websocket-protocol").unwrap(),
             SUBPROTOCOL
         );
         ws.send(tg::Message::binary(vec![1u8; 512])).await.unwrap();
         assert_eq!(ws.next().await.unwrap().unwrap().into_data().len(), 512);
-        // Over the 1 KiB limit: the server closes the connection.
         ws.send(tg::Message::binary(vec![2u8; 4096])).await.unwrap();
         let next = ws.next().await;
         assert!(
@@ -179,7 +168,6 @@ async fn accepted_from_good_origin_with_token_and_limits_apply() {
 #[tokio::test]
 async fn a_loopback_socket_without_a_token_is_refused() {
     let (addr, _) = serve().await;
-    // Not a browser page (no Origin), on loopback: still 4401.
     assert_eq!(
         refused_with(request(
             &format!("ws://{addr}/control"),
@@ -189,7 +177,6 @@ async fn a_loopback_socket_without_a_token_is_refused() {
         .await,
         4401
     );
-    // Origin is checked first for browser pages.
     assert_eq!(
         refused_with(request(
             &format!("ws://{addr}/control"),
@@ -203,7 +190,6 @@ async fn a_loopback_socket_without_a_token_is_refused() {
 
 #[tokio::test]
 async fn wss_with_rustls() {
-    // Self-signed cert for 127.0.0.1, written under the target dir (not /tmp).
     let ck =
         rcgen::generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()]).unwrap();
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))

@@ -386,8 +386,7 @@ extern "C" {
  * repr(C) layout/enum-discriminant change, an extern "C" signature retype, or a
  * symbol removal). Decoupled from the package semver below, which can't express
  * an ABI break. Appending a struct_size-guarded vtable/config field is NOT a
- * break. ABI 6 grew after it was cut without a bump; the C ABI does not ship in
- * 0.2, and the first release that ships it publishes that surface as ABI 7. */
+ * break. */
 #define RLMESH_ABI_VERSION 6
 
 RLMESH_API uint32_t rlmesh_abi_version(void);
@@ -2575,7 +2574,7 @@ RLMESH_API RLMeshStatus rlmesh_ext_register_entrypoint(const char* entrypoint,
                                                        const RLMeshObsTransform* transform);
 
 /* Runtime of the translation unit including this header, not of the Rust
- * library behind the ABI. Used by the ABI 5 server options and rlmesh.hpp. */
+ * library behind the ABI. Used by the server options and rlmesh.hpp. */
 #define RLMESH_DETAIL_STRINGIFY_IMPL(x) #x
 #define RLMESH_DETAIL_STRINGIFY(x) RLMESH_DETAIL_STRINGIFY_IMPL(x)
 #ifdef __cplusplus
@@ -2819,8 +2818,6 @@ RLMESH_API RLMeshStatus rlmesh_ext_cancel_token_clone(const RLMeshExtCancelToken
 RLMESH_API RLMeshStatus rlmesh_ext_cancel_token_cancel(RLMeshExtCancelToken* ext_cancel_token);
 RLMESH_API void rlmesh_ext_cancel_token_free(RLMeshExtCancelToken* ext_cancel_token);
 
-/* Optional host fields for foreground and background factory serves. NULL keeps
- * the legacy C identity. Each JSON field is optional; unknown fields fail. */
 typedef struct RLMeshExtEnvFactoryServeOptions {
   size_t struct_size;
   const char* host_runtime_json;
@@ -2832,12 +2829,12 @@ typedef struct RLMeshExtEnvFactoryServeOptions {
 
 typedef struct RLMeshEnvFactoryServeOptions {
   size_t struct_size;
-  int64_t num_envs;                           /* 1; <= 1 serves one env */
-  const char* workflow_edition;               /* NULL/""/blank = None */
-  const RLMeshValue* make_kwargs;             /* DICT; NULL = {} */
-  RLMeshExtCancelToken* cancel;               /* NULL = none, borrowed for the call */
-  uint64_t _reserved;                         /* 0; appended at the ABI-5 sizeof */
-  const RLMeshExtEnvFactoryServeOptions* ext; /* NULL = legacy C runtime */
+  int64_t num_envs;               /* 1; <= 1 serves one env */
+  const char* workflow_edition;   /* NULL/""/blank = None */
+  const RLMeshValue* make_kwargs; /* DICT; NULL = {} */
+  RLMeshExtCancelToken* cancel;   /* NULL = none, borrowed for the call */
+  uint64_t _reserved;             /* 0 */
+  const RLMeshExtEnvFactoryServeOptions* ext;
 #if UINTPTR_MAX == UINT32_MAX
   uint8_t _reserved1[4]; /* Explicit tail for 32-bit ABIs with 8-byte uint64 alignment. */
 #endif
@@ -2989,6 +2986,7 @@ RLMESH_API RLMeshStatus rlmesh_variant_sink_push(RLMeshVariantSink* sink, RLMesh
 #define RLMESH_VARIANT_OPTIONS_MIN_SIZE sizeof(RLMeshVariantOptions)
 
 /* ---- Policy / Model (facade) --------------------------------------------- */
+
 typedef struct RLMeshModel RLMeshModel;
 typedef struct RLMeshModelSpec RLMeshModelSpec;
 typedef enum RLMeshSpecKind {
@@ -3118,7 +3116,7 @@ typedef struct RLMeshExtModelServeOptions {
   size_t predict_concurrency;
   bool has_predict_concurrency;
   uint8_t _reserved[sizeof(size_t) - 1];
-  bool no_signal_handlers; /* false installs handlers; appended at ABI-5 sizeof */
+  bool no_signal_handlers; /* false installs handlers */
   uint8_t _reserved1[sizeof(size_t) - 1];
 } RLMeshExtModelServeOptions;
 #define RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT \
@@ -3130,7 +3128,7 @@ typedef struct RLMeshModelServeOptions {
   RLMeshExtCancelToken* cancel;          /* NULL = none, borrowed */
   const RLMeshExtModelServeOptions* ext; /* NULL = none */
   /* The participant the model joins the session at address as; NULL reads it
-   * off address. Appended at ABI-5 sizeof. */
+   * off address. */
   const char* name;
 } RLMeshModelServeOptions;
 #define RLMESH_MODEL_SERVE_OPTIONS_INIT {sizeof(RLMeshModelServeOptions), NULL, NULL, NULL, NULL}
@@ -3179,6 +3177,7 @@ RLMESH_API int64_t rlmesh_predict_seed(int64_t episode_seed, uint64_t predict_in
   offsetof(RLMeshExtModelServeOptions, no_signal_handlers)
 
 /* ---- Describe (facade) -------------------------------------------------- */
+
 typedef enum RLMeshDescribeKind {
   RLMESH_DESCRIBE_KIND_INVALID = 0,
   RLMESH_DESCRIBE_KIND_ENV = 1,
@@ -3239,6 +3238,7 @@ RLMESH_API RLMeshStatus rlmesh_ext_env_server_describe_json(const RLMeshEnvServe
                                                             RLMeshBytes* out);
 
 /* ---- Running: facade targets, observers and results ---------------------- */
+
 typedef struct RLMeshRunResult RLMeshRunResult;
 typedef struct RLMeshTelemetryRow RLMeshTelemetryRow;
 typedef struct RLMeshRunHooks RLMeshRunHooks;
@@ -3596,7 +3596,7 @@ typedef struct RLMeshBindOptions {
    * run context, an episode reset over before it ended counts as truncated,
    * and on_run_end fires at close. */
   RLMeshRunHooks* hooks;
-  const RLMeshView* view; /* NULL = None; native loop refuses a set view (RUN-4). */
+  const RLMeshView* view; /* NULL = None; native loop refuses a set view. */
 } RLMeshBindOptions;
 #define RLMESH_BIND_OPTIONS_MIN_SIZE offsetof(RLMeshBindOptions, hooks)
 #define RLMESH_BIND_OPTIONS_INIT \
@@ -3629,6 +3629,7 @@ RLMESH_API RLMeshStatus rlmesh_binding_close(RLMeshBinding* binding);
 RLMESH_API void rlmesh_binding_free(RLMeshBinding* binding);
 
 /* ---- Remote clients ----------------------------------------------------- */
+
 typedef struct RLMeshRemoteEnv RLMeshRemoteEnv;
 typedef struct RLMeshRemoteVectorEnv RLMeshRemoteVectorEnv;
 
@@ -3758,13 +3759,13 @@ RLMESH_API RLMeshStatus rlmesh_remote_vector_env_step(RLMeshRemoteVectorEnv* rem
                                                       bool* out_truncated, size_t capacity,
                                                       size_t* out_len, RLMeshValue** out_info);
 
-/* ---- model -------------------------------------------------------------- */
-
 /* Error convention for every call below: on a nonzero RLMeshStatus (or a NULL
  * return from a pointer-returning call) the failing call has ALREADY recorded
  * its message on this thread, so a caller can simply propagate the status and
  * let the outermost frame read rlmesh_last_error_message(). Never set your own
  * message for a capi call that already failed. */
+
+/* ---- model -------------------------------------------------------------- */
 
 /* Read items copy leaves. Readers retain a resolved adapter and own their roles. */
 RLMESH_API RLMeshStatus rlmesh_read_item_role(const char* role, RLMeshReadItem** out);
@@ -3842,12 +3843,10 @@ RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, co
 RLMESH_API void rlmesh_ext_callback_set_error_payload(void* payload,
                                                       void (*free_payload)(void* payload));
 RLMESH_API void* rlmesh_ext_last_error_take_payload(void);
-/* Tagged ownership transfer: the library never reads tag or payload bytes.
- * The tag identifies a payload representation/owner domain. The legacy setter
- * records a NULL tag. Use the returned deleter for foreign representations.
- * On success, all outputs are initialized (NULL when empty); outputs must be
- * distinct writable slots. All three are required. A failing call does not
- * consume the payload. A successful take transfers the deleter obligation. */
+/* Tagged ownership transfer: the library never reads tag or payload bytes; the tag
+ * identifies the payload's representation/owner domain. On success all outputs are
+ * initialized (NULL when empty) and must be distinct writable slots. A failing call
+ * does not consume the payload. A successful take transfers the deleter obligation. */
 RLMESH_API void rlmesh_ext_callback_set_tagged_error_payload(void* payload,
                                                              void (*free_payload)(void* payload),
                                                              const void* tag);
@@ -3855,6 +3854,7 @@ RLMESH_API RLMeshStatus rlmesh_ext_last_error_take_payload_owned(
     void** out_payload, void (**out_free_payload)(void* payload), const void** out_tag);
 
 /* ---- Recorder and immutable recorder records ---------------------------- */
+
 #define RLMESH_RECORDER_SCHEMA "rlmesh.result.v1"
 typedef struct RLMeshRecorder RLMeshRecorder;
 typedef struct RLMeshMediaRef RLMeshMediaRef;

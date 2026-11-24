@@ -1,5 +1,3 @@
-//! The facade `Model` over a `Policy`, end to end against a served env.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,7 +7,6 @@ use crate::binding::model::{RunLocalOptions, run_model_local};
 use crate::spaces::{Discrete, DiscreteOptions, Space};
 use crate::{Env, EnvServer, EnvServerOptions, ErrorClass, InfoDict, Kwargs, Result, Value};
 
-/// A three-step env; `reset` seeds with the given seed.
 struct Steps {
     step: i64,
 }
@@ -41,7 +38,6 @@ impl Env for Steps {
     }
 }
 
-/// A served `Steps` env and its address.
 fn served_env() -> (EnvServer, String) {
     let server = EnvServer::new(
         Steps { step: 0 },
@@ -65,7 +61,6 @@ struct Log {
     batch_sizes: Vec<usize>,
 }
 
-/// Counts its predicts per episode in the episode state.
 struct Counting {
     log: Arc<Mutex<Log>>,
 }
@@ -138,7 +133,6 @@ fn a_context_policy_counts_per_episode_and_hears_each_episode_end() {
     drop(server);
 }
 
-/// Only `predict_batch`: `predict` is a batch of one.
 struct BatchOnly {
     log: Arc<Mutex<Log>>,
 }
@@ -249,7 +243,6 @@ impl Policy for ZeroChunk {
     const NATIVE_CHUNK: Option<u32> = Some(0);
 }
 
-/// Sets a K in `load` without a chunk corner; its `close` must never run.
 struct LoadedChunk {
     closes: Arc<AtomicUsize>,
 }
@@ -412,7 +405,6 @@ const GRIPPER_SPEC: &str = r#"{
     "output": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
 }"#;
 
-/// One gripper state in, one gripper action out, three steps.
 struct Gripper {
     step: i64,
 }
@@ -459,7 +451,6 @@ fn served_gripper() -> (EnvServer, String) {
     (server, address)
 }
 
-/// A chunked spec'd policy: two frames per chunk, declared.
 struct Planner {
     chunks: Arc<AtomicUsize>,
 }
@@ -508,10 +499,8 @@ fn a_spec_model_resolves_its_adapter_and_replays_its_chunks() {
     let mut options = RunLocalOptions::parse(&address).unwrap();
     options = options.execution_horizon(2);
     run_model_local(&model, options).unwrap();
-    // Four steps at two frames per chunk.
     assert_eq!(chunks.load(Ordering::SeqCst), 2);
 
-    // A tagged env with no spec is refused at resolve.
     let plain = Model::new(
         |_obs: Value| Ok(Value::List(vec![Value::Float(0.0)])),
         ModelOptions::default(),
@@ -523,7 +512,6 @@ fn a_spec_model_resolves_its_adapter_and_replays_its_chunks() {
         "{error}"
     );
     assert!(error.to_string().contains("spec=None"), "{error}");
-    // NO_ADAPTER skips resolution: the model sees the raw observation.
     let raw = Model::new(
         |obs: Value| {
             assert!(obs.as_dict().is_ok());
@@ -539,7 +527,6 @@ fn a_spec_model_resolves_its_adapter_and_replays_its_chunks() {
     drop(server);
 }
 
-/// Returns three frames though it declares two.
 struct Liar;
 
 impl Policy for Liar {
@@ -579,8 +566,6 @@ fn a_chunk_of_the_wrong_length_is_a_value_error() {
     drop(server);
 }
 
-/// A session hosted by a served env, and the participant address a model
-/// serves at in it.
 fn session_host() -> (EnvServer, String) {
     let (host, address) = served_env();
     let policy = format!("{}/policy", address.rsplit_once('/').unwrap().0);
@@ -604,7 +589,6 @@ fn a_cancelled_serve_closes_the_model_and_fails_with_the_cancellation_class() {
         ModelOptions::default(),
     )
     .unwrap();
-    // A token cancelled before serve fails it at once and closes nothing.
     let cancel = crate::ext::CancelToken::new();
     cancel.cancel();
     let (_host, address) = session_host();
@@ -671,7 +655,6 @@ fn serve_refuses_a_v1_address_and_a_zero_predict_concurrency() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sync_calls_from_async_code_name_their_twin() {
-    // A task (the test's root future is not one, R-16).
     tokio::spawn(async {
         let model = Model::new(|_obs: Value| Ok(Value::Int(0)), ModelOptions::default()).unwrap();
         let error = model
@@ -792,11 +775,8 @@ fn final_model_drop_is_bounded_even_when_close_is_unresponsive() {
     out.expect("Drop must give up after its five-second bound");
 }
 
-/// The (observation, action) spaces each predict's context named.
 type SeenSpaces = Arc<Mutex<Vec<(Option<String>, Option<String>)>>>;
 
-/// A model with no adapter: it answers in the env's own action space, which
-/// its context names.
 struct Adapterless {
     spaces: SeenSpaces,
 }

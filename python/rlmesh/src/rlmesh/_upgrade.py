@@ -35,7 +35,7 @@ def removed(old: str, new: str) -> NoReturn:
     raise TypeError(f"{old} is gone in rlmesh 0.2: {new}")
 
 
-def Session(*args: object, **kwargs: object) -> NoReturn:  # noqa: N802 -- the 0.1 name
+def Session(*args: object, **kwargs: object) -> NoReturn:  # noqa: N802
     """Removed in 0.2: ``model.bind(target)`` returns a :class:`Binding`."""
     _ = args, kwargs
     removed(
@@ -65,7 +65,7 @@ def model_session(self: object, *args: object, **kwargs: object) -> NoReturn:
     )
 
 
-def RemoteModel(*args: object, **kwargs: object) -> NoReturn:  # noqa: N802 -- the 0.1 name
+def RemoteModel(*args: object, **kwargs: object) -> NoReturn:  # noqa: N802
     """Removed in 0.2: ``Model(address)`` wraps a model served elsewhere."""
     _ = args, kwargs
     removed(

@@ -1,9 +1,8 @@
 //! The test binary's allocator: the system's, except that a thread may make
-//! every allocation of at least some size fail, as a board's fragmented
-//! heap does, to reach the paths that handle it.
+//! every allocation of at least some size fail, as a board's fragmented heap
+//! does, to reach the paths that handle it.
 
-// A global allocator is unsafe to implement; this one exists only in the
-// test binary.
+// A global allocator is unsafe to implement; this one exists only in the test binary.
 #![allow(unsafe_code)]
 
 use core::alloc::{GlobalAlloc, Layout};
@@ -11,7 +10,6 @@ use core::cell::Cell;
 use std::alloc::System;
 
 std::thread_local! {
-    /// Allocations of this many bytes or more fail on this thread.
     static FAIL_FROM: Cell<usize> = const { Cell::new(usize::MAX) };
 }
 
@@ -59,7 +57,6 @@ unsafe impl GlobalAlloc for Failing {
 #[global_allocator]
 static ALLOCATOR: Failing = Failing;
 
-/// Runs `f` with every allocation of `bytes` or more on this thread failing.
 pub(crate) fn failing_from<R>(bytes: usize, f: impl FnOnce() -> R) -> R {
     let before = FAIL_FROM.with(|from| from.replace(bytes));
     let out = f();

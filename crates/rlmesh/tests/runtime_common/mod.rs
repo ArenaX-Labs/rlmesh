@@ -1,7 +1,3 @@
-//! Shared fake env/model/hook harness for the runtime driver's integration
-//! tests. `runtime_driver.rs` asserts the runtime's behavior against it; the sealed
-//! edition fingerprint in `runtime_edition_2026_06.rs` drives the same fakes, so both
-//! test binaries observe one stimulus, not two drifting copies.
 #![allow(dead_code)]
 
 use std::sync::Arc;
@@ -33,11 +29,7 @@ pub struct TestEnv {
     pub reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
     pub reset_options: Arc<Mutex<Vec<Option<rlmesh_spaces::MetaMap>>>>,
     pub terminal_after: usize,
-    // What this env reports as the terminal episode's `final_info`. Gymnasium's
-    // `is_success`/`success` live there, and the runtime derives the ledger's
-    // `success` from them; `None` leaves that outcome unreported.
     pub final_info: Option<MetaMap>,
-    // What this env claims to have spent on each op, as a peer would stamp it.
     pub endpoint_total_ns: Option<u64>,
     pub phases: EndpointPhases,
 }
@@ -80,8 +72,6 @@ impl RuntimeEnv for TestEnv {
     async fn step(&mut self, _request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         let step = self.step_count.fetch_add(1, Ordering::SeqCst) + 1;
         let terminal = step >= self.terminal_after;
-        // The terminal step's info carries the episode's `final_info`, as a
-        // Gymnasium env reports its outcome.
         let mut infos = info_map("phase", "step");
         if terminal && let Some(final_info) = &self.final_info {
             infos.entries.insert(
@@ -108,61 +98,32 @@ impl RuntimeEnv for TestEnv {
     }
 }
 
-/// Model calls in arrival order: `("predict" | "evict", episode ids)`.
 pub type Lifecycle = Arc<Mutex<Vec<(&'static str, Vec<String>)>>>;
-/// One predict request's history rows and its own observation, each as
-/// `(step, first observation byte)`.
 pub type LedgerEntry = (Vec<(i64, u8)>, (i64, u8));
-/// One entry per predict request, in arrival order.
 pub type Ledger = Arc<Mutex<Vec<LedgerEntry>>>;
 
 #[derive(Clone, Default)]
 pub struct TestModel {
-    // Set when the driver released the route at route end.
     pub closed: Arc<AtomicBool>,
-    // Simulates a route release that blocks (an RPC on a hung connection)
-    // without honoring any timeout.
     pub release_adapter_hangs: bool,
     pub predicts: Arc<AtomicUsize>,
     pub predict_delay: Option<Duration>,
     pub seen_observations: Arc<Mutex<Vec<Vec<u8>>>>,
-    // Episode ids the driver asked the model to evict (R2), in order: one
-    // `reset_adapter` call's episode ids per entry.
     pub reset_adapters: Arc<Mutex<Vec<Vec<String>>>>,
-    // Every model call in arrival order: ("predict", the observation's episode
-    // ids) or ("evict", the ids it ended) — the model-side episode lifecycle.
     pub lifecycle: Lifecycle,
-    // Number of chunk replay frames to return per predict (frames after frame
-    // 0, which is always present). 0 = not chunking.
     pub replay_frames: usize,
-    // The route negotiated observation history: the driver then carries every
-    // replayed step as a row on the next predict.
     pub wants_history: bool,
-    // Per predict: the history rows' `(step, first observation byte)` and the
-    // observation's own, in arrival order.
     pub ledger: Ledger,
-    // Simulates an evict the model never answers: the call is recorded, then
-    // pends forever.
     pub reset_adapter_hangs: bool,
-    // The 1-based predict call that fails with a fatal model error (after its
-    // lifecycle entry is recorded), failing the route mid-episode.
     pub fail_predict_at: Option<usize>,
-    // What this model reports holding, and the adapter share of each predict.
     pub held: Option<(u64, u64)>,
     pub adapter_ns: u64,
-    // What a model served elsewhere reports measuring for each predict.
     pub endpoint: Option<(Option<u64>, EndpointPhases)>,
-    // The lanes a handler in front of a batching pool says rode its forward.
     pub group_size: Option<u64>,
-    // Holds the `gate_at`th predict to arrive (0-based) until the gate opens;
-    // every other predict returns at once.
     pub gate: Option<Shared<oneshot::Receiver<()>>>,
     pub gate_at: usize,
     pub arrived: Arc<AtomicUsize>,
-    // One `()` per predict as it arrives, ahead of any delay or gate.
     pub arrivals: Option<mpsc::UnboundedSender<()>>,
-    // Per `predict_grouped` call, each request's observation leaves: the
-    // fused batches as the model saw them.
     pub batches: Arc<Mutex<Vec<Vec<Vec<Bytes>>>>>,
 }
 
@@ -203,8 +164,6 @@ impl TestModel {
             .lock()
             .expect("model observation recorder lock poisoned")
             .push(observation_bytes);
-        // Frame 0 is this step; the replay frames are buffered and replayed
-        // without re-calling the model.
         let frame = |byte: u8| vec![action(byte); observation.num_envs];
         Ok(PredictFrames {
             actions: frame(0),
@@ -293,15 +252,12 @@ impl ModelHandler for TestModel {
             .expect("reset_adapter recorder lock poisoned")
             .push(episode_ids);
         if self.reset_adapter_hangs {
-            // The call is on the record; now ignore any deadline entirely,
-            // like an evict on a hung connection.
             std::future::pending::<()>().await;
         }
         Ok(())
     }
 }
 
-/// The test model's route setup: records the release at route end.
 struct TestRoutes {
     closed: Arc<AtomicBool>,
     hangs: bool,
@@ -320,7 +276,6 @@ impl rlmesh::binding::model::ModelRouteSetup for TestRoutes {
 
     async fn release_adapter(&self, _env_id: &str) -> rlmesh::Result<()> {
         if self.hangs {
-            // Ignore any deadline entirely, like a misbehaving release.
             std::future::pending::<()>().await;
         }
         self.closed.store(true, Ordering::SeqCst);
@@ -328,12 +283,10 @@ impl rlmesh::binding::model::ModelRouteSetup for TestRoutes {
     }
 }
 
-/// The fakes' action: one `uint8 [1]` box.
 pub fn action(byte: u8) -> SpaceValue {
     SpaceValue::Box(Tensor::from_vec(vec![byte], vec![1], DType::Uint8).expect("a uint8 box"))
 }
 
-/// The native contract the fakes' spaces type: `uint8 [1]` boxes.
 pub fn contract(spec: &RuntimeSessionSpec) -> rlmesh_spaces::EnvContract {
     let space = rlmesh_spaces::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![1])
         .dtype(DType::Uint8)
@@ -350,7 +303,6 @@ pub fn contract(spec: &RuntimeSessionSpec) -> rlmesh_spaces::EnvContract {
     }
 }
 
-/// A driver of `model` against `env` under `spec`.
 pub fn new_driver<E>(
     spec: RuntimeSessionSpec,
     env: E,
@@ -365,8 +317,6 @@ where
     RuntimeDriver::new(spec, env, model, contract, hooks).with_history(history)
 }
 
-/// A one-entry `MetaMap`, the shape both step infos and an episode's
-/// `final_info` take in these fakes.
 pub fn meta_map(key: &str, kind: meta_value::Kind) -> MetaMap {
     MetaMap {
         entries: [(key.to_string(), MetaValue { kind: Some(kind) })].into(),
@@ -385,7 +335,6 @@ pub struct EmittedObservation {
     pub infos: Option<MetaMap>,
 }
 
-/// One step event's (terminated, truncated) per lane and its autoreset-roll mark.
 pub type StepFlags = (Vec<bool>, Vec<bool>, Vec<bool>);
 
 #[derive(Default)]
@@ -393,29 +342,19 @@ pub struct RecordingHooks {
     pub actions: AtomicUsize,
     pub ended: AtomicUsize,
     pub failed: AtomicUsize,
-    // When set, transform_observation prepends this marker byte to the first
-    // leaf of every observation it forwards to the model.
     pub observation_marker: Option<u8>,
-    // When set, transform_observation fails on the route with this env id.
     pub fail_transform_on: Option<String>,
     pub emitted_observations: Mutex<Vec<EmittedObservation>>,
     pub step_infos: Mutex<Vec<Option<MetaMap>>>,
-    // Per step event: (terminated, truncated, autoreset_roll), each per lane.
     pub step_flags: Mutex<Vec<StepFlags>>,
-    /// `(predict_ms, step_ms)` of every `step_completed` event, in order.
     pub step_timings: Mutex<Vec<(f64, f64)>>,
     pub started_seeds: Mutex<Vec<Option<i64>>>,
     pub completed_seeds: Mutex<Vec<Option<i64>>>,
     pub started_trials: Mutex<Vec<Option<u64>>>,
     pub completed_trials: Mutex<Vec<Option<u64>>>,
-    // Every per-episode hook event in arrival order, as (kind, the episode ids
-    // it names): the hook-side episode lifecycle.
     pub events: Mutex<Vec<(&'static str, Vec<String>)>>,
-    // Counts of live telemetry snapshots streamed via on_telemetry, by horizon.
     pub telemetry_windows: AtomicUsize,
     pub telemetry_sessions: AtomicUsize,
-    // Largest row count seen in any Session snapshot — proves the final push
-    // carried real telemetry, not an empty event.
     pub telemetry_session_rows: AtomicUsize,
 }
 
@@ -427,7 +366,6 @@ impl RecordingHooks {
             .push((kind, ids));
     }
 
-    /// The kinds of the events that named `episode_id`, in arrival order.
     pub fn events_for(&self, episode_id: &str) -> Vec<&'static str> {
         self.events
             .lock()
@@ -438,7 +376,6 @@ impl RecordingHooks {
             .collect()
     }
 
-    /// Every episode id an `episode_completed` event named, in arrival order.
     pub fn completed_ids(&self) -> Vec<String> {
         self.events
             .lock()
@@ -617,10 +554,6 @@ pub fn payload<const N: usize>(data: [u8; N]) -> Bytes {
     Bytes::copy_from_slice(&data)
 }
 
-/// A NEXT_STEP vector env with a per-lane terminal schedule. It mimics the env
-/// server's output: a lane terminates at its scheduled step (terminal obs keeps
-/// the old episode id), then auto-resets on the FOLLOWING step (fresh obs, new
-/// id, reward 0), never requiring a driver-issued reset.
 #[derive(Clone)]
 pub struct VectorTestEnv {
     pub reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
@@ -677,8 +610,6 @@ impl RuntimeEnv for VectorTestEnv {
         for lane in 0..n {
             if self.pending_autoreset[lane] {
                 rolled = true;
-                // t+1: the env auto-resets this lane and delivers the fresh obs of
-                // a new episode (step 0, reward 0, terminated=false).
                 self.pending_autoreset[lane] = false;
                 self.lane_step[lane] = 0;
                 rewards[lane] = 0.0;
@@ -686,9 +617,6 @@ impl RuntimeEnv for VectorTestEnv {
                 self.lane_step[lane] += 1;
                 if self.lane_step[lane] >= self.terminal_after[lane] {
                     terminated[lane] = true;
-                    // Lane 0 reports the outcome as Gymnasium's numeric
-                    // `success: 0`, so the ledger pins a derived `false`
-                    // (and, from the other lanes, an unreported outcome).
                     final_info |= lane == 0;
                     self.pending_autoreset[lane] = true;
                 }
@@ -713,9 +641,6 @@ impl RuntimeEnv for VectorTestEnv {
     }
 }
 
-/// A [`VectorTestEnv`] step's infos: its `phase` and, when lane 0 ended,
-/// lane 0's final info (Gymnasium's numeric `success: 0`) in the vector
-/// layout, masked to lane 0.
 pub fn vector_infos(phase: &str, lanes: usize, lane0_ended: bool) -> MetaMap {
     let mut infos = info_map("phase", phase);
     if lane0_ended {
@@ -778,8 +703,6 @@ pub fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
     }
 }
 
-/// Every predict's history rows followed by its own observation, as steps,
-/// in arrival order: the sequence of steps the model was handed.
 pub fn delivered_steps(ledger: &[LedgerEntry]) -> Vec<i64> {
     ledger
         .iter()
@@ -787,8 +710,6 @@ pub fn delivered_steps(ledger: &[LedgerEntry]) -> Vec<i64> {
         .collect()
 }
 
-/// The ledger split per episode, by the episode id each predict named, in
-/// first-predict order.
 pub fn ledger_per_episode(model: &TestModel) -> Vec<(String, Vec<LedgerEntry>)> {
     let ledger = model.ledger.lock().expect("ledger poisoned").clone();
     let predicts: Vec<String> = model
@@ -810,8 +731,6 @@ pub fn ledger_per_episode(model: &TestModel) -> Vec<(String, Vec<LedgerEntry>)> 
     episodes
 }
 
-/// A `tracing` writer that appends everything into a shared buffer, so a test can
-/// assert on a `warn!` that has no other observable effect.
 #[derive(Clone)]
 pub struct LogCapture(pub Arc<Mutex<Vec<u8>>>);
 
@@ -837,10 +756,6 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
     }
 }
 
-/// The one subscriber this test binary logs to, installed on first use. A
-/// thread-scoped `set_default` per capture raced tracing's callsite-interest
-/// cache against every other test's first log line and could capture nothing
-/// at all under load; a global subscriber is asked once and stays asked.
 fn captured_logs() -> &'static Arc<Mutex<Vec<u8>>> {
     static LOGS: std::sync::OnceLock<Arc<Mutex<Vec<u8>>>> = std::sync::OnceLock::new();
     LOGS.get_or_init(|| {
@@ -856,14 +771,10 @@ fn captured_logs() -> &'static Arc<Mutex<Vec<u8>>> {
     })
 }
 
-/// Drive a chunking run over `lanes` and hand back everything it logged.
 pub async fn chunked_run_logs(lanes: Vec<usize>) -> String {
-    // The tripwire is once per session, so two captures must not interleave.
     static ONE_CAPTURE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _serial = ONE_CAPTURE_AT_A_TIME.lock().await;
     let logs = captured_logs();
-    // A callsite another test registered while the subscriber was being
-    // installed may still carry the no-op dispatcher's interest.
     tracing::callsite::rebuild_interest_cache();
     let start = logs.lock().expect("log buffer poisoned").len();
     new_driver(
@@ -879,10 +790,6 @@ pub async fn chunked_run_logs(lanes: Vec<usize>) -> String {
     .await
     .expect("the chunked run completes");
     let captured = logs.lock().expect("log buffer poisoned")[start..].to_vec();
-    // Every other test in the binary logs to the same subscriber; the run above
-    // is single-threaded, so its lines are the ones stamped with this thread.
-    // Compared numerically: the formatter zero-pads (`ThreadId(02)`), Debug
-    // does not.
     let this_thread = thread_number(&format!("{:?}", std::thread::current().id()));
     String::from_utf8(captured)
         .expect("captured logs are utf-8")
@@ -901,8 +808,6 @@ fn thread_number(stamp: &str) -> u64 {
         .expect("a ThreadId(N) stamp")
 }
 
-/// A spec for `episodes` back-to-back single-lane episodes whose env declares
-/// `reset_options = declared`.
 pub fn trial_spec(episodes: u64, declared: &[&str]) -> RuntimeSessionSpec {
     let mut spec = one_episode_spec();
     spec.max_episodes = Some(episodes);
@@ -910,8 +815,6 @@ pub fn trial_spec(episodes: u64, declared: &[&str]) -> RuntimeSessionSpec {
     spec
 }
 
-/// Stamp `reset_options = declared` onto the spec's env contract metadata, the
-/// way `EnvFactory.make()` publishes the declaration.
 pub fn declare_reset_options(spec: &mut RuntimeSessionSpec, declared: &[&str]) {
     if declared.is_empty() {
         return;
@@ -935,8 +838,6 @@ pub fn declare_reset_options(spec: &mut RuntimeSessionSpec, declared: &[&str]) {
     });
 }
 
-/// The `trial_index` carried by one recorded `ResetRequest.options`, as the
-/// integer a single-lane reset sends.
 pub fn recorded_trial(options: &Option<rlmesh_spaces::MetaMap>) -> Option<i64> {
     match options.as_ref()?.get("trial_index")? {
         rlmesh_spaces::MetaValue::Int(value) => Some(*value),
@@ -944,9 +845,6 @@ pub fn recorded_trial(options: &Option<rlmesh_spaces::MetaMap>) -> Option<i64> {
     }
 }
 
-/// A lane-capable env handle: clones share one endpoint, every op names one
-/// lane, and each lane has its own episode length and step latency so lanes
-/// finish episodes in a timing-dependent order.
 #[derive(Clone)]
 pub struct LaneTestEnv {
     pub inner: Arc<Mutex<LaneTestState>>,
@@ -956,7 +854,6 @@ pub struct LaneTestEnv {
 
 #[derive(Default)]
 pub struct LaneTestState {
-    /// `(lane, seed)` per reset, in the order the env saw them.
     pub resets: Vec<(u32, Option<i64>)>,
     pub step: Vec<usize>,
 }
@@ -1038,8 +935,6 @@ pub fn lane_spec(num_envs: usize, max_episodes: u64, seeds: Vec<i64>) -> Runtime
     }
 }
 
-/// A single-lane env that never terminates on its own: only the runtime's
-/// caps end its episodes.
 #[derive(Clone, Default)]
 pub struct EndlessEnv {
     pub inner: Arc<Mutex<EndlessEnvState>>,

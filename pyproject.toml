@@ -20,8 +20,6 @@ dev = [
   "rlmesh-system",
   "rlmesh-system-fixtures",
 ]
-# The MuJoCo UR10e session demo (examples/python/v2/ur10e_mujoco) and an
-# independent MCAP reader for its test: `uv sync --group mujoco`.
 mujoco = ["rlmesh[numpy]", "mujoco==3.16.0", "mcap==1.6.0"]
 
 [tool.basedpyright]
@@ -32,8 +30,6 @@ include = [
   "python/rlmesh/tests/type_contract/fixtures",
   "tools/rlmesh_api_surface/src/rlmesh_api_surface",
 ]
-# Isaac Sim examples import the Kit runtime, and the coding agent LIBERO and
-# the Anthropic SDK; no dev environment carries them.
 exclude = ["examples/python/isaacsim", "examples/python/coding_agent"]
 typeCheckingMode = "basic"
 strict = ["python/rlmesh/src/rlmesh"]
@@ -50,14 +46,9 @@ reportImplicitOverride = "none"
 
 pythonVersion = "3.10"
 pythonPlatform = "All"
-# tools/ run only in the 3.11+ dev venv (tomllib); the 3.10 floor applies to the
-# shipped package and its user-facing tests.
 executionEnvironments = [{ root = "tools", pythonVersion = "3.11" }, { root = "." }]
 
 [tool.pytest.ini_options]
-# Wall-clock budgets fail on a busy machine whatever the code does, so the
-# default runs leave them out; `mise run test:python:perf` runs them alone.
-# Tests on real containers build images: `mise run test:sandbox:docker`.
 addopts = "-m 'not perf and not docker'"
 markers = [
   "perf: a wall-clock budget (mise run test:python:perf)",
@@ -86,23 +77,8 @@ extend-exclude = ["python/rlmesh/src/rlmesh/_rlmesh.pyi"]
 target-version = "py310"
 
 [tool.ruff.lint]
-select = [
-  "E", # pycodestyle errors
-  "W", # pycodestyle warnings
-  "F", # pyflakes
-  "I", # isort
-  "N", # pep8-naming
-  "D", # pydocstyle
-  "UP", # pyupgrade
-  "B", # flake8-bugbear
-  "RUF", # ruff-specific
-]
-ignore = [
-  "RUF059", # unused unpack vars (gym API always returns 5-tuples)
-  "E501", # line too long (formatter handles this)
-  "D105", # skip magic method docstrings
-  "D107", # document constructors on the class docstring
-]
+select = ["E", "W", "F", "I", "N", "D", "UP", "B", "RUF"]
+ignore = ["RUF059", "E501", "D105", "D107"]
 
 [tool.ruff.lint.per-file-ignores]
 "examples/**" = ["D", "F841", "RUF012"]

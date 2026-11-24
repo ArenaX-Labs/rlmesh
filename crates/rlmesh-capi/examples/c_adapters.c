@@ -1,4 +1,3 @@
-/* Stable adapters: typed authoring, immutable borrows, engine execution and ownership. */
 #include <rlmesh.h>
 #include <stdio.h>
 #include <string.h>
@@ -132,7 +131,6 @@ int main(void) {
   parsed = (RLMeshModelSpec*)1;
   CHECK(rlmesh_model_spec_from_metadata(metadata, &parsed) == RLMESH_OK && !parsed);
   rlmesh_value_free(metadata);
-  /* Gripper polarity, command units and allowed projections cross both ways. */
   {
     RLMeshActuator gripper = RLMESH_ACTUATOR_INIT;
     gripper.role = RLMESH_ADAPTERS_ACTION_GRIPPER;
@@ -173,7 +171,6 @@ int main(void) {
     CHECK(rlmesh_model_spec_from_json(flipped_text, &back) == RLMESH_OK &&
           rlmesh_model_spec_equals(back, flipping));
     rlmesh_model_spec_free(back);
-    /* A caller built against ABI 5 passes the shorter struct; the tail reads as unset. */
     gripper.struct_size = RLMESH_ACTUATOR_MIN_SIZE;
     CHECK(rlmesh_model_spec_new(&reading_node, &gripper_action, &back) == RLMESH_OK);
     CHECK(!rlmesh_model_spec_output(back)->components[0]->polarity);
@@ -181,7 +178,6 @@ int main(void) {
     rlmesh_model_spec_free(flipping);
     rlmesh_model_spec_free(plain);
   }
-  /* Sized leaves cover sugar, binary-safe text, composites and closed enums. */
   RLMeshImage image = RLMESH_IMAGE_INIT;
   image.role = RLMESH_ADAPTERS_IMAGE_PRIMARY;
   CHECK(rlmesh_image_with_size(&image, 4) == RLMESH_OK && image.height == 4 && image.width == 4);
@@ -265,7 +261,6 @@ int main(void) {
         !parsed && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR);
   rlmesh_value_free(malformed);
   rlmesh_value_free(metadata);
-  /* Tolerant spelling and binary-safe dict keys survive typed and JSON round trips. */
   state.dtype = RLMESH_DTYPE_OTHER;
   state.dtype_other = "future-float";
   const char key_bytes[] = {'z', 0, 'x'};
@@ -336,7 +331,6 @@ int main(void) {
   cycle.children = &cycle;
   cycle.children_len = 1;
   CHECK(rlmesh_model_spec_new(&cycle, &action, &future) == RLMESH_ERR_INVALID_ARGUMENT && !future);
-  /* Invalid struct_size input, zero/nonzero future tails, and no ownership on refusal. */
   RLMeshState bad = {0};
   RLMeshInputNode bad_node = rlmesh_input_node_state(&bad);
   CHECK(rlmesh_model_spec_new(&bad_node, &action, &future) == RLMESH_ERR_INVALID_ARGUMENT &&
@@ -375,7 +369,6 @@ int main(void) {
   CHECK(rlmesh_adapter_transform_obs(adapter, raw, &converted) == RLMESH_ERR_OS && !converted &&
         rlmesh_last_error_class() == RLMESH_ERROR_CLASS_OS_ERROR);
   rlmesh_adapter_free(adapter);
-  /* Transform handles share identity; specs retain them after the caller frees. */
   int transform_frees = 0;
   RLMeshObsTransform* transform = NULL;
   CHECK(rlmesh_obs_transform_new(NULL, &transform_frees, counted_free, &transform) ==
@@ -401,7 +394,7 @@ int main(void) {
   rlmesh_model_spec_free(custom_spec);
   CHECK(transform_frees == 1);
   rlmesh_adapter_free(alias);
-  CHECK(transform_frees == 1); /* registry retains the final reference */
+  CHECK(transform_frees == 1);
   custom.transform = NULL;
   custom.entrypoint = "abi5:identity";
   CHECK(rlmesh_model_spec_new(&custom_input, &action, &custom_spec) == RLMESH_OK);
@@ -449,7 +442,6 @@ int main(void) {
         !removed);
   rlmesh_obs_transform_free(replacement);
 
-  /* A route owns its transform after unregister; new resolves refuse the name. */
   int route_frees = 0;
   CHECK(rlmesh_obs_transform_new(copy_transform, &route_frees, counted_free, &transform) ==
         RLMESH_OK);
@@ -488,7 +480,6 @@ int main(void) {
   CHECK(reentrant_frees == 2);
   CHECK(rlmesh_ext_unregister_entrypoint("abi5:reentrant", NULL, &removed) == RLMESH_OK && removed);
 
-  /* Real model attachment and tag mutate the original env; NO_ADAPTER bypasses. */
   RLMeshEnvVtable ev = RLMESH_ENV_VTABLE_INIT;
   ev.reset = reset;
   ev.step = step;

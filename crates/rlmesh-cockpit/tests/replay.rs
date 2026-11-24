@@ -1,6 +1,3 @@
-//! Replaying a recorded session: scrubbing anywhere shows what playing
-//! straight through shows, and a paused live session shows where it was.
-
 mod common;
 
 use std::time::Duration;
@@ -11,8 +8,6 @@ use rlmesh_cockpit::{ModelConfig, Replay, View};
 
 #[test]
 fn scrubbing_a_replay_shows_what_playing_straight_through_shows() {
-    // Long enough for several checkpoints, with a preemption and a loss
-    // (a cumulative count) between them.
     let mut w = World::ur10e();
     w.run(12_000);
     w.grant("operator");
@@ -39,7 +34,6 @@ fn scrubbing_a_replay_shows_what_playing_straight_through_shows() {
     }
     assert_eq!(view(&scrubbed), view(&played));
 
-    // Stepping back one message and forward again lands where it was.
     scrubbed.step(false);
     assert!(scrubbed.at_ns() < last);
     scrubbed.step(true);
@@ -52,8 +46,6 @@ fn pausing_live_shows_the_session_from_its_last_seconds_alone() {
     w.run(4_000);
     w.grant("operator");
     w.run(8_000);
-    // Values are decoded at most every 20 ms, from wherever playing
-    // started, so only which parts show a value is compared.
     let mut history = History::new(Duration::from_secs(2), usize::MAX);
     for (at, input) in &w.recorded {
         history.push(*at, input);

@@ -1,35 +1,5 @@
-//! `rlmesh host` (installed as `rlmeshd` too): this machine's session host,
-//! in the foreground or as a service. It hosts real-time sessions on the
-//! LAN under one host identity that survives restarts, and admits only the
-//! devices of its device table.
-//!
-//! There is no key file to pass: its state directory
-//! ([`address::daemon_dir`], `--state-dir`) holds
-//! `host.key` (its static X25519 key and Ed25519 seed), `local.key` (the key
-//! of device `local`: this user's processes on this machine attach with it)
-//! and `devices.toml` ([`crate::devices`]). The keys are made on first
-//! start, 0600, and kept, so its identity survives restarts. It re-reads
-//! `devices.toml` every [`RELOAD`] and applies a change to every session at
-//! once; a robot name's first embodiment by a device allowed to pin it is
-//! written there as its pin.
-//!
-//! It records every session it hosts into a rolling recording unless
-//! `--no-record`.
-//!
-//! With the unreleased `fleet` feature and `--lobby` it also hosts the
-//! lobby, `_lobby` (`crate::lobby`), where robots provisioned to it wait
-//! for a scene's run, runs scenes, is the satellite of the hosts this
-//! machine paired with (`crate::satellite`), and advertises itself over
-//! mDNS (`discovery::advertise`).
-//!
-//! Its pairing endpoint (`rlmeshd/pair`, [`PairService`]) pairs machines,
-//! which the owner approves on this machine through the local channel
-//! ([`crate::pair`]), as `devices provision` enrolls boards. Its host id
-//! ([`HostIdentity::host_id`]) is in its first line.
-//!
-//! Unlike an embedded host it gates no link (`usrpwd`): Zenoh gates every
-//! listener of a router or none, and a board's zenoh-pico has no `usrpwd`,
-//! so the handshake alone admits, here as on any LAN link.
+//! `rlmesh host` (installed as `rlmeshd` too): this machine's session host, in
+//! the foreground or as a service.
 
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -63,17 +33,12 @@ use crate::lobby::Home;
 
 /// The host's own keys in the state directory.
 pub const HOST_KEY: &str = "host.key";
-/// How often `devices.toml` is read again.
 const RELOAD: Duration = Duration::from_millis(500);
 
-/// The host's own warnings, on stderr: `RUST_LOG` filters them,
-/// [`rlmesh_session::DEFAULT_LOG_FILTER`] when unset. A process that already
-/// has a logger (the Python package's) keeps it.
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(rlmesh_session::DEFAULT_LOG_FILTER));
     use tracing_subscriber::prelude::*;
-    // Zenoh logs its config, link password included, below INFO.
     let capped = tracing_subscriber::filter::filter_fn(rlmesh_session::logging::may_record);
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -91,7 +56,6 @@ pub fn state_dir(dir: Option<&Path>) -> Result<PathBuf> {
         .context("no state directory for rlmesh host: pass --state-dir")
 }
 
-/// The two 32-byte secrets of `path` (`{a}.{b}`, base32), if it exists.
 fn read_pair(path: &Path) -> Result<Option<Zeroizing<[[u8; 32]; 2]>>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => Zeroizing::new(text),
@@ -107,8 +71,8 @@ fn read_pair(path: &Path) -> Result<Option<Zeroizing<[[u8; 32]; 2]>>> {
     Ok(Some(Zeroizing::new(pair)))
 }
 
-/// The host identity in `dir`, made on first start (`host.key` and
-/// `local.key`, 0600). A missing `local.key` gets a new local secret.
+/// The host identity in `dir`, made on first start (`host.key` and `local.key`,
+/// 0600).
 pub fn identity(dir: &Path) -> Result<HostIdentity> {
     let fresh = || -> Result<Arc<HostIdentity>> {
         Ok(HostConfig::new(TenantId::new(TENANT)?, session_id(DEFAULT_SESSION)).identity)
@@ -150,16 +114,11 @@ pub fn identity(dir: &Path) -> Result<HostIdentity> {
     Ok(identity)
 }
 
-/// The base addresses rlmeshd gives paired machines and boards: `base`,
-/// or for every interface (`0.0.0.0`) the address of the interface its
-/// default route leaves by.
 // TODO: one address per host; list every interface's when a robot is on
-// more than one network (mDNS finds the others).
 pub fn advertised(base: SocketAddr) -> Vec<String> {
     if !base.ip().is_unspecified() {
         return vec![base.to_string()];
     }
-    // A UDP connect sends nothing: it only picks the route.
     let routed = std::net::UdpSocket::bind((base.ip(), 0))
         .and_then(|socket| {
             let probe: SocketAddr = if base.is_ipv4() {
@@ -198,8 +157,6 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
         config.presence_grace = grace;
     }
     config.rearm_robots = args.rearm_robots;
-    // Beyond loopback every part is sealed: anyone on the LAN sees the
-    // traffic.
     if !base.ip().is_loopback() && !args.no_seal {
         config.seal = SealPolicy::All;
     }
@@ -236,8 +193,6 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     };
     #[cfg(not(feature = "fleet"))]
     drop(config);
-    // What the local pairing endpoint (unix only) asks to apply now: the
-    // sender it is answered on once the device table has reloaded.
     let (apply, mut applying) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(4);
     #[cfg(unix)]
     let local = crate::pair::serve_local(crate::pair::Local {
@@ -253,8 +208,7 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     })?;
     #[cfg(not(unix))]
     drop((apply, service));
-    // One line: a reader that takes it and closes the pipe must not fail a
-    // second write.
+    // One line: a reader that closes the pipe after it must not fail a second write.
     let reach = match advertised(base).first() {
         Some(address) if base.ip().is_unspecified() => format!(", reachable at {address}"),
         Some(_) => String::new(),
@@ -287,7 +241,6 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
         writeln!(stdout, "recording to {}", dir.display())?;
     }
     stdout.flush()?;
-    // The table applied, and the day it was: an entry may expire overnight.
     let mut applied = (table, crate::devices::today());
     let mut refused: Option<String> = None;
     let mut shutdown = std::pin::pin!(shutdown_signal());
@@ -331,8 +284,6 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     Ok(())
 }
 
-/// Where to record (`None`: `--no-record`).
-/// The rolling budgets, with the flags' overrides.
 fn rolling(args: &HostArgs, dir: PathBuf) -> Rolling {
     let mut rolling = Rolling::new(dir);
     if let Some(keep) = args.record_keep {
@@ -365,9 +316,6 @@ fn recordings(args: &HostArgs) -> Result<Option<PathBuf>> {
     }
 }
 
-/// Applies `devices.toml` to every session if it changed since `applied`,
-/// or the day did (a device may have expired), and returns the table it
-/// applied.
 async fn reload(
     dir: &Path,
     server: &SessionServer,
@@ -377,7 +325,6 @@ async fn reload(
 ) -> Option<Table> {
     match Table::read(dir) {
         Ok(table) if table != applied.0 || crate::devices::today() != applied.1 => {
-            // Read checked it.
             let Ok((devices, pins)) = table.host() else {
                 return None;
             };
@@ -389,7 +336,6 @@ async fn reload(
         }
         Ok(_) => *refused = None,
         Err(err) => {
-            // Once per broken edit, not every read.
             let err = format!("{err:#}");
             if refused.as_ref() != Some(&err) {
                 let _ = writeln!(stderr, "rlmesh host: {DEVICES} not applied: {err}");
@@ -400,8 +346,6 @@ async fn reload(
     None
 }
 
-/// The daemon's fleet services (feature `fleet`): the lobby and its
-/// scenes, its satellite side and its mDNS advertisement.
 #[cfg(feature = "fleet")]
 struct Fleet {
     home: Arc<Home>,
@@ -426,7 +370,6 @@ impl Fleet {
             &identity.host_id(),
             advertised(base),
         );
-        // Without multicast it is found at its stored addresses only.
         let advertised = discovery::advertise(&identity.host_id(), base)
             .map_err(|err| {
                 let _ = writeln!(stderr, "rlmesh host: not advertised over mDNS: {err}");
@@ -447,8 +390,6 @@ impl Fleet {
     }
 }
 
-/// Pins every unpinned robot name embodied by a device allowed to pin it
-/// ([`Table::may_pin`]).
 async fn pin_first_embodiments(
     dir: &Path,
     server: &SessionServer,
@@ -476,8 +417,6 @@ async fn pin_first_embodiments(
         for (robot, device) in new {
             let _ = writeln!(stderr, "rlmesh host: pinned robot {robot} to {device}");
             // TODO: a tethered robot's first embodiment pins its device
-            // alone, since authority state doesn't carry board_id; record the
-            // declared board once the bridge sends one (scene step 10).
             table.robots.entry(robot).or_insert(Pin {
                 device,
                 board_id: None,

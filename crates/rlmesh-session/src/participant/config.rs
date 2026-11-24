@@ -50,9 +50,6 @@ pub struct ParticipantConfig {
     /// ([`Participant::local_estop`]): it attaches latched, and the session
     /// starts in ESTOP.
     pub estop: Option<Reason>,
-    /// The robot process's latch, when it outlives this participant (a
-    /// robot from the lobby, one run after another): it attaches latched
-    /// while it is, and its edges read the same latch.
     pub(crate) latch: Option<Arc<LocalLatch>>,
     /// What it attaches with: its device's key and the host's static key
     /// (`SessionHost::credential` in-process; a session address's key

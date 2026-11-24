@@ -1,23 +1,19 @@
-//! The datagram path: a robot's realtime parts between its board and the
-//! host over UDP instead of the session's TCP links, where a lost frame
-//! stalls everything behind it until it is sent again.
+//! The datagram path: a robot's realtime parts between its board and the host
+//! over UDP instead of the session's TCP links, where a lost frame stalls
+//! everything behind it until it is sent again.
 //!
-//! Only what is latest-wins at every layer above rides it: action chunks
-//! down (`c/{robot}/{path}`) and a robot's samples and `_applied` entries up
+//! Only what is latest-wins at every layer above rides it: action chunks down
+//! (`c/{robot}/{path}`) and a robot's samples and `_applied` entries up
 //! (`d/{robot}/{path}`). Each datagram carries exactly the sealed envelope the
-//! session would carry on that key, behind a small [`Header`] that names the
-//! key by a route the host listed in the robot's device view. The seal is
-//! what makes an unauthenticated socket safe: a datagram that does not open
-//! under its route's key is dropped and counted ([`Arrivals::unopened`]),
-//! and the seal's own sequence and replay window refuse a copy. The header's
-//! sequence counts losses and reordering ([`Arrivals`]) and nothing else.
+//! session would carry on that key, behind a small [`Header`] naming the key by
+//! a route the host listed in the robot's device view. A datagram that does not
+//! open under its route's key is dropped and counted ([`Arrivals::unopened`]),
+//! and the seal's replay window refuses a copy; the header's sequence only
+//! counts losses and reordering ([`Arrivals`]).
 //!
 //! The host sends a robot nothing until it opened a [`Kind::Probe`] from it
-//! under the robot's `k_up`, and goes on sending to the address it last
-//! opened a datagram from ([`Learned`]): a spoofed source redirects nothing,
-//! and a robot whose address changes is followed.
-//!
-//! [`Kind::Probe`]: Kind::Probe
+//! under the robot's `k_up`, and then sends to the address it last opened a
+//! datagram from ([`Learned`]).
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -33,15 +29,11 @@ use crate::wire::{
 
 /// The header's version, which [`crate::wire::DatagramOffer`] names.
 pub const VERSION: u8 = 1;
-/// The header's first byte: its magic in the high nibble, its version in
-/// the low.
 const MAGIC: u8 = 0xD0;
 /// The header's length.
 pub const HEADER_LEN: usize = 8;
-/// The most one datagram carries, header included: under a 1500-byte MTU's
-/// 1472 bytes of UDP payload with room for a tunnel, so it is never
-/// fragmented. A board reassembles no IP fragments, so a larger one would be
-/// lost without a word.
+/// The most one datagram carries, header included: under a 1500-byte MTU's 1472
+/// bytes of UDP payload with room for a tunnel, so it is never fragmented.
 pub const MAX_DATAGRAM: usize = 1400;
 /// The most a receiver reads of one datagram: anything past
 /// [`MAX_DATAGRAM`] up to this is read only to be refused.
@@ -54,10 +46,8 @@ pub enum Kind {
     Chunk = 1,
     /// A sample or `_applied` entry, board to host.
     Sample = 2,
-    /// A probe, board to host: a `Sealed` [`DatagramProbe`] under the
-    /// robot's `k_up`.
-    ///
-    /// [`DatagramProbe`]: crate::crypto::Kind::DatagramProbe
+    /// A probe, board to host: a `Sealed`
+    /// [`DatagramProbe`](crate::crypto::Kind::DatagramProbe) under the robot's `k_up`.
     Probe = 3,
 }
 
@@ -173,7 +163,6 @@ pub fn sample_bound(stream: &StreamSpec) -> usize {
         capture_ns: i64::MIN,
         publish_ns: i64::MIN,
         tick: u64::MAX,
-        // Only its length is encoded into the bound.
         payload: Bytes::new(),
         applied: stream.applied.then_some(Applied {
             mode: EdgeMode::Estop,
@@ -192,9 +181,9 @@ pub fn sample_bound(stream: &StreamSpec) -> usize {
         .saturating_add(OVERHEAD)
 }
 
-/// The longest sealed chunk of `count` actions of `stride` bytes that
-/// `source` can send under a binding with `inputs` input streams: every
-/// field of its envelope at its widest.
+/// The longest sealed chunk of `count` actions of `stride` bytes that `source`
+/// can send under a binding with `inputs` input streams: every field of its
+/// envelope at its widest.
 pub fn chunk_bound(
     channel: ChannelId,
     source: &ParticipantId,
@@ -222,7 +211,6 @@ pub fn chunk_bound(
         replace_from_ns: i64::MIN,
         valid_until_ns: i64::MIN,
         count,
-        // Only its length is encoded into the bound.
         actions: Bytes::new(),
         publish_ns: i64::MIN,
         tick: u64::MAX,
@@ -235,15 +223,14 @@ pub fn chunk_bound(
         .saturating_add(OVERHEAD)
 }
 
-/// The bytes of `n` as a protobuf varint.
 fn varint_len(n: usize) -> usize {
     let bits = usize::BITS - n.leading_zeros();
     (bits.max(1) as usize).div_ceil(7)
 }
 
 /// What one end received on a robot's datagram path, by the other end's
-/// statistics sequence: only datagrams that opened move it, so a forged
-/// header changes nothing but [`Self::unopened`].
+/// statistics sequence: only datagrams that opened move it, so a forged header
+/// changes nothing but [`Self::unopened`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Arrivals {
     highest: Option<u32>,
@@ -265,13 +252,11 @@ impl Arrivals {
             self.highest = Some(seq);
             return;
         };
-        // Signed distance, so the sequence may wrap.
         let ahead = seq.wrapping_sub(highest).cast_signed();
         if ahead > 0 {
             self.lost += u64::from(ahead.unsigned_abs() - 1);
             self.highest = Some(seq);
         } else if ahead < 0 {
-            // It was counted lost when the later one arrived.
             self.reordered += 1;
             self.lost = self.lost.saturating_sub(1);
         }
@@ -289,11 +274,10 @@ impl Arrivals {
 }
 
 /// Where the host sends a robot's datagrams: the source of the last one it
-/// opened from that robot, and nowhere before the first. Only a datagram
-/// that opened under the robot's keys moves it, so a spoofed source never
-/// redirects the stream (nor turns the host on a third party), and a robot
-/// whose address changes (NAT rebinding, a DHCP renewal) is followed with
-/// its next one.
+/// opened from that robot, and nowhere before the first. Only a datagram that
+/// opened under the robot's keys moves it, so a spoofed source cannot redirect
+/// the stream, and a robot whose address changes (NAT rebinding, a DHCP
+/// renewal) is followed with its next datagram.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Learned<A> {
     at: Option<A>,
@@ -368,9 +352,9 @@ impl<T> Latest<T> {
     }
 }
 
-/// Route ids, handed out without reuse while held: a datagram for a route
-/// that went (a part moved back to the session, a robot detached) names no
-/// other route.
+/// Route ids, handed out without reuse while held: a datagram for a route that
+/// went (a part moved back to the session, a robot detached) names no other
+/// route.
 #[derive(Clone, Debug, Default)]
 pub struct RouteIds {
     next: u16,
@@ -425,7 +409,6 @@ mod tests {
             bad[at] = byte;
             assert_eq!(Header::parse(&bad), Err(Unreadable::Header), "{at}={byte}");
         }
-        // The largest that fits, and one byte more.
         let full = vec![0; MAX_DATAGRAM - HEADER_LEN];
         assert!(header.frame(&full).is_some());
         assert!(header.frame(&[0; MAX_DATAGRAM - HEADER_LEN + 1]).is_none());
@@ -443,13 +426,11 @@ mod tests {
         }
         a.refused();
         assert_eq!((a.received, a.lost, a.reordered, a.unopened), (6, 1, 1, 1));
-        // Across the wrap.
         let mut a = Arrivals::default();
         for seq in [u32::MAX - 1, u32::MAX, 1] {
             a.opened(seq);
         }
         assert_eq!((a.received, a.lost, a.reordered), (3, 1, 0));
-        // A sender that started over is not a loss of billions.
         a.restart();
         a.opened(7);
         assert_eq!(a.lost, 1);
@@ -548,7 +529,6 @@ mod tests {
             fits(bound),
             "the demo's 4 actions x 2 joints fit: {bound} bytes"
         );
-        // 200 actions of 2 x f32 do not.
         assert!(!fits(chunk_bound(ChannelId(7), &source, 1, 200, 8)));
     }
 }

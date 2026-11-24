@@ -43,7 +43,6 @@ impl Corners {
         self.0 & (Corners::PREDICT_CHUNK.0 | Corners::PREDICT_CHUNK_BATCH.0) != 0
     }
 
-    /// The corner names in declaration order.
     pub(crate) fn names(self) -> Vec<&'static str> {
         [
             (Corners::PREDICT, "predict"),
@@ -89,7 +88,7 @@ impl LoadKey {
 /// What a model's `spec` may be: a `ModelSpec` or [`NO_ADAPTER`];
 /// `Option<SpecArg>`'s `None` leaves the spec undeclared.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(clippy::large_enum_variant)] // Two arms, as Python's SpecArg.
+#[allow(clippy::large_enum_variant)]
 pub enum SpecArg {
     /// Resolve an adapter from this spec per route.
     ModelSpec(ModelSpec),
@@ -106,8 +105,6 @@ impl From<ModelSpec> for SpecArg {
 /// Disable adapter resolution.
 pub const NO_ADAPTER: SpecArg = SpecArg::NoAdapter;
 
-/// The text a corner listed in [`Policy::CORNERS`] (or `CONTEXT`) but not
-/// written fails with.
 fn unwritten(method: &str, list: &str, entry: &str) -> Error {
     Error::Runtime(format!(
         "{method} is not implemented: the policy lists {entry} in {list} but does not \
@@ -115,18 +112,16 @@ fn unwritten(method: &str, list: &str, entry: &str) -> Error {
     ))
 }
 
-/// A model's declarations, predict operations and lifecycle hooks. Write the
-/// corners the model has and list them in [`CORNERS`](Policy::CORNERS); a
-/// corner that reads the per-episode context is listed in
-/// [`CONTEXT`](Policy::CONTEXT) too and written as its
-/// `<corner>_with_context` twin. Build the model with
+/// A model's declarations, predict operations and lifecycle hooks.
+///
+/// Write the corners the model has and list them in
+/// [`CORNERS`](Policy::CORNERS); a corner that reads the per-episode context is
+/// also listed in [`CONTEXT`](Policy::CONTEXT) and written as its
+/// `<corner>_with_context` twin. The consts are the declaration: a corner
+/// listed but not written fails its first call with the `RuntimeError` class,
+/// and a corner written but not listed is never called. Build the model with
 /// [`Model::new`](crate::Model::new) or
 /// [`Model::from_config`](crate::Model::from_config).
-///
-/// Rust cannot see which methods an impl wrote, so the consts are the
-/// declaration: a corner listed but not written fails its first call with
-/// the `RuntimeError` class naming the entry, and a corner written but not
-/// listed is never called.
 pub trait Policy: Send + 'static {
     /// The corners this policy implements.
     const CORNERS: Corners = Corners::PREDICT;
@@ -289,13 +284,12 @@ pub trait Policy: Send + 'static {
         ))
     }
 
-    /// Options to add to the env reset that starts `episode`, which holds
-    /// its `episode_id`, `seed` and `trial_index`. A run asks before each
-    /// reset it sends (when [`RESET_OPTIONS`](Policy::RESET_OPTIONS) is
-    /// set), and the env's `reset(options)` receives them under the
-    /// runtime's own reserved keys. A reset of several lanes gets each key
-    /// as a per-lane list; an env that autoresets restarts its lanes itself,
-    /// with no reset to carry them. The default adds none.
+    /// Options to add to the env reset that starts `episode`, which holds its `episode_id`,
+    /// `seed` and `trial_index`. A run asks before each reset it sends (when
+    /// [`RESET_OPTIONS`](Policy::RESET_OPTIONS) is set), and the env's `reset(options)`
+    /// receives them under the runtime's reserved keys. A reset of several lanes gets
+    /// each key as a per-lane list; an env that autoresets gets none. The default adds
+    /// none.
     fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
         let _ = episode;
         Ok(None)
@@ -313,7 +307,6 @@ pub trait Policy: Send + 'static {
     }
 }
 
-/// A bare predict closure.
 impl<F> Policy for F
 where
     F: FnMut(Value) -> Result<Value> + Send + 'static,

@@ -1,7 +1,4 @@
-//! Cheap per-episode sanity checks over what the recorder already sees: a
-//! frozen render context, a policy that never moves, a predict path that is
-//! orders of magnitude off its baseline. Each is a bounded-memory tracker fed
-//! per step and folded into `EpisodeJson.flags` when the episode closes.
+//! Cheap per-episode sanity checks over what the recorder already sees.
 
 use rlmesh_spaces::{DType, SpaceKind, SpaceSpec, SpaceValue, Tensor};
 use serde_json::Value;
@@ -14,13 +11,9 @@ pub const STATIC_POLICY: &str = "static_policy";
 pub const SLOW_PREDICT: &str = "slow_predict";
 pub const HORIZON_CAP: &str = "horizon_cap";
 
-/// Frames inside the warm-up are never compared: the first steps after a
-/// reset legitimately hold still.
 const WARMUP_FRAMES: usize = 10;
 const MIN_COMPARED_FRAMES: usize = 10;
 const FRAME_SAMPLE_BYTES: usize = 4096;
-/// Mean absolute pixel difference (u8 units) under which two frames count
-/// as identical; 0.5/255 in normalized units.
 const FROZEN_MEAN_ABS_DIFF: f64 = 0.5;
 const FROZEN_RATIO: f64 = 0.9;
 const MIN_STEPS: usize = 10;
@@ -30,8 +23,6 @@ const STILL_RATIO: f64 = 0.95;
 const MIN_PREDICTS: usize = 3;
 /// No probe baseline reaches the recorder, so the slow-predict bar is absolute.
 pub const SLOW_PREDICT_MS: f64 = 500.0;
-/// Env info leaves that report end-effector motion, matched on the last
-/// segment of a dotted key (`dense_reward.eef_speed`).
 const MOTION_KEYS: [&str; 5] = [
     "eef_speed",
     "ee_speed",
@@ -49,12 +40,10 @@ pub(super) struct EpisodeInvariants {
 }
 
 impl EpisodeInvariants {
-    /// The primary camera's raw (pre-perturbation) frame for one step.
     pub(super) fn frame(&mut self, bytes: &[u8]) {
         self.frames.observe(bytes);
     }
 
-    /// The model's raw action for one step and the observe-to-action latency.
     pub(super) fn action(
         &mut self,
         value: &SpaceValue,
@@ -141,8 +130,6 @@ impl FrameTracker {
     }
 }
 
-/// Every `stride`-th byte, capped at `FRAME_SAMPLE_BYTES`, so a frame
-/// comparison costs the same whatever the resolution.
 fn sample(bytes: &[u8]) -> Vec<u8> {
     let stride = bytes.len().div_ceil(FRAME_SAMPLE_BYTES).max(1);
     bytes.iter().step_by(stride).copied().collect()
@@ -169,7 +156,6 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     })
 }
 
-/// Welford running variance per action dimension.
 #[derive(Default)]
 struct ActionTracker {
     count: usize,
@@ -249,8 +235,6 @@ impl MotionTracker {
     }
 }
 
-/// The first motion leaf in the info tree as `(dotted key, magnitude)`; a
-/// vector leaf reports its L2 norm.
 fn motion_value(info: &Value, prefix: &str) -> Option<(String, f64)> {
     let object = info.as_object()?;
     for (key, value) in object {
@@ -306,7 +290,6 @@ fn slow_predict(predict_ms: &mut [f32]) -> Option<EpisodeFlag> {
     })
 }
 
-/// Flattens every non-image numeric leaf in declaration order.
 fn numeric_leaves(value: &SpaceValue, space: &SpaceSpec, out: &mut Vec<f64>) {
     match (value, space.spec.as_ref()) {
         (SpaceValue::Box(_), _) if is_image_space(space) => {}
@@ -385,7 +368,6 @@ mod tests {
     fn frozen_frames_after_warmup_are_flagged_and_moving_frames_are_not() {
         let mut frozen = EpisodeInvariants::default();
         for step in 0..40 {
-            // Physics keeps moving for the first frames, then the render dies.
             frozen.frame(&frame(|i| (i + step.min(5)) as u8));
         }
         let (flags, hash) = frozen.finish(40, false);
@@ -408,7 +390,6 @@ mod tests {
     fn sub_half_pixel_noise_still_counts_as_frozen() {
         let mut invariants = EpisodeInvariants::default();
         for step in 0..40 {
-            // One pixel toggles per frame: mean abs diff far below 0.5.
             invariants.frame(&frame(|i| if i == 0 { step as u8 } else { 7 }));
         }
         assert_eq!(names(&invariants.finish(40, false).0), [FROZEN_OBSERVATION]);

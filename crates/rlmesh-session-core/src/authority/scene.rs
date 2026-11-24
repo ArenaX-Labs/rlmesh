@@ -1,19 +1,13 @@
-//! A scene's session: its member table, its
-//! rejoin window and its closing. Fenced behind the `fleet` feature; its
-//! places are an ordinary session's ([`super::AuthorityConfig::places`]).
+//! A scene's session: its member table, its rejoin window and its closing.
 //!
-//! - **Members.** Only the scene's members attach, each from its device: a
-//!   robot from its pinned device (`board_id` is checked at declare), a
-//!   controller from its member's device up to its cap. Anyone else
-//!   attaches only as an observer (`NOT_AUTHORIZED`).
-//! - **Rejoin**: a member lost from the run is waited
-//!   for until `rejoin_until_ns` ([`SceneConfig::rejoin_ns`] after the
-//!   loss); a robot is back once it declared again, the same map as before
-//!   (`INCOMPATIBLE` otherwise), and the run arms only once every member is
-//!   back, on an explicit arm.
-//! - **Closing** ([`super::Authority::close_scene`]), in one revision: the
-//!   mode goes DISARMED (ESTOP stays), every lease ends with the reason,
-//!   and `scene.closing` (every device view's `closing`) is set.
+//! - **Members.** Only members attach as themselves: a robot from its pinned device
+//!   (`board_id` is checked at declare), a controller from its member's device up to its cap.
+//!   Anyone else attaches only as an observer (`NOT_AUTHORIZED`).
+//! - **Rejoin.** A member lost from the run is waited for [`SceneConfig::rejoin_ns`]; a robot
+//!   is back once it declares the same map again (`INCOMPATIBLE` otherwise), and the run
+//!   re-arms only on an explicit arm once every member is back.
+//! - **Closing** ([`Authority::close_scene`]), in one revision: the mode goes DISARMED (ESTOP
+//!   stays), every lease ends with the reason, and `scene.closing` is set.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 
@@ -49,8 +43,8 @@ pub enum Member {
 /// What a scene's session carries besides an ordinary session's rules.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneConfig {
-    /// The run, the scene's name and fingerprint (`closing` and
-    /// `rejoin_until_ns` are the authority's).
+    /// The run, the scene's name and fingerprint (`closing` and `rejoin_until_ns` are the
+    /// authority's).
     pub info: SceneInfo,
     /// Its members by name.
     pub members: BTreeMap<ParticipantId, Member>,
@@ -72,9 +66,9 @@ fn class_name(class: PriorityClass) -> &'static str {
 }
 
 impl SceneConfig {
-    /// Whether `participant`, on `device`, may attach with `roles` at
-    /// `priority`: observers always; otherwise only a member, from its
-    /// device, a robot as an embodiment and a controller within its cap.
+    /// Whether `participant`, on `device`, may attach with `roles` at `priority`: observers
+    /// always; otherwise only a member, from its device, a robot as an embodiment and a
+    /// controller within its cap.
     ///
     /// # Errors
     /// `NOT_AUTHORIZED`, naming the member and the fix.
@@ -88,8 +82,6 @@ impl SceneConfig {
         if roles.iter().all(|r| *r == Role::Observer) {
             return Ok(());
         }
-        // The home daemon watches and arms a run as an observer: arming is
-        // its device's verb, not a role.
         let scene = &self.info.name;
         let member = self.members.get(participant).ok_or_else(|| {
             refused(format!(
@@ -151,9 +143,6 @@ impl SceneConfig {
     }
 }
 
-/// A scene run's state in the authority: why it is closing, and the members
-/// lost and not back yet (a robot is back once it declared again) with
-/// when the run stops waiting for them.
 #[derive(Clone, Debug, Default)]
 pub(super) struct SceneState {
     closing: Option<Reason>,
@@ -161,8 +150,6 @@ pub(super) struct SceneState {
     rejoin_until_ns: Option<i64>,
 }
 
-/// The scene's rules inside [`Authority`]; without `fleet` each is a no-op
-/// (`super::no_scene`).
 impl Authority {
     fn scene_config(&self) -> Option<&SceneConfig> {
         self.config.scene.as_ref()
@@ -178,8 +165,6 @@ impl Authority {
         })
     }
 
-    /// A closing scene is over: nothing arms it or
-    /// takes a lease in it again, a grant waiting for its keys included.
     pub(super) fn scene_refuses(&self, command: &Command) -> Result<(), CtlError> {
         match &self.scene.closing {
             Some(closing)
@@ -210,31 +195,25 @@ impl Authority {
         }
     }
 
-    /// The id of the run this session hosts.
     pub(super) fn scene_run(&self) -> Option<&str> {
         self.scene_config().map(|s| s.info.run.as_str())
     }
 
-    /// Whether `id` is a member of the scene this session runs.
     pub(super) fn scene_member(&self, id: &ParticipantId) -> bool {
         self.scene_config()
             .is_some_and(|s| s.members.contains_key(id))
     }
 
-    /// Whether `id` is a lost member the run still waits for.
     pub(super) fn scene_rejoining(&self, id: &ParticipantId) -> bool {
         self.scene.rejoining.contains(id)
     }
 
-    /// `id` is back in the run: the window closes once every lost member
-    /// is.
     pub(super) fn rejoined(&mut self, id: &ParticipantId) {
         if self.scene.rejoining.remove(id) && self.scene.rejoining.is_empty() {
             self.scene.rejoin_until_ns = None;
         }
     }
 
-    /// The run arms only once every lost member is back.
     pub(super) fn scene_arm_ready(&self) -> Result<(), CtlError> {
         match self.scene.rejoining.first() {
             Some(member) => Err(CtlError::new(
@@ -245,8 +224,6 @@ impl Authority {
         }
     }
 
-    /// A member is lost: waited for until the rejoin window closes. Returns
-    /// whether `id` is a member.
     pub(super) fn scene_lost(&mut self, id: &ParticipantId) -> bool {
         let Some(rejoin_ns) = self
             .scene_config()
@@ -261,8 +238,6 @@ impl Authority {
         true
     }
 
-    /// A scene's robot keeps its map for the run: bindings were made
-    /// against it.
     pub(super) fn scene_keeps_map(
         &self,
         from: &ParticipantId,
@@ -280,12 +255,10 @@ impl Authority {
         }
     }
 
-    /// Closes the scene this session runs with `code`
-    /// (`SCENE_ENDED`, or `SCENE_FAILED` with the stage's error in
-    /// `detail`), `by` whoever stopped it, in one revision: the mode goes
-    /// DISARMED (ESTOP stays), every lease ends with the reason, and
-    /// `scene.closing` is set, which tells robots to detach and return to the
-    /// lobby. Nothing happens outside a scene or once it is closing.
+    /// Closes the scene this session runs with `code` (`SCENE_ENDED`, or `SCENE_FAILED` with
+    /// the stage's error in `detail`), `by` whoever stopped it, in one revision: the mode goes
+    /// DISARMED (ESTOP stays), every lease ends with the reason, and `scene.closing` is set,
+    /// which tells robots to detach and return to the lobby.
     pub fn close_scene(
         &mut self,
         code: ReasonCode,
@@ -356,7 +329,6 @@ mod tests {
         let robot = [Role::Embodiment];
         let controller = [Role::Controller];
         let (model, operator) = (PriorityClass::Model, PriorityClass::Operator);
-        // (participant, device, roles, priority, admitted, why)
         for (who, device, roles, priority, admitted, why) in [
             ("eye-l", "eye-l", &robot[..], model, true, ""),
             (
@@ -369,8 +341,6 @@ mod tests {
             ),
             ("skull", "local", &robot[..], model, true, ""),
             ("skull", "skull", &robot[..], model, true, ""),
-            // Unpinned: a guest without `arm`, or a board under another
-            // name, may not take its name.
             (
                 "skull",
                 "guest",

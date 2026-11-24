@@ -6,10 +6,7 @@ import "rlmesh/spaces/v1/meta.proto";
 import "rlmesh/spaces/v1/spaces.proto";
 
 // The static description of a served environment: its identity, spaces, and
-// author-provided metadata. Adapter tags and model specs do NOT get dedicated
-// fields; they travel inside `metadata` under versioned keys
-// (`rlmesh.adapters.v1.*`), so the spec layer can evolve without touching
-// this message.
+// author-provided metadata.
 message EnvSpec {
   string id = 1;
   rlmesh.spaces.v1.SpaceSpec action_space = 2;
@@ -21,15 +18,13 @@ message EnvSpec {
 // the orchestration facts a driver needs before the first reset.
 message EnvContract {
   EnvSpec spec = 1;
-  // Vector width. 1 for single envs; N for a batched env whose step/reset
-  // carry N-lane slabs.
+  // Vector width.
   uint32 num_envs = 2;
   string render_mode = 3;
   AutoresetMode autoreset_mode = 4;
 }
 
-// How the env behaves at episode boundaries. Closed set under wire-v1; new
-// modes require an edition gate (readers hard-reject unknown values).
+// How the env behaves at episode boundaries. Readers reject unknown values.
 enum AutoresetMode {
   AUTORESET_MODE_UNSPECIFIED = 0;
   AUTORESET_MODE_NEXT_STEP = 1;

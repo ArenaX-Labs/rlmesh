@@ -1,5 +1,3 @@
-"""A session's key stays in its address: no repr or refusal shows it."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -48,7 +46,6 @@ def test_reprs_leave_the_key_out() -> None:
             "SandboxInfo": repr(info),
             "Policy": repr(policy),
         }
-        # One driver holds the env at a time.
         with rlmesh.RemoteEnv(address) as env:
             shown["RemoteEnv"] = repr(env)
         with rlmesh.numpy.RemoteEnv(address) as numpy_env:

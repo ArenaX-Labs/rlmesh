@@ -10,8 +10,6 @@ use super::episodes::Episodes;
 use crate::env::types::StepResult as VectorStepResult;
 use crate::{Error, Result, binding::spaces};
 
-/// A contract's observation and action spaces; one without them is a
-/// malformed handshake.
 pub(super) fn spaces_of(
     contract: &spaces::EnvContract,
 ) -> Result<(Arc<spaces::SpaceSpec>, Arc<spaces::SpaceSpec>)> {
@@ -25,8 +23,6 @@ pub(super) fn spaces_of(
     }
 }
 
-/// A lane index for the wire (`uint32`): above `u32::MAX` is the ValueError
-/// class, before any I/O.
 pub(super) fn wire_lane(index: u64) -> Result<u32> {
     u32::try_from(index).map_err(|_| {
         Error::invalid_argument(format!(
@@ -58,26 +54,20 @@ impl EditionCell {
     }
 }
 
-/// A session participant driver or a native robot view.
 pub(super) enum Link {
     Lockstep {
         client: crate::lockstep::LockstepClient,
         address: String,
-        /// The selection; lockstep sends no pin (the env runs its declared
-        /// edition), so a pin is only recorded.
         edition: Arc<std::sync::Mutex<String>>,
         episodes: Episodes,
     },
-    /// A v2-native lockstep robot, through its Gym view (one lane).
     View {
-        /// `None` once closed (the lease is released).
         view: Arc<std::sync::Mutex<Option<Arc<crate::lockstep::GymView>>>>,
         address: String,
         edition: Arc<std::sync::Mutex<String>>,
     },
 }
 
-/// The Gym view behind a [`Link::View`], unless closed.
 fn open_view(
     view: &std::sync::Mutex<Option<Arc<crate::lockstep::GymView>>>,
 ) -> Result<Arc<crate::lockstep::GymView>> {
@@ -87,11 +77,9 @@ fn open_view(
         .ok_or_else(|| Error::Runtime("the env client is closed".into()))
 }
 
-/// How a session host's lease refusal reads: another driver holds the env.
 pub(crate) const ENV_HELD: &str = "the env is held by another driver (a binding, a run or a \
      RemoteEnv): close that one first";
 
-/// Whether the host refused a lease another driver holds.
 pub(crate) fn env_held(error: &crate::lockstep::GymError) -> bool {
     matches!(
         error,
@@ -106,8 +94,6 @@ pub(crate) fn lockstep_error(error: crate::lockstep::GymError) -> Error {
         error if env_held(&error) => Error::Connection(ENV_HELD.into()),
         GymError::Timeout(timeout) => Error::Timeout(timeout),
         GymError::Closed(why) | GymError::Unreachable(why) => Error::Connection(why),
-        // A refusal the same call meets again (a key the host does not
-        // accept): final, so not the transient ConnectionError class.
         error @ GymError::Session(_) if !error.is_transient() => Error::Protocol(error.to_string()),
         GymError::Session(error) => Error::Connection(error.to_string()),
         GymError::Map(why) | GymError::Config(why) | GymError::Value(why) => {
@@ -124,7 +110,6 @@ impl Link {
         }
     }
 
-    /// Resets `lanes` (empty: every lane): the observations and the info.
     pub(super) async fn reset(
         &mut self,
         lanes: Vec<u32>,
@@ -148,7 +133,6 @@ impl Link {
                 if !lanes.is_empty() {
                     return Err(Error::invalid_argument("a Gym view has one lane"));
                 }
-                // A v2-native robot reads plain JSON options.
                 let options = options.map(|options| {
                     let lowered = MetaValue::Map(options).lowered();
                     let MetaValue::Map(options) = lowered else {
@@ -168,7 +152,6 @@ impl Link {
         }
     }
 
-    /// Steps every lane with one action each.
     pub(super) async fn step(
         &mut self,
         actions: &[spaces::SpaceValue],
@@ -222,7 +205,6 @@ impl Link {
         }
     }
 
-    /// Lane `lane`'s frame as PNG bytes, if it has one.
     pub(super) async fn render(
         &mut self,
         lane: u32,
@@ -243,7 +225,6 @@ impl Link {
     }
 }
 
-/// A view step's observation and info.
 fn view_outcome(step: crate::lockstep::view::ViewStep) -> Result<(spaces::SpaceValue, MetaMap)> {
     let info = crate::lockstep::view::info(&step).map_err(lockstep_error)?;
     let observation =

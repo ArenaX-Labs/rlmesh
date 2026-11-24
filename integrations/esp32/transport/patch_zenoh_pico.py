@@ -1,50 +1,5 @@
 #!/usr/bin/env python3
-"""Patch zenoh-pico's sources under ROOT (the directory holding its `src/`)
-for the boards' transport, and for the Linux build that tests it.
-
-When zenoh-pico notices a link failing (a reset, a read error, a lease run
-out), its executor task closes the transport and clears it: it destroys the
-transport's send mutex and frees its buffers and link. Upstream does that
-under the session's transport mutex, but nothing that sends takes it, so a
-`z_put`, `z_get` or declaration on another task at that moment writes into
-freed memory, and on ESP-IDF uses a freed semaphore: heap corruption. Here
-every send and batch start take that (recursive) mutex too, and the failure
-path holds it from the close on, as does the reconnect's when replaying its
-declarations fails. A send after the clear finds no transport and fails, as
-it does after a transport that failed to allocate its buffers (which left
-itself marked unicast).
-
-A TCP link's connect waits at most 3 s (the handshake's own bound), and a
-send at most 1.5 s (SO_SNDTIMEO): a send that times out, or goes out in part,
-leaves the stream mid-message, so the link is shut down at once, its read
-fails, and zenoh-pico's failure path closes it as for any lost link. 1.5 s is
-past the host's presence grace (1 s: by then it has counted the board gone
-anyway) and short of its stall guard (2.5 s: the board gives up on a link
-before the host resets it). Both ports get it: lwIP's (the boards') and
-POSIX's (the Linux build).
-
-The ESP32 port's TCP link gets the receive timeout its other ports have (one
-task per session reads, so a silent peer would otherwise block its lease
-checks, query timeouts and closing for ever); every task it creates (its
-sessions' and the transport's) runs on the core the build sets with
-`-DRLMESH_TASK_CORE` (-1, the default, no affinity, as FreeRTOS's own
-`xTaskCreate`; 0 or 1 pins them); and a joined task is deleted only once it
-has suspended itself, with its event group (one leaked per closed session),
-whichever cores the two run on. A task tells its joiner it is done just
-before it suspends: deleted in between, while it still runs (on another core),
-FreeRTOS leaves its stack (5 KB for a session's) for that core's idle task
-to free, which under load may not run for a long time; deleted suspended, it
-is freed at once.
-
-Every port counts the tasks it started and those it ended
-(`zp_rlmesh_tasks`), so a board can show that none outlives its session.
-
-A subscription or queryable lookup that fails to allocate its result
-reports success with no result, which the caller then dereferences: it now
-reports the failure, and the sample is dropped.
-
-Exits non-zero when the sources are not the zenoh-pico this patches.
-"""
+"""Patch zenoh-pico's sources under ROOT (the directory holding its `src/`) for the boards' transport, and for the Linux build that tests it."""
 
 import pathlib
 import sys
@@ -54,9 +9,7 @@ patched: dict[pathlib.Path, str] = {}
 
 
 def patch(relative: str, edits: list[tuple[str, str]], port: bool = False) -> None:
-    """Checks and makes `edits` in memory: nothing is written unless all apply.
-    A `port`'s file (one platform's) is left alone where the tree has none:
-    the boards' library holds only the ESP32 port's."""
+    """Checks and makes `edits` in memory: nothing is written unless all apply."""
     path = root / relative
     if port and not path.exists():
         return

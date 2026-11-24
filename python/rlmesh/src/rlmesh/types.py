@@ -241,17 +241,7 @@ if TYPE_CHECKING:
     class VectorEnvLike(
         Protocol[BatchActionT, VectorObsT, VectorActT, BatchObsT, BatchArrayT]
     ):
-        """Structural protocol for vectorized environments.
-
-        Parametrized like :class:`EnvLike`, over the batched shapes: ``BatchActionT``
-        is the batched action ``step`` accepts, ``VectorObsT``/``VectorActT`` are the
-        per-instance space sample types, ``BatchObsT`` is the batched observation
-        ``reset``/``step`` return, and ``BatchArrayT`` is the batched
-        reward/termination/truncation array (one type for all three, the gymnasium
-        vector norm). The batched parameters default to ``Any``, so an
-        unparametrized ``VectorEnvLike`` (or the historical three-parameter
-        spelling) stays ceremony-free.
-        """
+        """Structural protocol for vectorized environments."""
 
         @property
         def num_envs(self) -> int:

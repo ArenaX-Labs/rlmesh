@@ -1,11 +1,4 @@
-"""Serve a one-lane vectorized env as the scalar env it is.
-
-The contract's ``num_envs`` is the only vector signal on the wire, so a batched
-simulator configured with one lane (Isaac Lab at ``num_envs=1``) cannot be
-served as a vector. :class:`SingleLaneEnv` drops the batch axis instead, and the
-runtime drives it like any scalar env: driver-owned resets, so per-episode
-seeds, ``trial_index`` and ``max_episode_steps`` all apply.
-"""
+"""Serve a one-lane vectorized env as the scalar env it is."""
 
 from __future__ import annotations
 
@@ -20,10 +13,7 @@ def _mode_name(mode: object) -> str:
 
 
 def _check_autoreset_mode(mode: object) -> None:
-    """Hold a present ``autoreset_mode`` to the rule every served env follows.
-
-    It must be a gymnasium ``AutoresetMode`` or ``"NextStep"`` / ``"Disabled"``.
-    """
+    """Hold a present ``autoreset_mode`` to the rule every served env follows."""
     if mode is None:
         raise ValueError(
             'metadata["autoreset_mode"] is present but None; set it to a gymnasium '
@@ -98,7 +88,6 @@ class SingleLaneEnv:
 
 
 def _lane0(space: Any, value: Any) -> Any:
-    """Lane 0 of a batched value, walking the per-lane ``space``'s structure."""
     children = _children(space)
     if isinstance(children, Mapping):
         return {key: _lane0(sub, value[key]) for key, sub in children.items()}
@@ -110,7 +99,6 @@ def _lane0(space: Any, value: Any) -> Any:
 
 
 def _batch1(space: Any, value: Any) -> Any:
-    """A one-lane batch of ``value``, walking the per-lane ``space``'s structure."""
     children = _children(space)
     if isinstance(children, Mapping):
         return {key: _batch1(sub, value[key]) for key, sub in children.items()}
@@ -122,14 +110,12 @@ def _batch1(space: Any, value: Any) -> Any:
 
 
 def _children(space: Any) -> Mapping[str, Any] | Sequence[Any] | None:
-    """A Dict space's named children, a Tuple space's ordered ones, or None."""
     return cast(
         "Mapping[str, Any] | Sequence[Any] | None", getattr(space, "spaces", None)
     )
 
 
 def _info0(info: Mapping[str, Any]) -> dict[str, Any]:
-    """Lane 0 of a vector info (gymnasium's ``key`` array plus ``_key`` mask)."""
     lane: dict[str, Any] = {}
     for key, value in info.items():
         if key.startswith("_"):

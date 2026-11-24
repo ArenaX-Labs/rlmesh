@@ -56,7 +56,6 @@ pub use table::{ActionRow, Binding, Dir, InputRow, Status};
 /// The most capture assignments the binder enumerates.
 pub const MAX_ASSIGNMENTS: usize = 4096;
 
-/// One policy entry, uniformly.
 struct Slot<'a> {
     dir: Dir,
     entry: &'a Entry,
@@ -90,7 +89,6 @@ impl Slot<'_> {
     }
 }
 
-/// A part a slot's selector matched, with what its captures took.
 #[derive(Clone)]
 struct Candidate<'a> {
     part: &'a PartSpec,
@@ -105,7 +103,6 @@ impl Candidate<'_> {
     }
 }
 
-/// A part's one-line summary in refusals: `camera 640x480 @30 Hz`.
 fn summary(part: &PartSpec) -> String {
     let kind = Kind::parse(&part.kind).unwrap_or(Kind::Custom);
     let rate = format!("@{} Hz", hz(part.hz));
@@ -138,7 +135,6 @@ fn joint_count(fields: &[FieldSpec]) -> u32 {
 }
 
 impl Binder<'_> {
-    /// `part` as its robot declared it (a view renames it).
     fn declared<'p>(&'p self, part: &'p PartSpec) -> &'p PartSpec {
         self.parts
             .iter()
@@ -146,20 +142,17 @@ impl Binder<'_> {
             .unwrap_or(part)
     }
 
-    /// How a refusal names `part`: `robot:path`.
     fn part_name(&self, part: &PartSpec) -> String {
         let own = self.declared(part);
         own.qualified()
     }
 
-    /// How a refusal names `part`'s applied stream.
     fn applied_name(&self, part: &PartSpec) -> String {
         let own = self.declared(part);
         format!("{}:{}", own.owner, own.path.applied())
     }
 }
 
-/// Pads the first column to its widest value plus `gap`.
 fn two_columns(rows: &[(String, String)], gap: usize) -> Vec<String> {
     let width = rows
         .iter()
@@ -172,8 +165,6 @@ fn two_columns(rows: &[(String, String)], gap: usize) -> Vec<String> {
         .collect()
 }
 
-/// Whether `from → to` is an exact cast: `Some(true)` exact, `Some(false)`
-/// lossy (`allow: dtype`), `None` refused (bool ↔ float).
 fn cast(from: DType, to: DType) -> Option<bool> {
     use DType::*;
     if from == to {
@@ -216,7 +207,6 @@ fn cast(from: DType, to: DType) -> Option<bool> {
     }
 }
 
-/// The binder's working state for one call.
 struct Binder<'a> {
     policy: &'a Policy,
     options: &'a RunOptions,
@@ -225,20 +215,15 @@ struct Binder<'a> {
     /// The view's parts under their view paths, when binding a view.
     view: Option<&'a [PartSpec]>,
     places: &'a [Place],
-    /// Who is in the session: a robot that was and is gone now offers its
-    /// last parts to required entries only.
     roster: &'a [ParticipantInfo],
     scope: Vec<String>,
     run: RunCall,
-    /// The robots required entries name or the view places that have
-    /// declared no parts yet.
     pending: Vec<ParticipantId>,
     problems: Vec<Problem>,
     warnings: Vec<String>,
 }
 
 impl<'a> Binder<'a> {
-    /// A binder of `policy` with `options` for `robot`, against nothing yet.
     fn new(policy: &'a Policy, options: &'a RunOptions, robot: ParticipantId) -> Self {
         Self {
             policy,
@@ -349,9 +334,6 @@ pub fn bind_in(
             owners.push(&part.owner);
         }
     }
-    // A plain session's several robots with no robot named: each in the
-    // view under its own name, so one policy drives them all (its actions
-    // name their robots: `eye-1:gaze`).
     let implicit;
     let places: &[Place] =
         if target.places.is_empty() && options.robot.is_none() && owners.len() > 1 {

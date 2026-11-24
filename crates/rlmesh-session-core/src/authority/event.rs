@@ -1,5 +1,4 @@
-//! What the authority reports: the events its verbs cause and why a
-//! participant left.
+//! What the authority reports: the events its verbs cause and why a participant left.
 
 use core::fmt;
 
@@ -52,8 +51,7 @@ pub enum AuthorityEvent {
         /// Why.
         reason: Reason,
     },
-    /// A stopped mode (SAFE or ESTOP) recorded a later cause without
-    /// changing.
+    /// A stopped mode (SAFE or ESTOP) recorded a later cause without changing.
     ModeReason {
         /// The mode.
         mode: Mode,
@@ -67,8 +65,8 @@ pub enum AuthorityEvent {
         /// Its part, `robot:path`.
         part: String,
     },
-    /// A higher class took a held lease (on the part itself, or on another
-    /// member of its command group).
+    /// A higher class took a held lease (on the part itself, or on another member of its
+    /// command group).
     LeasePreempted {
         /// The fenced lease.
         previous: Lease,
@@ -83,22 +81,21 @@ pub enum AuthorityEvent {
     LeaseRebound {
         /// The fenced lease.
         previous: Lease,
-        /// The lease under the new binding.
+        /// The lease.
         lease: Lease,
         /// Its part, `robot:path`.
         part: String,
     },
     /// A lease ended.
     LeaseEnded {
-        /// The lease.
+        /// The lease under the new binding.
         lease: Lease,
         /// Its part, `robot:path`.
         part: String,
-        /// Why.
+        /// The cause.
         reason: Reason,
     },
-    /// A lease holder went away: the leases it held ended, and nothing else
-    /// stopped for it.
+    /// A lease holder went away: the leases it held ended, and nothing else stopped for it.
     HolderLost {
         /// The holder.
         holder: ParticipantId,
@@ -142,8 +139,8 @@ pub enum AuthorityEvent {
         /// The parts, each `robot:path`.
         parts: Vec<String>,
     },
-    /// Parts left the table (removed, re-declared with another schema, or
-    /// their owner detached); their ids are retired.
+    /// Parts left the table (removed, re-declared with another schema, or their owner
+    /// detached); their ids are retired.
     PartsRemoved {
         /// Their robot.
         owner: ParticipantId,

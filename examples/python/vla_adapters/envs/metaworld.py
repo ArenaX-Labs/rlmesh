@@ -26,13 +26,11 @@ TAGS = adapt.EnvTags(
     observation={
         "corner_image": adapt.ImageTag(adapt.IMAGE_PRIMARY),
         "gripper_image": adapt.ImageTag(adapt.IMAGE_WRIST),
-        # One flat leaf, split by index range. Field widths sum to the leaf
-        # width (3 + 4 + 1 + 10 = 18); offsets are implied by order.
         "proprio": adapt.Split(
             adapt.Field(adapt.EEF_POS, 3),
             adapt.Field(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
             adapt.Field(adapt.GRIPPER_POS, 1),
-            adapt.Field(dim=10),  # object + goal positions: not consumed here
+            adapt.Field(dim=10),
         ),
         "task": adapt.TextTag(adapt.INSTRUCTION),
     },
@@ -58,15 +56,14 @@ ACTION_SPACE = gym.spaces.Box(-1.0, 1.0, (4,), np.float32)
 
 
 def sample_obs() -> dict[str, Any]:
-    """Synthetic observation; ``proprio`` is one flat width-18 vector."""
     rng = np.random.default_rng(0)
     quat = rng.normal(size=4).astype(np.float32)
     quat /= np.linalg.norm(quat)
     proprio = np.empty(18, dtype=np.float32)
-    proprio[0:3] = rng.normal(size=3)  # eef_pos
-    proprio[3:7] = quat  # eef_quat
-    proprio[7] = 0.04  # gripper
-    proprio[8:18] = rng.normal(size=10)  # object + goal (skipped by the layout)
+    proprio[0:3] = rng.normal(size=3)
+    proprio[3:7] = quat
+    proprio[7] = 0.04
+    proprio[8:18] = rng.normal(size=10)
     return {
         "corner_image": rng.integers(0, 256, (256, 256, 3), dtype=np.uint8),
         "gripper_image": rng.integers(0, 256, (256, 256, 3), dtype=np.uint8),

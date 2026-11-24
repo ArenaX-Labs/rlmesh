@@ -25,9 +25,6 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
 SEMVER_PARTS = re.compile(r"^\d+\.\d+\.\d+(?:-(?P<channel>alpha|beta|rc)\.\d+)?$")
-# Docs that name past versions as history, not as the current release: the
-# changelog and the policy pages that record which release sealed the wire
-# generation and the workflow edition. A bump must not rewrite those sentences.
 HISTORY_DOCS = {"docs/changelog.md", "docs/compatibility.md", "docs/versioning.md"}
 PACKAGED_SUPPORTED_EDITIONS = ROOT / "crates/rlmesh-proto/supported_editions.txt"
 WORKFLOW_EDITION_BLOCK = re.compile(
@@ -108,7 +105,6 @@ def _replace_workflow_edition_block(text: str, match: re.Match[str], block: str)
 
 
 def _drop_provisional_workflow_edition_block(text: str, edition: str) -> str:
-    # A stable release ships no provisional cohort (policy:check refuses one).
     match = _workflow_edition_block(text, edition)
     if match is None or _workflow_edition_status(match.group(0)) != "provisional":
         return text
@@ -265,42 +261,34 @@ def bump(old: str, new: str) -> None:
     o, op = re.escape(old), re.escape(old_pep)
     print(f"bump {old} -> {new}  (PEP 440 {old_pep} -> {new_pep})")
 
-    # Cargo workspace version + the "=X" path-dependency pins, in the root
-    # manifest and in any member that pins a sibling itself (rlmesh-device).
     for manifest in [ROOT / "Cargo.toml", *member_manifests(ROOT)]:
         sub_file(manifest, [(rf'version = "(=?){o}"', rf'version = "\g<1>{new}"')])
 
-    # The C header's hand-written RLMESH_VERSION (policy:check keeps it equal).
     sub_file(
         ROOT / "crates/rlmesh-capi/include/rlmesh.h",
         [(rf'#define RLMESH_VERSION "{o}"', f'#define RLMESH_VERSION "{new}"')],
     )
 
-    # Python package manifests use the PEP 440 spelling.
     for py in ("pyproject.toml", "python/rlmesh/pyproject.toml"):
         sub_file(ROOT / py, [(rf'version = "{op}"', f'version = "{new_pep}"')])
 
-    # The C# package (fenced, but versioned with the workspace).
     sub_file(
         ROOT / "csharp/src/RLMesh/RLMesh.csproj",
         [(rf"<Version>{o}</Version>", f"<Version>{new}</Version>")],
     )
 
-    # Example Dockerfiles install the published wheel by its PEP 440 version.
     for dockerfile in sorted((ROOT / "examples").rglob("Dockerfile")):
         sub_file(
             dockerfile,
             [(rf"(?m)^ARG RLMESH_VERSION={op}$", f"ARG RLMESH_VERSION={new_pep}")],
         )
 
-    # The npm package (release:js:package also stamps the workspace version at pack time).
     for npm in (
         "javascript/rlmesh/package.json",
         "javascript/rlmesh/package-lock.json",
     ):
         sub_file(ROOT / npm, [(rf'"version": "{o}"', f'"version": "{new}"')])
 
-    # Policy manifest: cargo artifacts use SemVer; the pypi artifact uses PEP 440.
     rlmesh_toml = ROOT / "rlmesh.toml"
     sub_file(rlmesh_toml, [(rf'version = "{o}"', f'version = "{new}"')])
     text = rlmesh_toml.read_text()
@@ -322,22 +310,12 @@ def bump(old: str, new: str) -> None:
     rlmesh_toml.write_text(text)
     sync_packaged_supported_editions()
 
-    # Crate README install snippets: cargo dependency + `cargo install --version`.
     for readme in sorted((ROOT / "crates").glob("*/README.md")):
         sub_file(
             readme,
             [(rf'= "{o}"', f'= "{new}"'), (rf"--version {o}", f"--version {new}")],
         )
 
-    # Prose (docs + example READMEs): every literal version mention — pip specs,
-    # cohort examples, "this documents X" claims — tracks the release. Both the
-    # SemVer and PEP 440 spellings are rewritten; the bare-SemVer swap also fixes
-    # the `BASE-X.Y.Z` cohort strings. Excludes the changelog and the
-    # version-stamped edition specs. policy:check's doc-version guard fails loudly
-    # if any stale literal survives.
-    # One pass, spelling chosen per site: a stable version reads the same in
-    # SemVer and PEP 440, so a second pass would rewrite inside the first
-    # pass's output ("0.1.0rc13-rc.13").
     literal = re.compile(rf'(?P<pep>(?<===)|(?<="package_version": "))?(?:{op}|{o})')
 
     def prose_spelling(match: re.Match[str]) -> str:
@@ -366,8 +344,6 @@ def selfcheck() -> None:
     assert pep440("0.1.0-beta.2") == "0.1.0b2"
     assert pep440("0.1.0-rc.3") == "0.1.0rc3"
     assert pep440("0.1.0") == "0.1.0"
-    # A stable version reads the same in both spellings: each prose site keeps
-    # its own form when bumped to a prerelease, and back again.
     stable_to_rc = re.compile(r'(?P<pep>(?<===)|(?<="package_version": "))?0\.1\.0')
     assert (
         stable_to_rc.sub(
@@ -422,7 +398,6 @@ status = "provisional"
     assert '[workflow.editions."2026.06"]' in prerelease_manifest
     assert 'sealed_in = "0.1.0"' in prerelease_manifest
     assert '[workflow.editions."2026.09-0.2.0-alpha.1"]' in prerelease_manifest
-    # A dropped sealed edition keeps its record but is not offered again.
     dropped_manifest = _update_workflow_manifest(
         sealed_manifest.replace(
             "\n[workflow.editions.",

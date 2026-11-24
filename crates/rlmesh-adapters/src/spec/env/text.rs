@@ -1,7 +1,3 @@
-//! A text entry (typically the task instruction) in an observation.
-//!
-//! Internal post-`join` form; never serialized (see `spec::env`), so no serde.
-
 use crate::path::NodePath;
 
 /// A text entry (typically the task instruction) in an observation.

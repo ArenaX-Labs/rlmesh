@@ -1,10 +1,3 @@
-// Serves an RLMesh env whose reset and step run on Unreal's game thread.
-//
-// An EnvServer calls reset and step on its own threads, but Unreal game state
-// may only be touched on the game thread. FRLMeshGameThreadEnv posts each call
-// to an FRLMeshGameThread and blocks until the game thread runs it from its
-// tick. This header needs only rlmesh.hpp and the standard library, so it also
-// builds outside Unreal.
 #pragma once
 
 #include <cstdint>

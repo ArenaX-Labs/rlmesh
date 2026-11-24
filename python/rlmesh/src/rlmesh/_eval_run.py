@@ -1,28 +1,4 @@
-"""Run the workloads of an ``rlmesh eval run`` plan in Docker sandboxes.
-
-Private glue for the CLI, which compiles the plan (``rlmesh::binding::plan``),
-skips what ``--resume`` finds recorded, and reports on the bundles written
-here. It reads one job on stdin::
-
-    {"plan": {...}, "images": {reference: image id}, "pending": [workload ids],
-     "out": dir, "gpus": "all" | null, "volumes": ["host:ctr", ...],
-     "maxEnvs": n, "status": path}
-
-Every container runs by the id the CLI resolved its image reference to, so
-a retag while the run goes (between waves too) cannot change what runs.
-
-Models run one at a time, each as one :class:`~rlmesh.SandboxModel` that
-its workloads reach in waves of at most ``maxEnvs``, each wave one
-:meth:`~rlmesh.Model.run_routes` call with a route per workload, its env a
-:class:`~rlmesh.SandboxEnv` of its own. Each finished workload is written as
-an ``rlmesh.result.v1`` bundle under ``<out>/workloads/<id>`` and gets one
-JSON line in the status file; a failed one gets its error there instead.
-
-A workload is done once its bundle is in place: it is written beside it and
-renamed there, then its verdict recorded. A Ctrl-C at any point leaves every
-workload not yet in place undone for ``--resume`` to run again, and is raised
-once the wave's finished routes are written; no model or wave starts after.
-"""
+"""Run the workloads of an ``rlmesh eval run`` plan in Docker sandboxes."""
 
 from __future__ import annotations
 
@@ -34,13 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-#: A model loads its weights before it answers; an env such as a LIBERO
-#: suite loads its sim assets before it serves.
 MODEL_CONNECT_TIMEOUT_SECONDS = 900.0
 ENV_CONNECT_TIMEOUT_SECONDS = 300.0
-#: Env containers started at once.
 ENV_STARTS = 8
-#: Env containers alive at once, when the job does not say (``--max-envs``).
 MAX_ENVS = 16
 
 
@@ -72,7 +44,6 @@ def main() -> int:
         try:
             _run_model(plan, model, mine, job, out, report)
         except Exception as error:
-            # The model failed every workload it had left.
             for workload in mine:
                 if workload["id"] in settled:
                     continue
@@ -128,7 +99,6 @@ def _run_wave(
     report: Any,
     images: dict[str, str],
 ) -> None:
-    """Run ``workloads`` as routes of one ``run_routes`` call, an env each."""
     import rlmesh
 
     envs: list[tuple[dict[str, Any], Any]] = []
@@ -151,7 +121,6 @@ def _run_wave(
             try:
                 envs.append((workload, started.result()))
             except Exception as error:
-                # One env failing fails only its workload.
                 report(
                     workload, status="failed", error=f"{type(error).__name__}: {error}"
                 )
@@ -169,13 +138,8 @@ def _run_wave(
                         max_episode_steps=w["maxEpisodeSteps"],
                         max_episode_seconds=None,
                         prefetch_lead=plan["prefetchLead"] or 0,
-                        # run_routes derives each reset seed from base_seed,
-                        # seed_key and the episode's trial ordinal, so walking
-                        # ordinals from the workload's first global slot draws
-                        # the plan's seeds (Workload::episode_seeds), paired
-                        # across models and splits. trialIndexBase equals it
-                        # whenever the plan has a global ordinal, and is
-                        # absent otherwise, so it cannot stand in here.
+                        # Walking ordinals from the workload's first global slot draws the plan's seeds
+                        # (Workload::episode_seeds); trialIndexBase is absent without a global ordinal.
                         trial_index_base=w["seedSlotOffset"],
                         close_env=False,
                     ),
@@ -186,7 +150,6 @@ def _run_wave(
         )
     finally:
         for _, env in envs:
-            # A killed env has nothing left to close.
             with contextlib.suppress(Exception):
                 env.close()
     try:
@@ -204,12 +167,10 @@ def _persist(
     out: Path,
     report: Any,
 ) -> None:
-    """Write each finished route's bundle into place, then its verdict."""
     from rlmesh.recorder import Recorder
 
     for (workload, _), result in zip(envs, results, strict=True):
         if isinstance(result, KeyboardInterrupt):
-            # Ctrl-C cut it short; the workloads that finished are still recorded.
             report(workload, status="failed", error="interrupted")
             continue
         if isinstance(result, BaseException):
@@ -252,7 +213,6 @@ def _persist(
 
 
 def _pinned(images: dict[str, str], image: str) -> str:
-    """The sandbox source that runs ``image`` by the id the CLI resolved."""
     return f"docker://{images[image]}"
 
 

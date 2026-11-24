@@ -1,4 +1,3 @@
-//! Python values over the shared facade's manual binding.
 use crate::facade::{PyFacadeHooks, value_to_py};
 use crate::model::LastPyError;
 use crate::spaces::{
@@ -169,8 +168,6 @@ impl PyBinding {
         }
     }
     fn close(&self, py: Python<'_>) -> PyResult<()> {
-        // The core's close is idempotent. Preserve user hook exceptions even
-        // when their text happens to match the closed-binding error.
         self.with(py, |b| b.close())
     }
 }
@@ -185,10 +182,8 @@ impl Drop for PyBinding {
         if binding.is_none() {
             return;
         }
-        // The facade drains Python model/env callbacks when it closes. A
-        // pyclass finalizer must release the GIL while those callbacks run.
+        // A pyclass finalizer must release the GIL while the facade drains callbacks on close.
         if Python::try_attach(|py| py.detach(|| drop(binding.take()))).is_none() {
-            // Interpreter shutdown cannot legally execute Python callbacks.
             std::mem::forget(binding);
         }
     }

@@ -135,8 +135,6 @@ impl Drop for DlpackTensor {
 
 impl Tensor {
     /// Copy a versioned CPU DLPack tensor into fresh contiguous storage.
-    /// On success, calls the producer's deleter; on error, ownership stays
-    /// with the caller, who may recover it with [`DlpackTensor::from_raw`].
     ///
     /// # Safety
     /// `obj` must point to a live, exclusively owned managed tensor. Its
@@ -162,9 +160,8 @@ impl Tensor {
         }
     }
 
-    /// Export a DLPack 1.0 tensor, sharing read-only storage by default.
-    /// A copying export owns fresh writable storage. The returned owner
-    /// keeps storage and layout alive even after this tensor is destroyed.
+    /// Export a DLPack 1.0 tensor, sharing read-only storage by default. A copying export
+    /// owns fresh writable storage.
     pub fn to_dlpack(&self, options: ToDlpackOptions) -> Result<DlpackTensor> {
         if let Some(device) = options.dl_device
             && device != self.dlpack_device()
@@ -192,10 +189,6 @@ impl Tensor {
             }
         };
         let (data, storage, copy) = if options.copy {
-            // Own the writable allocation directly. Derive its pointer from
-            // as_mut_ptr, never from a shared Storage slice. Keep the same
-            // 64-byte alignment as Tensor::copy without lending Rust slices
-            // into this allocation while the consumer may write it.
             let bytes = tensor.tobytes();
             let capacity = bytes
                 .len()
@@ -217,7 +210,6 @@ impl Tensor {
                 version: DLPackVersion { major: 1, minor: 0 },
                 manager_ctx: std::ptr::null_mut(),
                 deleter: Some(versioned_deleter),
-                // DLPACK_FLAG_BITMASK_READ_ONLY (1), IS_COPIED (2).
                 flags: if options.copy { 2 } else { 1 },
                 dl_tensor: DLTensor {
                     data,
@@ -244,8 +236,6 @@ impl Tensor {
         holder.managed.dl_tensor.shape = holder.shape.as_mut_ptr();
         holder.managed.dl_tensor.strides = holder.strides.as_mut_ptr();
         holder.managed.manager_ctx = (&raw mut *holder).cast();
-        // repr(C) puts managed at offset zero. The Box and its Vec buffers
-        // stay put until the managed tensor's deleter is called.
         let ptr = NonNull::new(Box::into_raw(holder).cast()).expect("Box is non-null");
         Ok(DlpackTensor(ptr))
     }
@@ -318,8 +308,6 @@ pub unsafe fn import_legacy(obj: NonNull<DLManagedTensor>) -> Result<Tensor> {
     }
 }
 
-/// Copy arbitrary (including negative) element strides without adopting
-/// producer memory. All arithmetic is checked before reading any elements.
 unsafe fn copy_dl_tensor(dl: &DLTensor) -> Result<Tensor> {
     let invalid = Error::invalid_argument;
     if dl.device.device_type != 1 {
@@ -423,7 +411,7 @@ unsafe fn copy_dl_tensor(dl: &DLTensor) -> Result<Tensor> {
     let mut expected = itemsize;
     let contiguous = shape.iter().zip(&strides).rev().all(|(&dim, &stride)| {
         let matches = dim == 1 || stride == expected as isize;
-        expected *= dim; // bounded by the already checked nbytes
+        expected *= dim;
         matches
     });
     if contiguous {
@@ -456,7 +444,6 @@ unsafe fn copy_dl_tensor(dl: &DLTensor) -> Result<Tensor> {
             index[axis] = 0;
         }
     }
-    // Adopt the freshly gathered buffer; imports never retain the producer.
     crate::ext::TensorExt::from_vec(data, &shape, dtype)
 }
 

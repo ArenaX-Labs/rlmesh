@@ -1,7 +1,6 @@
-#include <span>
-// C++20 convenience syntax; the options remain aggregates at both standards.
 #include <cassert>
 #include <rlmesh.hpp>
+#include <span>
 
 int main() {
   const rlmesh::RunOptions options{.episodes = 2, .seeds = {0, 1}};

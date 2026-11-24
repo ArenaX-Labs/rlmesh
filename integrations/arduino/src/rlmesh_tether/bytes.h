@@ -1,9 +1,3 @@
-// Byte runs and byte sinks: what the codec reads from and writes to.
-//
-// No Arduino header here: a sink is any `write(uint8_t)` (an Arduino
-// `Stream` or `Print`, or your own UART driver), and a run of bytes may sit
-// in program memory, which AVR and ESP8266 read with `pgm_read_byte`.
-
 #ifndef RLMESH_TETHER_BYTES_H_
 #define RLMESH_TETHER_BYTES_H_
 
@@ -20,13 +14,6 @@ namespace rlmesh {
 namespace tether {
 
 // A run of bytes in RAM or, with `flash`, in program memory (`PROGMEM`).
-// Flash is read with `pgm_read_byte` wherever the platform defines it: AVR
-// has a separate address space, and ESP8266 maps flash for word loads only,
-// so a plain byte load faults there. Elsewhere (ARM, ESP32, RISC-V, the
-// host) flash is ordinary addressable memory and both read alike. On those
-// cores a sketch may see `pgm_read_byte` (from the core header) where the library's
-// own files don't, so `at` compiles differently per file; both versions are
-// the same plain load there.
 struct Bytes {
   const uint8_t* data;
   uint16_t len;
@@ -42,6 +29,8 @@ struct Bytes {
     return b;
   }
 
+  // Flash is read with `pgm_read_byte` where the platform defines it: AVR has a separate address
+  // space, and ESP8266 maps flash for word loads only, so a plain byte load faults there.
   uint8_t at(uint16_t i) const {
 #if defined(pgm_read_byte)
     if (flash) return pgm_read_byte(data + i);
@@ -73,4 +62,4 @@ Sink sinkTo(T& target) {
 }  // namespace tether
 }  // namespace rlmesh
 
-#endif  // RLMESH_TETHER_BYTES_H_
+#endif

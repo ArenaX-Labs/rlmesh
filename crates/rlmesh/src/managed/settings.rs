@@ -1,6 +1,4 @@
 //! Process-level settings the CLI and [`Client`](super::Client) read once:
-//! where the profile files live, whether the OS keychain is used, and an API
-//! key that bypasses profiles altogether.
 
 use super::http::normalize_base_url;
 
@@ -71,7 +69,6 @@ impl Settings {
     }
 
     /// Settings confined to the given directories with the keychain off:
-    /// what a test harness or a sandboxed CI job wants.
     pub fn isolated(config_dir: impl Into<PathBuf>, data_dir: impl Into<PathBuf>) -> Self {
         Self {
             config_dir: Some(config_dir.into()),

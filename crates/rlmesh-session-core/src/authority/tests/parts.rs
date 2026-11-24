@@ -1,5 +1,3 @@
-//! Declaring parts: channel ids, re-declaration and removal.
-
 use super::*;
 
 #[test]
@@ -30,7 +28,6 @@ fn the_host_assigns_part_ids_and_never_reuses_them() {
     ids.dedup();
     assert_eq!(ids.len(), 7 + 6, "every stream id is distinct");
 
-    // The snapshot carries the declaration fingerprint.
     let contract = |f: &Fixture| {
         f.auth
             .snapshot(Vec::new(), 0)
@@ -40,7 +37,6 @@ fn the_host_assigns_part_ids_and_never_reuses_them() {
     };
     let declared = contract(&f).expect("a declaration fingerprint");
 
-    // An identical re-declaration is a no-op.
     let revision = f.auth.revision();
     f.run("robot", declare(&robot_map("")), 1)
         .expect("redeclare");
@@ -48,7 +44,6 @@ fn the_host_assigns_part_ids_and_never_reuses_them() {
     assert_eq!(f.ch("arm"), arm.channel);
     assert_eq!(contract(&f), Some(declared));
 
-    // A changed schema retires the id; armed, only sensors may change.
     f.run("operator", Command::Arm, 1).expect("arm");
     let ft = f.ch("ft");
     let hot = robot_map(r#", "wrist/cam": {"kind": "camera", "hz": 30, "width": 4, "height": 4}"#)
@@ -72,7 +67,6 @@ fn the_host_assigns_part_ids_and_never_reuses_them() {
         r#""cmd1": {"kind": "joints", "hz": 500"#,
         r#""cmd1": {"kind": "joints", "hz": 250"#,
     );
-    // A sensor hot-plug holds nothing: the robot is leased at once.
     let lease = f.grant("policy", "cmd1", 3).expect("lease");
     assert_eq!(
         Fixture::status(f.run("robot", declare(&changed), 3)),
@@ -95,7 +89,6 @@ fn the_host_assigns_part_ids_and_never_reuses_them() {
     assert!(f.ch("cmd1") > cmd1);
     assert!(f.auth.part(cmd1).is_none());
 
-    // Only embodiments declare parts; a bad map changes nothing.
     assert_eq!(
         Fixture::status(f.run("viewer", declare(&robot_map("")), 6)),
         CtlStatus::Forbidden

@@ -1,9 +1,5 @@
-// The native binding on loopback: a Node robot and Node policies in one session, the twin of
-// python/rlmesh/tests/integration/test_v2_session.py. The robot is the UR10e (the conformance
-// fixture), faked: its control loop publishes joints, wrench, gripper and two cameras, and applies
-// whatever its edge says is due. The policies bind to it by kind and path, lease its parts and
-// stream timed chunks. A lockstep env, served by Python (`trials_env.py`, through `uv run`), is run
-// by episodes. Needs dist/node.js and the addon (`mise run test:js:native`).
+// The native binding on loopback, the twin of python/rlmesh/tests/integration/test_v2_session.py.
+// Needs dist/node.js and the addon (`mise run test:js:native`).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createSocket } from 'node:dgram';
@@ -19,7 +15,6 @@ import * as rlmesh from '../../dist/node.js';
 const SPEC = new URL('../../../../crates/rlmesh-session-core/tests/', import.meta.url);
 const WAIT_MS = 10_000;
 
-/** A loopback port free for TCP and for UDP at the same number (a host binds both). */
 async function freePort() {
   for (;;) {
     const probe = createServer();
@@ -36,7 +31,6 @@ async function freePort() {
   }
 }
 
-/** Whether something accepts TCP connections on the loopback `port`. */
 function listening(port) {
   return new Promise((resolve) => {
     const socket = tcpConnect(port, '127.0.0.1');
@@ -56,7 +50,6 @@ after(() => rmSync(STATE, { recursive: true, force: true }));
 const UR_JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'];
 const HOME = Float32Array.of(0, -1.57, 1.57, -1.57, -1.57, 0);
 
-/** A small sine around the measured pose on the arm, the gripper half open. */
 const SINE = {
   hz: 50,
   inputs: {
@@ -72,7 +65,6 @@ const SINE = {
   allow: ['resize', 'crop'],
 };
 
-/** Holds one target on the arm. */
 const HOLD = {
   hz: 50,
   inputs: { q: { kind: 'joints', at: 'arm', fields: ['pos'], names: UR_JOINTS } },
@@ -82,7 +74,6 @@ const HOLD = {
 const fixture = (kind, name) => JSON.parse(readFileSync(new URL(`fixtures/${kind}/${name}.json`, SPEC), 'utf8'));
 const golden = (name) => readFileSync(new URL(`golden/${name}.txt`, SPEC), 'utf8').replace(/\n+$/, '');
 
-/** Polls `done` every 10 ms; `context()` goes into the timeout's message. */
 async function waitUntil(what, done, context = () => '') {
   const deadline = Date.now() + WAIT_MS;
   while (!done()) {
@@ -91,7 +82,6 @@ async function waitUntil(what, done, context = () => '') {
   }
 }
 
-/** Why a start now would be skipped, for a timeout's message. */
 function skipped(policy) {
   try {
     policy.observe();
@@ -101,11 +91,9 @@ function skipped(policy) {
   }
 }
 
-/** `[chunk, 6]` of one value. */
 const hold = (target, chunk = 10) => ({ arm: { data: new Float32Array(chunk * 6).fill(target), shape: [chunk, 6] } });
 const first = (due) => due.value.data[0];
 
-/** The UR10e without physics: commanded joints become measured ones. */
 class FakeUR10e {
   q = HOME.slice();
   gripper = 1;
@@ -186,7 +174,6 @@ test('a Node policy drives a Node robot on loopback', async () => {
   assert.equal(binding.json.actions[0].chunk, 10);
   assert.equal(binding.fingerprint.length, 16);
 
-  // An async predict: the run loop waits for it off this thread.
   const running = policy.run(
     async (obs) => {
       seen.push(obs);
@@ -212,7 +199,6 @@ test('a Node policy drives a Node robot on loopback', async () => {
   assert.ok(stats.waiting === null || typeof stats.waiting === 'string', String(stats.waiting));
   assert.equal(policy.holds, false, 'a stopped run releases its leases');
 
-  // predict saw what the binding table promises.
   const obs = seen.at(-1);
   assert.deepEqual(Object.keys(obs.inputs).sort(), ['ft', 'prompt', 'q', 'wrist']);
   assert.deepEqual(obs.inputs.q.shape, [6]);
@@ -226,7 +212,6 @@ test('a Node policy drives a Node robot on loopback', async () => {
   assert.equal(obs.meta.stale.size, 0);
   assert.equal(typeof obs.meta.timeNs, 'bigint');
 
-  // The robot applied the policy's chunks, and knows what they came from.
   const driving = ur.log.filter((d) => d.mode === 'driving');
   assert.ok(driving.length && driving.every((d) => d.path === 'arm'));
   assert.ok(driving.at(-1).basedOn.some(([path]) => path === 'arm'));
@@ -234,7 +219,6 @@ test('a Node policy drives a Node robot on loopback', async () => {
   assert.ok(edge.accepted > 0);
   assert.equal(edge.rejected, 0, JSON.stringify(edge.rejectedBy));
   assert.deepEqual(edge.modes.safe, [0, 0], 'a released lease never latches safe');
-  // How its chunks arrived: every accepted one in a lateness bucket.
   assert.equal(edge.clockRefused, null);
   assert.ok(edge.received >= edge.accepted && edge.lost >= 0, JSON.stringify(edge));
   assert.equal(edge.lateMs.length, 8);
@@ -272,7 +256,6 @@ test('the binding table and refusals match the conformance goldens', async () =>
   assert.ok(err instanceof rlmesh.SessionException);
   assert.equal(err.message.replace(/\n+$/, ''), golden('force_policy__ur10e_rtde__refused'));
   assert.deepEqual(err.problems, [['incompatible', 'input', 'ft']]);
-  // The fix the message suggests is a different robot: the same policy binds where the wrench is in tool0.
   assert.match(String((await refused.bind('ur10e')).binding), /wrist\/ft/);
   await refused.close();
 
@@ -294,7 +277,6 @@ test('an operator preempts the model, which stays stopped until resumed', async 
   const modelToken = ur.log.at(-1).leaseToken;
   assert.equal(typeof modelToken, 'bigint');
 
-  // Taking over: the operator class preempts the model class.
   const tokens = await operator.acquire();
   assert.ok(tokens['ur10e:arm'] > modelToken);
   await waitUntil("the model's lease gone", () => !model.holds);
@@ -305,24 +287,19 @@ test('an operator preempts the model, which stays stopped until resumed', async 
         const sent = operator.send(hold(0.75), operator.observe());
         assert.notEqual(sent.arm, null);
       } catch (e) {
-        // A start can be skipped under load (an input not yet fresh): try again next tick.
         if (!(e instanceof rlmesh.StartSkipped)) throw e;
       }
       await sleep(10);
     }
   })();
-  // A failure below stops the stream before the operator is disposed, so it is the one reported.
   await using _stopTeleop = { [Symbol.asyncDispose]: () => ((streaming = false), teleop) };
   await waitUntil('the operator driving', () => ur.driven((d) => first(d) === 0.75));
   assert.equal(ur.log.at(-1).leaseToken, tokens['ur10e:arm']);
-  // A preempted model stays warm and skips its starts (its next one may be a replan period away).
   await waitUntil('the model skipping its parked starts', () => model.stats().skipped.parked > 0, state);
   assert.deepEqual(model.stats().parked, ['ur10e:arm']);
 
-  // A model cannot take it back while the operator holds it.
   await assert.rejects(model.acquire(), (e) => e instanceof rlmesh.SessionRefused && e.status === 'LEASE_BUSY');
 
-  // The operator lets go: the model stays stopped, and the arm goes safe.
   streaming = false;
   await teleop;
   await operator.release();
@@ -339,7 +316,6 @@ test('an operator preempts the model, which stays stopped until resumed', async 
     [['ur10e:arm', 'teleop', 'ur10e:arm was taken by teleop at Operator; this policy stays stopped until policy.resume()']],
   );
 
-  // Resumed, the model re-requests and drives under a fresh token.
   assert.deepEqual(model.resume(), ['ur10e:arm']);
   await waitUntil('the model driving again', () => ur.driven((d) => first(d) === 0.25));
   const resumed = ur.log.at(-1).leaseToken;
@@ -377,7 +353,6 @@ test("a viewer reads every link's health, each robot's refusals by reason", asyn
   const running = model.run(() => hold(0.25), { duration: 30 });
   await waitUntil('the model driving', () => one.driven((d) => first(d) === 0.25));
 
-  // The viewer neither publishes nor commands; its first read subscribes and waits for one.
   let health = await viewer.health();
   while (!(health.links['ur10e']?.lastChunkAccepted > 0)) health = await viewer.health({ wait: true });
   const names = Object.keys(health.links).sort();
@@ -394,7 +369,6 @@ test("a viewer reads every link's health, each robot's refusals by reason", asyn
   assert.ok(health.links.viewer.lastSeqSeen['ur10e-2:arm'] > 0);
   assert.equal(health.links['ur10e'].run, null);
 
-  // A robot reads the same; the next one comes later.
   const now = await two.robot.health();
   const later = await two.robot.health({ wait: true });
   assert.ok(later.hostNs > now.hostNs);
@@ -443,7 +417,6 @@ test('a recorder writes the session to MCAP and reads it back', async () => {
 });
 
 test('a camera publishes frames it already encoded', async () => {
-  // A 16x8 JPEG, as a webcam in MJPEG mode hands it out.
   const frame = Buffer.from(
     '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAAIABADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDHooorhPqD/9k=',
     'base64',
@@ -488,11 +461,9 @@ test('a policy publishes annotations under its name and never binds them', async
         { hz: 25, actions: { gaze: { kind: 'joints', at: 'eyes', command: 'position', hz: 50 } } },
         { session: host, name: 'tracker', publishes: { target: { kind: 'x/target', hz: 25, fields: { xy: ['float32', [2]] } } } },
       );
-      // One robot besides the tracker's own parts: bound with no robot named, the eye alone.
       const binding = (await tracker.bind()).binding;
       assert.match(binding.toString(), /binding tracker on eye-1/);
       assert.throws(() => tracker.publish('boxes', Float32Array.of(0, 0)), /no part 'boxes'/);
-      // For half a second: the recorder subscribes to a new part once it sees it.
       for (let i = 0; i < 25; i++) {
         tracker.publish('target', Float32Array.of(0.01 * i, 0.5));
         await sleep(20);
@@ -580,7 +551,6 @@ test('a throwing predict releases the leases and the run rejects with its error'
     (e) => e === crash,
   );
   assert.equal(policy.holds, false);
-  // A wrong shape is refused before anything is sent.
   assert.throws(() => policy.send({ arm: { data: new Float32Array(6), shape: [6] } }, policy.observe()), (e) => e instanceof RangeError && /expected \[10, 6\]/.test(e.message));
   assert.throws(() => policy.send({ legs: { data: new Float32Array(60), shape: [10, 6] } }, policy.observe()), /not an action/);
 });
@@ -610,10 +580,6 @@ test("the session's key is in the host's address, never in what inspecting shows
   for (const shown of [inspect(host), inspect(policy), String(host), String(policy)]) assert.ok(!shown.includes(key), shown);
 });
 
-/**
- * A local env served as a lockstep robot by Python's `rlmesh.EnvServer` (`trials_env.py`), in a
- * session of its own: its session's address and the resets it saw (`{ seed, trial }`), in order.
- */
 async function serveTrials() {
   const { spawn } = await import('node:child_process');
   const { createInterface } = await import('node:readline');
@@ -655,7 +621,6 @@ test('a Node policy runs a lockstep env by episodes, each reset as a model run r
   const still = () => ({ a: { data: new Float32Array(2), shape: [1, 2] } });
   const played = [];
   const stats = await policy.run(still, { episodes: 3, seed: 5, onStep: (step) => played.push(step.actions.a) });
-  // Two steps an episode, one action a chunk: a predict a step, a reward of 1 each.
   assert.deepEqual(stats, {
     clock: 'lockstep',
     starts: 6,
@@ -664,17 +629,14 @@ test('a Node policy runs a lockstep env by episodes, each reset as a model run r
   });
   assert.deepEqual(policy.stats(), stats);
   assert.equal(played.length, 6);
-  // Each episode's reset is seeded from the base and carries its trial_index, numbered from 0.
   await waitUntil('three resets', () => env.resets.length === 3);
   const first = env.resets.splice(0);
   assert.deepEqual(first.map((r) => r.trial), [0, 1, 2]);
   assert.equal(new Set(first.map((r) => r.seed)).size, 3, JSON.stringify(first));
-  // The same seed runs the same episodes again.
   assert.deepEqual(await policy.run(still, { episodes: 3, seed: 5 }), stats);
   await waitUntil('three resets again', () => env.resets.length === 3);
   assert.deepEqual(env.resets.splice(0), first);
 
-  // The wall clock's settings throw at once, as do its verbs.
   for (const [opts, says] of [
     [{ duration: 1 }, /duration= is for a wall-clock robot/],
     [{ mode: 'shadow' }, /mode=shadow is for a wall-clock robot/],
@@ -688,16 +650,12 @@ test('a Node policy runs a lockstep env by episodes, each reset as a model run r
   assert.equal(env.resets.length, 0, 'nothing was reset');
 });
 
-// The hosting rule, as Python's participants follow it: a session address with no host, or a
-// loopback port with nothing listening, is hosted by the participant itself, in this process, until
-// it closes; one a host already listens on is joined.
 test('a robot with no session hosts the local one when nothing listens, and others join it', async () => {
   assert.equal(await listening(LOCAL_PORT), false);
   const robot = await rlmesh.Robot.connect('ur10e', fixture('robots', 'ur10e'));
   try {
     assert.ok(robot.address.startsWith(`127.0.0.1:${LOCAL_PORT}`) && robot.address.endsWith('/ur10e'), robot.address);
     assert.equal(await listening(LOCAL_PORT), true);
-    // A policy given the local session joins the robot's host instead of hosting one of its own.
     await using policy = new rlmesh.Policy(HOLD, { session: '', name: 'hold' });
     await policy.bind('ur10e');
     assert.equal(policy.binding.fingerprint.length, 16);

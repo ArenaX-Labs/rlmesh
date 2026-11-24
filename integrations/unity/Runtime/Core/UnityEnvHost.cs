@@ -33,7 +33,7 @@ namespace RLMesh.Unity
         {
             AssertMainThreadIfInitialized();
             if (mainThread == 0) throw new InvalidOperationException("Initialize the Unity main thread before serving");
-            Serving?.Invoke(); // Editor takes the reload lock BEFORE native construction.
+            Serving?.Invoke();
             var dispatcher = new MainThreadDispatcher(Lifetime.ShuttingDown);
             dispatchers.Add(dispatcher);
             return dispatcher;
@@ -102,7 +102,6 @@ namespace RLMesh.Unity
             });
         }
 
-        // Unit tests inject a failed disposal without replacing native cleanup.
         internal static void TrackStop(Task stop) { lock (gate) stops.Add(stop); }
     }
 }

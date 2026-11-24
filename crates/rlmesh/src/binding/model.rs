@@ -1,7 +1,7 @@
 //! The model engine plumbing the in-repo bindings drive: the async
 //! `ModelHandler` seam, the `PredictFn` holes of the adapter engine, the
 //! worker that runs a handler, and the facade `Model`'s erased
-//! construction for runtime corner declarations (R-25).
+//! construction for runtime corner declarations.
 
 use std::sync::Arc;
 
@@ -152,8 +152,6 @@ pub fn serve_model(
 }
 
 /// An already-loaded language handler entering the shared facade orchestration.
-/// Bindings retain their language-specific predict/route conversion, while run
-/// and bind own validation, hooks, episode tracking and resource lifetimes.
 pub struct PreparedModel {
     pub handler: Box<dyn ModelHandler>,
     pub presentation: Option<Box<dyn Presentation>>,
@@ -217,8 +215,6 @@ impl OwnedTarget {
             released: false,
         }
     }
-    /// Open the target; an address it hands back is an env's, where a lone
-    /// `host:port` is short for `host:port/env`.
     pub(crate) fn open(&mut self, edition: Option<&str>, caller: CallerJobs) -> Result<AdaptedEnv> {
         let mut target = self.adapter.open(edition, caller)?;
         target.address = crate::address::env_address(&target.address);
@@ -260,7 +256,6 @@ pub fn facade_value(value: rlmesh_adapters::v1::Value) -> Result<crate::Value> {
 pub use crate::model::facade::RunSlot as RunLease;
 
 /// Retain run admission through a language binding's exception conversion.
-/// A nested/parallel run fails before it can replace the active run's errors.
 pub fn claim_run(gate: Arc<std::sync::atomic::AtomicBool>) -> Result<Arc<RunLease>> {
     RunLease::claim(gate).map(Arc::new)
 }
@@ -299,7 +294,6 @@ pub fn binding_renderer(
 
 /// A language's drawing observer, paired with its ordinary RunHooks. The
 /// shared core supplies accounting and applies its truncation/quit requests.
-/// Kept in the semver-exempt binding namespace, not the public hooks contract.
 pub trait Presentation: Send {
     fn on_frame(&mut self, frame: &RunFrame<'_>) -> Result<()>;
     fn directive(&mut self) -> Result<crate::run::runtime::RunDirective>;

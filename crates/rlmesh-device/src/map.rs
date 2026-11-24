@@ -1,17 +1,10 @@
-//! A robot map's part paths, in authored order, without parsing the map:
-//! its top-level keys. The host normalises the map at `DeclareParts` and
-//! refuses one it can't; the board needs only the paths (their order, and
-//! `DeclareParts.seal`), so it doesn't carry the normaliser and a JSON
-//! parser in flash.
-
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use rlmesh_session_core::wire::PartPath;
 
-/// The top-level keys of `json`, in order, each a valid part path, or
-/// `None` when `json` isn't one JSON object (well formed throughout) with
-/// distinct valid keys.
+/// The top-level keys of `json`, in order, each a valid part path, or `None` when `json`
+/// isn't one JSON object (well formed throughout) with distinct valid keys.
 pub fn paths(json: &str) -> Option<Vec<String>> {
     let mut s = Scanner {
         b: json.as_bytes(),
@@ -47,7 +40,6 @@ pub fn paths(json: &str) -> Option<Vec<String>> {
     (s.at == s.b.len()).then_some(keys)
 }
 
-/// Nesting deeper than this is refused rather than recursed into.
 const MAX_DEPTH: u32 = 32;
 
 struct Scanner<'a> {
@@ -84,7 +76,6 @@ impl Scanner<'_> {
         Some(v)
     }
 
-    /// A string, decoded.
     fn string(&mut self) -> Option<String> {
         self.eat(b'"')?;
         let mut out = String::new();
@@ -123,8 +114,6 @@ impl Scanner<'_> {
                 c if c < 0x20 => return None,
                 c if c < 0x80 => out.push(char::from(c)),
                 _ => {
-                    // A multi-byte UTF-8 character: `json` is a `str`, so
-                    // it is whole; copy it through.
                     let start = self.at - 1;
                     let mut end = self.at;
                     while self.b.get(end).is_some_and(|b| b & 0xC0 == 0x80) {
@@ -137,7 +126,6 @@ impl Scanner<'_> {
         }
     }
 
-    /// Skips one value, checking it is well formed.
     fn value(&mut self, depth: u32) -> Option<()> {
         if depth > MAX_DEPTH {
             return None;
@@ -195,7 +183,6 @@ impl Scanner<'_> {
         (self.b.get(self.at..end)? == w).then(|| self.at = end)
     }
 
-    /// A JSON number: `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?`.
     fn number(&mut self) -> Option<()> {
         if self.peek() == Some(b'-') {
             self.at += 1;

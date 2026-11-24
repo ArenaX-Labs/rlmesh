@@ -45,7 +45,6 @@ public sealed partial class EnvServer
         {
             if (await Task.WhenAny(completion.Task, cancelled.Task).ConfigureAwait(false) == cancelled.Task)
             {
-                // Observe a later native error even though the caller stopped waiting.
                 _ = completion.Task.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 throw new Ext.CancelledError(cancellationToken);

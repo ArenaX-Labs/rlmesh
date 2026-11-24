@@ -1,5 +1,3 @@
-//! The binding of v1 declarations, end to end: lowered, bound and applied.
-
 mod unknown_kind_tests {
     use crate::error::ErrorCode;
     use crate::lower::resolve;
@@ -21,16 +19,12 @@ mod unknown_kind_tests {
         resolve(&tags, &space(obs_space), &space(action_space), &spec, false)
     }
 
-    // A one-actuator action shared by the cases below.
     const ACTION_SPACE: &str = r#"{"kind":"box","shape":[1],"dtype":"float32"}"#;
     const ACTION_OUT: &str = r#"{"components":[{"role":"a","dim":1}]}"#;
     const ACTION_TAGS: &str = r#"{"components":[{"role":"a","dim":1}]}"#;
 
     #[test]
     fn unreferenced_unknown_obs_kind_resolves_with_advisory() {
-        // The env declares an `audio` observation an old core can't build. The
-        // model references only the camera, so resolution succeeds and the
-        // unknown leaf is ignored with one deterministic advisory.
         let env_tags = format!(
             r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}},
                 "mic":{{"type":"audio","role":"audio/mic","sample_rate":16000}}}},
@@ -50,8 +44,6 @@ mod unknown_kind_tests {
                 .any(|a| a.message.contains("mic") && a.message.contains("audio")),
             "expected an unknown-kind advisory, got: {advisories:?}"
         );
-        // The dropped modality is also surfaced in the human summary (it produces
-        // no obs plan, so without this it would be invisible to describe()).
         let described = adapter.describe();
         assert!(
             described.contains("dropped:") && described.contains("mic"),
@@ -61,9 +53,6 @@ mod unknown_kind_tests {
 
     #[test]
     fn referenced_unknown_obs_kind_is_unsupported_kind() {
-        // The model needs role "weird", which the env offers only as an
-        // unrecognized kind: a localized UnsupportedKind ("upgrade the runtime"),
-        // not a misdirecting MissingRole.
         let env_tags = format!(
             r#"{{"observation":{{"sensor":{{"type":"lidar","role":"weird"}}}},"action":{ACTION_TAGS}}}"#
         );
@@ -83,9 +72,6 @@ mod unknown_kind_tests {
 
     #[test]
     fn optional_state_referencing_unknown_kind_is_unsupported_kind() {
-        // An *optional* component still fails loud when the env provides its role
-        // under an unrecognized kind: the data exists but is unreadable here, so
-        // the operator is told to upgrade rather than being silently fed zeros.
         let env_tags = format!(
             r#"{{"observation":{{"sensor":{{"type":"lidar","role":"weird"}}}},"action":{ACTION_TAGS}}}"#
         );
@@ -105,9 +91,6 @@ mod unknown_kind_tests {
 
     #[test]
     fn filled_text_referencing_unknown_kind_is_unsupported_kind() {
-        // A text input with a fill still fails loud when the env provides its
-        // role under an unrecognized kind -- the fill must not mask present-
-        // but-unreadable data.
         let env_tags = format!(
             r#"{{"observation":{{"note":{{"type":"richtext","role":"instruction"}}}},"action":{ACTION_TAGS}}}"#
         );
@@ -127,10 +110,6 @@ mod unknown_kind_tests {
 
     #[test]
     fn lone_camera_fallback_does_not_bind_an_unknown_kind_role() {
-        // With exactly one real camera, the lone-camera fallback papers over
-        // role-name mismatches -- but not when the requested role is the env's
-        // *unknown-kind* leaf: that fails loud (upgrade), it does not silently
-        // bind the wrong camera.
         let env_tags = format!(
             r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}},
                 "extra":{{"type":"lidar","role":"image/overhead"}}}},"action":{ACTION_TAGS}}}"#
@@ -152,8 +131,6 @@ mod unknown_kind_tests {
 
     #[test]
     fn model_input_of_unknown_kind_is_unsupported_kind() {
-        // A model input of an unrecognized kind has no apply path on an old core;
-        // it fails at resolve regardless of what the env offers.
         let env_tags = format!(
             r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}}}},"action":{ACTION_TAGS}}}"#
         );
@@ -173,9 +150,6 @@ mod unknown_kind_tests {
 
     #[test]
     fn bare_unknown_field_on_known_kind_taints_at_resolve() {
-        // Central asymmetry: a bare additive field on a recognized kind is
-        // must-understand — fail closed at resolve even though the leaf is
-        // referenced and otherwise valid.
         let env_tags = format!(
             r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary","normalize":false}}}},"action":{ACTION_TAGS}}}"#
         );
@@ -189,10 +163,6 @@ mod unknown_kind_tests {
         assert!(err.message.contains("normalize"), "got: {}", err.message);
     }
 
-    /// Deliberate invariant: join advisories (env-declaration hints like a
-    /// mislabeled image layout) surface through `advisories()` but stay OUT of
-    /// `describe()` — they are not dropped env modalities, and the conformance
-    /// vectors pin describe()'s exact text including its `dropped:` section.
     #[test]
     fn image_layout_advisory_surfaces_in_advisories_but_not_describe() {
         let env_tags = format!(
@@ -220,7 +190,6 @@ mod unknown_kind_tests {
 
     #[test]
     fn x_prefixed_field_does_not_taint_at_resolve() {
-        // The producer's `x-` opt-out: a marked-ignorable field resolves cleanly.
         let env_tags = format!(
             r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary","x-note":"hi"}}}},"action":{ACTION_TAGS}}}"#
         );
@@ -234,8 +203,6 @@ mod unknown_kind_tests {
 
     #[test]
     fn ad_hoc_role_the_env_lacks_draws_one_info_advisory() {
-        // The optional part zero-fills instead of hard-erroring, so without the
-        // advisory the author never learns their private role matched nothing.
         let env_tags = format!(
             r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}}}},"action":{ACTION_TAGS}}}"#
         );
@@ -253,7 +220,6 @@ mod unknown_kind_tests {
             .collect();
         assert_eq!(hits.len(), 1, "one advisory per role, got: {hits:?}");
         assert!(hits[0].message.contains("proprio/made_up"), "{hits:?}");
-        // A registered role the env also lacks is a contract, not a typo: silent.
         let model = format!(
             r#"{{"input":{{"s":{{"type":"state","components":[
                 {{"role":"proprio/eef_pos","dim":3,"optional":true}}]}}}},"output":{ACTION_OUT}}}"#
@@ -281,9 +247,6 @@ mod unknown_kind_tests {
         );
         let err = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect_err("no rebind");
         assert_eq!(err.code, ErrorCode::MissingRole);
-        // An unparted wrist rebinds only under the named projection: a lone
-        // third-person camera is not a wrist view. A named part never does,
-        // since a lone camera cannot be one arm of a pair.
         let model = format!(
             r#"{{"input":{{"pixels":{{"type":"image","role":"image/wrist"}}}},"output":{ACTION_OUT}}}"#
         );
@@ -305,9 +268,6 @@ mod unknown_kind_tests {
     }
 }
 
-/// The C14 geometry rules, exercised directly on [`check_geometry`] so each of
-/// the five cases is pinned once rather than through a full resolve.
-/// The `part` identity rules, end to end.
 mod part_tests {
     use crate::error::ErrorCode;
     use crate::lower::resolve;
@@ -394,7 +354,6 @@ mod part_tests {
             "got: {}",
             err.message
         );
-        // `optional` does not turn ambiguity into a fill: the env has the data.
         let optional = format!(
             r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"proprio/eef_pos","dim":3,"optional":true}}]}}}},"output":{ACTION_OUT}}}"#
         );
@@ -431,8 +390,6 @@ mod part_tests {
 
     #[test]
     fn a_named_part_never_rebinds() {
-        // The env has the role under another part: a named part is missing,
-        // not rebound -- fill if optional, else MissingRole naming what exists.
         let err = do_resolve(
             &env_one_arm("left_arm"),
             ONE_POS,
@@ -461,8 +418,6 @@ mod part_tests {
 
     #[test]
     fn an_unknown_kind_prefix_parses_and_fails_at_resolve() {
-        // The kind set is closed; a newer peer's kind relays and dies here,
-        // named. `x/` stays the whole-role escape.
         let model = format!(
             r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"audio/mic","dim":3}}]}}}},"output":{ACTION_OUT}}}"#
         );
@@ -508,8 +463,6 @@ mod part_tests {
                 && described.contains(r##""action/joint_pos" <- model[0:2]#right_arm"##),
             "got:\n{described}"
         );
-        // A part-less env actuator binds the model's only output of the role
-        // under any part, with the same info; two candidates are an error.
         let env_bare = r#"{"observation":{"l":{"type":"state","role":"proprio/eef_pos","part":"left_arm"}},
             "action":{"components":[{"role":"action/joint_pos","dim":2}]}}"#;
         let model_one = r#"{"input":{"s":{"type":"state","components":[{"role":"proprio/eef_pos","dim":3,"part":"left_arm"}]}},
@@ -584,7 +537,6 @@ mod part_tests {
             "{:?}",
             adapter.advisories()
         );
-        // A named part never falls through to the lone-camera fallback.
         let model = format!(
             r#"{{"input":{{"pixels":{{"type":"image","role":"image/primary","part":"head"}}}},"output":{ACTION_OUT}}}"#
         );
@@ -593,8 +545,6 @@ mod part_tests {
     }
 }
 
-/// The `labels` layout rules, end to end, on the
-/// Go2: SDK motor order on the env, Isaac order on a model.
 mod labels_tests {
     use std::collections::BTreeMap;
 
@@ -604,7 +554,6 @@ mod labels_tests {
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
 
-    /// Go2 joints in SDK motor order: FR, FL, RR, RL x hip, thigh, calf.
     const GO2_JOINTS: [&str; 12] = [
         "FR_hip_joint",
         "FR_thigh_joint",
@@ -620,7 +569,6 @@ mod labels_tests {
         "RL_calf_joint",
     ];
 
-    /// SDK order → Isaac order: FL,FR,RL,RR x hip,thigh,calf.
     const ISAAC: [usize; 12] = [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8];
 
     fn labels(order: &[usize]) -> String {
@@ -701,8 +649,6 @@ mod labels_tests {
                 && described.ends_with("]) perm[3,4,5,0,1,2,9,10,11,6,7,8]"),
             "got:\n{described}"
         );
-        // The permutation is its own inverse on the Go2, so the action-side
-        // scatter lists the same indices; the values prove the direction.
         assert!(
             adapter.advisories().is_empty(),
             "{:?}",
@@ -721,7 +667,6 @@ mod labels_tests {
             panic!("expected a tensor");
         };
         let obs = crate::apply::value::to_f32_vec(obs);
-        // joint_pos: SDK value at ISAAC[i], minus the stand pose in Isaac order.
         let expected_pos: Vec<f32> = ISAAC
             .iter()
             .enumerate()
@@ -731,8 +676,6 @@ mod labels_tests {
             assert!((got - want).abs() < 1e-6, "{obs:?}");
         }
         assert!((obs[12] - 3.0 * 0.05).abs() < 1e-6, "{obs:?}");
-        // Action: the model emits ones in Isaac order; each env axis reads its
-        // own joint's scale and pose back in SDK order.
         let action = crate::apply::transform_action(&adapter, &tensor(&[1.0; 12])).expect("apply");
         let action = crate::apply::value::to_f32_vec(&action);
         let expected_act: Vec<f32> = (0..12)
@@ -773,8 +716,6 @@ mod labels_tests {
             "{}",
             err.message
         );
-        // Env-only: silent, and the env's names annotate a per-axis vector the
-        // model declared positionally.
         let adapter = do_resolve(&go2_env(""), &go2_model(None)).expect("env-only labels resolve");
         let described = adapter.describe();
         assert!(
@@ -791,7 +732,6 @@ mod labels_tests {
 
     #[test]
     fn a_subset_of_the_env_labels_is_a_mismatch_on_either_side() {
-        // A front-legs-only checkpoint: six of the twelve labels.
         let front = labels(&[3, 4, 5, 0, 1, 2]);
         let model = format!(
             r#"{{"input":{{"obs":{{"type":"state","components":[{{"role":"proprio/joint_pos","labels":{front}}}]}}}},
@@ -848,8 +788,6 @@ mod labels_tests {
 
     #[test]
     fn a_three_cycle_of_custom_labels_permutes_each_direction_the_right_way() {
-        // Not its own inverse, so a gather/scatter direction mistake shows;
-        // the names are no robot's, and no registry is consulted.
         let env = r#"{"observation":{"q":{"type":"state","role":"proprio/joint_pos","labels":["tail_a","tail_b","tail_c"]}},
             "action":{"components":[{"role":"action/joint_pos","dim":3,"labels":["tail_a","tail_b","tail_c"]}]}}"#;
         let model = r#"{"input":{"q":{"type":"state","components":[{"role":"proprio/joint_pos","labels":["tail_b","tail_c","tail_a"]}]}},
@@ -930,10 +868,6 @@ mod labels_tests {
         );
     }
 
-    /// The Go2 body: gyro, IMU orientation and the velocity command beside the
-    /// joints, with the model reading the orientation as projected gravity and
-    /// clamping the assembled vector (rl_sar `robot_lab`, 45 - 12 for the
-    /// previous action, which is not part of this pairing).
     fn go2_body_env(base_quat: &str) -> String {
         let sdk = sdk();
         format!(
@@ -1006,7 +940,6 @@ mod labels_tests {
         assert_eq!(plan.native_width, Some(33));
         let mut raw: BTreeMap<String, Value> = BTreeMap::new();
         raw.insert("ang_vel".to_owned(), tensor(&[4.0, 0.0, 0.0]));
-        // Identity orientation, wxyz: gravity is straight down in the base.
         raw.insert("base_quat".to_owned(), tensor(&[1.0, 0.0, 0.0, 0.0]));
         raw.insert("command".to_owned(), tensor(&[0.5, 0.0, 0.0]));
         let mut joints = vec![0.0; 12];
@@ -1026,13 +959,10 @@ mod labels_tests {
         assert_eq!(&obs[..3], &[1.0, 0.0, 0.0]);
         assert_eq!(&obs[3..6], &[0.0, 0.0, -1.0]);
         assert_eq!(&obs[6..9], &[0.5, 0.0, 0.0]);
-        // The container clamp caught the runaway encoder reading.
         assert_eq!(obs[9], 100.0);
         assert!((obs[10] + 0.8).abs() < 1e-6, "{obs:?}");
     }
 
-    /// The complete Go2 pairing: the body model plus a part reading
-    /// the model's own previous action, 45 wide.
     fn go2_full_model(previous: &str) -> String {
         go2_body_model("").replacen(
             r#""scale":0.05}]}"#,
@@ -1063,7 +993,6 @@ mod labels_tests {
         raw
     }
 
-    /// The assembled `obs` vector at `step`, through the stateful seam.
     fn assembled(
         adapter: &crate::plans::Binding,
         buffers: &mut crate::stateful::FrameBuffers,
@@ -1098,8 +1027,6 @@ mod labels_tests {
             ),
             "got:\n{described}"
         );
-        // Answered by the model's own actuator: no ad-hoc-role nudge, and the
-        // route holds history the way a stacked one does.
         assert!(
             adapter.advisories().is_empty(),
             "{:?}",
@@ -1112,9 +1039,6 @@ mod labels_tests {
             panic!("expected a state plan");
         };
         assert_eq!(plan.native_width, Some(45));
-        // The stateless transform reads the fill; the stateful seam reads the
-        // raw output executed at the previous step, before the actuator's
-        // affine, and the fill at the episode's first step.
         let Value::Map(payload) =
             crate::apply::transform_obs(&adapter, &go2_body_raw(), &NoCustoms).expect("apply")
         else {
@@ -1136,8 +1060,6 @@ mod labels_tests {
 
     #[test]
     fn a_previous_action_part_permutes_the_actuator_axes_by_label() {
-        // The model reads back its own output in Isaac order, and a stand-in
-        // of 0.5 before the first action.
         let isaac = labels(&ISAAC);
         let previous = format!(
             r#"{{"role":"action/joint_pos","source":"action","labels":{isaac},"fill":0.5}}"#
@@ -1160,7 +1082,6 @@ mod labels_tests {
             &assembled(&adapter, &mut buffers, 1)[33..],
             expected.as_slice()
         );
-        // A label set that differs from the actuator's is a mismatch naming it.
         let err = go2_full_resolve(
             &go2_body_env(GO2_BODY_QUAT),
             r#"{"role":"action/joint_pos","source":"action","labels":["FR_hip_joint","FR_shin"]}"#,
@@ -1187,7 +1108,6 @@ mod labels_tests {
             "{}",
             err.message
         );
-        // A declared dim must be the actuator's.
         let err = go2_full_resolve(
             &env,
             r#"{"role":"action/joint_pos","source":"action","dim":6}"#,
@@ -1200,8 +1120,6 @@ mod labels_tests {
             "{}",
             err.message
         );
-        // Never an env role: an observation tag under `action/` is refused at
-        // join, before any model part is planned.
         let env = env.replacen(
             r#""role":"command/base_vel""#,
             r#""role":"action/base_vel""#,
@@ -1354,7 +1272,6 @@ mod provenance_tests {
             "{}",
             adapter.describe()
         );
-        // Quiet channel: never under `dropped:`.
         assert!(!adapter.describe().contains("dropped:"));
     }
 
@@ -1400,8 +1317,6 @@ mod projection_tests {
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
 
-    /// A LIBERO-style 7-D model on a MetaWorld-style 4-D env: the rotation
-    /// delta has no actuator.
     fn resolve_with(
         allow: &str,
     ) -> Result<crate::plans::Binding, crate::error::AdapterResolutionError> {
@@ -1457,9 +1372,6 @@ mod projection_tests {
     }
 }
 
-/// The value conventions a gripper and a delta carry: a different `polarity`
-/// or `unit` on the two sides is refused unless the model allows the named
-/// projection that converts it, and converted exactly when it does.
 mod convention_tests {
     use crate::apply::value::{Value, tensor_from_f32, to_f32_vec};
     use crate::error::ErrorCode;
@@ -1467,10 +1379,6 @@ mod convention_tests {
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
 
-    /// A one-gripper, one-position-delta env with a one-finger-pair reading,
-    /// and a model reading the reading and emitting both commands; `env` and
-    /// `model` splice extra attributes into the env's and the model's
-    /// actuators (`gripper` / `pos`) and the model's state part (`state`).
     fn resolve_pair(
         env_gripper: &str,
         env_pos: &str,
@@ -1522,7 +1430,6 @@ mod convention_tests {
             "{}",
             refused.message
         );
-        // The model's own invert already reverses it: no conversion is needed.
         let inverted = format!(r#"{open}, "invert": true"#);
         let adapter = resolve_pair(close, "", "", &inverted, "", "", "").expect("agrees");
         assert!(adapter.projections().is_empty());
@@ -1540,7 +1447,6 @@ mod convention_tests {
             act(&adapter, &[0.0, 0.0, 0.0, 0.75]),
             vec![0.0, 0.0, 0.0, -0.75]
         );
-        // Declared by one side only, it binds unchecked.
         assert!(resolve_pair(close, "", "", "", "", "", "").is_ok());
     }
 
@@ -1554,7 +1460,6 @@ mod convention_tests {
             "{}",
             refused.message
         );
-        // The model's scale bridges it exactly.
         assert!(
             resolve_pair(
                 "",
@@ -1628,7 +1533,6 @@ mod convention_tests {
         else {
             panic!("a lone state input is its tensor");
         };
-        // Closedness 0.25 / 1.0 read as openness 0.75 / 0.0.
         assert_eq!(
             to_f32_vec(&state),
             vec![0.75, 0.0],
@@ -1638,7 +1542,6 @@ mod convention_tests {
     }
 }
 
-/// What a declaration alone gets wrong is refused while lowering it.
 mod lowering_tests {
     use crate::error::ErrorCode;
     use crate::lower::resolve;

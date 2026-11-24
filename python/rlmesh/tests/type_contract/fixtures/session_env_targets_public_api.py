@@ -1,14 +1,4 @@
 # pyright: reportUnnecessaryTypeIgnoreComment=error
-"""Pins the env-target split between served and local models.
-
-A contract-only env handle (``env_contract`` without ``reset``/``step``) is a
-valid :data:`rlmesh.types.EnvTarget` -- a served model binds to it -- but is
-rejected at the type level by a local ``Model.bind``, whose
-:data:`rlmesh.types.LocalEnvTarget` deliberately excludes it. The file-level
-directive turns the suppressed rejection into a regression alarm: if
-``Model.bind`` ever starts accepting the handle, the ignore comment below
-becomes unnecessary and this fixture fails.
-"""
 
 from __future__ import annotations
 

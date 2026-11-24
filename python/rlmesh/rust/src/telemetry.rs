@@ -14,7 +14,6 @@ pub fn init_tracing(process_role: &'static str) {
         let filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new(rlmesh_session::DEFAULT_LOG_FILTER));
         let fmt_layer = fmt::layer().with_writer(std::io::stderr).with_target(false);
-        // Zenoh logs its config, link password included, below INFO.
         let capped = tracing_subscriber::filter::filter_fn(rlmesh_session::logging::may_record);
         let _ = registry()
             .with(filter)

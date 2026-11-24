@@ -1,20 +1,3 @@
-// Serve Chrono's industrial robot as an RLMesh environment, natively in C++.
-//
-//   chrono_reach_env [--address HOST:PORT] [--image-size N] [--max-steps N]
-//                    [--renderer raytrace|vulkan]
-//   chrono_reach_env --describe [--image-size N] [--max-steps N]
-//
-// --describe prints the env's describe envelope (its spaces, tags, and edition
-// handshake) and exits, without binding: bake it as the image's
-// dev.rlmesh.describe label (see README.md).
-//
-// --renderer picks the camera backend for both the observation image and
-// render() frames: the CPU ray tracer (default), or an offscreen Vulkan
-// rasterizer on the first GPU (or lavapipe) when built with CHRONO_REACH_VULKAN.
-//
-// The address defaults to $RLMESH_ADDRESS, else 0.0.0.0:50051 (the managed
-// platform's convention). $RLMESH_ENV_ENDPOINT_TOKEN, when set, is required on
-// every request. SIGINT / SIGTERM drain the server and close the env.
 #include <pthread.h>
 #include <signal.h>
 

@@ -1,8 +1,4 @@
 //! Running a model against an env: runs, bindings, hooks and results.
-//!
-//! Every call is sync and blocks; a run has an `_async` twin. A run or a
-//! binding borrows the model and the env: it never closes the model, and
-//! closes the env only on `close_env` (or one it built from a factory).
 
 pub(crate) mod drive;
 pub(crate) mod hooks;
@@ -35,17 +31,15 @@ use targets::ModelKind;
 
 use crate::{Env, Error, Model, Result, VectorEnv};
 
-/// A local env behind a run's loopback server.
 pub(crate) enum LoopbackEnv {
     Env(Box<dyn Env + Send>),
     Vector(Box<dyn VectorEnv + Send>),
 }
 
 impl Model {
-    /// Drive this model against `env` on the native runtime loop and return
-    /// the result. The run borrows the model (it stays open) and the env
-    /// (closed only on `close_env`); hooks run on this thread. One run at a
-    /// time per model.
+    /// Drive this model against `env` on the native runtime loop and return the result.
+    /// The run borrows the model (it stays open) and the env (closed only on `close_env`);
+    /// hooks run on this thread. One run at a time per model.
     pub fn run<'e>(
         &self,
         env_or_address: impl Into<EnvTarget<'e>>,
@@ -60,9 +54,8 @@ impl Model {
         ))
     }
 
-    /// The async twin of [`run`](Model::run): hooks run inside this future,
-    /// where a blocking rlmesh call fails with the `RuntimeError` class.
-    /// Dropping it cancels the run and fires no hook.
+    /// The async twin of [`run`](Model::run): hooks run inside this future, where a
+    /// blocking rlmesh call fails with the `RuntimeError` class.
     pub async fn run_async<'e>(
         &self,
         env_or_address: impl Into<EnvTarget<'e>>,
@@ -77,9 +70,8 @@ impl Model {
         .await
     }
 
-    /// Bind this model to `env` and step it by hand, as Python's
-    /// `Model.bind`: connects now, serving a local env in this process for
-    /// the binding's life. Closing the binding never closes the model.
+    /// Bind this model to `env` and step it by hand, as Python's `Model.bind`: connects
+    /// now, serving a local env in this process for the binding's life.
     pub fn bind<'a>(
         &'a self,
         target: impl Into<EnvTarget<'a>>,
@@ -138,8 +130,6 @@ pub fn bind<'a>(
     Binding::create(model.into(), env.into(), options)
 }
 
-// Host handlers and resources enter the same private implementation as the
-// public facade, without exposing its modules as alternate API paths.
 pub(crate) fn run_prepared(
     model: crate::binding::model::PreparedModel,
     env: EnvTarget<'_>,

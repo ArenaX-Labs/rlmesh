@@ -39,8 +39,6 @@ def main() -> None:
             lock_stat.st_dev,
             lock_stat.st_ino,
         ):
-            # The same open file description owns the lock across exec. Check
-            # it rather than trusting an environment marker alone.
             fcntl.flock(inherited_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             os.set_inheritable(inherited_fd, True)
             try:
@@ -68,8 +66,6 @@ def main() -> None:
         fcntl.flock(fd, fcntl.LOCK_EX)
 
     holder.write_text(f"{' '.join(command)} (in {os.getcwd()}, pid {os.getpid()})\n")
-    # flock belongs to the open file description; keeping the fd across exec
-    # hands the lock to the command for its whole lifetime.
     os.set_inheritable(fd, True)
     os.environ[inherited_key] = str(fd)
     try:

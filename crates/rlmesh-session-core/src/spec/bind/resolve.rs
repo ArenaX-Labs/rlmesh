@@ -1,6 +1,3 @@
-//! Structural candidates, captures, duplicate targets and the emitted
-//! table with its delivery contracts (steps 3, 4, 7 and 8).
-
 use super::problem::{BindError, Code, Problem, problem};
 use super::table::ActionRow;
 use super::table::{Binding, Dir, InputRow, Status};
@@ -60,7 +57,6 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// What lets an optional entry of `dir` stay unbound.
     fn leave(dir: Dir) -> Allow {
         match dir {
             Dir::In => Allow::Blank,
@@ -68,16 +64,11 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// (candidates, considered) of a slot.
     fn candidates(&self, slot: &Slot<'a>) -> (Vec<Candidate<'a>>, Vec<&'a PartSpec>) {
         let scope: Vec<&str> = self.scope.iter().map(String::as_str).collect();
         let mut candidates = Vec::new();
         let mut considered = Vec::new();
-        // An optional entry that may go blank (or be dropped) never binds to
-        // the parts a robot left behind: it binds as if the robot had never
-        // joined, and the controller binds it again once the robot is back.
         let skip_absent = !slot.required() && self.allowed(slot.entry, Self::leave(slot.dir));
-        // A qualified selector resolves in its robot's own map, view or not.
         let qualified = slot.selector.as_ref().is_some_and(|s| s.robot.is_some());
         let pool: Vec<&'a PartSpec> = match self.view {
             Some(view) if !qualified => view.iter().collect(),
@@ -103,14 +94,10 @@ impl<'a> Binder<'a> {
         (candidates, considered)
     }
 
-    /// Whether `robot` was in the session and is gone (its parts stay for
-    /// its return).
     fn gone(&self, robot: &ParticipantId) -> bool {
         self.roster.iter().any(|p| &p.id == robot && !p.present)
     }
 
-    /// The robots required entries name or the view places that have
-    /// declared no parts yet.
     fn undeclared(&self, slots: &[Slot<'a>]) -> Vec<ParticipantId> {
         let declared = |robot: &ParticipantId| self.parts.iter().any(|p| &p.owner == robot);
         let placed = self.places.iter().map(|p| &p.robot);
@@ -127,10 +114,6 @@ impl<'a> Binder<'a> {
         robots
     }
 
-    /// Refuses every optional entry nothing allows to stay unbound
-    /// (`blank` for an input, `drop` for an action): no robot could make
-    /// such a binding stand, so it is refused before anything is waited
-    /// for. It depends on the policy and the options alone.
     pub(super) fn check_optionals(&mut self) -> Result<(), BindError> {
         let slots = self.slots();
         for slot in slots.iter().filter(|s| !s.required()) {
@@ -194,7 +177,6 @@ impl<'a> Binder<'a> {
             )));
         }
 
-        // Step 4: captures, from the required entries.
         let required: Vec<usize> = (0..slots.len()).filter(|i| slots[*i].required()).collect();
         let mut free: Vec<String> = Vec::new();
         for i in &required {
@@ -348,7 +330,6 @@ impl<'a> Binder<'a> {
             }
         };
 
-        // Steps 3-5: each slot's one candidate under the chosen assignment.
         let mut bound: Vec<Option<&'a PartSpec>> = vec![None; slots.len()];
         let mut absent: Vec<bool> = vec![false; slots.len()];
         let unique: Vec<Option<&'a PartSpec>> = slots
@@ -391,7 +372,6 @@ impl<'a> Binder<'a> {
             let fitting: Vec<&Candidate<'a>> = cands.iter().filter(|c| c.fits(&chosen)).collect();
             match fitting.as_slice() {
                 [one] => bound[i] = Some(one.part),
-                // Allowed to stay unbound: refused up front otherwise.
                 [] if !slot.required() => absent[i] = true,
                 [] => self.unbound(slot, considered),
                 many => {
@@ -428,7 +408,6 @@ impl<'a> Binder<'a> {
             }
         }
 
-        // Step 6: compatibility.
         let replan = self.policy.hz;
         let mut inputs = Vec::new();
         let mut actions = Vec::new();
@@ -469,13 +448,10 @@ impl<'a> Binder<'a> {
             }
         }
 
-        // Step 7: duplicate targets.
         self.duplicates(&slots, &actions);
 
-        // Contracts, one per bound input stream.
         let contracts = self.contracts(&slots, &inputs, replan);
 
-        // Problems are reported in entry order.
         let order = |p: &Problem| {
             slots
                 .iter()
@@ -486,8 +462,6 @@ impl<'a> Binder<'a> {
         if !self.problems.is_empty() {
             return Err(self.refusal());
         }
-        // A view's rows hold their parts as declared, under their own paths:
-        // what the streams' keys are made of.
         if self.view.is_some() {
             let declared = |part: &mut Option<PartSpec>| {
                 if let Some(p) = part

@@ -4,11 +4,6 @@
 #USAGE flag "--rebuild" help="Rebuild the cp310 wheel even when one exists in dist/"
 #USAGE flag "--perf" help="Also run the tensor-conversion benchmarks and compare against the local perf baseline (warn-only)"
 
-# Executes the floors documented in docs/compatibility.md: the framework
-# integration suites run on Python 3.10 against the oldest supported
-# numpy/torch/jax, using a locally built cp310 wheel. Gated in
-# .github/workflows/floors.yml (weekly) and `mise run release:check`.
-
 set -euo pipefail
 
 repo_root="$PWD"
@@ -28,7 +23,6 @@ else
   torch_index=()
 fi
 
-# 1. Locate or build the cp310 wheel.
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' python/rlmesh/pyproject.toml | head -1)
 wheel=$(compgen -G "$dist/rlmesh-${version}-cp310-cp310-*.whl" | head -1 || true)
 if [ -z "$wheel" ] || [ "${usage_rebuild:-false}" = true ]; then
@@ -39,23 +33,16 @@ if [ -z "$wheel" ] || [ "${usage_rebuild:-false}" = true ]; then
 fi
 echo "floors: using wheel $wheel"
 
-# 2. Isolated python 3.10 venv. The explicit interpreter path overrides the
-# exported UV_PYTHON, and --no-config keeps uv from discovering the
-# workspace pyproject, whose constraint-dependencies pin modern
-# numpy/torch and would defeat the floor pins.
 mise install python@3.10
 python310="$(mise where python@3.10)/bin/python3.10"
 rm -rf "$venv"
 uv venv --python "$python310" "$venv"
 py="$venv/bin/python"
 
-# 3. torch alone from its platform index (the PyPI linux wheels bundle CUDA).
 uv pip install --no-config --python "$py" \
   ${torch_index[@]+"${torch_index[@]}"} \
   "$torch_pin"
 
-# 4. Everything else from PyPI. jax <= 0.4.30 does not depend on jaxlib,
-# hence the explicit pin.
 uv pip install --no-config --python "$py" \
   "numpy==${numpy_floor}" \
   "jax==${jax_floor}" \
@@ -63,18 +50,14 @@ uv pip install --no-config --python "$py" \
   "ml_dtypes==${ml_dtypes_floor}" \
   "pytest>=8,<9"
 
-# 5. Verify nothing got backtracked upward.
 installed=$("$py" -m pip list --format=freeze 2>/dev/null || uv pip list --no-config --python "$py" --format=freeze)
 echo "$installed" | grep -ix "numpy==${numpy_floor}" >/dev/null \
   || { echo "error: numpy floor pin did not hold:"; echo "$installed" | grep -i ^numpy; exit 1; }
 echo "$installed" | grep -ix "jax==${jax_floor}" >/dev/null \
   || { echo "error: jax floor pin did not hold"; exit 1; }
 
-# 6. The wheel itself (dependency-free by design).
 uv pip install --no-config --python "$py" --no-deps "$wheel"
 
-# 7. Run the framework suites with the venv interpreter (not `uv run`,
-# which would re-enter the workspace project and its constraints).
 "$py" -m pytest \
   python/rlmesh/tests/unit/test_tensor.py \
   python/rlmesh/tests/unit/test_dlpack.py \
@@ -83,8 +66,6 @@ uv pip install --no-config --python "$py" --no-deps "$wheel"
   python/rlmesh/tests/integration/test_jax.py \
   -q -p no:cacheprovider
 
-# 8. Optional: benchmark the floor versions and compare against the modern
-# local baseline (warn-only — version drift is informative, not a gate).
 if [ "${usage_perf:-false}" = true ]; then
   uv pip install --no-config --python "$py" --no-deps tools/rlmesh_system_fixtures
   floor_report="target/python-validation/floors-perf.json"
@@ -100,8 +81,6 @@ if [ "${usage_perf:-false}" = true ]; then
     --samples 5 --warmups 2 --output "$floor_report"
   baseline="target/python-validation/perf-baseline.json"
   if [ -f "$baseline" ]; then
-    # Warn-only cross-version drift table. Joined by measurement name (the
-    # environment labels differ between the modern baseline and this run).
     "$py" - "$baseline" "$floor_report" <<'PY'
 import json
 import sys

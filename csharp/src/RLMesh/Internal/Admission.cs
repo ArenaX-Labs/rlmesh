@@ -44,9 +44,8 @@ internal static class Admission
     }
     internal static void Publish(NativeHandle record)
     {
-        // Delay publication until the enclosing constructor has adopted all
-        // outputs and dependency references. The counted operation covers this
-        // interval, so teardown cannot miss an unpublished native root.
+        // Delay publication until the constructor has adopted all outputs and dependency references,
+        // so teardown cannot miss an unpublished native root.
         if (outermost != null) outermost.AddPublication(record);
         else record.Publish();
     }

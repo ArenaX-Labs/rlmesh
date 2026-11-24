@@ -90,7 +90,6 @@ pub fn build_info() -> BuildInfo {
     }
 }
 
-/// Text representation: `BuildInfo(version="0.1.0", ..., git=None)`.
 impl fmt::Display for BuildInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

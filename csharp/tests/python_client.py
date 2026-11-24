@@ -14,7 +14,6 @@ def remote_env() -> rlmesh.numpy.RemoteEnv:
 
 
 def random_episodes(count: int) -> None:
-    """Random episodes, each to its end."""
     with remote_env() as env:
         for _ in range(count):
             env.reset()
@@ -57,7 +56,6 @@ else:
             expected = expected_text[0]
             builtin = getattr(builtins, scenario, None)
             if builtin is not None:
-                # The env's builtin class arrives with its own message.
                 assert isinstance(error, builtin), type(error).__mro__
                 assert str(error) == expected and error.phase == "step", str(error)
             else:

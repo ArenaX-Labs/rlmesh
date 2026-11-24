@@ -177,8 +177,8 @@ def resolve_view(view: object) -> View | None:
             _, _, tail = spec.partition(":")
             if not tail:
                 return View(backend="http")
-            # ASCII digits only: no sign, separators, inner spaces or other
-            # scripts' digits, which ``int()`` would take.
+            # ASCII digits only: int() would also take signs, separators
+            # and other scripts' digits.
             if not (tail.isascii() and tail.isdigit()):
                 raise ValueError(
                     f"invalid view port {tail!r} in view={view!r}; use 'http:PORT' "
@@ -208,18 +208,12 @@ class ViewerDriver:
         self._render_call: Callable[[], object] | None = None
         self._disabled = False
         self._quit = False
-        #: Last drawn frame size, cached so the HUD can show the source resolution on
-        #: throttled steps that fetch no new frame. 0 until the first frame is drawn.
         self._frame_w = 0
         self._frame_h = 0
-        #: The last fed observation, its reader, and HUD fields: what a held viewer
-        #: redraws after the binding closes (and on a source switch while held).
         self._last_obs: object = None
         self._last_read: Callable[[object, object], object] | None = None
         self._last_hud: dict[str, Any] | None = None
-        #: The source whose frame was last drawn (``None`` before the first).
         self._drawn_source: str | None = None
-        #: ``step_hz`` pacing: when the next step is due (``perf_counter`` seconds).
         self._next_step_t: float | None = None
 
     def _ensure(self, contract: Any, client: Any) -> None:

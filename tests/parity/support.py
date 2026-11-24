@@ -13,7 +13,6 @@ LANGUAGES = {"python", "rust", "c", "cpp"}
 
 
 def scenarios():
-    """Load scenarios, rejecting duplicate IDs and unrecognized languages."""
     found = []
     ids = set()
     for path in sorted((ROOT / "tests/parity/fixtures").glob("*.toml")):
@@ -29,7 +28,6 @@ def scenarios():
 
 
 def native_args(case):
-    """Project inputs only; expected outputs never enter a native executable."""
     return [
         case["operation"],
         case.get("variant", ""),
@@ -40,7 +38,6 @@ def native_args(case):
 
 
 def compare(case, observed):
-    """Compare every specified expectation, including exact error text."""
     for key, value in case["expect"].items():
         assert key in observed, (case["id"], key, observed)
         assert observed[key] == value, (case["id"], key, value, observed)

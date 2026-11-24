@@ -1,5 +1,4 @@
-// Private, opaque bridge to the precompiled transport. Arduino's sketch
-// preprocessor must never see zenoh-pico's C headers (it uses -CC).
+// Private, opaque bridge to the precompiled transport.
 #ifndef RLMESH_TRANSPORT_H_
 #define RLMESH_TRANSPORT_H_
 

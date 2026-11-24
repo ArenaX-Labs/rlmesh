@@ -16,13 +16,6 @@ use crate::run::runtime::hooks::{EpisodeCompletedEvent, EpisodeStartedEvent, Run
 use crate::run::runtime::state::{RouteState, StartedEpisode};
 use crate::run::runtime::telemetry::{Aggregator, Sample, metrics};
 
-/// The env-reported task outcome from an episode's final-step info, read under
-/// the `keys` the session's edition governs
-/// ([`EditionDefaults::success_info_keys`](rlmesh_proto::EditionDefaults::success_info_keys)),
-/// in priority order: the first key holding a bool, integer, or number decides
-/// (numbers by truthiness, `1`/`1.0` → true), and keys of any other kind are
-/// skipped; `None` when no key decides. The Python Session's `_episode_success`
-/// applies the same rule so the two loops report identical success.
 fn success_from_final_info(
     keys: &[&str],
     final_info: Option<&rlmesh_proto::spaces::v1::MetaMap>,
@@ -42,8 +35,6 @@ where
     E: RuntimeEnv + Clone + 'static,
     M: ModelHandler,
 {
-    /// Fan out the scored episodes' starts; on an instruction route, hand
-    /// them back for `transform_instruction` at their first observation.
     pub(super) async fn invoke_started_episodes(
         &self,
         state: &RouteState,
@@ -75,9 +66,6 @@ where
         instruction_starts
     }
 
-    /// The completions of the lanes the env ended this step: each built
-    /// from the lane's episode as this driver accounted it (steps, reward,
-    /// start time) and the lane's share of this step's info.
     pub(super) fn env_completions(
         &self,
         state: &RouteState,
@@ -114,14 +102,6 @@ where
             .collect()
     }
 
-    /// Runtime-truncated completions for the group's lanes at the step/time cap
-    /// this step, excluding lanes the env itself just completed. Built from the
-    /// driver's own per-slot accounting (steps, accumulated reward, episode
-    /// start time) and this step's `infos`, which carry each lane's last
-    /// reported outcome; `validate()` guarantees driver-owned resets (autoreset
-    /// `DISABLED`) whenever a cap is configured, so the reset path restarts
-    /// these lanes exactly like env-reported completions. `ended` caps every
-    /// live lane (an observer ended the episode).
     pub(super) fn capped_completions(
         &self,
         state: &RouteState,
@@ -172,13 +152,6 @@ where
             .collect()
     }
 
-    /// Complete each episode: registry + summary (bounded runs only), and
-    /// build its `episode_completed` hook event for the caller to fan out once
-    /// the ended id's last event is out (see `Group::pending_completed`).
-    /// Summaries are recorded only when `max_episodes` is set — the report is
-    /// drained once at route end, so an unbounded (`max_episodes: None`)
-    /// session would otherwise accumulate one entry per episode for its whole
-    /// lifetime with no reader.
     pub(super) fn complete_episodes(
         &self,
         state: &mut RouteState,
@@ -196,7 +169,6 @@ where
                 .as_ref()
                 .map(|record| record.record_id.clone())
                 .unwrap_or_default();
-            // Proto env_index is uint32; events are i32/i64.
             let env_index = i32::try_from(completed.env_index).unwrap_or(i32::MAX);
             let seed = state.seed_for_episode(&completed.episode_id);
             let trial_index = state.trial_for_episode(&completed.episode_id);
@@ -247,30 +219,12 @@ where
         events
     }
 
-    /// `episode_completed` is the last hook event under its episode id.
     pub(super) async fn fan_out_completions(&self, events: Vec<EpisodeCompletedEvent>) {
         for event in events {
             fan_out_event!(self, episode_completed, event);
         }
     }
 
-    /// Queue the ended episodes' model-side state for eviction. The id to
-    /// evict is resolved POSITIONALLY from the runtime's own slot by
-    /// `env_index` — the env's `completed_episodes[].episode_id` echo is never
-    /// trusted as the authority — so this must run while the slot still holds
-    /// the ended id. Under driver-owned resets that is the completion step.
-    /// Under NEXT_STEP the lockstep group predicts once more on the terminal
-    /// observation (the autoreset step's action, which the env discards for
-    /// that lane) and that predict has to land on the ended id — evicting first
-    /// would make the model re-seed the ended episode, and re-tagging it with
-    /// the new id would leak the old episode's last frame into the new one —
-    /// so the eviction waits for the roll at t+1, just before the slot moves
-    /// on. Either way the model sees its `on_episode_end` after the last
-    /// predict under that id and never a predict after it. Sent by
-    /// [`flush_evictions`](Self::flush_evictions) on the next loop turn — or,
-    /// while the group still has a predict in flight (a prefetch conditioned
-    /// on the ended id), held until that predict lands. Each id is ended on
-    /// the slot once, so the teardown sweep does not end it again.
     pub(super) fn queue_evictions(
         &mut self,
         gid: usize,
@@ -286,12 +240,6 @@ where
         }
     }
 
-    /// Best-effort GC (R2): a failure is logged and the route keeps moving — a
-    /// missed evict only leaks model memory, never corrupts state (ids never
-    /// repeat). Bounded by `deadline` and by the route's cancellation, so a
-    /// model that keeps its stream open but never answers cannot hold the
-    /// route (or its teardown) on an eviction; the abandoned ids are dropped,
-    /// not retried — the model ends whatever it still holds at release.
     pub(super) async fn flush_evictions(
         &mut self,
         state: &mut RouteState,
@@ -311,11 +259,6 @@ where
                 None => std::future::pending().await,
             }
         };
-        // The eviction's wall time is a telemetry row of its own: an
-        // answered RPC (ok or failed) records `rpc.total` under
-        // `model.reset_adapter` next to `model.predict`, so a model that
-        // serializes its evictions behind its forwards shows up in the
-        // windows instead of only in the inter-episode gap.
         let started = Instant::now();
         tokio::select! {
             biased;
@@ -343,23 +286,14 @@ where
     }
 }
 
-/// Mint one authoritative episode id. UUIDv7 is time-ordered (sortable by
-/// creation) and never repeats, so a missed ResetAdapter can only leak memory —
-/// never alias a fresh episode.
 fn mint_episode_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
-/// Mint `count` fresh episode ids (one per lane being started).
 pub(super) fn mint_episode_ids(count: usize) -> Vec<String> {
     (0..count).map(|_| mint_episode_id()).collect()
 }
 
-/// Current per-lane ids with the NEXT_STEP autoreset rolls substituted in:
-/// lanes not rolling keep their current id, a rolling lane takes a freshly
-/// minted one. `ids` is aligned to `lanes` (the group's own lanes, in order),
-/// while `pending_roll` holds route-global `env_index`es, so a roll is placed
-/// at the lane's POSITION in the group.
 pub(super) fn episode_ids_with_roll(
     mut ids: Vec<String>,
     lanes: &[u32],
@@ -391,8 +325,6 @@ mod tests {
 
     #[test]
     fn success_skips_keys_whose_kind_carries_no_outcome() {
-        // A string (even "False"), a null, or a list never decides; the next
-        // key in priority order does.
         let skipped = info(&[
             ("is_success", Some(Kind::Text("False".into()))),
             ("success", None),

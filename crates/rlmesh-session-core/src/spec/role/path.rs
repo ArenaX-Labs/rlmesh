@@ -1,16 +1,11 @@
 //! Structured paths into a (possibly nested) observation or payload tree.
 //!
-//! Replaces the old dotted-string observation keys and the reserved `"."` root
-//! sentinel. A path is an ordered list of [`PathSeg`] steps; an **empty** path
-//! is the root (a single-leaf space, or a bare payload). A `Key` segment is a
-//! `Dict` descent and an `Index` segment is a `Tuple` descent, so the two are
-//! never ambiguous — a literal Dict key that contains a dot is just one `Key`
-//! segment, and a Tuple element is addressable by position.
+//! A path is an ordered list of [`PathSeg`] steps; an empty path is the root. A `Key` segment is a
+//! `Dict` descent and an `Index` segment a `Tuple` descent, so a literal key containing a dot is
+//! one segment.
 //!
-//! The same type serves two roles, distinguished only by the field name that
-//! holds it: a *source* (env side — where a feature is read from the raw
-//! observation) and a *placement* (model side — where a produced tensor lands
-//! in the payload). They are never mixed within one value.
+//! The same type is a source (env side: where a feature is read from) and a placement (model
+//! side: where a produced tensor lands).
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -55,8 +50,7 @@ impl NodePath {
         NodePath(segments)
     }
 
-    /// The first segment, if any — the top-level observation entry a source
-    /// lives under (replaces the old `top_level_key`).
+    /// The first segment, if any: the top-level observation entry a source lives under.
     pub fn first(&self) -> Option<&PathSeg> {
         self.0.first()
     }
@@ -67,9 +61,6 @@ impl NodePath {
     }
 }
 
-/// Renders as a readable dotted/bracketed path for error messages and for the
-/// canonical string keys frame-stacking uses (`robot.eef_pos`, `sensors[0]`,
-/// `<root>` for the empty path).
 impl fmt::Display for NodePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.0.is_empty() {
@@ -108,7 +99,6 @@ mod tests {
         let tuple = root.push_key("sensors").push_index(0);
         assert_eq!(tuple.to_string(), "sensors[0]");
 
-        // A literal dot in a key is one segment, never split.
         let dotted = root.push_key("weird.key");
         assert_eq!(dotted.0.len(), 1);
     }

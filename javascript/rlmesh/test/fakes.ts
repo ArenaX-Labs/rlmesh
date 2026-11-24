@@ -1,4 +1,3 @@
-// Fake class Workers for unit tests: a scripted stand-in for src/worker.ts on the other side of postMessage.
 import type { Platform } from '../src/session.js';
 import type { WorkerLike } from '../src/supervisor.js';
 import type { ControlDecl, StreamDecl, TrafficClass } from '../src/types.js';
@@ -49,7 +48,6 @@ export const CONTROLS: ControlDecl[] = [
 
 export const STATE = { session: '0192f3a4-5b6c-7d8e-9f00-112233445566', revision: 3, epoch: 1, mode: 'active', mode_reason: 'first_lease', estop_latched: false };
 
-/** A control worker that answers like the real one: hello, declarations and a clock on init; grants every lease request. */
 export function controlScript(opts: { grant?: boolean } = {}) {
   let token = 100;
   return (w: FakeWorker, m: any) => {

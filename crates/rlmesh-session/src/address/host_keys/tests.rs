@@ -62,7 +62,6 @@ fn a_key_file_is_private_while_its_host_runs_and_gone_after() {
 fn a_key_file_its_host_outlived_is_passed_over() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("hosts");
-    // As a killed host leaves it: whole, private, and held by no one.
     crate::address::write_private(
         &dir.join("127.0.0.1-5587.key"),
         fresh_key().to_string().as_bytes(),
@@ -105,15 +104,9 @@ fn a_linked_or_lax_key_file_is_refused_not_read() {
     );
 }
 
-// The processes of `a_loopback_host_leaves_its_key_for_this_users_other_processes`.
-
-/// A host child: binds here, prints its port, hosts until its stdin closes.
 const HOST: &str = "RLMESH_TEST_KEYS_HOST";
-/// With [`HOST`]: host `insecure`.
 const INSECURE: &str = "RLMESH_TEST_KEYS_INSECURE";
-/// A join child: joins the loopback port here with no key.
 const JOIN: &str = "RLMESH_TEST_KEYS_JOIN";
-/// With [`JOIN`]: its timeout, in milliseconds.
 const JOIN_MS: &str = "RLMESH_TEST_KEYS_JOIN_MS";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -166,13 +159,10 @@ async fn join_child() {
             println!("JOINED");
             participant.close().await;
         }
-        // Never a key: these name the address and the file, not what it holds.
         Err(err) => println!("ERR={err} AFTER={ms}"),
     }
 }
 
-/// The test binary, as one of the children above, in the scratch
-/// directories.
 fn child(test: &str, scratch: &Scratch) -> Command {
     let mut command = Command::new(std::env::current_exe().expect("test binary"));
     command
@@ -213,7 +203,6 @@ impl Scratch {
     }
 }
 
-/// A host child, stopped (its stdin closed, then killed) when dropped.
 struct Host {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -240,12 +229,10 @@ impl Host {
                 break port.trim().parse().expect("a port");
             }
         };
-        // The rest of its output, drained so its writes never meet a closed pipe.
         std::thread::spawn(move || lines.for_each(drop));
         Self { child, stdin, port }
     }
 
-    /// Closes the host and waits for its process to end.
     fn close(mut self) {
         self.stdin.take();
         let status = self.child.wait().expect("wait");
@@ -262,8 +249,6 @@ impl Drop for Host {
     }
 }
 
-/// What a keyless join to `port` printed: `JOINED`, or the error and how
-/// long it took.
 fn join(scratch: &Scratch, port: u16, timeout_ms: u64) -> String {
     let output = child("join_child", scratch)
         .env(JOIN, port.to_string())
@@ -291,8 +276,6 @@ fn took_ms(outcome: &str) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// A keyless join by another process of this user: what the quickstart's
-/// `RemoteEnv("127.0.0.1:5587/cartpole")` beside its `EnvServer` does.
 #[test]
 fn a_loopback_host_leaves_its_key_for_this_users_other_processes() {
     let scratch = Scratch::new();
@@ -303,31 +286,25 @@ fn a_loopback_host_leaves_its_key_for_this_users_other_processes() {
     assert_eq!(mode(&second_file), 0o600);
     assert_eq!(mode(&scratch.runtime.join("hosts")), 0o700);
 
-    // Two hosts side by side, each joined by address alone.
     assert_eq!(join(&scratch, first.port, 10_000), "JOINED");
     assert_eq!(join(&scratch, second.port, 10_000), "JOINED");
 
-    // A key file others could read is refused, at once, and says why.
     std::fs::set_permissions(&second_file, std::fs::Permissions::from_mode(0o644)).unwrap();
     let lax = join(&scratch, second.port, 10_000);
     assert!(lax.contains("mode 644"), "{lax}");
     assert!(took_ms(&lax) < 2_000, "{lax}");
     std::fs::set_permissions(&second_file, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    // A host's close removes its key and no other.
     first.close();
     assert!(!first_file.exists());
     assert!(second_file.exists());
 
-    // A launched host's key is its launcher's: it leaves none.
     let (identity, _) = launch_identity().unwrap();
     let launched = Host::start(&scratch, "127.0.0.1:0", |command| {
         command.env(HOST_IDENTITY_VAR, identity.as_str());
     });
     assert!(!scratch.key_file(launched.port).exists());
 
-    // A stale file whose host is gone is passed over: the join reports the
-    // missing key, as with no file at all.
     let stale = scratch.key_file(launched.port);
     crate::address::write_private(&stale, fresh_key().to_string().as_bytes()).unwrap();
     let passed_over = join(&scratch, launched.port, 2_000);
@@ -336,8 +313,6 @@ fn a_loopback_host_leaves_its_key_for_this_users_other_processes() {
         "{passed_over}"
     );
 
-    // One whose writer still runs but names another host's key ends soon,
-    // saying the key on file is not this host's.
     std::fs::remove_file(&stale).unwrap();
     let held = KeyFile::write_in(
         &scratch.runtime.join("hosts"),
@@ -354,7 +329,6 @@ fn a_loopback_host_leaves_its_key_for_this_users_other_processes() {
     drop(held);
     launched.close();
 
-    // Nor does a host beyond loopback.
     let wide = Host::start(&scratch, "0.0.0.0:0", |command| {
         command.env(INSECURE, "1");
     });

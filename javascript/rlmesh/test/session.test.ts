@@ -30,7 +30,6 @@ test('connect: one Worker per class, module compiled once, declarations, partici
   assert.equal(s.mode, 'active');
   assert.equal(s.clock.offset_ms, 1.5);
   assert.equal(s.id, 'web-0000abcd');
-  // The data Workers got the host's snapshot bytes and this participant's clock.
   for (const cls of ['state', 'bulk'] as const) {
     assert.equal(f.latest(cls).ops('state').length, 1);
     assert.deepEqual(f.latest(cls).ops('clock').at(-1), { op: 'clock', participant: 'web-0000abcd', offset_ms: 1.5, error_ms: 0.2 });
@@ -68,7 +67,6 @@ test('subscribe: bounded queue with a dropped counter; samples are owned per sub
   assert.equal(x.seq, 5);
   assert.equal(y.seq, 0);
   assert.notEqual((await b.next()).value!.data, x.data);
-  // latest() copies into the caller's buffer.
   const into = new Float64Array(8);
   const l = s.latest('arm7/arm', into)!;
   assert.equal(l.seq, 7);
@@ -82,11 +80,11 @@ test('subscribe: bounded queue with a dropped counter; samples are owned per sub
 test('latest(): a shared-memory slot only for streams that fit it; larger ones are delivered whole', async (t) => {
   const { s, f } = await open({ canShareMemory: true });
   t.after(() => s.close());
-  s.latest('arm7/arm'); // 14 values: a slot, no per-sample messages
+  s.latest('arm7/arm');
   const arm = f.latest('state').ops('subscribe').at(-1);
   assert.equal(arm.deliver, false);
   assert.equal(typeof arm.sab_slot, 'number');
-  assert.equal(s.latest('arm7/skin'), null); // 32 values: no slot, every sample delivered
+  assert.equal(s.latest('arm7/skin'), null);
   const skin = f.latest('state').ops('subscribe').at(-1);
   assert.equal(skin.path, 'arm7/skin');
   assert.equal(skin.deliver, true);
@@ -121,11 +119,9 @@ test('peek(): a borrowed frame is not recycled while held, and is unusable after
   }
   bulk.emit(frame(3));
   assert.equal(bulk.ops('return').length, 2, 'frame 2 recycled at the end of the using block + supersede');
-  // Owned copy via latest(): no bitmap, independent bytes.
   const own = s.latest<Frame>('arm7/scene/cam')!;
   assert.equal(own.data[0], 3);
   assert.ok(!('bitmap' in own));
-  // The frame event's borrow is released after the listener.
   let seen: any;
   s.on('frame', (e) => (seen = e));
   bulk.emit(frame(4));
@@ -209,7 +205,6 @@ test('a lease lost on disconnect is reported revoked and never resumed', async (
   assert.equal(arm.active, false);
   assert.equal(await arm.send([0, 0, 0, 0, 0, 0, 0]), false, 'the old lease refuses locally');
   assert.deepEqual(disc, ['control']);
-  // Reconnect: a new participant; nothing is resumed and a new lease gets a new token.
   ctl.emit({ op: 'socket', state: 'open', reconnect: true });
   ctl.emit({ op: 'socket', state: 'attached', id: 'web-0000beef' });
   assert.equal(s.id, 'web-0000beef');

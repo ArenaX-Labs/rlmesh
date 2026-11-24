@@ -1,4 +1,3 @@
-// Shared by translation units built at different standards in one binary.
 #pragma once
 #include <rlmesh.hpp>
 

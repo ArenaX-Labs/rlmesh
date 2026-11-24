@@ -1,21 +1,5 @@
-/* FreeRTOS's tasks and event groups over POSIX threads, as zenoh-pico's ESP32
- * port (src/system/arduino/esp32/system.c) uses them, so that port runs on
- * Linux under the board's transport. What matters is kept:
- *
- * - A task is gone only when vTaskDelete deletes it (a task function that
- *   returns aborts), and each task not yet freed holds its stack.
- * - A task deleted while it still runs (on the other core, between telling
- *   its joiner it is done and suspending itself) is freed by that core's idle
- *   task, later. Under load the idle task may not run for a long time; here it
- *   never does, so such a task's stack stays held, and is counted.
- * - Setting an event group's bits from a task lets the waiter run at once,
- *   while the task goes on for a moment (as on the other core): the join's
- *   race with the task's suspension is taken every time.
- * - A task pinned to a core runs on that CPU of the machine (core 0 on CPU 0):
- *   every task the transport makes on one core. */
-
 #ifndef _GNU_SOURCE
-#define _GNU_SOURCE /* pthread_attr_setaffinity_np */
+#define _GNU_SOURCE
 #endif
 
 #include "esp32_port.h"
@@ -51,7 +35,6 @@ static atomic_uint freed;
 static atomic_uint awaiting_idle;
 static atomic_ulong stacks;
 static _Thread_local struct esp32_port_task* current;
-/* The thread that is no task of the port's (the test's main thread). */
 static struct esp32_port_task outside;
 
 static void pause_ms(unsigned ms) {
@@ -63,12 +46,10 @@ static void* run(void* arg) {
   struct esp32_port_task* t = (struct esp32_port_task*)arg;
   current = t;
   t->fn(t->arg);
-  /* FreeRTOS has no return from a task function. */
   fprintf(stderr, "esp32_port: a task function returned\n");
   abort();
 }
 
-/* Its stack and control block go back to the heap. */
 static void release(struct esp32_port_task* t) {
   atomic_fetch_add(&freed, 1);
   atomic_fetch_sub(&stacks, t->stack);
@@ -86,7 +67,6 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char* name, uint32_t
   t->stack = stack_depth;
   pthread_mutex_init(&t->lock, NULL);
   pthread_cond_init(&t->wake, NULL);
-  /* As FreeRTOS does, the handle is out before the task first runs. */
   if (out != NULL) *out = t;
   atomic_fetch_add(&created, 1);
   atomic_fetch_add(&stacks, stack_depth);
@@ -135,8 +115,6 @@ void vTaskSuspend(TaskHandle_t task) {
   pthread_cond_broadcast(&t->wake);
   while (!t->deleted) pthread_cond_wait(&t->wake, &t->lock);
   pthread_mutex_unlock(&t->lock);
-  /* Deleted: freed by its deleter, or left for the idle task (still counted
-   * as holding its stack). The thread ends either way. */
   free(t);
   pthread_exit(NULL);
 }
@@ -145,7 +123,6 @@ void vTaskDelete(TaskHandle_t task) {
   struct esp32_port_task* t = task != NULL ? task : current;
   if (t == NULL || t == &outside) return;
   if (t == current) {
-    /* A task deleting itself is freed by the idle task. */
     atomic_fetch_add(&awaiting_idle, 1);
     pthread_exit(NULL);
   }
@@ -177,14 +154,13 @@ EventBits_t xEventGroupSetBits(EventGroupHandle_t g, EventBits_t bits) {
   EventBits_t now = g->bits;
   pthread_cond_broadcast(&g->wake);
   pthread_mutex_unlock(&g->lock);
-  /* A waiter on the other core runs now; this task goes on a moment. */
   if (current != NULL) pause_ms(2);
   return now;
 }
 
 EventBits_t xEventGroupWaitBits(EventGroupHandle_t g, EventBits_t bits, BaseType_t clear,
                                 BaseType_t all, TickType_t ticks) {
-  (void)ticks; /* portMAX_DELAY only */
+  (void)ticks;
   pthread_mutex_lock(&g->lock);
   while (all ? (g->bits & bits) != bits : (g->bits & bits) == 0) {
     pthread_cond_wait(&g->wake, &g->lock);

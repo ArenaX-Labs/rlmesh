@@ -18,7 +18,6 @@ public sealed class CancellationTests
         public override StepResult Step(Value? action)
         {
             Entered.Set(); Release.Wait();
-            // These constructors must also work after the terminal gate closes.
             using var tensor = new Tensor(new byte[] { 1 }, new long[] { 1 }, DType.Uint8);
             return base.Step(action);
         }
@@ -140,7 +139,7 @@ public sealed class CancellationTests
             Assert.DoesNotContain("registration disposed", trace); Assert.DoesNotContain("token freed", trace);
             releaseCancel.Set(); await Task.WhenAll(run, cancel).WaitAsync(Deadline);
             Assert.Equal(new[] { "call returned", "cancel", "registration disposed", "token freed" }, trace.ToArray());
-            source.Cancel(); // No remaining registration can touch the freed reference.
+            source.Cancel();
         }
         finally { releaseCancel.Set(); complete.Set(); CancellationBridge.BeforeCancel = null; CancellationBridge.Trace = null; }
     }
@@ -160,7 +159,7 @@ public sealed class CancellationTests
                     var cancel = new Thread(source.Cancel); cancel.Start();
                     try { client.Run(source.Token); } catch (CancelledError) { }
                     cancel.Join();
-                    client.Run(); // The same library worker always completes a fresh operation.
+                    client.Run();
                 }
                 done.SetResult(true);
             }

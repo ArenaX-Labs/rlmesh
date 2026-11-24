@@ -1,6 +1,6 @@
-//! The session host in its own OS process (`rlmesh host`), with
-//! participants in this one, linked over TCP on localhost (one connection
-//! per traffic class, all to the host's one port).
+//! The session host in its own OS process (`rlmesh host`), with participants in
+//! this one, linked over TCP on localhost (one connection per traffic class,
+//! all to the host's one port).
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -30,7 +30,6 @@ use rlmesh_session::{
 
 const WAIT: Duration = Duration::from_secs(10);
 
-/// The host process; killed on drop whatever the test did.
 struct HostProcess {
     child: Child,
     session: SessionId,
@@ -46,13 +45,10 @@ struct HostProcess {
 }
 
 impl HostProcess {
-    /// Spawns the host on free local ports, again on others when one was
-    /// taken in between (the host then exits before printing its address).
     fn spawn() -> Self {
         Self::spawn_with(&[], false)
     }
 
-    /// Spawned with `args` too, keeping what it writes to stderr.
     fn spawn_logged(args: &[&str]) -> Self {
         Self::spawn_with(args, true)
     }
@@ -73,7 +69,6 @@ impl HostProcess {
         let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
             .args(["host", "--listen", &base.to_string(), "--record-dir"])
             .arg(recordings.path())
-            // Record whatever the runner's disk has free.
             .args(["--record-min-free", "1B"])
             .arg("--state-dir")
             .arg(state.path())
@@ -100,11 +95,7 @@ impl HostProcess {
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
         let mut line = String::new();
         stdout.read_line(&mut line).expect("address line");
-        // Read the rest as it comes: a closed pipe would fail the host's
-        // next line ("recording to ...") with EPIPE.
         std::thread::spawn(move || std::io::copy(&mut stdout, &mut std::io::sink()));
-        // This user's processes attach as `local`, with the key the host
-        // keeps in its state directory.
         let key = std::fs::read_to_string(state.path().join("local.key")).unwrap_or_default();
         if line.starts_with(&format!("rlmesh host on {base} "))
             && let Ok(address) = format!("{base}#{}", key.trim()).parse::<SessionAddress>()
@@ -152,11 +143,6 @@ impl Drop for HostProcess {
     }
 }
 
-/// Publishes on `publisher` until a late subscription to its stream is
-/// warmed with the newest sample by the host's history store, and gives that
-/// subscription and how many samples it took. A sensor stream drops rather
-/// than blocks, so on a loaded host a sample may never reach the other
-/// process: this waits on the store, rather than allow it a fixed time.
 async fn served_from_history(
     publisher: &SamplePublisher,
     participant: &Participant,
@@ -183,7 +169,6 @@ async fn served_from_history(
                 )
                 .await
                 .expect("subscribe");
-            // Warmed by the store, not handed the sample as it passed.
             if sub.stats().last_seq == seq && sub.stats().from_history == 1 {
                 return (sub, seq);
             }
@@ -202,8 +187,6 @@ async fn join(
     roles: Vec<Role>,
     priority: PriorityClass,
 ) -> Participant {
-    // A client of the host, as the SDK joins one: the host gates no link,
-    // and the handshake under `local`'s key admits it.
     let tuning = TransportTuning {
         client: true,
         ..TransportTuning::default()
@@ -259,8 +242,6 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
     )
     .await;
 
-    // Bindings, verbs, leases and preemption are decided in the other
-    // process.
     for (p, fp) in [(&policy, 1), (&operator, 2)] {
         p.wait_for("the robot's parts", WAIT, |s| s.part(cmd).is_some())
             .await
@@ -286,7 +267,6 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
         .expect("view");
     assert!(view.check_fence(cmd, model.token, view.epoch).is_err());
 
-    // Heartbeats cross the process boundary both ways: clock mappings.
     for p in [&robot, &policy, &operator] {
         let snapshot = p
             .wait_for("a clock mapping", WAIT, |s| s.clock(p.id()).is_some())
@@ -296,8 +276,6 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
         assert!(mapping.error_ns < 50_000_000, "{mapping:?}");
     }
 
-    // Samples flow peer to peer and the host's history store, in the other
-    // process, serves a late subscriber.
     let ft = robot.publisher("ft").await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 0..3_u8 {
@@ -307,8 +285,6 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
     let (sub, _) = served_from_history(&ft, &policy, &robot_id, "ft").await;
     assert_eq!(sub.stats().from_history, 1, "a window of one");
 
-    // A crashed host: participants see its liveliness go, and verbs fail
-    // instead of hanging.
     host.signal(9);
     let mut present = robot.host_present();
     tokio::time::timeout(WAIT, present.wait_for(|p| !*p))
@@ -326,8 +302,6 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
     assert!(!host.wait_exit().success());
 }
 
-/// The host's own warnings reach its stderr: a participant it dropped, with
-/// why, once however often it happens in a row.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_process_warns_once_of_a_participant_it_dropped() {
     let host = HostProcess::spawn_logged(&["--presence-grace", "300ms"]);
@@ -357,7 +331,6 @@ async fn a_host_process_warns_once_of_a_participant_it_dropped() {
             !s.roster.iter().any(|p| p.id.as_str() == id)
         })
     };
-    // A lockstep driver's ending: no lease bound it, so no warning.
     let driver = join(
         &host,
         "driver",
@@ -385,7 +358,6 @@ async fn a_host_process_warns_once_of_a_participant_it_dropped() {
             .expect("bind");
         policy.arm().await.expect("arm");
         policy.grant_lease(cmd, None).await.expect("lease");
-        // Gone without a word while it holds the robot: its heartbeats stop.
         policy.close().await;
         gone("policy").await.expect("dropped");
     }
@@ -422,7 +394,6 @@ async fn a_terminated_host_shuts_down_cleanly_with_its_session_recorded() {
             .expect("publish");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // The other process took the last sample in before it is told to stop.
     let robot_id = robot.id().clone();
     let (_, published) = served_from_history(&ft, &robot, &robot_id, "ft").await;
     host.signal(15);
@@ -434,7 +405,6 @@ async fn a_terminated_host_shuts_down_cleanly_with_its_session_recorded() {
         .expect("withdrawn presence seen in time")
         .expect("watch");
 
-    // The recorder finished its segment before the host stopped.
     let dir = host
         .recordings
         .path()
@@ -451,15 +421,12 @@ async fn a_terminated_host_shuts_down_cleanly_with_its_session_recorded() {
         .iter()
         .filter(|m| matches!(m.message, Recorded::Sample(_)))
         .count();
-    // A sensor stream may drop on a loaded host, never the sample the host
-    // was seen to hold.
     assert!(
         (1..=published).contains(&(samples as u64)),
         "{samples} of {published}"
     );
 }
 
-/// The conformance fixtures of `rlmesh_session::spec`.
 fn fixture(kind: &str, name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../rlmesh-session-core/tests/fixtures")
@@ -468,7 +435,6 @@ fn fixture(kind: &str, name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()))
 }
 
-/// A packed value of `len` bytes.
 fn value(len: usize, fill: u8) -> Bytes {
     Bytes::from(vec![fill; len])
 }
@@ -489,8 +455,6 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
         .await
         .expect("declare the robot map");
     let robot_id = robot.id().clone();
-    // The other process normalised the authored map with the kind table, and
-    // fingerprints the declaration as this one would.
     let normalised =
         rlmesh_session::spec::normalise(&robot_id, SPEC_VERSION, &map).expect("normalise");
     assert_eq!(
@@ -507,7 +471,6 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
         ["force", "torque"]
     );
 
-    // A policy binds against the host's parts and declares the binding.
     let policy = join(&host, "pi0", vec![Role::Controller], PriorityClass::Model).await;
     policy
         .wait_for("the robot's parts", WAIT, |s| {
@@ -515,8 +478,6 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
         })
         .await
         .expect("parts");
-    // Freshness is not under test here, and a loaded host takes longer to
-    // seal and carry a round of frames than the default bound lets one age.
     let authored = fixture("policies", "pi0_single");
     let (inputs, actions) = authored
         .split_once("\"actions\"")
@@ -554,7 +515,6 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
         .await
         .expect("view");
 
-    // Install before authority: the robot has no publishers yet.
     let channels = binding.channels();
     let err = policy
         .grant_leases(channels.clone(), Vec::new(), None)
@@ -581,12 +541,8 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
         .expect("ready: granted");
     assert!(leases.iter().all(|l| l.binding == binding.fingerprint));
 
-    // The controller's cache snapshots the published inputs.
     let inputs = Inputs::open(&policy, &binding).await.expect("inputs");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    // Publish like a live robot, until the controller observes: a single
-    // sample can age past its staleness bound on a loaded host before the
-    // cache snapshots it.
     let mut scene_frame = Vec::new();
     synthetic_frame(1280, 720, 0, &mut scene_frame);
     let mut wrist_frame = Vec::new();
@@ -626,8 +582,6 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
     };
     assert_eq!(observation.meta.based_on.len(), 5);
     assert!(observation.meta.inputs.iter().all(|i| !i.stale));
-    // What predict receives: decoded, padded and resized images, the
-    // joint positions alone, the text.
     let tensor = |entry: &str| match observation.value(entry) {
         Some(Value::Tensor(t)) => t.clone(),
         other => panic!("{entry}: {other:?}"),
@@ -644,8 +598,6 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
     );
 }
 
-/// rlmeshd in its own process, on every interface, its state in `state`;
-/// killed on drop.
 struct Daemon {
     child: Child,
     base: std::net::SocketAddr,
@@ -659,8 +611,6 @@ impl Drop for Daemon {
 }
 
 impl Daemon {
-    /// Spawns it on `base`'s port (`None`: free ones) and waits for its
-    /// first line.
     fn spawn(state: &std::path::Path, base: Option<std::net::SocketAddr>) -> Self {
         for _ in 0..16 {
             let base = base
@@ -687,8 +637,6 @@ impl Daemon {
         panic!("rlmeshd never found a free port");
     }
 
-    /// Attaches as `id` at `priority` with `credential`, linked as a LAN
-    /// client is: no password.
     async fn join(
         &self,
         id: &str,
@@ -718,13 +666,10 @@ impl Daemon {
     }
 }
 
-/// Runs `rlmesh host` with its state in `state` on `base` until its first
-/// line, then stops it: the line.
 fn host_first_line(state: &std::path::Path, base: std::net::SocketAddr) -> String {
     host_first_line_with(state, base, &[])
 }
 
-/// [`host_first_line`], with `args` too.
 fn host_first_line_with(
     state: &std::path::Path,
     base: std::net::SocketAddr,
@@ -754,7 +699,6 @@ fn host_first_line_with(
 fn the_host_offers_boards_udp_by_default_and_runs_on_tcp_when_the_port_is_taken() {
     let state = tempfile::tempdir().expect("tempdir");
     let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("port");
-    // UDP on the same number as the TCP listener.
     let udp = base;
     let offered = format!("boards' realtime parts over UDP port {}", udp.port());
 
@@ -766,8 +710,6 @@ fn the_host_offers_boards_udp_by_default_and_runs_on_tcp_when_the_port_is_taken(
     assert!(tcp.starts_with("rlmesh host on "), "{tcp}");
     assert!(!tcp.contains("UDP"), "{tcp}");
 
-    // Someone else holds the UDP port: the host still runs, on TCP alone,
-    // after one warning.
     let taken = std::net::UdpSocket::bind(udp).expect("hold the UDP port");
     let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
         .args(["host", "--no-record", "--state-dir"])
@@ -830,8 +772,6 @@ async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at
     let local_key = || std::fs::read_to_string(state.path().join("local.key")).expect("local.key");
     let first = local_key();
 
-    // A laptop the table admits at model, and a restart that keeps the
-    // host's keys and reads the table.
     let laptop = StaticKeypair::from_private(&mut [5; 32]);
     std::fs::write(
         state.path().join("devices.toml"),
@@ -876,7 +816,6 @@ async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at
         "{refused}"
     );
 
-    // Revoked on the robot: detached at once.
     let revoked = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
         .args(["devices", "revoke", "laptop"])
         .env("RLMESH_STATE_DIR", state.path())
@@ -896,7 +835,6 @@ async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap(
     let state = tempfile::tempdir().expect("tempdir");
     let daemon = Daemon::spawn(state.path(), None);
     let robot = std::net::SocketAddr::from(([127, 0, 0, 1], daemon.base.port()));
-    // The laptop: its own config directory, and no rlmeshd of its own.
     let laptop = tempfile::tempdir().expect("tempdir");
     let mut pair = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
         .args(["pair", &robot.to_string(), "--name", "laptop josh"])
@@ -923,7 +861,6 @@ async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap(
     let enrolled =
         || std::fs::read_to_string(state.path().join("devices.toml")).unwrap_or_default();
 
-    // A wrong code refuses and enrolls nothing.
     let wrong = format!(
         "{:06}",
         (code.parse::<u32>().expect("digits") + 1) % 1_000_000
@@ -932,7 +869,6 @@ async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap(
     assert!(!refused.status.success());
     assert!(!enrolled().contains("[devices."), "{}", enrolled());
 
-    // The shown code enrolls the machine at operator, and it hears so.
     let approved = approve(&code);
     assert!(
         approved.status.success(),
@@ -947,7 +883,6 @@ async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap(
     let rest: Vec<String> = lines.map(|l| l.expect("a line")).collect();
     assert!(pair.wait().expect("wait").success(), "{rest:?}");
 
-    // Its host file joins the robot over the LAN, at its cap.
     let hosts = laptop.path().join("rlmesh").join("hosts");
     let file = std::fs::read_dir(&hosts)
         .expect("hosts")
@@ -971,8 +906,6 @@ async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap(
         .await
         .expect("attached as laptop-josh");
 
-    // A browser token pairs the same way: enrolled as a browser at model,
-    // and the laptop keeps the token's hash, never the token.
     let mut pair = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
         .args(["pair", &robot.to_string(), "--browser", "--name", "web"])
         .env("XDG_CONFIG_HOME", laptop.path())

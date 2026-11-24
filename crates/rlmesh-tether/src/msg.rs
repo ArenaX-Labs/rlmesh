@@ -2,9 +2,6 @@
 //! shares, and, with the `board` feature (unreleased), typed views over a
 //! board link's payloads and their encoding. Lengths are exact; reserved
 //! bits must be zero.
-//!
-//! `STATE` and `COMMAND` carry a part's dense value, whose length only the
-//! receiver knows (from the map), so `decode` takes it as a lookup.
 
 #[cfg(feature = "board")]
 mod board;

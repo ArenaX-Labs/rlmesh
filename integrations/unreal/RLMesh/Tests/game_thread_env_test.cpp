@@ -1,6 +1,3 @@
-// Standalone test of RLMeshGameThreadEnv.h, the part of the Unreal plugin that
-// needs no Unreal headers. The main thread stands in for the game thread: it
-// pumps calls while a model drives the served env from another thread.
 #include <chrono>
 #include <cstdio>
 #include <future>
@@ -46,7 +43,6 @@ try
 	server.start();
 	const std::string address = server.address();
 
-	// A model on another thread; this thread pumps like a game tick until it ends.
 	auto run = std::async(std::launch::async,
 						  [&]
 						  {
@@ -64,7 +60,6 @@ try
 	EXPECT(result.total_steps() == 6);
 	EXPECT(every_call_on_game_thread);
 
-	// Close() fails a call that is waiting for a tick, and every later call.
 	auto blocked = std::async(std::launch::async,
 							  [&]
 							  {

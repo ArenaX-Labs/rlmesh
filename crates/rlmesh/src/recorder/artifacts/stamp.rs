@@ -6,9 +6,9 @@ use serde_json::Value;
 
 use super::schema::AttemptStamp;
 
-/// Shells out to nvidia-smi (amd-smi or rocm-smi when it shows no GPU):
-/// call from a blocking context. The image references and the managed ABI
-/// are left for the caller to fill in.
+/// The stamp of this machine. Shells out to nvidia-smi (amd-smi or rocm-smi when it shows no
+/// GPU), so call it from a blocking context. The image references and the managed ABI are
+/// left for the caller to fill in.
 pub fn collect() -> AttemptStamp {
     let query = run(
         "nvidia-smi",
@@ -36,8 +36,6 @@ pub fn collect() -> AttemptStamp {
                 })
                 .map(str::to_string)
         });
-    // The driver's CUDA version is only reported by the bare table; skip it
-    // entirely when the query already showed no usable nvidia-smi.
     let cuda = query.as_ref().and_then(|_| {
         let out = run("nvidia-smi", &[])?;
         let rest = out.split("CUDA Version:").nth(1)?;
@@ -55,12 +53,10 @@ pub fn collect() -> AttemptStamp {
         gpu_model,
         nvidia_driver,
         cuda,
-        // The release a ROCm install records; "6.3.3-74" reads "6.3.3".
         rocm: std::fs::read_to_string("/opt/rocm/.info/version")
             .ok()
             .and_then(|v| v.trim().split('-').next().map(str::to_string))
             .filter(|v| !v.is_empty()),
-        // /proc on Linux; uname on hosts without it (macOS).
         kernel: std::fs::read_to_string("/proc/sys/kernel/osrelease")
             .ok()
             .or_else(|| run("uname", &["-r"]))
@@ -69,9 +65,6 @@ pub fn collect() -> AttemptStamp {
     }
 }
 
-/// The AMD GPU a ROCm node shows: amd-smi's market name (its PCI device id
-/// when the name is unset), else rocm-smi's card series on releases that
-/// predate amd-smi.
 fn amd_gpu_model() -> Option<String> {
     run("amd-smi", &["static", "--asic", "--json"])
         .and_then(|out| amd_smi_model(&out))
@@ -88,7 +81,6 @@ fn known(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// amd-smi prints a list of GPUs, or `{"gpu_data": [...]}` from ROCm 6.4.
 fn amd_smi_model(out: &str) -> Option<String> {
     let value: Value = serde_json::from_str(out).ok()?;
     let gpus = value
@@ -98,8 +90,6 @@ fn amd_smi_model(out: &str) -> Option<String> {
     known(asic.get("market_name")).or_else(|| known(asic.get("device_id")))
 }
 
-/// rocm-smi prints `{"card0": {"Card Series": ..., "Card Model": "0x74a1"}}`;
-/// the key's case changed across releases.
 fn rocm_smi_model(out: &str) -> Option<String> {
     let value: Value = serde_json::from_str(out).ok()?;
     let mut cards: Vec<_> = value

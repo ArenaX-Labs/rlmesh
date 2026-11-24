@@ -1,5 +1,3 @@
-"""Native engine warnings retain their Python category and caller frame."""
-
 import inspect
 import warnings
 

@@ -48,7 +48,6 @@ mod tests {
 
     #[test]
     fn matches_the_catalogue_check_value() {
-        // The CRC catalogue's check: "123456789" → 0x29B1.
         assert_eq!(crc16(b"123456789"), 0x29B1);
         assert_eq!(crc16(b""), 0xFFFF);
     }

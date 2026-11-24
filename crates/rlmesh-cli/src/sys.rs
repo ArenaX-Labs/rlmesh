@@ -1,8 +1,6 @@
 //! The OS calls the CLI makes through libc (Unix): a board's serial port,
-//! configured for provisioning, and the machine's host
-//! name. Neither std nor the workspace's crates set termios or the modem
-//! lines.
-#![allow(unsafe_code)] // libc: termios, modem-line ioctls, poll, gethostname.
+//! configured for provisioning, and the machine's host name.
+#![allow(unsafe_code)]
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -13,8 +11,6 @@ use std::time::Duration;
 
 use crate::provision::Port;
 
-/// Espressif's USB vendor id: its native USB (USB-Serial-JTAG, 303a:1001,
-/// and TinyUSB CDC) keeps quiet until DTR is asserted and resets on RTS.
 const ESPRESSIF: &str = "303a";
 
 /// A serial port at 115200 baud, raw, held exclusively.
@@ -30,9 +26,6 @@ fn check(result: libc::c_int) -> io::Result<()> {
     }
 }
 
-/// A modem-line ioctl's result: a port with no modem lines (a pty, as
-/// socat gives a test board) refuses them with `ENOTTY` or `EINVAL`, and
-/// has nothing to set.
 fn modem_lines(result: libc::c_int) -> io::Result<()> {
     match check(result) {
         Err(err) if matches!(err.raw_os_error(), Some(libc::ENOTTY | libc::EINVAL)) => Ok(()),
@@ -40,7 +33,6 @@ fn modem_lines(result: libc::c_int) -> io::Result<()> {
     }
 }
 
-/// The USB vendor id behind `path` (`/dev/ttyUSB0`), from sysfs (Linux).
 fn usb_vendor(path: &Path) -> Option<String> {
     let name = std::fs::canonicalize(path).ok()?;
     let name = name.file_name()?.to_str()?;
@@ -55,15 +47,7 @@ fn usb_vendor(path: &Path) -> Option<String> {
 }
 
 impl Tty {
-    /// Opens `path` exclusively at 115200 baud, never 1200 (the bootloader
-    /// touch), with these modem lines: RTS low
-    /// always, DTR high only for Espressif's native USB. A USB-UART bridge
-    /// (CP210x, CH340, CH9102) or an unknown adapter gets both low, since
-    /// asserting either resets the board behind it. Stale input is
-    /// flushed.
     // TODO: the vendor id comes from Linux's sysfs only; on macOS every
-    // port is treated as a USB-UART bridge (DTR low), so a native-USB
-    // ESP32-S3 there needs IOKit's vendor id when one is provisioned on a Mac.
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -77,10 +61,8 @@ impl Tty {
             )
         })?;
         let fd = file.as_raw_fd();
-        // The lock keeps out other rlmesh processes; TIOCEXCL keeps out
-        // every other open of the tty (an IDE's serial monitor), until
-        // this one ends.
         // SAFETY: `fd` is open for the life of `file`.
+        // The lock excludes other rlmesh processes; TIOCEXCL excludes every other open of the tty.
         check(unsafe { libc::ioctl(fd, libc::TIOCEXCL as _) }).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::ResourceBusy,
@@ -89,7 +71,6 @@ impl Tty {
         })?;
         let native = usb_vendor(path).as_deref() == Some(ESPRESSIF);
         // SAFETY: `fd` is open for the life of `file`; every pointer is to
-        // a live local of the type the call takes.
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFL);
             check(flags)?;
@@ -119,7 +100,6 @@ impl Tty {
 
 impl Drop for Tty {
     fn drop(&mut self) {
-        // A pty keeps its flags past this close: open it to others again.
         // SAFETY: `file` is still open.
         unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCNXCL as _) };
     }
@@ -173,7 +153,6 @@ mod tests {
     #[test]
     fn a_port_held_by_provisioning_refuses_every_other_open_until_closed() {
         // SAFETY: the pty's master is opened, granted and unlocked, and
-        // its name copied before anything else runs on this thread.
         let (master, slave) = unsafe {
             let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
             assert!(master >= 0, "{}", io::Error::last_os_error());
@@ -187,7 +166,6 @@ mod tests {
         };
         let other = || OpenOptions::new().read(true).write(true).open(&slave);
         let tty = Tty::open(&slave).expect("opened");
-        // An open that takes no lock, as a serial monitor's.
         let refused = other().expect_err("held exclusively");
         assert_eq!(refused.raw_os_error(), Some(libc::EBUSY), "{refused}");
         drop(tty);

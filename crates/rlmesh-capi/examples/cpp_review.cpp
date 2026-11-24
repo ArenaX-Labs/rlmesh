@@ -1,4 +1,3 @@
-// Regression coverage for the independent C++17 wrapper reviews.
 #include <cassert>
 #include <rlmesh.hpp>
 #if __cplusplus >= 202002L
@@ -17,7 +16,6 @@ struct PointerConvertiblePolicy : ReviewPolicy {
 };
 struct DerivedModel : Model {
   using Model::Model;
-  // Even a policy-like derived handle must copy as a handle.
   Value predict(const Value& v) { return v; }
 };
 static_assert(!std::is_constructible_v<Model, int>);
@@ -131,7 +129,6 @@ static_assert(!std::is_constructible_v<ServedEnv, std::array<Env, 1>>);
 static_assert(!std::is_constructible_v<ServedEnv, Span<const Env>>);
 static_assert(std::is_constructible_v<ServedEnv, const std::array<Env, 1>&>);
 
-// Compile-only: zero must still select the raw-pointer overload.
 Model null_model_overload() { return Model(0); }
 
 #if __cplusplus >= 202002L
@@ -210,7 +207,7 @@ int main() {
   Value floating(1.0L);
   assert(floating.as_float() == 1.0);
 #if __cplusplus >= 202002L
-  Model batch(StdSpanPolicy{});  // Instantiate the dispatch, not only its detector.
+  Model batch(StdSpanPolicy{});
   std::span<const Env> named_span(array);
   ServedEnv span_borrow(named_span);
   assert(span_borrow.lanes()[0] == array[0].raw());

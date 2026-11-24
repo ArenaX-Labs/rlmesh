@@ -1,5 +1,3 @@
-"""Ctrl-C during `Model.run` raises `rlmesh.Interrupted` with what finished."""
-
 from __future__ import annotations
 
 import _thread
@@ -36,10 +34,10 @@ def test_ctrl_c_keeps_the_episodes_that_finished() -> None:
 
     def predict(obs: object) -> int:
         calls["n"] += 1
-        if calls["n"] == 7:  # the first step of the fourth episode
+        if calls["n"] == 7:
             _thread.interrupt_main()
         if calls["n"] >= 7:
-            time.sleep(0.01)  # the run's signal poll lands within a few steps
+            time.sleep(0.01)
         return 0
 
     with pytest.raises(rlmesh.Interrupted) as caught:
@@ -69,7 +67,6 @@ def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
         def step(self, action: object) -> tuple[int, float, bool, bool, dict]:
             self.calls += 1
             if self.calls == 20:
-                # The other route's episode ends first, however slow the host.
                 ended.wait(30)
                 _thread.interrupt_main()
             if self.calls >= 20:
@@ -129,7 +126,6 @@ def test_a_routes_own_ctrl_c_stops_its_siblings() -> None:
     class Endless(_TwoStepEnv):
         def step(self, action: object) -> tuple[int, float, bool, bool, dict]:
             time.sleep(0.001)
-            # Ends only past the test's bound, so a regression fails, not hangs.
             return 0, 1.0, time.monotonic() > deadline, False, {}
 
     deadline = time.monotonic() + 30

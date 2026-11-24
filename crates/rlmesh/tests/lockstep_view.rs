@@ -1,5 +1,3 @@
-//! The Gym view over a v2-native robot that serves lockstep.
-
 #![allow(clippy::unwrap_used)]
 
 use std::sync::{Arc, Mutex};
@@ -40,7 +38,6 @@ fn floats(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// A first-order arm: q moves halfway to the commanded target each step.
 struct Arm {
     parts: Vec<PartSpec>,
     state: Mutex<([f32; 6], u64, Vec<f32>)>,
@@ -162,7 +159,6 @@ async fn without_a_policy_the_view_is_keyed_by_path_and_steps_once_per_step() {
         assert_eq!(step.edge_modes, [("arm".to_string(), "driving")]);
         assert_eq!(step.info_json, "{\"t\":1}");
         assert_eq!(step.observation[2].1, Value::Text("reach".into()));
-        // The view holds the lease; dropping it lets the next view take it.
         drop(view);
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
@@ -221,7 +217,6 @@ async fn through_a_policy_one_view_step_plays_the_whole_chunk() {
         "{q:?}"
     );
     assert_eq!(step.observation[2].1, Value::Text("reach".into()));
-    // The episode truncates at t = 10: the third chunk stops after 2.
     view.step(&[("arm".into(), chunk.clone())]).await.unwrap();
     let last = view.step(&[("arm".into(), chunk)]).await.unwrap();
     assert_eq!(last.steps, 2);
@@ -231,8 +226,6 @@ async fn through_a_policy_one_view_step_plays_the_whole_chunk() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_robot_whose_startup_fails_leaves_its_name_free_to_rebind() {
-    // Another binding hosts the session, so the failed robot's host
-    // closing does not take its participant with it.
     let host = rlmesh::lockstep::bind(":0/host").await.unwrap();
     let address = format!("{}/ur10e", host.address().rsplit_once('/').unwrap().0);
     let binding = rlmesh::lockstep::bind(&address).await.unwrap();
@@ -255,7 +248,6 @@ const HEAD: &str = r#"{
     "temp": {"kind": "value", "hz": 50, "unit": "degC", "range": [-40, 125]}
 }"#;
 
-/// A pan/tilt head that records every command its step receives.
 struct Head {
     parts: Vec<PartSpec>,
     seen: Arc<Mutex<Vec<Vec<f32>>>>,
@@ -331,7 +323,6 @@ async fn a_lockstep_robot_holds_its_commands_to_its_parts_limits() {
         )
         .await
         .unwrap();
-        // The view's spaces carry the declared limits and range.
         let (observations, actions) = view.spaces();
         assert_eq!(
             box_bounds(&actions, "head"),
@@ -356,8 +347,6 @@ async fn a_lockstep_robot_holds_its_commands_to_its_parts_limits() {
             "a part with no range keeps the dtype's span"
         );
 
-        // An out-of-limit action reaches the robot clamped, and `info`
-        // counts it.
         view.reset(None, "").await.unwrap();
         seen.lock().unwrap().clear();
         let step = view
@@ -380,7 +369,6 @@ async fn a_lockstep_robot_holds_its_commands_to_its_parts_limits() {
         assert_eq!(seen.lock().unwrap()[1], [0.1, -0.2]);
         assert_eq!(within.clamped, [("head".to_string(), 0)]);
 
-        // An invalid action is refused before the robot's step sees it.
         let refused = view
             .step(&[("head".into(), head(&[f32::NAN, 0.0]))])
             .await
@@ -399,7 +387,6 @@ async fn a_lockstep_robot_holds_its_commands_to_its_parts_limits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lockstep_robot_declares_its_clock_when_it_attaches() {
     use rlmesh_session::wire::{ParticipantId, PriorityClass, RobotClock, Role};
-    // Attached, never served: no parts declared, nothing answers `l/sim`.
     let binding = rlmesh::lockstep::bind(":0/sim").await.unwrap();
     let session = rlmesh_session::address::Address::participant(&binding.address())
         .unwrap()

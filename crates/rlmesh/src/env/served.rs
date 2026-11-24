@@ -9,7 +9,6 @@ use crate::{Error, Result};
 
 /// An env already built from the described factory: an env, a vector env, or
 /// a list of lane envs, of which only lane 0 is read. Describe reads its
-/// spaces and never closes it.
 #[non_exhaustive]
 pub enum ServedEnv<'a> {
     /// One env.
@@ -36,8 +35,6 @@ impl<'a> ServedEnv<'a> {
         ServedEnv::Lanes(lanes.iter().map(|lane| lane as &dyn Env).collect())
     }
 
-    /// The env whose spaces describe reads, or the ValueError class for an
-    /// empty lane list.
     pub(crate) fn read(&self) -> Result<ServedRead<'a>> {
         match self {
             ServedEnv::Env(env) => Ok(ServedRead::Env(*env)),
@@ -75,7 +72,6 @@ impl fmt::Debug for ServedEnv<'_> {
     }
 }
 
-/// The one env a served-env describe reads.
 pub(crate) enum ServedRead<'a> {
     Env(&'a dyn Env),
     Vector(&'a dyn VectorEnv),

@@ -1,6 +1,3 @@
-//! Serving the Gymnasium shape end to end: single, lane and vector envs,
-//! authored failures, and the server's construction checks.
-
 use super::*;
 
 #[test]
@@ -37,7 +34,6 @@ fn a_started_server_serves_the_gymnasium_shape_and_closes_the_env() {
     assert_eq!(reward, 1.0);
     assert_eq!(info.get("completed_episodes"), Some(&Value::Int(0)));
     remote.close().unwrap();
-    // close is idempotent; other I/O on a closed client is misuse (RMT-13).
     remote.close().unwrap();
     let err = remote.reset(None, None).unwrap_err();
     assert_eq!(err.class(), ErrorClass::RuntimeError);
@@ -49,7 +45,6 @@ fn a_started_server_serves_the_gymnasium_shape_and_closes_the_env() {
     server.shutdown().unwrap();
     assert!(server.wait(None).unwrap());
     assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
-    // Every callback, close included, ran on the lane's one thread.
     let threads = counters.threads.lock().unwrap();
     assert!(
         threads.windows(2).all(|pair| pair[0] == pair[1]),
@@ -78,7 +73,6 @@ fn close_env_on_shutdown_false_leaves_the_env_open() {
     server.shutdown().unwrap();
     assert_eq!(counters.closes.load(Ordering::SeqCst), 0);
 
-    // A never-started server closes its env on shutdown, and drop does too.
     let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
     drop(server);
     assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
@@ -245,7 +239,6 @@ fn serve_async_drops_stop_the_server() {
     client(async {
         let serving = server.serve_async();
         futures::pin_mut!(serving);
-        // Poll once so the server starts, then drop the future.
         assert!(futures::poll!(serving.as_mut()).is_pending());
     });
     assert!(server.wait(Some(Duration::from_secs(5))).unwrap());
@@ -286,7 +279,6 @@ fn a_vector_env_sees_the_batched_layout() {
         crate::ext::reset_lanes(&mut remote, &[u64::from(u32::MAX) + 1], None, None).unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
     drop(remote);
-    // A vector endpoint refuses the single-env client.
     let err = dial(server.address()).unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
     assert!(
@@ -319,14 +311,12 @@ fn a_one_lane_vector_env_serves_as_a_scalar_lane() {
     let (_, reward, _, _, _) = step(&mut remote, 2).unwrap();
     assert_eq!(reward, 0.5);
     drop(remote);
-    // A one-lane endpoint refuses the vector client.
     let err =
         RemoteVectorEnv::new(RemoteEnvOptions::default().address(server.address())).unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
     server.shutdown().unwrap();
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0], Value::Text("Some(One(3))".into()));
-    // Python's `_batch1`: a Discrete action is a one-item list.
     assert_eq!(seen[1], Value::List(vec![Value::Int(2)]));
 
     let err = EnvServer::vector(

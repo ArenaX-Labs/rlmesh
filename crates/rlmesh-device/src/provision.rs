@@ -1,9 +1,3 @@
-//! The board's half of USB provisioning, sans-IO: bytes
-//! from the serial port go in, and out come replies to write back, or a
-//! record for the platform to store before the board confirms it. The
-//! messages are `rlmesh-tether`'s, so the board and the daemon share one
-//! codec and its vectors.
-
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -14,8 +8,7 @@ use rlmesh_tether::msg::Receiver;
 use rlmesh_tether::provision::{self, DeviceInfo, Prov, device_flags, status, ty};
 use zeroize::Zeroizing;
 
-/// A stored provisioning record: the `PROVISION` payload as received, and
-/// what it says.
+/// A stored provisioning record: the `PROVISION` payload as received, and what it says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     /// The payload, as the board stores it (one NVS blob).
@@ -59,10 +52,7 @@ impl Record {
 /// What a byte from the serial port asks of the platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
-    /// Write these bytes to the serial port.
     Reply(Vec<u8>),
-    /// Store this record (one atomic write), then call
-    /// [`Responder::stored`] with the outcome.
     Store(Record),
 }
 
@@ -75,7 +65,6 @@ pub struct Responder {
     arch: u8,
     public: [u8; 32],
     host_id: Option<String>,
-    /// The CRC of the record being stored.
     storing: Option<u32>,
 }
 
@@ -94,15 +83,13 @@ pub fn public_key(private: &[u8; 32]) -> [u8; 32] {
 }
 
 impl Responder {
-    /// A responder with device key `private`, holding
-    /// `record` if provisioned. `arch` as in `HELLO`.
+    /// A responder with device key `private`, holding `record` if provisioned.
     pub fn new(private: &[u8; 32], arch: u8, record: Option<&Record>) -> Self {
         let v = |s: &str| s.parse::<u16>().unwrap_or(0);
         Self {
             decoder: Decoder::new(),
             seq: 0,
             name: record.map(|r| r.name.clone()).unwrap_or_default(),
-            // Major and minor, a byte each.
             lib_version: (v(env!("CARGO_PKG_VERSION_MAJOR")) << 8)
                 | v(env!("CARGO_PKG_VERSION_MINOR")),
             arch,
@@ -113,8 +100,6 @@ impl Responder {
     }
 
     /// One byte from the serial port: what to do about it, if anything.
-    /// Everything that isn't a valid `GET_DEVICE` or `PROVISION` is
-    /// ignored, the sketch's own text included.
     pub fn push(&mut self, byte: u8) -> Option<Step> {
         let decoded = match self.decoder.push(byte) {
             Some(Ok(decoded)) => decoded.to_vec(),
@@ -146,7 +131,6 @@ impl Responder {
                 self.storing = Some(provision::record_crc(payload));
                 Some(Step::Store(record))
             }
-            // A PROVISION out of range: refused, nothing written.
             Err(_) if frame.ty == ty::PROVISION => {
                 Some(Step::Reply(self.reply(status::INVALID, 0)))
             }
@@ -154,8 +138,8 @@ impl Responder {
         }
     }
 
-    /// The platform stored the record from [`Step::Store`] (`ok`), or
-    /// couldn't: the `PROVISIONED` to write.
+    /// The platform stored the record from [`Step::Store`] (`ok`), or couldn't: the
+    /// `PROVISIONED` to write.
     pub fn stored(&mut self, record: &Record, ok: bool) -> Vec<u8> {
         let crc = self.storing.take().unwrap_or(0);
         if ok {
@@ -172,10 +156,8 @@ impl Responder {
     }
 }
 
-/// `msg` as one frame with the next `seq`.
 fn write(seq: &mut u8, msg: &Prov<'_>) -> Vec<u8> {
     let mut out = Vec::new();
-    // Every field was checked by decoding or is this board's own.
     let _ = provision::write(msg, *seq, |b| out.push(b));
     *seq = seq.wrapping_add(1);
     out
@@ -211,7 +193,6 @@ mod tests {
     fn a_board_identifies_then_stores_and_confirms_its_record() {
         let private = [7; 32];
         let mut board = Responder::new(&private, 4, None);
-        // The sketch's text before the frame changes nothing.
         let mut wire = b"booted\r\n".to_vec();
         wire.extend(send(&Prov::GetDevice));
         let steps = feed(&mut board, &wire);
@@ -254,7 +235,6 @@ mod tests {
         let n = provision::payload(&p, &mut buf).unwrap();
         assert_eq!(payload[1..], provision::record_crc(&buf[..n]).to_le_bytes());
 
-        // Provisioned now: DEVICE_INFO says for whom.
         let steps = feed(&mut board, &send(&Prov::GetDevice));
         let [Step::Reply(reply)] = &steps[..] else {
             panic!("{steps:?}");
@@ -293,7 +273,6 @@ mod tests {
         .unwrap();
         let (_, payload) = decode(&board.stored(&record, false));
         assert_eq!(payload[0], status::STORAGE_FAILED);
-        // A PROVISION with port 0, framed by hand: refused, nothing stored.
         let mut p = alloc::vec![provision::VERSION, 0];
         p.extend([9; 32]);
         p.extend([1, b'h', 1, b'e', 1, 3, b'h', b':', b'0']);
@@ -311,7 +290,6 @@ mod tests {
     fn tether_frames_and_noise_are_ignored() {
         let mut board = Responder::new(&[7; 32], 4, None);
         let mut ping = alloc::vec![0];
-        // A tether `PING` (type 0x85): not a provisioning frame.
         rlmesh_tether::frame::write(0x85, 0, &[&[1]], |b| ping.push(b));
         assert!(feed(&mut board, &ping).is_empty());
         assert!(feed(&mut board, b"\x00garbage\x00\x01\x00").is_empty());

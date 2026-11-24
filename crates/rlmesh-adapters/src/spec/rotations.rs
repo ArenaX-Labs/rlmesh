@@ -1,20 +1,10 @@
-//! Rotation encoding vocabulary and per-encoding dimensions.
-
 use serde::{Deserialize, Serialize};
 
 /// Rotation representation of a state feature or action component.
 ///
-/// **Adding a value.** The vocabulary is closed on both sides, but the two
-/// sides tolerate a new value differently, and that decides what a new value
-/// costs. On the observation side the field is an `AcceptSet`:
-/// an old core parses a value it does not know as an unknown entry, round-trips
-/// it, and fails at *resolve* naming it, so an observation-side value (such as
-/// [`GravityXyz`](Self::GravityXyz)) mints no edition and no key bump. On the
-/// action side [`ActionEncoding`](super::ActionEncoding) is rigid (a single
-/// value, rejected at parse when unknown), so a value a controller can take
-/// would need an edition before an old core could read a spec that names it.
-/// The TS/FE binding models this field as an open `string`, so it degrades
-/// gracefully regardless of the Rust representation.
+/// The vocabulary is closed on both sides. On the observation side an unknown value parses,
+/// round-trips and fails at resolve naming it; on the action side
+/// [`ActionEncoding`](super::ActionEncoding) rejects an unknown value at parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RotationEncoding {
@@ -24,29 +14,19 @@ pub enum RotationEncoding {
     /// The standard 6D rotation (Zhou et al. 2019): the rotation matrix's first
     /// two columns concatenated, `[m00, m10, m20, m01, m11, m21]`.
     Rot6d,
-    /// The same first-two-columns 6D rotation, but flattened row-major over the
-    /// `(3, 2)` column block: `[m00, m01, m10, m11, m20, m21]`. A non-standard
-    /// interleaving some checkpoints (e.g. X-VLA proprio) were trained on; kept
-    /// explicit so [`Rot6d`](Self::Rot6d) can stay the standard convention.
-    // serde's snake_case would yield `rot6d_row_major`; pin it to match
-    // `as_str` and the Python `RotationEncoding` literal.
     #[serde(rename = "rot6d_rowmajor")]
     Rot6dRowMajor,
     /// Roll-pitch-yaw `[roll, pitch, yaw]` (radians), extrinsic XYZ:
     /// `R = Rz(yaw) * Ry(pitch) * Rx(roll)` (the ROS / scipy lowercase
-    /// `'xyz'` convention; pitch is recovered in `[-pi/2, pi/2]`). Other
-    /// Euler conventions are not built in -- use a custom input for them.
+    /// `'xyz'` convention; pitch is recovered in `[-pi/2, pi/2]`).
     EulerXyz,
     /// Projected gravity: the gravity direction expressed in the body frame,
     /// `R_world_from_base^T · (0, 0, -1)`, the 3-vector every locomotion
-    /// checkpoint reads instead of an orientation. An identity orientation
-    /// yields `(0, 0, -1)`; a robot on its back yields `(0, 0, 1)`.
+    /// checkpoint reads instead of an orientation. An identity orientation yields `(0, 0, -1)`.
     ///
-    /// **A sink, not a rotation.** Any rotation encoding converts *into* it,
-    /// but it carries only a direction (the yaw is gone), so nothing converts
-    /// *out of* it: a source declared `gravity_xyz` binds only a reader that
-    /// wants `gravity_xyz`, a `post_rotate` cannot decode it, and an action
-    /// component cannot be expressed in it.
+    /// A sink, not a rotation: any encoding converts into it, but it carries only a direction,
+    /// so nothing converts out of it. A `gravity_xyz` source binds only a reader that wants
+    /// `gravity_xyz`, a `post_rotate` cannot decode it, and no action component can use it.
     GravityXyz,
 }
 
@@ -111,9 +91,6 @@ mod tests {
     fn known_vocab_roundtrips_and_serde_matches_as_str() {
         for encoding in RotationEncoding::ALL {
             let json = serde_json::to_string(&encoding).expect("serialize");
-            // The serde wire string must equal as_str() for every variant: this
-            // pins the frozen vocabulary and catches a rename that drifts the
-            // serde form away from as_str() (and the Python literal).
             assert_eq!(json.trim_matches('"'), encoding.as_str());
             let back: RotationEncoding = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(back, encoding);
@@ -122,8 +99,6 @@ mod tests {
 
     #[test]
     fn unknown_encoding_is_rejected() {
-        // The bare enum rejects an unrecognized value at parse; the
-        // observation-side `AcceptSet` is what tolerates one until resolve.
         assert!(serde_json::from_str::<RotationEncoding>("\"rot10d\"").is_err());
     }
 

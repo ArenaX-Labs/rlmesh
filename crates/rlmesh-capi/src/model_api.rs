@@ -1,7 +1,4 @@
-//! A C policy vtable over the facade Model and its episode store.
-//! `rlmesh_model_serve` joins the session of a participant address as the
-//! model, as Python's `Model.serve` does.
-#![allow(unsafe_code)] // FFI callbacks, borrowed contexts and ownership transfer.
+#![allow(unsafe_code)]
 use crate::abi::{
     sizing,
     status::{CapiError, RLMeshStatus, guard, guard_value},
@@ -513,7 +510,6 @@ enum Held {
     Served(rlmesh::RemoteModel),
 }
 impl RLMeshModel {
-    /// The local model; a served one is the TypeError class for `what`.
     pub(crate) fn local(&self, what: &str) -> Result<&Model, CapiError> {
         match &self.held {
             Held::Local { model, .. } => Ok(model),
@@ -530,8 +526,6 @@ impl RLMeshModel {
         }
     }
 }
-/// # Safety
-/// A non-NULL handle stays live for the returned reference's lifetime.
 pub(crate) unsafe fn require<'a>(ptr: *const RLMeshModel) -> Result<&'a RLMeshModel, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null model"))
 }
@@ -632,7 +626,6 @@ unsafe fn construct(
     if let Some(h) = &hook_owner {
         h.owned.store(true, Ordering::Release);
     }
-    // Keep hook ownership even if neither hook slot was provided.
     let info = Arc::new(Info {
         _policy_owner: owner,
         spec,
@@ -742,11 +735,9 @@ pub unsafe extern "C" fn rlmesh_model_free(model: *mut RLMeshModel) {
             if let Held::Local { model, info } = &model.held
                 && Arc::strong_count(info) == 1
             {
-                // The worker can retain an inert policy briefly after close's
-                // reply. Release C state synchronously once the callback queue
-                // drained; its later Arc drop is then a no-op. In an async or
-                // reentrant context leave ownership to the facade's teardown.
                 let closed = model.close().is_ok() || model.close().is_ok();
+                // The worker can retain an inert policy briefly after close's reply: release C state
+                // synchronously here so its later Arc drop is a no-op.
                 if closed {
                     info._policy_owner.release();
                     if let Some(owner) = &info._hook_owner {

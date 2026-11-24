@@ -57,15 +57,14 @@ struct RemoteModelInner {
 
 /// A served model (policy) to bind envs to.
 ///
-/// Construction does no I/O: it checks the address and timeouts, and a run
-/// or a binding dials. Clones share the handle; it is `Send + Sync`.
+/// Construction does no I/O: it checks the address and timeouts, and a run or a binding dials.
+/// Clones share the handle; it is `Send + Sync`.
 #[derive(Clone)]
 pub struct RemoteModel(Arc<RemoteModelInner>);
 
 impl RemoteModel {
     /// Check the session participant address and local timeouts without I/O.
     pub fn new(options: RemoteModelOptions) -> Result<RemoteModel> {
-        // A model has no default name: its address names it.
         let address = options
             .address
             .ok_or_else(|| crate::Error::invalid_argument("address is required"))?;
@@ -89,8 +88,6 @@ impl RemoteModel {
         self.0.connect_timeout
     }
 
-    /// The model this handle dials, its requests bounded by
-    /// `request_timeout` when set.
     pub(crate) fn served(&self, connect_timeout: Duration) -> crate::lockstep::ServedModel {
         let served = crate::lockstep::ServedModel::new(self.address(), connect_timeout);
         match self.0.request_timeout {

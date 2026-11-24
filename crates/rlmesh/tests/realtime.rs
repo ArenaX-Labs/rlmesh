@@ -1,6 +1,3 @@
-//! One policy, one `predict`, on either clock: `rlmesh::realtime` follows
-//! the robot's declared clock.
-
 #![allow(clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,7 +26,6 @@ const ARM: &str = r#"{
             "command": "position", "safe": "stop", "max_action_age_ms": 1000}
 }"#;
 
-/// Reads the joints, commands a 4-action chunk at 100 Hz.
 const REACH: &str = r#"{
     "hz": 25,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
@@ -50,15 +46,12 @@ fn floats(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// What the lockstep robot saw.
 #[derive(Default)]
 struct Seen {
     seeds: Vec<Option<u64>>,
     rewards: Vec<f64>,
 }
 
-/// A first-order arm: q moves halfway to its target each step; the reward
-/// is minus the distance to 1, and an episode is cut at 10 steps.
 struct Sim {
     parts: Vec<PartSpec>,
     state: Mutex<([f32; 2], u64)>,
@@ -83,7 +76,6 @@ impl LockstepHandler for Sim {
             Request::Reset(reset) => {
                 let seed = reset.seeds.first().copied();
                 self.seen.lock().unwrap().seeds.push(seed);
-                // The seed sets where the arm starts.
                 let start = seed.map_or(0.0, |s| (s % 7) as f32 / 10.0);
                 *state = ([start; 2], 0);
                 Ok(self.frame(state.0, 0)?.reply(reset.epoch, 0))
@@ -104,7 +96,6 @@ impl LockstepHandler for Sim {
     }
 }
 
-/// Serves the lockstep robot `sim`; returns its session and what it saw.
 async fn serve_sim() -> (
     SessionAddress,
     Arc<Mutex<Seen>>,
@@ -133,7 +124,6 @@ async fn serve_sim() -> (
     (session, seen, cancel)
 }
 
-/// The one model: reach for 1 on both joints, whatever the clock.
 #[derive(Default)]
 struct Reach {
     predicts: u64,
@@ -183,7 +173,6 @@ async fn bind(session: &SessionAddress, robot: &str) -> BoundPolicy {
     .unwrap()
 }
 
-/// Runs `bound` on a plain thread, as a run must.
 fn run(
     bound: &BoundPolicy,
     predictor: &mut Reach,
@@ -200,7 +189,6 @@ async fn a_lockstep_robot_runs_episodes_of_whole_chunks_with_their_rewards_summe
     let BoundPolicy::Lockstep(policy) = &bound else {
         panic!("a lockstep robot");
     };
-    // One step is one action period of the policy (100 Hz).
     assert_eq!(policy.tick_ns(), 10_000_000);
     let settings = RunSettings {
         episodes: Some(2),
@@ -211,7 +199,6 @@ async fn a_lockstep_robot_runs_episodes_of_whole_chunks_with_their_rewards_summe
     let Ok(RunOutcome::Lockstep(first)) = run(&bound, &mut model, settings.clone()) else {
         panic!("a lockstep run");
     };
-    // 10 steps an episode: chunks of 4, 4 and 2, the last cut at the end.
     assert_eq!(first.episodes.len(), 2);
     assert_eq!(first.starts, 6);
     assert_eq!(model.played, [4, 4, 2, 4, 4, 2]);
@@ -225,17 +212,14 @@ async fn a_lockstep_robot_runs_episodes_of_whole_chunks_with_their_rewards_summe
         first.episodes.iter().map(|e| e.reward).collect::<Vec<_>>(),
         sums
     );
-    // Each episode is reset with the seed a model run derives.
     let seeds = seen.lock().unwrap().seeds.clone();
     let derived: Vec<Option<u64>> = (0..2)
         .map(|i| Some(policy.episode_seed(7, i) as u64))
         .collect();
     assert_eq!(seeds, derived);
     assert_ne!(seeds[0], seeds[1]);
-    // Ages are session time, and the arm publishes every step.
     assert!(model.ages_ns.iter().all(|age| *age == Some(0)));
 
-    // The same seed gives the same episodes.
     let Ok(RunOutcome::Lockstep(again)) = run(&bound, &mut Reach::default(), settings) else {
         panic!("a lockstep run");
     };
@@ -277,7 +261,6 @@ async fn a_lockstep_run_refuses_what_only_the_wall_clock_means() {
         };
         assert!(why.starts_with(says) && why.contains("lockstep"), "{why}");
     }
-    // A run straight on the lockstep policy checks them too.
     let BoundPolicy::Lockstep(policy) = &bound else {
         panic!("a lockstep robot");
     };
@@ -300,15 +283,11 @@ async fn a_lockstep_run_refuses_what_only_the_wall_clock_means() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_same_predictor_drives_a_wall_clock_robot() {
     let (session, _, cancel) = serve_sim().await;
-    // A wall-clock robot in the same session, publishing and playing what
-    // is due at 100 Hz.
     let robot = Arc::new(
         rlmesh_session::sdk::connect_robot(&session, "ur10e", ARM, WAIT)
             .await
             .unwrap(),
     );
-    // The lockstep robot armed the session: one declaring after is held
-    // until re-armed by name.
     let ur10e = rlmesh_session::wire::ParticipantId::new("ur10e").unwrap();
     robot.participant().rearm(&ur10e).await.unwrap();
     let stop = Arc::new(AtomicBool::new(false));
@@ -335,7 +314,6 @@ async fn the_same_predictor_drives_a_wall_clock_robot() {
     let bound = bind(&session, "ur10e").await;
     assert_eq!(bound.clock(), Clock::Wall);
     let mut model = Reach::default();
-    // Episodes and seeds are lockstep's.
     let refused = run(
         &bound,
         &mut model,
@@ -404,7 +382,6 @@ async fn a_policy_binding_a_lockstep_robot_among_others_is_refused() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_policy_bound_before_its_lockstep_robot_serves_runs_it_in_lockstep() {
-    // Attached and declared lockstep, not serving: nothing answers `l/sim`.
     let binding = rlmesh::lockstep::bind(":0/sim").await.unwrap();
     let session = rlmesh_session::address::Address::participant(&binding.address())
         .unwrap()
@@ -438,9 +415,6 @@ async fn a_policy_bound_before_its_lockstep_robot_serves_runs_it_in_lockstep() {
     cancel.cancel();
 }
 
-/// A Gym env of two steps an episode that records the `trial_index` each
-/// reset carried; it names the option among its reset options when
-/// `declares`.
 struct Trials {
     declares: bool,
     t: AtomicU64,
@@ -524,7 +498,6 @@ impl rlmesh::lockstep::Served for Trials {
     }
 }
 
-/// Acts zeros on a Gym env's box.
 struct Still;
 
 impl Predictor for Still {
@@ -540,8 +513,6 @@ impl Predictor for Still {
     }
 }
 
-/// The `trial_index` each of three episodes' resets carried, on a Gym env
-/// that declares the option or not.
 async fn trials_seen(declares: bool) -> Vec<Option<rlmesh_spaces::MetaValue>> {
     let binding = rlmesh::lockstep::bind(":0/trials").await.unwrap();
     let session = rlmesh_session::address::Address::participant(&binding.address())
@@ -591,11 +562,9 @@ async fn trials_seen(declares: bool) -> Vec<Option<rlmesh_spaces::MetaValue>> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gym_env_declaring_trial_index_gets_each_episode_s_ordinal_as_a_model_run_sends_it() {
     use rlmesh_spaces::MetaValue::Int;
-    // Numbered from 0, one a reset, as `Model::run` numbers them.
     assert_eq!(
         trials_seen(true).await,
         [Some(Int(0)), Some(Int(1)), Some(Int(2))]
     );
-    // An env that did not declare it is never handed the key.
     assert_eq!(trials_seen(false).await, [None, None, None]);
 }

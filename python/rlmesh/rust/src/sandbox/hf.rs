@@ -16,18 +16,14 @@ pub(crate) fn resolve_revision(source: &HfSourceRef) -> Result<String> {
 
     let url = hf_git_url(&source.repo);
 
-    // Resolve the unpinned HEAD when no revision is requested.
     let Some(revision) = source.revision.as_deref() else {
         return resolve_head(&url);
     };
 
     validate_revision(revision)?;
 
-    // Query the exact refs we accept, in git's checkout precedence order
-    // (annotated/lightweight tag before branch), passing fully-qualified ref
-    // patterns so a single user revision cannot expand to multiple refs and
-    // cannot be reinterpreted as a branch when a same-named tag exists. The
-    // patterns are anchored exact refs, not globs.
+    // Fully-qualified ref patterns, tag before branch: a revision must not expand to several refs
+    // or be read as a branch when a same-named tag exists.
     for ref_pattern in [
         format!("refs/tags/{revision}"),
         format!("refs/heads/{revision}"),
@@ -40,10 +36,8 @@ pub(crate) fn resolve_revision(source: &HfSourceRef) -> Result<String> {
     bail!("unable to resolve revision '{revision}' to a tag or branch for {url}");
 }
 
-/// Reject revisions that git could misinterpret. The exact-ref query already
-/// prevents glob expansion, but we also reject option-looking and
-/// glob-bearing revisions defensively so a hostile ref name can never be
-/// reparsed as a `git` flag (e.g. `--upload-pack=<cmd>`).
+// Reject option-looking and glob-bearing revisions so a hostile ref name can never be reparsed as a
+// `git` flag (e.g. `--upload-pack=<cmd>`).
 fn validate_revision(revision: &str) -> Result<()> {
     if revision.starts_with('-') {
         bail!("revision must not start with '-': '{revision}'");
@@ -56,9 +50,6 @@ fn validate_revision(revision: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run `git ls-remote --` for an exact ref pattern and return the matching SHA,
-/// rejecting ambiguous (multi-ref) results. The `--` terminates option parsing
-/// so neither the URL nor the pattern can be treated as a flag.
 fn ls_remote_exact(url: &str, ref_pattern: &str) -> Result<Option<String>> {
     let output = Command::new("git")
         .args(["ls-remote", "--", url, ref_pattern])
@@ -89,9 +80,6 @@ fn resolve_head(url: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("unable to resolve HEAD for {url}"))
 }
 
-/// Parse `git ls-remote` output, requiring at most one matching ref. Returns
-/// the SHA when exactly one ref matched, `None` when none matched, and errors
-/// when the pattern was ambiguous (more than one ref).
 fn parse_ls_remote_unique(stdout: &str, ref_pattern: &str) -> Result<Option<String>> {
     let mut shas = Vec::new();
     for line in stdout.lines() {
@@ -198,7 +186,6 @@ mod tests {
         assert!(validate_revision("v1.*").is_err());
         assert!(validate_revision("release/[0-9]").is_err());
         assert!(validate_revision("a^b").is_err());
-        // Ordinary tags/branches are accepted.
         assert!(validate_revision("v1.0").is_ok());
         assert!(validate_revision("main").is_ok());
         assert!(validate_revision("release/1.0").is_ok());
@@ -225,8 +212,6 @@ mod tests {
 
     #[test]
     fn parse_ls_remote_rejects_ambiguous_match() {
-        // Distinct SHAs under one (would-be-glob) pattern must be rejected,
-        // not silently resolved to the first line.
         let out = "1111111111111111111111111111111111111111\trefs/tags/v1.0\n\
                    2222222222222222222222222222222222222222\trefs/tags/v1.0-rc1\n";
         let err = parse_ls_remote_unique(out, "refs/tags/v1.*").unwrap_err();
@@ -235,8 +220,6 @@ mod tests {
 
     #[test]
     fn parse_ls_remote_dedupes_identical_shas() {
-        // A peeled annotated tag lists the same object twice (the `^{}` line);
-        // identical SHAs are not ambiguous.
         let sha = "0123456789abcdef0123456789abcdef01234567";
         let out = format!("{sha}\trefs/tags/v1.0\n{sha}\trefs/tags/v1.0^{{}}\n");
         assert_eq!(

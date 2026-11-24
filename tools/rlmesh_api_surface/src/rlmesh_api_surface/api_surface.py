@@ -301,7 +301,6 @@ def write_native_docs_api_surface(
     modules = _collect_native_modules(language, policy, repo_root, rustdoc_json_dir)
     package: dict[str, object] = {"name": policy["package_name"], "version": version}
     if "header" in policy:
-        # Both headers share the C ABI generation, which rlmesh.h defines.
         package["abiVersion"] = _abi_version(
             repo_root / Path(policy["header"]).parent / "rlmesh.h"
         )
@@ -349,7 +348,6 @@ def _collect_native_modules(
     rustdoc_json_dir: Path | None,
 ) -> list[ApiModule]:
     commit = _git_commit(repo_root)
-    # Imported here so the Python extractor never needs libclang or cargo.
     if language == "rust":
         from rlmesh_api_surface.rust_surface import (
             RustSurfaceConfig,
@@ -387,7 +385,6 @@ def _collect_native_modules(
                 source_commit=commit,
             ),
         )
-    # A module whose items all document elsewhere would render as an empty page.
     return [module for module in modules if module.exports]
 
 
@@ -469,9 +466,8 @@ class _Collector:
     ) -> ApiExport:
         exported_obj = module.members[export_name]
         obj = _resolved_object(exported_obj)
-        # Griffe can replace an explicitly imported function with the child
-        # module of the same name while resolving other aliases. Honor the
-        # source import binding rather than documenting the loader collision.
+        # Griffe can replace an explicitly imported function with the child module of the same name;
+        # honor the source import binding.
         if isinstance(obj, griffe.Module) and isinstance(module.filepath, Path):
             tree = ast.parse(module.filepath.read_text(encoding="utf-8"))
             for statement in tree.body:

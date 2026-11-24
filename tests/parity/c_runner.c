@@ -1,7 +1,4 @@
 #define _POSIX_C_SOURCE 200809L
-/* Shared E-3 script: native C authoring callbacks and facade calls only. */
-// Always evaluate checks and calls, including release consumers built with
-// NDEBUG.
 #define REQUIRE(...)                                                           \
   do {                                                                         \
     if (!(__VA_ARGS__))                                                        \
@@ -52,7 +49,6 @@ static void quoted(const char *text) {
     }
   putchar('"');
 }
-/* The last error's text with every `value` (a port, a size) masked. */
 static char *masked_message(const char *value, const char *mask) {
   const char *text = rlmesh_last_error_message();
   size_t len = strlen(text), vlen = value ? strlen(value) : 0;
@@ -135,7 +131,6 @@ static RLMeshStatus step(void *ud, const RLMeshValue *action, RLMeshValue **obs,
     s->held = true;
   }
   *reward = 1;
-  /* A cancelled episode never ends, so the run's cancel lands in it. */
   *terminated = s->steps >= 2 && !s->held;
   *truncated = false;
   return rlmesh_value_int(s->steps, obs);
@@ -280,15 +275,12 @@ static void *serve_model(void *arg) {
   (void)rlmesh_model_serve(serving->model, serving->address, &options);
   return NULL;
 }
-/* A run refuses an https:// env endpoint (v1) before any dial. */
 static void https_env(RLMeshModel *model) {
   RLMeshRunResult *result = NULL;
   REQUIRE(rlmesh_model_run(model, rlmesh_address_target("https://127.0.0.1:1"),
                            NULL, &result) != RLMESH_OK);
   error_fields_masked(":1", ":PORT");
 }
-/* An env served at a bare ":0" (short for ":0/env"), run at its bare
- * host:port#key. */
 static void bare_env(RLMeshEnv **env, RLMeshModel *model) {
   RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
   so.address = ":0";
@@ -325,8 +317,6 @@ static void bare_port_env(RLMeshModel *model) {
                            &result) != RLMESH_OK);
   error_fields();
 }
-/* A model served as the participant "policy" of a session this process
- * hosts, reached by its address and driving a local env. */
 static void served_model(RLMeshEnv *env, RLMeshModel *model,
                          const RLMeshEnvVtable *ev, Script *s,
                          const RLMeshEnvAttributes *attrs) {
@@ -563,8 +553,6 @@ int main(int argc, char **argv) {
       result = NULL;
       RLMeshValue *value = NULL;
       OK(rlmesh_value_int(0, &value));
-      /* A second run verifies both borrowed handles (unless close_env closed
-       * it). */
       if (!opts.close_env) {
         OK(rlmesh_model_run(model, rlmesh_env_target(env), NULL, &result));
         rlmesh_run_result_free(result);
@@ -766,12 +754,10 @@ int main(int argc, char **argv) {
       printf("\"episodes\":%llu",
              (unsigned long long)rlmesh_run_result_num_episodes(result));
     } else if (!strcmp(variant, "remote_undersized")) {
-      /* A partial session options allocation is refused before I/O. */
       RLMeshRemoteEnvOptions eo = RLMESH_REMOTE_ENV_OPTIONS_INIT;
       eo.struct_size = RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE - 1;
       RLMeshRemoteEnv *renv = NULL;
       REQUIRE(rlmesh_remote_env_new(&eo, &renv) != RLMESH_OK);
-      /* The size differs per target; the text masks it. */
       char sizes[160];
       snprintf(
           sizes, sizeof sizes,

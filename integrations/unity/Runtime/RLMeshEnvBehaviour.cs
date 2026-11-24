@@ -51,7 +51,7 @@ namespace RLMesh.Unity
             {
 #if ENABLE_IL2CPP && !UNITY_EDITOR
                 const bool il2cpp = true;
-                string backendVersion = Application.unityVersion; // IL2CPP ships with this Editor version.
+                string backendVersion = Application.unityVersion;
 #else
                 const bool il2cpp = false;
                 string backendVersion = System.Environment.Version.ToString();
@@ -71,7 +71,6 @@ namespace RLMesh.Unity
                 ownsBackground = true;
                 Application.runInBackground = true;
                 Debug.Log("RLMesh host runtime: " + hostRuntimeJson, this);
-                // The server's ToString leaves the address's key out; GetServedAddress has it.
                 Debug.Log("Serving " + EnvId + ": " + server, this);
             }
             catch { StopServing(); throw; }
@@ -103,7 +102,7 @@ namespace RLMesh.Unity
         {
             bool wasServing = ownsBackground;
             Task stop = UnityEnvHost.Stop(dispatcher, server);
-            if (server != null) stopping = stop; // Repeated Stop must retain an earlier drain.
+            if (server != null) stopping = stop;
             restartRequested = false;
             dispatcher = null; server = null; servedAddress = null;
             ownsBackground = false;

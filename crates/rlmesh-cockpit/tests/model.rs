@@ -1,6 +1,3 @@
-//! The cockpit's model on a sans-IO UR10e session: every panel's data,
-//! derived from what an observer receives, at injected times.
-
 mod common;
 
 use common::{MS, World, pid};
@@ -69,8 +66,6 @@ fn live_channels_show_the_path_tree_values_ages_and_losses() {
     };
     assert_eq!((thumb.width, thumb.height), (64, 48));
 
-    // Silence ages the value and goes stale past its bound; the joints'
-    // contract bound is derived.
     let quiet = w.now + 900 * MS;
     let view = w.model.view(quiet);
     let q = stream(&view, "ur10e/arm");
@@ -99,7 +94,7 @@ fn declared_and_measured_rates_stay_separate_and_name_their_clocks() {
         [("policy".to_string(), "latest@50".to_string())]
     );
     assert_eq!(arm.admitted_hz, Some(50.0));
-    assert_eq!(arm.plan, "latest@53"); // every 9th or 10th of 500
+    assert_eq!(arm.plan, "latest@53");
     let (who, rate) = &arm.heard[0];
     assert_eq!(who, "policy");
     assert!(
@@ -108,8 +103,6 @@ fn declared_and_measured_rates_stay_separate_and_name_their_clocks() {
     );
     assert!(arm.drift.is_none());
 
-    // The camera: declared 30, produced 30, published 20 (the publisher
-    // coalesced every third frame), received 20.
     let cam = stream(&view, "ur10e/wrist/cam");
     assert_eq!(cam.declared_hz, Some(30.0));
     assert!(close(cam.produced_hz, 30.0, 1.0), "{:?}", cam.produced_hz);
@@ -117,8 +110,6 @@ fn declared_and_measured_rates_stay_separate_and_name_their_clocks() {
     assert!(close(cam.received_hz, 20.0, 1.0), "{:?}", cam.received_hz);
     assert!(cam.drift.is_none(), "produced matches declared");
 
-    // The policy: 50 starts and completions per second, chunks at 50 Hz
-    // with a 2 ms age at receipt, and coverage left on its lease.
     let policy = view
         .controllers
         .iter()
@@ -134,7 +125,6 @@ fn declared_and_measured_rates_stay_separate_and_name_their_clocks() {
         (age - 2.0).abs() < 1e-6 && (max - 2.0).abs() < 1e-6,
         "{age} {max}"
     );
-    // 20 actions on the binding's 2 ms grid = 40 ms from the newest t0.
     let coverage = policy.coverage_ms.expect("coverage");
     assert!(coverage > 15.0 && coverage <= 40.0, "{coverage}");
     assert_eq!(policy.leases, ["ur10e/arm"]);
@@ -145,7 +135,6 @@ fn declared_and_measured_rates_stay_separate_and_name_their_clocks() {
         .expect("operator");
     assert!(operator.manual, "no run loop reports");
 
-    // The edge: 500 Hz on its own ticks, no misses, driving.
     let edge = &view.edges[0];
     assert_eq!(edge.label, "ur10e/arm");
     assert!(close(edge.tick_hz, 500.0, 5.0), "{:?}", edge.tick_hz);
@@ -167,7 +156,6 @@ fn declared_and_measured_rates_stay_separate_and_name_their_clocks() {
 fn a_slow_policy_and_a_stalled_edge_show_as_drift_skips_and_deadline_misses() {
     let mut w = World::ur10e();
     w.run(1_000);
-    // The edge thread stalls for 20 ms: one late tick, counted once.
     w.stall_until = w.now + 20 * MS;
     w.run(100);
     let view = w.model.view(w.now);
@@ -179,7 +167,6 @@ fn a_slow_policy_and_a_stalled_edge_show_as_drift_skips_and_deadline_misses() {
         edge.longest_gap_ms
     );
 
-    // A seq lost on the way is not a late tick.
     let applied = w
         .auth
         .part(w.channel("arm"))
@@ -189,7 +176,6 @@ fn a_slow_policy_and_a_stalled_edge_show_as_drift_skips_and_deadline_misses() {
     w.run(10);
     assert_eq!(w.model.view(w.now).edges[0].misses, 1);
 
-    // Busy skips and an inference pending are the controller's own counts.
     w.run.busy_skips = 40;
     w.run.pending_ns = 2_000 * MS as u64;
     w.run.drifting = true;
@@ -204,7 +190,6 @@ fn a_slow_policy_and_a_stalled_edge_show_as_drift_skips_and_deadline_misses() {
     assert!(policy.drifting);
     assert!(close(policy.pending_ms, 2_000.0, 1e-6));
 
-    // Hold, then safe, as the edge reports it: in the lanes and the events.
     w.edge_mode = EdgeMode::Hold;
     w.run(50);
     w.edge_mode = EdgeMode::Safe;
@@ -249,7 +234,6 @@ fn an_edge_says_why_it_is_not_moving_and_what_it_refused() {
         .expect("ur10e");
     assert!(link.heartbeat_age_ms.is_some() && link.jitter_ms.is_some());
 
-    // The robot refuses chunks under an old token, then its queue runs dry.
     w.rejected = vec![(Rejection::StaleToken, 3)];
     w.edge_mode = EdgeMode::Safe;
     w.edge_reason = ReasonCode::QueueDry;
@@ -311,10 +295,8 @@ fn a_clock_refusal_says_what_was_measured_against_which_bound() {
 fn the_timeline_follows_leases_epochs_preemption_and_estop() {
     let mut w = World::ur10e();
     w.run(300);
-    // The operator jumps in: its lease preempts the policy's.
     w.grant("operator");
     w.run(300);
-    // The policy's late chunk under its old token is fenced, not coverage.
     let stale = LeaseToken(1);
     w.chunk("policy", stale);
     w.verb(
@@ -372,7 +354,6 @@ fn the_timeline_follows_leases_epochs_preemption_and_estop() {
         .expect("mode lane");
     assert_eq!(mode.segments.last().map(|s| s.2.as_str()), Some("ESTOP e2"));
 
-    // The controls follow the mode: a latched e-stop is the robot's to clear.
     assert!(!view.header.can_arm && !view.header.can_disarm);
     assert!(
         view.header

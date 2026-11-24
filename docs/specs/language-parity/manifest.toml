@@ -1,10 +1,4 @@
 # Reviewed language parity mapping. Edit intentionally; parity:check never regenerates it.
-# E-1 records Stable Python parameters/default literals and native mappings.
-# E-2 (mise run parity:check, part of check) validates live native surfaces.
-# E-3 (mise run parity:fixtures, part of test:ci) runs shared behavioural fixtures;
-# tests/parity/generate_defaults.py reads parameters.*.default and Rust Type#field
-# mappings (or inventoried whole-options wrapper fields) to check Rust Default.
-# Restricted fixtures require languages + why; see tests/parity/README.md.
 
 ["rlmesh.adapters:Actuator.polarity"]
 area = "adapters"
@@ -317,7 +311,6 @@ params = {}
 also = ["rlmesh_binding_free"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_binding_free" = ["R-11"] }
 
 ["rlmesh:Binding".cpp]
@@ -327,7 +320,6 @@ params = {}
 also = ["rlmesh::Binding::Binding", "rlmesh::Binding::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Binding::Binding" = ["R-3"], "rlmesh::Binding::raw" = ["R-11"] }
 
 ["rlmesh:Binding.close"]
@@ -624,7 +616,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_build_info_repr" = ["R-10"] }
 
 ["rlmesh:BuildInfo".cpp]
@@ -693,7 +684,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_build_source_str" = ["R-9"] }
 
 ["rlmesh:BuildInfo.build_source".cpp]
@@ -929,7 +919,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::env::EnvFactory::enumerate_variants" = [
   "R-12",
 ], "rlmesh::env::EnvFactoryExt" = [
@@ -979,7 +968,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshEnvFactoryAttributes::reset_options" = [
   "R-12",
 ], "RLMeshEnvFactoryAttributes::reset_options_len" = [
@@ -1039,7 +1027,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EnvFactoryBase::handle" = [
   "R-12",
 ], "rlmesh::EnvFactoryBase::make_env" = [
@@ -1124,7 +1111,6 @@ also = [
   "rlmesh::MadeEnv",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EnvFactory::EnvFactory<F>" = [
   "R-12",
 ], "rlmesh::EnvFactory::enumerate_variants" = [
@@ -1250,7 +1236,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::env::TagParam::choices" = [
   "R-12",
 ], "rlmesh::env::TagParam::default_" = [
@@ -1278,7 +1263,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshTagParam::choices" = [
   "R-12",
 ], "RLMeshTagParam::default_" = [
@@ -1307,7 +1291,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::TagParam::choices" = [
   "R-12",
 ], "rlmesh::TagParam::default_" = [
@@ -1410,7 +1393,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::env::EnvServer::lanes" = [
   "R-12",
 ], "rlmesh::env::EnvServer::new" = [
@@ -1451,7 +1433,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshEnvServerOptions::options" = [
   "R-12",
 ], "rlmesh_env_server_free" = [
@@ -1488,7 +1469,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EnvServer::EnvServer" = [
   "R-12",
 ], "rlmesh::EnvServer::raw" = [
@@ -1649,7 +1629,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EnvironmentError::is_recoverable" = [
   "R-21",
 ], "rlmesh::EnvironmentError::message" = [
@@ -1671,7 +1650,6 @@ params = {}
 also = ["rlmesh::EnvironmentException::EnvironmentException"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EnvironmentException::EnvironmentException" = ["R-3"] }
 
 ["rlmesh:EnvironmentException.code"]
@@ -1728,7 +1706,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_error_code_str" = ["R-9"] }
 
 ["rlmesh:EnvironmentException.code".cpp]
@@ -1807,7 +1784,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_episode_result_equals" = ["R-10"], "rlmesh_episode_result_repr" = ["R-10"] }
 
 ["rlmesh:EpisodeResult".cpp]
@@ -1817,7 +1793,6 @@ params = { "index" = "rlmesh::EpisodeResult#index", "seed" = "rlmesh::EpisodeRes
 also = ["rlmesh::EpisodeResult::from_raw", "rlmesh::EpisodeResult::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EpisodeResult::from_raw" = [
   "R-11",
 ], "rlmesh::EpisodeResult::raw" = [
@@ -2077,7 +2052,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_frame_sources_equals" = [
   "R-10",
 ], "rlmesh_frame_sources_free" = [
@@ -2099,7 +2073,6 @@ params = { "roles" = "rlmesh::FrameSources#roles", "render_label" = "rlmesh::Fra
 also = ["rlmesh::FrameSources::raw", "rlmesh::FrameSources::take"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::FrameSources::raw" = ["R-11"], "rlmesh::FrameSources::take" = ["R-3"] }
 
 ["rlmesh:FrameSources.default_label"]
@@ -2163,7 +2136,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::RenderFn::call" = ["R-12"], "rlmesh::RenderFn::new" = ["R-11"] }
 
 ["rlmesh:FrameSources.render".c]
@@ -2299,7 +2271,6 @@ also = [
 ]
 rule = ["R-3", "MDL-5"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Corners::NONE" = [
   "R-12",
 ], "rlmesh::Corners::PREDICT" = [
@@ -2431,7 +2402,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_model_from_address" = [
   "D-4",
 ], "RLMeshModelOptions::free_hook_user_data" = [
@@ -2498,7 +2468,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Model::from_address" = [
   "D-4",
 ], "rlmesh::Model::Model" = [
@@ -2544,7 +2513,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::bind" = ["D-4"] }
 
 ["rlmesh:Model.bind".c]
@@ -2561,7 +2529,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_bind" = ["D-4"] }
 
 ["rlmesh:Model.bind".cpp]
@@ -2579,7 +2546,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::BindOptions::with_view" = ["R-3"], "rlmesh::bind" = ["D-4"] }
 
 ["rlmesh:Model.close"]
@@ -2686,7 +2652,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::types::LoadKey::name" = [
   "R-9",
 ], "rlmesh::types::LoadKey::optional" = [
@@ -2707,7 +2672,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshLoadKey::name" = ["R-9"], "RLMeshLoadKey::required" = ["R-12"] }
 
 ["rlmesh:Model.load".cpp]
@@ -2722,7 +2686,6 @@ also = [
   "rlmesh::types::LoadKey::required",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::types::LoadKey::name" = [
   "R-9",
 ], "rlmesh::types::LoadKey::required" = [
@@ -2779,7 +2742,6 @@ also = [
   "rlmesh::EpisodeEndHook::operator()",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EpisodeEndHook::EpisodeEndHook" = [
   "R-12",
 ], "rlmesh::EpisodeEndHook::operator bool" = [
@@ -2895,7 +2857,6 @@ path = "rlmesh::Policy::reset_options"
 params = { "episode" = "rlmesh::Policy::reset_options#episode" }
 also = ["rlmesh::Policy::RESET_OPTIONS"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Policy::RESET_OPTIONS" = ["R-12"] }
 
 ["rlmesh:Model.reset_options".c]
@@ -2981,7 +2942,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::ModelServeOptions::options" = ["R-12"] }
 
 ["rlmesh:Model.serve".c]
@@ -2998,7 +2958,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshModelServeOptions::options" = ["R-12"] }
 
 ["rlmesh:Model.serve".cpp]
@@ -3015,7 +2974,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::ModelServeOptions::options" = [
   "R-12",
 ], "rlmesh::ModelServeOptions::with_ext" = [
@@ -3107,7 +3065,6 @@ also = [
   "rlmesh::ModelError::message",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::ModelError::is_recoverable" = [
   "R-21",
 ], "rlmesh::ModelError::message" = [
@@ -3130,7 +3087,6 @@ params = { "message" = "rlmesh::ModelException::ModelException#message", "is_rec
 also = ["rlmesh::ModelException::ModelException"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::ModelException::ModelException" = ["R-3"] }
 
 ["rlmesh:ModelException.code"]
@@ -3183,7 +3139,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_model_error_code_str" = ["R-9"] }
 
 ["rlmesh:ModelException.code".cpp]
@@ -3261,7 +3216,6 @@ also = [
   "RLMeshSpecKind::RLMESH_SPEC_KIND_NO_ADAPTER",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshSpecArg::kind" = ["R-9"], "RLMeshSpecArg::spec" = ["R-12"] }
 
 ["rlmesh:NO_ADAPTER".cpp]
@@ -3294,7 +3248,6 @@ params = {}
 also = ["rlmesh::ProtocolException::ProtocolException"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::ProtocolException::ProtocolException" = ["R-3"] }
 
 ["rlmesh:RANDOM_SAMPLE"]
@@ -3411,7 +3364,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::InvalidArgumentError::adapter_resolution" = [
   "R-21",
 ], "rlmesh::InvalidArgumentError::message" = [
@@ -3448,7 +3400,6 @@ also = [
 ]
 rule = ["R-21", "R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_last_error_message" = [
   "R-3",
 ], "rlmesh_last_error_status" = [
@@ -3482,7 +3433,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::RLMeshException::RLMeshException" = [
   "R-3",
 ], "rlmesh::RuntimeError::RuntimeError" = [
@@ -3512,7 +3462,6 @@ bridges = ["bridge"]
 also = ["rlmesh::Reader::Clone", "rlmesh::Reader::call", "rlmesh::Reader::new"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Reader::call" = ["R-12"], "rlmesh::Reader::new" = ["R-11"] }
 
 ["rlmesh:Reader".c]
@@ -3523,7 +3472,6 @@ bridges = ["bridge"]
 also = ["rlmesh_reader_call", "rlmesh_reader_free", "rlmesh_reader_new", "rlmesh_reader_roles_get"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_reader_call" = [
   "R-3",
 ], "rlmesh_reader_free" = [
@@ -3542,7 +3490,6 @@ bridges = ["bridge"]
 also = ["rlmesh::Reader::Reader", "rlmesh::Reader::operator()"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Reader::Reader" = ["R-3"], "rlmesh::Reader::operator()" = ["R-10"] }
 
 ["rlmesh:Reader.roles"]
@@ -3885,7 +3832,6 @@ params = {}
 also = ["rlmesh::RecoverableEnvironmentException::RecoverableEnvironmentException"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::RecoverableEnvironmentException::RecoverableEnvironmentException" = [
   "R-3",
 ] }
@@ -3959,7 +3905,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::env::RemoteEnv::close_async" = [
   "R-16",
 ], "rlmesh::env::RemoteEnv::new" = [
@@ -3991,7 +3936,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_remote_env_free" = [
   "R-11",
 ], "rlmesh_remote_env_new" = [
@@ -4016,7 +3960,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::RemoteEnv::RemoteEnv" = [
   "R-3",
 ], "rlmesh::RemoteEnv::raw" = [
@@ -4379,7 +4322,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::env::RemoteVectorEnv::close_async" = [
   "R-16",
 ], "rlmesh::env::RemoteVectorEnv::new" = [
@@ -4409,7 +4351,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_remote_vector_env_free" = [
   "R-11",
 ], "rlmesh_remote_vector_env_new" = [
@@ -4432,7 +4373,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::RemoteVectorEnv::RemoteVectorEnv" = [
   "R-3",
 ], "rlmesh::RemoteVectorEnv::raw" = [
@@ -4859,7 +4799,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshRunContextVtable::contract" = [
   "R-3",
 ], "RLMeshRunContextVtable::frame_sources" = [
@@ -4993,7 +4932,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshRunHooksVtable::free_user_data" = [
   "R-12",
 ], "RLMeshRunHooksVtable::on_episode_end" = [
@@ -5162,7 +5100,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_run_result_advisories_len" = [
   "R-3",
 ], "rlmesh_run_result_clone" = [
@@ -5188,7 +5125,6 @@ params = { "episodes" = "rlmesh::RunResult#episodes", "telemetry" = "rlmesh::Run
 also = ["rlmesh::RunResult::from_raw", "rlmesh::RunResult::raw", "rlmesh::RunResult::take"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::RunResult::from_raw" = [
   "R-11",
 ], "rlmesh::RunResult::raw" = [
@@ -5465,7 +5401,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::ServeOptions::raw" = ["R-11"] }
 
 ["rlmesh:ServeOptions.close_timeout_seconds"]
@@ -5558,7 +5493,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_step_event_equals" = ["R-10"], "rlmesh_step_event_repr" = ["R-10"] }
 
 ["rlmesh:StepEvent".cpp]
@@ -5697,7 +5631,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::SharedFunction<R (A...), EmptyError>::SharedFunction<type-parameter-0-0 (type-parameter-0-2...), type-parameter-0-1>" = [
   "R-21",
 ], "rlmesh::SharedFunction<R (A...), EmptyError>::operator bool" = [
@@ -5859,7 +5792,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_telemetry_row_equals" = [
   "R-10",
 ], "rlmesh_telemetry_row_free" = [
@@ -5877,7 +5809,6 @@ params = { "op" = "rlmesh::TelemetryRow#op", "component" = "rlmesh::TelemetryRow
 also = ["rlmesh::TelemetryRow::from_raw", "rlmesh::TelemetryRow::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::TelemetryRow::from_raw" = ["R-11"], "rlmesh::TelemetryRow::raw" = ["R-11"] }
 
 ["rlmesh:TelemetryRow.avg"]
@@ -6088,7 +6019,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Tensor::dlpack_device" = [
   "R-3",
 ], "rlmesh::Tensor::new" = [
@@ -6125,7 +6055,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshToDlpackOptions::copy" = [
   "R-11",
 ], "RLMeshToDlpackOptions::dl_device_id" = [
@@ -6166,7 +6095,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Tensor::Tensor" = [
   "R-3",
 ], "rlmesh::Tensor::dlpack_device" = [
@@ -6221,7 +6149,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Span::Span<T>" = [
   "R-3",
 ], "rlmesh::Span::begin" = [
@@ -6295,7 +6222,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_device_str" = ["R-9"] }
 
 ["rlmesh:Tensor.device".cpp]
@@ -6367,7 +6293,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_dtype_str" = ["R-9"] }
 
 ["rlmesh:Tensor.dtype".cpp]
@@ -6392,7 +6317,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::to_string" = ["R-10"] }
 
 ["rlmesh:Tensor.from_dlpack"]
@@ -6603,7 +6527,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::env::Variant::new" = [
   "R-11",
 ], "rlmesh::env::VariantOptions::metadata" = [
@@ -6630,7 +6553,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_variant_equals" = [
   "R-10",
 ], "rlmesh_variant_free" = [
@@ -6654,7 +6576,6 @@ params = { "id" = "rlmesh::Variant#id", "params" = "rlmesh::Variant#params", "me
 also = ["rlmesh::Variant::from_raw", "rlmesh::Variant::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Variant::from_raw" = ["R-11"], "rlmesh::Variant::raw" = ["R-11"] }
 
 ["rlmesh:Variant.id"]
@@ -6739,7 +6660,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::View::parse" = ["R-3"], "rlmesh::View::validate" = ["R-3"] }
 
 default_serializers = { "hold" = "view_hold" }
@@ -6761,7 +6681,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshView::hold_seconds" = [
   "R-3",
 ], "rlmesh_view_equals" = [
@@ -6793,7 +6712,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::View::parse" = [
   "R-3",
 ], "rlmesh::View::raw" = [
@@ -7085,7 +7003,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Warning::category" = [
   "R-3",
 ], "rlmesh::Warning::message" = [
@@ -7111,7 +7028,6 @@ also = [
 ]
 rule = ["R-23", "R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_warning_category_is_subclass" = [
   "R-3",
 ], "rlmesh_warning_category_name" = [
@@ -7137,7 +7053,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Warning::category" = [
   "R-3",
 ], "rlmesh::Warning::message" = [
@@ -7253,7 +7168,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Vocabulary" = [
   "R-3",
 ], "rlmesh::adapters::Vocabulary::as_str" = [
@@ -7291,7 +7205,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Tolerant::Tolerant<E>" = [
   "R-3",
 ], "rlmesh::adapters::Tolerant::known" = [
@@ -7381,7 +7294,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Describable::env_factory" = [
   "R-3",
 ], "rlmesh::Describable::model" = [
@@ -7425,7 +7337,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::DescribeOptions::raw" = ["R-11"] }
 
 ["rlmesh:describe_json"]
@@ -7478,7 +7389,6 @@ also = [
   "RLMeshDescribeJsonOptions::workflow_edition",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshDescribeJsonOptions::served_vector_env" = ["R-3"] }
 
 ["rlmesh:describe_json".cpp]
@@ -7503,7 +7413,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::DescribeJsonOptions::raw" = [
   "R-11",
 ], "rlmesh::ServedEnv::ServedEnv" = [
@@ -7576,7 +7485,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EnvTarget::factory" = [
   "R-3",
 ], "rlmesh::EnvTarget::vector" = [
@@ -7629,7 +7537,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshEnvTarget::address" = [
   "R-3",
 ], "RLMeshEnvTarget::handle" = [
@@ -7681,7 +7588,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EnvTarget::EnvTarget" = [
   "R-3",
 ], "rlmesh::EnvTarget::raw" = [
@@ -7765,7 +7671,6 @@ also = [
   "rlmesh_tuple_get",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshStr::data" = [
   "R-3",
 ], "RLMeshStr::len" = [
@@ -7827,7 +7732,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::MultiBinary::MultiBinary" = [
   "R-3",
 ], "rlmesh::spaces::MultiDiscrete::MultiDiscrete" = [
@@ -8084,7 +7988,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Action::new" = ["R-11"] }
 
 default_constructor = "rlmesh::adapters::Action::new(Vec::<rlmesh::adapters::Actuator>::new())"
@@ -8110,7 +8013,6 @@ params = { "components" = "rlmesh::adapters::Action#components", "clip" = "rlmes
 also = ["rlmesh::adapters::Action::from_raw", "rlmesh::adapters::Action::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Action::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Action::raw" = [
@@ -8237,7 +8139,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshActuator::axis_offset" = [
   "R-3",
 ], "RLMeshActuator::axis_offset_len" = [
@@ -8261,7 +8162,6 @@ params = { "role" = "rlmesh::adapters::Actuator#role", "dim" = "rlmesh::adapters
 also = ["rlmesh::adapters::Actuator::from_raw", "rlmesh::adapters::Actuator::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Actuator::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Actuator::raw" = [
@@ -8629,7 +8529,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_adapter_advisories_len" = [
   "R-3",
 ], "rlmesh_adapter_clone" = [
@@ -8651,7 +8550,6 @@ params = {}
 also = ["rlmesh::adapters::Adapter::Adapter", "rlmesh::adapters::Adapter::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Adapter::Adapter" = [
   "R-3",
 ], "rlmesh::adapters::Adapter::raw" = [
@@ -8883,7 +8781,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshAdapterVtable::free_user_data" = ["R-12"] }
 
 ["rlmesh.adapters:AdapterBase".cpp]
@@ -9014,7 +8911,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::WrappedPredict::adapter" = [
   "R-3",
 ], "rlmesh::adapters::WrappedPredict::adapter_mut" = [
@@ -9035,7 +8931,6 @@ also = [
   "rlmesh_wrapped_predict_free",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshWrappedPredict" = [
   "R-3",
 ], "rlmesh_wrapped_predict_call" = [
@@ -9069,7 +8964,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::AdapterResolutionError::new" = ["R-11"] }
 
 ["rlmesh.adapters:AdapterResolutionError".c]
@@ -9096,7 +8990,6 @@ also = [
   "rlmesh_error_class_name",
 ]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_error_class_is_subclass" = ["R-3"], "rlmesh_error_class_name" = ["R-9"] }
 
 ["rlmesh.adapters:AdapterResolutionError".cpp]
@@ -9106,7 +8999,6 @@ params = {}
 also = ["rlmesh::AdapterResolutionError", "rlmesh::AdapterResolutionError::AdapterResolutionError"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::AdapterResolutionError::AdapterResolutionError" = ["R-21"] }
 
 ["rlmesh.adapters:Advisory"]
@@ -9143,7 +9035,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_advisory_equals" = ["R-10"], "rlmesh_advisory_repr" = ["R-10"] }
 
 ["rlmesh.adapters:Advisory".cpp]
@@ -9153,7 +9044,6 @@ params = {}
 also = ["rlmesh::adapters::Advisory::raw", "rlmesh::adapters::Advisory::repr"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Advisory::raw" = [
   "R-11",
 ], "rlmesh::adapters::Advisory::repr" = [
@@ -9223,7 +9113,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_advisory_severity_str" = ["R-9"] }
 
 ["rlmesh.adapters:Advisory.severity".cpp]
@@ -9339,7 +9228,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Concat::new" = ["R-11"] }
 
 default_constructor = "rlmesh::adapters::Concat::new(Vec::<rlmesh::adapters::ConcatPart>::new())"
@@ -9363,7 +9251,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshConcat::dtype_other" = ["R-9"] }
 
 ["rlmesh.adapters:Concat".cpp]
@@ -9373,7 +9260,6 @@ params = { "parts" = "rlmesh::adapters::Concat#parts", "pad_to" = "rlmesh::adapt
 also = ["rlmesh::adapters::Concat::from_raw", "rlmesh::adapters::Concat::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Concat::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Concat::raw" = [
@@ -9546,7 +9432,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshConcatPart::kind" = [
   "R-9",
 ], "RLMeshConcatPart::leaf" = [
@@ -9607,7 +9492,6 @@ params = { "dim" = "rlmesh::adapters::Constant#dim", "fill" = "rlmesh::adapters:
 also = ["rlmesh::adapters::Constant::from_raw", "rlmesh::adapters::Constant::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Constant::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Constant::raw" = [
@@ -9690,7 +9574,6 @@ params = { "transform" = "rlmesh::adapters::Custom#transform", "entrypoint" = "r
 also = ["rlmesh::adapters::Custom::from_raw", "rlmesh::adapters::Custom::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Custom::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Custom::raw" = [
@@ -9760,7 +9643,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::CustomEncoding::new" = ["R-11"] }
 
 default_constructor = "rlmesh::adapters::CustomEncoding::new(rlmesh::adapters::RotationEncoding::QuatXyzw)"
@@ -9784,7 +9666,6 @@ params = { "base" = "rlmesh::adapters::CustomEncoding#base", "from_base" = "rlme
 also = ["rlmesh::adapters::CustomEncoding::from_raw", "rlmesh::adapters::CustomEncoding::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::CustomEncoding::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::CustomEncoding::raw" = [
@@ -9843,7 +9724,6 @@ params = {}
 also = ["RLMeshEncodingArm", "RLMeshEncodingArm::entrypoint", "RLMeshEncodingArm::transform"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshEncodingArm::entrypoint" = ["R-3"], "RLMeshEncodingArm::transform" = ["R-3"] }
 
 ["rlmesh.adapters:CustomEncoding.from_base".cpp]
@@ -10053,7 +9933,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::EnvTags::new" = ["R-11"] }
 
 ["rlmesh.adapters:EnvTags".c]
@@ -10069,7 +9948,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_env_tags_clone" = [
   "R-11",
 ], "rlmesh_env_tags_equals" = [
@@ -10093,7 +9971,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::EnvTags::EnvTags" = [
   "R-3",
 ], "rlmesh::adapters::EnvTags::raw" = [
@@ -10328,7 +10205,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshField::encoding_other" = [
   "R-9",
 ], "RLMeshField::frame_other" = [
@@ -10344,7 +10220,6 @@ params = { "role" = "rlmesh::adapters::Field#role", "dim" = "rlmesh::adapters::F
 also = ["rlmesh::adapters::Field::from_raw", "rlmesh::adapters::Field::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Field::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Field::raw" = [
@@ -10555,7 +10430,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_fit_mode_str" = ["R-9"] }
 
 ["rlmesh.adapters:FitMode".cpp]
@@ -10613,7 +10487,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_frame_str" = ["R-9"] }
 
 ["rlmesh.adapters:Frame".cpp]
@@ -10771,7 +10644,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Image::new" = [
   "R-11",
 ], "rlmesh::adapters::Image::with_size" = [
@@ -10830,7 +10702,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshImage::channel_order_other" = [
   "R-9",
 ], "RLMeshImage::crop_mode_other" = [
@@ -10859,7 +10730,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Image::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Image::raw" = [
@@ -10914,7 +10784,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_channel_order_str" = ["R-9"] }
 
 ["rlmesh.adapters:Image.channel_order".cpp]
@@ -11006,7 +10875,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_crop_mode_str" = ["R-9"] }
 
 ["rlmesh.adapters:Image.crop_mode".cpp]
@@ -11439,7 +11307,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_image_layout_str" = ["R-9"] }
 
 ["rlmesh.adapters:ImageLayout".cpp]
@@ -11473,7 +11340,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::ImageTag::new" = ["R-11"] }
 
 default_constructor = "rlmesh::adapters::ImageTag::new(\"image/primary\")"
@@ -11497,7 +11363,6 @@ params = { "role" = "rlmesh::adapters::ImageTag#role", "layout" = "rlmesh::adapt
 also = ["rlmesh::adapters::ImageTag::from_raw", "rlmesh::adapters::ImageTag::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::ImageTag::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::ImageTag::raw" = [
@@ -11641,7 +11506,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::InputNode::InputNode" = [
   "R-3",
 ], "rlmesh::adapters::InputNode::dict" = [
@@ -11797,7 +11661,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshInputNode::children" = [
   "R-3",
 ], "RLMeshInputNode::children_len" = [
@@ -11850,7 +11713,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::ModelSpec::new" = [
   "R-11",
 ], "rlmesh::adapters::ModelSpec::with_allow" = [
@@ -11872,7 +11734,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_model_spec_clone" = [
   "R-11",
 ], "rlmesh_model_spec_equals" = [
@@ -11898,7 +11759,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::ModelSpec::ModelSpec" = [
   "R-3",
 ], "rlmesh::adapters::ModelSpec::raw" = [
@@ -12153,7 +12013,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshObsNode::children" = [
   "R-3",
 ], "RLMeshObsNode::children_len" = [
@@ -12191,7 +12050,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::ObsNode::ObsNode" = [
   "R-3",
 ], "rlmesh::adapters::ObsNode::dict" = [
@@ -12239,7 +12097,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_obs_transform_clone" = [
   "R-11",
 ], "rlmesh_obs_transform_equals" = [
@@ -12259,7 +12116,6 @@ params = {}
 also = ["rlmesh::adapters::ObsTransform::ObsTransform", "rlmesh::adapters::ObsTransform::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::ObsTransform::ObsTransform" = [
   "R-3",
 ], "rlmesh::adapters::ObsTransform::raw" = [
@@ -12305,7 +12161,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_observation_roles_equals" = [
   "R-10",
 ], "rlmesh_observation_roles_repr" = [
@@ -12319,7 +12174,6 @@ params = { "images" = "rlmesh::adapters::ObservationRoles#images", "states" = "r
 also = ["rlmesh::adapters::ObservationRoles::from_raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::ObservationRoles::from_raw" = ["R-11"] }
 
 ["rlmesh.adapters:ObservationRoles.images"]
@@ -12399,7 +12253,6 @@ params = {}
 rule = ["ADP-23", "R-3"]
 also = ["rlmesh_adapters_parts_len"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_adapters_parts_len" = ["R-3"] }
 
 ["rlmesh.adapters:PARTS".cpp]
@@ -12497,7 +12350,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_provenance_str" = ["R-9"] }
 
 ["rlmesh.adapters:Provenance".cpp]
@@ -12568,7 +12420,6 @@ params = {}
 rule = ["ADP-23", "R-3"]
 also = ["rlmesh_adapters_rotation_dims_len"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_adapters_rotation_dims_len" = ["R-3"] }
 
 ["rlmesh.adapters:ROTATION_DIMS".cpp]
@@ -12618,7 +12469,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_reference_str" = ["R-9"] }
 
 ["rlmesh.adapters:Reference".cpp]
@@ -12676,7 +12526,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_resample_str" = ["R-9"] }
 
 ["rlmesh.adapters:Resample".cpp]
@@ -12713,7 +12562,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Rotation::new" = ["R-11"] }
 
 ["rlmesh.adapters:Rotation".c]
@@ -12736,7 +12584,6 @@ params = { "encoding" = "rlmesh::adapters::Rotation#encoding", "value" = "rlmesh
 also = ["rlmesh::adapters::Rotation::from_raw", "rlmesh::adapters::Rotation::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Rotation::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Rotation::raw" = [
@@ -12857,7 +12704,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_rotation_encoding_dims" = ["R-3"], "rlmesh_rotation_encoding_str" = ["R-9"] }
 
 ["rlmesh.adapters:RotationEncoding".cpp]
@@ -12910,7 +12756,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_rotation_transform_clone" = [
   "R-11",
 ], "rlmesh_rotation_transform_equals" = [
@@ -12933,7 +12778,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::RotationTransform::RotationTransform" = [
   "R-3",
 ], "rlmesh::adapters::RotationTransform::raw" = [
@@ -12962,7 +12806,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Split::new" = ["R-11"] }
 
 ["rlmesh.adapters:Split".c]
@@ -12984,7 +12827,6 @@ params = { "fields" = "rlmesh::adapters::Split#fields" }
 also = ["rlmesh::adapters::Split::from_raw", "rlmesh::adapters::Split::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Split::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Split::raw" = [
@@ -13052,7 +12894,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_stack_pad_str" = ["R-9"] }
 
 ["rlmesh.adapters:StackPad".cpp]
@@ -13105,7 +12946,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::State::new" = ["R-11"] }
 
 default_constructor = "rlmesh::adapters::State::new(\"proprio/joint_pos\")"
@@ -13153,7 +12993,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshState::axis_offset" = [
   "R-3",
 ], "RLMeshState::axis_offset_len" = [
@@ -13181,7 +13020,6 @@ params = { "role" = "rlmesh::adapters::State#role", "encoding" = "rlmesh::adapte
 also = ["rlmesh::adapters::State::from_raw", "rlmesh::adapters::State::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::State::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::State::raw" = [
@@ -13251,7 +13089,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_state_container_str" = ["R-9"] }
 
 ["rlmesh.adapters:State.container".cpp]
@@ -13676,7 +13513,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_state_source_str" = ["R-9"] }
 
 ["rlmesh.adapters:State.source".cpp]
@@ -13712,7 +13548,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::StateTag::new" = ["R-11"] }
 
 default_constructor = "rlmesh::adapters::StateTag::new(\"proprio/joint_pos\")"
@@ -13740,7 +13575,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshStateTag::encoding_other" = [
   "R-9",
 ], "RLMeshStateTag::frame_other" = [
@@ -13756,7 +13590,6 @@ params = { "role" = "rlmesh::adapters::StateTag#role", "encoding" = "rlmesh::ada
 also = ["rlmesh::adapters::StateTag::from_raw", "rlmesh::adapters::StateTag::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::StateTag::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::StateTag::raw" = [
@@ -13947,7 +13780,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Text::new" = ["R-11"] }
 
 default_constructor = "rlmesh::adapters::Text::new(\"text/instruction\")"
@@ -13972,7 +13804,6 @@ params = { "role" = "rlmesh::adapters::Text#role", "container" = "rlmesh::adapte
 also = ["rlmesh::adapters::Text::from_raw", "rlmesh::adapters::Text::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::Text::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::Text::raw" = [
@@ -14021,7 +13852,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_text_container_str" = ["R-9"] }
 
 ["rlmesh.adapters:Text.container".cpp]
@@ -14095,7 +13925,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::TextTag::new" = ["R-11"] }
 
 ["rlmesh.adapters:TextTag".c]
@@ -14112,7 +13941,6 @@ params = { "role" = "rlmesh::adapters::TextTag#role" }
 also = ["rlmesh::adapters::TextTag::from_raw", "rlmesh::adapters::TextTag::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::TextTag::from_raw" = [
   "R-11",
 ], "rlmesh::adapters::TextTag::raw" = [
@@ -14245,7 +14073,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::adapters::TagError::error" = [
   "R-21",
 ], "rlmesh::adapters::TagError::into_parts" = [
@@ -14277,7 +14104,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_adapters_tag_vector" = ["R-3"] }
 
 ["rlmesh.adapters:tag".cpp]
@@ -15343,7 +15169,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_episode_record_equals" = [
   "R-10",
 ], "rlmesh_episode_record_free" = [
@@ -15363,7 +15188,6 @@ params = { "index" = "rlmesh::EpisodeRecord#index", "seed" = "rlmesh::EpisodeRec
 also = ["rlmesh::EpisodeRecord::from_raw", "rlmesh::EpisodeRecord::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::EpisodeRecord::from_raw" = [
   "R-11",
 ], "rlmesh::EpisodeRecord::raw" = [
@@ -15635,7 +15459,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_media_ref_equals" = [
   "R-10",
 ], "rlmesh_media_ref_free" = [
@@ -15653,7 +15476,6 @@ params = { "camera" = "rlmesh::MediaRef#camera", "kind" = "rlmesh::MediaRef#kind
 also = ["rlmesh::MediaRef::from_raw", "rlmesh::MediaRef::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::MediaRef::from_raw" = ["R-11"], "rlmesh::MediaRef::raw" = ["R-11"] }
 
 ["rlmesh.recorder:MediaRef.camera"]
@@ -15856,7 +15678,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::recorder::Recorder::close_async" = [
   "R-16",
 ], "rlmesh::recorder::Recorder::export_async" = [
@@ -15880,7 +15701,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_recorder_free" = [
   "R-11",
 ], "rlmesh_recorder_new" = [
@@ -15902,7 +15722,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Recorder::Recorder" = ["R-3"] }
 
 ["rlmesh.recorder:Recorder.add"]
@@ -16171,7 +15990,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_workload_record_episodes_get" = [
   "R-3",
 ], "rlmesh_workload_record_episodes_len" = [
@@ -16193,7 +16011,6 @@ params = { "model" = "rlmesh::WorkloadRecord#model", "env" = "rlmesh::WorkloadRe
 also = ["rlmesh::WorkloadRecord::from_raw", "rlmesh::WorkloadRecord::raw"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::WorkloadRecord::from_raw" = [
   "R-11",
 ], "rlmesh::WorkloadRecord::raw" = [
@@ -16412,7 +16229,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Box::from_spec" = ["R-3"], "rlmesh::spaces::Box::new" = ["R-11"] }
 
 default_skip = { "high" = "Positional or authored callable parameter, not a data field; R-7/R-12 defaults are exercised by behavioural fixtures.", "shape" = "Positional or authored callable parameter, not a data field; R-7/R-12 defaults are exercised by behavioural fixtures." }
@@ -16433,7 +16249,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_box_from_spec" = ["R-3"], "rlmesh_box_new" = ["R-11"] }
 
 ["rlmesh.spaces:Box".cpp]
@@ -16450,7 +16265,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Box::Box" = [
   "R-3",
 ], "rlmesh::spaces::Box::create" = [
@@ -16504,7 +16318,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_bounds_kind_str" = ["R-9"] }
 
 ["rlmesh.spaces:Box.bounds_kind".cpp]
@@ -16665,7 +16478,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshBound::type_" = [
   "R-3",
 ], "RLMeshBound::value" = [
@@ -16703,7 +16515,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Bound::Bound" = [
   "R-3",
 ], "rlmesh::spaces::Bound::as_bool" = [
@@ -16849,7 +16660,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Dict::contains_key" = [
   "R-3",
 ], "rlmesh::spaces::Dict::from_spec" = [
@@ -16877,7 +16687,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_dict_contains_key" = [
   "R-3",
 ], "rlmesh_dict_from_spec" = [
@@ -16909,7 +16718,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Dict::Dict" = [
   "R-3",
 ], "rlmesh::spaces::Dict::begin" = [
@@ -17145,7 +16953,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::DictSpaces::contains_key" = [
   "R-3",
 ], "rlmesh::spaces::DictSpaces::get" = [
@@ -17273,7 +17080,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Discrete::from_spec" = [
   "R-3",
 ], "rlmesh::spaces::Discrete::new" = [
@@ -17297,7 +17103,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_discrete_from_spec" = ["R-3"], "rlmesh_discrete_new" = ["R-11"] }
 
 ["rlmesh.spaces:Discrete".cpp]
@@ -17316,7 +17121,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Discrete::Discrete" = [
   "R-3",
 ], "rlmesh::spaces::Discrete::create" = [
@@ -17554,7 +17358,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Space::as_box" = [
   "R-3",
 ], "rlmesh::spaces::Space::as_dict" = [
@@ -17578,7 +17381,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_space_clone" = [
   "R-11",
 ], "rlmesh_space_equals" = [
@@ -17608,7 +17410,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::Space::Space" = [
   "R-3",
 ], "rlmesh::spaces::Space::adopt" = [
@@ -17715,7 +17516,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_space_kind_str" = ["R-9"] }
 
 ["rlmesh.spaces:Space.kind".cpp]
@@ -17855,7 +17655,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::spaces::SpaceSpec::SpaceSpec" = [
   "R-3",
 ], "rlmesh::spaces::SpaceSpec::copy_of" = [
@@ -18036,7 +17835,6 @@ params = {}
 also = ["rlmesh_env_contract_clone", "rlmesh_env_contract_free", "rlmesh_env_contract_repr"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_env_contract_clone" = [
   "R-11",
 ], "rlmesh_env_contract_free" = [
@@ -18057,7 +17855,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::specs::EnvContract::EnvContract" = [
   "R-3",
 ], "rlmesh::specs::EnvContract::copy_of" = [
@@ -18279,7 +18076,6 @@ params = {}
 also = ["rlmesh_space_spec_clone", "rlmesh_space_spec_free", "rlmesh_space_spec_repr"]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh_space_spec_clone" = [
   "R-11",
 ], "rlmesh_space_spec_free" = [
@@ -18440,7 +18236,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::env::Env::id" = [
   "R-3",
 ], "rlmesh::env::Env::metadata" = [
@@ -18481,7 +18276,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshEnv" = [
   "R-3",
 ], "RLMeshEnvAttributes::id" = [
@@ -18518,7 +18312,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Env::Env" = [
   "R-3",
 ], "rlmesh::Env::close" = [
@@ -18801,7 +18594,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::types::Metadata::contains_key" = [
   "R-5",
 ], "rlmesh::types::Metadata::get" = [
@@ -18852,7 +18644,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Metadata::Metadata" = [
   "R-5",
 ], "rlmesh::Metadata::at" = [
@@ -18908,7 +18699,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::types::EpisodeState::contains_key" = [
   "R-5",
 ], "rlmesh::types::EpisodeState::get" = [
@@ -18953,7 +18743,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshEpisodeState" = [
   "R-12",
 ], "rlmesh_episode_state_get" = [
@@ -18989,7 +18778,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::types::EpisodeState::EpisodeState" = [
   "R-5",
 ], "rlmesh::types::EpisodeState::contains_key" = [
@@ -19425,7 +19213,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshBytes::cap" = [
   "R-3",
 ], "RLMeshBytes::data" = [
@@ -19529,7 +19316,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::Value::Value" = [
   "R-5",
 ], "rlmesh::Value::adopt" = [
@@ -19617,7 +19403,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::env::VectorEnv::id" = [
   "R-3",
 ], "rlmesh::env::VectorEnv::metadata" = [
@@ -19660,7 +19445,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "RLMeshVectorEnv" = [
   "R-3",
 ], "RLMeshVectorEnvAttributes::id" = [
@@ -19698,7 +19482,6 @@ also = [
 ]
 rule = ["R-3"]
 
-# Individually reviewed translation helpers; additions need their own citation.
 also_rules = { "rlmesh::VectorEnv::VectorEnv" = [
   "R-3",
 ], "rlmesh::VectorEnv::close" = [

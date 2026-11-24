@@ -1,5 +1,3 @@
-"""The example envs' tags the 0.1 reader check reads are the ones they publish now."""
-
 from __future__ import annotations
 
 import subprocess

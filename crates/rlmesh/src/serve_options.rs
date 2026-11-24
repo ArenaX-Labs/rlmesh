@@ -21,28 +21,21 @@ impl ServeOptions {
     }
 }
 
-/// Experimental (Python's `BatchOptions`). How a session-served model
-/// coalesces the predicts it receives, from every session it answers in, into
-/// one handler call (one fused forward for a
-/// model that fuses). The model still runs one forward at a time: batching
-/// raises fill, not concurrency.
+/// Experimental (Python's `BatchOptions`). How a session-served model coalesces
+/// the predicts it receives, from every session it answers in, into one handler
+/// call. The model still runs one forward at a time: batching raises fill, not
+/// concurrency.
 ///
-/// A batch closes at `max_batch_size` groups or `batch_byte_budget`
-/// observation bytes, or as soon as every route the model has resolved has a
-/// request in it. While the model is idle it also closes `batch_window_ms`
-/// after its first request; while a forward runs, it stays open until that
-/// forward ends, so under load the window costs nothing.
-/// A model that cannot fuse (`allow_fusion = false`, or no batched corner)
-/// is not batched.
-///
-/// The defaults are: `max_batch_size` and `batch_window_ms`
-/// as its request compiler sets them, the byte budget and in-flight cap as
-/// its runner reads them. Build one with `..Default::default()`.
+/// A batch closes at `max_batch_size` groups or `batch_byte_budget` observation
+/// bytes, or as soon as every route the model has resolved has a request in it.
+/// While the model is idle it also closes `batch_window_ms` after its first
+/// request; while a forward runs, it stays open until that forward ends. A model
+/// that cannot fuse (`allow_fusion = false`, or no batched corner) is not
+/// batched. Build one with `..Default::default()`.
 #[derive(Debug, Clone)]
 pub struct BatchOptions {
-    /// The most predict groups (one route's rows each) one handler call
-    /// carries; 1 answers each request on its own, at once. A request with
-    /// more groups runs as a batch of its own.
+    /// The most predict groups (one route's rows each) one handler call carries; 1 answers
+    /// each request on its own, at once.
     pub max_batch_size: usize,
     /// The longest an idle model holds a batch open for more requests.
     pub batch_window_ms: u64,

@@ -73,8 +73,6 @@ pub(crate) fn validate_text_at(spec: &SpaceSpec, path: &str) -> Result<(), Space
         _ => return err_space!(path, "Text", "spec.text must be set"),
     };
 
-    // Zero is a valid bound (gymnasium's `Text(min_length=0)` admits the empty
-    // string, and proto3 decodes an unset bound as 0); only negatives are invalid.
     if t.min_length < 0 {
         return err_space!(path, "Text", "min_length must be >= 0");
     }
@@ -101,9 +99,6 @@ pub(crate) fn conform_text(space: &SpaceSpec, value: &SpaceValue, path: &str) ->
         _ => return Conformance::Structural(SpaceError::invalid(path, "space is not Text")),
     };
 
-    // Length and charset are range deviations the serving side may tolerate.
-    // Length is counted in characters (Gymnasium Text counts characters, not
-    // UTF-8 bytes).
     let len = text.chars().count() as i64;
     if len < t.min_length {
         return Conformance::Range(SpaceError::invalid(
@@ -156,36 +151,30 @@ mod tests {
 
         assert!(contains(&space, &SpaceValue::Text("abc".to_string())).is_ok());
         assert!(contains(&space, &SpaceValue::Text("ab".to_string())).is_ok());
-        assert!(contains(&space, &SpaceValue::Text("a".to_string())).is_err()); // too short
-        assert!(contains(&space, &SpaceValue::Text("abcdef".to_string())).is_err()); // too long
-        assert!(contains(&space, &SpaceValue::Text("abc!".to_string())).is_err()); // '!' not in charset
+        assert!(contains(&space, &SpaceValue::Text("a".to_string())).is_err());
+        assert!(contains(&space, &SpaceValue::Text("abcdef".to_string())).is_err());
+        assert!(contains(&space, &SpaceValue::Text("abc!".to_string())).is_err());
     }
 
     #[test]
     fn test_text_length_counts_chars_not_bytes() {
-        // max_length is in characters; "ééé" is 3 chars but 6 UTF-8 bytes.
         let space = TextBuilder::new(3)
             .charset("éàü".to_string())
             .build()
             .unwrap();
 
-        // 3 multi-byte chars (6 bytes) must be accepted, not rejected for length.
         assert!(contains(&space, &SpaceValue::Text("ééé".to_string())).is_ok());
-        // 4 chars exceeds the 3-char maximum.
         assert!(contains(&space, &SpaceValue::Text("éééà".to_string())).is_err());
     }
 
     #[test]
     fn test_text_rejects_vacuous_bounds() {
-        // min_length > max_length describes a space no value can satisfy; reject at build time.
         assert!(TextBuilder::new(5).min_length(10).build().is_err());
-        // Equal bounds remain valid (fixed-length text).
         assert!(TextBuilder::new(5).min_length(5).build().is_ok());
     }
 
     #[test]
     fn test_text_allows_zero_lengths() {
-        // gymnasium allows min_length=0, and proto3 decodes an unset bound as 0.
         let space = TextBuilder::new(4).min_length(0).build().unwrap();
         assert!(contains(&space, &SpaceValue::Text(String::new())).is_ok());
         assert!(contains(&space, &SpaceValue::Text("abcd".to_string())).is_ok());

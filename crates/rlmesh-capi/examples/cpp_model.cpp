@@ -1,4 +1,3 @@
-// c++ -std=c++17 -I<include> cpp_model.cpp -lrlmesh_capi -o cpp_model
 #include <cstdio>
 #include <cstdlib>
 #include <rlmesh.hpp>
@@ -6,7 +5,6 @@
 int main(int argc, char** argv) try {
   const std::string address = argc > 1 ? argv[1] : "localhost:7447/env";
   const uint64_t episodes = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 3;
-  // The run drives the env itself: keep its action space, release the lease.
   auto action_space =
       rlmesh::RemoteEnv(rlmesh::RemoteEnvOptions{}.with_address(address)).action_space();
   rlmesh::Model model(

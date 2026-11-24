@@ -1,7 +1,3 @@
-//! A model served on a session: routes resolve once, a predict carries
-//! several routes' rows and gets one outcome each, chunks come back as
-//! frames.
-
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -17,8 +13,6 @@ use rlmesh_session::wire::{ModelEpisode, ModelGroup, ModelReply, ModelRequest, M
 use rlmesh_spaces::leaves::{decode_leaf_slab, encode_leaf_slab};
 use rlmesh_spaces::{AutoresetMode, DType, EnvContract, SpaceValue, Tensor};
 
-/// Acts with its observation; chunks of three (the observation, then +1,
-/// +2) when asked for a chunk.
 struct Echo;
 
 fn plus(value: &SpaceValue, n: f32) -> SpaceValue {
@@ -122,8 +116,6 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
         call(resolve("a", 3)).await,
         ModelReply::Resolved(_)
     ));
-    // Two lanes of route a, and route b, never resolved: b's fault stays
-    // b's.
     let ModelReply::Predicted(outcomes) = call(ModelRequest::Predict(vec![
         group("a", &[1.0, 2.0]),
         group("b", &[3.0]),
@@ -149,7 +141,6 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
         "{fault:?}"
     );
 
-    // Each reply carries what the model measured, as v1's endpoint phases.
     let (_, timing) = model
         .link
         .call(&ModelRequest::Predict(vec![group("a", &[1.0])]), None)
@@ -163,7 +154,6 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
     assert!(timing.total_ns >= timing.user_ns, "{timing:?}");
     assert_eq!(timing.in_flight, Some(1));
 
-    // A released route is gone.
     assert_eq!(
         call(ModelRequest::Reset {
             route: "a".into(),
@@ -183,7 +173,6 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
     };
     assert!(outcomes[0].is_err());
 
-    // An edition this build does not implement is refused at resolve.
     let ModelRequest::Resolve(mut pinned) = resolve("c", 1) else {
         unreachable!()
     };
@@ -293,7 +282,6 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
         }
     };
     resolve(&model).await.unwrap();
-    // The model now answers in the target session too.
     let there = ModelConnection::connect(
         &format!("{session}/echo"),
         "observer",
@@ -304,15 +292,12 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
     there.close().await;
     model.on_close().await.unwrap();
 
-    // Its own session needs no invitation.
     let own = ModelConnection::connect(&address, "observer", Duration::from_secs(5))
         .await
         .unwrap();
     assert!(own.answers_in(address.rsplit_once('/').unwrap().0));
     assert!(!own.answers_in(&session));
 
-    // An invitation nobody follows: the model leaves once its join timeout
-    // passes, though the host keeps republishing the roster meanwhile.
     let (reply, _) = own
         .link
         .call(
@@ -330,7 +315,6 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
     let late = ModelConnection::connect(&late, "late", Duration::from_secs(1)).await;
     assert!(late.is_err(), "the model stayed in an abandoned session");
 
-    // A session the model can't reach is refused, naming it.
     let mut model = ServedModel::new(address, Duration::from_secs(10));
     model.join("127.0.0.1:1/nowhere").await.unwrap();
     let err = resolve(&model).await.unwrap_err();
@@ -366,10 +350,6 @@ async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
     served.await.unwrap().unwrap();
 }
 
-/// A session host's port on 127.0.0.1, held until the socket drops: bound
-/// with `SO_REUSEADDR` but not listening, so a connect is refused and no
-/// other socket can take it, while the host's own listener (Zenoh sets
-/// `SO_REUSEADDR` too) binds and listens on it.
 fn reserve_session_port() -> (u16, tokio::net::TcpSocket) {
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_reuseaddr(true).unwrap();
@@ -396,7 +376,6 @@ async fn a_driver_waits_for_a_model_not_up_yet_and_never_hosts_its_session() {
     let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
     let first = connecting.await.unwrap().unwrap();
     first.close().await;
-    // The model's session is its own: a driver leaving it leaves it serving.
     let again = ModelConnection::connect(&address, "driver", Duration::from_secs(10))
         .await
         .unwrap();
@@ -405,8 +384,6 @@ async fn a_driver_waits_for_a_model_not_up_yet_and_never_hosts_its_session() {
     served.await.unwrap().unwrap();
 }
 
-/// Fuses: one handler call answers every group, each with its own lanes.
-/// Records the groups of each call and refuses an observation of `-1`.
 #[derive(Clone, Default)]
 struct Fused(Arc<std::sync::Mutex<Vec<usize>>>);
 
@@ -458,7 +435,6 @@ fn batched<H: ModelHandler + 'static>(
     )
 }
 
-/// Predicts one group each, all at once, and returns each reply.
 async fn predict_together<H: ModelHandler + 'static>(
     service: &Arc<ModelService<H>>,
     groups: Vec<ModelGroup>,
@@ -495,8 +471,6 @@ async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
     );
     let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
 
-    // Two drivers, each in a session of its own that it invites the model
-    // into, each predicting its own route.
     let mut hosts = Vec::new();
     let mut drivers = Vec::new();
     for (i, route) in ["a", "b"].into_iter().enumerate() {
@@ -554,7 +528,6 @@ async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
     for mut host in hosts {
         host.close().await.unwrap();
     }
-    // One record, in the batches.jsonl shape.
     let text = std::fs::read_to_string(&path).unwrap();
     let records: Vec<serde_json::Value> = text
         .lines()
@@ -588,7 +561,6 @@ async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_batch_size_and_the_byte_budget_split_batches() {
-    // Each group carries 8 observation bytes.
     for (options, want) in [
         (
             rlmesh::BatchOptions {
@@ -656,7 +628,6 @@ async fn a_batch_closes_once_every_route_has_a_request_in_it() {
     );
     assert_eq!(fused.calls(), vec![2]);
 
-    // A queued alone; b's release leaves it holding every route.
     let lone = tokio::spawn({
         let service = Arc::clone(&service);
         async move {
@@ -689,7 +660,6 @@ async fn the_window_bounds_how_long_a_lone_request_waits() {
             ..Default::default()
         },
     );
-    // b never predicts, so a's batch waits the window for it.
     service.answer(resolve("a", 1)).await;
     service.answer(resolve("b", 1)).await;
     let started = std::time::Instant::now();
@@ -705,7 +675,6 @@ async fn the_window_bounds_how_long_a_lone_request_waits() {
     assert!(timing.queue_ns.unwrap() >= 200_000_000, "{timing:?}");
 }
 
-/// Fuses as [`Fused`] does, taking 200 ms per call.
 #[derive(Clone, Default)]
 struct Slow(Fused);
 
@@ -751,16 +720,11 @@ async fn a_batchs_inference_time_is_split_across_its_requests() {
     });
     for call in calls {
         let user = call.await.unwrap().user_ns.unwrap();
-        // Half of the one 200 ms forward each, not all of it.
         assert!((100_000_000..200_000_000).contains(&user), "user_ns {user}");
     }
     assert_eq!(slow.0.calls(), vec![2], "one handler call for both");
 }
 
-/// Proxies a model served elsewhere: its call takes 100 ms on the wire, of
-/// which the backend reports `v` ms of decode, 3`v` of its own work, 2`v` of
-/// encode and `v` of queue for a request whose observation is `v` (nothing
-/// for `v = 0`), read once.
 #[derive(Default)]
 struct Proxy(Option<rlmesh_proto::EndpointPhases>);
 
@@ -810,21 +774,17 @@ async fn a_proxied_model_reports_its_backends_phases_not_the_hop() {
                 .unwrap()
         }
     };
-    // At once, each reply carries its own request's backend phases; c's
-    // backend reports none, so it is timed here.
     let (a, b, c) = tokio::join!(predict("a", 1.0), predict("b", 2.0), predict("c", 0.0));
     const MS: u64 = 1_000_000;
     for (v, (reply, timing)) in [(1, a), (2, b), (0, c)] {
         assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
         let timing = timing.expect("a predict is timed");
-        // The proxy's own total holds the hop, not the backend's 4 ms.
         assert!(timing.total_ns >= Some(100 * MS), "{v}: {timing:?}");
         if v == 0 {
             assert!(timing.user_ns >= Some(100 * MS), "{v}: {timing:?}");
             continue;
         }
         assert_eq!(timing.user_ns, Some(3 * v * MS), "{v}: {timing:?}");
-        // Decode, encode and queue add the backend's to this side's.
         let adds = |got: Option<u64>, backend: u64| got.is_some_and(|got| got >= backend);
         assert!(
             adds(timing.decode_ns, v * MS)
@@ -845,7 +805,6 @@ async fn a_proxied_model_reports_its_backends_phases_not_the_hop() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_model_that_does_not_fuse_is_not_batched() {
-    // Echo runs a grouped predict one route at a time.
     let service = batched(
         Echo,
         rlmesh::BatchOptions {
@@ -886,8 +845,6 @@ async fn one_requests_error_does_not_fail_the_others_in_its_batch() {
     );
     service.answer(resolve("a", 1)).await;
     service.answer(resolve("b", 1)).await;
-    // b's rows are refused by the model and c was never resolved; a's
-    // stand.
     let replies = predict_together(
         &service,
         vec![group("a", &[1.0]), group("b", &[-1.0]), group("c", &[3.0])],
@@ -930,7 +887,6 @@ async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_pr
     .unwrap();
     let session = target.address.invite();
 
-    // Two spellings of one session.
     let invites = (0..4).map(|i| {
         let address = address.clone();
         let session = if i % 2 == 0 {
@@ -959,7 +915,6 @@ async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_pr
         .await
         .unwrap();
     assert!(matches!(reply, ModelReply::Predicted(_)), "{reply:?}");
-    // A second answerer would predict again, after the first reply.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(handler.calls(), [1]);
 
@@ -971,17 +926,12 @@ async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_pr
     target.close().await.unwrap();
 }
 
-/// Closes a service from inside one of a handler's own callbacks.
 type CloseFn = Arc<
     dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = rlmesh::Result<()>> + Send>>
         + Send
         + Sync,
 >;
 
-/// Logs its forwards and its close. A forward says it started, then blocks
-/// a library thread until the test lets it end, or panics on an observation
-/// of `-1`; it runs `close` from inside when `close_in` names the callback,
-/// and every route's release fails when `releases_fail`.
 #[derive(Clone)]
 struct Held {
     log: Arc<std::sync::Mutex<Vec<&'static str>>>,
@@ -1016,7 +966,6 @@ impl Held {
             let closed = (self.close.get().unwrap())().await;
             self.log.lock().unwrap().push(match closed {
                 Ok(()) => "closed",
-                // It waited on itself, up to its deadline and no longer.
                 Err(rlmesh::Error::Timeout(_)) if asked.elapsed() < Duration::from_secs(2) => {
                     "close timed out"
                 }
@@ -1033,11 +982,9 @@ impl ModelHandler for Held {
         assert!(!lanes.contains(&value(-1.0)), "the handler panicked");
         self.log.lock().unwrap().push("start");
         self.close_from("predict").await;
-        // On a library thread, where no cancel reaches it.
         let (log, started, go) = (self.log.clone(), self.started.clone(), self.go.clone());
         tokio::task::spawn_blocking(move || {
             started.notify_one();
-            // Bounded, so a failing test ends rather than waits on it.
             let go = tokio::time::timeout(Duration::from_secs(10), go.acquire());
             let handle = tokio::runtime::Handle::current();
             handle.block_on(go).unwrap().unwrap().forget();
@@ -1064,7 +1011,6 @@ impl ModelHandler for Held {
     }
 }
 
-/// Logs each route's release and fails it.
 struct FailingReleases(Arc<std::sync::Mutex<Vec<&'static str>>>);
 
 #[rlmesh::binding::async_trait]
@@ -1099,16 +1045,13 @@ async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_onc
     #[derive(Debug, Clone, Copy, PartialEq)]
     enum Ends {
         Answered,
-        /// Cancelled once its forward started.
         Cancelled,
-        /// Cancelled while its batch still assembles.
         TimedOut,
         Panicked,
     }
     for (fuses, ends, want) in [
         (false, Ends::Answered, &["start", "end", "on_close"][..]),
         (true, Ends::Answered, &["start", "end", "on_close"]),
-        // Its forward runs on: the close waits for that.
         (false, Ends::Cancelled, &["start", "end", "on_close"]),
         (true, Ends::Cancelled, &["start", "end", "on_close"]),
         (true, Ends::TimedOut, &["start", "end", "on_close"]),
@@ -1133,7 +1076,6 @@ async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_onc
         let answered = match ends {
             Ends::Panicked => {
                 let reply = accept().await;
-                // Unbatched, the panic is the request's own.
                 assert!(
                     reply.is_err()
                         || matches!(reply, Ok(ModelReply::Predicted(ref o)) if o[0].is_err()),
@@ -1149,7 +1091,6 @@ async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_onc
                 None
             }
             Ends::TimedOut => {
-                // b never predicts, so a's batch waits its window.
                 service.answer(resolve("b", 1)).await;
                 let predict = service.answer(ModelRequest::Predict(vec![group("a", &[1.0])]));
                 assert!(tokio::time::timeout(Duration::ZERO, predict).await.is_err());
@@ -1158,15 +1099,12 @@ async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_onc
             Ends::Answered => {
                 let accepted = accept();
                 started.await;
-                // In flight: that predict and this request, nothing more.
                 let (_, timing) = service.answer(ModelRequest::Describe).await;
                 assert_eq!(timing.in_flight, Some(2), "{case}");
                 Some(accepted)
             }
         };
         if ends != Ends::Panicked {
-            // The work is still running: the close waits for it, up to its
-            // deadline, and refuses anything new meanwhile.
             let early = service.close(Duration::from_millis(100)).await;
             assert!(
                 matches!(early, Err(rlmesh::Error::Timeout(_))),

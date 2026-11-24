@@ -1,16 +1,9 @@
 //! A borrowed local env behind a `'static` stand-in.
-//!
-//! The native driver and an env server need `'static` envs, and a run holds
-//! only `&'a mut` of the caller's. The stand-in keeps the env's members read
-//! once at construction and relays every `reset`, `step`, `render` and
-//! `close` to the caller through a [`CallerPort`], where the borrowed env
-//! runs them one at a time, between driver segments.
 
 use super::drive::CallerPort;
 use crate::spaces::Space;
 use crate::{Env, InfoDict, Metadata, Result, Value, VectorEnv, VectorSeed};
 
-/// An env's members, read once (the relay's contract source).
 struct Members {
     observation_space: Space,
     action_space: Space,
@@ -19,7 +12,6 @@ struct Members {
     id: Option<String>,
 }
 
-/// A scalar env lent through a port.
 pub(crate) struct LentEnv {
     members: Members,
     port: CallerPort,
@@ -81,7 +73,6 @@ impl Env for LentEnv {
     }
 }
 
-/// A vector env lent through a port.
 pub(crate) struct LentVectorEnv {
     members: Members,
     num_envs: u64,

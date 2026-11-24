@@ -1,5 +1,3 @@
-"""A served model stops on SIGINT and SIGTERM the way a served env does."""
-
 from __future__ import annotations
 
 import os
@@ -22,7 +20,6 @@ class Policy(rlmesh.numpy.Model):
 
 
 def _catches(pid: int, signum: int) -> bool:
-    """Whether ``pid`` has a handler for ``signum`` (Linux; elsewhere, after a beat)."""
     try:
         with open(f"/proc/{pid}/status", encoding="ascii") as status:
             caught = next(line for line in status if line.startswith("SigCgt:"))
@@ -32,9 +29,6 @@ def _catches(pid: int, signum: int) -> bool:
     return bool(int(caught.split()[1], 16) >> (signum - 1) & 1)
 
 
-# The serve with a Ctrl-C that lands while its serving line is printed: the
-# ready hook runs on the main thread, so Python raises the KeyboardInterrupt
-# inside it, not where the serve polls for one.
 INTERRUPTED_MID_LINE = """
 import signal
 import sys
@@ -109,11 +103,8 @@ def test_a_ctrl_c_during_the_serving_line_still_exits_130(tmp_path: object) -> N
 def test_a_served_model_stops_gracefully_and_promptly_on_sigterm(
     tmp_path: object,
 ) -> None:
-    # As PID 1 in a container, a SIGTERM nobody handles is ignored until
-    # `docker stop` kills the process; here, unhandled, it kills it (-15).
     proc = _serve(tmp_path)
     try:
-        # The serving line comes just before the serve takes over SIGTERM.
         deadline = time.monotonic() + 10
         while not _catches(proc.pid, signal.SIGTERM) and time.monotonic() < deadline:
             time.sleep(0.05)

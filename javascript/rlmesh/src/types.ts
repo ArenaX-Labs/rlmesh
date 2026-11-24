@@ -1,5 +1,4 @@
-// Public types of the `rlmesh` package. Names at this boundary carry no wire prefixes: modes,
-// priorities and kinds are lowercase strings.
+// Public types of the `rlmesh` package; modes, priorities and kinds are lowercase strings.
 
 /** The session mode, owned by the host (DISARMED → ARMED → ACTIVE → SAFE; ESTOP latches). */
 export type Mode = 'disarmed' | 'armed' | 'active' | 'safe' | 'estop';

@@ -2,27 +2,22 @@
 //!
 //! Session time is `tick × tick_ns`, advanced by the host tick by tick:
 //!
-//! 1. **Ready.** After arm, and after every step, each embodiment publishes
-//!    its samples for tick k, then sends `Ready{k, watermarks}`. Nothing
-//!    advances before the first `Ready` of an epoch.
+//! 1. **Ready.** After arm and after every step, each embodiment publishes its samples for
+//!    tick k, then sends `Ready{k, watermarks}`. Nothing advances before an epoch's first
+//!    `Ready`.
 //! 2. **Observe.** Once every embodiment is ready, the host publishes
-//!    `TickState{k, watermarks, due}`: `due` lists the controllers whose
-//!    policy period falls on k (from their binding's replan rate).
-//! 3. **Decide.** Each due controller waits until its inputs reach the
-//!    watermarks, snapshots, sends its chunks and `Decided{k, chunks}`. Its
-//!    decision is scheduled at tick k + d, where d is the session's latency
-//!    in ticks.
-//! 4. **Step.** The host publishes `Step{k, chunks}` with the chunks
-//!    scheduled at k, never before every decision scheduled at or before k
-//!    has arrived, so real computation is never raced.
-//! 5. The embodiment waits until its edge has judged every listed chunk,
-//!    applies what is due, steps physics by `tick_ns` and returns to 1 with
-//!    k + 1.
+//!    `TickState{k, watermarks, due}`; `due` lists the controllers whose policy period falls
+//!    on k.
+//! 3. **Decide.** Each due controller waits for its inputs to reach the watermarks, sends its
+//!    chunks and `Decided{k, chunks}`. The decision is scheduled at tick k + d, d the
+//!    session's latency in ticks.
+//! 4. **Step.** The host publishes `Step{k, chunks}` with the chunks scheduled at k, only
+//!    after every decision scheduled at or before k has arrived.
+//! 5. The embodiment waits until its edge has judged every listed chunk, applies what is due,
+//!    steps physics by `tick_ns` and returns to 1 with k + 1.
 //!
-//! Controllers not due at k are not waited for. A barrier not met within the
-//! timeout ends the run: the host goes SAFE. d is a constant here; seeded
-//! distributions and recorded traces belong to the managed
-//! timing-robustness suite.
+//! Controllers not due at k are not waited for. A barrier not met within the timeout ends the
+//! run: the host goes SAFE.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -138,7 +133,6 @@ impl VirtualClock {
         }
         let current = self.phase == Phase::Ready && tick == self.tick;
         if !current {
-            // A retry of a ready the barrier already counted is a no-op.
             if tick < self.tick || (tick == self.tick && self.ready.contains(from)) {
                 return Ok(Vec::new());
             }
@@ -211,7 +205,6 @@ impl VirtualClock {
         None
     }
 
-    /// Runs the barrier as far as it can go.
     fn advance(&mut self, who: &Participants, now_ns: i64) -> Vec<VirtualTick> {
         let mut out = Vec::new();
         if self.phase == Phase::Ready {
@@ -245,8 +238,6 @@ impl VirtualClock {
             self.phase = Phase::Decide;
             self.phase_since_ns = now_ns;
         }
-        // Step k once every decision scheduled at or before k has arrived:
-        // decisions made at ticks up to k - d.
         let k = self.tick;
         let latest_decision = k.checked_sub(self.config.latency_ticks);
         let pending = latest_decision.is_some_and(|last| {
@@ -261,7 +252,6 @@ impl VirtualClock {
                 chunks: self.scheduled.remove(&k).unwrap_or_default(),
             }));
             if let Some(last) = latest_decision {
-                // Every decision up to `last` is in: forget them.
                 self.due.retain(|tick, _| *tick > last);
             }
             self.tick = k + 1;
@@ -327,13 +317,11 @@ mod tests {
             .on_decided(&pid("policy"), 0, &[chunk(1)], &who, 1)
             .expect("decided");
         assert_eq!(kinds(&out), ["step0:1"]);
-        // Tick 1: not due, so observe and step together.
         let out = clock
             .on_ready(&pid("robot"), 1, &[], &who, 2)
             .expect("ready");
         assert_eq!(kinds(&out), ["observe10", "step1:0"]);
         assert_eq!(clock.tick(), 2);
-        // A retried ready and decision are no-ops; a future tick is refused.
         assert!(
             clock
                 .on_ready(&pid("robot"), 1, &[], &who, 3)
@@ -373,7 +361,6 @@ mod tests {
                 .expect("ready");
             steps.extend(kinds(&out));
             if k == 1 {
-                // Inference started at tick 0 and finishes during tick 1.
                 let out = clock
                     .on_decided(&pid("policy"), 0, &[chunk(7)], &who, 0)
                     .expect("decided");

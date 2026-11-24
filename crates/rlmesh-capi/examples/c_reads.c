@@ -1,4 +1,3 @@
-/* Adapter readers, instruction injection, retained contexts and render reach. */
 #include <rlmesh.h>
 #include <stdio.h>
 #include <string.h>
@@ -202,7 +201,6 @@ int main(void) {
   rlmesh_frame_sources_free(caller);
   rlmesh_frame_sources_free(caller_clone);
   CHECK(state.frees == 3);
-  /* Result constructors copy advisory inputs; lending survives shared clones. */
   char message[] = "copied";
   RLMeshAdvisory note = RLMESH_ADVISORY_INIT;
   note.severity = RLMESH_ADVISORY_SEVERITY_INFO;
@@ -306,7 +304,6 @@ int main(void) {
   CHECK(rlmesh_run_context_frame_sources(state.kept, &empty) == RLMESH_OK &&
         rlmesh_frame_sources_labels_len(empty) == 0);
   rlmesh_frame_sources_free(empty);
-  /* A binding reads an observation by role and reaches the env's render. */
   RLMeshBindOptions bind_options = RLMESH_BIND_OPTIONS_INIT;
   bind_options.workflow_edition = rlmesh_current_workflow_edition();
   RLMeshBinding* binding = NULL;
@@ -344,7 +341,7 @@ int main(void) {
   RLMeshFrameSources* transferred = NULL;
   CHECK(rlmesh_run_context_frame_sources(transfer_context, &transferred) == RLMESH_OK);
   CHECK(transfer_state.transfer_source == NULL);
-  rlmesh_run_context_free(transfer_context); /* transferred source retains the context */
+  rlmesh_run_context_free(transfer_context);
   out = NULL;
   CHECK(rlmesh_frame_sources_render(direct, &out, &has) == RLMESH_OK && has);
   rlmesh_value_free(out);

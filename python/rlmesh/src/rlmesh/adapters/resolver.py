@@ -1,11 +1,9 @@
 """Resolve env tags and a model spec into a concrete adapter.
 
-Resolution and plan application run in the native ``rlmesh-adapters`` core
-(the same implementation behind every language binding); this module
-serializes the tags and spec across the boundary, hands the
-gymnasium observation/action spaces to the native projector, and keeps the
-host-language concerns where they belong: entrypoint trust gating, custom
-callables, and the error type.
+Resolution and plan application run in the native ``rlmesh-adapters`` core;
+this module serializes the tags and spec across the boundary, hands the
+gymnasium spaces to the native projector, and handles entrypoint trust gating,
+custom callables, and the error type.
 
 Custom-input host holes and custom-encoding shims are keyed by the leaf's
 *structured placement path* in the input tree -- a tuple of ``str`` (Dict key)
@@ -57,8 +55,6 @@ class AdapterResolutionError(ValueError):
     """Raised when env tags and a model spec cannot be reconciled."""
 
 
-# Representative valid value per native base encoding, used by the optional
-# inverse self-check to confirm a CustomEncoding's two arms round-trip.
 _PROBES: dict[str, list[float]] = {
     "quat_xyzw": [0.0, 0.0, 0.0, 1.0],
     "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
@@ -83,11 +79,8 @@ def _walk_tree(
 ) -> Any:
     """Recurse the input tree, calling the per-node/per-leaf callbacks.
 
-    The single tree-walk every resolver traversal is built on. The segment walk
-    mirrors the native ``collect_leaves`` (a ``Dict`` pushes the key, a ``Tuple``
-    pushes the index), so a rendered placement matches the core's. Leaf detection
-    is by ``isinstance`` against the public leaf dataclasses, never a string
-    vocabulary. The three node callbacks decide the result shape:
+    A ``Dict`` pushes the key and a ``Tuple`` the index, so a rendered placement
+    matches the native core's. The node callbacks decide the result shape:
 
     - ``on_leaf(segments, leaf)`` -- the value produced for each leaf;
     - ``on_dict(children)`` -- combines a ``{key: result}`` map;
@@ -163,14 +156,10 @@ def _resolve_encoding_arm(
 ) -> RotationTransform:
     """Return the runnable callable for one ``CustomEncoding`` arm, or hard-fail.
 
-    A custom encoding executes in exactly one place: the process that defined its
-    in-process callable. So an in-process callable arm passes through and runs.
-    A *string* arm is not runnable -- a custom encoding is an extract/describe
-    schema for validation, not a portable runtime. The
-    :data:`~rlmesh.adapters.specs.custom_encoding.LOCAL_ARM` marker means a
-    callable that did not survive serialization; a ``module:callable`` entrypoint
-    is a portable reference whose execution is deferred (not wired up). Either
-    way it is language-tied and cannot be run here.
+    A custom encoding runs only in the process that defined its in-process
+    callable. A *string* arm (the
+    :data:`~rlmesh.adapters.specs.custom_encoding.LOCAL_ARM` marker or a
+    ``module:callable`` entrypoint) is not runnable.
     """
     if not isinstance(arm, str):
         return arm
@@ -195,11 +184,9 @@ def _shadow_state(
 ) -> State | Concat:
     """Replace a state leaf's custom-encoded parts with base-encoding shadows.
 
-    Records one observation shim per custom part, keyed by the leaf's structured
-    placement path, plus that part's index in ``shim_parts`` --
-    :func:`_address_obs_shims` turns the index into the part's offset once the
-    resolved widths are known. A custom encoding keeps its base width, so it may
-    sit at any offset of a multi-part :class:`Concat`.
+    Records one observation shim per custom part, keyed by placement path, plus
+    that part's index in ``shim_parts``; :func:`_address_obs_shims` turns the
+    index into an offset once widths are known.
     """
     placement = render_placement(segments)
     parts: tuple[ConcatPart, ...] = leaf.parts if isinstance(leaf, Concat) else (leaf,)
@@ -213,9 +200,7 @@ def _shadow_state(
             continue
         custom = True
         part = cast(State, part)
-        # The repack preserves the base width, so an index (one element) never
-        # fits and a dim is legal only when it restates that width -- which is
-        # how a concat part declares its own slice.
+        # The repack preserves base width: an index never fits, and a dim is legal only when it restates that width.
         if part.index is not None or part.dim not in (None, encoding.width):
             raise AdapterResolutionError(
                 f"state input {placement!r}: a CustomEncoding part keeps its base "
@@ -247,8 +232,7 @@ def _shadow_state(
         shadows.append(replace(part, encoding=encoding.base))
     if not custom:
         return leaf
-    # pad_to is fine (the shim addresses its slice of the padded vector), but
-    # reshape and a list container change the leaf the shim writes into.
+    # pad_to is fine; reshape and a list container change the leaf the shim writes into.
     if leaf.reshape is not None:
         raise AdapterResolutionError(
             f"state input {placement!r}: reshape runs before the host-side "
@@ -412,11 +396,8 @@ def _substitute_encodings(
     """Return a base-substituted shadow spec plus host-side encoding shims.
 
     The shadow spec lets the native core see only known encodings; the shims
-    repack the custom fields at the boundary, keyed by placement path. An
-    in-process callable arm runs in this process; a string arm (an entrypoint,
-    or a reconstructed-from-wire marker) hard-fails -- a custom encoding is a
-    validation/describe schema, executable only where its callable was defined
-    (see :func:`_resolve_encoding_arm`).
+    repack the custom fields at the boundary. A string arm hard-fails (see
+    :func:`_resolve_encoding_arm`).
     """
     obs_shims: list[ObsEncShim] = []
     shim_parts: list[int] = []
@@ -443,14 +424,11 @@ def _model_wire(
 ) -> tuple[dict[str, Any], dict[tuple[str | int, ...], ObsTransform]]:
     """Split a model spec into its wire form and the local custom callables.
 
-    Custom inputs never cross to the native core as code: an entrypoint
-    string is gated on ``trust_entrypoints`` and imported here; an
-    in-process callable stays here and is referenced by a ``host:<placement>``
-    placeholder. Either way the native plan keeps the input as a hole that
-    :class:`Adapter` fills from the raw observation. The returned callables are
-    keyed by the structured placement path (a ``str``/``int`` segment tuple); the
-    rendered ``host:<placement>`` string lives only in the wire spec, never
-    parsed back.
+    Custom inputs never cross to the native core as code: an entrypoint string
+    is gated on ``trust_entrypoints`` and imported here; an in-process callable
+    stays here, referenced by a ``host:<placement>`` placeholder. The native plan
+    keeps the input as a hole that :class:`Adapter` fills. The returned
+    callables are keyed by placement path.
     """
     customs: dict[tuple[str | int, ...], ObsTransform] = {}
 
@@ -481,8 +459,6 @@ def _model_wire(
             return {"type": "custom", "transform": wire_transform}
         return model_input_to_dict(cast(InputNode, leaf))
 
-    # The structural wire form: a Tuple serializes to a JSON list, a Dict to a
-    # JSON object, each leaf via ``wire_leaf``.
     wire_input = _walk_tree(
         model_spec.input,
         on_leaf=wire_leaf,
@@ -520,9 +496,8 @@ def resolve(
         model_spec: The model's declared input/output format.
         trust_entrypoints: Allow ``module:callable`` strings in custom
             inputs to be imported. Leave False for specs from untrusted
-            sources; in-process callables are always allowed. (Custom-encoding
-            entrypoint arms are never run -- a custom encoding executes only
-            where its in-process callable was defined.)
+            sources; in-process callables are always allowed. Custom-encoding
+            entrypoint arms are never run.
         check_inverse: Round-trip each two-armed
             :class:`~rlmesh.adapters.CustomEncoding` on a probe at resolve
             time to catch a mispaired encode/decode. Set False for an
@@ -535,9 +510,6 @@ def resolve(
         AdapterResolutionError: If a model input or action component has no
             usable counterpart in the env tags and spaces.
     """
-    # to_dict() runs the strict publish normalize; a spec error there (e.g. a
-    # duplicate action role) surfaces as an AdapterResolutionError, matching the
-    # pre-refactor behavior where this serialization sat inside the resolve try.
     try:
         env_tags_json = json.dumps(env_tags.to_dict())
     except ValueError as exc:
@@ -563,11 +535,10 @@ def _resolve_with_env_json(
 ) -> Adapter:
     """Shared resolve body, parameterized on the env tags JSON.
 
-    :func:`resolve` passes its locally-authored :class:`EnvTags` through
-    ``to_dict()`` (the strict publish door). :func:`resolve_from_contract` passes
-    a peer's raw contract tags **verbatim** to the native READ door — tolerant,
-    so a newer env's unrecognized observation kind parses and relays, and fails
-    only here if a model input references it (a typed ``UnsupportedKind``).
+    :func:`resolve` passes its :class:`EnvTags` through ``to_dict()``;
+    :func:`resolve_from_contract` passes a peer's raw tags verbatim to the
+    tolerant native read path, failing only if a model input references an
+    unrecognized kind.
     """
     if check_inverse:
         _check_inverses(model_spec)
@@ -615,12 +586,7 @@ def resolve_from_contract(
             resolution fails.
     """
     metadata = cast("dict[str, Any] | None", contract.metadata) or {}
-    # Consume path: pass the peer's raw contract tags straight to the tolerant
-    # native READ door, NOT through EnvTags.from_metadata (the strict publish
-    # door, which would reject a newer peer's unrecognized kind/field). The
-    # frozen Python dataclasses cannot represent an unknown leaf anyway; an
-    # unknown kind is the env's to declare and the resolver's to fail on (only if
-    # referenced), never the consumer's to parse.
+    # Pass peer tags to the tolerant native read path, not EnvTags.from_metadata, which rejects unknown kinds.
     env_tags_raw = metadata.get(ENV_METADATA_KEY)
     if env_tags_raw is None:
         raise AdapterResolutionError(
@@ -634,9 +600,7 @@ def resolve_from_contract(
     try:
         env_tags_json = json.dumps(env_tags_raw, allow_nan=False)
     except (ValueError, TypeError) as exc:
-        # ValueError = NaN/inf (allow_nan=False); TypeError = a non-JSON value
-        # (set, bytes, custom object). Both are "not serializable", surfaced as a
-        # clean AdapterResolutionError rather than a raw traceback to the caller.
+        # ValueError: NaN/inf; TypeError: a non-JSON value.
         raise AdapterResolutionError(
             f"env contract tags are not serializable JSON: {exc}"
         ) from None

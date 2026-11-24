@@ -21,15 +21,10 @@ pub enum Value {
     Numbers(Vec<(String, f64)>),
     /// Too many elements to list.
     Summary {
-        /// Elements.
         count: usize,
-        /// Smallest finite element.
         min: f64,
-        /// Largest finite element.
         max: f64,
-        /// Mean of the finite elements.
         mean: f64,
-        /// NaN or infinite elements.
         nonfinite: usize,
     },
     /// UTF-8 text.
@@ -92,8 +87,6 @@ pub fn thumbnail(spec: &StreamSpec, payload: &[u8], seq: u64) -> Value {
 }
 
 /// Decodes a raw packed value: every field, element by element.
-/// `names` label the elements of a single-field value when they match its
-/// length (joint names).
 pub fn decode(spec: &StreamSpec, names: &[String], payload: &[u8]) -> Value {
     if spec.fields.len() == 1 && spec.fields[0].dtype == DType::Utf8 {
         return match std::str::from_utf8(payload) {
@@ -147,7 +140,6 @@ pub fn decode(spec: &StreamSpec, names: &[String], payload: &[u8]) -> Value {
     }
 }
 
-/// One little-endian element as `f64`.
 fn element(dtype: DType, b: &[u8]) -> f64 {
     let a = |n: usize| -> [u8; 8] {
         let mut out = [0; 8];

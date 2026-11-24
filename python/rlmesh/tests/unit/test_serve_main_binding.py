@@ -1,10 +1,3 @@
-"""``python -m rlmesh.serve`` forwards a make-binding to the env factory.
-
-Closes the gap where ``serve.main()`` dropped kwargs: a containerized env can
-now serve any variation via ``--kwargs-json`` / ``RLMESH_MAKE_KWARGS``, while a
-binding aimed at a model (no load seam yet) fails loudly instead of vanishing.
-"""
-
 from __future__ import annotations
 
 import inspect
@@ -110,8 +103,6 @@ def test_model_binding_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_serve_target_overrides_the_model_entrypoint(
     monkeypatch: pytest.MonkeyPatch, argv: list[str], expected: str
 ) -> None:
-    # One family image serves every checkpoint: the platform sets the
-    # checkpoint's target over the image's CMD default.
     resolved: list[str] = []
     monkeypatch.setattr(
         serve, "resolve_entrypoint", lambda target, **k: resolved.append(target)
@@ -130,8 +121,6 @@ def test_serve_target_leaves_an_env_alone(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_serve_env_reserved_names_are_positional_only() -> None:
-    # env_source/address must be positional-only so a make-param named "address"
-    # (or "env_source") rides in **make_kwargs instead of colliding.
     params = inspect.signature(serve.serve_env).parameters
     assert params["env_source"].kind is inspect.Parameter.POSITIONAL_ONLY
     assert params["address"].kind is inspect.Parameter.POSITIONAL_ONLY
@@ -161,8 +150,6 @@ def test_serve_env_binding_named_address_does_not_collide(
 
 
 def test_main_forwards_runtime_vectorization(monkeypatch: pytest.MonkeyPatch) -> None:
-    # RLMESH_NUM_ENVS / RLMESH_VECTORIZATION_MODE flow into serve_env so a prebuilt
-    # EnvFactory image serves the requested lanes instead of a lone env.
     captured = _capture_env(monkeypatch)
     monkeypatch.setenv("RLMESH_NUM_ENVS", "4")
     monkeypatch.setenv("RLMESH_VECTORIZATION_MODE", "async")
@@ -170,7 +157,7 @@ def test_main_forwards_runtime_vectorization(monkeypatch: pytest.MonkeyPatch) ->
     assert code == 0
     assert captured["num_envs"] == 4
     assert captured["vectorization_mode"] == "async"
-    assert captured["binding"] == {}  # vector knobs do not leak into the binding
+    assert captured["binding"] == {}
 
 
 def test_main_rejects_non_integer_num_envs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,8 +204,6 @@ def test_serve_env_serves_factory_lanes_and_keeps_tags(
             return self.observation_space.sample(), 0.0, False, False, {}
 
     class _FakeTags:
-        # Stand-in EnvTags: EnvFactory.make stamps it onto each sub-env (validate=
-        # False), and EnvServer would re-stamp it on the scalar path.
         def to_metadata(self) -> dict[str, object]:
             return {"rlmesh.adapters.v1.env_tags": "x"}
 
@@ -229,15 +214,12 @@ def test_serve_env_serves_factory_lanes_and_keeps_tags(
         def make(self) -> object:
             return _GymEnv()
 
-    # num_envs > 1 serves lanes: one make() per lane, tags published per lane.
     serve.serve_env(_Factory, "127.0.0.1:1", num_envs=2)
     assert isinstance(captured["env"], list)
     assert len(captured["env"]) == 2
     assert all(isinstance(lane, _GymEnv) for lane in captured["env"])
     assert captured["tags"] is _Factory.tags
 
-    # An explicit vectorization_mode keeps the gym fan-out, served untagged
-    # (adapters resolve per lane and a gym vector env's spaces are batched).
     serve.serve_env(_Factory, "127.0.0.1:1", num_envs=2, vectorization_mode="sync")
     assert getattr(captured["env"], "num_envs", None) == 2
     assert captured["tags"] is None
@@ -246,8 +228,6 @@ def test_serve_env_serves_factory_lanes_and_keeps_tags(
 def test_cli_rejects_framework_and_device_for_model_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # --framework / --device only type the env obs/action seam; a model serve
-    # cannot honor them, so they hard-error instead of vanishing.
     monkeypatch.delenv("RLMESH_FRAMEWORK", raising=False)
     monkeypatch.delenv("RLMESH_DEVICE", raising=False)
     with pytest.raises(SystemExit):
@@ -257,8 +237,6 @@ def test_cli_rejects_framework_and_device_for_model_target(
 
 
 def test_cli_rejects_serve_controls_in_binding() -> None:
-    # framework/device joined num_envs/vectorization_mode in the binding
-    # collision guard: they are serve controls, not make() kwargs.
     with pytest.raises(SystemExit):
         serve.main(["--env", "pkg:Env", "--kwargs-json", '{"framework": "torch"}'])
     with pytest.raises(SystemExit):
@@ -268,8 +246,6 @@ def test_cli_rejects_serve_controls_in_binding() -> None:
 def test_resolve_entrypoint_accepts_env_factory_instance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # serve_env supports an EnvFactory INSTANCE (hasattr .make), so the CLI's
-    # entrypoint resolution must not reject the non-callable instance form.
     import sys
     import types
 
@@ -292,8 +268,6 @@ def test_resolve_entrypoint_accepts_env_factory_instance(
 
 
 def test_resolve_model_enforces_required_param_with_empty_binding() -> None:
-    # The model path now always resolves (matching the env path), so a declared
-    # required param is enforced even when no binding is supplied.
     from rlmesh.params import MissingParamError
 
     class _Req(rlmesh.Model):

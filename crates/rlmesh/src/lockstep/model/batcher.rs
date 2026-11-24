@@ -16,17 +16,13 @@ use super::{ModelService, fault};
 use crate::model::handler::ModelHandler;
 use crate::serve_options::BatchOptions;
 
-/// A served model's batcher: its options, the queue its loop reads (started
-/// on the first predict, dropped at close), and where batches are recorded.
 pub(super) struct Batching {
     options: BatchOptions,
     pub(super) queue: std::sync::Mutex<Option<mpsc::UnboundedSender<Queued>>>,
     records: Option<std::sync::Mutex<std::fs::File>>,
-    /// The model's name and address, which each record names.
     pub(super) serving: std::sync::OnceLock<(String, String)>,
 }
 
-/// A predict waiting in the batcher.
 pub(super) struct Queued {
     groups: Vec<ModelGroup>,
     bytes: usize,
@@ -34,7 +30,6 @@ pub(super) struct Queued {
     reply: oneshot::Sender<(Vec<ModelOutcome>, EndpointTiming)>,
 }
 
-/// The observation bytes a predict carries, history included.
 fn observation_bytes(groups: &[ModelGroup]) -> usize {
     let leaves = |leaves: &[Bytes]| leaves.iter().map(Bytes::len).sum::<usize>();
     groups
@@ -49,8 +44,6 @@ fn observation_bytes(groups: &[ModelGroup]) -> usize {
         .sum()
 }
 impl<H: ModelHandler + 'static> ModelService<H> {
-    /// Predicts `groups` in the next batch, or on their own when the model
-    /// does not batch.
     pub(super) async fn coalesce(
         self: &Arc<Self>,
         groups: Vec<ModelGroup>,
@@ -81,7 +74,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             reply,
         };
         if let Err(mpsc::error::SendError(queued)) = queue.send(queued) {
-            // Closing: answer it on its own.
             return self.predict(queued.groups, timing).await;
         }
         match answered.await {
@@ -98,15 +90,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         }
     }
 
-    /// The batcher loop: take an in-flight slot, assemble a batch, hand it
-    /// to the handler, and assemble the next while it runs. The slot is
-    /// taken before assembly, so at the cap requests keep joining the batch
-    /// that goes the moment a slot frees. While another batch is in flight
-    /// the batch stays open until that one ends (the handler runs one at a
-    /// time) or it fills: closing it on the window instead sent whatever
-    /// trickled in behind a big batch as a small one paying a whole forward.
-    /// Either way it closes once every resolved route has a request in it,
-    /// as no other request can come.
     async fn run_batches(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<Queued>) {
         let Some(options) = self.batching.as_ref().map(|b| b.options.clone()) else {
             return;
@@ -114,7 +97,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         let cap = options.max_in_flight_batches.max(1);
         let window = Duration::from_millis(options.batch_window_ms);
         let in_flight = Arc::new(Semaphore::new(cap));
-        // A request that did not fit the batch being assembled opens the next.
         let mut carry = None;
         loop {
             let Ok(permit) = Arc::clone(&in_flight).acquire_owned().await else {
@@ -134,8 +116,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             let busy = in_flight.available_permits() < cap - 1;
             let deadline = tokio::time::Instant::now() + window;
             while size < options.max_batch_size && bytes < options.batch_byte_budget {
-                // Registered before the check, so a release in between still
-                // wakes this batch to check again.
+                // Registered before the check, so a release in between still wakes this batch.
                 let released = self.released.notified();
                 tokio::pin!(released);
                 released.as_mut().enable();
@@ -145,8 +126,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 let next = if busy {
                     tokio::select! {
                         queued = rx.recv() => queued,
-                        // A slot freeing is the running forward ending; the
-                        // permit goes straight back so this batch takes it.
                         freed = Arc::clone(&in_flight).acquire_owned() => {
                             drop(freed);
                             break;
@@ -179,14 +158,10 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         }
     }
 
-    /// Whether every resolved route has a request in `waiting`.
     async fn every_route_in(&self, waiting: &HashSet<String>) -> bool {
         self.routes.lock().await.keys().all(|r| waiting.contains(r))
     }
 
-    /// Answers a batch with one handler call, each request with its own
-    /// groups' outcomes, and records it. `permit` is the batch's in-flight
-    /// slot, released before the record write.
     async fn flush(
         self: Arc<Self>,
         batch: Vec<Queued>,
@@ -216,9 +191,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         for (reply, count, waited) in members {
             let mine = outcomes.by_ref().take(count).collect();
             let queued = ns(waited).unwrap_or(0) + timing.queue_ns.unwrap_or(0);
-            // The batch's work is shared: each request is charged its groups'
-            // share of a grouped reply.
-            // Waits are each request's own and pass through whole.
             let share = |ns: Option<u64>| {
                 ns.map(|ns| (u128::from(ns) * count as u128 / size.max(1) as u128) as u64)
                     .filter(|ns| *ns != 0)
@@ -246,11 +218,9 @@ impl<H: ModelHandler + 'static> ModelService<H> {
     }
 }
 
-/// One handler call of the batcher.
 struct BatchRecord {
     size: usize,
     in_flight_at_dispatch: usize,
-    /// How long each group sat in the batcher before the call, in ms.
     waits: Vec<f64>,
     forward_wall: Duration,
     user_ns: Option<u64>,
@@ -267,10 +237,6 @@ impl Batching {
         }
     }
 
-    /// Appends `batch` to the record file, in the shape of the
-    /// runner's `telemetry/batches.jsonl` so one reader reads both:
-    /// `forwardWallMs` is the batch's call to settle (decode, the handler
-    /// lock, the forward, encode) and `endpointTotalMs` the handler call.
     fn record(&self, mut batch: BatchRecord) {
         let Some(records) = &self.records else {
             return;

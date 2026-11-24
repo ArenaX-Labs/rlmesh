@@ -4,14 +4,10 @@ use std::{fmt, str::FromStr};
 pub(crate) const V1_REFUSAL: &str =
     "v1 endpoints need RLMesh 0.1; serve with rlmesh.serve / pass the session address";
 
-/// An env's participant address: a lone `host:port` is short for
-/// `host:port/env` (anything else as given).
 pub(crate) fn env_address(text: &str) -> String {
     rlmesh_session::address::defaulting_participant(text, rlmesh_session::address::DEFAULT_ENV)
 }
 
-/// Why a bare port (`5555`) is no address, when `text` is one: it names no
-/// host, and `:5555` does.
 pub(crate) fn bare_port(text: &str) -> Option<String> {
     let port = text.trim();
     (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())).then(|| {
@@ -22,8 +18,6 @@ pub(crate) fn bare_port(text: &str) -> Option<String> {
     })
 }
 
-/// Why `text`, which is no session participant address, is refused: a
-/// bare port names no host; anything else is a v1 endpoint.
 pub(crate) fn refusal(text: &str) -> Error {
     Error::invalid_argument(bare_port(text).unwrap_or_else(|| V1_REFUSAL.into()))
 }
@@ -38,7 +32,6 @@ pub(crate) fn is_v2(text: &str) -> bool {
     rlmesh_session::address::is_v2_address(text)
 }
 
-/// `text` with its key (`#…`) left out: what errors, logs and `Debug` show.
 pub(crate) fn redact(text: &str) -> String {
     rlmesh_session::address::redact(text)
 }
@@ -122,7 +115,6 @@ mod tests {
             ("lab:7447", "lab:7447/env"),
         ] {
             assert_eq!(ConnectAddress::env(short).unwrap().as_str(), full);
-            // Not for a role without a default name (a served model).
             assert_eq!(
                 ConnectAddress::parse(short).unwrap_err().to_string(),
                 V1_REFUSAL

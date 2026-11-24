@@ -21,7 +21,6 @@ use crate::wire::{PartPath, PartSpec, ParticipantId, Place};
 /// The view's name: a binding against it targets `scene`.
 pub const VIEW: &str = "scene";
 
-/// How far a place's quaternion may sit from unit length.
 const UNIT_TOLERANCE: f64 = 1e-6;
 
 /// Whether `place` is well formed: `at` a path with no

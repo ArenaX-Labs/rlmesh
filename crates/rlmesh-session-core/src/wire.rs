@@ -1,54 +1,32 @@
 //! The RLMesh real-time session wire (protocol generation 2).
 //!
-//! This crate owns what two session peers must agree on byte for byte, and
-//! nothing about how they talk:
+//! What two session peers must agree on byte for byte, and nothing about how they talk:
 //!
-//! - [`ids`]: session, tenant, participant and channel ids, epochs, lease
-//!   tokens and binding fingerprints;
-//! - [`path`]: part paths, the only address of a part;
-//! - [`keys`]: the Zenoh key layout of one session;
-//! - [`version`]: the protocol generation, minor, kind table version and
-//!   the compatibility rule;
-//! - the message types: authority state and control verbs ([`authority`]),
-//!   heartbeats and clock pings ([`heartbeat`]), observer telemetry
-//!   ([`report`]), parts, streams and payload
-//!   packing ([`part`]), delivery contracts, action grids and publication
-//!   plans ([`contract`]), samples, batches and history queries ([`sample`]),
-//!   timed action chunks ([`action`]), the virtual-mode tick protocol
-//!   ([`tick`]), the lockstep fast path ([`lockstep`]), served models
-//!   ([`model`]), the endpoint timing their replies carry ([`timing`]),
-//!   machine pairing ([`pair`]), the lobby and scenes ([`scene`]) and one
-//!   robot's device view ([`view`]);
-//! - [`codec`]: the one module that knows the byte encoding.
+//! - [`ids`], [`path`] and [`keys`]: ids, epochs and lease tokens; part paths, the only
+//!   address of a part; the Zenoh key layout of one session.
+//! - [`version`]: the protocol generation, minor, kind table version and the compatibility
+//!   rule.
+//! - The messages: authority state and control verbs ([`authority`]), heartbeats and clock
+//!   pings ([`heartbeat`]), observer telemetry ([`report`]), parts and payload packing
+//!   ([`part`]), delivery contracts ([`contract`]), samples and history queries ([`sample`]),
+//!   timed action chunks ([`action`]), virtual-mode ticks ([`tick`]), the lockstep fast path
+//!   ([`lockstep`]), served models ([`model`]), endpoint timing ([`timing`]), machine pairing
+//!   ([`pair`]), the lobby and scenes ([`scene`]) and one robot's device view ([`view`]).
+//! - [`codec`]: the only module that knows the byte encoding.
 //!
-//! Every type outside [`codec`] is plain Rust: no generated code, no
-//! transport types.
+//! # Encoding
 //!
-//! # Encoding (decided Q8)
-//!
-//! **Protobuf envelopes with raw payloads**, for control and data:
-//!
-//! - Protobuf is the one schema language every binding RLMesh targets
-//!   (Python, C#, C++, Go) generates code for, and its field
-//!   rules (unknown fields skipped, numbers never reused) are exactly the
-//!   additive evolution the protocol needs.
-//! - Values are not serialized field by field: a sample's payload is its
-//!   part's fields packed raw, typed once by the declaration ([`part`]). The encoder
-//!   emits the payload as its own [`bytes::Bytes`]
-//!   segment between small field headers ([`codec::Encoded`]), which Zenoh
-//!   gathers without a copy; the decoder takes the received buffer as
-//!   [`bytes::Bytes`] and the payload slices it. A 900 kB camera frame is
-//!   never copied by this crate, and the concatenated segments are ordinary
-//!   protobuf that any implementation reads.
-//! - A fixed binary frame is future work, adopted
-//!   only if a measurement shows protobuf prevents a latency or copy target.
+//! Protobuf envelopes with raw payloads. A sample's payload is its part's fields packed raw,
+//! typed once by the declaration ([`part`]); the encoder emits it as its own
+//! [`bytes::Bytes`] segment between small field headers ([`codec::Encoded`]), and the decoder
+//! slices the received buffer, so a payload is never copied and the concatenated segments are
+//! ordinary protobuf.
 //!
 //! # Versioning
 //!
-//! See [`version`]: the generation is in the key prefix (`rlmesh/v2/...`) and
-//! the protobuf package (`rlmesh.session.v2`), so generations never meet; any
-//! protocol minor talks to any other, and features added in a minor are
-//! feature strings checked at attach.
+//! See [`version`]: the generation is in the key prefix (`rlmesh/v2/...`) and the protobuf
+//! package (`rlmesh.session.v2`), so generations never meet; any protocol minor talks to any
+//! other, and features added in a minor are feature strings checked at attach.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

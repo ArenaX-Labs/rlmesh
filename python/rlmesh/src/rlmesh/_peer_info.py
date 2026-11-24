@@ -1,23 +1,4 @@
-"""Best-effort collection of this Python runtime's identity for the handshake.
-
-The native handshake stamps every peer with an advisory ``PeerInfo`` (language,
-runtime version, OS, arch, framework versions) for operator debugging. The Rust
-side fills Rust defaults; this module gathers the *Python* host's real runtime
-and hands it to the native module (``rlmesh._rlmesh._set_python_peer_info``),
-which installs a process-wide override the Rust handshake builder merges in.
-
-Design notes:
-
-* Every field is best-effort. Collection never raises: a failure to read any
-  one field yields an empty value (which the Rust merge replaces with its
-  detected fallback for ``os``/``arch``/``package_version``).
-* Framework versions are read from *distribution metadata*
-  (:func:`importlib.metadata.version`), never by importing the framework. This
-  keeps import-time light and avoids forcing an optional heavy dependency
-  (numpy/torch/jax/jaxlib/gymnasium) to load.
-
-This is advisory diagnostics only; ``PeerInfo`` never gates compatibility.
-"""
+"""Best-effort collection of this Python runtime's identity for the handshake."""
 
 from __future__ import annotations
 
@@ -27,8 +8,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
 from typing import TypedDict
 
-# Frameworks whose installed version is worth reporting for debugging. Read from
-# distribution metadata only — these are deliberately not imported here.
+# Read from distribution metadata only; these are deliberately not imported.
 _FRAMEWORK_DISTRIBUTIONS: tuple[str, ...] = (
     "numpy",
     "torch",
@@ -37,12 +17,10 @@ _FRAMEWORK_DISTRIBUTIONS: tuple[str, ...] = (
     "gymnasium",
 )
 
-# Component label for a Python-hosted env/model peer.
 _COMPONENT = "rlmesh-python"
 
 
 def _safe(fn: Callable[[], object]) -> str:
-    """Call ``fn`` and return its string result, or ``""`` on any failure."""
     try:
         value = fn()
     except Exception:
@@ -56,13 +34,6 @@ def _safe(fn: Callable[[], object]) -> str:
 
 
 def _normalize_os(system: str) -> str:
-    """Map :func:`platform.system` to the Rust ``std::env::consts::OS`` vocab.
-
-    Rust reports ``"macos"``/``"windows"``/``"linux"``; Python's
-    ``platform.system()`` reports ``"Darwin"``/``"Windows"``/``"Linux"``. We
-    align the common ones and otherwise pass the lowercased value through (the
-    Rust merge keeps its own detected ``os`` when this is empty).
-    """
     mapping = {
         "darwin": "macos",
         "linux": "linux",
@@ -73,11 +44,7 @@ def _normalize_os(system: str) -> str:
 
 
 def _framework_versions() -> dict[str, str]:
-    """Versions of installed frameworks, from distribution metadata only.
-
-    Skips any framework that is not installed (``PackageNotFoundError``) and any
-    that raises for any other reason. Never imports the framework itself.
-    """
+    """Versions of installed frameworks, from distribution metadata only."""
     versions: dict[str, str] = {}
     for name in _FRAMEWORK_DISTRIBUTIONS:
         try:
@@ -90,7 +57,6 @@ def _framework_versions() -> dict[str, str]:
 
 
 def _package_version() -> str:
-    """This SDK's installed distribution version, best-effort."""
     try:
         return _dist_version("rlmesh")
     except Exception:
@@ -146,7 +112,6 @@ def register_python_peer_info(extra: dict[str, str] | None = None) -> None:
 
     try:
         info = collect_peer_info()
-        # `component` is fixed Rust-side per call site, so it is not forwarded.
         _set_python_peer_info(
             language=info["language"],
             language_version=info["language_version"],

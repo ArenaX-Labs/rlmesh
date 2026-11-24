@@ -1,5 +1,4 @@
-//! Gymnasium-shaped C environments, projected through the Rust facade.
-#![allow(unsafe_code)] // FFI callbacks, caller pointers and handle ownership.
+#![allow(unsafe_code)]
 use crate::abi::{
     sizing,
     status::{CapiError, RLMeshStatus, guard, guard_value},
@@ -496,8 +495,6 @@ impl Drop for Claim {
     }
 }
 
-/// A per-server gate prevents callbacks detached by the facade's timeout from
-/// starting after the C server has been freed. Free also drains each mutex.
 #[derive(Clone)]
 pub(crate) struct BorrowedEnv {
     pub(crate) inner: Arc<Mutex<Box<dyn Env + Send>>>,
@@ -794,7 +791,6 @@ mod tests {
             unsafe { rlmesh_env_server_new(&env, 1, &opts, &mut server) },
             RLMeshStatus::Ok
         );
-        // Never started: shutdown times out while the close stays wedged.
         assert_ne!(rlmesh_env_server_shutdown(server), RLMeshStatus::Ok);
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
         let pointer = server as usize;

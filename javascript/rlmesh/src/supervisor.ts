@@ -15,13 +15,9 @@ export interface WorkerLike {
 
 export interface SupervisorHooks {
   spawn(cls: TrafficClass): WorkerLike;
-  /** The `init` message for a (re)spawned Worker; includes the shared compiled Module. */
   initMessage(cls: TrafficClass): unknown;
-  /** Every message except `ready` and `fatal`. */
   onMessage(cls: TrafficClass, m: any): void;
-  /** The Worker is gone (trap, error, stall); called before the respawn delay. */
   onDown(cls: TrafficClass, reason: string): void;
-  /** A respawned Worker is ready; replay subscriptions etc. */
   onRestarted(info: WorkerRestart): void;
 }
 
@@ -43,7 +39,6 @@ interface Slot {
   lastSeen: number;
   downAt: number;
   reason: string;
-  /** Resolves the first start. */
   first?: { resolve: (m: any) => void; reject: (e: Error) => void };
 }
 
@@ -63,7 +58,6 @@ export class Supervisor {
     this.lastCheck = this.now();
   }
 
-  /** Spawn a class Worker; resolves with its `ready` message, rejects if it cannot instantiate. */
   start(cls: TrafficClass): Promise<any> {
     const slot: Slot = { w: null, ready: false, restarts: 0, consecutive: 0, lastRestartAt: -Infinity, lastSeen: this.now(), downAt: 0, reason: '' };
     this.slots.set(cls, slot);
@@ -80,7 +74,6 @@ export class Supervisor {
     return this.slots.get(cls)?.restarts ?? 0;
   }
 
-  /** Post to a ready Worker. Returns false (message dropped) while it is down or restarting. */
   post(cls: TrafficClass, m: unknown, transfer: Transferable[] = []): boolean {
     const s = this.slots.get(cls);
     if (!s?.w || !s.ready) return false;
@@ -88,12 +81,10 @@ export class Supervisor {
     return true;
   }
 
-  /** Tear down and respawn `cls` (also the entry point for `fatal`, `onerror` and stalls). */
   restart(cls: TrafficClass, reason: string) {
     const s = this.slots.get(cls);
     if (!s || this.closed || !s.w) return;
     if (s.first) {
-      // Never came up: fail `connect()` instead of looping.
       s.w.terminate();
       s.w = null;
       s.first.reject(new Error(`${cls} worker failed to start: ${reason}`));
@@ -117,7 +108,6 @@ export class Supervisor {
     }, delay);
   }
 
-  /** Call periodically. Skips a round when the caller's own timer ran late (a blocked main thread). */
   checkStalls() {
     const stallMs = this.opts.stallMs ?? 10000;
     const now = this.now();

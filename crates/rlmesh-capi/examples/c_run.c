@@ -1,4 +1,3 @@
-/* Runs and a binding, hook errors, contexts, budgets and result ownership. */
 #include <math.h>
 #include <rlmesh.h>
 #include <stdio.h>
@@ -53,7 +52,6 @@ static RLMeshStatus step(void* ud, const RLMeshValue* action, RLMeshValue** obs,
   rlmesh_value_free(success);
   return rlmesh_value_int(1, obs);
 }
-/* The model's reset options: every episode's reset carries level 9. */
 static RLMeshStatus add_level(void* ud, const RLMeshValue* episode, RLMeshValue** out) {
   (void)ud;
   bool has = false;
@@ -259,8 +257,6 @@ int main(void) {
         result == NULL);
   CHECK(strcmp(rlmesh_last_error_message(), "hook abort") == 0 && s.ends == 2);
   s.abort_step = false;
-  /* A binding: the model's action, then the env's; it holds the env and
-   * feeds its hooks, run_start at bind and run_end at close. */
   RLMeshBindOptions bo = RLMESH_BIND_OPTIONS_INIT;
   bo.workflow_edition = rlmesh_current_workflow_edition();
   bo.hooks = s.hooks;

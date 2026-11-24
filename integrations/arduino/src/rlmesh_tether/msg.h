@@ -1,9 +1,3 @@
-// The messages: typed views over a frame's payload, and their
-// encoding. Lengths are exact; reserved bits must be zero.
-//
-// `STATE` and `COMMAND` carry a part's dense value, whose length only the
-// receiver knows (from the map), so decoding takes it as a lookup.
-
 #ifndef RLMESH_TETHER_MSG_H_
 #define RLMESH_TETHER_MSG_H_
 
@@ -23,8 +17,8 @@ const uint8_t kMaxName = 32;
 const uint8_t kMaxNote = 48;
 // `part` meaning every part (`SAFE`).
 const uint8_t kEveryPart = 0xFF;
-// `HELLO.rx_max` bounds: room for `ATTACH` (16 bytes decoded), at most a
-// whole frame.
+// `HELLO.rx_max` bounds: room for `ATTACH` (16 bytes decoded), at most a whole
+// frame.
 const uint16_t kRxMaxMin = 16;
 const uint16_t kRxMaxMax = 256;
 // `HELLO.watchdog_ms` bounds.
@@ -176,8 +170,7 @@ struct Detach {
   uint8_t gen;
 };
 
-// One message; `type` (a `ty::k…`) says which member holds it. Decoded
-// messages borrow their variable parts from the frame.
+// One message; `type` (a `ty::k…`) says which member holds it.
 struct Msg {
   uint8_t type;
   // A `HELLO`'s version byte, with `Error::Version`.
@@ -209,8 +202,8 @@ enum class Error : uint8_t {
   Length,
   // A reserved bit is set.
   Reserved,
-  // A field out of range (`max` 0, a name too long, `rx_max` or
-  // `watchdog_ms` outside its bounds).
+  // A field out of range (`max` 0, a name too long, `rx_max` or `watchdog_ms`
+  // outside its bounds).
   Range,
   // `STATE` or `COMMAND` for a part the receiver doesn't know.
   UnknownPart,
@@ -229,7 +222,7 @@ enum class Receiver : uint8_t {
 };
 
 // A part's dense value length: the command on the board, the sample on the
-// bridge. `lookup` returns a negative length for an unknown part.
+// bridge.
 struct DenseLen {
   int16_t (*lookup)(const void* ctx, uint8_t part);
   const void* ctx;
@@ -243,8 +236,7 @@ Error decodeForBoard(const Frame& frame, DenseLen lens, Msg& out);
 Error decodeForBridge(const Frame& frame, DenseLen lens, Msg& out);
 
 // Writes `msg` as one frame with `seq` to `out` (COBS-encoded, with its
-// delimiter). Nothing is written when a field is out of range or the
-// payload doesn't fit a frame; that's the error.
+// delimiter).
 Error write(const Msg& msg, uint8_t seq, Sink out);
 
 // `write` for one message type.
@@ -260,11 +252,11 @@ Error writeSafe(const Safe& m, uint8_t seq, Sink out);
 Error writePing(const Ping& m, uint8_t seq, Sink out);
 Error writeDetach(const Detach& m, uint8_t seq, Sink out);
 
-// Whether `bytes` are well-formed UTF-8 (no overlong forms, surrogates or
-// code points past U+10FFFF).
+// Whether `bytes` are well-formed UTF-8 (no overlong forms, surrogates or code
+// points past U+10FFFF).
 bool validUtf8(const Bytes& bytes);
 
 }  // namespace tether
 }  // namespace rlmesh
 
-#endif  // RLMESH_TETHER_MSG_H_
+#endif

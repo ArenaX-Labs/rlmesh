@@ -1,13 +1,6 @@
-//! No secret reaches a tracing subscriber. Hosting a session, a keyed join,
-//! serving an env and serving a model (the Rust facade's serve and this
-//! extension's) are captured at TRACE, Zenoh's targets included, through the
-//! filter every subscriber this repo installs adds; neither the address key,
-//! the launch identity nor the link password may appear in any event or span
-//! field.
-//!
-//! It runs in a child process: the capture must be the process's first
-//! global subscriber, and the identity rides the child's environment as a
-//! launcher passes it.
+//! No secret reaches a tracing subscriber: neither the address key, the launch identity nor the
+//! link password may appear in any event or span field, Zenoh's targets included. The capture must
+//! be the process's first global subscriber, so it runs in a child process.
 
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
@@ -20,10 +13,8 @@ use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
 const CHILD: &str = "RLMESH_TEST_SECRET_TRACES_CHILD";
-/// What the child prints once it checked every line.
 const RAN: &str = "secret traces: checked";
 
-/// Every event and span field, as text.
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<String>>>);
 
@@ -85,7 +76,6 @@ impl<S: tracing::Subscriber> Layer<S> for Capture {
     }
 }
 
-/// The secrets a host launched under `identity` holds, by what each is.
 fn secrets(identity: &str) -> Vec<(&'static str, String)> {
     let key = rlmesh_session::address::identity_key(identity).expect("the identity");
     let text = key.to_string();
@@ -102,7 +92,6 @@ fn secrets(identity: &str) -> Vec<(&'static str, String)> {
     secrets
 }
 
-/// Waits up to 30 s for `capture` to see `needle`.
 fn wait_for(capture: &Capture, needle: &str) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !capture.saw(needle) {
@@ -140,14 +129,12 @@ fn no_secret_reaches_a_subscriber() {
         .output()
         .expect("the child");
     let _ = std::fs::remove_dir_all(&scratch);
-    // Its own messages never print a secret (see `child`).
     let shown = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.status.success(), "the child failed:\n{shown}");
-    // libtest prints the child's line after its own `test … ... `.
     let ran = shown
         .lines()
         .find_map(|line| line.find(RAN).map(|at| &line[at..]));
@@ -172,7 +159,6 @@ fn child() {
         .try_init()
         .expect("the first subscriber");
 
-    // Serve an env: it hosts the session (under the launched identity).
     let (server, address) = Python::attach(|py| -> PyResult<_> {
         let env = py
             .import("gymnasium")?
@@ -189,7 +175,6 @@ fn child() {
     wait_for(&capture, "EnvService serving");
     let session = address.rsplit_once('/').expect("participant").0.to_string();
 
-    // A keyed join: a remote env client.
     Python::attach(|py| -> PyResult<()> {
         let client = py
             .get_type::<crate::client::PyEnvClient>()
@@ -199,7 +184,6 @@ fn child() {
     })
     .expect("join the env");
 
-    // Serve a model through the Rust facade, until it is up.
     let model = rlmesh::Model::new(
         |_: rlmesh::Value| Ok(rlmesh::Value::Int(0)),
         rlmesh::ModelOptions::default(),
@@ -223,8 +207,6 @@ fn child() {
     cancel.cancel();
     let _ = serving.join().expect("the facade's serve");
 
-    // Serve a model through this extension: stopped first, it returns once
-    // bound.
     Python::attach(|py| -> PyResult<()> {
         let predict = py.eval(c"lambda observation: 0", None, None)?;
         let model = py.get_type::<crate::model::PyModel>().call1((predict,))?;
@@ -237,7 +219,6 @@ fn child() {
     Python::attach(|py| server.bind(py).call_method0("shutdown").map(drop)).expect("shutdown");
 
     let lines = capture.lines();
-    // What the run must have covered.
     for (start, needle) in [
         ("span ", " rlmesh.client.connect"),
         ("span ", " rlmesh.model.serve"),

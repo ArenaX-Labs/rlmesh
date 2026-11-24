@@ -1,15 +1,15 @@
-//! Per-device authorization: what
-//! each device may do, by its entry (`max_priority`, part globs, verbs).
+//! Per-device authorization: what each device may do, by its entry (`max_priority`, part
+//! globs, verbs).
 //!
-//! - An attach above the device's cap is refused (`NOT_AUTHORIZED`), never
-//!   clamped; an `observer` cap attaches only as an observer.
-//! - A lease needs every part it names covered by the device's `parts`, and
-//!   its class within the cap.
-//! - Reading a stream (its `k_stream`, a history query, a lockstep reply)
-//!   needs `parts` to cover it.
+//! - An attach above the device's cap is refused (`NOT_AUTHORIZED`), never clamped; an
+//!   `observer` cap attaches only as an observer.
+//! - A lease needs every part it names covered by the device's `parts`, and its class
+//!   within the cap.
+//! - Reading a stream (its `k_stream`, a history query, a lockstep reply) needs `parts`
+//!   to cover it.
 //! - `arm` and `disarm` need their verb; `estop` is every member's.
-//! - The `safety` class is `local`'s alone, and `local` (every holder of an
-//!   embedded host's address) may do everything.
+//! - The `safety` class is `local`'s alone, and `local` (every holder of an embedded
+//!   host's address) may do everything.
 //!
 //! A device with no entry may do nothing.
 
@@ -42,19 +42,18 @@ impl Verb {
 pub struct DeviceAccess {
     /// The highest class it may attach and lease at; `None`: observer only.
     pub max_priority: Option<PriorityClass>,
-    /// The roles its participants may attach with (an observer always
-    /// may): a board only embodies a robot, a browser only controls one.
+    /// The roles its participants may attach with (an observer always may): a board only
+    /// embodies a robot, a browser only controls one.
     pub roles: Vec<Role>,
-    /// Globs over `{robot}/{path}` it may lease and read (`*` one path
-    /// segment, `**` any number).
+    /// Globs over `{robot}/{path}` it may lease and read (`*` one path segment, `**` any
+    /// number).
     pub parts: Vec<String>,
     /// The verbs it may send besides every member's.
     pub verbs: Vec<Verb>,
 }
 
 impl DeviceAccess {
-    /// The defaults at `max_priority`: every part, and `arm`/`disarm` from
-    /// `operator` up.
+    /// The defaults at `max_priority`: every part, and `arm`/`disarm` from `operator` up.
     pub fn new(max_priority: Option<PriorityClass>) -> Self {
         let operator = max_priority.is_some_and(|p| p >= PriorityClass::Operator);
         Self {
@@ -219,8 +218,8 @@ impl Access {
         self.check_class(device, class, &format!("lease {robot}/{path}"))
     }
 
-    /// Whether `device` may read `robot`'s stream at `path` (a part path,
-    /// or one with `/_applied`).
+    /// Whether `device` may read `robot`'s stream at `path` (a part path, or one with
+    /// `/_applied`).
     pub fn may_read(&self, device: &str, robot: &ParticipantId, path: &str) -> bool {
         let path = path.strip_suffix("/_applied").unwrap_or(path);
         match self.entry(device) {
@@ -246,8 +245,6 @@ impl Access {
     }
 }
 
-/// Whether `glob` covers `{robot}/{path}`, segment by segment: `*` is one
-/// segment, `**` any number (none included), anything else itself.
 fn glob_match(glob: &str, robot: &str, path: &str) -> bool {
     fn go(glob: &[&str], name: &[&str]) -> bool {
         match glob.split_first() {
@@ -288,7 +285,6 @@ mod tests {
         let status = |r: Result<(), CtlError>| r.err().map(|e| e.status);
         let denied = Some(CtlStatus::NotAuthorized);
 
-        // (device, robot, path, may read)
         for (device, robot, path, reads) in [
             ("laptop", "ur10e", "arm", true),
             ("laptop", "ur10e", "arm/_applied", true),
@@ -306,8 +302,6 @@ mod tests {
                 "{device} {robot}/{path}"
             );
         }
-        // Attach: within the cap; observers only as observers; no safety
-        // but local's; no entry, nothing.
         let ctl = [Role::Controller];
         assert_eq!(
             status(access.check_attach("laptop", &ctl, PriorityClass::Model)),
@@ -337,7 +331,6 @@ mod tests {
             status(access.check_attach("stranger", &ctl, PriorityClass::Scripted)),
             denied
         );
-        // Leases: the part and the class.
         assert_eq!(
             status(access.check_lease("laptop", &ur, "arm", PriorityClass::Model)),
             None
@@ -350,7 +343,6 @@ mod tests {
             status(access.check_lease("laptop", &ur, "arm", PriorityClass::Operator)),
             denied
         );
-        // Verbs: arm and disarm from operator up, by default.
         assert_eq!(status(access.check_verb("laptop", Verb::Arm)), denied);
         assert_eq!(status(access.check_verb("rogue", Verb::Disarm)), None);
         assert_eq!(status(access.check_verb("local", Verb::Arm)), None);

@@ -6,13 +6,8 @@ use crate::errors::{SpaceError, err_space};
 use crate::scalar::{Scalar, ScalarError, decode_scalar};
 use crate::spaces::{Conformance, SpaceKind, SpaceSpec, SpaceValue};
 
-/// A low/high bound pair. `None` means "unbounded on this side" so integer
-/// bounds never have to invent a sentinel that collides with a real value
-/// (`i64::MIN`/`u64::MAX` are legitimate bounds).
 type Bound = (Option<Scalar>, Option<Scalar>);
 
-/// Elements per block of the vectorized scans: small enough to stay in L1,
-/// large enough that the per-block branch is noise.
 const BLOCK: usize = 4096;
 
 pub(crate) fn conform_box(space: &SpaceSpec, value: &SpaceValue, path: &str) -> Conformance {
@@ -45,7 +40,6 @@ pub(crate) fn conform_box(space: &SpaceSpec, value: &SpaceValue, path: &str) -> 
 
     let dtype = tensor.dtype();
     if dtype == DType::Unspecified {
-        // Tensor constructors reject Unspecified, so this cannot occur.
         return Conformance::Structural(SpaceError::invalid(
             path,
             "Box value dtype is unspecified",
@@ -58,8 +52,6 @@ pub(crate) fn conform_box(space: &SpaceSpec, value: &SpaceValue, path: &str) -> 
         Err(err) => return Conformance::Structural(err),
     };
 
-    // Borrowed straight from storage for a contiguous tensor: the scans below
-    // read the little-endian slab in place and allocate nothing.
     let data = tensor.to_contiguous_bytes();
     let elem = dtype_size(dtype);
     if !data.len().is_multiple_of(elem) {
@@ -74,11 +66,7 @@ pub(crate) fn conform_box(space: &SpaceSpec, value: &SpaceValue, path: &str) -> 
         ));
     }
 
-    // One scan. A NaN is never a member of any space, so it is a structural
-    // rejection that outranks an out-of-bounds element found earlier in the
-    // tensor; an out-of-bounds value is only a range deviation the serving side
-    // may tolerate. Every element is still checked for NaN after a range
-    // deviation is recorded, so a later NaN takes priority.
+    // NaN is a structural rejection that outranks any out-of-bounds element seen earlier.
     let finding = match bounds {
         Bounds::Uniform(bound) => scan_uniform(&data, dtype, bound),
         Bounds::Elementwise { low, high } => scan_elementwise(&data, dtype, low, high),
@@ -104,7 +92,6 @@ pub(crate) fn conform_box(space: &SpaceSpec, value: &SpaceValue, path: &str) -> 
     }
 }
 
-/// The first deviation a scan found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Finding {
     /// The first NaN element (structural).
@@ -119,8 +106,6 @@ enum Side {
     Above,
 }
 
-/// A Box space's bounds, resolved and length-checked but never expanded to
-/// one entry per element: per-element storage is read in place.
 enum Bounds<'a> {
     /// The same bound for every element (uniform or absent bounds).
     Uniform(Bound),
@@ -130,10 +115,6 @@ enum Bounds<'a> {
     TypedElementwise { low: &'a [u8], high: &'a [u8] },
 }
 
-/// Resolve the space's bounds for every dtype, comparing in the dtype's native
-/// domain. Float bounds carried as `double` (`Uniform`/`Elementwise`) are
-/// `Scalar::Float`s; dtype-typed byte bounds are decoded with the space's
-/// dtype so integer ranges stay exact.
 fn box_bounds<'a>(
     space: &'a SpaceSpec,
     numel: usize,
@@ -149,10 +130,6 @@ fn box_bounds<'a>(
         Some(BoxBounds::Uniform(bounds)) => {
             Bounds::Uniform((finite_float(bounds.low), finite_float(bounds.high)))
         }
-        // Elementwise bounds carry one value per element; the validator
-        // guarantees low.len() == high.len() == numel, so a length mismatch
-        // here means an unvalidated/corrupt spec reached containment. Error
-        // rather than silently cycling or truncating the bounds.
         Some(BoxBounds::Elementwise(bounds)) => {
             if bounds.low.len() != numel || bounds.high.len() != numel {
                 return err_space!(
@@ -190,13 +167,10 @@ fn box_bounds<'a>(
     })
 }
 
-/// An infinite `double` bound means "unbounded on this side"; a finite one is
-/// a real `Scalar::Float` comparison value.
 fn finite_float(value: f64) -> Option<Scalar> {
     value.is_finite().then_some(Scalar::Float(value))
 }
 
-/// Typed bounds must hold exactly `count` whole elements of `dtype`.
 fn check_typed_bounds(
     bytes: &[u8],
     count: usize,
@@ -222,8 +196,6 @@ fn check_typed_bounds(
     Ok(())
 }
 
-/// A bound shared by every element: the slab is read in its native type,
-/// block by block, with branch-free comparisons the compiler can vectorize.
 fn scan_uniform(data: &[u8], dtype: DType, (low, high): Bound) -> Option<Finding> {
     if dtype.is_float() {
         let (low, high) = (float_low(low, dtype), float_high(high, dtype));
@@ -248,7 +220,6 @@ fn scan_uniform(data: &[u8], dtype: DType, (low, high): Bound) -> Option<Finding
     }
 }
 
-/// An integer type's full range, in `i128`.
 fn range<T: Bounded + Into<i128>>() -> (i128, i128) {
     (T::MIN.into(), T::MAX.into())
 }
@@ -266,22 +237,14 @@ macro_rules! bounded {
 }
 bounded!(u8, i8, u16, i16, u32, i32, u64, i64);
 
-/// A float dtype's low bound as an `f64` threshold: an element is below it iff
-/// `low > v`. Absent is `-inf` (never greater); a NaN bound stays NaN, which,
-/// like `partial_cmp`, never compares greater.
 fn float_low(low: Option<Scalar>, dtype: DType) -> f64 {
     low.map_or(f64::NEG_INFINITY, |low| low.to_f64(dtype))
 }
 
-/// A float dtype's high bound: an element is above it iff `v > high`.
 fn float_high(high: Option<Scalar>, dtype: DType) -> f64 {
     high.map_or(f64::INFINITY, |high| high.to_f64(dtype))
 }
 
-/// An integer dtype's low bound in `i128`: an element `i` is below it iff
-/// `i < low`. A float bound `f` compares exactly, so `i < f` iff
-/// `i < ceil(f)` (saturating for out-of-range `f`); absent or NaN imposes no
-/// bound.
 fn int_low(low: Option<Scalar>, dtype: DType) -> i128 {
     match low {
         None => i128::MIN,
@@ -291,8 +254,6 @@ fn int_low(low: Option<Scalar>, dtype: DType) -> i128 {
     }
 }
 
-/// An integer dtype's high bound: `i` is above it iff `i > high`, and
-/// `i > f` iff `i > floor(f)`.
 fn int_high(high: Option<Scalar>, dtype: DType) -> i128 {
     match high {
         None => i128::MAX,
@@ -302,7 +263,6 @@ fn int_high(high: Option<Scalar>, dtype: DType) -> i128 {
     }
 }
 
-/// An integral scalar's value in its dtype's domain (`Uint64` unsigned).
 fn int_scalar(value: Scalar, dtype: DType) -> i128 {
     if dtype == DType::Uint64 {
         i128::from(value.as_u64())
@@ -311,9 +271,6 @@ fn int_scalar(value: Scalar, dtype: DType) -> i128 {
     }
 }
 
-/// Per-element `double` bounds (`Elementwise`), converted to the dtype's
-/// comparison domain element by element exactly as a uniform bound is (see
-/// [`float_low`] and [`int_low`]): an infinite bound is no bound.
 fn scan_elementwise(data: &[u8], dtype: DType, low: &[f64], high: &[f64]) -> Option<Finding> {
     let float = |index: usize| {
         let (low, high) = (low[index], high[index]);
@@ -362,9 +319,6 @@ fn scan_elementwise(data: &[u8], dtype: DType, low: &[f64], high: &[f64]) -> Opt
     }
 }
 
-/// Per-element typed bounds (`TypedElementwise`): bounds share the value's
-/// dtype, so every comparison is native (`Uint64` unsigned, `Bool` as 0/1,
-/// floats with IEEE semantics, where a NaN bound never compares greater).
 fn scan_typed_elementwise(data: &[u8], dtype: DType, low: &[u8], high: &[u8]) -> Option<Finding> {
     fn typed<V: PartialOrd + Copy, const N: usize>(
         data: &[u8],
@@ -401,9 +355,6 @@ fn read_f32(bytes: [u8; 4]) -> f64 {
     f64::from(f32::from_le_bytes(bytes))
 }
 
-/// Elements against per-element `(low, high)` thresholds: below iff
-/// `low > v`, above iff `v > high`, NaN (a value unordered with itself)
-/// structural and first-wins over any range deviation.
 fn scan_at<V: PartialOrd + Copy, const N: usize>(
     data: &[u8],
     read: impl Fn([u8; N]) -> V,
@@ -440,7 +391,6 @@ fn scan_float<const N: usize>(
     let mut range = None;
     for (block_index, block) in elements.chunks(BLOCK).enumerate() {
         let base = block_index * BLOCK;
-        // Branch-free reduction over the block; locate only on a hit.
         let (nan, out) = block.iter().fold((false, false), |(nan, out), &bytes| {
             let v = read(bytes);
             (nan | v.is_nan(), out | below(v) | above(v))
@@ -466,9 +416,6 @@ fn scan_float<const N: usize>(
     range
 }
 
-/// `low`/`high` are `i128` thresholds (`i < low` is below, `i > high` above);
-/// `min`/`max` are the dtype's range. Integers cannot be NaN, so the first
-/// deviation is the answer.
 fn scan_int<T, const N: usize>(
     data: &[u8],
     read: impl Fn([u8; N]) -> T + Copy,
@@ -480,13 +427,9 @@ where
 {
     let (elements, _) = data.as_chunks::<N>();
     let first = elements.first()?;
-    // Bounds that cover the whole dtype: no element can deviate (e.g. a uint8
-    // image in 0..=255), so the shape and length checks already decided it.
     if low <= min && high >= max {
         return None;
     }
-    // A bound past the dtype's far end: every element deviates, so the first
-    // one is the answer.
     if low > max || high < min {
         let side = if read(*first).into() < low {
             Side::Below
@@ -495,8 +438,6 @@ where
         };
         return Some(Finding::Range(0, side));
     }
-    // Both thresholds now clamp into the dtype exactly: for `min <= v <= max`,
-    // `v < low` iff `v < max(low, min)`, and likewise for `high`.
     let (Ok(low), Ok(high)) = (T::try_from(low.max(min)), T::try_from(high.min(max))) else {
         unreachable!("clamped bounds lie in the dtype's range");
     };
@@ -575,13 +516,10 @@ mod tests {
     fn test_box_conform_classifies_deviations() {
         let space = box_space(0.0, 1.0, vec![2], DType::Float32);
 
-        // Out of bounds is a Range deviation the serving side may tolerate.
         let oob: Vec<u8> = [0.5f32, 2.5].iter().flat_map(|v| v.to_le_bytes()).collect();
         let oob = SpaceValue::Box(Tensor::from_vec(oob, vec![2], DType::Float32).expect("tensor"));
         assert!(matches!(conform(&space, &oob), Conformance::Range(_)));
 
-        // NaN is Structural even when another element is also out of bounds, so a
-        // NaN is never masked by a range deviation found earlier in the scan.
         let nan_and_oob: Vec<u8> = [2.5f32, f32::NAN]
             .iter()
             .flat_map(|v| v.to_le_bytes())
@@ -597,8 +535,6 @@ mod tests {
 
     #[test]
     fn test_box_contains_rejects_nan_even_when_unbounded() {
-        // An unbounded Box accepts any finite value but never NaN: NaN is not a
-        // member of any space, so it is rejected regardless of bounds.
         let space = box_space(f64::NEG_INFINITY, f64::INFINITY, vec![2], DType::Float32);
         let data: Vec<u8> = [f32::NAN, 0.5]
             .iter()
@@ -660,9 +596,6 @@ mod tests {
     fn test_box_contains_rejects_mismatched_elementwise_bounds() {
         use crate::{BoxSpec, ElementwiseBounds};
 
-        // A hand-built (unvalidated) spec whose elementwise bounds carry fewer
-        // values than the tensor has elements. Containment must reject this
-        // rather than silently cycling the bounds to fit.
         let space = SpaceSpec {
             shape: vec![3],
             dtype: DType::Float32,
@@ -682,8 +615,6 @@ mod tests {
 
     #[test]
     fn test_strided_view_passes_contains() {
-        // Storage holds [0.5, 9.0, 0.5, 9.0]; the stride-2 view sees only
-        // [0.5, 0.5], so the out-of-bounds 9.0s must not be inspected.
         let data: Vec<u8> = [0.5f32, 9.0, 0.5, 9.0]
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -706,10 +637,6 @@ mod tests {
 
     #[test]
     fn test_box_contains_int64_extreme_bounds_are_exact() {
-        // Bounds at the very top of the i64 range: 2^63 - 2 .. 2^63 - 1.
-        // An f64 round-trip would round both to 2^63 and accept 2^63 - 1 even
-        // when it is the only in-bounds value, or reject it entirely. The
-        // native-domain comparison keeps the one-ULP distinction exact.
         let space = i64_box(i64::MAX - 1, i64::MAX, vec![3], DType::Int64);
 
         let inside: Vec<u8> = [i64::MAX - 1, i64::MAX, i64::MAX - 1]
@@ -724,8 +651,6 @@ mod tests {
             .is_ok()
         );
 
-        // i64::MAX - 2 is just below the low bound and must be rejected even
-        // though it is f64-indistinguishable from the bound.
         let below: Vec<u8> = [i64::MAX - 2, i64::MAX, i64::MAX]
             .iter()
             .flat_map(|v| v.to_le_bytes())
@@ -755,7 +680,6 @@ mod tests {
             .is_ok()
         );
 
-        // i64::MIN + 2 is above the high bound.
         let above: Vec<u8> = [i64::MIN, i64::MIN + 2]
             .iter()
             .flat_map(|v| v.to_le_bytes())
@@ -771,9 +695,6 @@ mod tests {
 
     #[test]
     fn test_box_contains_uint64_max_bound() {
-        // u64::MAX as a bound, compared in the unsigned domain. The largest
-        // value (u64::MAX) is in bounds; u64::MAX as i64 is -1, so an i64
-        // comparison would wrongly reject it.
         let space = BoxSpaceBuilder::uint_scalar(0, u64::MAX, vec![1])
             .build()
             .expect("valid space");
@@ -787,7 +708,6 @@ mod tests {
             .is_ok()
         );
 
-        // A mid-range value is also in bounds.
         let mid: Vec<u8> = (1u64 << 63).to_le_bytes().to_vec();
         assert!(
             contains(
@@ -817,7 +737,6 @@ mod tests {
             .is_ok()
         );
 
-        // Second element below its low bound (100).
         let below: Vec<u8> = [5i64, 99].iter().flat_map(|v| v.to_le_bytes()).collect();
         assert!(
             contains(
@@ -840,7 +759,6 @@ mod tests {
                 "u64 {v} must be in [-1.0, 100.0]"
             );
         }
-        // 101 is above the high bound.
         let above = SpaceValue::Box(
             Tensor::from_vec(101u64.to_le_bytes().to_vec(), vec![1], DType::Uint64)
                 .expect("tensor"),
@@ -850,9 +768,6 @@ mod tests {
 
     #[test]
     fn test_box_rejects_fractional_float_bound_on_int_dtype() {
-        // A fractional float-form bound on an integer dtype cannot be packed
-        // onto the bytes-only wire without truncation (0.5 -> 0), which would
-        // silently widen the space's admitted set. Reject it at construction.
         let err = BoxSpaceBuilder::scalar(0.5, 10.0, vec![1])
             .dtype(DType::Int64)
             .build()
@@ -861,8 +776,6 @@ mod tests {
             err.to_string().contains("finite whole number"),
             "unexpected error: {err}"
         );
-        // An infinite bound on an integer dtype is rejected for the same reason
-        // (it would saturate to the dtype min/max).
         assert!(
             BoxSpaceBuilder::scalar(f64::NEG_INFINITY, 10.0, vec![1])
                 .dtype(DType::Int64)
@@ -870,7 +783,6 @@ mod tests {
                 .is_err()
         );
 
-        // Integral float bounds round-trip exactly and remain valid.
         let space = box_space(0.0, 10.0, vec![1], DType::Int64);
         let one = SpaceValue::Box(
             Tensor::from_vec(1i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
@@ -894,8 +806,6 @@ mod tests {
     fn test_validate_rejects_typed_bounds_byte_length_mismatch() {
         use crate::{BoxSpec, TypedUniformBounds};
 
-        // A Uint64 typed-uniform bound whose `low` is only 4 bytes (half a
-        // scalar) must be rejected by validation.
         let space = SpaceSpec {
             shape: vec![1],
             dtype: DType::Uint64,

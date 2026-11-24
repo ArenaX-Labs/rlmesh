@@ -1,5 +1,3 @@
-"""A lone ``host:port`` is an env's address, short for ``host:port/env``."""
-
 from __future__ import annotations
 
 import socket
@@ -86,7 +84,6 @@ def test_a_bare_port_names_the_host_form() -> None:
 
 
 def test_a_served_model_still_names_itself() -> None:
-    # A model has no default name: Model("host:port") names no model.
     with pytest.raises(ValueError, match="participant address"):
         rlmesh.Model("127.0.0.1:5555")
 
@@ -101,7 +98,6 @@ def test_a_session_address_keeps_host_port_as_that_hosts_session() -> None:
 
 @pytest.fixture
 def grpc_like_server() -> Iterator[int]:
-    """A TCP server speaking HTTP/2, as an RLMesh 0.1 (gRPC) server does."""
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen()
@@ -109,7 +105,6 @@ def grpc_like_server() -> Iterator[int]:
 
     def answer(conn: socket.socket) -> None:
         with conn:
-            # An HTTP/2 server's first frame: an empty SETTINGS.
             conn.sendall(bytes([0, 0, 0, 4, 0, 0, 0, 0, 0]))
             try:
                 conn.recv(256)

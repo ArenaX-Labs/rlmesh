@@ -1,18 +1,10 @@
-//! An ordered preference list of a frozen vocabulary value, tolerant of unknown
-//! (future) entries.
+//! An ordered preference list of a frozen vocabulary value, tolerant of unknown entries.
 //!
-//! A spec field that once named a single encoding (`"encoding": "quat_xyzw"`)
-//! becomes an [`AcceptSet`]: still a bare string on the wire when it holds one
-//! value (byte-identical to before), but optionally a list when a side declares
-//! more than one acceptable encoding (`["rot6d", "quat_xyzw"]`). The resolver
-//! reads these as a *preference order* and picks the encoding the two sides can
-//! bridge — see `resolver`. Unknown (future) strings parse and round-trip but
-//! are skipped by [`AcceptSet::known`], so an old reader degrades gracefully
-//! instead of failing at parse: the recognized subset still negotiates, and a
-//! wholly-unrecognized declaration surfaces at *resolve* (a typed error), never
-//! here. The vocabulary enums themselves ([`RotationEncoding`](super::RotationEncoding),
-//! [`ImageLayout`](super::ImageLayout)) stay closed and `Copy`; the unknown arm
-//! lives only at this boundary so the apply/geometry layers never see it.
+//! An [`AcceptSet`] is a bare string on the wire when it holds one value and a list when a side
+//! accepts several (`["rot6d", "quat_xyzw"]`); the resolver reads it in preference order. Unknown
+//! strings parse and round-trip but are skipped by [`AcceptSet::known`], so a reader degrades
+//! gracefully: the recognized subset still negotiates, and a wholly unrecognized declaration is a
+//! typed error at resolve, never at parse.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -23,18 +15,12 @@ use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A closed wire vocabulary: a value with a canonical wire string, parseable
-/// back from one. Implemented by [`RotationEncoding`](super::RotationEncoding)
-/// and [`ImageLayout`](super::ImageLayout).
+/// back from one.
 pub trait WireVocab: Copy + Eq + Sized {
-    /// Parse a wire string into a known value, or `None` if unrecognized.
     fn from_wire(name: &str) -> Option<Self>;
-    /// The canonical wire string for this value.
     fn as_wire(self) -> &'static str;
 }
 
-/// One entry of an [`AcceptSet`]: a recognized vocabulary value, or an unknown
-/// (future) wire string retained verbatim for round-trip but never selected by
-/// a reader that does not recognize it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Entry<T> {
     Known(T),
@@ -59,8 +45,7 @@ impl<T: WireVocab> Entry<T> {
 
 /// An ordered, non-empty preference list of a frozen vocabulary value.
 ///
-/// Entries are de-duplicated by wire string, preserving first-seen order. See
-/// the module docs for the wire form and the graceful-degradation contract.
+/// Entries are de-duplicated by wire string, keeping first-seen order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptSet<T> {
     // Invariant: non-empty. Enforced by the deserializer (a list must name at
@@ -85,8 +70,7 @@ impl<T: WireVocab> AcceptSet<T> {
         })
     }
 
-    /// The first recognized value, if any. For a producer this is its native
-    /// (raw) encoding; `None` means the declaration named only unknown values.
+    /// The first recognized value, if any.
     pub fn first_known(&self) -> Option<T> {
         self.known().next()
     }
@@ -104,10 +88,8 @@ impl<T: WireVocab> AcceptSet<T> {
 
 impl<T: WireVocab> Serialize for AcceptSet<T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Byte-parity: a single entry serializes as a bare string, exactly like
-        // the pre-accept-set single-value wire form, so existing frozen specs
-        // round-trip unchanged. A list only appears when a side genuinely
-        // declares more than one acceptable encoding.
+        // A single entry serializes as a bare string so single-value wire forms stay byte-identical;
+        // a list appears only when more than one encoding is declared.
         if let [only] = self.entries.as_slice() {
             return serializer.serialize_str(only.wire());
         }
@@ -140,8 +122,6 @@ impl<'de, T: WireVocab> Deserialize<'de> for AcceptSet<T> {
                 let mut entries: Vec<Entry<T>> = Vec::new();
                 let mut seen: BTreeSet<String> = BTreeSet::new();
                 while let Some(raw) = seq.next_element::<String>()? {
-                    // De-dup by wire string, preserving first-seen order: a
-                    // repeated preference is harmless noise, not an error.
                     if seen.insert(raw.clone()) {
                         entries.push(Entry::parse(raw));
                     }
@@ -173,8 +153,6 @@ impl WireVocab for super::Provenance {
 mod tests {
     use super::{AcceptSet, WireVocab};
 
-    // A tiny two-value vocabulary so the AcceptSet tests do not depend on the
-    // real encoding enums.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Vocab {
         A,
@@ -205,7 +183,6 @@ mod tests {
     fn singleton_round_trips_as_a_bare_string() {
         let set = parse(r#""a""#);
         assert_eq!(set.known().collect::<Vec<_>>(), vec![Vocab::A]);
-        // Byte parity: a single entry serializes back to a bare string.
         assert_eq!(serde_json::to_string(&set).unwrap(), r#""a""#);
         assert_eq!(AcceptSet::single(Vocab::A), set);
     }
@@ -221,8 +198,6 @@ mod tests {
 
     #[test]
     fn unknown_entries_are_tolerated_and_skipped() {
-        // A future encoding in a list parses, round-trips verbatim, but is not a
-        // selectable known value — graceful forward-compatible degradation.
         let set = parse(r#"["c", "a"]"#);
         assert_eq!(set.known().collect::<Vec<_>>(), vec![Vocab::A]);
         assert_eq!(set.first_known(), Some(Vocab::A));
@@ -232,8 +207,6 @@ mod tests {
 
     #[test]
     fn a_wholly_unknown_declaration_has_no_known_value() {
-        // Parses (no hard fail), but first_known is None: the resolver turns
-        // this into a typed resolve-time error, not a parse error.
         let set = parse(r#""rot10d""#);
         assert_eq!(set.first_known(), None);
         assert_eq!(set.known().count(), 0);
@@ -258,8 +231,6 @@ mod tests {
     #[test]
     fn a_provenance_set_tolerates_an_unknown_value() {
         use crate::spec::Provenance;
-        // A single value is a bare string on the wire; an unknown one rides
-        // along and is simply not a known entry.
         let set: AcceptSet<Provenance> = serde_json::from_str(r#""estimated""#).unwrap();
         assert_eq!(set.first_known(), Some(Provenance::Estimated));
         assert_eq!(serde_json::to_string(&set).unwrap(), r#""estimated""#);

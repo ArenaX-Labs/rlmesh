@@ -32,10 +32,6 @@ where
     E: RuntimeEnv + Clone + 'static,
     M: ModelHandler,
 {
-    /// Start (or restart) every lane of a group: claim the episodes' slots,
-    /// pick their seeds, mint their ids, and put the reset in flight. A group
-    /// with no slot left goes idle instead; a lockstep vector wider than the
-    /// remaining budget starts its extra lanes surplus (never scored).
     pub(super) fn begin_reset(
         &mut self,
         gid: usize,
@@ -56,13 +52,11 @@ where
             return;
         }
         let seeds = self.seeds_for(&groups[gid], &slots);
-        // The runtime is the sole id authority (R1): a fresh UUIDv7 per lane.
         let episode_ids = mint_episode_ids(width);
         for surplus in &episode_ids[slots.len()..] {
             state.mark_surplus(surplus);
         }
         state.note_episode_seeds(&episode_ids, &seeds);
-        // Who the model's reset options are for (none asked without a source).
         let starts: Vec<EpisodeInfo> = match self.reset_options {
             Some(_) => episode_ids
                 .iter()
@@ -80,8 +74,6 @@ where
         let group = &mut groups[gid];
         group.pending_start = Some((episode_ids.clone(), slots));
         group.replay.clear();
-        // The rows belonged to the episodes this reset ends; their windows are
-        // evicted, and the new episodes start from their reset observation.
         group.history.clear();
         group.pending_roll.clear();
         let reset_options = self.reset_options.clone();
@@ -131,9 +123,6 @@ where
         });
     }
 
-    /// Put a step in flight for every ready group that has an action frame:
-    /// the next replay frame, or a chunk that arrived while the last one
-    /// played.
     #[allow(clippy::needless_range_loop)]
     pub(super) async fn dispatch_steps(
         &mut self,
@@ -158,11 +147,6 @@ where
             let Some(model_action) = groups[gid].replay.pop_front() else {
                 continue;
             };
-            // Async-inference mode: with `prefetch_lead` (or fewer) replay frames
-            // left, ask for the next chunk from the latest observation now. On a
-            // history route that observation is the backlog's trailing row (it
-            // landed while a frame covered its step); `latest_request` promotes
-            // it to the request's own and the rows before it ride along.
             if self.prefetch_lead > 0
                 && groups[gid].replay.len() <= self.prefetch_lead as usize
                 && matches!(groups[gid].predict, PredictState::None)
@@ -340,8 +324,6 @@ where
         }
     }
 
-    /// Apply one group's step: account the step, complete and (per autoreset
-    /// mode) restart its finished lanes, then observe the next observation.
     #[allow(clippy::too_many_arguments)]
     async fn on_step(
         &mut self,
@@ -368,17 +350,8 @@ where
         let predict = std::mem::take(&mut groups[gid].pending_predict);
         state.record_step_at(&positions, &response.rewards, rpc, predict);
         let snapshot = state.snapshot_at(&positions);
-        // The lanes the env ended this step, from its own flags and this
-        // driver's accounting of each lane's episode. A lane rolling under
-        // NEXT_STEP autoreset answers its new episode's first observation,
-        // never a completion.
         let mut completed_episodes = self.env_completions(state, &groups[gid], &response);
 
-        // Then the lanes the step or time cap ends, skipping those the env
-        // just ended, and every live lane an observer ends early. Both run
-        // ahead of the step event so it can carry the terminal flags; a cap
-        // is never configured under NEXT_STEP, so nothing here precedes a
-        // roll it should follow.
         let directive = self.hooks.directive();
         let capped = self.capped_completions(
             state,
@@ -406,9 +379,6 @@ where
             .iter()
             .map(|lane| groups[gid].pending_roll.contains(lane))
             .collect();
-        // On an autoreset roll this response carries the NEW episode's reset
-        // observation + infos, which belong on its observation event, not on
-        // the old episode's step.
         let rolled = !groups[gid].pending_roll.is_empty();
         fan_out_event!(
             self,
@@ -430,16 +400,10 @@ where
             }
         );
 
-        // Apply any NEXT_STEP autoreset roll the env just performed: roll our
-        // slots to freshly minted ids, each on a fresh route-global slot.
         if rolled {
-            // The step event above was the ended ids' last hook event, so their
-            // completions go out now, ahead of the new episodes' start.
             let completions = std::mem::take(&mut groups[gid].pending_completed);
             self.fan_out_completions(completions).await;
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
-            // The ended ids leave their slots now, so this is when the model
-            // drops them (see `queue_evictions` for why not at completion).
             self.queue_evictions(gid, &groups[gid], state, pending_roll.iter().copied());
             let roll_ids = episode_ids_with_roll(
                 state.episode_ids_at(&positions),
@@ -457,7 +421,6 @@ where
                         .and_then(|slots| slots.first().copied())
                 })
                 .collect();
-            // A rolled lane the budget no longer covers runs surplus.
             for ((lane, id), slot) in groups[gid].lanes.iter().zip(&roll_ids).zip(&rolling) {
                 if pending_roll.contains(lane) && slot.is_none() {
                     state.mark_surplus(id);
@@ -469,11 +432,6 @@ where
         }
 
         let completions = self.complete_episodes(state, &context, &completed_episodes);
-        // Tell the model to evict the ended episodes' state (best-effort GC;
-        // ids never repeat so a miss only leaks memory). Under NEXT_STEP the
-        // ended id is still observed and predicted on once more (below) and
-        // stepped at t+1, so its `episode_completed` event and its eviction
-        // both wait for the roll at t+1.
         if self.driver_owns_resets() {
             self.fan_out_completions(completions).await;
             self.queue_evictions(
@@ -487,15 +445,8 @@ where
         }
 
         if !completed_episodes.is_empty() {
-            // A lane that completed gets a fresh episode, so buffered future
-            // actions are stale: flush and re-plan (receding horizon on reset).
-            // A prediction in flight was conditioned on the ended episode; its
-            // chunk must not leak into the new one.
             let group = &mut groups[gid];
             if !group.replay.is_empty() && group.width() > 1 && !self.vector_replay_warned {
-                // Tripwire for chunk replay on a lockstep vector group, once per
-                // session: the buffer is whole-batch, so ONE lane's episode end
-                // throws away every lane's remaining frames.
                 self.vector_replay_warned = true;
                 tracing::warn!(
                     num_envs = group.width(),
@@ -510,8 +461,6 @@ where
                 PredictState::InFlight { .. } => PredictState::InFlight { stale: true },
                 _ => PredictState::None,
             };
-            // Under NEXT_STEP, a lane that completed this step (t) autoresets
-            // at t+1, which rolls its slot.
             if !self.driver_owns_resets() {
                 group
                     .pending_roll
@@ -519,9 +468,6 @@ where
             }
         }
 
-        // The edition's default step bound truncates under driver-owned resets
-        // (`capped_completions`). Under NEXT_STEP the env owns its lanes, so a
-        // scored episode it never ends fails the run there instead of hanging.
         if !self.driver_owns_resets() {
             let bound = self.spec.edition_defaults().default_max_episode_steps;
             let endless = state.slots_at(&positions).into_iter().find(|slot| {
@@ -549,14 +495,6 @@ where
             }
         }
 
-        // A group runs until every scored episode completed -- the budget bounds
-        // episode starts (slot claims), so `total_episodes` reaching it means
-        // nothing scored is live anywhere (surplus lanes the env rolled past the
-        // budget are stepped, never counted). The one exception is a lane group
-        // whose resets the DRIVER owns: that budget is the slot counter, checked
-        // at reset by `claim_slots`. A group left holding only surplus lanes
-        // (a lane group rolled past the budget under NEXT_STEP) stops now, and
-        // every group stops once an observer quits.
         let budget_spent = self
             .spec
             .max_episodes
@@ -565,10 +503,6 @@ where
             || ((!lane_group || !self.driver_owns_resets()) && budget_spent)
             || state.all_surplus_at(&positions)
         {
-            // The group never steps again, so the ended lanes' deferred
-            // completions and evictions (NEXT_STEP, see `queue_evictions`) go
-            // out now: the route-end flush sends the evictions before the
-            // model is released.
             let completions = std::mem::take(&mut groups[gid].pending_completed);
             self.fan_out_completions(completions).await;
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
@@ -578,9 +512,6 @@ where
             return Ok(());
         }
 
-        // Driver-owned resets: a finished lane restarts. Groups are reset whole
-        // (a lane group is one lane; a whole-vector group under DISABLED is
-        // num_envs == 1, see RuntimeSessionSpec::validate).
         if self.driver_owns_resets() {
             let done: HashSet<u32> = completed_episodes
                 .iter()

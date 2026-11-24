@@ -1,18 +1,3 @@
-//! A session host for `mise run test:esp32:host`: the default session of
-//! tenant `local` on a free loopback port, printing its address with its key
-//! (as `rlmesh host` does), until killed. With `udp`, it relays the board's
-//! realtime parts over UDP on the session's own port number, as
-//! `rlmesh host --board-data udp` does. With `soak` after that, it drives
-//! every commanded part of the board for as long as it runs, granting their
-//! leases again whenever the board attaches anew, for the board's soak.
-//!
-//! Its links are not gated. A loopback embedded host gates them (Zenoh
-//! `usrpwd`, keyed by the session), which zenoh-pico can't present; a board
-//! on the LAN joins `rlmesh host --insecure` instead, whose LAN links are
-//! plain. Session traffic is authenticated and sealed by the handshake
-//! either way. For tests only.
-
-// Test infrastructure owns the wall clock, as the board platform does.
 #![allow(clippy::disallowed_methods, clippy::print_stdout)]
 
 use std::io::Write;
@@ -67,8 +52,6 @@ async fn main() {
         .expect("controller");
     let owner = ParticipantId::new("eyes").expect("id");
     if soak {
-        // Each 5 s, how long the host took to relay the board's chunks on
-        // the datagram path, as `relay <buckets> max <ms>`.
         let relays = async {
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -112,8 +95,6 @@ async fn main() {
     let lease = policy.grant_lease(channel, None).await.expect("lease");
     let publisher = policy.chunk_publisher(&lease).await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    // Advance only after the board echoes the applied action as its state.
-    // Two distinct targets catch a transport that replays only its first chunk.
     let targets = [[0.25_f32, -0.1_f32], [-0.2_f32, 0.15_f32]].map(|pos| {
         pos.into_iter()
             .flat_map(f32::to_le_bytes)
@@ -156,9 +137,6 @@ async fn main() {
     }
 }
 
-/// Each part's state as a policy reading it sees it: its newest sample's
-/// number, and the new ones found at the policy's ticks (one the next
-/// replaced between two ticks is never seen).
 #[derive(Default)]
 struct Seen {
     newest: u64,
@@ -166,18 +144,12 @@ struct Seen {
     found: u64,
 }
 
-/// Reads every commanded part of the board's state at 200 Hz and drives it
-/// with 30 chunks a second of two actions each, with leases granted again whenever the last ones ended (the
-/// board attached anew), never giving up.
 async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
     let mut revision = 1000;
-    // The rate each part's state is read at: 200 Hz, or SOAK_HZ.
     let read_hz = std::env::var("SOAK_HZ")
         .ok()
         .and_then(|hz| hz.parse::<f64>().ok())
         .unwrap_or(200.0);
-    // The new samples found at each tick, printed every 5 s as
-    // `state <part> <samples>/s`.
     let mut readers = std::collections::BTreeMap::new();
     let seen: Arc<Mutex<std::collections::BTreeMap<String, Seen>>> = Arc::default();
     tokio::spawn({
@@ -240,8 +212,6 @@ async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
             }
         }
         let channels: Vec<ChannelId> = parts.iter().map(|p| p.channel).collect();
-        // Each part's state read at its rate (at 200 Hz the board publishes
-        // every sample), stated as a policy binding it as an input states it.
         revision += 1;
         let _ = policy
             .command(Command::DeclareBinding {
@@ -281,7 +251,6 @@ async fn drive_forever(policy: &Participant, owner: &ParticipantId) -> ! {
                     s.lease(lease.channel)
                         .is_some_and(|l| l.token == lease.token)
                 });
-                // Each joint's centre, as many as the part has.
                 let width = publisher.stride() / 4;
                 let action: Vec<u8> = std::iter::repeat_n(0.0_f32, width)
                     .flat_map(f32::to_le_bytes)

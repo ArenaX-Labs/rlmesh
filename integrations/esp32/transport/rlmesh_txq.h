@@ -1,14 +1,3 @@
-/* The transport's queue of publications waiting for its send task, in two
- * lanes. A sample (any class but control) is latest-wins per key expression: a
- * newer one replaces the one waiting, so a slow link lowers a stream's rate
- * instead of queueing it. Control publications (heartbeats) queue in order and
- * go first. Bounded in bytes: past the bound the oldest sample goes, and only
- * when no sample is left the oldest control publication. What the send task
- * took out and is still sending counts against the bound too, up to half of
- * it: a send held up by the link never takes the room of the newest samples,
- * and all of it together stays within one and a half bounds, however long the
- * link stalls. Not locked: the transport holds its lock around every call. */
-
 #ifndef RLMESH_TXQ_H_
 #define RLMESH_TXQ_H_
 
@@ -34,8 +23,8 @@ typedef struct rlmesh_txq {
   /* Bytes the send task took out and has not finished sending. */
   size_t inflight;
   size_t cap;
-  /* Publications dropped to keep to `cap`, and samples a newer one on the
-   * same key replaced (counted in `dropped` too). */
+  /* Publications dropped to keep to `cap`, and samples a newer one on the same
+   * key replaced (counted in `dropped` too). */
   uint32_t dropped;
   uint32_t replaced;
 } rlmesh_txq_t;
@@ -83,9 +72,7 @@ static inline size_t rlmesh_txq_sending(const rlmesh_txq_t* q) {
 #define RLMESH_TXQ_CONTROL 0
 
 /* Takes `t`, which the queue then owns: a sample replaces the one waiting on
- * its key. While over the bound, drops the oldest sample, else the oldest
- * control publication (never `t`). False when `t` alone is over the bound
- * (then dropped). */
+ * its key. */
 static inline bool rlmesh_txq_push(rlmesh_txq_t* q, rlmesh_txq_item_t* t) {
   size_t size = rlmesh_txq_size(t);
   if (size + rlmesh_txq_sending(q) > q->cap) {
@@ -152,8 +139,8 @@ static inline void rlmesh_txq_drop_class(rlmesh_txq_t* q, uint8_t class_) {
   }
 }
 
-/* Takes every publication waiting, now the caller's to send: they count
- * against the bound until rlmesh_txq_sent. */
+/* Takes every publication waiting, now the caller's to send: they count against
+ * the bound until rlmesh_txq_sent. */
 static inline rlmesh_txq_item_t* rlmesh_txq_take(rlmesh_txq_t* q) {
   rlmesh_txq_item_t* list = q->head;
   q->inflight += q->bytes;
@@ -170,4 +157,4 @@ static inline void rlmesh_txq_clear(rlmesh_txq_t* q) {
   for (rlmesh_txq_item_t* t = rlmesh_txq_pop(q); t != NULL; t = rlmesh_txq_pop(q)) free(t);
 }
 
-#endif /* RLMESH_TXQ_H_ */
+#endif

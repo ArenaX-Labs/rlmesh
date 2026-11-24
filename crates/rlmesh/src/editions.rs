@@ -1,41 +1,34 @@
 //! Workflow editions: which declaration a participant runs at.
 //!
-//! A workflow edition is a sticky declaration: a participant states the
-//! edition it was authored against and keeps it until its author bumps it.
-//! One resolver settles which declaration wins, highest first:
+//! A participant states the edition it was authored against and keeps it until its author bumps
+//! it. The first declaration found wins:
 //!
 //! 1. the call's own value (its options struct's `workflow_edition`);
 //! 2. the `RLMESH_WORKFLOW_EDITION` environment variable;
 //! 3. the served peer's option;
 //! 4. the type's declaration;
 //!
-//! then none: the participant floats to this build's newest edition. Running
-//! and serving resolve quietly; a describe envelope marks the float
-//! (`workflow_edition_floats`) for the checks that report it. A blank value
-//! declares nothing and falls through; a set-but-blank environment variable
-//! stops resolution and floats deliberately. The winner is validated and
-//! trimmed; an edition this build cannot run is the ValueError class. No
-//! project file is read.
+//! then none: the participant floats to this build's newest edition, and a describe envelope marks
+//! the float (`workflow_edition_floats`). A blank value declares nothing and falls through; a
+//! set-but-blank environment variable stops resolution and floats deliberately. The winner is
+//! trimmed and validated; an edition this build cannot run is the ValueError class. No project
+//! file is read.
 
 use crate::{Error, Result};
 
-/// The environment variable holding the process-wide declaration.
 pub(crate) const WORKFLOW_EDITION_ENV_VAR: &str = "RLMESH_WORKFLOW_EDITION";
 
 /// The bare `YYYY.MM` workflow edition this build runs at: the value to
 /// paste into a declaration, the same on every build of that edition.
 ///
-/// A bare base selects whichever spelling of it both sides offer: the sealed
-/// name on a release, this build's cohort (what
-/// [`BuildInfo::workflow_edition`](crate::BuildInfo::workflow_edition)
-/// reports) on a prerelease or local build.
+/// A bare base selects whichever spelling of it both sides offer: the sealed name on a release,
+/// this build's cohort
+/// ([`BuildInfo::workflow_edition`](crate::BuildInfo::workflow_edition)) on a prerelease or local
+/// build.
 pub fn current_workflow_edition() -> &'static str {
     rlmesh_proto::WORKFLOW_EDITION_BASE
 }
 
-/// What a participant declaring `declared` offers: the edition it runs
-/// (this build's current when it declares none) and every edition this
-/// build runs.
 pub(crate) fn offer(declared: Option<&str>) -> (String, Vec<String>) {
     (
         rlmesh_proto::declared_workflow_edition(declared).to_string(),
@@ -43,10 +36,6 @@ pub(crate) fn offer(declared: Option<&str>) -> (String, Vec<String>) {
     )
 }
 
-/// A lockstep env's offer (its `gym_env` edition answers), negotiated
-/// against `declared` (the driver's WANT) with the same edition ordering the env client
-/// negotiates it: the env's offer, the selected edition and its retained
-/// base. A refusal is the message to report.
 pub(crate) fn negotiate_env(
     info: &crate::lockstep::GymEnvInfo,
     declared: Option<&str>,
@@ -133,7 +122,6 @@ pub fn resolve_rungs(sources: EditionSources<'_>) -> Result<EditionResolution> {
     Ok(EditionResolution::Undeclared)
 }
 
-/// Resolve a native participant's declared edition (`None`: it floats).
 pub(crate) fn resolve_native(sources: EditionSources<'_>) -> Result<Option<String>> {
     resolve_rungs(sources).map(EditionResolution::into_declared)
 }
@@ -143,8 +131,6 @@ mod tests {
     use super::*;
     use crate::warnings::tests::HANDLER_LOCK;
 
-    /// Runs `body` with `RLMESH_WORKFLOW_EDITION` set to `value` (or unset),
-    /// serialized with every other test touching the variable or the handler.
     #[allow(unsafe_code)]
     fn with_env(value: Option<&str>, body: impl FnOnce()) {
         let _guard = HANDLER_LOCK.lock().unwrap_or_else(|err| err.into_inner());
@@ -201,7 +187,6 @@ mod tests {
             );
         });
         with_env(Some(base), || {
-            // The variable outranks the served peer's option and the type.
             assert_eq!(
                 resolve_rungs(sources(None, Some("bogus"), Some("bogus"))).unwrap(),
                 EditionResolution::Declared(base.to_string())
@@ -212,7 +197,6 @@ mod tests {
                 resolve_rungs(sources(None, Some(base), Some(base))).unwrap(),
                 EditionResolution::FloatsDeliberately
             );
-            // A call value still wins over the deliberate float.
             assert_eq!(
                 resolve_rungs(sources(Some(base), None, None)).unwrap(),
                 EditionResolution::Declared(base.to_string())

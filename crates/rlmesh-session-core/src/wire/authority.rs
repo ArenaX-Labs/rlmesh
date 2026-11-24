@@ -1,6 +1,6 @@
-//! Authority state and control verbs: roles, the session mode, leases bound
-//! to bindings, clock mappings, the host's snapshot, and the `ctl`
-//! request/reply pair.
+//! Authority state and control verbs: roles, the session mode, leases bound to
+//! bindings, clock mappings, the host's snapshot, and the `ctl` request/reply
+//! pair.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -248,8 +248,8 @@ pub struct LeaseEnd {
     /// The lease that preempted or re-issued it.
     pub by: Option<Lease>,
     /// A release that handed the parts back
-    /// ([`LEASE_HANDBACK`](crate::wire::version::LEASE_HANDBACK)): the
-    /// participant the lease had preempted, who takes them again.
+    /// ([`LEASE_HANDBACK`](crate::wire::version::LEASE_HANDBACK)): the participant
+    /// the lease had preempted, who takes them again.
     pub to: Option<ParticipantId>,
 }
 
@@ -381,9 +381,7 @@ impl ClockMapping {
     }
 }
 
-/// A controller's binding, as the host recorded it. The binder
-/// (`rlmesh_session_core::spec`) produces the table and its fingerprint; the host keeps
-/// what fencing and scheduling need.
+/// A controller's binding, as the host recorded it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BindingRecord {
     /// The controller.
@@ -645,9 +643,8 @@ impl AuthoritySnapshot {
         self.demands.iter().find(|d| d.channel == channel)
     }
 
-    /// The fence an edge applies to an incoming chunk: right epoch, and the
-    /// token of the part's current lease. The edge checks expiry itself,
-    /// against its own clock.
+    /// The fence an edge applies to an incoming chunk: right epoch, and the token
+    /// of the part's current lease.
     pub fn check_fence(
         &self,
         channel: ChannelId,
@@ -803,8 +800,8 @@ pub enum Command {
         /// The token held on each.
         token: LeaseToken,
         /// Hands them back to the participant this lease preempted
-        /// ([`LEASE_HANDBACK`](crate::wire::version::LEASE_HANDBACK));
-        /// `None`: a plain release.
+        /// ([`LEASE_HANDBACK`](crate::wire::version::LEASE_HANDBACK)); `None`: a plain
+        /// release.
         to: Option<ParticipantId>,
     },
     /// Emergency stop: accepted from anyone.
@@ -821,9 +818,8 @@ pub enum Command {
     },
     /// An embodiment's local clear of a latched e-stop.
     Clear,
-    /// An embodiment fell back on its own account (its edge, or a device
-    /// watchdog): ACTIVE, ARMED and DISARMED go SAFE; SAFE and ESTOP record
-    /// why.
+    /// An embodiment fell back on its own account (its edge, or a device watchdog):
+    /// ACTIVE, ARMED and DISARMED go SAFE; SAFE and ESTOP record why.
     EnterSafe {
         /// Why.
         reason: String,
@@ -877,9 +873,8 @@ pub enum Command {
         /// The run.
         run: String,
     },
-    /// Keep the host's recent recording as an incident (the cockpit's
-    /// Keep): whoever may arm may keep. The host that records answers it;
-    /// the authority only checks the sender.
+    /// Keep the host's recent recording as an incident (the cockpit's Keep):
+    /// whoever may arm may keep.
     Keep {
         /// Names the incident.
         label: String,

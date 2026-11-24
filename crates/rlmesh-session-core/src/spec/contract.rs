@@ -35,7 +35,6 @@ pub const MAX_HISTORY_SPAN: Duration = Duration::from_secs(10);
 pub const MAX_RING_BYTES: u64 = 512 << 20;
 /// How long beyond its window a publisher retains samples, for recovery.
 pub const RECOVERY: Duration = Duration::from_secs(1);
-/// The derived freshness floor.
 const MIN_FRESHNESS: Duration = Duration::from_millis(5);
 
 /// The source rate of `part`'s stream: its `hz`, or for its applied stream
@@ -190,13 +189,8 @@ pub fn mode_name(mode: ContractMode) -> &'static str {
     }
 }
 
-/// The rate that publishes the newest sample at `delivery_hz` from a source
-/// at `source_hz`: every k-th sample, k the most that leaves no gap longer
-/// than `1 / delivery_hz`. A rate of D itself on a faster grid that isn't a
-/// multiple of it (50 Hz at 30) leaves gaps of one sample and of two, and a
-/// reader ticking at D finds nothing new at one tick in three. The rate sits
-/// between the grid's k-th and (k - 1)-th: a publisher a little off its
-/// rate still skips no more than k - 1 samples.
+/// The rate that publishes the newest sample at `delivery_hz` from a source at `source_hz`:
+/// every k-th sample, k the most that leaves no gap longer than `1 / delivery_hz`.
 fn latest_rate(source_hz: f64, delivery_hz: f64) -> f64 {
     if !(delivery_hz > 0.0 && source_hz > delivery_hz) {
         return delivery_hz;
@@ -303,8 +297,6 @@ mod tests {
             )
             .is_ok()
         );
-        // A window's newest sample is at most 1 / S old: 5 ms is fine at
-        // 1 kHz, whatever the delivery rate.
         assert!(
             admit(
                 &contract(ContractMode::History, 20.0, 50, Some(5)),
@@ -372,10 +364,6 @@ mod tests {
         );
     }
 
-    /// A reader at D on a faster source finds a new sample at each of its
-    /// ticks: the plan never leaves a gap longer than 1 / D on the source's
-    /// grid. At D itself, a 50 Hz source read at 30 Hz would publish one,
-    /// skip one, publish two: 20 new samples a second at the reader.
     #[test]
     fn a_latest_plan_leaves_no_gap_longer_than_a_readers_tick() {
         let gimbal = part(r#"{"servos": {"kind": "joints", "names": ["pan", "tilt"], "hz": 50}}"#);
@@ -389,8 +377,6 @@ mod tests {
         };
         for d in [10.0, 20.0, 25.0, 30.0, 40.0, 49.0] {
             let hz = rate(d);
-            // Published every k samples on the 20 ms grid, some k - 1: the
-            // longest gap is k samples.
             let k = (50.0_f64 / hz).ceil();
             assert!(hz >= d && k / 50.0 <= 1.0 / d + 1e-9, "{d} Hz: plan {hz}");
         }

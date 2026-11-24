@@ -1,11 +1,3 @@
-// Pack the npm release (`mise run release:js:package`, after `build:js` and release:js:native):
-//
-//   target/npm-pkg/rlmesh-{version}.tgz                  the package: dist/ without any .node
-//   target/npm-pkg/rlmesh-{platform}-{arch}-{version}.tgz one @rlmesh/{platform}-{arch} per addon
-//
-// The version comes from the Cargo workspace, so every language ships the same one. `rlmesh` names
-// each platform package as an optional dependency at that exact version; npm installs only the one
-// whose os/cpu/libc match, and native.ts loads it. --require-all refuses a partial set (publish).
 import { execFileSync } from "node:child_process";
 import {
   cpSync,
@@ -88,7 +80,6 @@ if (!existsSync("javascript/rlmesh/dist/browser.js")) {
 }
 const dir = `${out}/rlmesh`;
 mkdirSync(dir);
-// No addon, and not the unreleased lobby and scenes (dist/fleet.js, a test bundle).
 cpSync("javascript/rlmesh/dist", `${dir}/dist`, {
   recursive: true,
   filter: (f) => !f.endsWith(".node") && !/[\\/]fleet\.js(\.map)?$/.test(f),

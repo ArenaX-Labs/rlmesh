@@ -1,11 +1,3 @@
-"""The session's live link health, read from a robot and from policies.
-
-Two eyes, a tracker driving both, a viewer that only reads eye 1, and a
-prober that sends eye 2 a value that is not a number: every participant's
-link, and each eye's refusals by reason, reach a viewer that neither
-publishes nor commands.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -85,8 +77,6 @@ def host() -> Iterator[rlmesh.Host]:
 
 
 class Eyes:
-    """Two eyes, each publishing its gaze and taking what is due."""
-
     def __init__(self, host: rlmesh.Host) -> None:
         self.eyes = [
             rlmesh.Robot(name, EYE, session=host) for name in ("eye-1", "eye-2")
@@ -137,7 +127,6 @@ def test_a_viewer_reads_every_link_and_each_robots_refusals(host: rlmesh.Host) -
         thread.start()
         wait_until("the tracker sending", lambda: tracker.stats()["chunks_sent"] > 5)
 
-        # The prober takes eye 2 and sends it a value that is not a number.
         prober.acquire()
         two = rig.eyes[1]
 
@@ -153,8 +142,6 @@ def test_a_viewer_reads_every_link_and_each_robots_refusals(host: rlmesh.Host) -
 
         wait_until("eye 2 refusing a chunk for its value", refused)
 
-        # The viewer neither publishes nor commands: its first read
-        # subscribes and waits for a publication.
         health = viewer.health()
         deadline = time.monotonic() + WAIT
         while (
@@ -183,7 +170,6 @@ def test_a_viewer_reads_every_link_and_each_robots_refusals(host: rlmesh.Host) -
         assert links["viewer"]["last_seq_seen"]["eye-1:eyes"] > 0
         assert links["eye-1"]["run"] is None
 
-        # A robot reads the same; the next one comes later.
         now = rig.eyes[0].health()
         later = rig.eyes[0].health(wait=True)
         assert later["host_ns"] > now["host_ns"]

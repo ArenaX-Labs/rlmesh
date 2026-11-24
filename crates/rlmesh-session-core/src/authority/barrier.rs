@@ -31,7 +31,6 @@ impl Authority {
         Ok(())
     }
 
-    /// Who the virtual barrier waits for.
     pub(super) fn barrier_participants(&self) -> Participants {
         let tick_ns = self.config.virtual_clock.map_or(1, |c| c.tick_ns.max(1));
         Participants {

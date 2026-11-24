@@ -1,14 +1,6 @@
 //! The eframe app: each frame brings the model up to date (a live feed
 //! drained, or a replay advanced), renders the model's view and sends the
 //! verbs the operator asked for (live only).
-//!
-//! A live session can be paused: the cockpit replays its recent history
-//! ([`History`]) while the feed keeps draining underneath, and only the
-//! e-stop stays on. Keep asks the host to keep the last minutes of its
-//! recording as an incident. With `collect` (unreleased) the episode
-//! controls work on the host's recording through this machine's recordings
-//! directory: an episode is collected into `collected/{dataset}/` when the
-//! operator marks it a success or a failure.
 
 use std::path::{Path, PathBuf};
 #[cfg(feature = "collect")]
@@ -33,9 +25,7 @@ enum Source {
     Replay {
         replay: Box<Replay>,
         last: Instant,
-        /// The recording's file or directory.
         path: PathBuf,
-        /// Why Rerun did not open.
         rerun_failed: Option<String>,
     },
 }
@@ -44,23 +34,17 @@ struct Live {
     feed: Feed,
     model: Model,
     history: History,
-    /// Paused on the history.
     paused: Option<(Replay, Instant)>,
-    /// The host's recordings root, when it is on this machine.
     recordings: Option<Rolling>,
-    /// Where episodes are collected: `collected/{dataset}/`.
     #[cfg_attr(not(feature = "collect"), allow(dead_code))]
     dataset: String,
     bar: LiveBar,
-    /// The running episode: its start, wall clock and session time.
     #[cfg(feature = "collect")]
     episode: Option<(SystemTime, i64)>,
-    /// What the bar asked for, done next frame.
     action: Option<LiveAction>,
 }
 
 impl Live {
-    /// The session's rolling recording is on this machine.
     fn session(&self) -> Option<(SessionId, &Rolling)> {
         let session = self.model.snapshot()?.session;
         let rolling = self.recordings.as_ref()?;
@@ -115,7 +99,6 @@ impl CockpitApp {
     }
 }
 
-/// Advances `replay` by the wall time since `last`.
 fn tick(replay: &mut Replay, last: &mut Instant) {
     let now = Instant::now();
     replay.tick(now - *last);
@@ -128,8 +111,6 @@ impl eframe::App for CockpitApp {
             Source::Live(live) => {
                 live.feed.drain(&mut live.model, Some(&mut live.history));
                 let now_ns = live.feed.now_ns();
-                // What the bar asked for last frame (it is drawn inside the
-                // header, after the view is chosen).
                 match live.action.take() {
                     Some(LiveAction::Pause) => {
                         let replay = live
@@ -138,8 +119,6 @@ impl eframe::App for CockpitApp {
                         live.paused = Some((replay, Instant::now()));
                     }
                     Some(LiveAction::Resume) => live.paused = None,
-                    // The host keeps its own recording, wherever it runs;
-                    // its answer reaches the header.
                     Some(LiveAction::Keep) => {
                         live.feed.send(Verb::Keep);
                         live.bar.note = None;
@@ -223,7 +202,6 @@ impl eframe::App for CockpitApp {
                     }
                 };
                 ui::show(ui, &view, &mut self.ui, bar);
-                // The bar acts after the view is drawn: show its effect.
                 if replay.playing {
                     ui.ctx().request_repaint();
                 } else {
@@ -234,8 +212,6 @@ impl eframe::App for CockpitApp {
     }
 }
 
-/// Opens the MCAP files at `path` in the Rerun viewer, which decodes their
-/// protobuf envelopes itself.
 fn open_in_rerun(path: &Path) -> Result<(), String> {
     let files = record::mcap_files(path).map_err(|err| err.to_string())?;
     std::process::Command::new("rerun")

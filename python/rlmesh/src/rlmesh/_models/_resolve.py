@@ -14,8 +14,6 @@ if TYPE_CHECKING:
     from ..adapters import Adapter
     from ..specs import EnvContract
 
-# Cross-module surface: the shared resolver plus the helpers ``_eval``
-# resolves as module globals (see note in ``_connect``).
 __all__ = ["resolve_adapter"]
 
 

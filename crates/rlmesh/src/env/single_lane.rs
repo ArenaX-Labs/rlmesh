@@ -1,8 +1,4 @@
 //! A one-lane vector env served as a scalar env.
-//!
-//! The contract's `num_envs` is the only vector signal on the wire, so a
-//! batched simulator configured with one lane is served as a scalar lane:
-//! the runtime then owns its resets, per-episode seeds and `trial_index`.
 
 use rlmesh_spaces::SpaceSpec as WireSpec;
 
@@ -14,7 +10,6 @@ use crate::{Error, InfoDict, Metadata, Result, Value};
 
 const AUTORESET_KEY: &str = "autoreset_mode";
 
-/// A scalar view of a vector env whose `num_envs` is 1.
 pub(crate) struct SingleLaneEnv {
     env: Box<dyn VectorEnv + Send>,
     observation_space: Space,
@@ -23,8 +18,6 @@ pub(crate) struct SingleLaneEnv {
 }
 
 impl SingleLaneEnv {
-    /// Reject `SameStep` autoreset, validate the mode, then remove the
-    /// `autoreset_mode` metadata key.
     pub(crate) fn new(env: Box<dyn VectorEnv + Send>) -> Result<SingleLaneEnv> {
         let mut metadata = env.metadata().unwrap_or_default();
         if metadata.get(AUTORESET_KEY) == Some(&Value::Text("SameStep".to_string())) {
@@ -50,8 +43,6 @@ impl SingleLaneEnv {
 }
 
 fn lane_error(err: Error) -> Error {
-    // A projection failure is the env's, as Python's `_lane0` raising inside
-    // the callback is: not recoverable.
     Error::environment(err.to_string())
 }
 
@@ -81,8 +72,6 @@ impl Env for SingleLaneEnv {
         let actions = match action {
             Some(action) => batch1(space, action).map_err(lane_error)?,
             None => match &space.spec {
-                // Python's `_batch1` indexes the None: a TypeError inside step,
-                // except a Dict with no children, which has nothing to index.
                 Some(rlmesh_spaces::types::SpaceKind::Dict(dict)) if dict.keys.is_empty() => {
                     Value::Dict(Metadata::new())
                 }

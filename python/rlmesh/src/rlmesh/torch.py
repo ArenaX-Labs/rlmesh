@@ -64,7 +64,7 @@ def ensure_available() -> None:
     """Raise if Torch is not installed."""
     try:
         _ = importlib.import_module("torch")
-    except ImportError as exc:  # pragma: no cover - import guard
+    except ImportError as exc:  # pragma: no cover
         raise ImportError(
             "rlmesh.torch requires torch. Install rlmesh[torch]."
         ) from exc
@@ -138,18 +138,10 @@ def from_tensor(tensor: object) -> Tensor | bool | int | float:
 
 
 def _frombuffer_view(tensor: Tensor, *, writable_copy: bool) -> TorchTensor:
-    """Buffer-protocol fallback used for copies and pre-2.2 bool tensors.
-
-    Builds a zero-copy ``torch.frombuffer`` view over the tensor's buffer;
-    ``writable_copy`` clones it -- exactly one copy, owned and writable.
-    """
     import torch
 
     dtype = cast("torch.dtype", _torch_dtype(tensor.dtype))
     shape = tuple(tensor.shape)
-    # torch.frombuffer rejects a zero-length buffer, so a zero-size leaf (an empty
-    # mask, point cloud, or variable-length buffer) would crash this decode path.
-    # Build the empty tensor directly instead.
     if any(dim == 0 for dim in shape):
         return torch.empty(shape, dtype=dtype)
     with warnings.catch_warnings():
@@ -167,7 +159,6 @@ _bool_dlpack: bool | None = None
 
 
 def _bool_dlpack_supported() -> bool:
-    """Whether torch's DLPack path handles bool tensors (torch >= 2.2)."""
     global _bool_dlpack
     if _bool_dlpack is None:
         import torch.utils.dlpack
@@ -220,11 +211,6 @@ def _encode_leaf(value: object) -> object:
 def _stack_leaf(values: list[object]) -> object:
     import torch
 
-    # Tensor leaves stack to [N, ...]; numeric primitives become a 1-D tensor. Text
-    # leaves stay a per-lane list. A ragged leaf cannot fuse -- raise rather than
-    # silently returning a list for this leaf while siblings stack, which hands the
-    # model a structurally inconsistent batch ({stacked leaves} + {one list leaf}).
-    # A None leaf is rejected explicitly, matching the numpy and jax bridges.
     if any(v is None for v in values):
         raise ValueError(
             f"cannot fuse a None observation leaf across {len(values)} lanes; a "
@@ -266,13 +252,7 @@ def _unstack_leaf(value: object, n: int) -> list[object]:
 
 
 def _decode_owned(tensor: Tensor) -> TorchTensor:
-    """Owned, writable decode for the value-bridge (predict/step) path.
-
-    The public ``as_tensor`` still shares memory by default; the decode path
-    copies so an in-place op in ``predict`` (e.g. ``img.div_(255)``) cannot
-    write through into the shared, read-only wire buffer. Opt back into the
-    zero-copy view with ``as_tensor(tensor, copy=False)``.
-    """
+    """Owned, writable decode for the value-bridge (predict/step) path."""
     return as_tensor(tensor, copy=True)
 
 
@@ -287,8 +267,6 @@ def _to_device_leaf(value: object, device: object) -> object:
 def _to_host_leaf(value: object) -> object:
     import torch
 
-    # A reward/terminated/truncated leaf: move a (possibly GPU) tensor to host as a
-    # Python scalar/list in one transfer; a plain Python scalar passes through.
     if isinstance(value, torch.Tensor):
         return cast("object", cast("Any", value.detach().cpu()).tolist())
     return value

@@ -1,10 +1,8 @@
 """Media staging: hold recorded videos / carried env videos until export.
 
-Frames are encoded straight into a per-episode ``.mp4`` in a temp staging dir as
-they arrive (via the native video writer -- bounding memory to one frame), and
-remembered as an ``(source, bundle_relative_path)`` asset. Env-produced videos
-already exist on disk, so they are copied into staging at episode end (a fixed env
-path that gets overwritten next episode can't clobber an earlier capture). ``export``
+Frames are encoded straight into a per-episode ``.mp4`` in a temp staging dir
+as they arrive. Env-produced videos are copied into staging at episode end, so a
+path overwritten next episode cannot clobber an earlier capture. ``export``
 copies every asset into the bundle.
 """
 
@@ -41,16 +39,11 @@ class MediaStager:
     ) -> None:
         self._dir: str | None = None
         self._closed = False
-        #: Playback rate stamped on recorded videos (read by the manifest row).
         self.fps = fps
-        #: AV1 record quality, 1..=100 (higher is better/larger).
         self.quality = quality
-        #: ``"av1"`` or ``"h264"``; H.264 runs ``ffmpeg`` (``PATH`` when None).
         self.codec = codec
         self.ffmpeg = ffmpeg
-        #: ``(absolute source path, bundle-relative destination)`` pairs.
         self.assets: list[tuple[str, str]] = []
-        #: Bundle-relative paths already handed out, to keep them unique.
         self._used: set[str] = set()
 
     def _staging_dir(self) -> str:

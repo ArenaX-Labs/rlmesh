@@ -67,7 +67,6 @@ pub fn encode_handshake_accept(accept: &HandshakeAccept) -> Vec<u8> {
     pb::HandshakeAccept {
         generation: accept.generation,
         device: accept.device.clone(),
-        // Unspecified: observer only.
         max_priority: accept.max_priority.map_or(0, |p| priority_to_pb(p) as i32),
         host_sign_key: Bytes::copy_from_slice(&accept.host_sign_key),
         host_instance: accept.host_instance,
@@ -98,8 +97,6 @@ pub fn decode_handshake_accept(buf: &[u8]) -> Result<HandshakeAccept, WireError>
         host_instance: accept.host_instance,
         up_key_id: accept.up_key_id,
         down_key_id: accept.down_key_id,
-        // An offer this side can't read is no offer: the session carries
-        // everything, as from a host that offers none.
         datagram: accept.datagram.and_then(|d| {
             Some(DatagramOffer {
                 port: u16::try_from(d.port).ok().filter(|p| *p != 0)?,

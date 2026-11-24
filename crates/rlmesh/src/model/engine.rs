@@ -2,10 +2,6 @@
 //! per-lane drive, episode-keyed frame buffers, and native adapter application
 //! in pure Rust, calling back into a [`PredictFn`] only for the model's predict
 //! and into the custom/encoding holes only where a route declares them.
-//!
-//! This replaces a binding's hand-rolled predict loop: a PyO3 (or any future
-//! language) binding constructs `AdaptedModelHandler::new(predict, resolver)`
-//! and serves it; a pure-Rust model does the same with no host runtime.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,24 +37,14 @@ pub struct AdaptedModelHandler {
     resolver: Option<Arc<dyn RouteResolver>>,
     routes: Routes,
     spec_less_horizons: SpecLessHorizons,
-    /// The held-state total every route publishes into (see [`HeldCells`]).
     held: Arc<HeldCells>,
-    /// Adapter time (obs assembly + action apply) accumulated by the current
-    /// predict-family call, drained per request via `take_adapter_ns`. Shared
-    /// (`Arc`) because the work runs on `spawn_blocking` threads.
     adapter_ns: Arc<AtomicU64>,
-    /// The episodes the short-chunk warning already fired for (see
-    /// [`take_prefix`]): once per episode.
     short_chunk_warned: Arc<ShortChunkWarned>,
-    /// The endpoint-wide frame-window budget (see [`FRAME_HISTORY_LIMIT_ENV`]),
-    /// read once here so every route is admitted against the same number.
     history_limit: u64,
 }
 
 impl AdaptedModelHandler {
-    /// Build a handler from the model's predict hole and an optional route
-    /// resolver. `resolver = None` means a spec-less model: every env serves
-    /// through [`PredictFn::predict_spec_less`].
+    /// Build a handler from the model's predict hole and an optional route resolver.
     pub fn new(predict: Arc<dyn PredictFn>, resolver: Option<Arc<dyn RouteResolver>>) -> Self {
         Self {
             predict,
@@ -72,7 +58,6 @@ impl AdaptedModelHandler {
         }
     }
 
-    /// Look up the per-env entry (cloning the `Arc`), if the env is spec'd.
     fn entry(&self, env_id: &str) -> Option<Arc<Mutex<RouteEntry>>> {
         self.routes
             .lock()
@@ -81,7 +66,6 @@ impl AdaptedModelHandler {
             .cloned()
     }
 
-    /// The horizon pinned for a spec-less route (1 = no chunking / never pinned).
     fn spec_less_horizon(&self, env_id: &str) -> u32 {
         self.spec_less_horizons
             .lock()
@@ -92,7 +76,6 @@ impl AdaptedModelHandler {
     }
 }
 
-/// A model's reset options, asked of its predict hole on a blocking thread.
 struct PredictResetOptions(Arc<dyn PredictFn>);
 
 #[async_trait]
@@ -123,11 +106,6 @@ impl ModelHandler for AdaptedModelHandler {
         };
         let predict = Arc::clone(&self.predict);
         let adapter_ns = Arc::clone(&self.adapter_ns);
-        // Decode + frame-stack + the model's predict are CPU/host work; run them
-        // off the async worker so concurrent (pipelined) requests on other routes
-        // are not stalled. A spec'd route runs the per-lane engine loop (emitting
-        // chunk frames); a spec-less route takes the preserved batched raw path
-        // (chunked through the model's chunk corner when a horizon was pinned).
         let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
         crate::warnings::blocking(move || match entry {
             Some(entry) => predict_route(
@@ -142,9 +120,6 @@ impl ModelHandler for AdaptedModelHandler {
         .await?
     }
 
-    /// Fusion needs a batched corner and the model's permission
-    /// (`allow_fusion`); without both, keep the chunk-preserving sequential
-    /// default — correct per group, just unfused.
     async fn predict_grouped(
         &mut self,
         observations: Vec<ModelObservation>,
@@ -216,16 +191,6 @@ impl ModelHandler for AdaptedModelHandler {
     }
 
     async fn reset_adapter(&mut self, env_id: &str, episode_ids: Vec<String>) -> Result<()> {
-        // The frame buffers were already evicted off the predict lock by
-        // `AdaptedRouteSetup::reset_adapter`. What is left is the model's own
-        // hook, which shares the model's state with its forwards and so stays
-        // serialized behind them here.
-        //
-        // Surface the episode-end edge to the model's own hook (one call per
-        // ended episode), e.g. to reset a single-env model's recurrent state. An
-        // empty `episode_ids` is an evict-ALL/teardown, not an episode end, so it
-        // fires nothing here — model shutdown is `on_close`'s job — but it
-        // drops the env's per-episode model state silently (MDL-8).
         for episode_id in &episode_ids {
             self.short_chunk_warned.remove(episode_id);
         }
@@ -244,10 +209,6 @@ impl ModelHandler for AdaptedModelHandler {
     }
 
     async fn on_close(&mut self) -> Result<()> {
-        // Drop every route's per-episode state as the authoritative shutdown sweep.
-        // Snapshot the entries and release the map lock first: an entry lock
-        // may be held across a blocking forward, and the map lock must stay
-        // free for the route lookups (reset/release) racing this close.
         let entries: Vec<Arc<Mutex<RouteEntry>>> = self
             .routes
             .lock()

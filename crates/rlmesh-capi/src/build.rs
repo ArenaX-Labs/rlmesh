@@ -1,7 +1,4 @@
-//! Build identity, the current workflow edition and the warning handler:
-//! `rlmesh_build_info`, `rlmesh_current_workflow_edition`,
-//! `rlmesh_set_warning_handler` (Core, R-23).
-#![allow(unsafe_code)] // FFI: out-structs, static C strings, callbacks.
+#![allow(unsafe_code)]
 
 use std::ffi::{CString, c_char, c_void};
 use std::sync::LazyLock;
@@ -13,7 +10,7 @@ use crate::codec::RLMeshBytes;
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RLMeshBuildSource {
-    #[allow(dead_code)] // the C enum's reserved 0, never produced
+    #[allow(dead_code)]
     Invalid = 0,
     Release = 1,
     Package = 2,
@@ -30,7 +27,7 @@ impl RLMeshBuildSource {
     }
 }
 
-/// `RLMeshBuildInfo` (an out-struct, R-19).
+/// `RLMeshBuildInfo`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RLMeshBuildInfo {
@@ -49,7 +46,6 @@ pub struct RLMeshBuildInfo {
 
 const BUILD_INFO_MIN_SIZE: usize = std::mem::size_of::<RLMeshBuildInfo>();
 
-/// The build's strings as process-lifetime C strings.
 struct StaticInfo {
     version: CString,
     protocol_generation: CString,
@@ -173,13 +169,11 @@ pub extern "C" fn rlmesh_current_workflow_edition() -> *const c_char {
     EDITION.as_ptr()
 }
 
-// ---- warnings ---------------------------------------------------------------
-
 /// `RLMeshWarningCategory`.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RLMeshWarningCategory {
-    #[allow(dead_code)] // the C enum's reserved 0, never produced
+    #[allow(dead_code)]
     Invalid = 0,
     UserWarning = 1,
     RuntimeWarning = 2,
@@ -233,14 +227,13 @@ pub extern "C" fn rlmesh_warning_category_is_subclass(cls: i32, base: i32) -> bo
 type WarningHandlerFn =
     unsafe extern "C" fn(user_data: *mut c_void, category: i32, message: *const c_char) -> i32;
 
-/// The C handler and its `user_data`, freed once with the last copy.
 struct CHandler {
     handler: WarningHandlerFn,
     user_data: *mut c_void,
     free_user_data: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
-// SAFETY: R-23 requires the handler and its `user_data` to be thread-safe.
+// SAFETY: the handler contract requires the handler and its `user_data` to be thread-safe.
 unsafe impl Send for CHandler {}
 unsafe impl Sync for CHandler {}
 
@@ -269,8 +262,6 @@ impl CHandler {
         } else {
             detail
         };
-        // A class the handler set (`rlmesh_callback_set_error_class`) is the
-        // error's class; otherwise it is an RLMeshException (R-23).
         Err(crate::abi::status::attach_callback_payload(
             match crate::abi::status::take_callback_class() {
                 Some(class) => crate::abi::status::error_of_class(class, &detail),
@@ -280,7 +271,7 @@ impl CHandler {
     }
 }
 
-/// Install the process-wide warning handler (R-23). A NULL `handler`
+/// Install the process-wide warning handler. A NULL `handler`
 /// restores the default (stderr, each distinct warning once); a NULL
 /// `handler` with a non-NULL `user_data` or `free_user_data` is
 /// RLMESH_ERR_INVALID_ARGUMENT and keeps the installed handler. On RLMESH_OK

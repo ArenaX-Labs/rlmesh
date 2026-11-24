@@ -1,13 +1,10 @@
 //! Opt-in H.264 recording through the user's own ffmpeg.
 //!
-//! rlmesh never bundles or links an H.264 encoder: `codec="h264"` runs the
-//! ffmpeg the user installed (on `PATH`, or an explicit path) as a subprocess
-//! and pipes raw RGB frames to its stdin. The arguments use libx264
-//! `ultrafast`/`zerolatency`, yuv420p, odd sides padded to even, and
-//! `+faststart` for browser playback.
-//!
-//! Writes block: a slow encoder backpressures the caller through the pipe.
-//! Every frame is kept.
+//! rlmesh never bundles or links an H.264 encoder: `codec="h264"` runs the ffmpeg the user
+//! installed (on `PATH`, or an explicit path) as a subprocess and pipes raw RGB frames to its
+//! stdin, encoding with libx264 `ultrafast`/`zerolatency`, yuv420p, odd sides padded to even, and
+//! `+faststart` for browser playback. Writes block, so a slow encoder backpressures the caller;
+//! every frame is kept.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -16,14 +13,10 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
-/// The ffmpeg encoder H.264 recording needs.
 const ENCODER: &str = "libx264";
 
-/// Bytes of ffmpeg stderr kept for an error message.
 const STDERR_LIMIT: usize = 64 * 1024;
 
-/// Checks that `program` runs and lists libx264, once per program per
-/// process; otherwise an error naming what to install.
 pub(super) fn require(program: &Path) -> io::Result<()> {
     static CHECKED: OnceLock<Mutex<HashMap<PathBuf, Result<(), String>>>> = OnceLock::new();
     let mut checked = CHECKED
@@ -62,7 +55,6 @@ fn probe(program: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// One ffmpeg process encoding a single camera's frames.
 pub(super) struct H264Writer {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -73,7 +65,6 @@ pub(super) struct H264Writer {
 }
 
 impl H264Writer {
-    /// Start ffmpeg writing `path`; `program` has passed [`require`].
     pub(super) fn create(
         program: &Path,
         path: &Path,
@@ -103,9 +94,9 @@ impl H264Writer {
             .spawn()
             .map_err(|err| io::Error::other(format!("start {}: {err}", program.display())))?;
         let stdin = child.stdin.take();
-        // Drained so a chatty ffmpeg never blocks on a full stderr pipe,
-        // keeping only its tail as it goes.
         let stderr = child.stderr.take().map(|mut pipe| {
+            // Drained so a chatty ffmpeg never blocks on a full stderr pipe,
+            // keeping only its tail as it goes.
             std::thread::spawn(move || {
                 let (mut buf, mut chunk) = (Vec::new(), [0; 8192]);
                 loop {
@@ -133,21 +124,18 @@ impl H264Writer {
         })
     }
 
-    /// Pipe one packed RGB frame; blocks while ffmpeg is behind.
     pub(super) fn push(&mut self, rgb: &[u8]) -> io::Result<()> {
         let stdin = self
             .stdin
             .as_mut()
             .ok_or_else(|| io::Error::other("ffmpeg writer is closed"))?;
         if let Err(err) = stdin.write_all(rgb) {
-            // ffmpeg exited: its stderr names why, not the broken pipe.
             return Err(self.exit().err().unwrap_or(err));
         }
         self.frames += 1;
         Ok(())
     }
 
-    /// Close ffmpeg's input and wait for it to finalize the file.
     pub(super) fn finish(mut self) -> io::Result<super::Stats> {
         if self.frames == 0 {
             return Err(io::Error::other("no frames were recorded"));
@@ -179,7 +167,6 @@ impl H264Writer {
 }
 
 impl Drop for H264Writer {
-    /// An abandoned writer stops its encoder instead of leaving it running.
     fn drop(&mut self) {
         if self.stdin.take().is_some() {
             let _ = self.child.kill();

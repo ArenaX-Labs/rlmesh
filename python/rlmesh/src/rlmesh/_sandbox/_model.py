@@ -1,10 +1,9 @@
 """``SandboxModel``: a prebuilt model container running in its own container.
 
 The model-side sibling of ``SandboxEnv``. The source is a prebuilt
-``image://<tag>`` container you built yourself (BYO); construction is inert -- it
-records the tag but starts nothing. ``serve()`` (or use as a context manager)
-starts a long-lived container serving the policy in the session it hosts;
-``run(env)`` and ``bind(env)`` drive it there.
+``image://<tag>`` container; construction starts nothing. ``serve()`` (or use as
+a context manager) starts a long-lived container serving the policy;
+``run(env)`` and ``bind(env)`` drive it.
 """
 
 from __future__ import annotations
@@ -42,12 +41,9 @@ _IMAGE_SCHEMES = ("image://", "docker://")
 def _resolve_model_source(source: object) -> str:
     """Resolve a model source to a prebuilt image tag.
 
-    A model is always a prebuilt rlmesh-serving image (BYO) -- there is no
-    build-from-source for models. An explicit ``image://``/``docker://`` scheme
-    is stripped; a bare string is taken as the image tag (an untagged repo ref
-    like ``policy/run-test`` is valid), but an obvious gym env id (``CartPole-v1``,
-    ``pkg:Env-v0``) is rejected up front rather than failing opaquely at
-    ``docker run`` -- a model is never a gym source.
+    An explicit ``image://``/``docker://`` scheme is stripped; a bare string is
+    the image tag (an untagged repo ref like ``policy/run-test`` is valid), but a
+    gym env id (``CartPole-v1``, ``pkg:Env-v0``) is rejected.
     """
     if not isinstance(source, str):
         raise TypeError(
@@ -68,8 +64,7 @@ def _resolve_model_source(source: object) -> str:
             "SandboxModel source must be an image tag (e.g. 'smolvla:latest') or "
             f"image://<tag> / docker://<tag>; got {source!r}"
         )
-    # A bare gym env id (version-suffixed) is never a model image; an explicit
-    # scheme is trusted, and an untagged repo ref is a valid image.
+    # A bare gym env id is never a model image; an explicit scheme is trusted.
     if not had_scheme and looks_like_gym_id(tag):
         raise ValueError(
             f"SandboxModel source {source!r} looks like a gym env id, not a model "
@@ -129,11 +124,8 @@ class SandboxModel:
     def serve(self) -> SandboxModel:
         """Start a long-lived container serving the policy, once it answers.
 
-        Delegates to the shared :func:`start_prebuilt_container` (the same path
-        the env sandbox uses) without an eval shape -- a model is never
-        vectorized; the model's construction params, if any, ride in as
-        ``RLMESH_MAKE_KWARGS``. A container that does not answer is stopped
-        before the error is raised, so nothing leaks.
+        The model's construction params ride in as ``RLMESH_MAKE_KWARGS``. A
+        container that does not answer is stopped before the error is raised.
 
         Idempotent: a second call returns the already-running handle, and one
         made while the first is starting waits for it. The model is reachable at
@@ -165,7 +157,6 @@ class SandboxModel:
                 role="model",
             )
         except BaseException:
-            # Killed: it never answered, so there is nothing to drain.
             sandbox_stop_env(container_id=info.container_id, kill=True)
             raise
         self._container_id = info.container_id
@@ -272,9 +263,7 @@ class SandboxModel:
             return
         from .._rlmesh import sandbox_stop_env
 
-        # Mark closed only once the stop succeeds, so a transient failure can be
-        # retried by a later shutdown()/__exit__/__del__ instead of leaking the
-        # container (mirrors the sandbox env session teardown).
+        # Mark closed only after the stop succeeds, so a failed stop can be retried.
         sandbox_stop_env(container_id=self._container_id)
         self._closed = True
         self._address = None

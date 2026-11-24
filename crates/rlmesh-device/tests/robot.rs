@@ -1,8 +1,3 @@
-//! The device's robot against a real session host over Zenoh on loopback,
-//! with this test as its transport (one session per traffic class): what
-//! zenoh-pico does on a board.
-
-// The transport's side: it reads the clock, as a board's does.
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
@@ -37,24 +32,15 @@ const MAP: &str = r#"{"eyes": {"kind": "joints", "names": ["pan", "tilt"], "fiel
   "hz": 50, "command": "position", "safe": "hold",
   "limits": {"pos": [[-0.6, 0.6], [-0.4, 0.4]]}}}"#;
 const WAIT: Duration = Duration::from_secs(10);
-/// zenoh-pico reassembles a message in 4096 bytes (`Z_FRAG_MAX_SIZE`, as
-/// boards are built) and drops a larger one without a word.
 const PICO_MESSAGE: usize = 4096;
 
-/// The system allocator, counting what the calling thread allocates while
-/// [`counted`] runs: a board's heap, as one receive spends it.
 struct Counting;
 
-/// What one counted call allocated.
 #[derive(Clone, Copy, Debug, Default)]
 struct Allocs {
-    /// Allocations and reallocations made.
     count: u32,
-    /// Bytes they asked for.
     bytes: usize,
-    /// The largest single request.
     largest: usize,
-    /// The most held at once beyond what was held before.
     peak: usize,
     live: isize,
 }
@@ -107,7 +93,6 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
 #[global_allocator]
 static COUNTING_ALLOC: Counting = Counting;
 
-/// Runs `f`, with what it allocated on this thread.
 fn counted<R>(f: impl FnOnce() -> R) -> (R, Allocs) {
     ALLOCS.with(|a| a.set(Allocs::default()));
     COUNTING.with(|c| c.set(true));
@@ -116,7 +101,6 @@ fn counted<R>(f: impl FnOnce() -> R) -> (R, Allocs) {
     (out, ALLOCS.with(std::cell::Cell::get))
 }
 
-/// One message a board took, and what taking it cost.
 #[derive(Clone, Copy, Debug)]
 struct Taken {
     at: Instant,
@@ -132,7 +116,6 @@ enum Took {
     Reply,
 }
 
-/// SplitMix64, seeded from the clock: the handshake's ephemeral keys.
 struct Mix(u64);
 
 impl Rng for Mix {
@@ -177,11 +160,9 @@ struct World {
     base: std::net::SocketAddr,
     identity: Arc<HostIdentity>,
     host: SessionHost,
-    /// Its datagram path, if it relays over UDP.
     relay: Option<Arc<DatagramRelay>>,
 }
 
-/// Client sessions to the host at `base`, one per class.
 async fn links(base: std::net::SocketAddr) -> Transport {
     Transport::open(&TransportConfig::per_class_tcp(base))
         .await
@@ -193,13 +174,10 @@ impl World {
         Self::start_with(Vec::new()).await
     }
 
-    /// A host that knows `devices` besides `local`.
     async fn start_with(devices: Vec<Device>) -> Self {
         Self::start_configured(|config| config.devices = devices).await
     }
 
-    /// A host that signs device views and seals none, as one from before
-    /// sealed views.
     async fn start_unsealed() -> Self {
         Self::start_configured(|config| {
             config
@@ -233,18 +211,14 @@ impl World {
         links(self.base).await
     }
 
-    /// A host that relays boards' realtime parts over UDP on loopback.
     async fn start_datagram() -> Self {
         Self::start_datagram_strict(false).await
     }
 
-    /// [`Self::start_datagram`], never moving a board off the path when
-    /// `strict` (`--board-data udp-only`).
     async fn start_datagram_strict(strict: bool) -> Self {
         Self::start_datagram_with(move |config| config.datagram_strict = strict).await
     }
 
-    /// [`Self::start_datagram`], configured further.
     async fn start_datagram_with(configure: impl FnOnce(&mut HostConfig)) -> Self {
         let relay = DatagramRelay::bind("127.0.0.1:0".parse().expect("addr"))
             .await
@@ -261,13 +235,10 @@ impl World {
         world
     }
 
-    /// Stops the host and starts a new one at the same address with the same
-    /// key: a new process, a new instance, an empty roster.
     async fn restart(self) -> Self {
         self.restart_with(None).await
     }
 
-    /// [`Self::restart`], relaying over UDP on `datagram` when given.
     async fn restart_with(self, datagram: Option<Arc<DatagramRelay>>) -> Self {
         let Self {
             tenant,
@@ -279,7 +250,6 @@ impl World {
         } = self;
         host.shutdown().await;
         let started = Instant::now();
-        // The ports free up as the old transport finishes closing.
         let transport = loop {
             let config = TransportConfig::host_tcp(base);
             match Transport::open(&config).await {
@@ -337,106 +307,59 @@ impl World {
     }
 }
 
-/// What the board's loop saw: the actions its edge dispatched.
 #[derive(Default)]
 struct Seen {
     actions: Vec<(EdgeMode, Vec<u8>)>,
-    /// The last tick's mode.
     mode: Option<EdgeMode>,
-    /// Who the e-stop latch names, while latched.
     latched_by: Option<String>,
     published: u32,
-    /// Samples of the part that actually went out.
     sent: u32,
-    /// Why the board last refused a chunk, and its invalid-value count.
     refused: (Option<Rejection>, u64),
-    /// How the part's chunks arrived, and the robot's accepted count.
     timing: Option<rlmesh_session::wire::ChunkTiming>,
     accepted: u64,
-    /// The robot's end of the datagram path.
     datagram: Option<rlmesh_session::wire::DatagramStats>,
 }
 
-/// A board's transport: one session per traffic class, as zenoh-pico opens
-/// them, kept across runs so a test can break the links under it.
 struct Board {
-    /// `None` while the links are dead: nothing goes out or comes back
-    /// until the robot asks to reopen them (zenoh-pico's sessions don't come
-    /// back on their own; Zenoh's own client would, and hide the fault).
     transport: Option<Transport>,
     base: std::net::SocketAddr,
     tx: mpsc::UnboundedSender<Event>,
     rx: mpsc::UnboundedReceiver<Event>,
-    /// Each with the id the robot gave it.
     subscribers: Vec<(u8, zenoh::pubsub::Subscriber<()>)>,
     tokens: Vec<zenoh::liveliness::LivelinessToken>,
     queries: BTreeMap<u32, tokio::task::JoinHandle<()>>,
     rng: Mix,
     start: Instant,
     next_sample: u64,
-    /// Links reopened at the robot's request.
     reconnects: u32,
-    /// No new link can open before this: the network is down.
     offline_until: Option<Instant>,
-    /// The transport never reports a query's end, as when zenoh-pico's
-    /// executor is blocked in `recv`.
     no_query_end: bool,
-    /// Queries that never reach the host, by key.
     lose: Box<dyn FnMut(&str) -> bool + Send>,
-    /// Replies too large for zenoh-pico ([`PICO_MESSAGE`]) are lost, as
-    /// on a board.
     pico: bool,
-    /// Replies lost for their size.
     oversized: Arc<std::sync::atomic::AtomicU32>,
-    /// Check signed views apart from the robot, as a board's transport
-    /// does on another task; `checker` is the current link's.
     check_views: bool,
     checker: Option<SignedChecker>,
-    /// Checkers taken, and views the checker refused.
     checkers: u32,
     views_refused: u32,
-    /// Spoils the next signed view that arrives.
     forge_next_view: bool,
-    /// Signature checks made, and those made after the robot took a sealed
-    /// view (a board's transport skips them then).
     checks: u32,
     checks_after_sealed: u32,
-    /// Sealed views never reach the robot, as from a host that doesn't seal.
-    /// Signed views that arrived after the first sealed one.
     signed_after_sealed: u32,
-    /// The first sealed view that arrived, kept for a replay.
     first_sealed: Option<(String, Vec<u8>)>,
-    /// The last sealed view that arrived.
     last_sealed: Option<(String, Vec<u8>)>,
-    /// Views and replies taken, with their cost.
     taken: Arc<Mutex<Vec<Taken>>>,
-    /// A fading link: within each period, nothing arrives or leaves for
-    /// the first part.
     fades: Arc<Mutex<Option<(Duration, Duration)>>>,
-    /// Each chunk that arrived: when, the key it was sealed under, and
-    /// whether the robot refused it as unauthenticated.
     chunks: Arc<Mutex<Vec<(Instant, u32, bool)>>>,
-    /// Key deliveries never reach the robot, so grants for it wait.
     drop_keys: Arc<std::sync::atomic::AtomicBool>,
-    /// The datagram socket the robot opened, connected to the host's UDP
-    /// port, and its reader.
     udp: Option<(Arc<tokio::net::UdpSocket>, tokio::task::JoinHandle<()>)>,
-    /// Datagrams lost on their way: those from the host, and those to it
-    /// (a probe's lane, or any other).
     lose_down: Arc<std::sync::atomic::AtomicBool>,
     lose_up: Arc<std::sync::atomic::AtomicBool>,
     lose_probes: Arc<std::sync::atomic::AtomicBool>,
-    /// A send the socket refused: the robot is told on its next loop.
     udp_failed: bool,
-    /// Every datagram that arrived from the host, kept for a replay.
     datagrams: Arc<Mutex<Vec<Vec<u8>>>>,
-    /// Datagrams sent, by lane.
     sent_up: Arc<Mutex<BTreeMap<String, u32>>>,
-    /// Commands subscriptions declared on the session's links.
     command_subscriptions: u32,
-    /// Command subscriptions dropped (a part back on the datagram path).
     command_unsubscriptions: u32,
-    /// The last probe the robot sent.
     last_probe: Option<Vec<u8>>,
 }
 
@@ -487,7 +410,6 @@ impl Board {
         }
     }
 
-    /// Whether the link is in a fade now.
     fn faded(&self) -> bool {
         self.fades
             .lock()
@@ -498,7 +420,6 @@ impl Board {
             })
     }
 
-    /// Hands `robot` a message as `take` does, timed and counted.
     fn take(&self, what: Took, take: impl FnOnce()) {
         let started = Instant::now();
         let ((), allocs) = counted(take);
@@ -511,8 +432,6 @@ impl Board {
         });
     }
 
-    /// The links die with no word to the board: a host restarted, or Wi-Fi
-    /// gone. What is in flight is lost.
     fn sever(&mut self) {
         self.close_udp();
         self.transport = None;
@@ -524,9 +443,6 @@ impl Board {
         while self.rx.try_recv().is_ok() {}
     }
 
-    /// Runs `robot` until `done` holds or `limit` passes, carrying out its
-    /// actions as a board would. Once it runs, it ticks the part each loop
-    /// and publishes a sample every 20 ms.
     async fn run(
         &mut self,
         robot: &mut Robot,
@@ -647,8 +563,6 @@ impl Board {
         }
     }
 
-    /// A signed view as a board's transport takes it: verified apart from
-    /// the robot, which is handed only what passed.
     fn check_view(&mut self, robot: &mut Robot, key: &str, mut bytes: Vec<u8>, now_us: u64) {
         if let Some(checker) = robot.take_checker() {
             self.checker = Some(checker);
@@ -658,7 +572,6 @@ impl Board {
             return;
         };
         if !robot.wants_signed_views() {
-            // The transport drops it unchecked.
             return;
         }
         self.checks += 1;
@@ -742,7 +655,6 @@ impl Board {
                 self.queries.insert(
                     id,
                     tokio::spawn(async move {
-                        // The key alone, of the reply's envelope.
                         let fits = |bytes: &[u8]| !pico || bytes.len() + key.len() <= PICO_MESSAGE;
                         let mut get = zenoh
                             .get(key.clone())
@@ -854,8 +766,6 @@ impl Drop for Board {
     }
 }
 
-/// Runs `robot` over a fresh transport to the world's host until `done`
-/// holds or `limit` passes (see [`Board::run`]).
 async fn drive(
     world: &World,
     mut robot: Box<Robot>,
@@ -874,8 +784,6 @@ async fn drive(
 async fn a_board_joins_declares_its_parts_and_heartbeats() {
     let world = World::start().await;
     let robot = world.robot(AddressKey::of(&world.identity));
-    // Joined, then 5.5 s more: past the time it would count the host lost
-    // without echoes.
     let mut running = None;
     let robot = drive(
         &world,
@@ -893,9 +801,7 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
     assert!(running.is_some(), "never joined: {:?}", robot.fault());
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
     assert!(robot.generation() >= 1);
-    // Heartbeats are echoed, sealed both ways.
     assert!(robot.echoes() >= 20, "{} echoes", robot.echoes());
-    // It asked for its device view at attach, and the host publishes it.
     assert!(robot.view().is_some(), "the board holds its device view");
     assert!(
         robot.views() > 0,
@@ -911,14 +817,12 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
         snapshot.parts.iter().any(|p| p.path.as_str() == "eyes"),
         "the host has its parts"
     );
-    // Its clock is mapped from the heartbeats' timing: an edge needs it.
     let id = ParticipantId::new("eyes").expect("id");
     assert!(snapshot.clock(&id).is_some(), "the board's clock is mapped");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_board_takes_views_checked_on_another_task_and_never_a_forged_one() {
-    // Signed views only, as from a host that doesn't seal them.
     let world = World::start_unsealed().await;
     let mut robot = world.robot(AddressKey::of(&world.identity));
     let mut board = Board::open(&world).await;
@@ -957,10 +861,7 @@ async fn a_running_board_is_next_due_by_its_heartbeat_and_its_control_tick() {
         })
         .await;
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
-    // The board's clock, as its run read it.
     let now_us = || u64::try_from(board.start.elapsed().as_micros()).expect("µs");
-    // Drained: nothing waits, so the next due moment is the heartbeat's, at
-    // most a period away.
     let now = now_us();
     let _ = robot.poll(now);
     let due = robot.next_due().expect("a heartbeat is scheduled");
@@ -969,7 +870,6 @@ async fn a_running_board_is_next_due_by_its_heartbeat_and_its_control_tick() {
         "due {} us after now",
         due.saturating_sub(now)
     );
-    // Once ticked, the part's next tick (50 Hz) bounds it too.
     let part = robot.part("eyes").expect("part");
     let ticked = now_us();
     let _ = robot.tick(part, ticked);
@@ -1009,7 +909,6 @@ async fn a_board_takes_sealed_views_and_checks_no_signature_after_the_first() {
         "no signed view sent once it takes sealed ones"
     );
 
-    // The first sealed view again: a replay, refused and counted.
     let (key, mut first) = board.first_sealed.clone().expect("a sealed view");
     let held = robot.view().expect("a view").revision;
     robot.sample(SUB_VIEW_SEALED, &key, &mut first, 0);
@@ -1040,8 +939,6 @@ async fn a_board_falls_back_to_signed_views_from_a_host_that_doesnt_seal() {
 async fn a_board_latched_before_it_joins_still_joins_and_reports_the_latch() {
     let world = World::start().await;
     let mut robot = world.robot(AddressKey::of(&world.identity));
-    // Its e-stop pin held at boot: latched before it has a link, and read
-    // as pressed on every loop after. One latch, its first reason.
     robot.estop("pin held at boot", 0);
     for t in 1..1000 {
         robot.estop("pin still held", t);
@@ -1106,7 +1003,6 @@ async fn a_controller_drives_the_board_and_reads_its_samples() {
         policy.arm().await.expect("arm");
         let lease = policy.grant_lease(eyes, None).await.expect("lease");
         let tx = policy.chunk_publisher(&lease).await.expect("publisher");
-        // The board installs its k_cmd from the grant's delivery.
         tokio::time::sleep(Duration::from_millis(300)).await;
         let target = pos(0.25, -0.1);
         let deadline = Instant::now() + WAIT;
@@ -1138,8 +1034,6 @@ async fn a_controller_drives_the_board_and_reads_its_samples() {
         let host = world.host.snapshot();
         assert_ne!(host.mode, Mode::Safe, "{:?}", host.mode_reason);
 
-        // The controller's e-stop signal: the board's edge latches it
-        // directly (ESTOP_SIGNAL, by the controller) and stops driving.
         policy.estop("test").await.expect("e-stop");
         let deadline = Instant::now() + WAIT;
         loop {
@@ -1162,7 +1056,6 @@ async fn a_controller_drives_the_board_and_reads_its_samples() {
             .expect("ESTOP");
         (target, received)
     };
-    // The board loop runs until the controller is done: race them.
     let (target, _) = tokio::select! {
         result = controller => result,
         robot = board => panic!("the board's loop ended first: {:?}", robot.fault()),
@@ -1176,8 +1069,6 @@ async fn a_controller_drives_the_board_and_reads_its_samples() {
         seen.actions.len()
     );
     assert!(seen.published > 0);
-    // Every accepted chunk was timed, and a later refusal (the e-stop's) only
-    // received.
     let timing = seen.timing.expect("the part's chunk timing");
     assert_eq!(timing.accepted, seen.accepted);
     assert!(timing.received >= timing.accepted && timing.accepted > 0);
@@ -1216,9 +1107,6 @@ async fn a_board_with_another_hosts_key_is_refused() {
     );
 }
 
-/// A board provisioned for the host joins with its own
-/// device key, under the access the daemon enrolled it with; an unenrolled
-/// key may do nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_provisioned_board_joins_with_its_device_key() {
     let private = [0x42_u8; 32];
@@ -1269,9 +1157,6 @@ async fn a_provisioned_board_joins_with_its_device_key() {
     );
 }
 
-/// A board provisioned for its home joins the home's default session
-/// directly, with its own device key and no lobby (only a `fleet` build
-/// waits there), so one firmware serves every eye.
 #[cfg(not(feature = "fleet"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_provisioned_board_joins_its_homes_default_session_without_the_lobby() {
@@ -1327,8 +1212,6 @@ async fn a_provisioned_board_joins_its_homes_default_session_without_the_lobby()
     assert_eq!(eye.device, "board-eye-1");
 }
 
-/// One policy for eyes `eye-1` and `eye-2`: no robot named, so it binds
-/// the session's view, each action naming its eye.
 const EYES_POLICY: &str = r#"{
     "hz": 25,
     "actions": {
@@ -1339,7 +1222,6 @@ const EYES_POLICY: &str = r#"{
     }
 }"#;
 
-/// Both eyes to 0.25 rad pan and tilt, for the whole chunk.
 struct Gaze;
 
 impl rlmesh_session::Predictor for Gaze {
@@ -1357,10 +1239,6 @@ impl rlmesh_session::Predictor for Gaze {
     }
 }
 
-/// Two boards and one policy driving both: board 2 goes off the network
-/// (its loop stops) and the host loses it, board 1 keeps moving, and once
-/// board 2 is back it rejoins on its own and, with robots re-arming on
-/// their own, is driven again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_driven_again() {
     let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
@@ -1406,7 +1284,6 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
             .await
         }
     });
-    // Board 2 runs until both boards are driven, then drops off.
     let driven = |seen: &Arc<Mutex<Seen>>| {
         let seen = seen.lock().expect("seen");
         seen.actions
@@ -1464,7 +1341,6 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
     let two = two_session.await.expect("board 2");
     assert_eq!(two.phase(), Phase::Running, "fault: {:?}", two.fault());
 
-    // Board 2 is off the network: the host loses it, board 1 goes on.
     let eye_two = ParticipantId::new("eye-2").expect("id");
     let started = Instant::now();
     while world
@@ -1476,8 +1352,6 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
         assert!(started.elapsed() < WAIT, "the host never lost board 2");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Board 1 takes more actions with board 2 gone, however slowly a loaded
-    // machine delivers them.
     let before = seen_one.lock().expect("seen").actions.len();
     let started = Instant::now();
     while seen_one.lock().expect("seen").actions.len() <= before + 10 {
@@ -1493,7 +1367,6 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
     );
     assert_ne!(world.host.snapshot().mode, Mode::Safe);
 
-    // Back: it finds the host gone quiet, joins again and is driven again.
     seen_two.lock().expect("seen").actions.clear();
     let two = drive(
         &world,
@@ -1532,8 +1405,6 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
     one.await.expect("board 1");
 }
 
-/// A policy that reads the board's part as an input (latest, below its 50 Hz)
-/// and commands it.
 const READING_POLICY: &str = r#"{
     "hz": 20,
     "inputs": {"eyes": {"kind": "joints", "at": "eye-1:eyes"}},
@@ -1543,9 +1414,6 @@ const READING_POLICY: &str = r#"{
     }
 }"#;
 
-/// A part bound as a policy's input: the board installs the host's delivery
-/// plan and acknowledges it, so the lease is granted, and then publishes at
-/// the plan's rate rather than its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_policy_reading_a_boards_part_gets_its_lease_and_the_plan_applies() {
     let world = Arc::new(World::start().await);
@@ -1625,12 +1493,9 @@ async fn a_policy_reading_a_boards_part_gets_its_lease_and_the_plan_applies() {
         .cloned()
         .expect("the input's demand");
     assert_eq!(demand.acked, demand.revision, "{demand:?}");
-    // Read at 20 Hz: every second sample, some of them every one, so that
-    // no gap is over 50 ms.
     let rate = 50.0 / 1.5;
     assert_eq!(demand.plan, Plan::Latest { hz: rate });
 
-    // It offers 50 Hz: at most 33 go out, whatever else the machine is doing.
     let before = seen.lock().expect("seen").sent;
     let started = Instant::now();
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1644,8 +1509,6 @@ async fn a_policy_reading_a_boards_part_gets_its_lease_and_the_plan_applies() {
     board.await.expect("board");
 }
 
-/// A host restarted under a board that was not: the links are dead and only
-/// the board can reopen them, then it joins the new instance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_board_reopens_its_links_and_rejoins_a_restarted_host() {
     let world = World::start().await;
@@ -1656,7 +1519,6 @@ async fn a_board_reopens_its_links_and_rejoins_a_restarted_host() {
         .run(&mut robot, WAIT, &seen, |r| r.phase() == Phase::Running)
         .await;
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
-    // Past the time silence would count: links that answer are left alone.
     let joined = Instant::now();
     board
         .run(&mut robot, Duration::from_secs(6), &seen, move |_| {
@@ -1665,14 +1527,12 @@ async fn a_board_reopens_its_links_and_rejoins_a_restarted_host() {
         .await;
     assert_eq!(board.reconnects, 0, "fault: {:?}", robot.fault());
     assert_eq!(robot.attaches(), 1);
-    // Bytes that open under no key: a refusal this attach counts.
     let at = u64::try_from(board.start.elapsed().as_micros()).expect("µs");
     robot.sample(SUB_COMMANDS, "not/a/chunk", &mut [1, 2, 3], at);
     assert_eq!(robot.refusals(Rejection::Unauthenticated), 1);
 
     let world = world.restart().await;
     board.sever();
-    // The silent case: the dead link reports nothing, not even a query's end.
     board.no_query_end = true;
     let mut left = false;
     board
@@ -1683,7 +1543,6 @@ async fn a_board_reopens_its_links_and_rejoins_a_restarted_host() {
         .await;
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
     assert!(board.reconnects >= 1, "it reopened its links");
-    // This attach's refusals start over; the lifetime's are kept.
     assert_eq!(robot.attaches(), 2);
     assert_eq!(robot.refusals(Rejection::Unauthenticated), 0);
     assert_eq!(robot.chunks_refused(), 0);
@@ -1693,8 +1552,6 @@ async fn a_board_reopens_its_links_and_rejoins_a_restarted_host() {
     assert!(roster.iter().any(|p| p.id.as_str() == "eyes" && p.present));
 }
 
-/// Wi-Fi gone long enough for the host to lose the board, then back, with
-/// the host up all along: it reopens its links, retrying until they open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_board_rejoins_after_the_network_returns_with_the_host_still_up() {
     let world = World::start().await;
@@ -1720,9 +1577,6 @@ async fn a_board_rejoins_after_the_network_returns_with_the_host_still_up() {
     assert!(robot.generation() > first, "a new attach");
 }
 
-/// zenoh-pico's executor stuck in `recv`: no query ever reports its end, and
-/// the first host query and the first `ctl` request are lost. The robot's own
-/// deadlines carry it through both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_board_joins_though_lost_queries_never_report_their_end() {
     let world = World::start().await;
@@ -1750,11 +1604,6 @@ async fn a_board_joins_though_lost_queries_never_report_their_end() {
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
 }
 
-/// A session whose state outgrew what a board's transport takes in (here a
-/// policy's binding table alone fills it; in a session driven for a while,
-/// its participants, parts, bindings and ended leases): the board still reads
-/// the host instance and joins, and a full participant still reads the whole
-/// state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_board_joins_a_session_whose_state_outgrew_its_transport() {
     let world = World::start().await;
@@ -1793,11 +1642,8 @@ async fn a_board_joins_a_session_whose_state_outgrew_its_transport() {
     );
 }
 
-/// Refused in a session whose state is larger than a board reassembles, a
-/// board still hears why: the refusal carries the reason, not the state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_board_refused_in_a_session_whose_state_outgrew_its_transport_hears_why() {
-    // Enrolled for everything but embodying a robot: its attach is refused.
     let private = [0x44_u8; 32];
     let mut access = DeviceAccess::new(Some(PriorityClass::Model));
     access.roles = vec![Role::Controller];
@@ -1834,8 +1680,6 @@ async fn a_board_refused_in_a_session_whose_state_outgrew_its_transport_hears_wh
     }
 }
 
-/// A chunk the edge refuses says why, and what can't be opened at all is
-/// counted the same way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
     let world = World::start().await;
@@ -1874,10 +1718,6 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
         let lease = policy.grant_lease(eyes, None).await.expect("lease");
         let tx = policy.chunk_publisher(&lease).await.expect("publisher");
         let started = Instant::now();
-        // A value that isn't a number: well formed, sealed, and refused for
-        // it. Chunks that reach the board before its clock mapping or the
-        // lease are refused for that instead: sent until one is refused
-        // for its value, and the board says so.
         let bad = pos(f32::NAN, 0.0);
         let refused_for_value = || {
             let seen = seen.lock().expect("seen");
@@ -1903,10 +1743,6 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         done.store(true, std::sync::atomic::Ordering::Relaxed);
-        // Kept past the join: dropping the last handle of a Zenoh session
-        // closes it in a nested `block_on` on this thread, which takes the
-        // wakeup the board loop's timer sends meanwhile, and the loop
-        // would never run again.
         (policy, tx)
     };
     let (_, _kept) = tokio::time::timeout(Duration::from_secs(60), async {
@@ -1915,7 +1751,6 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
     .await
     .expect("the board loop and the controller finish");
     assert!(robot.refusals(Rejection::InvalidValue) >= 1);
-    // Each refusal is counted once, under its reason.
     let by_reason = || {
         Rejection::ALL
             .iter()
@@ -1925,7 +1760,6 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
     let refused = robot.chunks_refused();
     assert_eq!(by_reason(), refused);
 
-    // Bytes that open under no key are the same kind of news.
     let unauthenticated = robot.refusals(Rejection::Unauthenticated);
     let at = u64::try_from(board.start.elapsed().as_micros()).expect("µs");
     robot.sample(SUB_COMMANDS, "not/a/chunk", &mut [1, 2, 3], at);
@@ -1937,17 +1771,14 @@ async fn a_board_says_why_it_refused_a_chunk_and_counts_each_reason() {
     assert_eq!(robot.chunks_refused(), refused + 1);
 }
 
-/// The demo's camera robot.
 const CAMERA_PARTS: &str = r#"{"rgb": {"kind": "camera", "width": 32, "height": 24, "hz": 30}}"#;
 
-/// The demo's tracker: three custom streams.
 const TRACKER_PARTS: &str = r#"{
     "target": {"kind": "track/target", "hz": 30, "fields": {"xy": ["float32", [2]]}},
     "face": {"kind": "track/face", "hz": 30, "fields": {"box": ["float32", [4]]}},
     "hand": {"kind": "track/hand", "hz": 30, "fields": {"xyz": ["float32", [3]]}}
 }"#;
 
-/// The demo's viewer: six inputs, no actions.
 const VIEWER_POLICY: &str = r#"{
     "hz": 10,
     "inputs": {
@@ -1962,7 +1793,6 @@ const VIEWER_POLICY: &str = r#"{
 }"#;
 
 impl World {
-    /// A host whose robots re-arm on their own, as the demo's does.
     async fn start_rearming() -> Self {
         let (transport, base) = open_local_listener("127.0.0.1".parse().expect("ip"))
             .await
@@ -2013,7 +1843,6 @@ impl World {
         .expect("a valid map")
     }
 
-    /// Waits until the host's state satisfies `done`.
     async fn until(
         &self,
         what: &str,
@@ -2027,8 +1856,6 @@ impl World {
     }
 }
 
-/// A board running on its own task until `stop`, with its log of what it
-/// took and its fades.
 struct Running {
     task: tokio::task::JoinHandle<(Box<Robot>, Board)>,
     taken: Arc<Mutex<Vec<Taken>>>,
@@ -2072,8 +1899,6 @@ async fn run_board(
     }
 }
 
-/// Views taken per second, replies per second, and what one view cost at
-/// most, over `taken`.
 fn rates(taken: &[Taken]) -> (f64, f64, Allocs, Duration) {
     let (Some(first), Some(last)) = (taken.first(), taken.last()) else {
         return (0.0, 0.0, Allocs::default(), Duration::ZERO);
@@ -2100,10 +1925,6 @@ fn rates(taken: &[Taken]) -> (f64, f64, Allocs, Duration) {
     )
 }
 
-/// The demo's session: two boards with a commanded part each, a camera
-/// robot, a tracker publishing three parts, a desk, a driver commanding both
-/// boards and a viewer reading six parts. What a board's view carries and
-/// costs it, and how it grows as each joins.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_boards_view_in_the_demo_session() {
     use rlmesh_session_core::wire::{DeviceView, codec};
@@ -2210,7 +2031,6 @@ async fn a_boards_view_in_the_demo_session() {
         .await;
     grew("viewer", &world);
 
-    // Driven, steady: what each view costs eye-1, and how often one comes.
     one.taken.lock().expect("taken").clear();
     let started = Instant::now();
     while one
@@ -2227,7 +2047,6 @@ async fn a_boards_view_in_the_demo_session() {
     }
     let steady = one.taken.lock().expect("taken").clone();
 
-    // eye-2 on a fading link: 400 ms of nothing every 1.5 s.
     two.taken.lock().expect("taken").clear();
     *two.fades.lock().expect("fades") =
         Some((Duration::from_millis(1500), Duration::from_millis(400)));
@@ -2239,7 +2058,6 @@ async fn a_boards_view_in_the_demo_session() {
             .map(|l| l.token)
     };
     one.taken.lock().expect("taken").clear();
-    // Until its lease lapsed and was granted again three times.
     let mut tokens = std::collections::BTreeSet::new();
     let started = Instant::now();
     while tokens.len() < 4 {
@@ -2305,7 +2123,6 @@ async fn a_boards_view_in_the_demo_session() {
     for row in &growth {
         eprintln!("  {row:?}");
     }
-    // Its own part only, and none of it on the wire after its declaration.
     assert!(view.parts.iter().all(|p| p.owner == eye));
     assert!(
         sealed.len() + 150 < codec::encode_view(&view).len(),
@@ -2316,14 +2133,11 @@ async fn a_boards_view_in_the_demo_session() {
         7,
         "every present member, for its e-stop keys"
     );
-    // A view like the last allocates nothing; one that grows the view's
-    // room or changes the keys held, a few small blocks.
     assert!(
         free * 10 >= steady.len() * 9,
         "{free} of {} views allocated nothing",
         steady.len()
     );
-    // Refinements at most every quarter of the lease grace, plus changes.
     assert!(
         steady_rate < 20.0 && beside_rate < 20.0,
         "{steady_rate} and {beside_rate} views/s"
@@ -2331,13 +2145,6 @@ async fn a_boards_view_in_the_demo_session() {
     assert_eq!(one_robot.view_counts().2, 0, "eye-1 dropped no view");
 }
 
-/// A board that resets while driven (its loop stops dead, and a new process
-/// joins under its name before the host has counted the old one lost)
-/// refuses as unauthenticated only the chunks already in flight under its
-/// old generation's lease: the driver stops sending under a lease the
-/// moment its view shows it ended, even while its lease keeper is busy
-/// with another robot's grant (here one whose key deliveries are lost, so
-/// each grant waits out its time).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
     let world = Arc::new(World::start_rearming().await);
@@ -2367,8 +2174,6 @@ async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
             ),
             &rlmesh_session::spec::Policy::parse(EYES_POLICY).expect("policy"),
             &rlmesh_session::spec::RunOptions::named("driver"),
-            // Leases that outlast a reset: the driver must stop on the
-            // view, not on its lease running out.
             rlmesh_session::ControllerConfig {
                 lease_ttl: Some(Duration::from_secs(2)),
                 ..rlmesh_session::ControllerConfig::default()
@@ -2413,8 +2218,6 @@ async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
             .map(|l| l.key_id)
     };
 
-    // Every lease again, eye-2's grant waiting on keys it never gets: the
-    // driver's lease keeper stays busy with it.
     two.drop_keys
         .store(true, std::sync::atomic::Ordering::Relaxed);
     desk.disarm().await.expect("disarm");
@@ -2431,8 +2234,6 @@ async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // The reset: nothing more in or out of the old process, and a new one
-    // joins at once.
     *one.fades.lock().expect("fades") =
         Some((Duration::from_secs(3600), Duration::from_secs(3600)));
     let back = run_board(&world, world.board("eye-1"), &stop).await;
@@ -2443,7 +2244,6 @@ async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
                 && lease(s, &eye) != Some(before)
         })
         .await;
-    // Its commands subscribed, then two seconds: the old lease's whole ttl.
     let started = Instant::now();
     while back.chunks.lock().expect("chunks").is_empty() && started.elapsed() < WAIT {
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2478,9 +2278,6 @@ async fn a_board_back_from_a_reset_refuses_only_the_chunks_already_in_flight() {
     let _ = two.task.await;
 }
 
-/// A controller that leases the board's part and sends it a chunk of four
-/// actions every 33 ms until `done` holds or [`WAIT`] passes: whether it
-/// held, and the newest sample of the part the controller received.
 async fn drive_board(
     world: &World,
     seen: &Arc<Mutex<Seen>>,
@@ -2495,7 +2292,6 @@ async fn drive_board(
     .await
 }
 
-/// [`drive_board`], sending nothing while `quiet` is set: the lease held.
 async fn drive_board_quieting(
     world: &World,
     seen: &Arc<Mutex<Seen>>,
@@ -2555,7 +2351,6 @@ async fn drive_board_quieting(
     (held, latest)
 }
 
-/// The board's health row at the host.
 fn board_health(world: &World) -> Option<rlmesh_session::ParticipantHealth> {
     world
         .host
@@ -2564,7 +2359,6 @@ fn board_health(world: &World) -> Option<rlmesh_session::ParticipantHealth> {
         .find(|row| row.participant.as_str() == "eyes")
 }
 
-/// Waits for the host's health of the board to satisfy `ok`.
 async fn wait_health(
     world: &World,
     what: &str,
@@ -2594,7 +2388,6 @@ async fn a_board_on_the_datagram_path_takes_chunks_and_its_samples_reach_a_polic
     let seen = Arc::new(Mutex::new(Seen::default()));
     let mut robot = world.robot(AddressKey::of(&world.identity));
     let mut board = Board::open(&world).await;
-    // A recorder, as the host's own would: an observer of every stream.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("session.mcap");
     let observer = {
@@ -2630,7 +2423,6 @@ async fn a_board_on_the_datagram_path_takes_chunks_and_its_samples_reach_a_polic
     let stats = robot.datagram_stats().expect("offered");
     assert!(stats.active && stats.unopened == 0, "{stats:?}");
     assert_eq!(robot.datagram_fallbacks(), 0);
-    // Never both paths: no command subscription, no sample on the session.
     assert_eq!(board.command_subscriptions, 0);
     assert_eq!(
         seen.lock().expect("seen").sent,
@@ -2642,7 +2434,6 @@ async fn a_board_on_the_datagram_path_takes_chunks_and_its_samples_reach_a_polic
         lanes.keys().any(|k| k.ends_with("/eyes")) && lanes.keys().any(|k| k.ends_with("_applied")),
         "{lanes:?}"
     );
-    // The policy received the board's samples, relayed by the host.
     assert_eq!(latest.as_deref(), Some(&pos(0.1, 0.2)[..]));
     let row = tokio::select! {
         row = wait_health(&world, "the datagram path", |r| {
@@ -2656,8 +2447,6 @@ async fn a_board_on_the_datagram_path_takes_chunks_and_its_samples_reach_a_polic
         host.active && host.sent > 0 && host.unopened == 0,
         "{host:?}"
     );
-    // Every chunk the host sent on was timed through its relay (read a
-    // moment after the counters).
     let relay = row.datagram_relay.expect("relay timing");
     assert!(relay.ms.iter().sum::<u64>() >= host.sent, "{relay:?}");
     let stats = recorder.finish().await.expect("finish");
@@ -2686,8 +2475,6 @@ async fn flipping_the_hosts_board_data_and_reattaching_switches_paths() {
     assert!(on_udp(&robot), "{:?}", robot.fault());
     let attaches = robot.attaches();
 
-    // The host comes back without the datagram path: the board re-attaches
-    // on TCP, and is driven there.
     let world = world.restart().await;
     board
         .run(&mut robot, Duration::from_secs(20), &seen, |r| {
@@ -2705,7 +2492,6 @@ async fn flipping_the_hosts_board_data_and_reattaching_switches_paths() {
     assert!(held, "not driven over TCP after the switch");
     assert_eq!(board.command_subscriptions, subscriptions + 1);
 
-    // And with it again: back on UDP.
     let attaches = robot.attaches();
     let relay = DatagramRelay::bind("127.0.0.1:0".parse().expect("addr"))
         .await
@@ -2735,8 +2521,6 @@ async fn flipping_the_hosts_board_data_and_reattaching_switches_paths() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_board_or_host_without_the_path_keeps_every_part_on_tcp() {
     use rlmesh_session::wire::DataPath;
-    // A board that does not take it (as one from before it), with a host
-    // that offers it.
     let world = World::start_datagram().await;
     let seen = Arc::new(Mutex::new(Seen::default()));
     let mut robot = world.robot(AddressKey::of(&world.identity));
@@ -2757,7 +2541,6 @@ async fn a_board_or_host_without_the_path_keeps_every_part_on_tcp() {
     };
     drop(board);
 
-    // A host that offers nothing, with a board that would take it.
     let world = World::start().await;
     let seen = Arc::new(Mutex::new(Seen::default()));
     let mut robot = world.robot(AddressKey::of(&world.identity));
@@ -2810,8 +2593,6 @@ async fn a_hostile_datagram_changes_nothing_but_a_counter() {
     .datagram_host
     .expect("host counters");
 
-    // At the host, from a stranger: garbage, a sample that opens under no
-    // key, a captured probe again, and one too large. The host answers none.
     let rogue = tokio::net::UdpSocket::bind("127.0.0.1:0")
         .await
         .expect("udp");
@@ -2836,8 +2617,6 @@ async fn a_hostile_datagram_changes_nothing_but_a_counter() {
         "the host answered a stranger"
     );
 
-    // At the board, as if from the host's address: garbage, a chunk
-    // datagram again, one too large.
     let replay = board
         .datagrams
         .lock()
@@ -2858,8 +2637,6 @@ async fn a_hostile_datagram_changes_nothing_but_a_counter() {
     assert_eq!(robot.chunks_accepted(), accepted);
     assert_eq!(robot.phase(), Phase::Running);
 
-    // The host counted what did not open (the garbage and the oversize one
-    // name no route), and kept sending to the board: its chunks still arrive.
     let received = after.received;
     let (held, _) = tokio::select! {
         driven = drive_board(&world, &seen, |seen, _| {
@@ -2881,16 +2658,10 @@ async fn a_hostile_datagram_changes_nothing_but_a_counter() {
     assert!(relay.unrouted() >= 2, "{} unrouted", relay.unrouted());
 }
 
-/// Every chunk datagram lost while the control link stays healthy: the host,
-/// which counts what it sent against what the board's heartbeats say opened,
-/// moves the board's parts to TCP, where it is driven. Once the datagrams
-/// get through again, it moves them back onto the path, in the same attach.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_host_moves_a_board_whose_chunks_stop_arriving_to_tcp_and_back_once_they_arrive() {
     use rlmesh_session::wire::DataPath;
     use std::sync::atomic::Ordering;
-    // Starved of chunks, the board goes safe; re-armed at once, as the
-    // bench's host does it.
     let world = World::start_datagram_with(|config| config.rearm_robots = true).await;
     let seen = Arc::new(Mutex::new(Seen::default()));
     let mut robot = world.robot(AddressKey::of(&world.identity));
@@ -2932,7 +2703,6 @@ async fn a_host_moves_a_board_whose_chunks_stop_arriving_to_tcp_and_back_once_th
         () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
     };
 
-    // The path works again: back on it at the host's next try.
     lose_down.store(false, Ordering::Relaxed);
     let received = robot.datagram_stats().expect("stats").received;
     let (held, _) = tokio::select! {
@@ -2957,8 +2727,6 @@ async fn a_host_moves_a_board_whose_chunks_stop_arriving_to_tcp_and_back_once_th
     };
 }
 
-/// A policy that holds its lease and sends nothing for seconds: nothing was
-/// sent, so nothing is broken, and the board stays on the path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_policy_that_stops_sending_leaves_a_board_on_the_datagram_path() {
     use rlmesh_session::wire::DataPath;
@@ -2977,7 +2745,6 @@ async fn a_policy_that_stops_sending_leaves_a_board_on_the_datagram_path() {
             if quiet_at.is_none() && d.received >= 10 {
                 quiet_at = Some(into);
             }
-            // Quiet for 3 s, then driven for a second more.
             let quiet_for = quiet_at.map(|at| into.saturating_sub(at));
             quiet.store(
                 quiet_for.is_some_and(|t| t < Duration::from_secs(3)),
@@ -2999,8 +2766,6 @@ async fn a_policy_that_stops_sending_leaves_a_board_on_the_datagram_path() {
     };
 }
 
-/// A strict host (`--board-data udp-only`) keeps a board on the path though
-/// every chunk datagram is lost: loss is loss.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_strict_host_keeps_a_board_on_the_datagram_path_whatever_it_loses() {
     use rlmesh_session::wire::DataPath;
@@ -3043,7 +2808,6 @@ async fn a_host_that_hears_no_samples_over_the_path_moves_the_board_back_to_tcp(
     let seen = Arc::new(Mutex::new(Seen::default()));
     let mut robot = world.robot(AddressKey::of(&world.identity));
     let mut board = Board::open(&world).await;
-    // Its samples never reach the host over UDP (its probes do).
     board.lose_up.store(true, Ordering::Relaxed);
     let on_udp = |r: &Robot| r.datagram_stats().is_some_and(|d| d.active);
     board.run(&mut robot, WAIT, &seen, on_udp).await;
@@ -3066,7 +2830,6 @@ async fn a_host_that_hears_no_samples_over_the_path_moves_the_board_back_to_tcp(
         () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
     };
     assert!(!row.datagram_host.expect("host").active);
-    // Its samples reach a policy over TCP, and its chunks too.
     let (held, latest) = tokio::select! {
         driven = drive_board(&world, &seen, |seen, sample| sample && seen.accepted > 5) => driven,
         () = board.run(&mut robot, Duration::from_secs(30), &seen, |_| false) => panic!("loop ended"),
@@ -3098,15 +2861,11 @@ async fn a_board_on_the_datagram_path_rides_out_an_outage_of_every_link() {
     let fades = board.fades.clone();
     let start = board.start;
     let mut outage: Option<Duration> = None;
-    // Driven over UDP; then nothing at all arrives or leaves for 400 ms (the
-    // robot goes safe, as it would over TCP), and for a second and a half
-    // after: an outage of the whole link is no reason to leave the path.
     let (held, _) = tokio::select! {
         driven = drive_board(&world, &seen, |seen, _| {
             let Some(d) = seen.datagram else { return false };
             let into = start.elapsed();
             if outage.is_none() && d.received >= 10 {
-                // One fade, from now, 400 ms long, in a period past the test.
                 *fades.lock().expect("fades") =
                     Some((into + Duration::from_secs(600), into + Duration::from_millis(400)));
                 outage = Some(into);

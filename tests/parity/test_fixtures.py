@@ -17,14 +17,12 @@ CASES = scenarios()
 
 @pytest.fixture(autouse=True)
 def quiet_edition(monkeypatch):
-    """Make floating deliberate so only the fixture's warning is emitted."""
     monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", "")
 
 
 @pytest.mark.parametrize("language", ["python", "c", "cpp"])
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
 def test_scenario(language, case):
-    """Every applicable scenario must run and compare its observed output."""
     if language not in case.get("languages", ["python", "rust", "c", "cpp"]):
         pytest.skip(case["why"])
     if language == "python":

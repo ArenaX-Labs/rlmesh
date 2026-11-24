@@ -180,7 +180,6 @@ def test_gymnasium_int64_box_roundtrips_2_pow_63_minus_1_exactly() -> None:
     restored = spaces.to_gymnasium_space(space)
     assert isinstance(restored, gymnasium.spaces.Box)
     assert restored.dtype == np.dtype("int64")
-    # The bound survives exactly; an f64 round-trip would round it up to 2**63.
     assert int(restored.high.max()) == 2**63 - 1
     np.testing.assert_array_equal(restored.high, source.high)
     np.testing.assert_array_equal(restored.low, source.low)
@@ -246,8 +245,6 @@ def test_gymnasium_rank2_scalar_low_broadcast_matches_gymnasium() -> None:
     gymnasium = pytest.importorskip("gymnasium")
     from rlmesh import spaces
 
-    # gymnasium broadcasts the scalar low across the (2,3) shape; the rlmesh
-    # round-trip must reproduce that exact per-element broadcast.
     source = gymnasium.spaces.Box(
         low=0.0,
         high=np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32),

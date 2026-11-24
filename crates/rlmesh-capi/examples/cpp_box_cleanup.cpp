@@ -1,4 +1,3 @@
-// Inject a failure after C construction, before a C++ Box can own the result.
 #define rlmesh_ext_box_elementwise_new test_box_new
 #define rlmesh_space_free test_space_free
 #define rlmesh_space_spec test_space_spec

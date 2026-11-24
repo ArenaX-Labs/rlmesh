@@ -1,18 +1,13 @@
 """Structural tree round-trip for model input nodes.
 
-The dataclass<->dict *shape* lives here; validation and canonicalization are done
-by the authoritative Rust codec (see :mod:`._codec`), so the from-dict reader
-operates on already-valid canonical data.
+Validation and canonicalization are done by the Rust codec (see :mod:`._codec`).
 
-Discrimination on the wire is structural (mirroring the Rust ``InputNode``): a
-JSON array is a Tuple, a JSON object whose ``"type"`` is a leaf discriminant
-(``image``/``state``/``text``/``custom``) is a leaf, and any other JSON object is
-a Dict. Placement in the tree is the payload position -- there is no ``key``.
+Discrimination on the wire is structural: a JSON array is a Tuple, a JSON object
+whose ``"type"`` is a leaf discriminant (``image``/``state``/``text``/``custom``)
+is a leaf, and any other JSON object is a Dict.
 
-The generic structural tree-walkers (:func:`encode_node` / :func:`decode_node`)
-and the shared leaf-vocabulary base (:data:`COMMON_LEAF_TYPES`) live here and are
-reused by the observation side (:mod:`.env_tags`), which differs only in its leaf
-encoder/decoder and its one extra leaf discriminant.
+The tree-walkers (:func:`encode_node` / :func:`decode_node`) and
+:data:`COMMON_LEAF_TYPES` are reused by :mod:`.env_tags`.
 """
 
 from __future__ import annotations
@@ -34,14 +29,8 @@ from .model_inputs import (
     Text,
 )
 
-# The leaf-vocabulary `type` discriminants shared by both sides; each side adds
-# its one own leaf (model: `custom`, env: `split`). Single-sourced here so the
-# two sides cannot drift on the common vocabulary. Package-internal (imported by
-# :mod:`.env_tags`) but not part of the public API, hence no leading underscore.
 COMMON_LEAF_TYPES = frozenset({"image", "state", "text"})
 
-# The leaf-vocabulary `type` discriminants that mark a JSON object as a leaf
-# rather than a Dict node (mirrors the Rust ``MODEL_LEAF_TYPES``).
 _MODEL_LEAF_TYPES = COMMON_LEAF_TYPES | {"custom"}
 
 
@@ -110,8 +99,6 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         "width": item.width,
         "layout": item.layout,
         "dtype": item.dtype,
-        # normalize overloads bool|range: a range pair emits as a [low, high]
-        # list, a bool stays a bool (byte parity with the old always-emitted flag).
         "normalize": list(item.normalize)
         if isinstance(item.normalize, tuple)
         else item.normalize,
@@ -119,12 +106,8 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         "upside_down": item.upside_down,
         "resample": item.resample,
     }
-    # Additive over the pinned v1 wire (the env still sends one frame/step),
-    # emitted only when set. It IS consumed by the native adapter engine
-    # (episode-keyed FrameBuffers), not host-only -- see Image.stack.
     if item.stack != 1:
         image["stack"] = item.stack
-    # Opt-in, emitted only when set (byte-parity with the pinned wire format).
     if item.allow_upscale:
         image["allow_upscale"] = True
     if item.fit is not None:
@@ -145,12 +128,8 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         image["jpeg_quality"] = item.jpeg_quality
     if item.channel_order != "rgb":
         image["channel_order"] = item.channel_order
-    # Always the [height, width] pair on the wire; __post_init__ has already
-    # widened the square-int shorthand.
     if item.render is not None:
         image["render"] = list(cast("tuple[int, int]", item.render))
-    # The declared frame window; a contiguous stack stays off the wire so every
-    # spec written before offsets existed is byte-identical.
     if item.offsets is not None:
         image["offsets"] = list(item.offsets)
     if item.stack_pad != "first":
@@ -193,7 +172,6 @@ def _part_to_dict(part: State | Constant) -> Any:
     if role_only:
         return part.role
     out = {"role": part.role}
-    # Additive: the default source stays off the wire.
     if part.source == "action":
         out["source"] = "action"
     if part.encoding is not None:
@@ -213,8 +191,6 @@ def _part_to_dict(part: State | Constant) -> Any:
             "encoding": part.post_rotate.encoding,
             "value": list(part.post_rotate.value),
         }
-    # A per-axis sequence goes under its own `axis_*` key; the scalar key
-    # never changes type.
     for name in ("scale", "offset"):
         value = getattr(part, name)
         if isinstance(value, tuple):
@@ -223,7 +199,6 @@ def _part_to_dict(part: State | Constant) -> Any:
             out[name] = value
     if part.frame is not None:
         out["frame"] = part.frame
-    # One value is a bare string, an accept-set a list (the encoding's form).
     if isinstance(part.provenance, tuple):
         out["provenance"] = list(cast("tuple[str, ...]", part.provenance))
     elif part.provenance is not None:
@@ -256,11 +231,10 @@ def _state_to_dict(item: State | Concat) -> dict[str, Any]:
         "components": [_part_to_dict(part) for part in _state_parts(item)],
         "pad_to": item.pad_to,
         "dtype": item.dtype,
-        # `()` is a valid 0-D scalar target; only None means "no reshape".
+        # () is a valid 0-D target; only None means no reshape.
         "reshape": list(item.reshape) if item.reshape is not None else None,
         "container": item.container,
     }
-    # Additive: emitted only when set, so every pre-`clip` spec is byte-identical.
     if item.clip is not None:
         state["clip"] = list(item.clip)
     return state
@@ -279,21 +253,12 @@ def model_leaf_to_dict(item: ModelLeaf) -> dict[str, Any]:
             "container": item.container,
             "fill": item.fill,
         }
-    # The only remaining ModelLeaf variant is Custom; a custom input can never
-    # be serialized into v1 contract metadata, so both branches below reject.
     if item.entrypoint is None:
-        # Publish boundary: an in-process callable cannot be serialized.
         raise ValueError(
             "custom input holds an in-process callable and cannot be "
             "serialized; use Custom(entrypoint='module:callable') instead"
         )
-    # An entrypoint custom carries an importable `module:callable`, so
-    # publishing it would ship executable code in a contract a remote
-    # consumer might import. Until an allowlist-based trust model exists,
-    # refuse to serialize it here. Local resolve still runs it (gated by
-    # trust_entrypoints) via the resolver's _model_wire, which handles
-    # customs itself and never routes them through this serializer -- so this
-    # gate is publish-only.
+    # An entrypoint custom would ship executable code in a published contract; refuse it until a trust model exists.
     raise ValueError(
         f"custom input carries an entrypoint ({item.entrypoint!r}) and "
         "cannot be published in v1 contract metadata; resolve the spec "
@@ -353,7 +318,7 @@ def _decode_normalize(raw: Any) -> bool | tuple[float, float]:
     """Decode the overloaded ``normalize`` field: a bool, or a ``[low, high]`` list."""
     if isinstance(raw, (list, tuple)):
         pair = to_pair(raw)
-        assert pair is not None  # a present list/tuple always yields a pair
+        assert pair is not None
         return pair
     return bool(raw)
 
@@ -399,16 +364,8 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
         dtype = data.get("dtype", "float32")
         container = data.get("container", "array")
         clip = to_pair(data.get("clip"))
-        # `_part_from_dict` yields a bare role ``str`` for a role-only wire
-        # component and a parameterized ``State`` for an object component.
+        # A single parameterized part round-trips to a bare State; a bare role or several parts stay a Concat.
         parts = tuple(_part_from_dict(part) for part in data["components"])
-        # A single *parameterized* part round-trips to a bare State carrying the
-        # leaf's container fields: a State and a one-part Concat over the same
-        # parameterized part serialize identically, and State is the natural
-        # author for the single-part case (the documented wire equivalence). A
-        # single *bare* role string, or more than one part, is a genuine Concat --
-        # collapsing those would change the authored leaf type (a bare role-only
-        # Concat, and a multi-part Concat, must survive as Concat).
         if len(parts) == 1 and isinstance(parts[0], State):
             base = parts[0]
             return State(
@@ -449,12 +406,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             fill=data.get("fill"),
         )
     if kind == "custom":
-        # The resolver's internal `transform: "host:<key>"` placeholder (see
-        # resolver._model_wire) references a host-side callable that stayed local
-        # during resolve; it is NOT an importable entrypoint and is never meant
-        # to round-trip back through from_dict. Reject it rather than minting a
-        # Custom with a bogus `host:` entrypoint a later trust_entrypoints
-        # resolve would try to import.
+        # The resolver's ``host:<key>`` transform is a local callable, not an entrypoint; reject it rather than mint an importable Custom.
         transform = data["transform"]
         if isinstance(transform, str) and transform.startswith("host:"):
             raise ValueError(

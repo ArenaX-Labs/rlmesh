@@ -1,11 +1,3 @@
-//! The interop vectors (`tests/vectors/crypto.json`): this
-//! build must reproduce them byte for byte, and each is cross-checked
-//! against the primitives directly, from the documented byte layouts.
-//!
-//! Regenerate with `RLMESH_REGENERATE_CRYPTO_VECTORS=1 cargo test -p
-//! rlmesh-session-core --test crypto_vectors` (only when the contract
-//! changes: every implementation checks against this file).
-
 use std::path::PathBuf;
 
 use blake2::{Blake2s256, Digest};
@@ -34,12 +26,10 @@ const REGENERATE: &str = "RLMESH_REGENERATE_CRYPTO_VECTORS";
 const IK: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const XX: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
-/// Every fixed input is `BLAKE2s-256("rlmesh/v2 vector: " ‖ name)`.
 fn fixed(name: &str) -> [u8; 32] {
     Blake2s256::digest(format!("rlmesh/v2 vector: {name}").as_bytes()).into()
 }
 
-/// Serves the given 32-byte values in order, then fails.
 struct FixedRng(Vec<[u8; 32]>);
 
 impl Rng for FixedRng {
@@ -85,8 +75,6 @@ fn lp(x: &[u8]) -> Vec<u8> {
     out
 }
 
-/// snow with a fixed ephemeral and its own default DH and cipher, outside
-/// `crypto`'s wrapper.
 mod direct {
     use snow::params::{CipherChoice, DHChoice, HashChoice};
     use snow::resolvers::{CryptoResolver, DefaultResolver};
@@ -176,7 +164,6 @@ fn sealed_vector(encrypted: bool) -> Value {
         )
     };
     let mut tx = SealSender::new(key_id, Key::from_bytes(key), KindSet::ALL, security);
-    // Two messages first, so the vector's seq is 3.
     for _ in 0..2 {
         tx.seal(kind, keyexpr, b"").expect("seal");
     }
@@ -195,8 +182,6 @@ fn sealed_vector(encrypted: bool) -> Value {
     })
 }
 
-/// A robot's probe on the datagram path: a `Sealed` probe (kind 21) under
-/// its `k_up`, behind the datagram header.
 fn datagram_vector() -> Value {
     let name = "datagram probe key";
     let key = fixed(name);
@@ -260,8 +245,6 @@ fn signed_vector() -> Value {
     })
 }
 
-/// eye-l's view: one commandable part (`gaze`, channel 1, applied 2) leased
-/// by `tracker` under binding 7 at a 20 ms grid.
 fn device_view() -> DeviceView {
     let eye = ParticipantId::new("eye-l").expect("id");
     let tracker = ParticipantId::new("tracker").expect("id");
@@ -366,7 +349,6 @@ fn signed_view_vector() -> Value {
     })
 }
 
-/// IK through snow directly: msg 1, msg 2, `h` and the raw split.
 #[allow(clippy::type_complexity)]
 fn ik_direct(
     ps: &[u8; 32],
@@ -416,7 +398,6 @@ fn ik_vector() -> Value {
     let (tenant, session, host_instance, name) =
         ("acme", "demo", 0x0102_0304_0506_0708u64, "arm-1");
     let prologue = handshake::prologue(tenant, session, host_instance, name).expect("prologue");
-    // Any fixed bytes: the HandshakeAccept message is defined with the wiring.
     let accept = b"\x08\x01\x12\x06laptop\x18\x02";
     let (init, msg1) = IkInitiator::start(
         &mut FixedRng(vec![pe]),
@@ -499,8 +480,6 @@ fn pairing_vector() -> Value {
     let (revealed, daemon_sas) = commit.reveal(lap.nonce()).expect("reveal");
     let laptop_sas = lap.check_reveal(&revealed).expect("check");
     assert_eq!(laptop_sas, daemon_sas);
-    // The split: one sealed message each way, opened in the cross-check
-    // under keys taken from snow directly.
     let up = l
         .sender
         .seal(Kind::PairNonce, "rlmeshd/pair", lap.nonce())
@@ -630,7 +609,6 @@ fn the_datagram_vector_is_its_header_then_the_sealed_probe() {
     want.extend_from_slice(&seq.to_le_bytes());
     want.extend_from_slice(&unhex(&probe["message"]));
     assert_eq!(bytes, want);
-    // Only `k_up` opens it, and only as a probe.
     let mut rx = SealReceiver::new(
         u32::try_from(int(&probe["key_id"])).expect("u32"),
         Key::from_bytes(unhex32(&probe["key"])),
@@ -648,7 +626,6 @@ fn the_signed_vectors_verify_with_ed25519_dalek_directly() {
     for name in ["signed", "signed_view"] {
         check_signed(&vectors[name]);
     }
-    // The view decodes on its own path, and only as the key's robot's.
     let v = &vectors["signed_view"];
     let public = unhex32(&v["public"]);
     let host_instance = int(&v["host_instance"]);
@@ -721,8 +698,6 @@ fn the_ik_vector_matches_snow_directly() {
     assert_eq!(up, unhex32(&v["k_up"]));
     assert_eq!(down, unhex32(&v["k_down"]));
 
-    // The crate's sealed messages open under the split keys from snow, with
-    // the documented key ids and kind sets.
     let keyexpr = text(&v["keyexpr"]);
     let up_id = u32::try_from(int(&v["up_key_id"])).expect("u32");
     let down_id = u32::try_from(int(&v["down_key_id"])).expect("u32");
@@ -744,7 +719,6 @@ fn the_ik_vector_matches_snow_directly() {
         b"\x08\x01"
     );
 
-    // And the crate's responder reads msg 1 from the vector alone.
     let host = StaticKeypair::from_private(&mut { hs });
     let r =
         IkResponder::read_request(&mut FixedRng(vec![he]), &host, &prologue, &msg1).expect("read");
@@ -792,7 +766,6 @@ fn the_pairing_vector_matches_snow_and_blake2_directly() {
         unhex(&v["daemon_static_public"])
     );
 
-    // C and the SAS from the documented formulas.
     let (ni, nr, c) = (unhex32(&v["ni"]), unhex32(&v["nr"]), unhex32(&v["c"]));
     let mut hasher = Blake2s256::new();
     hasher.update(lp(b"rlmesh/v2 pair commit"));
@@ -811,7 +784,6 @@ fn the_pairing_vector_matches_snow_and_blake2_directly() {
     assert_eq!(commitment(&h, &nr), c);
     assert_eq!(u64::from(sas(&h, &ni, &nr).value()), want);
 
-    // Key 1 is the first split output (laptop → daemon), key 2 the second.
     let (k1, k2) = init.dangerously_get_raw_split();
     let keyexpr = text(&v["keyexpr"]);
     let mut up = SealReceiver::new(
@@ -822,8 +794,6 @@ fn the_pairing_vector_matches_snow_and_blake2_directly() {
     );
     let mut msg = unhex(&v["sealed_pair_nonce"]);
     assert_eq!(up.open(keyexpr, &mut msg).expect("open").body, ni);
-    // A daemon-only kind, authenticated under the real laptop key (key 1),
-    // is refused by the daemon's receiver for that key.
     let mut forger = SealSender::new(
         1,
         Key::from_bytes(k1),

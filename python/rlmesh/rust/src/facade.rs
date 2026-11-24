@@ -1,4 +1,3 @@
-//! Python presentation and signal conversion at the shared facade boundary.
 use crate::model::LastPyError;
 use crate::types::to_py_err;
 use pyo3::prelude::*;
@@ -58,7 +57,6 @@ pub(crate) fn result_to_py<'py>(
         telemetry.append(item)?;
     }
     out.set_item("telemetry", telemetry)?;
-    // Advisory conversion uses the binding's existing JSON/schema wrapper.
     let advisories = pyo3::types::PyList::empty(py);
     for advisory in &result.advisories {
         advisories.append(crate::adapters::PyAdvisory::from(
@@ -225,7 +223,6 @@ impl PyFacadeHooks {
         })
     }
 
-    /// Run the relay's `method` transform on one lane's `value`.
     fn transform(
         &mut self,
         method: &str,

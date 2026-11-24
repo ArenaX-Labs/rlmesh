@@ -14,8 +14,6 @@ from . import libero, metaworld, simpler_bridge
 
 @dataclass(frozen=True)
 class EnvEntry:
-    """Everything the eval harness needs to know about one environment."""
-
     tags: adapt.EnvTags
     observation_space: gym.spaces.Space[Any]
     action_space: gym.spaces.Space[Any]

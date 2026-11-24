@@ -1,5 +1,5 @@
-//! The `Sealed` envelope: a 15-byte header, the body (encrypted or
-//! not) and a Poly1305 tag, under ChaCha20-Poly1305.
+//! The `Sealed` envelope: a 15-byte header, the body (encrypted or not) and a Poly1305 tag,
+//! under ChaCha20-Poly1305.
 //!
 //! | Offset | Size | Field |
 //! |---|---|---|
@@ -11,17 +11,14 @@
 //! | 15 | n | `body` |
 //! | 15 + n | 16 | tag |
 //!
-//! Nonce = `kind` ‖ 3 zero bytes ‖ `seq` (u64 LE). Encrypted: AAD =
-//! `header ‖ lp(key expression)`, plaintext = body. Integrity only: AAD =
-//! `header ‖ lp(key expression) ‖ body`, plaintext empty.
+//! Nonce = `kind` ‖ 3 zero bytes ‖ `seq` (u64 LE). Encrypted: AAD = `header ‖ lp(key
+//! expression)`, plaintext = body. Integrity only: AAD = `header ‖ lp(key expression) ‖ body`,
+//! plaintext empty.
 //!
-//! Whether a message is encrypted is never the sender's choice per message:
-//! it is the kind's level, or for kinds 7–9, 11, 12 and 14 the key's
-//! [`Security`]. A message whose flag doesn't match is rejected.
-//!
-//! Keys go into one [`SealSender`] or [`SealReceiver`] by value, and a
-//! sender's counters start at 1 and never restart, so a (key, kind, seq)
-//! nonce is never reused.
+//! Whether a message is encrypted is never chosen per message: it is the kind's level, or for
+//! kinds 7–9, 11, 12 and 14 the key's [`Security`]. A message whose flag doesn't match is
+//! rejected. Keys go into one [`SealSender`] or [`SealReceiver`] by value, and a sender's
+//! counters start at 1 and never restart, so a (key, kind, seq) nonce is never reused.
 
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce, Tag};
@@ -42,7 +39,7 @@ pub const OVERHEAD: usize = HEADER_LEN + TAG_LEN;
 /// `flags` bit 0: the body is encrypted.
 pub const FLAG_ENCRYPTED: u8 = 1;
 
-/// What a `Sealed` carries. Unknown kinds are rejected.
+/// What a `Sealed` carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Kind {
@@ -82,11 +79,11 @@ pub enum Kind {
     PairReveal = 18,
     /// Pairing: `PairWait` and its `PairResult` reply.
     PairWait = 19,
-    /// A robot's device view, sealed under its own `k_down`: what a board
-    /// opens instead of checking the host's signature on every view.
+    /// A robot's device view, sealed under its own `k_down`: what a board opens instead of
+    /// checking the host's signature on every view.
     DeviceView = 20,
-    /// A robot's probe on the host's datagram path, under its `k_up`: the
-    /// host sends a robot's datagrams only to an address it opened one from.
+    /// A robot's probe on the host's datagram path, under its `k_up`: the host sends a robot's
+    /// datagrams only to an address it opened one from.
     DatagramProbe = 21,
 }
 
@@ -101,17 +98,16 @@ pub enum Protection {
     Configured,
 }
 
-/// The level of a key's configured kinds (`Key.security`):
-/// `sign` (integrity only) or `seal` (encrypted). The level is per key: the
-/// host issues `Seal` when any part the key's scope covers is `seal`, and
-/// `Sign` otherwise. So a `k_cmd` or `k_obs` for a lease mixing `sign` and
-/// `seal` parts is `Seal` for all of them, chunks of the `sign` parts
-/// included; `k_estop` is always `Sign`; `k_up`/`k_down` are always `Seal`
-/// (their kinds are always encrypted anyway).
+/// The level of a key's configured kinds (`Key.security`): `sign` (integrity only) or
+/// `seal` (encrypted).
+///
+/// The host issues `Seal` when any part the key's scope covers is `seal`, and `Sign` otherwise,
+/// so a `k_cmd` or `k_obs` for a lease mixing both is `Seal` for all of its parts. `k_estop` is
+/// always `Sign`; `k_up`/`k_down` are always `Seal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Security {
-    /// Integrity only: a MAC under the key, so every holder of the key (a
-    /// stream's readers too) can make one. Not a per-sender signature.
+    /// Integrity only: a MAC under the key, so every holder of the key (a stream's readers too)
+    /// can make one.
     Mac,
     /// Encrypted.
     Seal,
@@ -151,9 +147,9 @@ impl Kind {
         self as u8
     }
 
-    /// The kind's level: kinds under `k_up`/`k_down` (1–6, 10, 15, 20, 21) and
-    /// pairing (16–19) are always encrypted, e-stop signals (13) never, and
-    /// 7, 8, 9, 11 and 12 follow their key's [`Security`]. 14 is unassigned.
+    /// The kind's level: kinds under `k_up`/`k_down` (1–6, 10, 15, 20, 21) and pairing (16–19)
+    /// are always encrypted, e-stop signals (13) never, and 7, 8, 9, 11 and 12 follow their
+    /// key's [`Security`].
     pub fn protection(self) -> Protection {
         use Kind::*;
         match self {
@@ -183,16 +179,13 @@ impl Kind {
 
 const KINDS: usize = 21;
 
-/// The kinds a key may carry (its purpose and scope). A message of
-/// any other kind under that key is rejected.
+/// The kinds a key may carry (its purpose and scope).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KindSet(u32);
 
 impl KindSet {
     /// Every kind.
     pub const ALL: Self = Self(((1 << KINDS) - 1) << 1);
-    /// The pairing kinds, 16–19, both directions. Tests only: a real link
-    /// splits them by direction (`pairing::LAPTOP_KINDS`, `DAEMON_KINDS`).
     #[cfg(test)]
     pub(crate) const PAIRING: Self = Self::of_const(&[16, 17, 18, 19]);
 
@@ -201,8 +194,7 @@ impl KindSet {
         Self(kinds.iter().fold(0, |set, k| set | 1 << k.as_u8()))
     }
 
-    /// Exactly the kinds with these bytes (bytes that name no kind are
-    /// ignored).
+    /// Exactly the kinds with these bytes (bytes that name no kind are ignored).
     pub const fn of_const(kinds: &[u8]) -> Self {
         let mut set = 0u32;
         let mut i = 0;
@@ -246,8 +238,8 @@ impl Header {
         out
     }
 
-    /// Parse the header at the front of `msg`, so a receiver can find the
-    /// key named by `key_id`. Nothing is authenticated yet.
+    /// Parse the header at the front of `msg`, so a receiver can find the key named by
+    /// `key_id`.
     ///
     /// # Errors
     /// [`OpenError`] for a short message, a version other than 1, an unknown
@@ -284,10 +276,9 @@ impl Header {
     }
 }
 
-/// Where the body of an integrity-only message lies, **unverified**: for an
-/// observer that records or displays what was sent (a recorder, a cockpit)
-/// without the key to verify it, and never acts on it. `None` for an
-/// encrypted or malformed message.
+/// Where the body of an integrity-only message lies, **unverified**: for an observer that
+/// records or displays what was sent (a recorder, a cockpit) without the key to verify it,
+/// and never acts on it.
 pub fn unverified_body(msg: &[u8]) -> Option<core::ops::Range<usize>> {
     let header = Header::parse(msg).ok()?;
     (!header.encrypted).then(|| HEADER_LEN..msg.len() - TAG_LEN)
@@ -301,13 +292,10 @@ pub fn nonce(kind: Kind, seq: u64) -> [u8; 12] {
     out
 }
 
-/// AADs up to this size are built on the stack. A larger one (a key
-/// expression over about 240 bytes, or an integrity-only body that with
-/// the header and key expression passes 256 bytes) is built in one heap
-/// allocation per seal or open.
+/// AADs up to this size are built on the stack; a larger one costs one heap allocation per seal
+/// or open.
 pub const INLINE_AAD: usize = 256;
 
-/// Build the AAD (`header ‖ lp(keyexpr) [‖ body]`) and hand it to `f`.
 fn with_aad<R>(
     header: &[u8; HEADER_LEN],
     keyexpr: &str,
@@ -348,7 +336,7 @@ pub enum SealError {
     TooLong,
 }
 
-/// Why a message was dropped. A receiver never processes it.
+/// Why a message was dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum OpenError {
     /// Shorter than a header and a tag.
@@ -363,8 +351,8 @@ pub enum OpenError {
     /// The kind byte names no kind.
     #[error("unknown kind {0}")]
     UnknownKind(u8),
-    /// The encrypted flag doesn't match the kind's level (or, for a
-    /// configured kind, the key's security).
+    /// The encrypted flag doesn't match the kind's level (or, for a configured kind, the key's
+    /// security).
     #[error("kind {0:?} at the wrong protection")]
     Protection(Kind),
     /// The kind is not one this key carries.
@@ -379,21 +367,20 @@ pub enum OpenError {
     /// Seen before, or older than the window.
     #[error(transparent)]
     Replayed(#[from] Replayed),
-    /// The tag doesn't verify: the wrong key or key expression, or a
-    /// changed header, body or tag.
+    /// The tag doesn't verify: the wrong key or key expression, or a changed header, body or
+    /// tag.
     #[error("authentication failed")]
     Auth,
 }
 
 /// The sending side of one key: a dense `seq` counter per kind, from 1.
-/// One sender per key; callers sharing it across tasks hold one lock
-/// per (key, kind) across sealing and enqueuing.
+///
+/// Callers sharing one across tasks hold one lock per (key, kind) across sealing and enqueuing.
 pub struct SealSender {
     aead: ChaCha20Poly1305,
     key_id: u32,
     kinds: KindSet,
     security: Security,
-    /// The next `seq` per kind; 0 once `u64::MAX` is used.
     next: [u64; KINDS],
 }
 
@@ -406,8 +393,8 @@ impl core::fmt::Debug for SealSender {
 }
 
 impl SealSender {
-    /// The sender under `key` (id `key_id`) for `kinds`, at `security` for
-    /// the configured kinds. Takes the key: one sender per key.
+    /// The sender under `key` (id `key_id`) for `kinds`, at `security` for the configured
+    /// kinds.
     pub fn new(key_id: u32, key: Key, kinds: KindSet, security: Security) -> Self {
         Self {
             aead: ChaCha20Poly1305::new(key.as_bytes().into()),
@@ -423,8 +410,8 @@ impl SealSender {
         self.key_id
     }
 
-    /// Seal `body` as the next message of `kind` on `keyexpr`, encrypted
-    /// as the kind and the key's security say.
+    /// Seal `body` as the next message of `kind` on `keyexpr`, encrypted as the kind and the
+    /// key's security say.
     ///
     /// # Errors
     /// [`SealError`]; the counter is unchanged then.
@@ -435,7 +422,6 @@ impl SealSender {
     }
 
     /// [`seal`](Self::seal), appending to `out` (which a caller can reuse).
-    /// `out` is unchanged on error.
     ///
     /// # Errors
     /// [`SealError`]; the counter is unchanged then.
@@ -453,10 +439,9 @@ impl SealSender {
         Ok(())
     }
 
-    /// Takes the next `seq` of `kind` and hands the sealing to the caller,
-    /// to finish without the lock it holds this sender under (a large body
-    /// then never holds up the key's other users). The `seq` is used even
-    /// if the sealing fails or is dropped.
+    /// Takes the next `seq` of `kind` and hands the sealing to the caller, to finish without
+    /// the lock it holds this sender under (a large body then never holds up the key's other
+    /// users).
     ///
     /// # Errors
     /// [`SealError`] for a kind this key doesn't carry or an exhausted
@@ -511,7 +496,6 @@ impl core::fmt::Debug for Sealing {
 
 impl Sealing {
     /// Seals `body` on `keyexpr`, appending to `out` (unchanged on error).
-    /// It takes the sealing: one `seq`, one message.
     ///
     /// # Errors
     /// [`SealError`].
@@ -548,8 +532,8 @@ impl Sealing {
     }
 }
 
-/// One message being opened ([`SealReceiver::begin`]): its header passed
-/// the key's checks and its replay window.
+/// One message being opened ([`SealReceiver::begin`]): its header passed the key's checks
+/// and its replay window.
 pub struct Opening {
     aead: ChaCha20Poly1305,
     header: Header,
@@ -569,9 +553,8 @@ impl Opening {
         &self.header
     }
 
-    /// Verifies (and decrypts) `msg`, received on `keyexpr`, in place,
-    /// without the lock its receiver is held under; then
-    /// [`SealReceiver::commit`] its `seq`.
+    /// Verifies (and decrypts) `msg`, received on `keyexpr`, in place, without the lock its
+    /// receiver is held under; then [`SealReceiver::commit`] its `seq`.
     ///
     /// # Errors
     /// [`OpenError`]. `msg` may hold garbage after a failed decryption.
@@ -638,8 +621,8 @@ impl core::fmt::Debug for SealReceiver {
 }
 
 impl SealReceiver {
-    /// A receiver of `key` (id `key_id`) for `kinds`, expecting `security`
-    /// for the configured kinds.
+    /// A receiver of `key` (id `key_id`) for `kinds`, expecting `security` for the configured
+    /// kinds.
     pub fn new(key_id: u32, key: Key, kinds: KindSet, security: Security) -> Self {
         Self {
             aead: ChaCha20Poly1305::new(key.as_bytes().into()),
@@ -655,10 +638,8 @@ impl SealReceiver {
         self.key_id
     }
 
-    /// Open `msg`, received on `keyexpr`, in place: check the header and
-    /// its protection, the replay window and the tag, decrypt, then record
-    /// the `seq`. The body borrows `msg`. Allocates only when the AAD is
-    /// over [`INLINE_AAD`] bytes.
+    /// Open `msg`, received on `keyexpr`, in place: check the header and its protection, the
+    /// replay window and the tag, decrypt, then record the `seq`.
     ///
     /// # Errors
     /// [`OpenError`]; the window is unchanged then. `msg` may hold
@@ -670,9 +651,8 @@ impl SealReceiver {
         Ok(opened)
     }
 
-    /// Checks `msg`'s header (its key, kind and protection) and replay
-    /// window, and hands the verification to the caller, to finish without
-    /// the lock it holds this receiver under.
+    /// Checks `msg`'s header (its key, kind and protection) and replay window, and hands the
+    /// verification to the caller, to finish without the lock it holds this receiver under.
     ///
     /// # Errors
     /// [`OpenError`].
@@ -682,8 +662,8 @@ impl SealReceiver {
         Ok(opening)
     }
 
-    /// [`Self::begin`] for a caller that keeps its own replay window for
-    /// this flow (one per subscription): the header checks only.
+    /// [`Self::begin`] for a caller that keeps its own replay window for this flow (one per
+    /// subscription): the header checks only.
     ///
     /// # Errors
     /// [`OpenError`].
@@ -704,8 +684,8 @@ impl SealReceiver {
         })
     }
 
-    /// Records the `seq` of a message an [`Opening`] verified: a second
-    /// copy that verified meanwhile is refused here.
+    /// Records the `seq` of a message an [`Opening`] verified: a second copy that verified
+    /// meanwhile is refused here.
     ///
     /// # Errors
     /// [`OpenError::Replayed`].
@@ -756,8 +736,6 @@ mod tests {
         assert!(!opened.encrypted());
         assert_eq!(opened.header.seq, 1, "one counter per kind");
 
-        // A configured kind follows the key: sign here, seal below. An empty
-        // body, and a body that doesn't fit the inline AAD.
         for body in [&[][..], &[5u8; 1000][..]] {
             let mut msg = tx.seal(Kind::Sample, KEYEXPR, body).unwrap();
             assert!(!Header::parse(&msg).unwrap().encrypted);
@@ -815,21 +793,18 @@ mod tests {
             rx.open(KEYEXPR, &mut good.clone()[..OVERHEAD - 1]),
             Err(OpenError::Truncated)
         );
-        // The good one still opens: nothing above moved the window.
         assert!(rx.open(KEYEXPR, &mut good.clone()).is_ok());
     }
 
     #[test]
     fn rejects_a_flag_that_does_not_match_the_kinds_level() {
         let (mut tx, mut rx) = pair(Security::Seal);
-        // A downgraded always-encrypted kind is refused before the tag.
         let mut msg = tx.seal(Kind::KeyDelivery, KEYEXPR, b"x").unwrap();
         msg[1] = 0;
         assert_eq!(
             rx.open(KEYEXPR, &mut msg),
             Err(OpenError::Protection(Kind::KeyDelivery))
         );
-        // And an "encrypted" e-stop signal.
         let mut msg = tx.seal(Kind::EstopSignal, KEYEXPR, b"x").unwrap();
         msg[1] = FLAG_ENCRYPTED;
         assert_eq!(
@@ -840,8 +815,6 @@ mod tests {
 
     #[test]
     fn rejects_a_configured_kind_at_the_wrong_security() {
-        // A sender holding the key at `sign` while receivers expect `seal`
-        // (or a flag flipped on the wire): never lowered silently.
         let key = || Key::from_bytes([7; 32]);
         let mut sign = SealSender::new(1, key(), KindSet::ALL, Security::Mac);
         let mut seal = SealSender::new(1, key(), KindSet::ALL, Security::Seal);
@@ -925,7 +898,6 @@ mod tests {
                     "{other}"
                 );
             }
-            // Still unseen: the failures didn't consume the seq.
             assert!(rx.open(KEYEXPR, &mut msg.clone()).is_ok());
         }
     }
@@ -939,8 +911,6 @@ mod tests {
         ] {
             let (mut tx, mut rx) = pair(security);
             let msg = tx.seal(kind, KEYEXPR, b"body!").unwrap();
-            // The seq, the body and the tag reach the tag check (0x10 keeps
-            // seq 1 a fresh seq rather than 0).
             for at in 7..msg.len() {
                 let mut bad = msg.clone();
                 bad[at] ^= 0x10;
@@ -950,8 +920,6 @@ mod tests {
                     "byte {at}"
                 );
             }
-            // So does another kind at the same level: the kind is in the
-            // nonce and the AAD.
             let mut bad = msg.clone();
             bad[2] = if kind == Kind::Sample {
                 Kind::Applied
@@ -960,7 +928,6 @@ mod tests {
             }
             .as_u8();
             assert_eq!(rx.open(KEYEXPR, &mut bad), Err(OpenError::Auth));
-            // A changed key_id names another key.
             let mut bad = msg.clone();
             bad[3] ^= 1;
             assert_eq!(rx.open(KEYEXPR, &mut bad), Err(OpenError::WrongKey(43)));
@@ -974,7 +941,6 @@ mod tests {
         let msgs: Vec<Vec<u8>> = (0..70)
             .map(|_| tx.seal(Kind::Sample, KEYEXPR, b"s").unwrap())
             .collect();
-        // Out of order inside the window: fine once each.
         assert!(rx.open(KEYEXPR, &mut msgs[3].clone()).is_ok());
         assert!(rx.open(KEYEXPR, &mut msgs[1].clone()).is_ok());
         assert_eq!(
@@ -982,13 +948,11 @@ mod tests {
             Err(Replayed(2).into())
         );
         assert!(rx.open(KEYEXPR, &mut msgs[69].clone()).is_ok());
-        // seq 6 is 64 below 70: the oldest still held; seq 5 has fallen out.
         assert!(rx.open(KEYEXPR, &mut msgs[5].clone()).is_ok());
         assert_eq!(
             rx.open(KEYEXPR, &mut msgs[4].clone()),
             Err(Replayed(5).into())
         );
-        // Windows are per kind: another kind's seq 1 is new.
         let mut applied = tx.seal(Kind::Applied, KEYEXPR, b"a").unwrap();
         assert!(rx.open(KEYEXPR, &mut applied).is_ok());
     }
@@ -1017,7 +981,6 @@ mod tests {
         let mut out = vec![9];
         assert!(tx.seal_to(Kind::Sample, KEYEXPR, b"x", &mut out).is_err());
         assert_eq!(out, [9], "unchanged on error");
-        // Other kinds keep going.
         assert!(tx.seal(Kind::Applied, KEYEXPR, b"x").is_ok());
     }
 
@@ -1031,7 +994,6 @@ mod tests {
         );
         let mut msg = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
         assert_eq!(rx.open(&long, &mut msg), Err(OpenError::KeyExprTooLong));
-        // The failed seal used no seq.
         assert_eq!(Header::parse(&msg).unwrap().seq, 1);
     }
 }

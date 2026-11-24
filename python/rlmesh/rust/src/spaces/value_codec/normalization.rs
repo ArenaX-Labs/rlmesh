@@ -2,10 +2,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 /// Normalize Python wrappers accepted at SpaceValue boundaries.
-///
-/// This is intentionally narrow: it unwraps namedtuples and array/scalar wrapper
-/// types into plain Python containers or scalars before space-specific encoding
-/// applies shape, dtype, and conformance checks.
 pub(crate) fn normalize_space_value_input<'py>(
     value: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
@@ -13,10 +9,6 @@ pub(crate) fn normalize_space_value_input<'py>(
 }
 
 /// Normalize Python wrappers accepted in metadata maps.
-///
-/// Metadata has its own converter because its policy is more permissive than
-/// runtime values: after this wrapper normalization it also accepts enum
-/// `.value`/`.name` fallbacks in `metadata.rs`.
 pub(super) fn normalize_metadata_value<'py>(
     value: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {

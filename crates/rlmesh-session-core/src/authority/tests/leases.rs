@@ -1,5 +1,3 @@
-//! Leases: grants, bindings, preemption, command groups and fencing.
-
 use super::*;
 
 #[test]
@@ -39,8 +37,6 @@ fn a_multi_part_grant_is_all_or_none() {
     f.run("operator", Command::Arm, 0).expect("arm");
     let script = f.grant("script", "cmd3", 0).expect("script lease");
     f.grant("operator", "cmd2", 0).expect("operator lease");
-    // cmd2 is held by a higher class: nothing of the request is granted,
-    // not even the free cmd1, and the preemptible cmd3 is untouched.
     assert_eq!(
         Fixture::status(f.grant_with("policy", &["cmd1", "cmd3", "cmd2"], &[], 1)),
         CtlStatus::LeaseBusy
@@ -142,7 +138,6 @@ fn rebinding_reissues_the_holders_leases_under_a_fresh_token() {
         .grant_with("policy", &["cmd1", "cmd2"], &[], 0)
         .expect("leases");
     let epoch = f.auth.epoch();
-    // The same binding again changes nothing.
     let applied = f
         .bind(
             "policy",
@@ -151,7 +146,6 @@ fn rebinding_reissues_the_holders_leases_under_a_fresh_token() {
         )
         .expect("same binding");
     assert!(applied.events.is_empty());
-    // A new binding keeps cmd1 under a new token and drops cmd2.
     let applied = f.bind("policy", 11, &["cmd1"]).expect("rebind");
     let rebound = f.auth.lease(f.ch("cmd1")).expect("kept").clone();
     assert!(rebound.token > old[0].token, "a fresh token");
@@ -169,7 +163,6 @@ fn rebinding_reissues_the_holders_leases_under_a_fresh_token() {
         Err(FenceError::StaleToken { .. })
     ));
     assert_eq!(f.auth.mode(), Mode::Active);
-    // Dropping every part settles back to ARMED.
     f.bind("policy", 12, &["cmd4"]).expect("rebind");
     assert_eq!(f.auth.mode(), Mode::Armed);
 }
@@ -211,8 +204,6 @@ fn command_groups_hold_one_member_and_switch_atomically() {
     assert!(f.auth.lease(f.ch("arm")).is_none());
     let revision = f.auth.revision();
 
-    // The operator takes the other member: the model's is preempted in
-    // the same revision.
     let human = f
         .grant("operator", "arm", 3)
         .expect("preempt across the group");
@@ -226,7 +217,6 @@ fn command_groups_hold_one_member_and_switch_atomically() {
         Fixture::status(f.grant("policy", "arm/tcp", 4)),
         CtlStatus::GroupBusy
     );
-    // Other parts are independent of the group.
     f.grant("policy", "cmd1", 4).expect("ungrouped");
 }
 
@@ -284,7 +274,6 @@ fn operator_preempts_model_and_the_old_token_is_fenced() {
     f.release("operator", &human, 9).expect("release");
     let again = f.grant("policy", "cmd1", 10).expect("model again");
     assert!(again.token > human.token);
-    // The snapshot says why each lease ended, and who took it.
     let ended = f.auth.snapshot(Vec::new(), 10).ended;
     let why: Vec<_> = ended
         .iter()

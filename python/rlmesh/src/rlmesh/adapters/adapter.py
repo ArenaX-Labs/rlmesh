@@ -18,18 +18,11 @@ if TYPE_CHECKING:
 
 ActionT = TypeVar("ActionT")
 
-# A raw env observation handed to an adapter: a mapping of named leaves for a
-# Dict space, or a single bare leaf (array) for a flat (non-Dict) space.
 RawObs = Mapping[str, Any] | NumpyArray
 
-# A structured placement path into the model input payload tree: each step is a
-# ``str`` (Dict key) or ``int`` (Tuple index); the empty tuple is the root of a
-# bare-leaf input. Mirrors the native ``NodePath`` without a string to re-parse.
 Placement = tuple[str | int, ...]
 
-# The reserved raw-obs envelope key the native core uses for a flat (non-Dict)
-# observation: the single top-level entry holding the whole observation Value.
-# Mirrors ``rlmesh_adapters::plans::OBS_ROOT_KEY``.
+# Reserved raw-obs envelope key for a flat (non-Dict) observation (``rlmesh_adapters::plans::OBS_ROOT_KEY``).
 _OBS_ROOT_KEY = "<obs>"
 
 
@@ -59,16 +52,12 @@ def _serve_custom(
 class ObsEncShim:
     """Repack one slice of an observation payload leaf from base to custom.
 
-    Keyed by the leaf's structured ``segments`` path in the input tree (each
-    step a ``str`` Dict key or ``int`` Tuple index; the empty tuple is the root
-    of a bare-leaf input). Mirrors the native ``NodePath`` without any string to
-    render and re-parse on the host side.
+    Keyed by the leaf's ``segments`` path in the input tree (each step a ``str``
+    Dict key or ``int`` Tuple index; the empty tuple is a bare-leaf input).
 
     ``offset`` is where this field starts inside the ``native_width``-wide
     assembled leaf: a single-part state is the whole leaf, a part of a
-    multi-part ``Concat`` is the slice ``[offset, offset + width)``. Both come
-    from the resolved plan's ``state_layouts()`` (part widths are env-dependent,
-    so they are known only after resolve).
+    multi-part ``Concat`` is the slice ``[offset, offset + width)``.
     """
 
     segments: tuple[str | int, ...]
@@ -120,11 +109,9 @@ def _tree_contains(tree: Any, segments: Placement) -> bool:
 def _tree_set(tree: Any, segments: Placement, value: Any) -> Any:
     """Return ``tree`` with the value at ``segments`` replaced by ``value``.
 
-    The empty path (a bare-leaf payload) replaces the whole tree. List nodes are
-    rebuilt as lists so an in-place index assignment is well defined. Mirrors the
-    native ``insert_at`` (`apply/obs.rs`): an ``int`` segment requires a List node
-    and grows it with empty-dict placeholders, a ``str`` segment requires a Map,
-    and an empty placeholder takes whichever kind its segment needs.
+    The empty path replaces the whole tree. An ``int`` segment requires a list
+    node and grows it with empty-dict placeholders; a ``str`` segment requires a
+    map; an empty placeholder takes whichever kind its segment needs.
     """
     if not segments:
         return value
@@ -133,15 +120,10 @@ def _tree_set(tree: Any, segments: Placement, value: Any) -> Any:
         if isinstance(tree, Mapping) and not tree:
             tree = []
         if not isinstance(tree, (list, tuple)):
-            # Mirror the native ``insert_at`` placement-conflict guard: an int
-            # segment needs a List node.
             raise ValueError(
                 f"payload placement conflict: expected a list to place index [{head}]"
             )
         items = list(cast("Sequence[Any]", tree))
-        # A trailing custom leaf at a Tuple index may not exist in the native
-        # payload list yet; grow the list before assigning (mirrors the native
-        # ``insert_at``'s ``resize``) rather than indexing past the end.
         if head >= len(items):
             items.extend({} for _ in range(head + 1 - len(items)))
         items[head] = _tree_set(items[head], rest, value)
@@ -153,9 +135,6 @@ def _tree_set(tree: Any, segments: Placement, value: Any) -> Any:
             f"payload placement conflict: expected a mapping to place key {head!r}"
         )
     node = dict(cast("Mapping[Any, Any]", tree))
-    # A custom leaf's placement is omitted from the native payload tree, so the
-    # key may not exist yet -- descend into an empty subtree rather than indexing
-    # a missing key.
     node[head] = _tree_set(node.get(head, {}), rest, value)
     return node
 
@@ -198,11 +177,8 @@ class AdapterBase(ABC, Generic[ActionT]):
     def observe(self, raw_obs: RawObs) -> None:
         """Advance episode-scoped state for a step that predicted nothing.
 
-        Driven once per env step whose action came from a replayed chunk: the
-        step happened, so an adapter holding a frame history still has to see
-        its observation or the window would hold decision points instead of
-        consecutive steps. A no-op by default -- override it alongside
-        :meth:`reset` if your adapter caches anything across steps.
+        Called once per env step whose action came from a replayed chunk, so a
+        frame history still sees consecutive steps. A no-op by default.
         """
 
     def explain(self) -> str:
@@ -250,17 +226,8 @@ class Adapter(AdapterBase[NumpyArray]):
         action_enc_shims: tuple[ActEncShim, ...] = (),
     ) -> None:
         self._plan = plan
-        # All host-side holes are keyed by the structured placement path (a
-        # ``str``/``int`` segment tuple), so the in-process path never re-parses
-        # a rendered placement string.
         self._customs = dict(customs)
-        # Which inputs hold a frame window, straight from the native plan (the
-        # windows themselves live in the core, so the local and served paths
-        # stack through one ring). Empty means `observe` has nothing to do.
         self._history_keys = tuple(plan.history_keys())
-        # Host-side custom-encoding shims: the native plan resolves each to a
-        # base encoding; these repack the field at the boundary (obs after the
-        # native transform, action before it).
         self._obs_enc_shims = obs_enc_shims
         self._action_enc_shims = action_enc_shims
 
@@ -281,23 +248,15 @@ class Adapter(AdapterBase[NumpyArray]):
         see the full raw observation. Inputs that request frame history are
         stacked here from a rolling buffer, cleared by :meth:`reset`.
         """
-        # A flat (non-Dict) observation is a single leaf: present it under the
-        # reserved root envelope key the plan references for a Split-tagged env.
         obs: Mapping[str, Any] = (
             raw_obs if isinstance(raw_obs, Mapping) else {_OBS_ROOT_KEY: raw_obs}
         )
         selected = {
             key: obs[key] for key in self._plan.referenced_obs_keys() if key in obs
         }
-        # The native plan returns the assembled payload *tree* (nested dict/list,
-        # or a bare leaf), with custom holes omitted.
         payload = cast(
             "Value", self._plan.transform_obs(to_value(selected, input_bridge))
         )
-        # Repack custom-encoded leaves from their resolved base encoding into the
-        # model's convention, before stacking (so a stacked input stacks the
-        # model's representation). Shims, stacks, and customs are all keyed by
-        # the structured segment path (str Dict key / int Tuple index).
         numpy_bridge = _numpy_value_bridge()
         for shim in self._obs_enc_shims:
             if _tree_contains(payload, shim.segments):
@@ -310,10 +269,6 @@ class Adapter(AdapterBase[NumpyArray]):
                 )
                 payload = _tree_set(payload, shim.segments, repacked)
         for segments, transform in self._customs.items():
-            # Custom inputs see the full observation (not just the plan's
-            # referenced keys), normalized to a mapping -- identical to raw_obs
-            # for a Dict env, and {<obs>: leaf} for a flat one. The result lands
-            # at the custom leaf's placement path in the payload tree.
             value = to_value(transform(obs), custom_bridge)
             payload = _tree_set(payload, segments, value)
         return payload
@@ -345,18 +300,14 @@ class Adapter(AdapterBase[NumpyArray]):
         stop = shim.offset + shim.width
         base = cast("NumpyArray", leaf[shim.offset : stop])
         out = cast("NumpyArray", np.asarray(shim.from_base(base)))
-        # A rotation field is a flat width-N vector; reject a non-1-D return
-        # (e.g. a stray reshape) rather than silently flattening it, which could
-        # reorder elements.
+        # Reject a non-1-D return rather than flattening it, which could reorder elements.
         if out.ndim != 1 or int(out.size) != shim.width:
             raise ValueError(
                 f"custom encoding {shim.name!r} for {placement!r} must "
                 f"return a flat width-{shim.width} vector, from_base returned "
                 f"shape {out.shape}"
             )
-        # A fresh copy in the model's declared dtype: the native core already
-        # cast the state to it, but from_base may have produced float64, and the
-        # slice write below must not mutate the payload the caller holds.
+        # Copy: the slice write below must not mutate the payload the caller holds.
         repacked = cast("NumpyArray", leaf.astype(np.dtype(shim.dtype)))
         repacked[shim.offset : stop] = out
         return repacked
@@ -366,17 +317,12 @@ class Adapter(AdapterBase[NumpyArray]):
     ) -> None:
         """Advance the frame windows for a step that predicted nothing.
 
-        The tick a replayed chunk owes its history: the env step happened, so
-        every input that declares a ``stack`` still sees its frame, and the next
-        assembled payload stacks consecutive steps rather than decision points.
-        Only the observation keys the plan reads are encoded -- exactly as
-        :meth:`transform_obs_value` does -- and nothing else in the spec is
-        applied, so a custom input's transform never runs on a replayed step.
-        It also counts the step, so the action :meth:`transform_action`
-        converts next is recorded as the one executed here for a part reading
-        the previous action. A no-op for a plan with no per-episode history.
-        Without ``input_bridge`` the observation is read as NumPy, like
-        :meth:`transform_obs`.
+        Every input that declares a ``stack`` still sees its frame, so windows
+        hold consecutive steps. Only the observation keys the plan reads are
+        encoded and no custom transform runs. The step is counted, so the next
+        converted action is recorded as executed here for a part reading the
+        previous action. A no-op for a plan with no per-episode history. Without
+        ``input_bridge`` the observation is read as NumPy.
         """
         if not self._history_keys:
             return
@@ -427,8 +373,7 @@ class Adapter(AdapterBase[NumpyArray]):
                 "a CustomEncoding on an action component requires the model to "
                 "emit a flat array action, not a mapping"
             )
-        # A fresh float64 copy: the in-place slice writes below must not mutate
-        # the array the caller still holds (np.asarray would alias it).
+        # Copy: the slice writes below must not mutate the caller's array.
         action = cast("NumpyArray", np.array(raw_action, dtype=np.float64))
         if action.ndim != 1:
             raise ValueError(
@@ -439,7 +384,6 @@ class Adapter(AdapterBase[NumpyArray]):
             stop = shim.offset + shim.width
             segment = cast("NumpyArray", action[shim.offset : stop])
             converted = cast("NumpyArray", np.asarray(shim.to_base(segment)))
-            # Reject a non-1-D / wrong-width return rather than reshaping it.
             if converted.ndim != 1 or int(converted.size) != shim.width:
                 raise ValueError(
                     f"custom encoding {shim.name!r} must return a flat width-"
@@ -480,15 +424,11 @@ class Adapter(AdapterBase[NumpyArray]):
     def serve_route(self, bridge: ValueBridge) -> dict[str, object]:
         """The served-route payload the native engine drives.
 
-        The engine applies the native plan, frame-stacking, customs, and
-        encoding shims in Rust; this hands it the native plan plus the host
-        (Python) holes as neutral Value-tree callables (framework/numpy bridging
-        stays here). Used only on the serve path; :meth:`transform_obs_value`
-        remains the in-process run(env) single-lane path.
+        Hands the engine the native plan plus the host (Python) holes as
+        Value-tree callables. Serve path only; :meth:`transform_obs_value` is the
+        in-process path.
         """
-        # The served engine looks each host hole up by the native
-        # ``NodePath::to_string()``; render the structured placement to that
-        # canonical string here (the only place the serve path needs it).
+        # The served engine looks host holes up by ``NodePath::to_string()``.
         customs = {
             render_placement(segments): _serve_custom(transform, bridge)
             for segments, transform in self._customs.items()

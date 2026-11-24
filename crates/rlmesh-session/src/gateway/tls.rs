@@ -1,7 +1,4 @@
 //! Optional TLS (`wss://`, `https://`) with rustls (ring provider), as an axum `Listener`.
-//!
-//! Handshakes run in their own tasks with a timeout, so one slow or stalled client cannot hold up the
-//! accept loop; finished streams are handed to axum through a channel.
 
 use rustls::ServerConfig;
 use rustls::pki_types::pem::PemObject;

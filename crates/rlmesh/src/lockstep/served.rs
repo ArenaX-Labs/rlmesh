@@ -1,21 +1,12 @@
 //! The env side of the Gym path: a served env behind the lockstep
 //! exchange, on native values.
 //!
-//! `Served` is what the env server's adapters answer (their checks,
-//! conformance and env calls, without the v1 messages); `GymEnv` puts one
-//! behind the exchange: part slabs become leaf slabs and values and back
-//! (bit-exact), with the lane checks a request needs before it reaches the
-//! env.
-//!
-//! Three rules the Gym path needs:
-//!
-//! - **Reward width.** Gym rewards are `f64`; the Gym path sends `f64 [N]`
-//!   so they stay bit-exact. Readers take `f32 [N]` or `f64 [N]` by length.
-//! - **Info.** `info_json` always carries the env's `info`
-//!   ([`meta_json`](mod@crate::lockstep::meta_json)); empty means unset.
-//! - **Episode ids.** A driver numbers its episodes (1, 2, ...) in
-//!   `LockstepReset.episode_ids`; a `LockstepStep` has no id field and a
-//!   reply's `episode_ids` stays empty.
+//! - **Reward width.** Gym rewards are `f64` and the Gym path sends `f64 [N]` so they stay
+//!   bit-exact; readers take `f32 [N]` or `f64 [N]` by length.
+//! - **Info.** `info_json` always carries the env's `info` ([`mod@crate::lockstep::meta_json`]);
+//!   empty means unset.
+//! - **Episode ids.** A driver numbers its episodes (1, 2, ...) in `LockstepReset.episode_ids`; a
+//!   `LockstepStep` has no id field and a reply's `episode_ids` stays empty.
 
 use std::sync::Arc;
 
@@ -88,7 +79,6 @@ pub trait Served: Send + Sync + 'static {
     async fn close(&self) -> Result<(), EnvironmentError>;
 }
 
-/// The slabs of a side's parts, by channel.
 pub(crate) fn tagged(side: &Side, slabs: Vec<Bytes>) -> Vec<PartValues> {
     side.parts
         .iter()
@@ -100,7 +90,6 @@ pub(crate) fn tagged(side: &Side, slabs: Vec<Bytes>) -> Vec<PartValues> {
         .collect()
 }
 
-/// The slabs of a side's parts, in part order, from messages by channel.
 pub(crate) fn ordered(side: &Side, values: &[PartValues]) -> Result<Vec<Bytes>, GymError> {
     side.parts
         .iter()
@@ -130,7 +119,6 @@ fn mask(flags: &[bool], lanes: usize) -> Bytes {
     Bytes::from(out)
 }
 
-/// A refused request, as the v1 env service refuses it.
 fn refused(code: ErrorCode, message: String) -> GymError {
     GymError::env(code, message, true)
 }
@@ -172,8 +160,6 @@ impl GymEnv {
             .ok_or_else(|| GymError::Map("the env has no space".into()))
     }
 
-    /// How many lanes a request covers: `lanes` must be in range and
-    /// unique on a lane endpoint, and `seeds` empty or one per lane.
     fn width(&self, op: &str, lanes: &[u32], seeds: usize) -> Result<usize, GymError> {
         if lanes.is_empty() {
             return Ok(self.num_envs);
@@ -222,7 +208,6 @@ impl GymEnv {
         Ok(lanes.len())
     }
 
-    /// The observation part slabs of `values`.
     fn observations(&self, values: &[SpaceValue], lanes: usize) -> Result<Vec<Bytes>, GymError> {
         let space = Self::space(&self.map.info.contract.observation_space)?;
         let leaves = encode_leaf_slab(values, space)
@@ -234,7 +219,6 @@ impl GymEnv {
         let lanes = self.width("partial reset", &reset.lanes, reset.seeds.len())?;
         let options =
             meta_json::optional_from_json(&reset.options_json).map_err(GymError::Malformed)?;
-        // u64 on the v2 wire, i64 for the env: the same 64 bits.
         let seeds = reset.seeds.iter().map(|s| *s as i64).collect();
         let called = std::time::Instant::now();
         let ok = self
@@ -271,7 +255,6 @@ impl GymEnv {
             lanes,
         )?;
         let space = Self::space(&self.map.info.contract.action_space)?;
-        // A wrong-width action is the client's fault, as on the v1 wire.
         let actions = decode_leaf_slab(&leaves, space, lanes)
             .map_err(|e| GymError::env(ErrorCode::InvalidAction, e.to_string(), true))?;
         let decode_ns = ns(decoded.elapsed());

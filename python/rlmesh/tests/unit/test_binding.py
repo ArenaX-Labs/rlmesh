@@ -1,10 +1,3 @@
-"""A model driven on an env: rlmesh.run / Model.run, and Model.bind by hand.
-
-These pin both against a tiny local env: how a model is bound to an env and
-driven, whole runs and by hand (reset/step). The served and adapted loops are
-exercised in the integration suite.
-"""
-
 from __future__ import annotations
 
 from typing import Any, cast
@@ -17,8 +10,6 @@ from rlmesh._models._view import ViewerDriver
 
 
 class _TinyEnv:
-    """A minimal local env: one step, then terminates with reward 1.0."""
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -41,7 +32,7 @@ def test_run_drives_a_model_against_a_local_env() -> None:
     result = rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), seeds=[0, 1])
     assert isinstance(result, rlmesh.RunResult)
     assert result.num_episodes == 2
-    assert result.mean_reward == 1.0  # one step, reward 1.0, then terminates
+    assert result.mean_reward == 1.0
 
 
 def test_run_refuses_a_bare_callable_and_takes_a_framework_model() -> None:
@@ -54,17 +45,17 @@ def test_run_refuses_a_bare_callable_and_takes_a_framework_model() -> None:
 def test_a_binding_steps_the_env_by_hand() -> None:
     binding = rlmesh.Model(lambda obs: 0).bind(_TinyEnv())
     assert isinstance(binding, rlmesh.Binding)
-    assert binding.done is True  # no episode yet
+    assert binding.done is True
     _obs, info = binding.reset(seed=0)
     assert info["seed"] == 0
     assert binding.done is False
     _obs, reward, terminated, _trunc, info = binding.step()
     assert (reward, terminated, info["action"]) == (1.0, True, 0)
-    assert binding.done is True  # the env terminated after one step
+    assert binding.done is True
     with pytest.raises(RuntimeError, match="reset to start the next"):
         binding.step()
     binding.reset()
-    assert binding.step(0)[2] is True  # the caller's action
+    assert binding.step(0)[2] is True
     binding.close()
 
 
@@ -104,8 +95,6 @@ def test_a_predict_exception_keeps_its_own_type() -> None:
 
 
 class _ForeverEnv:
-    """A local env that never terminates on its own (only a cap/skip can end it)."""
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -125,8 +114,6 @@ class _ForeverEnv:
 
 
 class _SkipDriver:
-    """A stand-in ViewerDriver that asks to end each episode after its first step."""
-
     def __init__(self) -> None:
         self._steps = 0
 
@@ -147,8 +134,6 @@ class _SkipDriver:
 
 
 class _QuitDriver(_SkipDriver):
-    """A stand-in ViewerDriver that requests quit after the first fed step."""
-
     def consume_skip(self) -> bool:
         return False
 
@@ -187,7 +172,7 @@ def test_a_closed_binding_rejects_any_further_use() -> None:
     binding = rlmesh.Model(lambda obs: 0).bind(_TinyEnv())
     binding.reset()
     binding.close()
-    binding.close()  # idempotent
+    binding.close()
     with pytest.raises(RuntimeError, match="binding is closed"):
         binding.reset()
     with pytest.raises(RuntimeError, match="binding is closed"):
@@ -201,7 +186,7 @@ def test_closing_a_binding_leaves_its_model_open() -> None:
         binding.reset()
         binding.step()
     assert closes == []
-    with model.bind(_TinyEnv()) as binding:  # still usable
+    with model.bind(_TinyEnv()) as binding:
         binding.reset()
     model.close()
     assert closes == [1]
@@ -234,7 +219,6 @@ def test_run_and_bind_release_a_factory_built_env() -> None:
     with model.bind(_Factory()) as binding:
         binding.reset()
     assert closed == [1, 1]
-    # A caller's env is borrowed: closed only on the opt-in.
     env = _Env()
     model.run(env)
     with model.bind(env) as binding:
@@ -244,7 +228,6 @@ def test_run_and_bind_release_a_factory_built_env() -> None:
     with model.bind(env, close_env=True) as binding:
         binding.reset()
     assert closed == [1, 1, 1, 1]
-    # Opting a factory-built env into shutdown closes it once, not twice.
     with model.bind(_Factory(), close_env=True) as binding:
         binding.reset()
     model.run(_Factory(), close_env=True)
@@ -258,11 +241,6 @@ def test_as_model_rejects_a_non_model_source() -> None:
         as_model(object())
     with pytest.raises(TypeError, match="takes a Model"):
         as_model(lambda obs: 0)
-
-
-# ---------------------------------------------------------------------------
-# instruction= override injection (placement + container shape)
-# ---------------------------------------------------------------------------
 
 
 def _spec(input_tree: Any) -> object:
@@ -280,22 +258,18 @@ def test_text_placements_covers_every_placement_and_container() -> None:
     import rlmesh.adapters as adapt
     from rlmesh._models._instruction import TextPlacement, text_placements
 
-    # bare-root: the whole payload IS the text leaf (empty placement)
     assert text_placements(_spec(adapt.Text(role=adapt.INSTRUCTION))) == (
         TextPlacement((), False),
     )
-    # top-level dict key, both container shapes
     assert text_placements(
         _spec({"prompt": adapt.Text(role=adapt.INSTRUCTION, container="str")})
     ) == (TextPlacement(("prompt",), False),)
     assert text_placements(
         _spec({"prompt": adapt.Text(role=adapt.INSTRUCTION, container="list")})
     ) == (TextPlacement(("prompt",), True),)
-    # nested dict placement
     assert text_placements(
         _spec({"lang": {"instr": adapt.Text(role=adapt.INSTRUCTION)}})
     ) == (TextPlacement(("lang", "instr"), False),)
-    # tuple placement (positional)
     assert text_placements(_spec((adapt.Text(role=adapt.INSTRUCTION),))) == (
         TextPlacement((0,), False),
     )
@@ -309,14 +283,7 @@ def test_text_placements_empty_for_specless_models() -> None:
     assert text_placements(NO_ADAPTER) == ()
 
 
-# ---------------------------------------------------------------------------
-# run() observability (hooks) + per-episode caps
-# ---------------------------------------------------------------------------
-
-
 class _Recorder(rlmesh.RunHooks):
-    """Records every hook invocation in order, plus events and run results."""
-
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self.events: list[rlmesh.StepEvent] = []
@@ -345,7 +312,7 @@ def test_binding_hooks_fire_in_order_with_indices_and_seeds() -> None:
         for seed in (7, 8):
             binding.reset(seed=seed)
             binding.step()
-        binding.reset(seed=9)  # closed before it ends: truncated
+        binding.reset(seed=9)
 
     assert recorder.calls == [
         ("start", 0, 7),
@@ -461,8 +428,6 @@ def test_invalid_execution_horizon_raises_value_error_at_entry() -> None:
 
 
 def test_negative_prefetch_lead_is_rejected_at_entry() -> None:
-    # The lead is a frame count; the native loop treats 0 as synchronous and
-    # anything else as async, so a negative one is a mis-set knob.
     with pytest.raises(ValueError, match="prefetch_lead must be >= 0"):
         rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), prefetch_lead=-1)
     with pytest.raises(ValueError, match="prefetch_lead must be >= 0"):
@@ -470,16 +435,11 @@ def test_negative_prefetch_lead_is_rejected_at_entry() -> None:
 
 
 def test_execution_horizon_over_the_bound_is_rejected() -> None:
-    # The ceiling is the SDK twin of the engine's MAX_EXECUTION_HORIZON: above it
-    # a horizon is always a mis-set knob, not a real open-loop plan.
     with pytest.raises(ValueError, match="execution_horizon must be <= 1024"):
         rlmesh.Model(lambda obs: 0).bind(_TinyEnv(), execution_horizon=1025)
 
 
 def test_execution_horizon_over_the_declared_chunk_is_rejected() -> None:
-    # Declaring K is a promise the binding holds the caller to: the model cannot
-    # produce more than K actions per predict, so a larger horizon is refused up
-    # front rather than silently short-replaying every step.
     class _Chunky(rlmesh.Model):
         native_chunk = 4
 
@@ -500,7 +460,7 @@ def test_unchunked_warning_points_at_the_caller() -> None:
         warnings_mod.simplefilter("always")
         binding = rlmesh.Model(lambda obs: 0).bind(_TinyEnv(), execution_horizon=4)
     (warning,) = [w for w in caught if "running un-chunked" in str(w.message)]
-    assert warning.filename == __file__  # stacklevel reaches the caller's frame
+    assert warning.filename == __file__
     binding.close()
 
 
@@ -513,8 +473,6 @@ def test_tree_set_preserves_tuple_payloads() -> None:
 
 
 class _ScalarActionEnv:
-    """A local env with a scalar (Discrete) action space, recording what it got."""
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -537,10 +495,6 @@ class _ScalarActionEnv:
 
 
 def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
-    # A chunk corner returning a 1-D numpy chunk unstacks into rank-0 rows; a
-    # Discrete space takes numbers, so those rows must arrive as scalars rather
-    # than rank-0 tensors (which used to raise "must be real number" at
-    # execution_horizon >= 2).
     import numpy as np
 
     class _NumpyChunky:
@@ -567,13 +521,11 @@ def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
         ({"task_success": 1.0}, True),
         ({"task_success": 0}, False),
         ({"other": True}, None),
-        # Kinds the runtime skips never decide; the next key does.
         ({"is_success": "False", "success": True}, True),
         ({"is_success": "True"}, None),
         ({"is_success": None, "success": False}, False),
         ({"is_success": [1], "task_success": 0.0}, False),
         ({"success": b"\x01"}, None),
-        # NumPy scalars and 0-d arrays unwrap as they do on the wire.
         ({"is_success": np.bool_(True)}, True),
         ({"is_success": np.int64(0)}, False),
         ({"success": np.float32(0.5)}, True),
@@ -584,8 +536,6 @@ def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
 def test_episode_success_reads_the_same_keys_as_the_runtime(
     info: dict[str, Any], expected: bool | None
 ) -> None:
-    """The Python loop and the Rust runtime must agree on which final-step
-    info keys carry the task outcome (is_success, success, task_success)."""
     from rlmesh._models._eval import episode_success
 
     assert episode_success(info) is expected
@@ -802,8 +752,6 @@ def test_adapted_bind_and_run_refuse_an_action_the_env_int_box_cannot_hold(
 
 
 def test_random_sample_seeds_its_sampler_with_each_episode_seed() -> None:
-    # SPC-P8: a seeded episode seeds RANDOM_SAMPLE's action sampler, so the same
-    # seed reproduces the same actions.
     from rlmesh import spaces
 
     class _WideEnv(_ForeverEnv):
@@ -886,9 +834,9 @@ def test_a_binding_replays_a_chunk_and_ends_each_episode_on_the_model() -> None:
         binding.reset()
         for _ in range(4):
             binding.step()
-        binding.step(0)  # the caller's action drops the rest of the chunk
+        binding.step(0)
         binding.step()
-        binding.reset()  # ends the first episode on the model
+        binding.reset()
     assert calls == ["chunk", "chunk", "chunk", "end", "end"]
 
 

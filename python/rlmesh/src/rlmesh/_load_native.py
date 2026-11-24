@@ -1,14 +1,4 @@
-"""Single point for importing symbols from the compiled ``rlmesh._rlmesh`` core.
-
-Centralizes the ``try/except`` that turns a missing/unbuilt native extension into
-one uniform, actionable :class:`ImportError`, so the runtime call sites that pull
-native client/server/model classes do not each repeat the guard.
-
-It is also where an editable install notices a stale extension: the in-tree
-``.so`` is rebuilt only by ``mise run build:python:develop`` (or ``uv run``), so
-after a commit or checkout it can keep running a build stamped from an older
-HEAD, whose dev workflow edition no freshly built peer shares.
-"""
+"""Single point for importing symbols from the compiled ``rlmesh._rlmesh`` core."""
 
 from __future__ import annotations
 
@@ -34,18 +24,14 @@ def load_native(name: str) -> Any:
     """
     try:
         import rlmesh._rlmesh as native
-    except ImportError as e:  # pragma: no cover - import guard
+    except ImportError as e:  # pragma: no cover
         raise ImportError("Failed to import _rlmesh native module.") from e
     _warn_if_stale(native)
     return getattr(native, name)
 
 
 def _warn_if_stale(native: Any) -> None:
-    """Warn once per process when an editable build lags the checkout's HEAD.
-
-    Runs only for a source build (``build_info().build_source == "git"``) loaded
-    from a repository checkout, never for an installed wheel. Never raises.
-    """
+    """Warn once per process when an editable build lags the checkout's HEAD."""
     global _stale_checked
     if _stale_checked:
         return
@@ -59,7 +45,6 @@ def _warn_if_stale(native: Any) -> None:
 
 
 def _stale_message(native: Any) -> str | None:
-    """The stale-extension warning for ``native``, or ``None`` when it is current."""
     if os.environ.get(STALE_CHECK_ENV_VAR, "").strip().lower() in _OPT_OUT:
         return None
     info = native.build_info()
@@ -82,7 +67,6 @@ def _stale_message(native: Any) -> str | None:
 
 
 def _checkout_root(extension: Path) -> Path | None:
-    """The rlmesh repository the extension was loaded from, or ``None`` for an install."""
     resolved = extension.resolve()
     if any(part in {"site-packages", "dist-packages"} for part in resolved.parts):
         return None
@@ -93,7 +77,6 @@ def _checkout_root(extension: Path) -> Path | None:
 
 
 def _git_head(checkout: Path) -> str | None:
-    """``git rev-parse --short=12 HEAD`` in ``checkout``, or ``None`` when git fails."""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=12", "HEAD"],

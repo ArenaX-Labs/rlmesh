@@ -39,10 +39,8 @@ fn metadata_keeps_insertion_order_and_compares_without_it() {
     map.insert("a", 2);
     map.insert("c", 3);
     assert_eq!(map.keys().collect::<Vec<_>>(), ["b", "a", "c"]);
-    // Replacing keeps the position.
     assert_eq!(map.insert("b", 9), Some(Value::Int(1)));
     assert_eq!(map.keys().collect::<Vec<_>>(), ["b", "a", "c"]);
-    // Removing shifts, never swaps.
     assert_eq!(map.remove("b"), Some(Value::Int(9)));
     assert_eq!(map.keys().collect::<Vec<_>>(), ["a", "c"]);
     assert!(map.contains_key("a") && !map.contains_key("b"));

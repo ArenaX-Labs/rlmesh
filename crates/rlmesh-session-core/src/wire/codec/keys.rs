@@ -21,12 +21,8 @@ pub fn encode_key_delivery(delivery: &KeyDelivery) -> Vec<u8> {
     .encode_to_vec()
 }
 
-/// The most keys one delivery or reply carries: a generation's keys for
-/// every lease, stream and member of a large session.
 pub(super) const MAX_KEYS: usize = 1024;
-/// The fewest bytes a key encodes to: its 32 key bytes, tagged.
 pub(super) const MIN_KEY: usize = 34;
-/// The most key ids one delivery retires.
 const MAX_RETIRED: usize = 256;
 
 /// Decodes a key delivery: key by key, each capped (at most 256 parts a
@@ -42,7 +38,6 @@ pub fn decode_key_delivery(buf: &[u8]) -> Result<KeyDelivery, WireError> {
     })
 }
 
-/// One key, capped.
 pub(super) fn decode_key(buf: &[u8]) -> Result<IssuedKey, WireError> {
     bound::check(buf, &bound::KEY)?;
     key_from_pb(pb::Key::decode(buf)?)

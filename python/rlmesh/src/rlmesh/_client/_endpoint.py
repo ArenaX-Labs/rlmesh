@@ -1,5 +1,3 @@
-"""Session endpoint normalization and credential redaction."""
-
 from __future__ import annotations
 
 from typing import cast

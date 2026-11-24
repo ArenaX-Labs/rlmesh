@@ -1,11 +1,3 @@
-"""Internal value conversion shared by Python framework backends.
-
-Framework modules (``rlmesh.numpy``, ``rlmesh.torch``, ``rlmesh.jax``) supply
-leaf encoders/decoders for their tensor type. This module owns the shared
-tree-walking logic for RLMesh value payloads so runtime, model, and adapter
-paths agree on one canonical Python value shape.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -52,8 +44,7 @@ class IdentityBridge:
         return cast(Value, value)
 
     def tree_stack(self, trees: Sequence[object]) -> object:
-        # Opaque native Values can't be fused into a batched tensor, so the
-        # dependency-free Value model sees the per-lane list and returns one.
+        # Opaque native Values can't be fused into a batched tensor.
         return list(trees)
 
     def tree_unstack(self, value: object, n: int) -> list[object]:
@@ -193,11 +184,7 @@ def tree_unstack(
 
 
 def tree_map(value: object, leaf_fn: Callable[[object], object]) -> object:
-    """Apply ``leaf_fn`` to every leaf of a tree, preserving its container shape.
-
-    Used to slice a leading axis off each leaf -- e.g. de-chunking an action chunk
-    to a single action (``leaf[0]``) or its batched form (``leaf[:, 0]``).
-    """
+    """Apply ``leaf_fn`` to every leaf of a tree, preserving its container shape."""
     if isinstance(value, dict):
         mapping = cast("Mapping[str, object]", value)
         return {key: tree_map(item, leaf_fn) for key, item in mapping.items()}
@@ -299,9 +286,6 @@ class FrameworkBridge:
         self._encode_leaf = encode_leaf
         self._stack_leaf = stack_leaf
         self._unstack_leaf = unstack_leaf
-        # Optional device/host ops -- supplied by frameworks with a device concept
-        # (torch, jax). Used by the env serving wrapper to place a decoded action on
-        # the requested device and to move a reward/done leaf back to host.
         self._to_device_leaf = to_device_leaf
         self._to_host_leaf = to_host_leaf
 

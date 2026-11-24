@@ -68,23 +68,18 @@ class ModelSpec:
     def __hash__(self) -> int:
         """Hash consistently with the generated order-insensitive ``__eq__``.
 
-        ``input`` can be a Dict node (an unhashable Python ``dict``), so the
-        dataclass-default field hash would fail even though the spec is frozen
-        and compares by value -- and ``__eq__`` compares Dict nodes without
-        regard to key order, so the hash must not depend on it either. Hash a
-        key-order-canonical rendering (see :func:`hashable_node`); it applies no
-        serialization, so a Custom-input spec stays hashable.
+        Hashes a key-order-canonical rendering (see :func:`hashable_node`),
+        since a Dict node is an unhashable ``dict`` and ``__eq__`` ignores key
+        order. A Custom-input spec stays hashable.
         """
         return hash((hashable_node(self.input), self.output, self.allow, self.timing))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of this spec.
 
-        A ``CustomEncoding`` field serializes to a describe/validate schema
-        (``{base, ...}``): its base can be validated against an env
-        without running the arm. An entrypoint arm travels as its
-        ``module:callable`` string; an in-process callable arm has no wire form,
-        so it travels as a non-portable ``<local>`` marker.
+        A ``CustomEncoding`` field serializes to a ``{base, ...}`` schema; an
+        entrypoint arm travels as its ``module:callable`` string and an
+        in-process callable as a ``<local>`` marker.
 
         Raises:
             ValueError: If a custom *input* cannot be serialized (an in-process
@@ -102,9 +97,7 @@ class ModelSpec:
 
     def to_json(self) -> str:
         """Return this spec serialized as a JSON string."""
-        # allow_nan=False: refuse to emit the non-RFC-8259 `Infinity`/`NaN`
-        # tokens the Rust serde codec rejects (a directly-constructed dataclass
-        # bypasses the from_dict finiteness guards).
+        # allow_nan=False: the Rust serde codec rejects Infinity/NaN tokens.
         from ..._rlmesh import adapters_spec_normalize
 
         return adapters_spec_normalize(
@@ -115,14 +108,11 @@ class ModelSpec:
         """Return a metadata mapping fragment carrying this spec.
 
         Merge the result into model contract metadata so remote consumers
-        can recover the spec via :meth:`from_metadata`. Custom *inputs* (whole
-        opaque host transforms, whether in-process callables or
-        ``module:callable`` entrypoints) cannot be published, because a consumer
-        would have to import code from the contract; resolve such a spec locally
-        instead. A custom *encoding* is different: it publishes as a
-        describe/validate schema (``{base, ...}``, in-process arms as a
-        ``<local>`` marker) for validation against an env; execution stays
-        where the callable was defined.
+        can recover the spec via :meth:`from_metadata`. Custom *inputs*
+        (in-process callables or ``module:callable`` entrypoints) cannot be
+        published, because a consumer would have to import code from the
+        contract; resolve such a spec locally. A custom *encoding* publishes as
+        a ``{base, ...}`` schema and never runs remotely.
 
         Raises:
             ValueError: If any input is a custom transform (in-process callable
@@ -134,15 +124,12 @@ class ModelSpec:
     def from_dict(cls, data: Mapping[str, Any]) -> ModelSpec:
         """Build a spec from :meth:`to_dict` output.
 
-        The input is validated and canonicalized by the Rust codec first, so the
-        Python shape readers below operate on already-valid data.
+        The input is validated and canonicalized by the Rust codec first.
 
-        One canonicalization caveat: a :class:`~rlmesh.adapters.Concat` with a
-        single *parameterized* part serializes identically to the equivalent
-        :class:`~rlmesh.adapters.State` (the documented wire equivalence), and
-        reads back as that ``State`` -- so ``from_dict(spec.to_dict())`` can
-        differ from ``spec`` by that leaf class alone, with identical wire form
-        and behavior.
+        A :class:`~rlmesh.adapters.Concat` with a single *parameterized* part
+        serializes identically to the equivalent :class:`~rlmesh.adapters.State`
+        and reads back as that ``State``, so ``from_dict(spec.to_dict())`` can
+        differ from ``spec`` by that leaf class alone.
         """
         canonical = normalize_spec("model", data, allow_custom=True)
         return cls(
@@ -161,11 +148,7 @@ class ModelSpec:
     def from_metadata(cls, metadata: Mapping[str, Any]) -> ModelSpec | None:
         """Extract a spec from model contract metadata, or None when absent.
 
-        Reads the single v1 metadata key (``rlmesh.adapters.v1.model_spec``).
-        When a future v2 format lands it ships a new key and reader, restoring a
-        newest-format-first dual read so a newer build still reads an older
-        peer's v1 spec; that dispatch moves into the Rust codec (the single
-        source of truth) once the PyO3 normalize door lands.
+        Reads the v1 metadata key (``rlmesh.adapters.v1.model_spec``).
         """
         payload = metadata.get(MODEL_METADATA_KEY)
         if payload is None:

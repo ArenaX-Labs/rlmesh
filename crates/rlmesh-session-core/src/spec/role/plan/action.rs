@@ -1,5 +1,3 @@
-//! Resolved instructions for the action vector.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -74,9 +72,7 @@ pub struct ActionSegment {
     pub frame: Option<FrameRef>,
     /// The agreed delta reference.
     pub reference: Option<FrameRef>,
-    /// The body part this actuator was bound under, when a side declared one
-    /// (the env actuator's own `part`, else the model output's). Rendered by
-    /// `describe` as `#part`.
+    /// The body part this actuator was bound under, when a side declared one; rendered by `describe` as `#part`.
     pub part: Option<String>,
     /// An opaque segment: `Some((width, value))` emits `width` copies of `value`
     /// and reads nothing from the model (the env requires these dims but no model

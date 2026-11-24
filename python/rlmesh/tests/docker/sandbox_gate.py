@@ -1,11 +1,3 @@
-"""Helpers for the sandbox Docker gate: its images, run label and timings.
-
-Every container and image this suite creates carries the label
-``rlmesh.test.run=<run>``, and only those are removed at the end: a shared
-Docker host may run anything else. ``mise run test:sandbox:docker`` sets the
-run id; see ``docs/testing.md``.
-"""
-
 from __future__ import annotations
 
 import os
@@ -24,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[4]
 IMAGES = Path(__file__).resolve().parent / "images"
 LABEL = "rlmesh.test.run"
 
-#: Seconds, by what was timed, across the session.
 TIMINGS: dict[str, list[float]] = defaultdict(list)
 
 
@@ -36,7 +27,6 @@ def run_id() -> str:
 
 
 def docker_missing() -> str | None:
-    """Why this machine cannot run the gate, or ``None`` when it can."""
     if shutil.which("docker") is None:
         return "the docker CLI is not on PATH"
     try:
@@ -67,7 +57,6 @@ def docker(*args: str, env: dict[str, str] | None = None) -> str:
 
 
 def remove_labelled(run: str) -> None:
-    """Remove this run's containers and images, and nothing else."""
     selector = f"label={LABEL}={run}"
     containers = docker("ps", "-aq", "--filter", selector).split()
     if containers:
@@ -111,8 +100,6 @@ def _image_exists(tag: str) -> bool:
 
 
 def build_images(run: str) -> GateImages:
-    """Build the env, model, failing-env and failing-model images from this
-    checkout's wheel."""
     images = GateImages(
         run=run,
         env=f"{run}-env:gate",
@@ -160,8 +147,6 @@ def build_images(run: str) -> GateImages:
 
 
 def check_same_build(images: GateImages) -> None:
-    """Fail unless the images run this host's build: a dev build talks only
-    to the identical build (its workflow edition carries the tree state)."""
     from rlmesh._rlmesh import build_info
 
     probe = (

@@ -1,6 +1,3 @@
-//! One part: its declaration, lowered to the kind's fields, then the
-//! normalised [`PartSpec`].
-
 use super::attrs;
 use super::check::{
     apply_units, field, float_dtype, invalid, limits, millis, name, optional_fields, pair, rate,
@@ -76,7 +73,6 @@ pub(super) struct PartDecl {
 }
 
 impl PartDecl {
-    /// The keys this declaration sets.
     fn present(&self) -> Vec<&'static str> {
         let keys: [(&'static str, bool); 44] = [
             ("kind", true),
@@ -131,8 +127,6 @@ impl PartDecl {
     }
 }
 
-/// The fields a part publishes and, for a commandable part, the fields one
-/// action carries.
 struct Lowered {
     fields: Vec<FieldSpec>,
     command_fields: Option<Vec<FieldSpec>>,
@@ -140,7 +134,6 @@ struct Lowered {
     encoding: Encoding,
 }
 
-/// Expands a part's fields from the kind table.
 fn lower(path: &str, kind: Kind, decl: &mut PartDecl) -> Result<Lowered, CtlError> {
     let mode = decl.command.clone();
     let mut names = Vec::new();
@@ -366,8 +359,6 @@ fn lower(path: &str, kind: Kind, decl: &mut PartDecl) -> Result<Lowered, CtlErro
     })
 }
 
-/// A source's rotation encoding (`quat_xyzw` by default; never
-/// `gravity_xyz`, which is a target only).
 fn source_rotation(path: &str, rotation: Option<&str>) -> Result<Rotation, CtlError> {
     match rotation {
         None => Ok(Rotation::QuatXyzw),
@@ -456,7 +447,6 @@ pub(super) fn part(
         encoding,
     } = lower(path, kind, &mut decl)?;
 
-    // Units, per field, published and command fields alike.
     let width_m = decl.width_m.is_some();
     if let Some(units) = decl.units.take() {
         let kind_of = kind;
@@ -605,7 +595,6 @@ pub(super) fn part(
             if encoding != Encoding::Raw {
                 return Err(invalid(path, "encoded parts take no commands"));
             }
-            // A text command (one utf8 field) is sent whole, as its slab.
             Layout::of(&command_fields).map_err(|err| invalid(path, err))?;
             let merge = match decl.merge.as_deref() {
                 None | Some("replace") => MergePolicy::Replace,

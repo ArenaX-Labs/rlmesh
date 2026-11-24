@@ -1,32 +1,18 @@
 //! The Gym view over a v2-native robot in lockstep.
 //!
-//! [`GymView`] drives a robot that serves the lockstep exchange (a
-//! [`LockstepHandler`](crate::lockstep::LockstepHandler) behind [`serve_robot`](crate::lockstep::LockstepBinding::serve_robot))
-//! and presents it as a Gymnasium env:
+//! [`GymView`] presents a robot serving the lockstep exchange as a Gymnasium env:
 //!
-//! - the observation space is keyed by the policy's input names, or by part
-//!   path (`/` → `.`) without a policy: a single-field part is its field, a
-//!   multi-field part a dict of fields;
-//! - the action space is keyed by action names (`[chunk, ...]`, squeezed
-//!   when the chunk is 1), or by commandable part path without a policy;
-//! - one view step with chunk H is H lockstep steps (stopping at the end
-//!   of the episode), rewards summed;
-//! - `info` carries each input's age (in session time: steps × `tick_ns`,
-//!   one action period of the policy per step, 1 ms without one),
-//!   the stale inputs, each action's edge mode (`driving` for a part
-//!   commanded this step, else `idle`; lockstep has no hold or safe), and
-//!   how many of each action's commands the part's limits changed
-//!   (`clamped`: the robot applies them, as a wall-clock edge would);
-//! - without a policy, an action's `Box` carries its command field's
-//!   declared limits, and an observation's its part's declared `range`.
+//! - the observation space is keyed by the policy's input names, or by part path (`/` → `.`)
+//!   without a policy; the action space by action names (`[chunk, ...]`, squeezed when the chunk
+//!   is 1), or by commandable part path without a policy;
+//! - one view step with chunk H is H lockstep steps (stopping at the end of the episode), rewards
+//!   summed;
+//! - `info` carries each input's age in session time, the stale inputs, each action's edge mode
+//!   (`driving` or `idle`), and how many of each action's commands the part's limits clamped.
 //!
-//! With a policy, the binder's plans run on the replies' packed payloads
-//! (conversions, history windows, blanks), exactly as for a v2 policy in
-//! wall mode; a window shorter than its history is padded with its oldest
-//! sample, as `allow: warmup` would.
-//!
-//! [`Frame`] is the robot side's helper: it packs `publish`ed fields into
-//! the reply's part slabs.
+//! With a policy, the binder's plans run on the replies' payloads exactly as in wall mode; a
+//! window shorter than its history is padded with its oldest sample. [`Frame`] is the robot
+//! side's helper that packs `publish`ed fields into the reply's part slabs.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,12 +47,7 @@ use crate::lockstep::meta_json;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
     /// One array.
-    Array {
-        /// Its dtype.
-        dtype: DType,
-        /// Its shape.
-        shape: Vec<u32>,
-    },
+    Array { dtype: DType, shape: Vec<u32> },
     /// Arrays by field name.
     Dict(Vec<(String, DType, Vec<u32>)>),
     /// A `str`.
@@ -262,7 +243,6 @@ pub struct ViewStep {
     /// Lockstep steps taken.
     pub steps: u32,
     /// Age of each input's newest sample, in ns of session time (`None`:
-    /// never published).
     pub ages_ns: Vec<(String, Option<u64>)>,
     /// Inputs older than their freshness bound, or never published.
     pub stale: Vec<String>,
@@ -284,8 +264,6 @@ pub struct ViewStep {
 }
 
 struct History {
-    /// Per channel, the newest samples (oldest first) and the step of the
-    /// newest.
     samples: BTreeMap<ChannelId, (VecDeque<Bytes>, u64)>,
     depth: BTreeMap<ChannelId, usize>,
 }
@@ -316,8 +294,6 @@ pub struct GymView {
     link: Arc<dyn LockstepLink>,
     inputs: Vec<Input>,
     outputs: Vec<Output>,
-    /// Each output's command checks, as the robot runs them: to count what
-    /// its limits change.
     checks: Vec<Option<CommandCheck>>,
     tick_ns: u64,
     epoch: AtomicU64,
@@ -325,14 +301,10 @@ pub struct GymView {
     step: AtomicU64,
     history: Mutex<History>,
     binding: Option<Box<Binding>>,
-    /// The driver's participant, released (its lease freed) on close or
-    /// drop.
     keep: Mutex<Option<Box<dyn Keep>>>,
 }
 
 impl Drop for GymView {
-    /// A view dropped without [`GymView::close`] still detaches, in the
-    /// background, so the next driver can take the lease at once.
     fn drop(&mut self) {
         let keep = self
             .keep
@@ -517,11 +489,9 @@ impl GymView {
 
     /// The observation and action spaces, keyed by entry: an array entry
     /// a `Box` spanning its dtype (a float's unbounded), a text entry a
-    /// `Text`, a multi-field entry a `Dict` of its fields. Without a
-    /// policy, a float action field's `Box` is its declared limits and a
-    /// float observation field's its part's declared `range`; a policy's
-    /// entries may be converted from the part's, so they keep the dtype's
-    /// span.
+    /// `Text`, a multi-field entry a `Dict` of its fields. Without a policy, a
+    /// float action field's `Box` is its declared limits and a float
+    /// observation field's its part's declared `range`.
     pub fn spaces(&self) -> (SpaceSpec, SpaceSpec) {
         let observation = self.inputs.iter().map(|input| match input {
             Input::Raw { name, part } => {
@@ -593,13 +563,11 @@ impl GymView {
     }
 
     /// [`Self::step`] with every bound action as a policy returns it:
-    /// `[chunk, ...]`, a chunk of 1 included.
     pub async fn step_chunks(&self, actions: &[(String, Value)]) -> Result<ViewStep, GymError> {
         self.play(actions, true).await
     }
 
     async fn play(&self, actions: &[(String, Value)], chunked: bool) -> Result<ViewStep, GymError> {
-        // Every commanded part's actions, packed, by action name.
         let mut packed: Vec<(ChannelId, usize, Vec<u8>, Option<&CommandCheck>)> = Vec::new();
         let mut names: Vec<&str> = Vec::new();
         let mut chunk = 1_usize;
@@ -644,13 +612,9 @@ impl GymView {
                 .iter()
                 .zip(&mut clamped)
                 .map(|((channel, stride, bytes, check), clamped)| {
-                    // A shorter chunk holds its last action.
                     let count = bytes.len() / stride.max(&1);
                     let i = k.min(count.saturating_sub(1));
                     let payload = Bytes::copy_from_slice(&bytes[i * stride..(i + 1) * stride]);
-                    // The robot applies its limits; this only counts what
-                    // they change (an invalid action is the robot's to
-                    // refuse).
                     if let Some(Ok(checked)) = check.map(|c| c.check(&payload, 1)) {
                         *clamped += checked.clamped;
                     }
@@ -694,8 +658,6 @@ impl GymView {
                 (o.name().to_string(), mode)
             })
             .collect();
-        // What each part played: its first `taken` actions (a shorter chunk
-        // held its last).
         let played = names
             .iter()
             .zip(&packed)
@@ -803,8 +765,6 @@ impl GymView {
     }
 }
 
-/// A bound policy's session time per step: its shortest action period, or
-/// its replan period when it commands nothing.
 fn tick_of(binding: &Binding) -> u64 {
     let period = binding
         .actions
@@ -927,7 +887,6 @@ fn dict_space(keys: Vec<String>, spaces: Vec<SpaceSpec>) -> SpaceSpec {
     }
 }
 
-/// A part's declared `range`: `(low, high)` by field.
 fn ranges(part: &PartSpec) -> BTreeMap<String, (f64, f64)> {
     let Some(Ok(Json::Object(ranges))) = part
         .attrs
@@ -942,8 +901,6 @@ fn ranges(part: &PartSpec) -> BTreeMap<String, (f64, f64)> {
         .collect()
 }
 
-/// Float bounds of `numel` elements from `pairs`: one pair broadcasts,
-/// else one per element (anything else is left unbounded).
 fn float_bounds(pairs: &[(f64, f64)], numel: usize) -> Option<BoxBounds> {
     match pairs {
         [(low, high)] => Some(BoxBounds::Uniform(UniformBounds {
@@ -958,9 +915,6 @@ fn float_bounds(pairs: &[(f64, f64)], numel: usize) -> Option<BoxBounds> {
     }
 }
 
-/// An array's `Box`: `bounds` (one pair, or one per element) on a
-/// `float32`/`float64` field, else its dtype's span. A `float16` keeps its
-/// span: the edge does not clamp it.
 fn array_space(dtype: DType, shape: &[u32], bounds: Option<Vec<(f64, f64)>>) -> SpaceSpec {
     let native = rlmesh_spaces::DType::from_name(dtype.name()).unwrap_or_default();
     let numel = shape.iter().map(|d| *d as usize).product();
@@ -981,7 +935,6 @@ fn array_space(dtype: DType, shape: &[u32], bounds: Option<Vec<(f64, f64)>>) -> 
             high: f64::INFINITY,
         }),
         (None, DType::Bool) => typed(Scalar::Bool(false), Scalar::Bool(true)),
-        // The dtype's own range; `u64`'s top wraps to -1, as its scalars do.
         (None, DType::U64) => typed(Scalar::Int(0), Scalar::Int(-1)),
         (None, _) => {
             let bits = dtype.size() * 8;
@@ -1003,8 +956,6 @@ fn array_space(dtype: DType, shape: &[u32], bounds: Option<Vec<(f64, f64)>>) -> 
     }
 }
 
-/// An entry's space, its fields' `bounds` by field name (an array entry's
-/// field is `fields`' only one).
 fn entry_space(
     entry: &Entry,
     fields: &[FieldSpec],

@@ -1,5 +1,3 @@
-//! Map the model's action layout onto the env's, role by role.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -17,8 +15,6 @@ use crate::spec::role::plan::{ActionPlan, ActionSegment};
 use crate::spec::role::roles::registry;
 use crate::spec::role::state::{check_axis_width, label_permutation, part_suffix};
 
-/// Enforce a registered role's `Fixed` dim law on a model actuator (the env side
-/// is checked at `join`). An ad-hoc/`Variable`/`ByEncoding` role is left alone.
 fn check_role_dim_law(role: &str, dim: u32) -> Result<()> {
     if let Some(def) = registry::role_def(role)
         && let registry::DimLaw::Fixed(expected) = def.dim
@@ -35,9 +31,6 @@ fn check_role_dim_law(role: &str, dim: u32) -> Result<()> {
     Ok(())
 }
 
-/// The scatter a model label tuple implies against an env actuator: per env
-/// axis, the model index that drives it. `None` when the model names no
-/// labels or the orders agree. The two tuples must name the same set.
 fn label_scatter(role: &str, env: &Actuator, model: &Actuator) -> Result<Option<Vec<u32>>> {
     let Some(model_labels) = &model.labels else {
         return Ok(None);
@@ -67,13 +60,8 @@ fn label_scatter(role: &str, env: &Actuator, model: &Actuator) -> Result<Option<
     })
 }
 
-/// Validate that a model/env action component pairing is convertible. `role` is
-/// the matched (always present) role both sides share.
 fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()> {
     check_role_dim_law(role, model.dim)?;
-    // A custom action encoding shadows to its `base` for the structural checks;
-    // the host-side arm (`to_base`) is never imported or run here. Validate that
-    // a model-side custom carries the action arm it needs.
     if let (Some(custom), Some(base)) = (model.custom, model.encoding) {
         if !custom.to_base {
             return Err(err(
@@ -118,8 +106,6 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()>
                 ),
             ));
         }
-        // Model per-axis corrections name the model's own axes, which no longer
-        // exist once the rotation is re-encoded for the env.
         if model.axis_scale.is_some() || model.axis_offset.is_some() {
             return Err(err(
                 ErrorCode::Unsupported,
@@ -160,8 +146,6 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()>
     Ok(())
 }
 
-/// A model output keyed for [`index_by_key`]: `(role, part, no provenance,
-/// (start offset, actuator))`.
 type PlacedOutput<'a> = (
     &'a str,
     Option<&'a str>,
@@ -169,19 +153,12 @@ type PlacedOutput<'a> = (
     (u32, &'a Actuator),
 );
 
-/// The model's roled outputs keyed by `(role, part)`, each with its start
-/// offset in the action vector, plus the vector's width. Shared by the action
-/// planner (the env actuator seeks the output that drives it) and the state
-/// planner (an action-source part seeks the output it reads back).
 pub(super) struct ModelOutputs<'a> {
     pub by_key: BTreeMap<LeafKey, (u32, &'a Actuator)>,
     pub in_dim: u32,
 }
 
 pub(super) fn index_outputs(model: &[Actuator]) -> Result<ModelOutputs<'_>> {
-    // A role-less (opaque) model actuator emits dims the env ignores: it
-    // advances the cursor but is matched by nothing, so only roled components
-    // are keyed.
     let mut placed: Vec<PlacedOutput<'_>> = Vec::new();
     let mut cursor: u32 = 0;
     for component in model {
@@ -201,8 +178,6 @@ pub(super) fn index_outputs(model: &[Actuator]) -> Result<ModelOutputs<'_>> {
     })
 }
 
-/// The roled model outputs no segment of `plan` reads, as `(role, part,
-/// start, dim)` in model output order: what binding them would discard.
 pub(super) fn unconsumed<'a>(
     outputs: &ModelOutputs<'a>,
     plan: &ActionPlan,
@@ -243,9 +218,6 @@ pub(super) fn plan_action(
     let mut segments: Vec<ActionSegment> = Vec::with_capacity(env.len());
     let mut seen_env: BTreeMap<LeafKey, ()> = BTreeMap::new();
     for env_component in env {
-        // A role-less (opaque) env actuator occupies its dims with a constant
-        // fill, matched by no model output (the action-side mirror of a role-less
-        // Field). It reads nothing from the model.
         let Some(role) = &env_component.role else {
             segments.push(ActionSegment {
                 role: None,
@@ -283,10 +255,7 @@ pub(super) fn plan_action(
         };
         let env_key: LeafKey = (role.clone(), env_component.part.clone(), None);
         if seen_env.insert(env_key.clone(), ()).is_some() {
-            // Mirror the model-side dedup above (and the env-side StateLayout
-            // role check): a role repeated in the env layout would resolve
-            // every copy against the same model slice, building the env action
-            // by repetition instead of a real mapping.
+            // A repeated role would resolve every copy against the same model slice.
             return Err(err(
                 ErrorCode::Duplicate,
                 match &env_key.1 {
@@ -299,8 +268,6 @@ pub(super) fn plan_action(
                 },
             ));
         }
-        // The env actuator is the seeker here: it looks for the model output
-        // that drives it, under the same part rules a model input follows.
         let bound = seek(
             offsets,
             role,
@@ -312,11 +279,6 @@ pub(super) fn plan_action(
             advisories,
         )?;
         let Some(bound) = bound else {
-            // An optional roled actuator the model does not output falls back to
-            // its constant `fill` -- the action-side mirror of a model input's
-            // `optional` zero-fill, reusing the opaque branch's fill segment. The
-            // role is kept on the segment so `describe` can flag the fabrication;
-            // apply ignores it once `fill` is set.
             if env_component.optional {
                 segments.push(ActionSegment {
                     role: Some(role.clone()),
@@ -366,8 +328,6 @@ pub(super) fn plan_action(
         let (start, model_component) = *bound.feature;
         let scatter = label_scatter(role, env_component, model_component)?;
         check_action_dims(model_component, env_component, role)?;
-        // Each side's per-axis vector runs in that side's own label order, so
-        // it must be exactly that side's width.
         let locus = format!("action role {}", quoted(role));
         for (name, axis, width) in [
             (
@@ -393,8 +353,6 @@ pub(super) fn plan_action(
         ] {
             check_axis_width(axis, name, Some(width), &locus)?;
         }
-        // clip is an env-side clamp to the env actuator's range; it has no meaning
-        // on the model output (whose range is a mapping source, not a final bound).
         if model_component.clip {
             return Err(err(
                 ErrorCode::Unsupported,
@@ -405,8 +363,6 @@ pub(super) fn plan_action(
             ));
         }
         let binarize = env_component.binary || model_component.binary;
-        // threshold is a binary decision boundary on either side; without a binary
-        // snap it would silently become a constant offset on a continuous action.
         if (env_component.threshold.is_some() || model_component.threshold.is_some()) && !binarize {
             return Err(err(
                 ErrorCode::Unsupported,
@@ -416,8 +372,6 @@ pub(super) fn plan_action(
                 ),
             ));
         }
-        // clip-to-range needs a range to clamp to; a clip without one is an
-        // authoring contradiction (Python __post_init__ catches it too).
         let clip = if env_component.clip {
             let Some(range) = env_component.range else {
                 return Err(err(
@@ -432,8 +386,6 @@ pub(super) fn plan_action(
         } else {
             None
         };
-        // An absolute pose command carries a frame; a delta carries the
-        // reference pose it is integrated against. Same rule, same errors.
         let frame = check_geometry(
             Attr::Frame,
             role,
@@ -480,10 +432,6 @@ pub(super) fn plan_action(
             } else {
                 env_component.range
             },
-            // Corrections compose as literal transforms after the format bridge:
-            // model-side first (bridge the model's output convention toward the
-            // env), then env-side. A model that emits the env's convention leaves
-            // its side unset; a shared env declares its quirk once on its side.
             model_scale: model_component.scale,
             model_offset: model_component.offset,
             model_axis_scale: model_component.axis_scale.clone(),
@@ -500,8 +448,6 @@ pub(super) fn plan_action(
             threshold: env_component.threshold,
             scatter,
             labels: env_component.labels.clone(),
-            // With no scatter the model writes the env's axes in the env's
-            // order, so the env's names apply to the model's values too.
             model_labels: model_component
                 .labels
                 .clone()
@@ -521,10 +467,6 @@ pub(super) fn plan_action(
     })
 }
 
-/// The gripper polarity check: the model's command, through both sides' own
-/// sign corrections, must reach the env in the env's declared polarity. A
-/// difference is the named projection `flip_gripper`, which reflects the
-/// value in the env's range; returned as that reflection's sum.
 fn check_polarity(
     role: &str,
     env: &Actuator,
@@ -575,9 +517,6 @@ fn check_polarity(
     Ok(Some(env.range.map_or(0.0, |(low, high)| low + high)))
 }
 
-/// The delta unit check: one model unit, through the range map and both
-/// sides' scales, must be the same physical step as the env's. A difference
-/// is the named projection `convert_units`; returned as its factor.
 fn check_unit(
     role: &str,
     env: &Actuator,
@@ -769,7 +708,6 @@ mod tests {
             "{}",
             error.message
         );
-        // The same encoding on both sides keeps the model's axes meaningful.
         let same = rotation(4, Rotation::QuatXyzw);
         assert!(
             plan(
@@ -793,9 +731,6 @@ mod tests {
 
     #[test]
     fn model_side_corrections_resolve_onto_the_segment() {
-        // A model declares its own output convention (e.g. a gripper polarity
-        // flip): it resolves onto the segment's model-side fields rather than
-        // being rejected, so no imperative bridge is needed in predict().
         let mut model_gripper = component("action/gripper");
         model_gripper.scale = Some(2.0);
         model_gripper.invert = true;
@@ -804,7 +739,6 @@ mod tests {
         let plan = plan(&model, &env, &mut Vec::new()).unwrap();
         assert_eq!(plan.segments[0].model_scale, Some(2.0));
         assert!(plan.segments[0].model_invert);
-        // The env declared no corrections, so its side stays unset.
         assert_eq!(plan.segments[0].scale, None);
         assert!(!plan.segments[0].invert);
     }
@@ -824,7 +758,7 @@ mod tests {
     fn rejects_clip_without_a_range() {
         let model = layout(vec![component("action/x")]);
         let mut env_x = component("action/x");
-        env_x.clip = true; // no range declared
+        env_x.clip = true;
         let env = layout(vec![env_x]);
         let error = plan(&model, &env, &mut Vec::new()).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
@@ -837,7 +771,6 @@ mod tests {
 
     #[test]
     fn rejects_clip_declared_on_the_model_component() {
-        // clip stays env-side only (it clamps to the env actuator's range).
         let mut model_x = component("action/x");
         model_x.clip = true;
         let model = layout(vec![model_x]);
@@ -853,12 +786,10 @@ mod tests {
 
     #[test]
     fn opaque_env_actuator_resolves_to_a_fill_segment() {
-        // The env requires a dim no model produces (e.g. a control-mode selector);
-        // a role-less actuator resolves to an opaque fill, not a MissingRole error.
         let model = layout(vec![component("action/gripper")]);
         let env = layout(vec![component("action/gripper"), opaque(2, 0.25)]);
         let plan = plan(&model, &env, &mut Vec::new()).unwrap();
-        assert_eq!(plan.in_dim, 1); // the model only outputs the gripper dim
+        assert_eq!(plan.in_dim, 1);
         assert_eq!(plan.segments.len(), 2);
         assert!(plan.segments[0].role.is_some());
         assert_eq!(plan.segments[1].role, None);
@@ -867,9 +798,6 @@ mod tests {
 
     #[test]
     fn optional_roled_actuator_with_no_model_output_resolves_to_a_fill_segment() {
-        // An optional role the model omits falls back to its fill instead of a
-        // MissingRole error -- the action-side mirror of an optional model input.
-        // The role is kept on the segment (for `describe`); apply ignores it.
         let model = layout(vec![component("action/gripper")]);
         let mut base = component("x/base_motion");
         base.dim = 4;
@@ -877,7 +805,7 @@ mod tests {
         base.fill = 0.0;
         let env = layout(vec![component("action/gripper"), base]);
         let plan = plan(&model, &env, &mut Vec::new()).unwrap();
-        assert_eq!(plan.in_dim, 1); // the model still only outputs the gripper dim
+        assert_eq!(plan.in_dim, 1);
         assert_eq!(plan.segments.len(), 2);
         assert_eq!(plan.segments[1].role.as_deref(), Some("x/base_motion"));
         assert_eq!(plan.segments[1].fill, Some((4, 0.0)));
@@ -885,8 +813,6 @@ mod tests {
 
     #[test]
     fn optional_role_the_model_does_output_is_driven_normally() {
-        // optional only changes the missing case: a model that outputs the role
-        // maps it like any other actuator (no fill).
         let model = layout(vec![component("action/gripper")]);
         let mut env_gripper = component("action/gripper");
         env_gripper.optional = true;
@@ -909,8 +835,6 @@ mod tests {
         assert!(error.message.contains("env action needs role"));
     }
 
-    /// Every way a model/env actuator pairing is (or is not) convertible:
-    /// `Ok` or the error code each refusal carries.
     #[test]
     fn action_dims_are_checked_per_rule() {
         use super::check_action_dims;
@@ -1031,8 +955,6 @@ mod tests {
         }
     }
 
-    /// The delta unit check: what one model unit reaches the env as, through
-    /// the range map and both sides' scales, and the factor that rescales it.
     #[test]
     fn a_unit_mismatch_is_the_factor_that_rescales_it() {
         use super::check_unit;
@@ -1046,7 +968,6 @@ mod tests {
             ..component("action/delta_eef_pos")
         };
         let allowed = || Projections::allowing(&[Projection::ConvertUnits]);
-        // (what, model, env, same_range, the factor)
         let cases: Vec<(&str, Actuator, Actuator, bool, Option<f64>)> = vec![
             (
                 "no units",
@@ -1077,7 +998,6 @@ mod tests {
                 Some(0.25),
             ),
             (
-                // Spans 2 and 8: one model unit is 4 env units.
                 "a range map",
                 side(Some(0.04), Some((1.0, 3.0)), None),
                 side(Some(0.01), Some((2.0, 10.0)), None),
@@ -1099,7 +1019,6 @@ mod tests {
                 Some(4.0),
             ),
             (
-                // |-2| × |3|: one model unit is six env units.
                 "both scales, by magnitude",
                 side(Some(0.06), None, Some(-2.0)),
                 side(Some(0.01), None, Some(3.0)),
@@ -1141,7 +1060,6 @@ mod tests {
             }
             assert!(advisories.is_empty(), "{what}: {advisories:?}");
         }
-        // A rescale the model spec does not allow is refused.
         let refused = check_unit(
             "action/delta_eef_pos",
             &side(Some(0.04), None, None),
@@ -1152,7 +1070,6 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(refused.code, ErrorCode::ConventionMismatch);
-        // A unit on one side only is noted, not checked.
         for (model, env, who) in [(Some(0.01), None, "model"), (None, Some(0.01), "env")] {
             let mut advisories = Vec::new();
             let got = check_unit(

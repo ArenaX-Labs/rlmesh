@@ -1,6 +1,6 @@
 """Live capture: a :class:`~rlmesh.RunHooks` that records into a workload.
 
-This is the ``run(hooks=...)`` / ``bind(hooks=...)`` tie-in. It observes the eval and, per
+Used as ``run(hooks=...)`` / ``bind(hooks=...)``. It observes the eval and, per
 episode, records the outcome plus any media the env exposes -- per-step image frames
 read through the run's own reader and streamed straight into a native AV1 writer (one
 frame in memory at a time), and/or an env-produced video file whose path the env
@@ -103,8 +103,6 @@ class CaptureHooks(RunHooks):
         telemetry: list[TelemetryRow],
         tree: tuple[PyEpisodeArtifacts, str, str] | None = None,
     ) -> None:
-        #: ``Recorder.record``'s artifact tree: its writer (fed by the run),
-        #: staging root and bundle prefix.
         self._tree = tree
         self._artifact_tap = tree[0] if tree is not None else None
         self._workload = workload
@@ -115,19 +113,14 @@ class CaptureHooks(RunHooks):
         self._binding = binding
         self._video_keys = video_keys
         self._included = included_in_metrics
-        #: An explicit ``cameras`` list (even empty) is honored as-is; ``None`` defers
-        #: discovery to the first step, when the run's contract is populated.
+        #: An explicit ``cameras`` list (even empty) is honored; ``None`` defers discovery to the first step.
         self._resolved = cameras is not None
         self._explicit = cameras is not None
-        #: Memoized ``render()`` thunk (resolved once from the run context), or ``None``.
         self._render: Callable[[], object] | None = None
         self._render_resolved = False
         self._render_camera: str | None = RENDER_CAMERA if cameras is not None else None
-        #: camera -> in-flight writer for the current episode.
         self._writers: dict[str, _Cam] = {}
-        #: cameras that raised while encoding -- dropped for the whole run.
         self._disabled: set[str] = set()
-        #: cameras that produced at least one frame (to flag silent no-capture).
         self._captured: set[str] = set()
         self._video_path: str | None = None
 
@@ -141,7 +134,6 @@ class CaptureHooks(RunHooks):
         if self._binding is None:
             self._binding = context
         if self._tree is not None:
-            # Several runs into one workload continue its episode numbering.
             self._tree[0].set_episode_offset(len(self._workload.episodes))
 
     def on_episode_start(self, *, episode: int, seed: int | None) -> None:

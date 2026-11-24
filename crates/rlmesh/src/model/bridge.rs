@@ -19,14 +19,11 @@ use crate::binding::spaces::{EnvContract, SpaceValue};
 use crate::ext::TensorExt;
 use crate::{DType, Error, Metadata, Result, Tensor, Value};
 
-/// The engine handler for one model: its predict hole and its route
-/// resolver (always present, so every route resolves, spec'd or not).
 pub(crate) fn engine_handler(shared: Arc<Shared>) -> AdaptedModelHandler {
     let trust = shared.decl.trust_entrypoints;
     engine_handler_trusting(shared, trust)
 }
 
-/// [`engine_handler`] with a run's or session's `trust_entrypoints`.
 pub(crate) fn engine_handler_trusting(
     shared: Arc<Shared>,
     trust_entrypoints: bool,
@@ -58,7 +55,6 @@ pub(crate) fn engine_handler_configured(
     )
 }
 
-/// A facade value as the engine's adapter value.
 pub(crate) fn to_adapter(value: &Value) -> Result<AdapterValue> {
     Ok(match value {
         Value::Tensor(tensor) => AdapterValue::Tensor(tensor.core().clone()),
@@ -84,7 +80,6 @@ pub(crate) fn to_adapter(value: &Value) -> Result<AdapterValue> {
     })
 }
 
-/// An engine adapter value as a facade value.
 pub(crate) fn from_adapter(value: AdapterValue) -> Result<Value> {
     Ok(match value {
         AdapterValue::None => Value::None,
@@ -110,9 +105,6 @@ pub(crate) fn from_adapter(value: AdapterValue) -> Result<Value> {
     })
 }
 
-/// Split a chunk into frames by the native `split_chunk` rule: a `List` into
-/// its items, a tensor along its leading axis (a 0-d one is one frame), a
-/// `Dict` per field; a `Tuple` and any other value are one frame.
 pub(crate) fn split_frames(chunk: Value) -> Result<Vec<Value>> {
     match chunk {
         Value::List(items) => Ok(items),
@@ -148,8 +140,6 @@ pub(crate) fn split_frames(chunk: Value) -> Result<Vec<Value>> {
     }
 }
 
-/// A chunk for the engine: pre-split by the native rule, so the engine's
-/// own split (of a list) yields exactly these frames.
 fn chunk_to_adapter(chunk: Value) -> Result<AdapterValue> {
     Ok(AdapterValue::List(
         split_frames(chunk)?
@@ -172,9 +162,6 @@ fn scalar_tensor<T: Copy>(
     )?))
 }
 
-/// Stack per-lane values on a new leading axis N: tensors stack, numbers and
-/// flags become a 1-d tensor, dicts and tuples stack per field, anything
-/// else becomes a list of the lanes.
 pub(crate) fn stack_values(lanes: Vec<Value>) -> Result<Value> {
     let Some(first) = lanes.first() else {
         return Ok(Value::List(Vec::new()));
@@ -254,8 +241,6 @@ pub(crate) fn stack_values(lanes: Vec<Value>) -> Result<Value> {
     }
 }
 
-/// Split a batched value back into `n` lanes along its leading axis (the
-/// inverse of [`stack_values`]).
 pub(crate) fn unstack_value(value: Value, n: usize) -> Result<Vec<Value>> {
     let lanes = match value {
         Value::Tensor(tensor) if tensor.ndim() >= 1 => {
@@ -307,20 +292,13 @@ pub(crate) fn unstack_value(value: Value, n: usize) -> Result<Vec<Value>> {
     Ok(lanes)
 }
 
-/// The model's predict hole: every corner and hook call queued on the
-/// model's thread.
 struct ModelPredict {
     instruction: Option<String>,
     envs: RouteEnvs,
     shared: Arc<Shared>,
-    /// The spec-less route's short-chunk once-set (the spec'd routes use the
-    /// engine's).
     warned: ShortChunkWarned,
 }
 
-/// Each route's env contract, by env id: kept from the route's resolve (or
-/// its first spec-less predict) to its release, so every row's context names
-/// its env's spaces.
 #[derive(Clone, Default)]
 struct RouteEnvs(Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<crate::EnvContract>>>>);
 
@@ -337,7 +315,6 @@ impl RouteEnvs {
         self.map().get(env_id).cloned()
     }
 
-    /// Keeps `contract` for `env_id` unless one is kept already.
     fn remember(&self, env_id: &str, contract: Option<&EnvContract>) {
         let Some(contract) = contract else {
             return;
@@ -350,7 +327,6 @@ impl RouteEnvs {
         }
     }
 
-    /// `episode`'s row, on its env.
     fn row(&self, episode: Option<&EpisodeInfo>) -> Row {
         let mut row = Row::of(episode);
         row.env = self.get(&row.env_id);
@@ -524,8 +500,6 @@ impl PredictFn for ModelPredict {
         let horizon = execution_horizon.max(1);
         let encode = |value: &Value| Self::encode_action(value, &action_space);
 
-        // N = 1: predict, or predict_chunk at a horizon above 1, with the
-        // lane's own context.
         if num_envs <= 1 || lanes.len() <= 1 {
             let input = lanes.into_iter().next().unwrap_or(Value::None);
             let row = rows.into_iter().next().unwrap_or_default();
@@ -577,7 +551,6 @@ impl PredictFn for ModelPredict {
             });
         }
 
-        // N > 1 with predict_batch: the per-lane values, per-lane contexts.
         if self.corners().contains(Corners::PREDICT_BATCH) {
             let actions = self
                 .shared
@@ -594,9 +567,7 @@ impl PredictFn for ModelPredict {
             });
         }
 
-        // N > 1 otherwise: one batched value, an anonymous context.
         let batched = stack_values(lanes)?;
-        // Anonymous, yet still on its route's env.
         let row = Row {
             env: self.envs.get(&observation.route.env_id),
             ..Row::default()
@@ -654,9 +625,6 @@ impl PredictFn for ModelPredict {
     }
 }
 
-/// Resolves the model's spec per route: none for `NO_ADAPTER` or a spec-less
-/// model on an untagged env, an adapter for a spec, and a refusal for a
-/// tagged env with no spec.
 struct SpecResolver {
     context: Option<Arc<crate::run::hooks::LibraryContext>>,
     spec: Option<SpecArg>,
@@ -671,7 +639,6 @@ impl RouteResolver for SpecResolver {
         route_key: &str,
         env_contract: &EnvContract,
     ) -> Result<Option<RouteConfig>> {
-        // Every route, spec'd or not, so each row's context names its env.
         self.envs.map().remove(route_key);
         self.envs.remember(route_key, Some(env_contract));
         if matches!(self.spec, Some(SpecArg::NoAdapter)) {

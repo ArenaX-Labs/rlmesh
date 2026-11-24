@@ -1,5 +1,3 @@
-// The spaces C++ wrapper: shapes, typed bounds, downcasts and error classes.
-// Exits nonzero on the first failed check.
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -23,7 +21,6 @@ void check(bool ok, const char* what, int line) {
 int main() {
   using namespace rlmesh::spaces;
 
-  // The Shape example (throwing constructors).
   auto obs = Dict({{"pos", Box(-1.0, 1.0, {3})},
                    {"id", Discrete(4, rlmesh::spaces::DiscreteOptions{}.with_start(1))}});
   CHECK(obs.seed(7) == 7);
@@ -51,11 +48,9 @@ int main() {
   CHECK(rlmesh::to_string(rlmesh::DType::Float32) == "float32");
   CHECK(to_string(SpaceKind::MultiBinary) == "multi_binary");
 
-  // Children are shared: the same space on every read.
   CHECK(obs["pos"] == *pos);
   CHECK(!obs.as_box().has_value());
 
-  // Typed bounds read back exactly.
   Box wide =
       Box::create(uint64_t{0}, std::numeric_limits<uint64_t>::max(), {2}, {rlmesh::DType::Uint64});
   CHECK(std::get<Bound>(*wide.high()).as_uint() == std::numeric_limits<uint64_t>::max());
@@ -68,7 +63,6 @@ int main() {
   }
   CHECK(threw_type);
 
-  // Error classes: fractional integer bound, wrong-kind spec.
   bool threw_value = false;
   try {
     Box bad(0.5, 3.0, {2}, {rlmesh::DType::Int32});
@@ -82,7 +76,6 @@ int main() {
   } catch (const rlmesh::ValueError&) {
   }
 
-  // Seeding reproduces; copies share the sampler.
   Discrete d(1000);
   Discrete copy = d;
   d.seed(3);
@@ -92,11 +85,9 @@ int main() {
   CHECK(a.as_int() == b.as_int());
   CHECK(d.n() == 1000 && d.start() == 0);
 
-  // Per-element bounds (C++-only extra).
   Box per = rlmesh::ext::box_elementwise({0, -5}, {1, 5}, {2}, {rlmesh::DType::Int64});
   CHECK(std::get<std::vector<Bound>>(*per.low())[1].as_int() == -5);
 
-  // Tensor copies retain storage after the Value and the first view die.
   std::optional<rlmesh::Tensor> retained, another;
   {
     const float data[] = {1.25f, -3.5f};

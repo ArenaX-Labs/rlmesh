@@ -6,27 +6,23 @@ use crate::Result;
 use crate::adapters::EnvTags;
 use crate::env::{Env, VectorEnv};
 
-/// An env with tags merged into its metadata.
 pub(crate) struct Tagged {
     env: Box<dyn Env + Send>,
     metadata: crate::Metadata,
 }
 
 impl Tagged {
-    /// Merge and validate `tags` against `env`'s spaces.
     pub(crate) fn new(env: Box<dyn Env + Send>, tags: EnvTags) -> Result<Tagged> {
         tags.validate(&env.observation_space(), &env.action_space())?;
         Self::unchecked(env, tags)
     }
 
-    /// Merge `tags` without validation.
     pub(crate) fn unchecked(env: Box<dyn Env + Send>, tags: EnvTags) -> Result<Tagged> {
         let mut metadata = env.metadata().unwrap_or_default();
         tags.stamp(&mut metadata)?;
         Ok(Tagged { env, metadata })
     }
 
-    /// `env` serving `metadata` as its own (a factory's stamp).
     pub(crate) fn with_metadata(env: Box<dyn Env + Send>, metadata: crate::Metadata) -> Tagged {
         Tagged { env, metadata }
     }
@@ -69,7 +65,6 @@ impl Env for Tagged {
     }
 }
 
-/// An env run marked as server `id`'s callback.
 pub(super) struct Marked<E> {
     pub(super) id: u64,
     pub(super) env: Option<E>,

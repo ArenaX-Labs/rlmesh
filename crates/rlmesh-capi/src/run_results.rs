@@ -1,4 +1,3 @@
-//! Immutable run/telemetry handles and sized episode results.
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,
@@ -96,8 +95,6 @@ pub struct RLMeshRunResultOptions {
     pub advisories: *const *const crate::adapters::RLMeshAdvisory,
     pub advisories_len: usize,
 }
-/// # Safety
-/// A non-NULL handle stays live for the returned reference's lifetime.
 pub(crate) unsafe fn require<'a>(p: *const RLMeshRunResult) -> Result<&'a RunResult, CapiError> {
     unsafe { p.as_ref() }
         .map(|r| r.0.as_ref())

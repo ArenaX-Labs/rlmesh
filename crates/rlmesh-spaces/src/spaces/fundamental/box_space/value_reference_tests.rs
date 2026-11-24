@@ -1,10 +1,4 @@
 //! Box conformance against the reference implementation it replaced.
-//!
-//! `reference::conform_box` is the original element-at-a-time scan (one
-//! `Scalar` and one bound pair materialised per element). The typed fast paths
-//! in `value.rs` must reach the same decision with the same error for every
-//! dtype, bound form and value, including NaN, infinities, the dtype extremes,
-//! empty and block-spanning tensors, and corrupt (unvalidated) bounds.
 
 use proptest::prelude::*;
 
@@ -200,8 +194,6 @@ mod reference {
     }
 }
 
-/// Both implementations' verdicts, rendered so a mismatch shows the class and
-/// the exact error (message and path).
 fn verdicts(space: &SpaceSpec, value: &SpaceValue) -> (String, String) {
     let render = |conformance: Conformance| format!("{conformance:?}");
     (
@@ -219,8 +211,6 @@ fn concrete_dtype() -> impl Strategy<Value = DType> {
     )
 }
 
-/// Shapes from scalar and empty up to a few blocks, so block boundaries of the
-/// vectorized scans are crossed.
 fn shape() -> impl Strategy<Value = Vec<i64>> {
     prop_oneof![
         8 => prop::collection::vec(0i64..=5, 0..=3),
@@ -229,9 +219,6 @@ fn shape() -> impl Strategy<Value = Vec<i64>> {
     ]
 }
 
-/// One element's bytes in `dtype`: mostly small in-range numbers, with raw
-/// bit patterns (dtype extremes, odd float encodings), fractions, NaN and the
-/// infinities mixed in.
 fn element(dtype: DType) -> impl Strategy<Value = Vec<u8>> {
     let size = dtype_size(dtype);
     let number = move |scalar: Scalar| encode_scalars(&[scalar], dtype).expect("encode");
@@ -256,8 +243,6 @@ fn element(dtype: DType) -> impl Strategy<Value = Vec<u8>> {
     ]
 }
 
-/// A `double` bound: in-range integers, fractions, the infinities, NaN, and
-/// magnitudes past every dtype.
 fn double_bound() -> impl Strategy<Value = f64> {
     prop_oneof![
         8 => (-4i64..=13).prop_map(|v| v as f64),
@@ -279,8 +264,6 @@ fn double_bound() -> impl Strategy<Value = f64> {
     ]
 }
 
-/// Typed bound bytes for `count` elements of `dtype`, occasionally the wrong
-/// length so the length checks are compared too.
 fn typed_bound(dtype: DType, count: usize) -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         12 => prop::collection::vec(element(dtype), count).prop_map(|parts| parts.concat()),
@@ -289,8 +272,6 @@ fn typed_bound(dtype: DType, count: usize) -> impl Strategy<Value = Vec<u8>> {
 }
 
 fn bounds(dtype: DType, numel: usize) -> BoxedStrategy<Option<BoxBounds>> {
-    // Per-element strategies get expensive on block-sized tensors; cap them
-    // and let the length checks reject the rest.
     let per_element = numel.min(64);
     prop_oneof![
         1 => Just(None),
@@ -312,8 +293,6 @@ fn bounds(dtype: DType, numel: usize) -> BoxedStrategy<Option<BoxBounds>> {
     .boxed()
 }
 
-/// A Box space (unvalidated, so corrupt bounds reach conformance) and a value
-/// of its shape and dtype.
 fn case() -> impl Strategy<Value = (SpaceSpec, SpaceValue)> {
     (concrete_dtype(), shape()).prop_flat_map(|(dtype, shape)| {
         let numel: usize = shape.iter().map(|&dim| dim as usize).product();
@@ -365,8 +344,6 @@ fn assert_agrees(space: &SpaceSpec, value: &SpaceValue) -> String {
     fast
 }
 
-/// Bounds covering a whole integer dtype short-circuit; values at both
-/// extremes stay members, and one bound step inside the range catches them.
 #[test]
 fn full_range_integer_bounds_accept_every_value() {
     let extremes: [(DType, i128, i128); 9] = [
@@ -404,8 +381,6 @@ fn full_range_integer_bounds_accept_every_value() {
     }
 }
 
-/// A NaN in a later block still outranks an earlier range deviation, and the
-/// reported index is the first NaN's across block boundaries.
 #[test]
 fn nan_after_range_deviation_across_blocks_is_structural() {
     for dtype in [DType::Float16, DType::Float32, DType::Float64] {
@@ -426,8 +401,6 @@ fn nan_after_range_deviation_across_blocks_is_structural() {
     }
 }
 
-/// The first range deviation is reported even when it sits deep in a later
-/// block; infinities against infinite bounds are members.
 #[test]
 fn first_range_deviation_and_infinite_bounds() {
     for dtype in [DType::Float16, DType::Float32, DType::Float64] {
@@ -470,8 +443,6 @@ fn first_range_deviation_and_infinite_bounds() {
     }
 }
 
-/// Bounds outside an integer dtype's range: past the far end every element
-/// deviates; a fractional or out-of-range bound compares exactly.
 #[test]
 fn integer_bounds_beyond_the_dtype() {
     let data = encode(DType::Uint8, &[Scalar::Int(0), Scalar::Int(255)]);
@@ -488,8 +459,6 @@ fn integer_bounds_beyond_the_dtype() {
     }
 }
 
-/// Empty tensors are members whatever the bounds, but corrupt bounds are still
-/// structural.
 #[test]
 fn empty_tensors() {
     for dtype in DType::ALL.into_iter().filter(|&d| d != DType::Unspecified) {
@@ -509,8 +478,6 @@ fn empty_tensors() {
     }
 }
 
-/// `cargo test -p rlmesh-spaces --release box_conformance_timing -- --ignored --nocapture`:
-/// ms per camera frame through Box conformance, against the reference scan.
 #[test]
 #[ignore = "timing, not correctness: run with --release --nocapture"]
 #[allow(clippy::print_stdout, reason = "the point of the test is the report")]

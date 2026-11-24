@@ -1,5 +1,3 @@
-//! PyO3 wrapper over the `rlmesh::viewer` engine, fed from the Python Session loop.
-
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -72,11 +70,10 @@ impl PyViewer {
         }
     }
 
-    /// Update the HUD: step / cumulative reward / outcome (all computed by the caller)
-    /// plus the optional debug metrics the Session measures — model & env step timing,
-    /// eval throughput, episode elapsed, episode index/seed, action-chunk replay
-    /// position, and the selected source's frame size. The viewer fills in its own draw
-    /// fps; every metric defaults to a "not applicable" sentinel so old callers still work.
+    /// Update the HUD: step, cumulative reward and outcome, plus optional debug metrics
+    /// (model and env step time, throughput, episode elapsed time, episode index and seed,
+    /// frame size, chunk replay position). Each metric defaults to a "not applicable"
+    /// sentinel; the viewer measures its own draw rate.
     #[pyo3(signature = (
         step, reward, outcome, *,
         model_ms=0.0, env_ms=0.0, sps=0.0, elapsed_s=0.0,
@@ -198,10 +195,8 @@ impl PyVideoWriter {
 
     /// Queue one contiguous HWC uint8 frame (`channels` = 1/3/4) for encoding.
     ///
-    /// `buf` is any C-contiguous uint8 buffer (bytes, a flat memoryview, a
-    /// numpy array) -- read through the buffer protocol, so the only Python-side
-    /// copy is the one that hands the frame to the encoder thread. An encode
-    /// failure surfaces on a later call (or at `finish`), never silently.
+    /// `buf` is any C-contiguous uint8 buffer. An encode failure is raised on a later call or
+    /// at `finish`.
     fn write_frame(
         &self,
         py: Python<'_>,
@@ -262,10 +257,9 @@ impl PyVideoWriter {
     }
 }
 
-/// The Python recorder's handle on a workload's per-episode artifact tree
-/// (`episodes/epNNNNNN/`, the managed evaluation-artifacts layout). A run
-/// feeds it the native loop's events; the recorder reads back each closed
-/// episode's record to bundle its files.
+/// The Python recorder's handle on a workload's per-episode artifact tree (`episodes/epNNNNNN/`).
+/// A run feeds it the loop's events; the recorder reads back each closed episode's record to
+/// bundle its files.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "PyEpisodeArtifacts")]
 pub struct PyEpisodeArtifacts {

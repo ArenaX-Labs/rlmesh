@@ -112,7 +112,6 @@ bool net10 = reader.GetAssemblyDefinition().GetCustomAttributes().Any(h =>
         System.Text.Encoding.UTF8.GetString(reader.GetBlobBytes(a.Value)).Contains(".NETCoreApp,Version=v10.0", StringComparison.Ordinal);
 });
 
-// Check references, imports and reverse-call addresses without loading the assembly.
 foreach (var h in reader.MemberReferences)
 {
     var m = reader.GetMemberReference(h);
@@ -135,8 +134,7 @@ foreach (var h in reader.MethodDefinitions)
         if (type is "System.String" or "System.Boolean" or "System.Text.StringBuilder" || Attrs(m.GetCustomAttributes()).Any(a => a.Contains("MarshalAs", StringComparison.Ordinal)))
             violations.Add("Non-blittable import: " + Text(m.Name));
 }
-// Decode IL instructions enough to find actual ldftn instructions, not matching
-// operand bytes. OpCode.OperandType describes every operand in the BCL.
+// Decode IL enough to find actual ldftn instructions, not matching operand bytes.
 var opcodes = typeof(System.Reflection.Emit.OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)
     .Select(f => (System.Reflection.Emit.OpCode)f.GetValue(null)!).ToDictionary(o => unchecked((ushort)o.Value));
 foreach (var h in reader.MethodDefinitions)

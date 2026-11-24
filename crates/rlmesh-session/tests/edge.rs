@@ -1,7 +1,3 @@
-//! The edge over a real session: a host and participants linked over
-//! per-class TCP on localhost, and controllers and observers in second OS
-//! processes.
-
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,11 +22,8 @@ use serde_json::json;
 const WAIT: Duration = Duration::from_secs(5);
 const GRACE: Duration = Duration::from_millis(300);
 const CHILD: &str = "RLMESH_EDGE_TEST_CHILD";
-/// How long a new chunk route gets to settle before the first send.
 const WARMUP: Duration = Duration::from_millis(100);
 
-/// `cmd`: velocity-style joint commands (no hold), 2 s open-loop budget;
-/// `ft`: force/torque; `arm` + `arm/tcp`: a command group.
 const ROBOT: &str = r#"{
     "cmd": {"kind": "x/joints", "hz": 1000, "fields": {"pos": ["float32", [6]]},
             "command": "position", "safe": "stop", "priority": "control", "hold_max_ms": 100,
@@ -51,7 +44,6 @@ struct World {
     base: std::net::SocketAddr,
     tenant: TenantId,
     session: SessionId,
-    /// The host's address key, which a child process attaches with.
     key: AddressKey,
     host: SessionHost,
 }
@@ -71,7 +63,6 @@ impl World {
         let tenant = TenantId::new("edge").expect("tenant");
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);
-        // One clock domain for every process of the test: the machine's.
         config.clock = SystemMonotonicClock.shared();
         config.lease_grace = GRACE;
         config.health_log = None;
@@ -113,7 +104,6 @@ impl World {
         p
     }
 
-    /// Spawns this test binary as a child running `scenario`.
     fn child(&self, scenario: &str, stdout: Stdio) -> Child {
         Command::new(std::env::current_exe().expect("test binary"))
             .args(["--exact", "child_process", "--nocapture"])
@@ -157,7 +147,6 @@ async fn join(
         .expect("attach")
 }
 
-/// Binds `p` to every commandable part of the robot.
 async fn bind(p: &Participant, fingerprint: Fingerprint) {
     let view = p
         .wait_for("the robot's parts", WAIT, |s| {
@@ -188,16 +177,12 @@ async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// Waits until the participant has a clock mapping (the edge refuses chunks
-/// before it, and the chunk's source, have one).
 async fn mapped(p: &Participant) {
     p.wait_for("a clock mapping", WAIT, |s| s.clock(p.id()).is_some())
         .await
         .expect("mapping");
 }
 
-/// A 1 kHz control loop on its own thread, as an embodiment runs one. The
-/// robot's side of a handover (switching its control mode) is instant here.
 fn tick_at_1khz(
     edge: Arc<Edge>,
     stop: Arc<AtomicBool>,
@@ -219,7 +204,6 @@ fn tick_at_1khz(
     })
 }
 
-/// `n` actions at 1 ms from now (session time), every byte `tag`.
 fn chunk(p: &Participant, n: usize, tag: u8, valid_for: Duration) -> ChunkDraft {
     let now = p.session_now_ns();
     ChunkDraft {
@@ -262,7 +246,6 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
     let model_tx = policy.chunk_publisher(&model).await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(200)).await;
     model_tx
-        // Long enough to still be due however late a loaded machine ticks.
         .send(chunk(&policy, 1000, 1, Duration::from_secs(2)))
         .expect("send");
     wait_until("model chunk accepted", || edge.stats().accepted == 1).await;
@@ -273,7 +256,6 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
         "the model drives"
     );
 
-    // Already void on arrival.
     model_tx
         .send(chunk(&policy, 50, 1, Duration::ZERO))
         .expect("send");
@@ -282,7 +264,6 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
     })
     .await;
 
-    // The operator jumps in; the model's in-flight chunks are fenced.
     let human = operator.grant_lease(cmd, None).await.expect("preempt");
     robot
         .wait_for("robot sees the preemption", WAIT, |s| {
@@ -297,7 +278,6 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
         "the fenced queue is not acted on"
     );
     assert!(tick.action.is_none() && tick.safe_behavior.is_some());
-    // The preempted holder's key ended with its token: it can't seal...
     policy
         .wait_for("the model sees the preemption", WAIT, |s| {
             s.lease(cmd).is_some_and(|l| l.token == human.token)
@@ -306,8 +286,6 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
         .expect("view");
     let late = model_tx.send(chunk(&policy, 50, 1, Duration::from_millis(100)));
     assert!(matches!(late, Err(SessionError::Key(_))), "{late:?}");
-    // ...and a chunk naming the new lease, sealed by anyone but its holder
-    // (here under its public key id with a made-up key), never opens.
     let now = operator.session_now_ns();
     let forged = ActionChunk {
         channel: cmd,
@@ -392,7 +370,6 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(Mutex::new(Vec::new()));
     let ticker = tick_at_1khz(edge.clone(), stop.clone(), Some(ticks.clone()));
-    // The model re-plans a 50 ms chunk every 10 ms.
     let streaming = Arc::new(AtomicBool::new(true));
     let model_loop = tokio::spawn({
         let streaming = streaming.clone();
@@ -405,7 +382,6 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
         }
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
-    // The operator jumps in mid-chunk; the model keeps sending.
     let human = operator.grant_lease(cmd, None).await.expect("preempt");
     let human_tx = operator.chunk_publisher(&human).await.expect("publisher");
     robot
@@ -434,8 +410,6 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
         .iter()
         .position(|(source, _)| source == "operator")
         .expect("the operator drove");
-    // About 300 ms of model driving: ~300 ticks here, fewer on a loaded
-    // runner whose 1 kHz ticker stalls (96 seen in CI).
     assert!(
         first_human > 20,
         "the model drove first ({first_human} ticks)"
@@ -451,7 +425,6 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
         stats.queue.fenced > 0,
         "the model's queued actions were dropped: {stats:?}"
     );
-    // The model's later chunks never left: its key ended with its token.
     assert_eq!(stats.mode(EdgeMode::Safe).entries, 0, "{stats:?}");
     assert_eq!(world.host.snapshot().mode, Mode::Active);
 }
@@ -479,12 +452,8 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
     tokio::time::sleep(Duration::from_millis(200)).await;
     let stop = Arc::new(AtomicBool::new(false));
     let ticker = tick_at_1khz(edge.clone(), stop.clone(), None);
-    // One 20 ms chunk, then silence (heartbeats continue: the host alone
-    // would never lapse the lease).
     tx.send(chunk(&policy, 20, 1, Duration::from_millis(150)))
         .expect("send");
-    // The edge's EnterSafe ends this robot's lease alone; the session is
-    // not taken SAFE for it.
     let snapshot = robot
         .wait_for("the edge's EnterSafe reaches the host", WAIT, |s| {
             s.ended.iter().any(|e| e.lease.token == lease.token)
@@ -493,7 +462,6 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
         .expect("the lease ended");
     assert!(snapshot.lease(cmd).is_none(), "its lease ends");
     assert_ne!(snapshot.mode, Mode::Safe);
-    // Every observer sees why, without inferring it.
     let ended = snapshot
         .ended
         .iter()
@@ -515,22 +483,14 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
     assert_eq!(stats.safe_reports, 1, "{stats:?}");
     assert_eq!(stats.mode(EdgeMode::Safe).entries, 1);
     let hold = stats.mode(EdgeMode::Hold);
-    // hold_max is 100 ms, timed from when the chunk's coverage ended. Mode
-    // time is charged per tick to the mode of the tick before, so a ticker
-    // stall across that boundary (a loaded CI runner: 87 ms seen) counts
-    // toward Driving, and one before the safe tick counts toward Hold. 40 ms
-    // either way still tells holding for hold_max from going safe at once.
     assert!(
         (60_000_000..=140_000_000).contains(&hold.time_ns),
         "held {} ms",
         hold.time_ns / 1_000_000
     );
-    // The session, with no lease left, is ARMED; the robot waits for an arm.
     assert_eq!(world.host.snapshot().mode, Mode::Armed);
 }
 
-/// Two controllers drive one part each; the first vanishes. Its queue runs
-/// dry at the edge before the host notices, and still only its part stops.
 async fn a_vanished_holder_leaves_the_other_driving(
     world: &World,
     dying: (&Participant, &str),
@@ -663,8 +623,6 @@ async fn with_the_host_gone_the_edge_falls_back_on_its_own_clock() {
         .expect("view");
     let tx = policy.chunk_publisher(&lease).await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(200)).await;
-    // A long chunk (the part's open-loop budget is 2 s): the queue would
-    // drive for a second, the most one chunk carries.
     tx.send(chunk(&policy, 1024, 1, Duration::from_secs(2)))
         .expect("send");
     wait_until("chunk accepted", || edge.stats().accepted == 1).await;
@@ -683,8 +641,6 @@ async fn with_the_host_gone_the_edge_falls_back_on_its_own_clock() {
     let after = gone.elapsed();
     stop.store(true, Ordering::Relaxed);
     ticker.join().expect("ticker");
-    // Within the lease grace (300 ms) plus the host's renewal cadence, and
-    // however long a loaded machine takes to tick and notice.
     assert!(after < GRACE + Duration::from_secs(2), "after {after:?}");
     let stats = edge.stats();
     assert_eq!(stats.mode(EdgeMode::Hold).ticks, 0, "no hold: {stats:?}");
@@ -694,8 +650,6 @@ async fn with_the_host_gone_the_edge_falls_back_on_its_own_clock() {
     assert_eq!(tick.safe_behavior.as_deref(), Some("stop"));
 }
 
-/// Streams `tag` chunks under `lease` for `duration`, after letting a new
-/// route settle for `warmup`.
 async fn stream(p: &Participant, lease: &Lease, tag: u8, duration: Duration, warmup: Duration) {
     let tx = p.chunk_publisher(lease).await.expect("publisher");
     tokio::time::sleep(warmup).await;
@@ -709,8 +663,6 @@ async fn stream(p: &Participant, lease: &Lease, tag: u8, duration: Duration, war
     }
 }
 
-/// The child half of the cross-process tests: runs only when a parent test
-/// launches this binary with [`CHILD`] set to `base,session,tenant,key,scenario`.
 #[tokio::test(flavor = "multi_thread")]
 async fn child_process() {
     let Ok(spec) = std::env::var(CHILD) else {
@@ -758,8 +710,6 @@ async fn child_process() {
             )
             .await
             .expect("subscribe");
-        // Ready: the parent drives until it reads the report, which goes
-        // once more than a hundred driving ticks reached this process.
         println!("CHILD_READY");
         let driving = |seen: &[(rlmesh_session::wire::Applied, Option<u8>)]| {
             seen.iter()
@@ -805,13 +755,11 @@ async fn child_process() {
         "crash" => {
             let lease = policy.grant_lease(cmd, None).await.expect("lease");
             stream(&policy, &lease, 7, Duration::from_millis(600), WARMUP).await;
-            // A crash: no detach, no release.
             std::process::exit(0);
         }
         "rebind" => {
             let lease = policy.grant_lease(cmd, None).await.expect("lease");
             stream(&policy, &lease, 7, Duration::from_millis(400), WARMUP).await;
-            // A new binding: the lease comes back under a fresh token.
             let view = policy
                 .declare_binding(Fingerprint::from(71), r#"{"rev": 2}"#, vec![cmd], 0.0)
                 .await
@@ -835,7 +783,6 @@ async fn child_process() {
             );
             let joint = policy.grant_lease(arm, None).await.expect("arm");
             stream(&policy, &joint, 1, Duration::from_millis(400), WARMUP).await;
-            // Switch to the Cartesian member in one revision.
             let leases = policy
                 .grant_leases(vec![tcp], vec![arm], None)
                 .await
@@ -856,8 +803,6 @@ async fn child_process() {
     std::process::exit(0);
 }
 
-/// The robot side of the cross-process tests: the edge on `path`, mapped,
-/// armed, ticking at 1 kHz with its ticks recorded.
 struct Driven {
     robot: Participant,
     edge: Arc<Edge>,
@@ -907,8 +852,6 @@ async fn a_controller_in_another_process_drives_the_edge_and_its_crash_falls_bac
         driven.edge.stats().mode(EdgeMode::Driving).ticks > 100
     })
     .await;
-    // Its crash: the queue runs dry (or its lease lapses) and its lease
-    // ends.
     let cmd = channel(&driven.robot, "cmd");
     let snapshot = driven
         .robot
@@ -1016,8 +959,6 @@ async fn a_group_hands_over_between_members_driven_from_another_process() {
         after.iter().all(|t| t.channel == Some(tcp)),
         "never the joint member again"
     );
-    // Every tick publishes one applied sample per member; only the driving
-    // member's is present.
     for t in &ticks {
         assert_eq!(t.applied.len(), 2);
         let present: Vec<_> = t.applied.iter().filter(|a| a.applied.present).collect();
@@ -1062,8 +1003,6 @@ async fn the_applied_stream_reaches_an_observer_in_another_process() {
         }
         panic!("no report");
     });
-    // Drives until the other process has seen enough of it, however long
-    // a loaded machine takes to carry it there.
     let tx = policy.chunk_publisher(&lease).await.expect("publisher");
     tokio::time::sleep(WARMUP).await;
     let stride = tx.stride();
@@ -1076,9 +1015,6 @@ async fn the_applied_stream_reaches_an_observer_in_another_process() {
     let report = report.await.expect("report");
     assert!(child.wait().expect("child").success());
     driven.stop();
-    // Ticks reached the other process as applied samples: absent ones
-    // (Idle, then Hold) carry no value, present ones the dispatched action
-    // under the lease's token, in chunk order.
     assert!(report["samples"].as_u64().expect("n") > 100, "{report}");
     assert!(report["present"].as_u64().expect("n") > 100, "{report}");
     assert!(report["driving"].as_u64().expect("n") > 100, "{report}");

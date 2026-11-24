@@ -1,6 +1,3 @@
-//! Shutdown, drain and close: concurrent and reentrant shutdowns, async
-//! drains, and callbacks that drop the last server handle.
-
 use super::*;
 
 #[test]
@@ -27,8 +24,6 @@ fn concurrent_shutdown_and_wait_join_the_in_progress_drain() {
             unreachable!()
         }
         fn close(&mut self) -> crate::Result<()> {
-            // Ready cleanup must mark its callbacks too: a shutdown requested
-            // by close only signals and never waits for its own drain lock.
             self.server.lock().unwrap().upgrade().unwrap().shutdown()?;
             self.entered.send(()).unwrap();
             let (lock, ready) = &*self.release;
@@ -88,8 +83,6 @@ fn concurrent_shutdown_and_wait_join_the_in_progress_drain() {
             };
             let early = observed.recv_timeout(Duration::from_millis(50));
             let polled = server.wait(Some(Duration::ZERO));
-            // Always release the close, even if a regression made an observer
-            // return early; no test failure may strand a library thread.
             *release.0.lock().unwrap() = true;
             release.1.notify_all();
             first.join().unwrap().unwrap();
@@ -105,8 +98,6 @@ fn concurrent_shutdown_and_wait_join_the_in_progress_drain() {
     }
 }
 
-// Shutdown regressions use channels so the test controls the exact drain
-// phase, including the two reentrant hangs reported during review.
 struct ShutdownProbe {
     server: Arc<Mutex<std::sync::Weak<EnvServer>>>,
     closing: Option<std::sync::mpsc::Sender<()>>,
@@ -301,8 +292,6 @@ fn synchronous_shutdown_joins_an_unpolled_async_drain() {
             .is_pending()
     );
     entered.recv_timeout(Duration::from_secs(5)).unwrap();
-    // A held close supplies no completion notification. Timer polling would
-    // wake this unpolled future after 10ms; the drain must remain asleep.
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
     let release = std::thread::spawn(move || {

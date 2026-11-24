@@ -1,10 +1,5 @@
 //! The batch sweep: how a served model's throughput grows with the number of
 //! sessions predicting at once, and the `max_batch_size` it recommends.
-//!
-//! A served model's batcher groups the predicts of concurrent sessions
-//! itself, so a sweep point is N routes
-//! driven at once ([`run_routes`]), each a one-lane stand-in env, and its
-//! latency the per-step predict time the routes see.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -46,10 +41,9 @@ impl Default for BenchOptions {
     }
 }
 
-/// A sweep: the report (its `handshake` and `batch_sweep` checks, the
-/// baseline and the recommendation, in the probe report's shape) and the
-/// telemetry of the single-session point, whose reset and step rows are the
-/// round trips a run pays around each predict.
+/// A sweep: the report (the `handshake` and `batch_sweep` checks, the baseline and the
+/// recommendation) and the telemetry of the single-session point, whose reset and step rows
+/// are the round trips a run pays around each predict.
 #[derive(Debug, Clone)]
 pub struct BenchResult {
     pub report: ProbeReport,
@@ -148,9 +142,6 @@ fn sweep(
     single
 }
 
-/// A size that measures slower than the one before it is run once more and
-/// the better run kept: a first pass at a new shape is more often a warm-up
-/// (JIT, allocator growth) than the knee.
 fn point_retrying_a_dip(
     model: &RemoteModel,
     synthesized: &SynthesizedEnv,
@@ -168,7 +159,6 @@ fn point_retrying_a_dip(
     }
 }
 
-/// Times the predicts of the steps past `warmup`.
 struct PredictTimes {
     warmup: i64,
     ms: Vec<f64>,
@@ -183,7 +173,6 @@ impl RunHooks for PredictTimes {
     }
 }
 
-/// One sweep point: `n` routes at once, each `warmup + iterations` steps.
 fn point(
     model: &RemoteModel,
     synthesized: &SynthesizedEnv,

@@ -1,5 +1,3 @@
-"""An env container that exits during startup, as one whose make() fails does."""
-
 from __future__ import annotations
 
 import os

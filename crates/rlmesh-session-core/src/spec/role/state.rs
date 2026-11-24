@@ -1,5 +1,3 @@
-//! Pair each model state component with an env feature and derive the plan.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -20,7 +18,6 @@ use crate::spec::role::path::NodePath;
 use crate::spec::role::plan::{PreviousAction, StatePiece, StatePlan};
 use crate::spec::rotation::Rotation;
 
-/// Width of an optional component's fill when the env lacks it.
 fn fill_width(component: &Piece, role: &str, at: &str) -> Result<u32> {
     if component.index.is_some() {
         return Ok(1);
@@ -44,7 +41,6 @@ fn fill_width(component: &Piece, role: &str, at: &str) -> Result<u32> {
     ))
 }
 
-/// ` (part "p")` for a message about a leaf that named one, else nothing.
 pub(super) fn part_suffix(part: Option<&str>) -> String {
     match part {
         Some(part) => format!(" (part {})", quoted(part)),
@@ -52,15 +48,10 @@ pub(super) fn part_suffix(part: Option<&str>) -> String {
     }
 }
 
-/// The constant an absent (or role-less) part contributes, with the model-side
-/// affine folded in — so `apply_state` never needs the spec again.
 fn folded_fill(component: &Piece) -> f64 {
     component.fill * component.scale.unwrap_or(1.0) + component.offset.unwrap_or(0.0)
 }
 
-/// A piece with no env source: `dim` copies of `fill`. The scalar affine is
-/// folded into `fill` by the caller; a per-axis one rides along unfolded and
-/// applies per element.
 fn fill_piece(
     width: u32,
     fill: f64,
@@ -96,10 +87,6 @@ fn fill_piece(
     }
 }
 
-/// An action-source part reads the spec's own output actuator of the same
-/// `(role, part)`: the raw slice of the action the model executed at the
-/// previous step, in model order, or `fill` before the episode's first one.
-/// The width is the actuator's; `labels` reorder the actuator's labels.
 fn previous_action_piece(
     component: &Piece,
     role: &str,
@@ -182,7 +169,6 @@ fn previous_action_piece(
     })
 }
 
-/// A per-axis vector must name exactly one value per resolved axis.
 pub(super) fn check_axis_width(
     values: Option<&[f64]>,
     name: &str,
@@ -203,14 +189,12 @@ pub(super) fn check_axis_width(
     Ok(())
 }
 
-/// Labels one side names that the other lacks.
 pub(super) struct LabelSetDiff {
     pub wanted_only: Vec<String>,
     pub available_only: Vec<String>,
 }
 
 impl LabelSetDiff {
-    /// Which side lacks which labels, naming only a side that lacks some.
     pub(super) fn describe(&self, wanted: &str, available: &str) -> String {
         let mut sides = Vec::new();
         if !self.wanted_only.is_empty() {
@@ -223,10 +207,6 @@ impl LabelSetDiff {
     }
 }
 
-/// Where each of `wanted` sits in `available`, when the two name the same
-/// set: `None` for the same order, else the permutation. Shared by the
-/// observation gather and the action scatter; both tuples are duplicate-free
-/// (the codec checks), so equal sets mean equal lengths.
 pub(super) fn label_permutation(
     wanted: &[String],
     available: &[String],
@@ -258,12 +238,6 @@ pub(super) fn label_permutation(
     Ok((!identity).then_some(permutation))
 }
 
-/// The gather a model label tuple implies against the leaf it reads (an env
-/// leaf, or the model's own actuator for an action-source part; `offerer`
-/// names which): `None` when the model names none or the same order, else
-/// the permutation into the model's order. The two tuples must name the same
-/// set; a labeled model against an unlabeled leaf, or a label either side
-/// lacks, is a [`LabelMismatch`](ErrorCode::LabelMismatch).
 fn label_gather(
     role: &str,
     env: Option<&[String]>,
@@ -299,16 +273,6 @@ fn label_gather(
     })
 }
 
-/// Choose the (source, destination) rotation encodings for a state piece.
-///
-/// `env` is the producer: its first recognized entry is the native (raw)
-/// encoding the runtime value is in. `model` is the consumer: its entries are
-/// an accept-set in preference order. Prefer no conversion — when the model
-/// accepts the env's native, use it on both sides; otherwise convert the native
-/// into the model's most-preferred recognized encoding. `(None, None)` means
-/// neither side declares a rotation. A side that declares only *unrecognized*
-/// encodings is a typed resolve error (graceful degradation's loud edge), not a
-/// silent pass.
 fn select_state_encoding(
     role: &str,
     env: Option<&Accept<Rotation>>,
@@ -359,8 +323,6 @@ fn select_state_encoding(
             .first_known()
             .expect("model has a recognized encoding")
     };
-    // The direction law: a sink carries a direction, not a rotation, so an
-    // env that publishes one binds only a model that reads that same sink.
     if !native.is_source() && dst != native {
         return Err(err(
             ErrorCode::EncodingMismatch,
@@ -389,8 +351,6 @@ pub(super) fn plan_state(
     let at = quoted(&placement.to_string());
     let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.pieces.len());
     for component in &model_input.pieces {
-        // A constant part reads nothing: it contributes its declared width of
-        // the fill value wherever it sits in the concat.
         let Some(role) = component.role.as_deref() else {
             let width = component
                 .dim
@@ -398,19 +358,12 @@ pub(super) fn plan_state(
             pieces.push(fill_piece(width, component.fill, None, None, component));
             continue;
         };
-        // An action-source part reads the model's own output, never an env
-        // leaf: it binds the spec's actuator and consults nothing here.
         if component.previous {
             pieces.push(previous_action_piece(
                 component, role, &at, outputs, advisories,
             )?);
             continue;
         }
-        // A custom encoding resolves structurally to its `base` here and the
-        // host-side repack runs on its own slice, addressed by the resolved
-        // piece widths this plan records — so it may sit at any offset of a
-        // multi-part concat. What it can never be is absent: an optional part
-        // the env does not declare has no zero form of the custom packing.
         if component.custom.is_some() && component.optional {
             return Err(err(
                 ErrorCode::Unsupported,
@@ -433,9 +386,6 @@ pub(super) fn plan_state(
             advisories,
         )?;
         let Some(bound) = bound else {
-            // The role's data is present but under a kind this core can't read:
-            // fail loud before the optional zero-fill silently degrades it. A
-            // role the env genuinely lacks falls through to the optional branch.
             crate::spec::role::bind::reject_referenced_unknown(role, &placement, unknown_roles)?;
             if component.optional {
                 let width = fill_width(component, role, &at)?;
@@ -466,7 +416,6 @@ pub(super) fn plan_state(
             ));
         };
         let env_state: &EnvState = bound.feature;
-        // Align the axes by name before anything else reads them.
         let gather = label_gather(
             role,
             env_state.labels.as_deref(),
@@ -474,10 +423,6 @@ pub(super) fn plan_state(
             &at,
             "env leaf",
         )?;
-        // A custom encoding shadows to its `base` for the structural
-        // negotiation; the host-side arm is never imported or run here (only a
-        // trusted in-process resolve does). Validate the obs-side invariants the
-        // resolver can check without running the arm.
         let model_set = match component.encoding.as_ref() {
             Some(encoding) => {
                 if let (Some(custom), Some(base)) = (component.custom, encoding.first_known()) {
@@ -490,10 +435,6 @@ pub(super) fn plan_state(
                             ),
                         ));
                     }
-                    // The repack preserves the base width, so an index (one
-                    // element) never fits; a dim is legal exactly when it
-                    // restates that width, which is how a concat part declares
-                    // its own slice.
                     let base_dims = base.width();
                     if component.index.is_some()
                         || component.dim.is_some_and(|dim| dim != base_dims)
@@ -514,8 +455,6 @@ pub(super) fn plan_state(
         };
         let (src_encoding, dst_encoding) =
             select_state_encoding(role, env_state.encoding.as_ref(), model_set)?;
-        // A post-rotation decodes the source into a matrix, which a sink has
-        // none of (the codec already refuses a sink as the literal itself).
         if let Some(src) = src_encoding
             && !src.is_source()
             && component.post_rotate.is_some()
@@ -544,8 +483,6 @@ pub(super) fn plan_state(
             advisories,
         )?;
         let flip = check_state_polarity(role, &at, env_state, component, advisories, projections)?;
-        // When converting, the env feature's declared width must match the
-        // native (source) encoding the raw value is in.
         if let (Some(src), Some(dst)) = (src_encoding, dst_encoding)
             && src != dst
             && let Some(env_dim) = env_state.dim
@@ -563,12 +500,6 @@ pub(super) fn plan_state(
                 ),
             ));
         }
-        // Bounds-check the requested slice against the source width. The
-        // width is the env feature's, unless a rotation conversion reshapes it
-        // first (in which case the converted width applies). Without this an
-        // out-of-range index or dim silently yields fewer values. A
-        // post-rotation always goes through the matrix, so it reshapes to the
-        // destination encoding even when both sides name the same one.
         let converts = matches!(
             (src_encoding, dst_encoding),
             (Some(src), Some(dst)) if src != dst || component.post_rotate.is_some()
@@ -576,7 +507,6 @@ pub(super) fn plan_state(
         let source_width = if converts {
             dst_encoding.map(Rotation::width)
         } else if let Some(labels) = &component.labels {
-            // The same set as the env's labels, so the env width.
             Some(labels.len() as u32)
         } else {
             env_state.dim
@@ -609,8 +539,6 @@ pub(super) fn plan_state(
             } else if let Some(dim) = component.dim
                 && dim < width
             {
-                // Keeping the leading elements is a guess about what the rest
-                // mean (one finger of a two-finger width): named, never silent.
                 projections.apply(
                     Projection::SelectState,
                     format!(
@@ -629,9 +557,6 @@ pub(super) fn plan_state(
                 )?;
             }
         }
-        // The piece's resolved output width, when statically known: an index
-        // keeps one element, a dim truncates to it, otherwise the source width
-        // (the converted width when a rotation conversion reshapes it) stands.
         let width = match (component.index, component.dim) {
             (Some(_), _) => Some(1),
             (_, Some(dim)) => Some(dim),
@@ -643,8 +568,6 @@ pub(super) fn plan_state(
         ] {
             check_axis_width(axis, name, width, &locus)?;
         }
-        // The output axis names: the model's when it declared them (the
-        // gather put the values in that order), else the env's.
         let labels = component
             .labels
             .clone()
@@ -653,15 +576,10 @@ pub(super) fn plan_state(
         pieces.push(StatePiece {
             source: env_state.source.clone(),
             src_offset: env_state.slice_offset,
-            // src_dim is the slice width, meaningful only for a layout field
-            // (where slice_offset is set); a whole-leaf state leaves it None so
-            // the documented "used only when src_offset is set" invariant holds
-            // (env_state.dim there is the advisory space width, not a slice).
             src_dim: env_state.slice_offset.and(env_state.dim),
             src_encoding,
             dst_encoding,
             post_rotate: component.post_rotate,
-            // Labels fix the width the way a declared `dim` does.
             dim: component
                 .dim
                 .or_else(|| component.labels.as_ref().map(|labels| labels.len() as u32)),
@@ -684,8 +602,6 @@ pub(super) fn plan_state(
             flip,
         });
     }
-    // Known only when every piece's width is (and no pathological spec overflows
-    // the sum): a host-side shim can address a slice only in that case.
     let native_width = pieces.iter().try_fold(0u32, |total, piece| {
         piece.width.and_then(|width| total.checked_add(width))
     });
@@ -701,10 +617,6 @@ pub(super) fn plan_state(
     })
 }
 
-/// The gripper reading's polarity check: the env's reading, through the
-/// model part's own scale, must reach the model in the polarity it declares.
-/// A difference is the named projection `flip_gripper`, which reflects the
-/// value in the model's range (else the env's); returned as that sum.
 fn check_state_polarity(
     role: &str,
     at: &str,
@@ -764,7 +676,6 @@ fn check_state_polarity(
 mod encoding_selection_tests {
     use super::*;
 
-    /// An accept set as a spec writes it: one name, or a list.
     fn set(json: &str) -> Accept<Rotation> {
         let names: Vec<String> = match serde_json::from_str(json).expect("parse accept-set") {
             serde_json::Value::String(one) => vec![one],
@@ -793,14 +704,12 @@ mod encoding_selection_tests {
         let (env, model) = (set(r#""quat_xyzw""#), set(r#""rot6d""#));
         let (src, dst) =
             select_state_encoding("proprio/rot", Some(&env), Some(&model)).expect("ok");
-        assert_eq!(src, Some(Rotation::QuatXyzw)); // env native = source
-        assert_eq!(dst, Some(Rotation::Rot6d)); // model target
+        assert_eq!(src, Some(Rotation::QuatXyzw));
+        assert_eq!(dst, Some(Rotation::Rot6d));
     }
 
     #[test]
     fn prefers_no_conversion_when_model_accepts_the_native() {
-        // The model lists rot6d first but also accepts the env's native quat:
-        // take the native (no conversion), even though rot6d is preferred.
         let (env, model) = (set(r#""quat_xyzw""#), set(r#"["rot6d", "quat_xyzw"]"#));
         let (src, dst) =
             select_state_encoding("proprio/rot", Some(&env), Some(&model)).expect("ok");
@@ -810,9 +719,6 @@ mod encoding_selection_tests {
 
     #[test]
     fn falls_back_past_an_unrecognized_preference() {
-        // Scenario 1: a model trained on a future encoding lists it first but
-        // accepts the frozen env's native as a fallback — the unknown is
-        // skipped at resolve, the native chosen, no runtime error.
         let (env, model) = (set(r#""quat_xyzw""#), set(r#"["rot10d", "quat_xyzw"]"#));
         let (src, dst) =
             select_state_encoding("proprio/rot", Some(&env), Some(&model)).expect("ok");
@@ -822,8 +728,6 @@ mod encoding_selection_tests {
 
     #[test]
     fn wholly_unrecognized_declaration_errors_at_resolve() {
-        // Graceful degradation's loud edge: a side that names only an unknown
-        // encoding parses, but resolves to a typed error (not a silent pass).
         let (env, model) = (set(r#""quat_xyzw""#), set(r#""rot10d""#));
         let error =
             select_state_encoding("proprio/rot", Some(&env), Some(&model)).expect_err("err");
@@ -837,13 +741,11 @@ mod encoding_selection_tests {
 
     #[test]
     fn the_gravity_sink_converts_in_but_never_out() {
-        // Any rotation projects to gravity...
         let (env, model) = (set(r#""quat_wxyz""#), set(r#""gravity_xyz""#));
         let (src, dst) =
             select_state_encoding("proprio/base_rot", Some(&env), Some(&model)).expect("ok");
         assert_eq!(src, Some(Rotation::QuatWxyz));
         assert_eq!(dst, Some(Rotation::GravityXyz));
-        // ...gravity reads as itself...
         let (env, model) = (
             set(r#""gravity_xyz""#),
             set(r#"["quat_wxyz", "gravity_xyz"]"#),
@@ -854,7 +756,6 @@ mod encoding_selection_tests {
             (src, dst),
             (Some(Rotation::GravityXyz), Some(Rotation::GravityXyz))
         );
-        // ...and never becomes a rotation again.
         let (env, model) = (set(r#""gravity_xyz""#), set(r#""quat_wxyz""#));
         let error =
             select_state_encoding("proprio/base_rot", Some(&env), Some(&model)).expect_err("err");
@@ -904,7 +805,6 @@ mod plan_state_tests {
 
     const ROLE: &str = "proprio/eef_rot";
 
-    /// A bound part's width, or the refusal's code.
     type Width = Result<Option<u32>, ErrorCode>;
 
     fn accept(rotation: Rotation) -> Accept<Rotation> {
@@ -954,8 +854,6 @@ mod plan_state_tests {
         }
     }
 
-    /// The one state piece `model` reads from an env offering `env`, or the
-    /// refusal's code; `allow` lists the projections the spec allows.
     fn plan(
         model: Piece,
         env: Option<EnvState>,
@@ -1001,7 +899,6 @@ mod plan_state_tests {
         assert_eq!(filled.fill, Some(6.5));
         assert_eq!(filled.absent_role.as_deref(), Some(ROLE));
         assert_eq!(filled.width, Some(2));
-        // Not optional: missing.
         let required = Piece {
             dim: Some(2),
             ..piece()
@@ -1012,8 +909,6 @@ mod plan_state_tests {
         );
     }
 
-    /// Every rule a state part's encoding, custom arms and post-rotation
-    /// meet: `Ok` with the part's width, or the refusal's code.
     #[test]
     fn encodings_customs_and_post_rotations_bind_per_rule() {
         let quat = Some(Rotation::QuatXyzw);
@@ -1113,8 +1008,6 @@ mod plan_state_tests {
         }
     }
 
-    /// An index or a dim against the source's width: kept, refused out of
-    /// range, or (a leading slice) the `select_state` projection.
     #[test]
     fn slices_are_checked_against_the_source_width() {
         let wide = || {
@@ -1160,7 +1053,6 @@ mod plan_state_tests {
             let got = plan(model, Some(wide()), allow).map(|piece| piece.width);
             assert_eq!(got, want, "{what}");
         }
-        // The env's axis names carry over only at their own width.
         let whole = plan(sliced(None, None), Some(wide()), &[]).expect("whole");
         assert_eq!(whole.labels.map(|l| l.len()), Some(3));
         let leading = plan(sliced(Some(2), None), Some(wide()), &select).expect("leading");

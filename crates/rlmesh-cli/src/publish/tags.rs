@@ -25,8 +25,8 @@ pub(super) fn check_tag(tag: &str) -> Result<()> {
     Ok(())
 }
 
-/// The full target references: TARGET, each `--tag` in its repository, then
-/// the channel, without repeats.
+/// The full target references: TARGET, each `--tag` in its repository, then the
+/// channel, without repeats.
 pub(crate) fn target_tags(args: &PublishArgs) -> Result<(Reference, Vec<String>)> {
     let target = Reference::parse(&args.target)?;
     if target.digest.is_some() || target.tag.is_none() {
@@ -80,8 +80,8 @@ pub(crate) fn create_args(
 pub(crate) enum Existing {
     /// The registry says there is no such manifest.
     Absent,
-    /// It could not be read (auth, transport, a registry error, output that
-    /// does not parse), so nothing is known about it; the reason.
+    /// It could not be read (auth, transport, a registry error, output that does
+    /// not parse), so nothing is known about it; the reason.
     Unreadable(String),
     /// A manifest at `digest`, as stored (`raw`).
     Found { digest: String, raw: Value },
@@ -100,11 +100,7 @@ pub(crate) enum TagState {
     Moves(String),
 }
 
-/// Whether an existing manifest is the index about to be published. Both are
-/// compared as stored, field by field: the same media type and artifactType,
-/// the same manifests in the same order (digest, size, platform, annotations,
-/// every descriptor field), the same annotations and subject. Only the
-/// serialization (whitespace, key order) may differ.
+/// Whether an existing manifest is the index about to be published.
 pub(crate) fn same_index(existing: &Value, index: &Value) -> bool {
     existing == index
 }
@@ -125,12 +121,10 @@ pub(crate) fn tag_states(existing: &[Existing], index: &Value) -> Vec<TagState> 
         .collect()
 }
 
-/// Print each tag's state and return the refusals: TARGET and `--tag` tags
-/// name a version and do not move, or get pushed over a state that could not
-/// be read, without `--force`; the channel tag (its full reference, unless it
-/// is also a version tag) moves, which is its purpose, and says from where.
-/// Every tag ends at TARGET's digest, so another tag holding the same index
-/// at another digest (another serialization) is re-pointed.
+/// Print each tag's state and return the refusals: TARGET and `--tag` tags name
+/// a version and do not move, or get pushed over a state that could not be
+/// read, without `--force`; the channel tag (its full reference, unless it is
+/// also a version tag) moves, which is its purpose, and says from where.
 pub(super) fn report_tags(
     stdout: &mut impl Write,
     style: Style,
@@ -205,7 +199,6 @@ mod tests {
     use crate::publish::testing::*;
     use serde_json::json;
 
-    /// The `Tags:` line of `tag` in a publish's output.
     fn tag_line<'a>(out: &'a str, tag: &str) -> &'a str {
         out.lines()
             .find(|line| line.trim_start().starts_with(&format!("{tag} ")))
@@ -224,7 +217,6 @@ mod tests {
             tag_line(&out, "reg.example/ns/pi0:v3").ends_with(" new"),
             "{out}"
         );
-        // TARGET is pushed alone, then the other tags point at its digest.
         let v3 = registry.digest_of("reg.example/ns/pi0:v3");
         for tag in ["reg.example/ns/pi0:v3.0", "reg.example/ns/pi0:latest"] {
             assert_eq!(registry.digest_of(tag), v3, "{tag}");
@@ -240,8 +232,6 @@ mod tests {
             ]
         );
         assert_eq!(registry.pushes(), 2);
-        // Publishing the same version again changes nothing and is allowed;
-        // no tag is pushed again.
         let (result, out) = run(&registry, &publish);
         assert_eq!(result.unwrap(), 0, "{out}");
         assert!(
@@ -257,8 +247,6 @@ mod tests {
         );
         assert_eq!(registry.pushes(), 2);
 
-        // Other children under the same version tag: the dry run says what
-        // would be refused, and the real run refuses it.
         let mut other = args("reg.example/ns/pi0:v3", &SOURCES[..2]);
         other.channel = Some("latest".to_owned());
         other.dry_run = true;
@@ -279,7 +267,6 @@ mod tests {
             tag_line(&out, "reg.example/ns/pi0:v3").ends_with(&format!("refused: points at {v3}")),
             "{out}"
         );
-        // The channel is not refused: moving is what it is for.
         assert!(
             tag_line(&out, "reg.example/ns/pi0:latest")
                 .ends_with(&format!("moves from {v3} (channel)")),
@@ -302,7 +289,6 @@ mod tests {
             registry.digest_of("reg.example/ns/pi0:v3")
         );
 
-        // A new version moves only the channel, without --force.
         let mut next = args("reg.example/ns/pi0:v4", SOURCES);
         next.channel = Some("latest".to_owned());
         let (result, out) = run(&registry, &next);
@@ -316,7 +302,6 @@ mod tests {
             "{out}"
         );
 
-        // A channel that is also the version tag is protected like one.
         let mut same = args("reg.example/ns/pi0:latest", &SOURCES[..1]);
         same.channel = Some("latest".to_owned());
         let error = format!("{:#}", run(&registry, &same).0.unwrap_err());
@@ -363,7 +348,6 @@ mod tests {
             assert!(run(&registry, &publish).0.is_err());
             assert_eq!(registry.pushes(), 0, "nothing is pushed");
         }
-        // A real absence is new.
         registry.manifests.borrow_mut().remove(tag);
         let mut publish = args(tag, SOURCES);
         publish.dry_run = true;
@@ -371,8 +355,6 @@ mod tests {
         assert_eq!(result.unwrap(), 0, "{out}");
         assert!(tag_line(&out, tag).ends_with(" new"), "{out}");
 
-        // --force pushes over it, and the channel is overwritten regardless;
-        // both say why.
         registry.insert_raw(tag, "ERROR: unexpected status: 401 Unauthorized");
         let channel = "reg.example/ns/pi0:latest";
         registry.insert_raw(channel, "ERROR: unexpected status: 503 Service Unavailable");
@@ -420,16 +402,12 @@ mod tests {
 
         let assembled = registry.digest_of(target);
 
-        // The same index, serialized differently (compact, other key order),
-        // so at another digest: unchanged, and not pushed again, so its
-        // digest stays put.
         let reordered = format!(
             "{{\"manifests\":{},\"schemaVersion\":2,\"mediaType\":\"{OCI_INDEX}\"}}",
             stored["manifests"]
         );
         let version = sha256(&reordered);
         assert_ne!(version, assembled);
-        // The channel already holds the same index, as docker assembles it.
         registry.store("reg.example/ns/pi0:latest", &registry.raw(target).unwrap());
         registry.store(target, &reordered);
         let mut publish = args(target, SOURCES);
@@ -444,8 +422,6 @@ mod tests {
             )),
             "{out}"
         );
-        // Only the other tags are pushed, pointed at TARGET's stored digest
-        // rather than assembled again, so every tag is the same manifest.
         let created = registry.created.borrow().last().unwrap().clone();
         assert_eq!(
             created,
@@ -478,15 +454,13 @@ mod tests {
             out.contains("re-pointed reg.example/ns/pi0:latest"),
             "{out}"
         );
-        // Now every tag holds the version's digest: nothing to push.
         let pushes = registry.pushes();
         let (result, out) = run(&registry, &publish);
         assert_eq!(result.unwrap(), 0, "{out}");
         assert!(out.contains("Already published"), "{out}");
         assert_eq!(registry.pushes(), pushes);
 
-        // An index carrying a subject or an artifactType the replacement would
-        // drop is a different index, though docker's .Manifest view hides both.
+        // An index with a subject or artifactType is a different index even though docker's .Manifest view hides both.
         for (field, value) in [
             (
                 "subject",
@@ -509,7 +483,6 @@ mod tests {
                 "{field}: {error}"
             );
         }
-        // So is one whose manifests differ only in a descriptor's size.
         let mut resized = stored.clone();
         resized["manifests"][0]["size"] = Value::from(1);
         registry.set_raw_at_digest(target, &resized.to_string());

@@ -11,28 +11,17 @@ use uuid::Uuid;
 use crate::sandbox::source::ResolvedEnvironmentSourceRef;
 use crate::sandbox::{EffectiveSandboxSpec, EnvironmentSourceRef, hf, shell_quote};
 
-/// The participant a built env serves as in its container's session.
 const ENV_NAME: &str = "env";
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTAINER_LOG_TAIL_BYTES: usize = 64 * 1024;
-/// The most log lines the report of a container that exited quotes.
 const CONTAINER_LOG_TAIL_LINES: usize = 40;
 
-/// Label stamped on every container rlmesh starts.
 const OWNER_LABEL: &str = "rlmesh.sandbox=1";
 const OWNER_LABEL_FILTER: &str = "label=rlmesh.sandbox=1";
 
-/// Label key recording the OS process id that owns a container.
 const OWNER_PID_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid";
 const OWNER_PID_NS_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid-ns";
 
-/// `docker ps --format` template emitting one
-/// `<id>|<owner-pid>|<owner-pid-ns>|<status>` line
-/// per container. A `|` delimiter (rather than whitespace) is used so the
-/// *empty* owner-pid field of legacy containers that predate per-process
-/// labeling is preserved as an empty middle column rather than collapsed away.
-/// `.State` is the single-word state (e.g. `running`, `exited`), matching the
-/// values [`ContainerState::status`] holds.
 const REAP_PS_FORMAT: &str = "{{.ID}}|{{.Label \"rlmesh.sandbox.owner-pid\"}}|{{.Label \"rlmesh.sandbox.owner-pid-ns\"}}|{{.State}}";
 
 #[derive(Debug, Clone)]
@@ -46,7 +35,6 @@ pub struct StartedContainer {
     pub address: String,
 }
 
-// The address carries the sandbox's key: `Debug` leaves it out.
 impl std::fmt::Debug for StartedContainer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StartedContainer")
@@ -61,9 +49,6 @@ pub fn ensure_image(spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
 }
 
 fn ensure_image_tagged(spec: &EffectiveSandboxSpec, image_tag: &str) -> Result<BuildArtifact> {
-    // A single `docker image inspect` answers both "does it exist" and
-    // "what is its id": inspect_image_id returns Ok(None) when the image is
-    // absent, so a second existence probe is redundant.
     if let Some(image_id) = inspect_image_id(image_tag)? {
         return Ok(BuildArtifact { image_id });
     }
@@ -71,13 +56,6 @@ fn ensure_image_tagged(spec: &EffectiveSandboxSpec, image_tag: &str) -> Result<B
     let tempdir = tempfile::tempdir().context("failed to create sandbox build context")?;
     write_build_context(spec, &tempdir)?;
 
-    // Opt-in: when a build memory ceiling is requested, route the build
-    // through a bounded `docker-container` buildx builder so an OOM is a
-    // clean cgroup-local build failure instead of a host freeze. Wrapping the
-    // `docker` CLI in a systemd scope does NOT work -- the build runs in the
-    // daemon's own cgroup (system.slice), a sibling of the CLI, so only a
-    // builder whose cgroup contains the work can bound it. Without a ceiling
-    // we keep the default builder (today's behaviour).
     let build_memory = match spec.build_memory.as_deref() {
         Some(raw) => resolve_build_memory(raw)?,
         None => None,
@@ -122,9 +100,7 @@ pub async fn run_container_async(
     let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
     let bootstrap_json = render_bootstrap_json(spec)?;
     let host_port = free_session_port()?;
-    // The container hosts its session under keys made here, so this process
-    // knows the address's key (the workload spec). The value
-    // rides docker's own environment, never its argv.
+    // The value rides docker's environment, never its argv.
     let (identity, key) = launch_identity()?;
     let output = Command::new("docker")
         .env(HOST_IDENTITY_VAR, identity.as_str())
@@ -138,9 +114,6 @@ pub async fn run_container_async(
         .output()
         .context("failed to start docker container")?;
     if !output.status.success() {
-        // `docker run` can leave a created (but not started) container behind
-        // when startup fails after the container is created (e.g. a port
-        // collision). Remove it by name so we do not leak it.
         let _ = remove_container(&container_name);
         bail!("docker run failed:\n{}", command_output(&output));
     }
@@ -150,9 +123,7 @@ pub async fn run_container_async(
     if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
         let hint = spec.rlmesh_package.skew_hint();
         let report = startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
-        // Killed, not stopped: a container that never became ready has
-        // nothing to drain, and `docker stop` would wait out its grace period
-        // (its entrypoint, PID 1, ignores SIGTERM) before the error surfaces.
+        // Kill, not stop: the entrypoint (PID 1) ignores SIGTERM, so stop would wait out its grace period.
         let _ = discard_container(&container_id);
         return Err(report);
     }
@@ -174,18 +145,16 @@ pub fn stop_container(container_id: &str) -> Result<()> {
     remove_container(container_id)
 }
 
-/// Best-effort reap of orphaned rlmesh-owned containers.
-///
-/// Only containers whose recorded owner process is gone are removed; current
-/// process containers are excluded and individual Docker failures are skipped.
+/// Best-effort reap of orphaned rlmesh-owned containers: only those whose
+/// recorded owner process is gone, never this process's; individual Docker
+/// failures are skipped.
 pub fn reap_orphaned_containers() -> Result<Vec<String>> {
     let candidates = list_owned_containers()?;
     let self_pid = std::process::id();
     let self_pid_namespace = current_pid_namespace_id();
     let mut reaped = Vec::new();
     for candidate in candidates {
-        // Never reap our own containers, even if a pid-reuse coincidence
-        // were to make the liveness check ambiguous.
+        // Never reap our own containers, even if the pid-liveness check is ambiguous.
         if candidate.owner_pid == Some(self_pid) {
             continue;
         }
@@ -262,7 +231,6 @@ fn startup_failure_report(
 ) -> anyhow::Error {
     let inspected = inspect_container_state(container_id);
     let logs = container_logs(container_id);
-    // A container that exited is the cause, whatever the wait last saw.
     if let Ok(Some(state)) = &inspected
         && state.is_terminal()
     {
@@ -301,8 +269,6 @@ fn startup_failure_report(
     ))
 }
 
-/// The report of an env container that exited before its session answered:
-/// that exit leads, then its last log lines, not the wait it cut short.
 fn format_exit_report(
     state: &ContainerState,
     container_id: &str,
@@ -336,8 +302,6 @@ fn format_exit_report(
     report
 }
 
-/// The last `lines` lines of `text`, bounded to [`CONTAINER_LOG_TAIL_BYTES`]
-/// too.
 fn last_lines(text: &str, lines: usize) -> String {
     let all: Vec<&str> = text.trim_end().lines().collect();
     let kept = all[all.len().saturating_sub(lines)..].join("\n");
@@ -357,8 +321,6 @@ fn container_logs(container_id: &str) -> Result<String> {
         }
         logs.push_str(&String::from_utf8_lossy(&output.stderr));
     }
-    // A secret the container printed (its address key, its identity) is
-    // left out of the report that quotes it.
     Ok(rlmesh_session::address::redact_text(&logs))
 }
 
@@ -500,8 +462,6 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
                 if let Some(state) = container_terminated(container_id) {
                     bail!("sandbox container exited before ready ({state})");
                 }
-                // A refusal the same dial meets again (a key the host does
-                // not accept) is final: waiting out the deadline hides it.
                 if !err.is_transient() || Instant::now() >= deadline {
                     return Err(err.into());
                 }
@@ -521,22 +481,10 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
     }
 }
 
-/// Whether the container is *confirmed* to have reached a terminal state.
-///
-/// A transient `docker inspect` failure (e.g. the daemon is briefly busy) is
-/// treated as "not confirmed terminal" so the readiness wait keeps polling
-/// until its own deadline, rather than tearing down a container that is about
-/// to become ready. Only an inspect that succeeds and reports a terminal
-/// status returns `true`.
-/// When the container is confirmed terminal, returns its state summary for
-/// the error message; None while it is still running or not yet inspectable.
 fn container_terminated(container_id: &str) -> Option<String> {
     confirmed_terminal_summary(inspect_container_state(container_id))
 }
 
-/// Decide whether an inspect result confirms the container is terminal. A
-/// transient inspect error or a not-yet-found container is treated as "not
-/// confirmed", so the readiness wait keeps polling instead of aborting.
 fn confirmed_terminal_summary(inspected: Result<Option<ContainerState>>) -> Option<String> {
     match inspected {
         Ok(Some(state)) if state.is_terminal() => Some(state.summary()),
@@ -578,12 +526,6 @@ ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
     ))
 }
 
-/// Serialize the bootstrap payload that is injected at run time via the
-/// `RLMESH_BOOTSTRAP_JSON` env var (see `docker_run_args`), rather than baked
-/// into the image at build time. This keeps runtime-only parameters (kwargs,
-/// num_envs, vectorization_mode, and similar settings) out of the image and
-/// its build hash, so changing one never rebuilds the image or invalidates
-/// the pip install layer.
 fn render_bootstrap_json(spec: &EffectiveSandboxSpec) -> Result<String> {
     serde_json::to_string(&BootstrapConfigFile {
         spec: BootstrapSpec::from_effective_spec(spec)?,
@@ -650,19 +592,9 @@ fn command_output(output: &std::process::Output) -> String {
     sections.join("\n")
 }
 
-/// Fixed cushion left for the already-running host (desktop + services) when
-/// `build_memory="auto"` computes the ceiling. The box is never idle, so a
-/// percentage cap would still co-exhaust with the desktop -- the trap that froze
-/// the host. Leave a flat headroom instead.
 const BUILD_MEMORY_HEADROOM: u64 = 8 * 1024 * 1024 * 1024;
-/// Floor so a small box still gets a usable (if tight) build ceiling.
 const BUILD_MEMORY_FLOOR: u64 = 4 * 1024 * 1024 * 1024;
 
-/// Interpret a requested `build_memory` value into a concrete `--driver-opt
-/// memory=` value, or `None` to use the default builder. `"auto"` sizes a
-/// ceiling from host RAM; `"off"`/`"none"`/`"unbounded"`/empty opt out; a docker
-/// size string (e.g. `"20g"`) passes through. A non-size string (typo) errors up
-/// front rather than failing confusingly inside `docker buildx create`.
 fn resolve_build_memory(raw: &str) -> Result<Option<String>> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "" | "off" | "none" | "unbounded" => Ok(None),
@@ -680,10 +612,6 @@ fn resolve_build_memory(raw: &str) -> Result<Option<String>> {
     }
 }
 
-/// Whether `value` is a docker memory size: a positive decimal with an optional
-/// `b`/`k`/`m`/`g`/`t` unit (case-insensitive, optional trailing `b`). Gates the
-/// passthrough above so a typo can't produce a degenerate builder name or a
-/// late, opaque docker error.
 fn is_docker_size(value: &str) -> bool {
     let lower = value.trim().to_ascii_lowercase();
     let without_b = lower.strip_suffix('b').unwrap_or(&lower);
@@ -704,14 +632,6 @@ fn bounded_build_memory(total_ram: u64) -> u64 {
         .max(BUILD_MEMORY_FLOOR)
 }
 
-/// Total physical RAM in bytes: `/proc/meminfo` on Linux, else `sysctl
-/// hw.memsize` on macOS. `None` when neither is readable.
-///
-/// macOS caveat: `hw.memsize` is HOST RAM, but a docker build runs in a Linux VM
-/// whose (smaller) RAM is the real ceiling, so an `"auto"` cap here can land
-/// above the VM size. That is safe -- the VM already contains an OOM, so the
-/// host can't freeze and an over-high cap is merely inert. On macOS prefer an
-/// explicit `build_memory` (or raise the VM's memory) over `"auto"`.
 fn host_total_ram_bytes() -> Option<u64> {
     proc_meminfo_total().or_else(sysctl_memsize)
 }
@@ -737,10 +657,6 @@ fn sysctl_memsize() -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
-/// The per-ceiling builder name, e.g. `rlmesh-build-20g`. Encoding the cap in
-/// the name keeps a re-requested ceiling stable (reused builder, warm cache)
-/// while a changed ceiling lands a fresh builder. Old ones are stopped
-/// containers costing only disk; clean up with `docker buildx rm`.
 fn builder_name(memory: &str) -> String {
     let suffix: String = memory
         .chars()
@@ -755,9 +671,6 @@ fn builder_name(memory: &str) -> String {
     format!("rlmesh-build-{suffix}")
 }
 
-/// Inspect-or-create a bounded `docker-container` buildx builder. `memory-swap
-/// == memory` disables swap inside the builder so the cap is a hard wall (prompt
-/// cgroup OOM-kill, no thrash). Returns the builder name to build through.
 fn ensure_bounded_builder(memory: &str) -> Result<String> {
     let name = builder_name(memory);
     if builder_exists(&name)? {
@@ -779,9 +692,6 @@ fn ensure_bounded_builder(memory: &str) -> Result<String> {
         .output()
         .context("failed to create bounded docker buildx builder")?;
     if !output.status.success() {
-        // A concurrent build may have created the builder between our inspect
-        // and create. Re-inspect rather than parse docker's version-varying
-        // error text: if it now exists, the race resolved in our favour.
         if builder_exists(&name)? {
             return Ok(name);
         }
@@ -834,12 +744,8 @@ fn docker_run_args(
         "ALL".to_string(),
         "--security-opt".to_string(),
         "no-new-privileges".to_string(),
-        // Mark the container as rlmesh-owned so orphans can be reaped.
         "--label".to_string(),
         OWNER_LABEL.to_string(),
-        // Record the owning process so the reaper can tell a live owner's
-        // container apart from an orphan: only containers whose owner process
-        // is gone are reaped.
         "--label".to_string(),
         format!("{OWNER_PID_LABEL_KEY}={owner_pid}"),
     ];
@@ -852,14 +758,10 @@ fn docker_run_args(
     args.extend([
         "--env".to_string(),
         format!("RLMESH_BOOTSTRAP_JSON={bootstrap_json}"),
-        // The env serves in a session the container hosts on all its
-        // interfaces, on the host's own port numbers, so a session address
-        // means the same inside the container and out.
         "--env".to_string(),
         format!("RLMESH_ADDRESS=0.0.0.0:{host_port}"),
         "--env".to_string(),
         format!("RLMESH_NAME={ENV_NAME}"),
-        // Its value comes from docker's environment (`run_container_async`).
         "--env".to_string(),
         HOST_IDENTITY_VAR.to_string(),
         "--name".to_string(),
@@ -878,8 +780,6 @@ pub(crate) fn free_session_port() -> Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
-/// A rlmesh-owned container candidate for reaping: its id, the recorded owner
-/// process id (absent for legacy containers), and its docker state word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedContainer {
     id: String,
@@ -888,8 +788,6 @@ struct OwnedContainer {
     status: String,
 }
 
-/// List every rlmesh-owned container (running or stopped), together with its
-/// recorded owner pid and state, by filtering on the `rlmesh.sandbox` label.
 fn list_owned_containers() -> Result<Vec<OwnedContainer>> {
     let output = Command::new("docker")
         .args([
@@ -914,10 +812,6 @@ fn list_owned_containers() -> Result<Vec<OwnedContainer>> {
     )))
 }
 
-/// Parse pipe-delimited `docker ps --format` output (see [`REAP_PS_FORMAT`])
-/// into [`OwnedContainer`] rows. Lines without an id and a non-empty state are
-/// skipped; an empty or non-numeric owner-pid field (legacy containers) parses
-/// to `None`.
 fn parse_owned_containers(raw: &str) -> Vec<OwnedContainer> {
     raw.lines()
         .filter_map(|line| {
@@ -947,23 +841,6 @@ fn parse_owned_containers(raw: &str) -> Vec<OwnedContainer> {
         .collect()
 }
 
-/// Decide whether a rlmesh-owned container is an orphan that may be reaped.
-///
-/// This is the pure core of the reaper, factored out so it can be tested
-/// without Docker. Inputs are the container's docker state word, its recorded
-/// owner pid (`None` for legacy containers that predate per-process labeling),
-/// and whether that pid is currently alive.
-///
-/// Rules:
-/// - A container whose owner process is still alive is never an orphan (this is
-///   the live-session case the reaper must not disturb).
-/// - A container whose recorded owner process is gone is an orphan regardless
-///   of state (running leftovers from a hard-killed owner are exactly what we
-///   reap).
-/// - A legacy container *without* an owner-pid label is treated as an orphan
-///   only when it is not running, since we cannot prove an owner is gone; a
-///   running unlabeled container is left alone to avoid killing a live session
-///   started by an older rlmesh build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OwnerPidLiveness {
     Alive,
@@ -978,7 +855,6 @@ fn is_orphan(status: &str, owner_pid: Option<u32>, owner_liveness: OwnerPidLiven
     }
 }
 
-/// Whether a docker state word denotes a running container.
 fn is_running_status(status: &str) -> bool {
     status.eq_ignore_ascii_case("running")
 }
@@ -1006,13 +882,6 @@ fn current_pid_namespace_id() -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-/// Best-effort liveness check for a process id, std-only via `/proc/<pid>`
-/// existence (Linux). This carries an inherent pid-reuse race: if the original
-/// owner died and the OS recycled its pid for an unrelated process, the
-/// container is mistaken for live and skipped this sweep (it will be reaped on
-/// a later sweep once the recycled pid also exits). That residual race is
-/// acceptable: erring toward *not* reaping is the safe direction, since the
-/// cost is a leaked container, not a killed live session.
 fn pid_is_alive(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -1020,7 +889,6 @@ fn pid_is_alive(pid: u32) -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // `kill -0` probes process existence without sending a signal.
         std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
             .stdout(std::process::Stdio::null())
@@ -1125,8 +993,6 @@ mod tests {
         }
     }
 
-    /// A baseline CartPole gym spec; tests override only the fields they exercise
-    /// via `..gym_spec()`.
     fn gym_spec() -> EffectiveSandboxSpec {
         EffectiveSandboxSpec {
             schema_version: crate::sandbox::BOOTSTRAP_SCHEMA_VERSION,
@@ -1170,14 +1036,10 @@ mod tests {
     #[test]
     fn build_memory_resolution_ceiling_and_builder_name() {
         const GIB: u64 = 1024 * 1024 * 1024;
-        // Headroom math (the trap that froze the host): leave 8 GiB for the
-        // loaded desktop; clamp small boxes up to the 4 GiB floor, never 0.
         assert_eq!(bounded_build_memory(32 * GIB), 24 * GIB);
         assert_eq!(bounded_build_memory(8 * GIB), 4 * GIB);
         assert_eq!(bounded_build_memory(0), 4 * GIB);
 
-        // Opt-out keywords -> no builder; a size string passes through; "auto"
-        // expands to a concrete byte count.
         assert_eq!(resolve_build_memory("off").unwrap(), None);
         assert_eq!(resolve_build_memory("").unwrap(), None);
         assert_eq!(resolve_build_memory("20g").unwrap().as_deref(), Some("20g"));
@@ -1186,7 +1048,6 @@ mod tests {
                 .unwrap()
                 .is_some_and(|m| m.parse::<u64>().is_ok())
         );
-        // A typo'd size is rejected up front, not handed to docker.
         for bad in ["garbage", ";;;", "20 g", "-5g", "0"] {
             assert!(
                 resolve_build_memory(bad).is_err(),
@@ -1194,7 +1055,6 @@ mod tests {
             );
         }
 
-        // is_docker_size accepts the forms docker accepts and nothing else.
         assert!(
             ["20g", "2048m", "1.5g", "1073741824", "512k", "1t"]
                 .iter()
@@ -1206,7 +1066,6 @@ mod tests {
                 .any(|s| is_docker_size(s))
         );
 
-        // Builder name encodes the cap and is a valid buildx name.
         assert_eq!(builder_name("20g"), "rlmesh-build-20g");
         assert_eq!(builder_name("25769803776"), "rlmesh-build-25769803776");
     }
@@ -1218,8 +1077,6 @@ mod tests {
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
         assert!(!args.iter().any(|arg| arg == "--rm"));
-        // Flag/value pairs, not loose membership: `--cap-drop` followed by
-        // anything other than `ALL` would still contain both tokens.
         assert!(args.windows(2).any(|pair| pair == ["--cap-drop", "ALL"]));
         assert!(
             args.windows(2)
@@ -1232,7 +1089,6 @@ mod tests {
     fn docker_run_args_publish_the_session_port_on_loopback() {
         let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
-        // One port: every traffic class dials it.
         let published: Vec<_> = args
             .windows(2)
             .filter(|pair| pair[0] == "-p")
@@ -1241,7 +1097,6 @@ mod tests {
         assert_eq!(published, ["127.0.0.1:40000:40000"]);
         assert!(args.iter().any(|arg| arg == "RLMESH_ADDRESS=0.0.0.0:40000"));
         assert!(args.iter().any(|arg| arg == "RLMESH_NAME=env"));
-        // The host's keys are passed by name: their value is never argv.
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--env", "RLMESH_HOST_IDENTITY"])
@@ -1264,8 +1119,6 @@ mod tests {
     fn docker_run_args_stamp_owner_pid_label() {
         let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
-        // The owner-pid label must be present so the reaper can tell a live
-        // owner's container apart from an orphan.
         assert!(
             args.iter()
                 .any(|arg| arg == "rlmesh.sandbox.owner-pid=4242"),
@@ -1335,11 +1188,8 @@ mod tests {
             error: String::new(),
         };
 
-        // Only a successful inspect reporting a terminal state confirms exit.
         assert!(confirmed_terminal_summary(Ok(Some(exited))).is_some());
         assert!(confirmed_terminal_summary(Ok(Some(running))).is_none());
-        // A transient inspect error or a not-yet-found container must not abort
-        // the readiness wait; that would tear down a healthy container.
         assert!(confirmed_terminal_summary(Ok(None)).is_none());
         assert!(
             confirmed_terminal_summary(Err(anyhow!("docker inspect failed: daemon busy")))
@@ -1403,8 +1253,6 @@ mod tests {
 
     #[test]
     fn is_orphan_reaps_containers_whose_owner_is_gone() {
-        // Owner process gone: reap regardless of container state, including a
-        // running leftover from a hard-killed owner.
         assert!(is_orphan("running", Some(4242), OwnerPidLiveness::Dead));
         assert!(is_orphan("exited", Some(4242), OwnerPidLiveness::Dead));
     }
@@ -1417,13 +1265,10 @@ mod tests {
 
     #[test]
     fn is_orphan_treats_legacy_unlabeled_containers_conservatively() {
-        // No owner-pid label: only reap when not running, since we cannot prove
-        // the owner is gone. A running unlabeled container is left alone.
         assert!(is_orphan("exited", None, OwnerPidLiveness::Unknown));
         assert!(is_orphan("dead", None, OwnerPidLiveness::Unknown));
         assert!(is_orphan("created", None, OwnerPidLiveness::Unknown));
         assert!(!is_orphan("running", None, OwnerPidLiveness::Unknown));
-        // State word casing must not change the decision.
         assert!(!is_orphan("Running", None, OwnerPidLiveness::Unknown));
     }
 
@@ -1445,8 +1290,6 @@ mod tests {
 
     #[test]
     fn pid_is_alive_detects_current_process() {
-        // The test process itself is alive; a very high pid is overwhelmingly
-        // unlikely to exist on a normal system.
         assert!(pid_is_alive(std::process::id()));
         assert!(!pid_is_alive(u32::MAX));
     }
@@ -1673,8 +1516,6 @@ mod ready_tests {
         }
     }
 
-    /// A key the host refuses is final: the wait reports it at once instead
-    /// of retrying it out to its deadline.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_readiness_wait_stops_at_a_refused_key() {
         let server = EnvServer::new(

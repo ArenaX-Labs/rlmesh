@@ -406,9 +406,6 @@ def test_parse_entrypoint_rejects_missing_callable() -> None:
 
 
 def test_recipe_construction_error_is_catchable_as_import_error() -> None:
-    # load_env_entrypoint is public (rlmesh._serving.load_env_entrypoint) and used to
-    # raise a raw ImportError/AttributeError/TypeError/ValueError. The wrapper must
-    # stay catchable by an old-style `except ImportError` so callers do not break.
     from rlmesh._bootstrap.loaders import EntrypointConstructionError
 
     assert issubclass(EntrypointConstructionError, ImportError)
@@ -416,8 +413,6 @@ def test_recipe_construction_error_is_catchable_as_import_error() -> None:
 
 
 def test_load_env_entrypoint_malformed_caught_as_import_error() -> None:
-    # A bad entrypoint that previously surfaced a raw ImportError must still be
-    # catchable as ImportError even though it is now a EntrypointConstructionError.
     from rlmesh._bootstrap.loaders import (
         EntrypointConstructionError,
         load_env_entrypoint,
@@ -431,8 +426,6 @@ def test_load_env_entrypoint_malformed_caught_as_import_error() -> None:
 def test_load_env_entrypoint_does_not_wrap_factory_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # EntrypointConstructionError wraps ONLY the import/resolve boundary; an error
-    # raised inside a successfully-resolved factory must propagate raw.
     from rlmesh._bootstrap.loaders import (
         EntrypointConstructionError,
         load_env_entrypoint,
@@ -454,7 +447,6 @@ def test_load_env_entrypoint_does_not_wrap_factory_errors(
 def test_resolve_bootstrap_spec_reads_inline_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The run path delivers a gym/hf spec inline via RLMESH_BOOTSTRAP_JSON.
     from rlmesh._bootstrap.spec_resolution import resolve_bootstrap_spec
 
     monkeypatch.setenv(
@@ -469,8 +461,6 @@ def test_resolve_bootstrap_spec_reads_inline_payload(
 def test_load_environment_chains_lookup_error_with_suggestion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """gymnasium's NameNotFound ("Did you mean ...?") must be quoted and
-    chained, not masked by a complaint about the missing gym module."""
     from rlmesh._bootstrap.loaders import load_environment
 
     name_not_found = type("NameNotFound", (Exception,), {})
@@ -509,8 +499,6 @@ def test_import_packages_chains_and_quotes_cause() -> None:
 def test_load_gym_env_does_not_retry_construction_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A construction error (not a lookup miss) raises as-is instead of
-    re-running side-effecting construction against gym and blaming both."""
     from rlmesh._bootstrap.loaders import load_gym_env
 
     gymnasium = ModuleType("gymnasium")
@@ -562,9 +550,6 @@ def test_expect_vectorization_mode_none_means_auto() -> None:
 
 
 def test_call_hf_make_env_leaves_kwargs_only_signature_alone_by_default() -> None:
-    """A **kwargs-only make_env only receives n_envs/use_async_envs when
-    vectorization is actually requested, so the default single-env case never
-    crashes a natural passthrough signature."""
     from rlmesh._bootstrap.gym_support import call_hf_make_env
 
     captured: dict[str, object] = {}
@@ -582,8 +567,6 @@ def test_call_hf_make_env_leaves_kwargs_only_signature_alone_by_default() -> Non
 
 
 def test_load_hf_env_uses_unique_module_names(tmp_path) -> None:
-    """Two hf env loads in one process must not clobber each other's
-    sys.modules entry."""
     from rlmesh._bootstrap.loaders import load_hf_env
 
     markers: dict[str, str] = {}

@@ -55,17 +55,11 @@ use check::invalid;
 pub(crate) use decl::{FieldDecl, Ordered};
 use part::{PartDecl, part};
 
-/// The longest frame, mode, behaviour or group id.
 const MAX_NAME_LEN: usize = 64;
-/// The longest joint name.
 const MAX_ELEMENT_NAME_LEN: usize = 128;
-/// The most joints in one part.
 const MAX_JOINTS: u32 = 1024;
-/// The highest declared rate.
 const MAX_HZ: f64 = 10_000.0;
-/// The longest declared duration, in ms.
 const MAX_MS: f64 = 60_000.0;
-/// The longest `doc` or `layout` text.
 const MAX_DOC_LEN: usize = 4096;
 
 /// Attribute keys the normaliser writes into [`PartSpec::attrs`]; the binder
@@ -118,7 +112,6 @@ pub fn authored_paths(robot_json: &str) -> Result<Vec<String>, CtlError> {
     Ok(map.0.into_iter().map(|(path, _)| path).collect())
 }
 
-/// A host accepts a robot on any kind table from 1 up to its own.
 fn check_spec_version(declared: u32, own: u32) -> Result<(), CtlError> {
     if declared == 0 {
         return Err(CtlError::new(

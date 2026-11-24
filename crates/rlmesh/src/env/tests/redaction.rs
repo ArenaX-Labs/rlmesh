@@ -1,13 +1,9 @@
-//! Every public type that holds an address prints it without its key, and
-//! no refusal of a keyed address repeats it.
-
 use super::*;
 use crate::{
     BindOptions, EnvTarget, Model, ModelOptions, ModelServeOptions, RemoteModel,
     RemoteModelOptions, RunOptions,
 };
 
-/// The key of a keyed address (`…#{key}/…`).
 fn key_of(address: &str) -> String {
     let (_, rest) = address.split_once('#').expect("a keyed address");
     rest.split('/').next().unwrap_or_default().to_string()
@@ -120,7 +116,6 @@ fn display_and_debug_leave_the_key_out() {
 
 #[test]
 fn a_refused_keyed_address_is_not_repeated() {
-    // A key of the right shape; nothing listens behind these addresses.
     let (_, key) = rlmesh_session::address::launch_identity().unwrap();
     let key = key.to_string();
     let v1 = format!("tcp://10.0.0.5:1#{key}/env");

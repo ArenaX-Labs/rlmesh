@@ -59,8 +59,7 @@ pub struct Image {
     pub optional: bool,
     /// Fill value (0-255) for the blank frame an `optional` camera synthesizes when the env offers
     /// no matching image; default 0 (black). Requires `optional=True` (without it the fill could
-    /// never take effect, so setting it alone is a construction error); named to match
-    /// `Actuator.fill`.
+    /// never take effect, so setting it alone is a construction error).
     pub fill: Option<u8>,
     /// Number of frames to stack on a new leading axis (frame history). `1` (default) means no
     /// stacking. Stacking is applied by the adapter core from an episode-keyed rolling window,
@@ -92,8 +91,7 @@ pub struct Image {
     pub channel_order: Tolerant<ChannelOrder>,
     /// The camera resolution this model was trained against, as a square `int` or an `(height,
     /// width)` pair (each axis 1-4096). An *assertion*, not a request: the adapter never resizes a
-    /// camera to reach it. Callers can set the environment's camera dial from it before
-    /// the run;
+    /// camera to reach it. Callers can set the environment's camera dial from it before the run;
     /// resolution then fails with `RenderMismatch` if the camera it bound does not actually render
     /// at this size. Declare it instead of pinning the env's camera width/height by hand.
     pub render: Option<(u32, u32)>,
@@ -272,7 +270,7 @@ pub struct State {
     /// role) or `"action"` (the model's own output actuator of the same `role` and `part`, read
     /// back as the raw action executed at the previous step, in model order, before the
     /// actuator's scale/offset; `fill` before the episode's first action). `Previous` is the
-    /// sugar. An action- source part carries only `part`, `labels`, `dim` and `fill`. Omitted
+    /// sugar. An action-source part carries only `part`, `labels`, `dim` and `fill`. Omitted
     /// from the wire when default.
     pub source: StateSource,
     /// Clamp the assembled vector to `(low, high)` after every part's own transforms and before
@@ -538,7 +536,7 @@ pub struct Actuator {
     /// carry one.
     pub part: Option<String>,
     /// Optional addend applied after `scale` (`value * scale + offset`), a float or a per-axis
-    /// sequence like `scale`: the stand pose a joint-position target is expressed around..
+    /// sequence like `scale`: the stand pose a joint-position target is expressed around.
     pub offset: Option<AxisValue>,
     /// The axis names this actuator drives, `dim` of them in this side's own order. When a model
     /// names labels the env actuator must name the same set; the model's output is then
@@ -660,8 +658,7 @@ pub struct ImageTag {
     pub layout: ImageLayout,
     /// Whether the image is rendered rotated 180 degrees (a true rotation, not a vertical flip)
     /// relative to the canonical upright orientation. Declared on both ends; the adapter flips only
-    /// when the env and the model disagree. (If a second orientation is ever needed, this should
-    /// become a constrained string like `dtype`, not a wider `bool`.)
+    /// when the env and the model disagree.
     pub upside_down: bool,
     /// The body part this camera sits on, when the role repeats across a body (`"head"`,
     /// `"left_arm"`, ...). An identity key the resolver matches on, never a value it checks.

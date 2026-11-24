@@ -1,11 +1,3 @@
-"""A launcher makes a host identity, starts a served env under it, and dials it.
-
-The way a launcher not written in Rust starts ``python -m rlmesh.serve`` in a
-container: ``rlmesh host-identity new`` prints the identity and the keyed
-address, the served process hosts its session beyond loopback under that
-identity, and only the printed key reaches it.
-"""
-
 from __future__ import annotations
 
 import json
@@ -109,7 +101,6 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
     serve_env = {
         **os.environ,
         "RLMESH_HOST_IDENTITY": identity,
-        # Beyond loopback, as a container's published ports are.
         "RLMESH_ADDRESS": f"0.0.0.0:{port}",
         "RLMESH_WORKFLOW_EDITION": "",
         "RLMESH_STATE_DIR": str(tmp_path / "state"),
@@ -124,7 +115,6 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
     )
     try:
         serving = _serving(proc)
-        # Stdout is the container's log: the key is a credential.
         assert printed["key"] not in serving
         assert "#…/env" in serving
         env = rlmesh.RemoteEnv(printed["address"], connect_timeout_seconds=20)
@@ -135,9 +125,6 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
             env.close()
 
         _, wrong = launch.launch_identity()
-        # The link gate refuses the wrong key: a refusal retrying cannot get
-        # past (not the ConnectionError a launcher retries until the host
-        # listens), said well within the timeout.
         started = time.monotonic()
         with pytest.raises(rlmesh.ProtocolException) as refused:
             rlmesh.RemoteEnv(
@@ -156,8 +143,6 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
     assert identity.strip() not in rest
 
 
-# The repo's script that runs a command as a host and as a client on another
-# network (two network namespaces, else this machine's non-loopback address).
 ACROSS_NETNS = Path(__file__).resolve().parents[4] / "scripts" / "test-across-netns.sh"
 
 ACROSS_DISPATCH = """
@@ -208,7 +193,6 @@ else:
 
 
 def test_a_served_env_is_reachable_from_another_machine(tmp_path: Path) -> None:
-    """The keyed address alone joins a launched env across a real network."""
     from rlmesh import launch
     from rlmesh._rlmesh import sandbox_session_port
 

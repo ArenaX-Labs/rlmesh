@@ -1,30 +1,19 @@
-//! R-19 sized inputs. ABI 5 introduces every original field at the minimum;
-//! a field appended since is read only when `struct_size` covers it, and
-//! reads as zero (NULL, false, 0) when it does not.
-#![allow(unsafe_code)] // Read only caller-declared bytes, after checking the minimum.
+#![allow(unsafe_code)]
 use super::status::CapiError;
 mod inputs;
 
 /// A C input whose restricted representations are fully described here.
 ///
 /// # Safety
-/// Every bool field (including nested fields) must be listed, and every other
-/// field must accept all initialized byte representations used by C callers.
-/// Every all-zero byte pattern must be a valid `T` too (it stands in for the
-/// appended fields a smaller `struct_size` leaves out).
+/// Every bool field (including nested fields) must be listed, every other field must accept all
+/// initialized byte representations, and the all-zero byte pattern must be a valid `T` (it stands
+/// in for fields a smaller `struct_size` leaves out).
 pub(crate) unsafe trait SizedInput: Copy {
     const BOOL_FIELDS: &'static [(usize, &'static str)];
-    /// The ABI-5 size: the smallest `struct_size` accepted.
     const MIN_SIZE: usize = std::mem::size_of::<Self>();
-    /// The end offset of each field appended after ABI 5, in order: a
-    /// `struct_size` below `size_of::<Self>()` must be `MIN_SIZE` or one of
-    /// these, so no field is ever read in part.
     const APPENDED_ENDS: &'static [usize] = &[];
 }
 
-/// Validate the ABI-5 minimum and the zero unknown tail before reading `T`.
-/// A `struct_size` that stops at an appended field's boundary reads the
-/// fields it covers and zero for the rest; one that splits a field is refused.
 pub(crate) unsafe fn read<T: SizedInput>(
     ptr: *const T,
     name: &str,

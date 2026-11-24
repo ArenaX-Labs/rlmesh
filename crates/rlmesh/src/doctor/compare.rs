@@ -11,22 +11,13 @@ use serde_json::Value;
 
 use super::report::{CheckStatus, ProbeCheck};
 
-/// Renderer jitter tolerated on image leaves, in raw units (LSBs for uint8).
 pub(super) const IMAGE_REPLAY_ATOL: f64 = 2.0;
-/// Fraction of image elements allowed beyond the jitter tolerance: rasterizers
-/// flip a few edge/shadow pixels hard between identical frames (SimplerEnv
-/// widowx: ~0.5% of pixels at up to 149 LSBs with identical physics state).
 pub(super) const IMAGE_REPLAY_MAX_FRACTION: f64 = 0.01;
-/// Base seed for the action the latency loop steps with; `+ step` per step.
 pub(super) const ENV_STEP_SEED: u64 = 0x5EED_0057;
-/// The contract branch a tagged env stamps on its own metadata.
 pub(super) const ENV_BRANCH_METADATA_KEY: &str = rlmesh_adapters::v1::ENV_BRANCH_METADATA_KEY;
 
-/// The actions of one predict: frames (one per executed action) x lanes.
 pub(super) type Frames = Vec<Vec<SpaceValue>>;
 
-/// Structural JSON equality that ignores int/float representation and treats
-/// a missing object key as null, returning the first differing path.
 pub(super) fn first_difference(live: &Value, declared: &Value) -> Option<String> {
     diff_at(live, declared, "$")
 }
@@ -64,10 +55,6 @@ fn diff_at(live: &Value, declared: &Value, path: &str) -> Option<String> {
     }
 }
 
-/// The `env_contract` verdict, as a pure function of the three things it
-/// compares: the image's declared branch table, the branch the running env
-/// stamped, and the tags it is serving (`Value::Null` for any of them means
-/// "absent").
 pub(super) fn env_contract_check(
     contracts: &Value,
     served_branch: &Value,
@@ -161,9 +148,6 @@ pub(super) fn replay_drift(delta: Option<f64>, tolerance: f64) -> Drift {
     }
 }
 
-/// Verdict for a model whose A,B,A replay drifted: informational if a fresh
-/// episode brings input A back to its first answer, a failure if the state
-/// survives the episode end.
 pub(super) fn stateful_check(
     replay: f64,
     tolerance: f64,
@@ -293,22 +277,17 @@ pub(super) fn shape_check(
 }
 
 pub(super) struct Replay {
-    /// The reset observation followed by one per step.
     pub(super) observations: Vec<SpaceValue>,
     pub(super) rewards: Vec<f64>,
     pub(super) dones: Vec<bool>,
-    /// How long the reset took; episode setup that dominates a short run is
-    /// worth reporting even when it is perfectly reproducible.
     pub(super) reset_ms: f64,
 }
 
-/// Where two replays part ways: index 0 is the reset, `n` the n-th step.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct ReplayDivergence {
     pub(super) steps: usize,
     pub(super) state_max: f64,
     pub(super) image_max: f64,
-    /// Largest per-leaf fraction of image elements beyond `IMAGE_REPLAY_ATOL`.
     pub(super) image_over_fraction: f64,
     pub(super) state_first: Option<usize>,
     pub(super) image_first: Option<usize>,
@@ -332,7 +311,6 @@ impl ReplayDivergence {
     }
 }
 
-/// `None` when any observation pair has incomparable shapes.
 pub(super) fn compare_replays(
     a: &Replay,
     b: &Replay,
@@ -364,15 +342,12 @@ pub(super) fn compare_replays(
     for (step, (done_a, done_b)) in a.dones.iter().zip(&b.dones).enumerate() {
         divergence.state(step + 1, f64::from(done_a != done_b));
     }
-    // One run ending earlier than the other is itself a state divergence.
     if a.observations.len() != b.observations.len() {
         divergence.state(divergence.steps, 1.0);
     }
     Some(divergence)
 }
 
-/// Max |a-b| per leaf, keyed by path (tuple positions as digits), walking
-/// `space`; `None` on an incomparable leaf.
 fn leaf_max_diffs(
     space: &SpaceSpec,
     a: &SpaceValue,
@@ -404,8 +379,6 @@ fn leaf_max_diffs(
     }
 }
 
-/// A Box leaf that reads as a camera frame: uint8, HW, HWC or CHW with 1, 3
-/// or 4 channels.
 pub(super) fn is_image_space(space: &SpaceSpec) -> bool {
     matches!(space.spec.as_ref(), Some(SpaceKind::Box(_)))
         && space.dtype == DType::Uint8
@@ -415,7 +388,6 @@ pub(super) fn is_image_space(space: &SpaceSpec) -> bool {
         )
 }
 
-/// Paths of the image-like leaves of `space`, in declaration order.
 pub(super) fn image_leaves(space: &SpaceSpec, path: Vec<String>, out: &mut Vec<Vec<String>>) {
     match space.spec.as_ref() {
         Some(SpaceKind::Box(_)) if is_image_space(space) => out.push(path),
@@ -430,19 +402,10 @@ pub(super) fn image_leaves(space: &SpaceSpec, path: Vec<String>, out: &mut Vec<V
     }
 }
 
-/// The safe action the conformance step sends: zero pulled into range on every
-/// Box element. `sample_seeded` draws N(0,1) for a `Box(-inf, inf)`, and
-/// simpler_env, robotwin and absolute-pose LIBERO all declare one, so a random
-/// draw can throw the arm out of the scene and fail a step the image serves
-/// fine.
 pub(super) fn neutral_action(space: &SpaceSpec) -> Result<SpaceValue, String> {
     probe_action(space, None)
 }
 
-/// The latency loop's action: a seeded draw wherever the Box element is
-/// bounded (so the preview the loop captures shows a scene that moves), and
-/// the neutral value wherever a bound is open (so an unbounded space is still
-/// not a lottery).
 pub(super) fn bounded_action(space: &SpaceSpec, seed: u64) -> Result<SpaceValue, String> {
     probe_action(space, Some(seed))
 }
@@ -460,7 +423,6 @@ fn action_leaf(spec: &SpaceSpec, seed: Option<u64>) -> Result<SpaceValue, String
         rlmesh_spaces::sample_seeded(spec, seed).map_err(|err| format!("sample action: {err}"))
     };
     let Some(SpaceKind::Box(box_spec)) = spec.spec.as_ref() else {
-        // Discrete and friends are finite by construction: nothing to blow up.
         return sample(seed.unwrap_or(ENV_STEP_SEED));
     };
     let dtype = match spec.dtype {
@@ -480,14 +442,12 @@ fn action_leaf(spec: &SpaceSpec, seed: Option<u64>) -> Result<SpaceValue, String
         .iter()
         .zip(&high)
         .enumerate()
-        .map(|(index, (low, high))| {
-            match drawn.as_ref().and_then(|drawn| drawn.get(index)) {
-                // A finite element's draw is already in range; an open bound
-                // is the only place the sampler's tails can hurt.
+        .map(
+            |(index, (low, high))| match drawn.as_ref().and_then(|drawn| drawn.get(index)) {
                 Some(scalar) if low.is_finite() && high.is_finite() => *scalar,
                 _ => neutral_scalar(*low, *high, dtype),
-            }
-        })
+            },
+        )
         .collect();
     let bytes = encode_scalars(&scalars, dtype).map_err(|err| format!("encode action: {err}"))?;
     Tensor::from_slice(&bytes, &spec.shape, dtype)
@@ -495,11 +455,6 @@ fn action_leaf(spec: &SpaceSpec, seed: Option<u64>) -> Result<SpaceValue, String
         .map_err(|err| format!("action tensor: {err}"))
 }
 
-/// The neutral value of one action element: the middle of a fully bounded
-/// `[low, high]` -- a joint whose limits are `[2, 5]` rests at 3.5, not pinned
-/// against its low stop -- and zero pulled into range when either end is open,
-/// where there is no middle to take. `max` then `min` rather than `clamp`,
-/// which panics on inverted or NaN bounds a probed image is free to declare.
 fn neutral_scalar(low: f64, high: f64, dtype: DType) -> Scalar {
     let clamped_zero = 0.0_f64.max(low).min(high);
     let neutral = if low.is_finite() && high.is_finite() {
@@ -508,22 +463,13 @@ fn neutral_scalar(low: f64, high: f64, dtype: DType) -> Scalar {
         clamped_zero
     };
     match dtype {
-        // A bool element has no meaningful midpoint: false stays the rest.
         DType::Bool => Scalar::Bool(clamped_zero != 0.0),
         DType::Float16 | DType::Float32 | DType::Float64 => Scalar::Float(neutral),
-        // Integer Box bounds are inclusive over `[ceil(low), floor(high)]`,
-        // as in the sampler.
         _ => Scalar::Int(neutral.max(low.ceil()).min(high.floor()) as i64),
     }
 }
 
-/// `low` and `high` per element, defaulting to the unbounded pair. The
-/// sampler's own version of this is private to rlmesh-spaces.
 fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>) {
-    // The sampler reads a TypedUniform bound as its first scalar whatever the
-    // buffer holds, so a buffer sized for neither reading still bounds the
-    // leaf here instead of falling back to the unbounded fill and drawing a
-    // neutral the space rejects.
     let typed = |bytes: &[u8], fill: f64| -> Vec<f64> {
         match decode_scalars(bytes, dtype) {
             Ok(scalars) if scalars.len() == numel => {
@@ -560,8 +506,6 @@ fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>
     }
 }
 
-/// Widest finite `high - low` over the Box leaves of `space`; `None` when
-/// nothing is bounded, so a spread has no scale to be read against.
 pub(super) fn action_range(space: &SpaceSpec) -> Option<f64> {
     let widest = |spaces: &[SpaceSpec]| spaces.iter().filter_map(action_range).reduce(f64::max);
     match space.spec.as_ref()? {
@@ -593,14 +537,12 @@ pub(super) fn action_range(space: &SpaceSpec) -> Option<f64> {
     }
 }
 
-/// " (12.3% of the action range)" when the range is known, else "".
 pub(super) fn range_fraction_note(diff: f64, range: Option<f64>) -> String {
     range.map_or_else(String::new, |range| {
         format!(" ({:.1}% of the action range)", diff / range * 100.0)
     })
 }
 
-/// Element-wise |a-b| summary over one comparison (or several merged ones).
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub(super) struct DiffStats {
     pub(super) max: f64,
@@ -656,8 +598,6 @@ impl DiffStats {
     }
 }
 
-/// Spread of every later trial against the first, plus the per-predict
-/// element count; `None` when any trial has an incomparable shape.
 pub(super) struct TrialSpread {
     pub(super) max: f64,
     mean_sum: f64,
@@ -781,10 +721,6 @@ mod tests {
 
     use super::*;
 
-    // simpler_env, robotwin and absolute-pose LIBERO declare half-open action
-    // boxes, and the blocking conformance step must not be a lottery on them.
-    // The latency loop still has to move the scene it previews, so only its
-    // open elements go neutral.
     #[test]
     fn probe_actions_stay_in_range_and_zero_only_the_open_elements() {
         let space = BoxSpaceBuilder::tensor(
@@ -806,8 +742,6 @@ mod tests {
             tensor_f64(&tensor).expect("decode")
         };
 
-        // A bounded element rests at its midpoint; an element with an open end
-        // has no midpoint, so zero pulled into range is the rest.
         const NEUTRAL: [f64; 4] = [3.5, 0.0, 2.0, 0.0];
         assert_eq!(values(neutral_action(&space).expect("neutral")), NEUTRAL);
 
@@ -823,9 +757,6 @@ mod tests {
         );
     }
 
-    /// rlmesh-spaces reads a TypedUniform bound as its first scalar however
-    /// long the buffer is, so a pair sized for neither one-per-element nor one
-    /// scalar must still bound the leaf here.
     #[test]
     fn typed_bounds_broadcast_their_first_scalar_like_the_sampler() {
         let pair = |value: f64| {
@@ -847,9 +778,6 @@ mod tests {
         );
     }
 
-    /// Same-width protocol swaps pass every other check silently, because
-    /// `join` never compares role *names* against bounds. Each arm here is one
-    /// way the swap shows up.
     #[test]
     fn env_contract_gates_the_branch_the_image_actually_serves() {
         let delta_tags = json!({
@@ -870,7 +798,6 @@ mod tests {
         let delta = json!({"action_type": "delta"});
         let abs = json!({"action_type": "abs"});
         let cases = [
-            // No discriminants: one contract, nothing to gate.
             (
                 Value::Null,
                 Value::Null,
@@ -906,8 +833,6 @@ mod tests {
                 CheckStatus::Fail,
                 Some("env_branch_undeclared"),
             ),
-            // The swap the gate exists for: absolute targets served under a
-            // label that declares deltas.
             (
                 contracts.clone(),
                 abs.clone(),
@@ -1003,8 +928,6 @@ mod tests {
             .expect("dict")
     }
 
-    /// One observation of [`image_and_state_space`]: `flipped` of its 1000
-    /// pixels at `10 + jump`, the rest at 10.
     fn observation(flipped: usize, jump: u8, pos: f32) -> SpaceValue {
         let mut pixels = vec![10u8; 1000];
         pixels[..flipped].fill(10 + jump);
@@ -1048,7 +971,6 @@ mod tests {
         assert_eq!(same.steps, 2);
         assert_eq!((same.state_first, same.image_first), (None, None));
 
-        // Every pixel off by the jitter tolerance is still the same frame.
         let jitter = replay(
             vec![
                 observation(0, 0, 0.5),
@@ -1095,7 +1017,6 @@ mod tests {
         let ended = compare_replays(&base, &short, &space, &images).expect("comparable");
         assert_eq!((ended.steps, ended.state_first), (1, Some(1)));
 
-        // Untagged: the image leaf is still found by shape.
         let mut found = Vec::new();
         image_leaves(&space, Vec::new(), &mut found);
         assert_eq!(found, images);

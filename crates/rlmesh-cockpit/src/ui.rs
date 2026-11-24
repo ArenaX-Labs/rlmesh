@@ -162,10 +162,7 @@ pub enum LiveAction {
     Start,
     /// End the episode and collect it, a success or not.
     #[cfg(feature = "collect")]
-    Finish {
-        /// The operator's verdict.
-        success: bool,
-    },
+    Finish { success: bool },
     /// End the episode and drop it.
     #[cfg(feature = "collect")]
     Discard,
@@ -189,7 +186,6 @@ pub struct LiveBar {
     pub note: Option<Result<String, String>>,
 }
 
-/// The episode controls: start with a task; success, fail or discard.
 #[cfg(feature = "collect")]
 fn episode_controls(
     ui: &mut egui::Ui,
@@ -909,7 +905,6 @@ fn edge_tone(mode: EdgeMode) -> Tone {
     crate::model::edge_tone(mode)
 }
 
-/// Mode, lease and edge lanes over the last minute.
 fn lanes(ui: &mut egui::Ui, view: &View) {
     ui.add_space(4.0);
     ui.label(

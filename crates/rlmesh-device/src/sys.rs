@@ -1,7 +1,4 @@
-//! A board's allocator and panic: the C library's, which the firmware
-//! already links (ESP-IDF's heap, newlib's `abort`).
-
-#![allow(unsafe_code)] // The C library's allocator.
+#![allow(unsafe_code)]
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::{c_char, c_int, c_void};
@@ -16,8 +13,6 @@ unsafe extern "C" {
     fn printf(format: *const c_char, ...) -> c_int;
 }
 
-/// `malloc` aligns to 4 on ESP-IDF; a wider alignment goes to `memalign`,
-/// whose blocks `free` also releases.
 const MALLOC_ALIGN: usize = 4;
 
 struct CAlloc;
@@ -45,7 +40,6 @@ unsafe impl GlobalAlloc for CAlloc {
             }
             block.cast()
         } else {
-            // Copies into a new `memalign` block.
             let Ok(new) = Layout::from_size_align(new_size, layout.align()) else {
                 return core::ptr::null_mut();
             };
@@ -72,11 +66,8 @@ unsafe fn raw_alloc(layout: Layout) -> *mut u8 {
     }
 }
 
-/// The reserve ([`crate::heap`]): a block held back, freed when an
-/// allocation fails so that it can succeed. Null while it is not held.
 static RESERVE: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Frees the reserve, if held: whether there was one to free.
 fn released() -> bool {
     let block = RESERVE.swap(core::ptr::null_mut(), Ordering::AcqRel);
     if block.is_null() {
@@ -104,16 +95,11 @@ pub(crate) fn room() -> bool {
         )
         .is_err()
     {
-        // Another task took it again meanwhile.
         unsafe { free(block) };
     }
     true
 }
 
-/// A panic prints where it happened (no message: formatting one would pull
-/// `core::fmt` into flash), then resets the board through the C library's
-/// `abort` (ESP-IDF prints a backtrace, then restarts), which stops every
-/// output.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     if let Some(at) = info.location() {

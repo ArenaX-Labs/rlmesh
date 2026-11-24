@@ -1,12 +1,3 @@
-//! The conformance vectors (`tests/vectors.json`, schema in
-//! `tests/README.md`): this crate must reproduce them byte for byte, and
-//! every implementation of the tether (the Arduino library's host runner
-//! too) runs the same file.
-//!
-//! Regenerate with `RLMESH_REGENERATE_TETHER_VECTORS=1 cargo test -p
-//! rlmesh-tether --test vectors`, then `mise run fmt:config` (only when the
-//! contract changes: the board library checks against this file).
-
 use std::path::PathBuf;
 
 use rlmesh_tether::cobs::{self, DecodeError, Decoder};
@@ -53,12 +44,10 @@ fn text(v: &Value) -> &str {
     v.as_str().expect("a string")
 }
 
-/// The bytes `b'a'..` repeated to `n`.
 fn letters(n: usize) -> Vec<u8> {
     (0..n).map(|i| b'a' + (i % 26) as u8).collect()
 }
 
-/// Non-zero bytes `1..=255` repeated to `n`.
 fn nonzero(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i % 255 + 1) as u8).collect()
 }
@@ -69,7 +58,6 @@ fn encode(src: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Writes `msg`, or panics with its error.
 fn wire(msg: &Msg<'_>, seq: u8) -> Vec<u8> {
     let mut out = Vec::new();
     msg::write(msg, seq, |b| out.push(b)).expect("writes");
@@ -113,8 +101,6 @@ fn msg_error_name(e: MsgError) -> &'static str {
     }
 }
 
-/// The error as a vector records it: `{"error": …}`, plus `"version"` for
-/// a future `HELLO`.
 fn msg_error_json(e: MsgError) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("error".into(), json!(msg_error_name(e)));
@@ -190,8 +176,6 @@ fn msg_json(m: &Msg<'_>) -> Value {
     }
 }
 
-/// Builds the message a vector describes and hands it to `f` (the variable
-/// parts borrow from a local buffer).
 fn with_msg<R>(v: &Value, f: impl FnOnce(Msg<'_>) -> R) -> R {
     let bytes = |k: &str| unhex(&v[k]);
     let id = |k: &str| -> [u8; 8] { unhex(&v[k]).try_into().expect("8 bytes") };
@@ -280,7 +264,6 @@ fn with_msg<R>(v: &Value, f: impl FnOnce(Msg<'_>) -> R) -> R {
     }
 }
 
-/// `{"<part>": <dense length>}` as a lookup; parts not listed are unknown.
 fn dense_lookup(v: &Value) -> impl Fn(u8) -> Option<usize> + '_ {
     move |part| {
         v.get("dense_len")
@@ -289,13 +272,9 @@ fn dense_lookup(v: &Value) -> impl Fn(u8) -> Option<usize> + '_ {
     }
 }
 
-/// Dense lengths by part index.
 type Parts = Vec<(u8, usize)>;
-/// A name, the message, its `seq` and the parts it needs.
 type MessageCase<'a> = (&'a str, Msg<'a>, u8, Parts);
-/// A name, the receiver, a type and payload, the parts, and the error.
 type Rejection<'a> = (&'a str, Receiver, u8, Vec<u8>, Parts, MsgError);
-/// A name, the fields, offsets, lengths, stride and the dense value.
 type PackCase<'a> = (&'a str, &'a str, Vec<usize>, Vec<usize>, usize, Vec<u8>);
 
 fn dense_json(parts: &[(u8, usize)]) -> Value {
@@ -306,8 +285,6 @@ fn dense_json(parts: &[(u8, usize)]) -> Value {
             .collect(),
     )
 }
-
-// ── Generation ───────────────────────────────────────────────────────────
 
 fn crc_cases() -> Vec<Value> {
     let cases: &[(&str, Vec<u8>)] = &[
@@ -362,7 +339,6 @@ fn cobs_encode_cases() -> Vec<Value> {
         .collect()
 }
 
-/// One decoder result: the decoded bytes, or why they were dropped.
 type Decoded = Result<Vec<u8>, DecodeError>;
 
 fn decode_stream_n<const N: usize>(wire: &[u8]) -> Vec<Decoded> {
@@ -372,8 +348,6 @@ fn decode_stream_n<const N: usize>(wire: &[u8]) -> Vec<Decoded> {
         .collect()
 }
 
-/// Feeds `wire` to a decoder of `rx_max` bytes, one of the sizes the
-/// vectors use.
 fn decode_stream(wire: &[u8], rx_max: usize) -> Vec<Decoded> {
     match rx_max {
         16 => decode_stream_n::<16>(wire),
@@ -410,7 +384,6 @@ fn frame_result_json(r: &Decoded) -> Value {
     }
 }
 
-/// Joins wire pieces into one stream.
 fn cat(parts: &[&[u8]]) -> Vec<u8> {
     parts.concat()
 }
@@ -507,7 +480,6 @@ fn cobs_decode_cases() -> Vec<Value> {
 
 fn frame_cases() -> Vec<Value> {
     let ping = wire(&Msg::Ping { gen_: 3 }, 1);
-    // A good PING's decoded bytes, with its CRC or a payload byte flipped.
     let decoded = |w: &[u8]| decode_stream(w, 256).remove(0).expect("decodes");
     let mut bad_crc = decoded(&ping);
     let last = bad_crc.len() - 1;
@@ -821,7 +793,6 @@ fn message_cases() -> Vec<Value> {
         .into_iter()
         .map(|(name, m, seq, parts)| {
             let w = wire(&m, seq);
-            // It decodes back to itself at the end it's meant for.
             let mut got = decode_stream(&w, 256);
             let bytes = got.remove(0).expect("decodes");
             let f = Frame::parse(&bytes).expect("frame");
@@ -837,12 +808,11 @@ fn message_cases() -> Vec<Value> {
         .collect()
 }
 
-/// A valid `HELLO` payload with `name`: edit its bytes to break it.
 fn hello_payload(name: &[u8]) -> Vec<u8> {
     let mut p = b"RLMT\x01".to_vec();
-    p.extend_from_slice(&[0x00, 0x01, 1]); // lib_version, arch
+    p.extend_from_slice(&[0x00, 0x01, 1]);
     p.extend_from_slice(&[0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7]);
-    p.extend_from_slice(&[0x01, 0x02, 0, 0]); // boot, gen, flags
+    p.extend_from_slice(&[0x01, 0x02, 0, 0]);
     p.extend_from_slice(&600_u16.to_le_bytes());
     p.extend_from_slice(&0xDEAD_BEEF_u32.to_le_bytes());
     p.extend_from_slice(&250_u16.to_le_bytes());
@@ -865,7 +835,6 @@ fn rejection_cases() -> Vec<Value> {
     let mut long_name = h.clone();
     long_name.push(b'x');
     let mut cases: Vec<Rejection<'_>> = vec![
-        // Direction.
         (
             "COMMAND heard by the bridge (an echoing adapter)",
             Bridge,
@@ -898,7 +867,6 @@ fn rejection_cases() -> Vec<Value> {
             vec![],
             E::Direction,
         ),
-        // Unknown types.
         (
             "type 0x06 at the bridge",
             Bridge,
@@ -947,7 +915,6 @@ fn rejection_cases() -> Vec<Value> {
             vec![],
             E::UnknownType,
         ),
-        // HELLO: magic, then version, then length.
         (
             "HELLO, bad magic",
             Bridge,
@@ -1028,7 +995,6 @@ fn rejection_cases() -> Vec<Value> {
             vec![],
             E::Length,
         ),
-        // HELLO: ranges, reserved bits, UTF-8.
         (
             "HELLO, name_len 33",
             Bridge,
@@ -1134,7 +1100,6 @@ fn rejection_cases() -> Vec<Value> {
         ));
     }
     cases.extend([
-        // Exact lengths.
         (
             "MAP, 3 bytes",
             Bridge,
@@ -1682,10 +1647,6 @@ fn generate() -> Value {
     })
 }
 
-// ── Provisioning ──────────────────────────────────────────────
-
-/// Writes `msg`, or panics with its error: a leading delimiter, then the
-/// frame.
 fn prov_wire(msg: &Prov<'_>, seq: u8) -> Vec<u8> {
     let mut out = Vec::new();
     provision::write(msg, seq, |b| out.push(b)).expect("writes");
@@ -1724,8 +1685,6 @@ fn key32(v: &Value) -> [u8; 32] {
     unhex(v).try_into().expect("32 bytes")
 }
 
-/// Builds the message `v` describes (bytes borrowed from locals) and
-/// passes it to `f`.
 fn with_prov<R>(v: &Value, f: impl FnOnce(Prov<'_>) -> R) -> R {
     match text(&v["type"]) {
         "GET_DEVICE" => f(Prov::GetDevice),
@@ -1791,17 +1750,13 @@ fn provision_of<'a>(host_id: &'a [u8], addresses: &[&'a [u8]]) -> Provision<'a> 
     }
 }
 
-/// An address of `len` bytes: `h…h:7447`.
 fn address(len: usize) -> Vec<u8> {
     let mut a = vec![b'h'; len - 5];
     a.extend_from_slice(b":7447");
     a
 }
 
-/// A PROVISION payload of exactly `len` bytes (37 + 32-byte host id + 5-byte name + 4
-/// addresses), with addresses as long as it takes.
 fn provision_addresses(len: usize) -> Vec<Vec<u8>> {
-    // 37 + 32 + 5 + 4 × (1 + a) = len.
     let total = len - 74 - 4;
     let base = total / 4;
     (0..4)
@@ -1899,7 +1854,6 @@ fn provision_cases() -> Vec<Value> {
         .collect()
 }
 
-/// A valid PROVISION payload for `host_id` and `addresses`, by hand.
 fn provision_payload(flags: u8, host_id: &[u8], addresses: &[&[u8]]) -> Vec<u8> {
     let mut p = vec![provision::VERSION, flags];
     p.extend((0..32).map(|i| 0x50 + i as u8));
@@ -1949,7 +1903,6 @@ fn provision_rejection_cases() -> Vec<Value> {
     let mut long = ok.clone();
     long.push(0);
     let cases: Vec<(&str, Receiver, u8, Vec<u8>, MsgError)> = vec![
-        // Direction and type.
         (
             "PROVISION heard by the daemon",
             Bridge,
@@ -1971,7 +1924,6 @@ fn provision_rejection_cases() -> Vec<Value> {
             vec![0],
             E::UnknownType,
         ),
-        // GET_DEVICE.
         (
             "GET_DEVICE, the tether's magic",
             Board,
@@ -2000,7 +1952,6 @@ fn provision_rejection_cases() -> Vec<Value> {
             b"RLMP\x02\x00".to_vec(),
             E::Length,
         ),
-        // DEVICE_INFO.
         (
             "DEVICE_INFO, version 1, checked before its length",
             Bridge,
@@ -2050,7 +2001,6 @@ fn provision_rejection_cases() -> Vec<Value> {
             device_info_payload(0, b"", b"e")[..30].to_vec(),
             E::Length,
         ),
-        // PROVISIONED.
         (
             "PROVISIONED, a byte short",
             Bridge,
@@ -2058,7 +2008,6 @@ fn provision_rejection_cases() -> Vec<Value> {
             vec![0; 4],
             E::Length,
         ),
-        // PROVISION.
         (
             "PROVISION, version 1",
             Board,
@@ -2210,7 +2159,6 @@ fn provision_write_rejection_cases() -> Vec<Value> {
     use MsgError as E;
     let id33 = letters(33);
     let a: &[u8] = b"192.168.1.20:7447";
-    // A 253-byte payload: one past the frame.
     let over = provision_addresses(253);
     let over_refs: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
     let id32 = letters(MAX_ID);
@@ -2305,11 +2253,6 @@ fn the_file_matches_this_build() {
     assert_eq!(fresh, load(), "regenerate only when the contract changes");
 }
 
-// ── Checking the file ────────────────────────────────────────────────────
-//
-// These read only the file, as another implementation would, so a vector
-// edited by hand is checked too.
-
 fn cases<'a>(all: &'a Value, section: &str) -> &'a [Value] {
     all[section].as_array().expect("a section")
 }
@@ -2330,7 +2273,6 @@ fn cobs_vectors() {
         let decoded = unhex(&v["decoded"]);
         let encoded = unhex(&v["encoded"]);
         assert_eq!(encode(&decoded), encoded, "{}", v["name"]);
-        // Read as pieces, the same bytes encode alike.
         let (a, rest) = decoded.split_at(decoded.len() / 3);
         let (b, c) = rest.split_at(rest.len() / 2);
         let mut pieces = Vec::new();
@@ -2375,9 +2317,7 @@ fn message_vectors() {
         let name = &v["name"];
         let want = unhex(&v["wire"]);
         let seq = int(&v["seq"]);
-        // Encode from the fields.
         with_msg(&v["msg"], |m| assert_eq!(wire(&m, seq), want, "{name}"));
-        // Decode from the wire.
         let bytes = decode_stream(&want, 256).remove(0).expect("decodes");
         let f = Frame::parse(&bytes).expect("frame");
         assert_eq!(f.seq, seq, "{name}");
@@ -2424,7 +2364,6 @@ fn provision_vectors() {
             provision::write(&m, seq, |b| out.push(b)).expect("writes");
             assert_eq!(out, want, "{name}");
         });
-        // The leading delimiter yields nothing; then one frame.
         assert_eq!(want[0], 0, "{name} starts with a delimiter");
         let bytes = decode_stream(&want, 256).remove(0).expect("decodes");
         let f = Frame::parse(&bytes).expect("frame");
@@ -2481,33 +2420,21 @@ fn pack_vectors() {
     }
 }
 
-/// Values written out by hand, not taken from this crate, so a bug shared
-/// by the crate and its generated vectors still shows.
 #[test]
 fn literal_values_not_from_the_crate() {
-    // The zlib CRC-32 of the pangram, and the CRC catalogue's CRC-16 check.
     assert_eq!(
         crc::crc32(b"The quick brown fox jumps over the lazy dog"),
         0x414F_A339
     );
     assert_eq!(crc::crc16(b"123456789"), 0x29B1);
-    // The COBS reference example: a zero inside the data.
     assert_eq!(
         encode(&[0x11, 0x22, 0x00, 0x33]),
         [0x03, 0x11, 0x22, 0x02, 0x33]
     );
-    // One whole HELLO frame, field by field, CRC and COBS
-    // computed by a separate implementation.
     let decoded: &[u8] = &[
-        0x01, 0x00, // type HELLO, seq 0
-        b'R', b'L', b'M', b'T', 0x01, // magic, version
-        0x00, 0x01, 0x01, // lib_version 0x0100, arch AVR
-        0xB0, 0xB1, 0x00, 0xB3, 0xB4, 0x00, 0x00, 0xB7, // board_id
-        0x01, 0x02, 0x00, 0x00, // boot 0x0201, gen 0, flags 0
-        0x58, 0x02, 0xEF, 0xBE, 0xAD, 0xDE, // map_len 600, map_crc
-        0xFA, 0x00, 0x40, 0x00, // watchdog_ms 250, rx_max 64
-        0x05, b'e', b'y', b'e', b'-', b'1', // name
-        0x06, 0xC9, // CRC-16 0xC906, little-endian
+        0x01, 0x00, b'R', b'L', b'M', b'T', 0x01, 0x00, 0x01, 0x01, 0xB0, 0xB1, 0x00, 0xB3, 0xB4,
+        0x00, 0x00, 0xB7, 0x01, 0x02, 0x00, 0x00, 0x58, 0x02, 0xEF, 0xBE, 0xAD, 0xDE, 0xFA, 0x00,
+        0x40, 0x00, 0x05, b'e', b'y', b'e', b'-', b'1', 0x06, 0xC9,
     ];
     let wire: &[u8] = &[
         0x02, 0x01, 0x06, b'R', b'L', b'M', b'T', 0x01, 0x05, 0x01, 0x01, 0xB0, 0xB1, 0x03, 0xB3,
@@ -2527,8 +2454,6 @@ fn literal_values_not_from_the_crate() {
         .find(|v| v["name"] == "HELLO")
         .expect("the HELLO vector");
     assert_eq!(unhex(&hello["wire"]), wire);
-    // A GET_DEVICE with its leading delimiter, CRC-16 0x6C52
-    // and COBS computed by a separate implementation.
     let get_device: &[u8] = &[
         0x00, 0x02, 0x90, 0x08, b'R', b'L', b'M', b'P', 0x02, 0x52, 0x6C, 0x00,
     ];

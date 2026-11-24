@@ -1,13 +1,3 @@
-// `RLMeshTether<Map>`: the board runtime on an Arduino `Stream`, typed by
-// the header `rlmesh tether gen` writes.
-//
-// The generated `Map` provides:
-//
-//   enum Part : uint8_t { ... };           // authored order
-//   enum SafeBehaviour : uint8_t { ... };  // the declared `safe` names
-//   static const uint8_t kParts;
-//   static const rlmesh::tether::BoardSpec& spec();
-
 #ifndef RLMESH_TETHER_ARDUINO_H_
 #define RLMESH_TETHER_ARDUINO_H_
 
@@ -53,8 +43,8 @@ class ArduinoHal {
   bool activeLow_ = true;
 };
 
-// `RxMax` is the largest frame the board accepts (`HELLO.rx_max`): at
-// least 16, and enough for the largest `COMMAND` (its dense value + 9).
+// `RxMax` is the largest frame the board accepts (`HELLO.rx_max`): at least 16,
+// and enough for the largest `COMMAND` (its dense value + 9).
 template <class Map, uint16_t RxMax = 64>
 class RLMeshTether {
   static_assert(RxMax >= kRxMaxMin && RxMax <= kRxMaxMax, "RxMax is 16..=256");
@@ -71,13 +61,10 @@ class RLMeshTether {
   RLMeshTether(const RLMeshTether&) = delete;
   RLMeshTether& operator=(const RLMeshTether&) = delete;
 
-  // An optional e-stop input, before begin(). The pin has its pull-up on.
-  // A normally-closed button between the pin and GND, with `activeLow`
-  // false, reads a cut wire as pressed.
+  // An optional e-stop input, before begin().
   void estopPin(uint8_t pin, bool activeLow = true) { hal_.estopPin(pin, activeLow); }
 
-  // Runs `fn` with each command for `part`. `T` is the part's generated
-  // command struct; false when its size isn't the part's dense command.
+  // Runs `fn` with each command for `part`.
   template <class T>
   bool onCommand(Part part, void (*fn)(const T& command, bool hold)) {
     if (!fits(part, sizeof(T))) return false;
@@ -94,9 +81,7 @@ class RLMeshTether {
     return true;
   }
 
-  // Starts the tether: every part safe, then the first `HELLO`. Call it
-  // last in setup(); the hardware watchdog arms on the first poll(). False,
-  // and the board stays silent, when the map header disagrees with itself.
+  // Starts the tether: every part safe, then the first `HELLO`.
   bool begin(SafeHandler onSafe, uint16_t watchdogMs = kDefaultWatchdogMs) {
     if (Map::spec().partCount != Map::kParts) return false;
     onSafe_ = onSafe;
@@ -104,12 +89,11 @@ class RLMeshTether {
     return true;
   }
 
-  // Call from loop() as often as possible: every callback runs from here,
-  // with a budget of 2 ms for all of them.
+  // Call from loop() as often as possible: every callback runs from here, with
+  // a budget of 2 ms for all of them.
   void poll() { board_.poll(); }
 
-  // delay() that keeps the tether running. Not from a callback: there it
-  // only waits, and the hardware watchdog isn't fed.
+  // delay() that keeps the tether running.
   void delay(uint32_t ms) {
     uint32_t start = ::millis();
     do {
@@ -117,9 +101,7 @@ class RLMeshTether {
     } while (::millis() - start < ms);
   }
 
-  // Runs `fn` every `ms`, from loop(). Each call site needs its own lambda:
-  // the timer lives with the lambda's type, so two calls passing the same
-  // function pointer type share one.
+  // Runs `fn` every `ms`, from loop().
   template <class F>
   void every(uint32_t ms, F fn) {
     static uint32_t last = 0;
@@ -138,8 +120,8 @@ class RLMeshTether {
     return board_.publish(part, reinterpret_cast<const uint8_t*>(&sample), sizeof(T));
   }
 
-  // A `NOTE` to the computer: use this, not Serial.print(), which shares
-  // the tether's port. At most 48 bytes and 2 a second.
+  // A `NOTE` to the computer: use this, not Serial.print(), which shares the
+  // tether's port.
   bool print(const char* text) {
     return board_.note(0, 0, reinterpret_cast<const uint8_t*>(text), uint16_t(strlen(text)));
   }
@@ -192,4 +174,4 @@ class RLMeshTether {
 }  // namespace tether
 }  // namespace rlmesh
 
-#endif  // RLMESH_TETHER_ARDUINO_H_
+#endif

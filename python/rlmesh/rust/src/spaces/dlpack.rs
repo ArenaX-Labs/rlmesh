@@ -1,4 +1,3 @@
-//! Python capsule negotiation around the shared Rust DLPack implementation.
 #![allow(unsafe_code)]
 
 use std::ffi::CStr;
@@ -120,8 +119,7 @@ unsafe extern "C" fn legacy_capsule_destructor(capsule: *mut pyo3::ffi::PyObject
     // SAFETY: Python invokes this destructor on a live capsule. Only an
     // unconsumed capsule owns its managed tensor and may call its deleter.
     unsafe {
-        // A renamed (`used_dltensor`) capsule belongs to the consumer; only
-        // free when the export was never consumed.
+        // A renamed (`used_dltensor`) capsule belongs to the consumer; free only if never consumed.
         let pointer = pyo3::ffi::PyCapsule_GetPointer(capsule, DLTENSOR_NAME.as_ptr());
         if pointer.is_null() {
             pyo3::ffi::PyErr_Clear();

@@ -13,15 +13,13 @@ categories = { workspace = true }
 keywords = { workspace = true }
 publish = true
 
-# no_std and allocation-free: the same code runs on the bridge and on a board.
 [dependencies]
 
 [dev-dependencies]
 serde_json = { workspace = true }
 
 [features]
-# Unreleased: the board link's messages and dense packing (the Arduino
-# tether runtime's wire). Off in every release; CI builds and tests it.
+# Unreleased: off in every release; CI builds and tests it.
 board = []
 
 [[test]]

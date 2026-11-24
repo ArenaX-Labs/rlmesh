@@ -40,8 +40,6 @@ impl Rolling {
     /// The defaults (newest 30 min or 20 GB, one-minute segments, pause
     /// below 2 GB free; incidents of the 2 min before and 30 s after, kept
     /// 14 days or 10 GB) under `dir`.
-    // `rlmesh host` overrides the budgets with its `--record-*` and
-    // `--incidents-*` flags.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
@@ -68,21 +66,15 @@ impl Rolling {
     }
 }
 
-/// Rolling capture's writer side.
 pub(super) struct RollingSink {
     pub(super) rolling: Rolling,
-    /// This session's segments.
     pub(super) dir: PathBuf,
     pub(super) session: SessionId,
-    /// Reports degraded health while paused.
     pub(super) participant: Arc<Participant>,
     pub(super) current: Option<Segment>,
-    /// While paused, the log time to try opening a segment again.
     pub(super) retry_at: i64,
-    /// The newest authority snapshot, written first into every segment.
     pub(super) authority: Option<Message>,
     pub(super) paused: bool,
-    /// Open incidents: until when (log time) new segments go into each.
     pub(super) keeping: Vec<(i64, PathBuf)>,
 }
 
@@ -107,8 +99,6 @@ impl RollingSink {
             }
         };
         if let Err(err) = written {
-            // The segment stays readable up to the failed write (a full
-            // disk, most likely); capture retries next period.
             warn!(%err, "recording paused: a segment write failed");
             self.current = None;
             self.pause(true);
@@ -121,15 +111,11 @@ impl RollingSink {
         Ok(())
     }
 
-    /// Closes the current segment, applies the budgets and opens the next
-    /// one, unless the disk is below the floor.
     fn rotate(&mut self, log_time: i64, stats: &mut RecordStats) -> Result<(), RecordError> {
         if let Some(current) = self.current.take() {
             current.finish(&Metadata::new(), stats)?;
         }
         purge(&self.rolling);
-        // The root, which outlives the session directory the purge may
-        // just have removed.
         if free_bytes(&self.rolling.dir).is_some_and(|free| free < self.rolling.min_free_bytes) {
             if !self.paused {
                 warn!(dir = %self.dir.display(), "recording paused: less than {} bytes free", self.rolling.min_free_bytes);
@@ -145,7 +131,6 @@ impl RollingSink {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
         let path = self.dir.join(format!("{wall_ms}.mcap"));
-        // The purge removes a session directory it empties, this one too.
         let created = std::fs::create_dir_all(&self.dir)
             .map_err(|source| RecordError::Io {
                 path: self.dir.clone(),
@@ -179,9 +164,6 @@ impl RollingSink {
             .set_health(if paused { Health::Degraded } else { Health::Ok });
     }
 
-    /// Keeps the recent segments as an incident and the ones opened until
-    /// [`Rolling::incident_after`] from now, unless an incident is still
-    /// open (it holds this one's start already).
     pub(super) fn incident(&mut self, label: &'static str, log_time: i64) {
         if self.keeping.iter().any(|(until, _)| log_time < *until) {
             debug!(session = %self.session, label, "incident within an open one");
@@ -205,8 +187,6 @@ impl RollingSink {
 /// `incidents/{session}/{unix_ms}-{label}/`, out of the rolling purge's
 /// reach; returns that directory. The segments are hard links, so the one
 /// being written keeps growing in the incident until it rotates.
-// A recording server answers the `Keep` host verb with this, so a cockpit
-// on any machine can keep.
 pub fn keep(rolling: &Rolling, session: SessionId, label: &str) -> Result<PathBuf, RecordError> {
     let now = std::time::SystemTime::now();
     let since = now.checked_sub(rolling.incident_before).unwrap_or(now);
@@ -238,8 +218,6 @@ pub struct Episode {
 /// with its `episode.json`. Nothing purges collected episodes; returns
 /// the directory.
 // TODO: an episode longer than the rolling budget (30 min or 20 GB) loses
-// its purged start; link segments as they open while an episode runs when
-// takes get that long.
 pub fn collect(
     rolling: &Rolling,
     session: SessionId,
@@ -271,7 +249,6 @@ fn unix_ms(t: std::time::SystemTime) -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-/// `name` with anything but ASCII letters, digits and `-` replaced by `_`.
 fn file_name(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -284,9 +261,6 @@ fn file_name(name: &str) -> String {
         .collect()
 }
 
-/// Hard-links `session`'s rolling segments that hold anything since
-/// `since` into a new `dir`: each segment is named for when it opened, so
-/// it covers until the next one opened (the newest, until now).
 fn link_since(
     rolling: &Rolling,
     session: SessionId,
@@ -335,8 +309,6 @@ fn link_since(
     Ok(())
 }
 
-/// Hard-links `segment` into `dir`, or copies it where links are refused;
-/// a link already there is kept (never copied over: it is the same file).
 fn link_into(segment: &Path, dir: &Path) -> std::io::Result<()> {
     let Some(name) = segment.file_name() else {
         return Ok(());
@@ -350,9 +322,6 @@ fn link_into(segment: &Path, dir: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Removes the oldest rolling segments, of every session under the root,
-/// past the age and size budgets. Racing purgers (one per session) are
-/// fine: a segment already gone is skipped.
 fn purge(rolling: &Rolling) {
     let mut segments: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
     let sessions = std::fs::read_dir(rolling.dir.join("rolling"))
@@ -376,10 +345,9 @@ fn purge(rolling: &Rolling) {
     segments.sort();
     let mut total: u64 = segments.iter().map(|(_, len, _)| len).sum();
     let now = std::time::SystemTime::now();
-    // A segment written within the last period may be another session's
-    // open one: never removed.
     let open = now.checked_sub(rolling.segment).unwrap_or(now);
     for (modified, len, path) in segments {
+        // A segment written within the last period may be another session's open one: never removed.
         if modified >= open {
             break;
         }
@@ -395,12 +363,9 @@ fn purge(rolling: &Rolling) {
             Err(err) => warn!(%err, path = %path.display(), "could not remove an old segment"),
         }
         if let Some(dir) = path.parent() {
-            // Only succeeds once the session's last segment is gone.
             let _ = std::fs::remove_dir(dir);
         }
     }
-    // Incidents, by their directories' age; a segment linked into two
-    // counts twice.
     let mut incidents: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
     let sessions = std::fs::read_dir(rolling.dir.join("incidents"))
         .into_iter()
@@ -445,7 +410,6 @@ fn purge(rolling: &Rolling) {
     }
 }
 
-/// Free bytes on the disk holding `dir`, for an unprivileged user.
 #[cfg(unix)]
 #[allow(unsafe_code, clippy::useless_conversion)]
 fn free_bytes(dir: &Path) -> Option<u64> {
@@ -461,7 +425,6 @@ fn free_bytes(dir: &Path) -> Option<u64> {
 }
 
 // TODO: no free-space floor off unix; add GetDiskFreeSpaceExW when the
-// recorder runs on Windows hosts.
 #[cfg(not(unix))]
 fn free_bytes(_: &Path) -> Option<u64> {
     None

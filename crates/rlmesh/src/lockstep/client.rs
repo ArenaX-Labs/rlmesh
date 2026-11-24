@@ -1,10 +1,5 @@
 //! The driver side of the Gym path: `LockstepClient` resets,
 //! steps and renders a lockstep Gym env on native values, rebuilding its
-//! exact spaces from the robot's `gym_env`.
-//!
-//! The client numbers the episodes its resets start (1, 2, ...) for
-//! `LockstepReset.episode_ids`; a reply carries no episode metadata, so
-//! accounting (ids, completions) is the caller's.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -82,17 +77,11 @@ struct Driver {
     token: AtomicU64,
     step: AtomicU64,
     episodes: AtomicU64,
-    /// Kept alive for the run (its heartbeats keep the lease), until
-    /// [`LockstepClient::close`] releases it.
     keep: tokio::sync::Mutex<Option<Box<dyn Keep>>>,
-    /// What the env measured answering the last reset or step.
     last: std::sync::Mutex<Option<EndpointTiming>>,
 }
 
 impl Drop for Driver {
-    /// A driver dropped without [`LockstepClient::close`] still detaches, in
-    /// the background: the host takes presence from heartbeats, not from a
-    /// withdrawn liveliness token, so only a detach frees the env at once.
     fn drop(&mut self) {
         if let Some(keep) = self.keep.get_mut().take() {
             crate::run::drive::runtime().spawn(keep.release());
@@ -104,7 +93,6 @@ impl Drop for Driver {
 #[derive(Clone)]
 pub struct LockstepClient {
     inner: Arc<Driver>,
-    /// The session the env is in (its address), when connected through one.
     session: Option<String>,
 }
 
@@ -141,7 +129,6 @@ impl LockstepClient {
         }
     }
 
-    /// The client of the env in `session` (a session address).
     pub(crate) fn in_session(mut self, session: String) -> Self {
         self.session = Some(session);
         self
@@ -218,7 +205,6 @@ impl LockstepClient {
             .ok_or_else(|| GymError::Map("the env has no space".into()))
     }
 
-    /// The observation leaf slabs of `lanes` lanes in `side`'s part slabs.
     fn observation_leaves(
         &self,
         values: &[rlmesh_session::wire::PartValues],
@@ -263,7 +249,6 @@ impl LockstepClient {
         let reset = LockstepReset {
             epoch: Epoch(d.epoch.load(Ordering::Acquire)),
             lanes: lanes.to_vec(),
-            // i64 for the env, u64 on the v2 wire: the same 64 bits.
             seeds: seeds.iter().map(|s| *s as u64).collect(),
             options_json: meta_json::optional_to_json(options),
             episode_ids: (first..first + width as u64).collect(),

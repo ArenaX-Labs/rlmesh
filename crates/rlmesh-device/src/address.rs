@@ -1,7 +1,3 @@
-//! The address an embedded host prints, as a board takes it:
-//! `{host}:{port}[/{session}]#{secret}.{host key}[/{name}]`. The key is
-//! session-core's [`AddressKey`]; the tenant is always `local`.
-
 use alloc::string::{String, ToString};
 
 use rlmesh_session_core::auth::AddressKey;
@@ -26,10 +22,8 @@ pub struct Address {
     pub name: Option<String>,
 }
 
-/// A host address, `host:port` (an IPv6 host keeps its brackets, as a
-/// Zenoh locator wants it), or `None`: the one port every traffic class
-/// dials. A port above [`MAX_PORT`](rlmesh_tether::provision::MAX_PORT) is
-/// refused, as provisioning refuses it.
+/// A host address, `host:port` (an IPv6 host keeps its brackets, as a Zenoh locator wants
+/// it), or `None`: the one port every traffic class dials.
 pub fn host_port(text: &str) -> Option<(String, u16)> {
     let (host, port) = text.rsplit_once(':')?;
     let port: u16 = port.parse().ok()?;
@@ -42,7 +36,6 @@ pub fn host_port(text: &str) -> Option<(String, u16)> {
 /// Parses `text`, or `None` when it isn't an address with its key.
 pub fn parse(text: &str) -> Option<Address> {
     let (place, keyed) = text.trim().split_once('#')?;
-    // The key's base32 has no '/': a name follows it after one.
     let (key, name) = match keyed.split_once('/') {
         Some((key, name)) if !name.is_empty() => (key, Some(name.to_string())),
         Some(_) => return None,

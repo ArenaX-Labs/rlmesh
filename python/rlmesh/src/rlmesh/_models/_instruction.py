@@ -12,7 +12,6 @@ from typing import Any, NamedTuple, cast
 
 from ._adapter_mode import NO_ADAPTER
 
-# Cross-module surface for ``_eval`` (see note in ``_connect``).
 __all__ = ["TextPlacement", "text_placements", "tree_set"]
 
 
@@ -81,7 +80,5 @@ def tree_set(tree: Any, segments: tuple[str | int, ...], value: Any) -> Any:
     node: dict[str, Any] = (
         dict(cast("Mapping[str, Any]", tree)) if isinstance(tree, Mapping) else {}
     )
-    # A subtree may not exist yet (e.g. injecting into a missing nested key);
-    # descend into an empty dict rather than indexing a missing key.
     node[head] = tree_set(node.get(head, {}), rest, value)
     return node

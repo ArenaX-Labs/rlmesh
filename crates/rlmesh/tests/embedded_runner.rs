@@ -1,8 +1,3 @@
-//! A runner of its own, embedding the driver as a program outside this
-//! repository does: public paths only (`rlmesh::binding`, `rlmesh::lockstep`,
-//! `rlmesh_spaces`), a custom env and a custom model handler, then a served
-//! env and a served model. A change that breaks that path fails here first.
-
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -30,7 +25,6 @@ use rlmesh_spaces::{
     AutoresetMode, DType, EnvContract, MetaMap, MetaValue, SpaceSpec, SpaceValue, Tensor,
 };
 
-/// A `[n]` box of `dtype` in `[-1, 1]`.
 fn boxed(dtype: DType, n: i64) -> SpaceSpec {
     rlmesh_spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![n])
         .dtype(dtype)
@@ -38,8 +32,6 @@ fn boxed(dtype: DType, n: i64) -> SpaceSpec {
         .unwrap()
 }
 
-/// A counter env: its observation is the step it is at, and it ends after
-/// three steps.
 #[derive(Clone, Default)]
 struct Counter {
     t: Arc<AtomicUsize>,
@@ -91,8 +83,6 @@ impl RuntimeEnv for Counter {
     }
 }
 
-/// A handler that reads every observation with the space its route resolved
-/// and answers zeros of the action space.
 #[derive(Clone, Default)]
 struct Reader {
     spaces: Arc<Mutex<Option<(SpaceSpec, SpaceSpec)>>>,
@@ -154,7 +144,6 @@ impl ModelHandler for Reader {
     }
 }
 
-/// What the runner watches.
 #[derive(Default)]
 struct Watch {
     steps: AtomicUsize,
@@ -183,7 +172,6 @@ impl RuntimeHooks for Watch {
     }
 }
 
-/// A session spec for `contract`, as a runner fills it in.
 fn session(
     contract: &EnvContract,
     num_envs: usize,
@@ -215,7 +203,6 @@ fn session(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_runner_drives_its_own_env_and_model() {
     let contract = Counter::contract();
-    // The contract round-trips through the driver's data form.
     let wire = env_contract_to_proto(&contract);
     assert_eq!(env_contract_from_proto(wire).unwrap().id, contract.id);
 
@@ -258,16 +245,13 @@ async fn a_runner_drives_its_own_env_and_model() {
             .any(|row| row.source.op == "model.predict"),
         "the session telemetry records the predicts"
     );
-    // Every observation decoded against the env's space: step 0..2, twice.
     {
         let seen = model.seen.lock().unwrap();
         assert_eq!(seen.len(), 6);
         assert!(matches!(&seen[0], SpaceValue::Box(t) if *t.to_contiguous_bytes() == [0, 7]));
     }
-    // A model the run does not own is left open for the next run...
     assert_eq!(model.closed.load(Ordering::SeqCst), 0);
 
-    // ...and one it owns is closed once, when the run ends.
     let contract = Counter::contract();
     let mut spec = session(&contract, 1, false, rlmesh_proto::Edition::E2026_10);
     spec.close_model_on_end = true;
@@ -298,7 +282,6 @@ async fn a_runner_drives_a_served_env_with_a_served_model() {
         cancel.clone(),
     ));
 
-    // The runner's model, served in a session of its own.
     let model = Reader::default();
     let binding = rlmesh::lockstep::ModelBinding::bind(":0/model")
         .await
@@ -311,7 +294,6 @@ async fn a_runner_drives_a_served_env_with_a_served_model() {
     let served_model =
         tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
 
-    // Connected as Model.run connects: the edition and contract checked.
     let connected = LockstepEnv::connect(&env_address, ConnectOptions::default(), Some("2026.10"))
         .await
         .unwrap();
@@ -359,10 +341,7 @@ async fn a_runner_drives_a_served_env_with_a_served_model() {
     assert_eq!(report.total_episodes, 2);
     assert_eq!(watch.episodes.lock().unwrap().len(), 2);
     assert!(report.total_steps > 0);
-    // The served model read every observation the env sent, decoded.
     assert_eq!(model.seen.lock().unwrap().len() as i64, report.total_steps);
-    // A bare connect drives the same env: the runner's own choice to skip the
-    // checks above.
     let bare = rlmesh::lockstep::connect(&env_address, ConnectOptions::default())
         .await
         .unwrap();

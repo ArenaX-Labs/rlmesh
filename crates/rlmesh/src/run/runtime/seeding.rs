@@ -1,12 +1,10 @@
 //! Paired reset seeds: one episode's seed from what must stay fixed for a
 //! paired comparison, and nothing else.
 //!
-//! The inputs are the base seed, the seed key (the environment, never the
-//! model or a per-launch id) and the episode's global slot within that key. No
-//! session id: two models over the same base and environment draw the same
-//! episodes, and shards that split one total partition a single slot range, so
-//! re-sharding draws the same set. `conformance/episode_seeds.v1.json` pins it across
-//! languages.
+//! The inputs are the base seed, the seed key (the environment, never the model or a
+//! per-launch id) and the episode's global slot within that key. Two models over the same base
+//! and environment draw the same episodes, and re-sharding draws the same set.
+//! `conformance/episode_seeds.v1.json` pins it across languages.
 
 /// FNV-1a over (base seed, seed key, slot), masked to `[0, 2**32)` so every
 /// seed fits Gymnasium's and NumPy's seed range.

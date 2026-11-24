@@ -15,13 +15,7 @@ from ._literals import Bound, FloatDTypeLike
 
 
 def _bound(value: Bound | None, name: str) -> float:
-    """Validate one Box bound, keeping an exact Python ``int`` exact.
-
-    ``float()`` rounds integer bounds above 2**53 and saturates a ``uint64``
-    bound at ``i64::MAX``; the native constructor routes exact integers through
-    the typed builders instead, so only non-integers need the float coercion
-    (which is also where ``"inf"``/``"-inf"`` parse and NaN is rejected).
-    """
+    """Validate one Box bound, keeping an exact Python ``int`` exact."""
     if isinstance(value, int):
         return value
     return require_float(value, name)

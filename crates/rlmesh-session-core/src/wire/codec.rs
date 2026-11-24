@@ -1,31 +1,22 @@
 //! The byte encoding: protobuf envelopes with raw payloads.
 //!
-//! This is the only module that knows how messages look on the wire (see the
-//! crate docs for why). Everything else in the crate, and every crate above
-//! it, speaks the plain types this module encodes and decodes.
+//! The only module that knows how messages look on the wire; everything else speaks the
+//! plain types it encodes and decodes. Every payload is one protobuf message of
+//! `rlmesh.session.v2` (`proto/rlmesh/session/v2/session.proto`); the key says which.
 //!
-//! Every message is one protobuf message of `rlmesh.session.v2` (see
-//! `proto/rlmesh/session/v2/session.proto`) per payload; the key says which.
+//! - Control messages ([`Request`], [`CtlReply`], [`AuthoritySnapshot`], [`DeviceView`],
+//!   [`Heartbeat`], [`HeartbeatEcho`], [`ParticipantReport`], [`VirtualTick`],
+//!   [`HistoryQuery`]) encode to one buffer and decode from any byte slice.
+//! - [`Sample`]s, [`SampleBatch`]es and [`ActionChunk`]s carry their values as one packed
+//!   `bytes` payload. [`encode_sample`], [`encode_batch`] and [`encode_chunk`] emit
+//!   [`Encoded`] segments, the payload as its own [`Bytes`] segment, so a transport that
+//!   gathers segments sends it without a copy; the concatenation is ordinary protobuf.
+//!   The decoders take the received buffer as [`Bytes`], and the payload slices it.
+//! - The lockstep and served-model messages encode to one buffer.
 //!
-//! - Control messages ([`Request`], [`CtlReply`], [`AuthoritySnapshot`],
-//!   [`DeviceView`], [`Heartbeat`], [`HeartbeatEcho`], [`ParticipantReport`],
-//!   [`VirtualTick`], [`HistoryQuery`])
-//!   encode to one buffer and decode from any byte slice.
-//! - [`Sample`]s, [`SampleBatch`]es and [`ActionChunk`]s carry their values
-//!   as one packed `bytes` payload. [`encode_sample`], [`encode_batch`] and
-//!   [`encode_chunk`] emit the message as [`Encoded`] segments: small
-//!   buffers for the fields and the payload's tag and length, and the
-//!   payload as its own [`Bytes`] segment, so a transport that gathers
-//!   segments (Zenoh's `ZBytes`) sends it without a copy. The concatenation
-//!   is ordinary protobuf. The decoders take the received buffer as
-//!   [`Bytes`], and the payload slices it.
-//! - The lockstep and served-model messages encode to one buffer (one copy
-//!   of the slabs).
-//!
-//! Payload contents are not validated here; the layout check against the
-//! declaration is [`StreamSpec::check_payload`] (samples) and the edge's
-//! intake (chunks). Lengths are bounded here: a chunk's action count and
-//! payload size, a batch's sample count.
+//! Payload contents are not validated here; the layout check is
+//! [`StreamSpec::check_payload`] (samples) and the edge's intake (chunks). Lengths are
+//! bounded here: a chunk's action count and payload size, a batch's sample count.
 //!
 //! [`StreamSpec::check_payload`]: crate::wire::part::StreamSpec::check_payload
 
@@ -45,16 +36,14 @@ use crate::wire::{
 #[cfg(doc)]
 use bytes::Bytes;
 
-/// Generated `rlmesh.session.v2` messages: private, so the schema can move
-/// without touching any public type.
 #[allow(clippy::all, clippy::pedantic)]
 mod pb {
     include!(concat!(env!("OUT_DIR"), "/rlmesh.session.v2.rs"));
 }
 
 /// The `rlmesh.session.v2` protobuf descriptors (a serialized
-/// `google.protobuf.FileDescriptorSet`): the schema a recording names for
-/// each envelope it stores.
+/// `google.protobuf.FileDescriptorSet`): the schema a recording names for each
+/// envelope it stores.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/session_descriptor.bin"));
 

@@ -5,7 +5,7 @@ use crate::prelude::*;
 /// The longest input `lp` takes: its length must fit a `u16`.
 pub const LP_MAX: usize = u16::MAX as usize;
 
-/// An input to `lp` was over 65,535 bytes. `lp` never truncates.
+/// An input to `lp` was over 65,535 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("a length-prefixed field is over 65535 bytes")]
 pub struct LpTooLong;
@@ -30,7 +30,7 @@ pub fn lp(x: &[u8]) -> Result<Vec<u8>, LpTooLong> {
     Ok(out)
 }
 
-/// Append `lp(x)` to `out`. `out` is unchanged on error.
+/// Append `lp(x)` to `out`.
 ///
 /// # Errors
 /// [`LpTooLong`] if `x` is over 65,535 bytes.
@@ -40,8 +40,6 @@ pub fn push_lp(out: &mut Vec<u8>, x: &[u8]) -> Result<(), LpTooLong> {
     Ok(())
 }
 
-/// BLAKE2s-256 (unkeyed) over `lp(label) ‖ fields`: the pairing commitment
-/// and SAS.
 pub(crate) fn hash_labelled(label: &[u8], fields: &[&[u8]]) -> Result<[u8; 32], LpTooLong> {
     use blake2::Digest;
     let prefix = lp_prefix(label)?;
@@ -54,9 +52,7 @@ pub(crate) fn hash_labelled(label: &[u8], fields: &[&[u8]]) -> Result<[u8; 32], 
     Ok(hash.finalize().into())
 }
 
-/// `kdf(key, label, fields…)`: BLAKE2s-256 keyed with `key`, over
-/// `lp(label) ‖ fields`. Only for the embedded `local` key (and later the
-/// loopback password).
+/// `kdf(key, label, fields…)`: BLAKE2s-256 keyed with `key`, over `lp(label) ‖ fields`.
 ///
 /// # Errors
 /// [`LpTooLong`] if `label` is over 65,535 bytes.

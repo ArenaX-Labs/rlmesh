@@ -1,10 +1,4 @@
-"""Authoring base for environments: a thin runtime class (tags/make), NOT a build DSL.
-
-Subclass :class:`EnvFactory` to describe an environment's *runtime*. There is no build
-DSL here -- packaging stays in your Dockerfile. Models are authored by subclassing
-``rlmesh.Model`` and overriding ``predict`` (no separate recipe noun); envs serve via
-:class:`EnvServer`, ``EnvFactory.serve``, or ``python -m rlmesh.serve --env my_pkg:MyEnv``.
-"""
+"""Authoring base for environments: a thin runtime class (tags/make), NOT a build DSL."""
 
 from __future__ import annotations
 
@@ -23,9 +17,7 @@ if TYPE_CHECKING:
     from .adapters import EnvTags
     from .params import ParamSpec
 
-#: Ceiling on a factory's contract-branch table. Every branch is constructed and
-#: tag-normalized once at describe time and lands in the image label, so the
-#: product of the declared discriminants' choices is bounded rather than free.
+#: Cap on the contract-branch table; every branch is constructed once at describe time.
 _MAX_TAG_BRANCHES = 8
 
 
@@ -36,12 +28,6 @@ class EnvFactory(ABC):
     are that contract. ``make(**kwargs)`` is the factory and may return a single env or a
     vectorized batch; task selection and ``num_envs`` are its parameters, not separate
     subclasses. ``tags = None`` (the default) means a generic, un-adapted env.
-
-    Optionally set ``params`` to a :class:`~rlmesh.ParamSpec` declaring ``make``'s
-    construction parameters; a managed dashboard then presents/validates/sweeps
-    them, and a bad binding is rejected before construction (see
-    :mod:`rlmesh.params`). ``params = None`` (default) keeps today's blind
-    passthrough to ``make``.
 
     Optionally implement an ``enumerate_variants()`` classmethod that returns a
     list of :class:`~rlmesh.Variant` (or ``yield`` them lazily) -- the finite,
@@ -66,54 +52,26 @@ class EnvFactory(ABC):
     tags: ClassVar[EnvTags | None] = None
     #: Optional declared construction-parameter surface validated against ``make``.
     params: ClassVar[ParamSpec | None] = None
-    #: The declared ``params`` names whose value selects the obs/action contract --
-    #: the *contract discriminants*. Each must be a declared :class:`~rlmesh.Param`
-    #: with ``choices`` and a ``make`` signature default drawn from them, and the
-    #: product of those choices is capped at 8 branches. ``()`` (the default) is
-    #: one fixed contract: ``tags``.
+    #: ``params`` names whose value selects the obs/action contract. Each must be a declared
+    #: :class:`~rlmesh.Param` with ``choices``; the product of choices is capped at 8 branches.
     tag_params: ClassVar[tuple[str, ...]] = ()
-    #: The reserved reset-option keys this env wants delivered on
-    #: ``reset(seed=, options=)``. ``make`` publishes them in the env's metadata,
-    #: and the runtime sends a reserved key only to an env that named it -- an env
-    #: that forwards ``options`` into a third-party ``reset`` is never handed a key
-    #: it cannot interpret. The one key this edition defines is ``"trial_index"``,
-    #: the 0-based ordinal of the episode being started (see
-    #: :func:`rlmesh.trial_index`); ``()`` (the default) receives none.
+    #: Reserved reset-option keys delivered on ``reset(seed=, options=)``. The only key
+    #: defined is ``"trial_index"`` (see :func:`rlmesh.trial_index`).
     reset_options: ClassVar[tuple[str, ...]] = ()
-    #: The env's camera dial: the two ``make`` params, ``(height, width)``, that
-    #: set the resolution every camera renders at. ``make`` publishes them in the
-    #: env's metadata, and a driver that knows the model binds the model's
-    #: ``Image(render=...)`` size there before the env is made (see
-    #: ``SandboxEnv(model=...)``); a param the caller passes itself still wins.
-    #: ``()`` (the default) is no dial.
+    #: The two ``make`` params ``(height, width)`` that set camera render resolution; ``()`` is no dial.
     render_params: ClassVar[tuple[str, ...]] = ()
-    #: ``True`` for an env with no episode horizon of its own: it never
-    #: truncates. ``make`` publishes the declaration in the env's metadata, and
-    #: a run against the env without ``max_episode_steps`` is refused before its
-    #: first reset rather than left to run forever.
+    #: ``True`` for an env with no episode horizon of its own; a run without
+    #: ``max_episode_steps`` is refused before its first reset.
     requires_episode_cap: ClassVar[bool] = False
-    #: The workflow edition this env was authored against -- a sticky
-    #: declaration, the source-resident analogue of NixOS's ``stateVersion``:
-    #: write it once and upgrading rlmesh cannot change how this env behaves.
-    #: Paste the value :func:`rlmesh.current_workflow_edition` reports. ``None``
-    #: (the default) declares nothing and floats to this build's newest edition,
-    #: which is reported once per process. Overridden by
-    #: ``RLMESH_WORKFLOW_EDITION`` and by ``--workflow-edition`` /
-    #: ``ServeOptions(workflow_edition=...)``; see :doc:`the precedence table
-    #: </editions/index>`.
+    #: Workflow edition this env was authored against (see :func:`rlmesh.current_workflow_edition`).
+    #: ``None`` floats to the newest edition. Overridden by ``RLMESH_WORKFLOW_EDITION``
+    #: and ``--workflow-edition`` / ``ServeOptions(workflow_edition=...)``.
     workflow_edition: ClassVar[str | None] = None
-    #: Framework bridge pinned by a framework-specific subclass
-    #: (``rlmesh.torch.EnvFactory`` / ``rlmesh.jax.EnvFactory``) that types the
-    #: env's obs/action seam; ``make`` stamps it onto the env it returns so a
-    #: local ``run``/``session`` honors it like ``serve_env``. ``None`` is numpy.
+    #: Framework bridge pinned by a framework-specific subclass; ``None`` is numpy.
     _bridge: ClassVar[ValueBridge | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        # Stamp the factory's ``tags`` onto every env ``make()`` returns, so the tag
-        # "rides the environment": a locally-made env (no server) still carries the
-        # contract a spec'd model resolves against. The subclass's own ``make`` body
-        # is untouched; serving an already-stamped env merges the same tags
-        # idempotently. ``tags = None`` is a no-op (a generic, un-adapted env).
+        # Stamp ``tags`` onto every env ``make()`` returns so a locally made env carries its contract.
         super().__init_subclass__(**kwargs)
         _check_tag_params(cls)
         _check_render_params(cls)
@@ -124,9 +82,7 @@ class EnvFactory(ABC):
         @functools.wraps(user_make)
         def make(self: EnvFactory, *args: Any, **make_kwargs: Any) -> EnvLike[Any, Any]:
             cls = type(self)
-            # Bind BEFORE make(): the branch is read off make's own signature with
-            # defaults applied, so a positional or omitted discriminant resolves to
-            # the same value the body will see, and a bad one fails pre-construction.
+            # Bind before make(): the branch is read from make's signature with defaults applied.
             branch = (
                 _tag_binding(cls, user_make, self, args, make_kwargs)
                 if cls.tag_params
@@ -137,9 +93,7 @@ class EnvFactory(ABC):
             if tags is not None:
                 from .adapters import tag
 
-                # validate=False: the obs/action layout is validated against the
-                # tags at adapter-resolution time (serve or session), so a make()
-                # of a vectorized batch (whose spaces differ) is not rejected here.
+                # validate=False: a vectorized make() has batched spaces that differ from the per-lane tags.
                 env = tag(env, tags, validate=False)
             fragment: dict[str, object] = {}
             if branch is not None:
@@ -164,7 +118,7 @@ class EnvFactory(ABC):
                 try:
                     env._bridge = cls._bridge  # type: ignore[attr-defined]
                 except AttributeError:
-                    pass  # a __slots__ env: it stays on the numpy default
+                    pass
             return env
 
         make._rlmesh_tag_stamped = True  # type: ignore[attr-defined]
@@ -186,13 +140,13 @@ class EnvFactory(ABC):
         """
         return cls.tags
 
-    def prepare(self) -> None:  # noqa: B027  optional no-op hook, not abstract
+    def prepare(self) -> None:  # noqa: B027
         """Optional: one-time setup before ``make()``."""
 
     @classmethod
     def describe(cls) -> dict[str, Any]:
         """Return this factory's full metadata envelope (see :func:`rlmesh.describe`)."""
-        from ._describe import describe  # lazy: avoid an import cycle at module load
+        from ._describe import describe
 
         return describe(cls, kind="env")
 
@@ -208,7 +162,7 @@ class EnvFactory(ABC):
         """
         raise NotImplementedError
 
-    def close(self) -> None:  # noqa: B027  optional no-op hook, not abstract
+    def close(self) -> None:  # noqa: B027
         """Optional: release resources."""
 
     @final
@@ -314,11 +268,6 @@ def trial_index(
 
 
 def _as_ordinal(value: object) -> int | None:
-    """``value`` as an integer ordinal, else ``None``.
-
-    Any integral number but a bool, or an integral float in ``[-2**63, 2**63)``
-    (the range every language's ``trial_index`` returns).
-    """
     if isinstance(value, bool):
         return None
     if isinstance(value, numbers.Integral):
@@ -329,12 +278,6 @@ def _as_ordinal(value: object) -> int | None:
 
 
 def _stamp_metadata(env: object, fragment: Mapping[str, object]) -> None:
-    """Merge a metadata fragment into ``env.metadata`` (mirrors ``adapters.tag``).
-
-    ``metadata`` is typically a class attribute on gymnasium envs; copy-and-assign
-    shadows it with an instance attribute rather than mutating every env of that
-    class, which is the standard override path.
-    """
     existing = getattr(env, "metadata", None)
     merged: dict[str, object] = (
         dict(cast("Mapping[str, object]", existing))
@@ -346,7 +289,6 @@ def _stamp_metadata(env: object, fragment: Mapping[str, object]) -> None:
 
 
 def _discriminant(cls: type[EnvFactory], name: str) -> Any:
-    """The declared :class:`~rlmesh.Param` for a ``tag_params`` name, or ``None``."""
     spec = cls.params
     for param in spec.params if spec is not None else ():
         if param.name == name:
@@ -361,13 +303,7 @@ def _tag_binding(
     args: tuple[Any, ...],
     kwargs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Resolve the branch a ``make`` call selects, before the call runs.
-
-    Binds the call against ``make``'s own signature and applies defaults, so an
-    omitted or positionally-passed discriminant resolves to exactly the value the
-    body will see. The binding (never a subset -- every declared discriminant is
-    present) is what rides the env under ``ENV_BRANCH_METADATA_KEY``.
-    """
+    """Resolve the branch a ``make`` call selects, before the call runs."""
     from .params import ParamError
 
     bound = inspect.signature(user_make).bind(instance, *args, **kwargs)
@@ -386,13 +322,6 @@ def _tag_binding(
 
 
 def _tag_branches(cls: type[EnvFactory]) -> list[dict[str, Any]]:
-    """The factory's contract-branch table: every discriminant binding it declares.
-
-    The Cartesian product of each ``tag_params`` name's declared ``choices``,
-    ordered so **index 0 is the default branch** -- the binding ``make``'s own
-    signature defaults select, whose ``tags_for`` result is the factory's
-    top-level ``tags``. ``tag_params = ()`` has no table (one fixed contract).
-    """
     signature = inspect.signature(cls.make).parameters
     choices = {name: tuple(_discriminant(cls, name).choices) for name in cls.tag_params}
     defaults = {name: signature[name].default for name in cls.tag_params}
@@ -441,16 +370,6 @@ def render_binding(source: object, size: tuple[int, int] | None) -> dict[str, in
 
 
 def _check_tag_params(cls: type[EnvFactory]) -> None:
-    """Reject an unusable contract-branch declaration at class creation.
-
-    A branch table is baked into the image label and read by a platform that
-    cannot re-run the author's code, so every way it can be wrong -- an
-    undeclared, unenumerable or defaultless discriminant, an unbounded product, a
-    ``tags_for`` nothing consults or that answers with the wrong kind of thing, a
-    table that is adapted on some branches and generic on others, or a default
-    branch that disagrees with the ``tags`` a branch-blind reader sees -- fails
-    here, where the author is looking, rather than at push or run time.
-    """
     overrides_tags_for = cls.tags_for.__func__ is not EnvFactory.tags_for.__func__  # type: ignore[attr-defined]
     if not cls.tag_params:
         if overrides_tags_for:

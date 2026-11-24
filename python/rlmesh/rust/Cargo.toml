@@ -24,7 +24,6 @@ crate-type = ["cdylib", "rlib"]
 name = "stub_gen"
 path = "src/bin/stub_gen.rs"
 doc = false
-# The stub generator is the only target that needs `stub-gen`.
 required-features = ["stub-gen"]
 
 [features]
@@ -32,18 +31,14 @@ default = ["cli"]
 abi3-py311 = ["pyo3/abi3-py311"]
 cli = ["dep:rlmesh-cli"]
 stub-gen = ["dep:pyo3-stub-gen"]
-# Unreleased: the lobby and scene runs (`rlmesh-session/fleet`). Never in a
-# release wheel; CI builds it.
+# Unreleased; never in a release wheel.
 fleet = ["rlmesh-cli?/fleet", "rlmesh-session/fleet"]
 
-# `rlmesh cockpit` in every desktop wheel; the Linux ARM wheel (a Pi, a
-# robot's computer) leaves the window out.
+# The Linux ARM wheel omits the cockpit window.
 [target.'cfg(not(all(target_os = "linux", target_arch = "aarch64")))'.dependencies]
 rlmesh-cli = { workspace = true, optional = true, features = ["cockpit"] }
 
 [dependencies]
-# No `managed`: the package has its own platform client (`rlmesh.managed`);
-# the bundled CLI (feature `cli`) brings it in for itself.
 rlmesh = { workspace = true, default-features = false, features = ["viewer"] }
 rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
@@ -57,7 +52,6 @@ bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
-# The Docker sandbox (`sandbox`): image hashes, build contexts, container ids.
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
@@ -81,10 +75,7 @@ pyo3 = { workspace = true, features = [
   "generate-import-lib",
 ] }
 pyo3-stub-gen = { workspace = true, optional = true }
-# Non-optional on purpose: a build-time-only proc-macro whose
-# rustpython-parser/unicode_names2 deps are host tools that never link into the
-# cdylib. Supplies `gen_stub_*` (under `stub-gen`) and the `remove_gen_stub`
-# no-op shim (without it) for the inert `#[gen_stub(...)]` helper attributes.
+# Non-optional: a build-time proc-macro that supplies the `remove_gen_stub` no-op shim when `stub-gen` is off.
 pyo3-stub-gen-derive = { workspace = true }
 rand = { workspace = true }
 

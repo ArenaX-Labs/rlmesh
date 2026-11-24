@@ -1,11 +1,3 @@
-"""Authoring layer: policy/env coercion, gates, and constructors.
-
-The full ``Model(...).run(env)`` loop is unchanged and exercised elsewhere; these
-tests pin the seam -- how a duck-typed policy or a ``Model`` subclass is coerced into
-a model, how the serve dispatch avoids double-construction, and how the constructors
-run the lifecycle hooks.
-"""
-
 from __future__ import annotations
 
 from typing import Any, ClassVar, cast
@@ -23,22 +15,14 @@ from rlmesh._models._coerce import coerce_model
 
 
 class _Policy:
-    """A duck-typed policy object (NOT a ``Model`` subclass): wrapped via coerce_model.
-
-    rlmesh treats ``__init__`` as authoritative for a duck-typed policy and never
-    calls ``load()`` (doing so would load weights twice). ``reset()`` is wired to the
-    episode-END edge.
-    """
-
-    # a stand-in for a ModelSpec; coercion only reads the attribute by name.
     spec = "SPEC"
 
     def __init__(self) -> None:
-        self.loads = 1  # constructs fully here
+        self.loads = 1
         self.episode_ends = 0
 
     def load(self) -> None:
-        self.loads += 1  # must NOT be auto-called by rlmesh (would double-load)
+        self.loads += 1
 
     def predict(self, observation: object) -> int:
         return 7
@@ -51,13 +35,12 @@ class _Policy:
 
 
 def test_looks_like_policy_gate() -> None:
-    assert looks_like_policy(_Policy) is True  # class: predict is an unbound function
-    assert looks_like_policy(_Policy()) is True  # instance: predict is a bound method
-    assert looks_like_policy(lambda obs: 0) is False  # bare callable has no .predict
+    assert looks_like_policy(_Policy) is True
+    assert looks_like_policy(_Policy()) is True
+    assert looks_like_policy(lambda obs: 0) is False
 
 
 def test_construct_authored_model_instantiates_without_double_loading() -> None:
-    # __init__ is authoritative for a duck-typed policy; rlmesh must NOT call load().
     inst = construct_authored_model(_Policy)
     assert isinstance(inst, _Policy)
     assert inst.loads == 1
@@ -68,17 +51,15 @@ def test_construct_authored_model_accepts_an_instance() -> None:
     given = _Policy()
     inst = construct_authored_model(given)
     assert inst is given
-    assert inst.loads == 1  # not re-loaded
+    assert inst.loads == 1
 
 
 def test_coerce_model_wires_policy_into_the_policy_slot() -> None:
     coerced = coerce_model(_Policy, spec=None)
     assert isinstance(coerced.policy, _Policy)
-    assert coerced.policy.loads == 1  # __init__ only; no auto load()
-    assert coerced.predict == coerced.policy.predict  # bound method of the instance
-    assert coerced.spec == "SPEC"  # falls back to the policy's spec
-    # reset/close are the policy's bound methods; reset() fires at the episode-END
-    # edge (on_episode_end), the same on local and served paths.
+    assert coerced.policy.loads == 1
+    assert coerced.predict == coerced.policy.predict
+    assert coerced.spec == "SPEC"
     assert coerced.on_episode_end is not None
     assert coerced.on_episode_end == coerced.policy.reset
     coerced.on_episode_end()
@@ -102,9 +83,6 @@ def test_coerce_model_bare_callable_is_unchanged() -> None:
 
 
 def test_duck_policy_predict_chunk_is_picked_up_and_actually_chunks() -> None:
-    # A duck-typed policy's chunk corner must survive coercion: with
-    # execution_horizon=3 the replay calls predict_chunk once per 3 steps
-    # instead of silently dropping the corner and re-planning every step.
     calls = {"chunk": 0, "predict": 0}
 
     class _ChunkPolicy:
@@ -146,8 +124,8 @@ def test_duck_policy_predict_chunk_is_picked_up_and_actually_chunks() -> None:
         rlmesh.numpy.Model(_ChunkPolicy()), _SixStepEnv(), execution_horizon=3
     )
     assert result.total_steps == 6
-    assert calls["chunk"] == 2  # re-planned every 3 steps
-    assert calls["predict"] == 0  # the chunk corner drove the whole episode
+    assert calls["chunk"] == 2
+    assert calls["predict"] == 0
 
 
 def test_coerce_model_rejects_non_callable_non_policy() -> None:
@@ -157,10 +135,7 @@ def test_coerce_model_rejects_non_callable_non_policy() -> None:
 
 def test_model_constructs_from_a_duck_typed_policy_class() -> None:
     model = rlmesh.Model(_Policy)
-    assert model.spec == "SPEC"  # policy spec flows through Model
-
-
-# --- Model subclass authoring (the merged ModelRecipe path) ---
+    assert model.spec == "SPEC"
 
 
 class _ModelPolicy(rlmesh.Model):
@@ -175,8 +150,8 @@ class _ModelPolicy(rlmesh.Model):
 
 def test_model_subclass_loads_once_and_exposes_spec() -> None:
     model = _ModelPolicy()
-    assert model.loaded is True  # load() fired during __init__
-    assert model.spec == "SPEC"  # class-attribute spec resolved onto the instance
+    assert model.loaded is True
+    assert model.spec == "SPEC"
 
 
 def test_model_subclass_spec_kwarg_overrides_class_attr() -> None:
@@ -185,8 +160,6 @@ def test_model_subclass_spec_kwarg_overrides_class_attr() -> None:
 
 
 def test_model_rejects_a_model_as_source() -> None:
-    # A Model builds its own worker; wrapping it again would double-construct. The
-    # guard lives at the construction gateway (ModelBase.__init__), not in coerce.
     with pytest.raises(TypeError, match="Instantiate your Model subclass"):
         rlmesh.Model(_ModelPolicy)
     with pytest.raises(TypeError, match="Instantiate your Model subclass"):
@@ -196,8 +169,6 @@ def test_model_rejects_a_model_as_source() -> None:
 def test_model_subclass_serve_loads_then_serves(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Only the blocking terminal is stubbed; subclass __init__ (load + worker) runs
-    # for real, so this fails if serve ever regresses to a no-op.
     from rlmesh._models.base import ModelBase
 
     seen: dict[str, object] = {}
@@ -210,18 +181,13 @@ def test_model_subclass_serve_loads_then_serves(
     monkeypatch.setattr(ModelBase, "serve", fake_serve)
     model = _ModelPolicy()
     model.serve("127.0.0.1:5555", name="policy")
-    assert model.loaded is True  # load() fired during construction
+    assert model.loaded is True
     assert seen == {"address": "127.0.0.1:5555"}
-
-
-# --- serve dispatch: resolve a model source without double-construction ---
 
 
 def test_serve_model_dispatch_avoids_double_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # serve_model resolves a source to one served Model: a subclass *class* is
-    # instantiated once (load fires), an instance is served as-is -- never re-wrapped.
     from rlmesh import serve
     from rlmesh._models.base import ModelBase
 
@@ -237,15 +203,12 @@ def test_serve_model_dispatch_avoids_double_construction(
     serve.serve_model(_ModelPolicy, "127.0.0.1:5555")
     assert len(served) == 1
     assert isinstance(served[0], _ModelPolicy)
-    assert served[0].loaded is True  # load() ran exactly once at instantiation
+    assert served[0].loaded is True
 
     served.clear()
     inst = _ModelPolicy()
     serve.serve_model(inst, "127.0.0.1:5555")
-    assert served == [inst]  # existing instance served as-is, not re-wrapped
-
-
-# --- env authoring (unchanged) ---
+    assert served == [inst]
 
 
 class _Env(EnvFactory):
@@ -282,7 +245,6 @@ def test_env_recipe_serve_prepares_makes_and_serves(
             device: object = None,
             options: object = None,
         ) -> None:
-            # Accepted (neutral server), not asserted here.
             _ = framework, device, options
             self.address = address
             seen.update(env=env, address=address, tags=tags)
@@ -293,7 +255,7 @@ def test_env_recipe_serve_prepares_makes_and_serves(
     monkeypatch.setattr(rlmesh, "EnvServer", FakeEnvServer)
     env = _Env()
     env.serve("127.0.0.1:5555", render_mode="rgb_array")
-    assert env.prepared is True  # prepare() fired; serve is no longer a no-op
+    assert env.prepared is True
     assert seen == {
         "env": ("env", True, {"render_mode": "rgb_array"}),
         "address": "127.0.0.1:5555",
@@ -305,8 +267,6 @@ def test_env_recipe_serve_prepares_makes_and_serves(
 def test_env_factory_serve_separates_serving_options_from_make_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The serving options are named in EnvFactory.serve's signature, so they can
-    # never silently mix with make kwargs on the way into serve_env.
     from rlmesh import serve as serve_mod
 
     seen: dict[str, object] = {}
@@ -332,12 +292,7 @@ def test_authoring_bases_are_exported() -> None:
     assert rlmesh.EnvFactory is EnvFactory
 
 
-# --- regression: model binding must not be silently swallowed ----------------
-
-
 def test_construct_authored_model_rejects_swallowed_binding() -> None:
-    # A Model that does not override load() has nowhere to apply a binding; the
-    # default no-op load would swallow it silently. Fail loud instead.
     class _NoLoad(rlmesh.Model):
         def predict(self, observation: object) -> int:
             return 0
@@ -360,9 +315,6 @@ def test_construct_authored_model_applies_binding_via_load() -> None:
     assert seen["checkpoint"] == "x"
 
 
-# --- contract branches: tag_params / tags_for ---------------------------------
-
-
 def _tags(role: str) -> Any:
     import rlmesh.adapters as adapt
 
@@ -377,8 +329,6 @@ _ABSOLUTE = _tags("action/eef_pos")
 
 
 class _BranchEnv:
-    """A make() return with a *class-level* metadata dict (the gymnasium shape)."""
-
     metadata: ClassVar[dict[str, object]] = {}
 
     def __init__(self, seed: int = 0) -> None:
@@ -409,19 +359,13 @@ def _published(env: object) -> tuple[object, object]:
 
 
 def test_default_branch_stamps_the_signature_defaults() -> None:
-    # Nothing supplied: the binding is still complete (make's defaults applied),
-    # and the tags are the default branch's -- i.e. the factory's own ``tags``.
     branch, tags = _published(_Branched().make())
     assert branch == {"action_type": "delta"}
     assert tags == _DELTA
-    # The stamp is an instance attribute: the class-level dict is untouched, so
-    # one branched env never leaks its branch onto the next.
     assert _BranchEnv.metadata == {}
 
 
 def test_branch_binds_a_positional_discriminant() -> None:
-    # bind() reads make's own signature, so a positional value selects the branch
-    # exactly as the keyword form does.
     assert _published(_Branched().make("abs"))[0] == {"action_type": "abs"}
     assert _published(_Branched().make(action_type="abs"))[1] == _ABSOLUTE
 
@@ -429,7 +373,6 @@ def test_branch_binds_a_positional_discriminant() -> None:
 def test_branch_rejects_a_value_outside_the_declared_choices() -> None:
     from rlmesh.params import ParamError
 
-    # Pre-construction: the bind runs before make()'s body.
     with pytest.raises(ParamError, match="action_type='ee'"):
         _Branched().make(action_type="ee")
 
@@ -445,10 +388,6 @@ def test_unbranched_factory_stamps_no_branch_key() -> None:
 
     env = _Plain().make()
     assert ENV_BRANCH_METADATA_KEY not in cast("dict[str, Any]", env.metadata)
-
-
-# The eight class-creation TypeErrors. Each builds a factory that is wrong in
-# exactly one way; the class statement itself is what must fail.
 
 
 def test_tag_params_rejects_an_undeclared_discriminant() -> None:
@@ -488,8 +427,6 @@ def test_tag_params_rejects_a_discriminant_without_a_signature_default() -> None
             def make(self, action_type: str) -> _BranchEnv:
                 return _BranchEnv()
 
-    # A default that is not one of the choices is the same defect: the default
-    # branch would not be in the table the label publishes.
     with pytest.raises(TypeError, match="signature default"):
 
         class _OffChoices(EnvFactory):
@@ -570,7 +507,7 @@ def test_tags_disagreeing_with_the_default_branch_is_rejected() -> None:
     with pytest.raises(TypeError, match="its default branch"):
 
         class _Disagrees(EnvFactory):
-            tags = _DELTA  # ...but the default branch answers with _ABSOLUTE
+            tags = _DELTA
             params = rlmesh.ParamSpec(
                 rlmesh.Param("action_type", type="enum", choices=("delta", "abs"))
             )
@@ -585,7 +522,6 @@ def test_tags_disagreeing_with_the_default_branch_is_rejected() -> None:
 
 
 def test_tag_params_without_a_tags_for_override_is_a_spaces_only_branch() -> None:
-    # Legal: the discriminant moves the spaces, not the contract.
     class _SpacesOnly(EnvFactory):
         tags = _DELTA
         params = rlmesh.ParamSpec(
@@ -608,9 +544,6 @@ def test_tag_branches_orders_the_default_first() -> None:
         {"action_type": "delta"},
         {"action_type": "abs"},
     ]
-
-
-# --- Model.from_config: the configured constructor ---
 
 
 class _Configured(rlmesh.Model):
@@ -674,6 +607,5 @@ def test_from_config_refuses_a_framework_base_class() -> None:
     for base in (rlmesh.Model, rlmesh.numpy.Model):
         with pytest.raises(TypeError, match="authored Model subclass"):
             base.from_config()
-    # The plain constructors keep their shapes.
     assert _Configured().loads == [{"checkpoint": "default", "device": "cpu"}]
     assert rlmesh.Model(lambda obs: obs, spec=rlmesh.NO_ADAPTER) is not None

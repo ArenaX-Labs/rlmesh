@@ -7,43 +7,6 @@
 //! ```text
 //! session_bench both --camera off|raw|jpeg --chunk 1 --duration-s 30
 //! ```
-//!
-//! `both` runs the embodiment here and spawns the controller as a second OS
-//! process; `embodiment` and `controller` run one side each (`--base` names
-//! the host's TCP port, `--session-file` passes the session id and
-//! the host's address key).
-//! Every timestamp is the machine's `CLOCK_MONOTONIC`, shared by both
-//! processes. The result is one JSON object on stdout:
-//!
-//! - `control_per_s`: Driving ticks per second at the robot;
-//! - `loop_ms`: apply tick minus the capture of the ft sample the applied
-//!   action was based on (p50/p99/p99.9/max);
-//! - `chunk_age_ms`: chunk receipt at the edge minus that capture;
-//! - `miss_pct`: ticks not Driving;
-//! - `split`: loop p99 and miss % for the frame tick, the 5 ticks after it,
-//!   and the others (T3);
-//! - `camera`: frames decoded per second at the controller and capture to
-//!   decoded latency;
-//! - `safety`: SAFE entries, hold and safe ticks, lease lapses at the host;
-//! - `cpu_skipped_ticks`: robot ticks more than 1 ms late;
-//! - `snapshot_age_ms`, `transit_ms`: `chunk_age_ms` split at the chunk's
-//!   `t0` as the edge converted it (with `--controller bound`, the policy's
-//!   snapshot): the ft sample's age at the snapshot, then inference,
-//!   packing and the link (per dispatched chunk).
-//!
-//! Options: `--camera off|raw|jpeg` (640x480 at `--camera-hz 20`; jpeg is
-//! q75 with an 8 Mbit/s cap), `--chunk N` actions at 1 ms re-planned every
-//! `--replan-ms` (default 1 for N=1, else 10), `--links per-class|shared`,
-//! `--warmup-s 3`, `--duration-s 30`, `--seal none|all` (encrypt every
-//! part rather than sign it).
-//!
-//! `--controller raw` (the default) re-plans from the transport callback on
-//! every `replan`-th ft sample. `--controller bound` is a bound policy
-//! instead, the shape `rlmesh.realtime` runs from Python: the binder's delivery
-//! contracts (ft `latest@R`, the camera an input too), the
-//! [`Controller`](rlmesh_session::Controller) run loop at the replan rate,
-//! and `t0` at the snapshot. It is the Rust baseline of
-//! `examples/python/v2/session_bench.py`.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -193,8 +156,6 @@ fn transport_config(args: &Args, listen: bool) -> Result<TransportConfig, BoxErr
     })
 }
 
-/// The robot map: wrench commands in (velocity-like: no hold), force/torque
-/// at 1 kHz and an optional 640x480 camera out.
 fn robot_map(args: &Args) -> String {
     let camera = match args.camera.as_str() {
         "off" => String::new(),
@@ -243,7 +204,6 @@ fn participant_config(
     Ok(config)
 }
 
-/// p50/p99/p99.9/max in ms (nearest rank).
 fn percentiles(mut ns: Vec<i64>) -> Value {
     if ns.is_empty() {
         return Value::Null;
@@ -256,7 +216,6 @@ fn percentiles(mut ns: Vec<i64>) -> Value {
     json!({"n": ns.len(), "p50": at(0.5), "p99": at(0.99), "p999": at(0.999), "max": at(1.0)})
 }
 
-/// Sleeps until `deadline_ns`: a coarse sleep, then a short spin.
 fn sleep_until(clock: &SystemMonotonicClock, deadline_ns: i64) {
     loop {
         let left = deadline_ns - clock.now_ns();
@@ -393,13 +352,11 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let cmd = declared.part_at(&robot_id, "cmd").ok_or("cmd")?.channel;
     let ft_channel = declared.part_at(&robot_id, "ft").ok_or("ft")?.channel;
     if let Some(path) = &args.session_file {
-        // It holds the key: for this user only.
         rlmesh_session::address::write_private(path, format!("{session} {key}").as_bytes())?;
     }
 
     let clock = SystemMonotonicClock;
     let ft_capture: Arc<Vec<AtomicI64>> = Arc::new((0..RING).map(|_| AtomicI64::new(0)).collect());
-    // (based-on capture, receipt - capture) per accepted chunk.
     let chunk_ages: Arc<Mutex<Vec<(i64, i64)>>> = Arc::new(Mutex::new(Vec::with_capacity(40_000)));
     let edge = Arc::new(
         Edge::attach(
@@ -429,8 +386,6 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
         .wait_for(
             "the controller's binding and a clock mapping",
             Duration::from_secs(60),
-            // A bound controller leases only once its inputs are warm: the
-            // samples start at its binding.
             |s| {
                 (s.lease(cmd).is_some() || s.bindings.iter().any(|b| b.channels.contains(&cmd)))
                     && s.clock(robot.id()).is_some()
@@ -528,7 +483,6 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     if let Some(t) = cam_thread {
         t.join().map_err(|_| "camera thread panicked")?;
     }
-    // Let the controller see the stream end.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let anchor = records.first().map_or(start_ns, |r| r.capture_ns);
@@ -576,7 +530,6 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
                 .collect()
         })
         .unwrap_or_default();
-    // Each dispatched chunk once, split at its t0.
     let mut seen = std::collections::BTreeSet::new();
     let (mut snapshot_age, mut transit) = (Vec::new(), Vec::new());
     for r in &window {
@@ -624,8 +577,6 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     Ok(result)
 }
 
-/// The bound policy of `--controller bound`: the ft wrench in (and the
-/// camera, so its frames cross the link), `chunk` 1 ms actions out.
 fn bound_policy(args: &Args) -> String {
     let camera = if args.camera == "off" {
         String::new()
@@ -642,8 +593,6 @@ fn bound_policy(args: &Args) -> String {
     )
 }
 
-/// The "model" of `--controller bound`: hold the first six floats of the
-/// wrench for the whole chunk.
 struct HoldWrench {
     chunk: u32,
 }
@@ -686,7 +635,6 @@ async fn bound_controller(args: &Args, policy: Participant) -> Result<Value, Box
         .await?,
     );
     controller.participant().arm().await?;
-    // The embodiment measures warmup + duration after its first sample.
     let run_for = Duration::from_nanos((args.warmup_ns + args.duration_ns).unsigned_abs())
         + Duration::from_secs(2);
     let chunk = u32::try_from(args.chunk)?;
@@ -762,7 +710,6 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
     let clock = SystemMonotonicClock;
     let last_rx = Arc::new(AtomicI64::new(0));
     let send_errors = Arc::new(AtomicU64::new(0));
-    // EWMA of the ft one-way delay: where the next chunk will land.
     let expected_ns = Arc::new(AtomicI64::new(0));
     let (chunk, replan) = (args.chunk, args.replan);
     let _ft = policy
@@ -793,7 +740,6 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
                         if r.sample.seq % replan != 0 {
                             return;
                         }
-                        // The "model": hold the first six floats of the wrench.
                         let action = r.sample.payload.slice(..24.min(r.sample.payload.len()));
                         let actions = if chunk == 1 {
                             action
@@ -818,7 +764,6 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
             },
         )
         .await?;
-    // Camera frames are decoded off the transport thread.
     let decoded = Arc::new(Mutex::new(Vec::<(i64, i64)>::new()));
     let (frame_tx, frame_rx) = std::sync::mpsc::channel::<Sample>();
     let decoding = Arc::new(AtomicBool::new(true));
@@ -866,7 +811,6 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
                 .await?,
         ),
     };
-    // Run until the stream has started and then been quiet for 1.5 s.
     loop {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let quiet = last_rx.load(Ordering::Relaxed);
@@ -876,8 +820,6 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
     }
     decoding.store(false, Ordering::Relaxed);
     let _ = decoder.join();
-    // The camera window: frames captured in the embodiment's measurement
-    // window, which starts warmup after the first ft capture.
     let frames = decoded.lock().map(|d| d.clone()).unwrap_or_default();
     let first = frames.first().map_or(0, |(c, _)| *c);
     let (start, end) = (

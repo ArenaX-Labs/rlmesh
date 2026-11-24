@@ -1,12 +1,12 @@
 //! [`RouteState`]: the per-route bookkeeping the driver advances each step, and
 //! the model observations it builds from that state.
 //!
-//! Slots are per lane (`env_index`). The driver works on *groups* of lanes
-//! (one group per lane for a lane endpoint, one group for the whole vector
-//! otherwise), so every accessor takes the group's slot `positions` and reads
-//! or advances only those lanes. Episode indices and seeds come from the
-//! route-global slot counter ([`claim_slots`](RouteState::claim_slots)), so
-//! they depend on start order alone, never on which group ran the episode.
+//! Slots are per lane (`env_index`). The driver works on groups of lanes (one
+//! per lane for a lane endpoint, one for the whole vector otherwise), so every
+//! accessor takes the group's slot `positions` and touches only those lanes.
+//! Episode indices and seeds come from the route-global slot counter
+//! ([`claim_slots`](RouteState::claim_slots)), so they depend on start order
+//! alone, never on which group ran the episode.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -48,23 +48,11 @@ pub(crate) struct RouteState {
     total_episodes: i64,
     records: EpisodeRecordRegistry,
     episode_summaries: Vec<EpisodeSummary>,
-    /// The explicit seed each live episode was reset with, keyed by episode id;
-    /// drained into that episode's summary at completion.
     seed_by_episode: HashMap<String, i64>,
-    /// The next route-global episode slot. A slot is claimed when an episode
-    /// starts; it is the episode's index and picks its seed.
     next_slot: u64,
-    /// The episode budget the bounded claim honors.
     max_episodes: Option<u64>,
-    /// The trial ordinal each live episode was reset with, keyed by episode id;
-    /// drained into that episode's summary at completion.
     trial_by_episode: HashMap<String, u64>,
-    /// How many trial ordinals have been minted off `trial_index_base`
-    /// (episode-start order). Monotone for the life of the route.
     trial_cursor: u64,
-    /// Episodes that started past the budget: a lockstep lane the env rolled
-    /// (or reset) after every slot was claimed. Stepped because its vector
-    /// cannot pause one lane, but never scored, counted, or announced.
     surplus: HashSet<String>,
 }
 
@@ -103,22 +91,12 @@ impl RouteState {
         }
     }
 
-    /// Claim the next `lanes` trial ordinals off `trial_index_base`, in
-    /// episode-start order and positionally aligned to the lanes being reset.
-    ///
-    /// The window rule: a route's trial window is its `max_episodes` budget M --
-    /// the run ends once `trials_completed_in_window >= M`, so a shard walks
-    /// exactly the ordinals `[base, base + M)` and the next shard's base is
-    /// `base + M`. The cursor only walks forward, and every reset claims one
-    /// ordinal per restarted lane, so no two episodes on a route ever share one.
     pub(crate) fn claim_trial_indices(&mut self, base: u64, lanes: usize) -> Vec<u64> {
         let start = base.saturating_add(self.trial_cursor);
         self.trial_cursor += lanes as u64;
         (0..lanes as u64).map(|offset| start + offset).collect()
     }
 
-    /// Remember which trial ordinal each episode in a reset batch received, so
-    /// its completion summary can report it. No-op for an unsequenced batch.
     pub(crate) fn note_episode_trials(&mut self, episode_ids: &[String], trials: &[u64]) {
         for (episode_id, trial) in episode_ids.iter().zip(trials) {
             self.trial_by_episode.insert(episode_id.clone(), *trial);
@@ -129,8 +107,6 @@ impl RouteState {
         self.trial_by_episode.get(episode_id).copied()
     }
 
-    /// The position of lane `env_index` in the slot vector, or `None` when the
-    /// lane is not part of this route.
     pub(crate) fn slot_position(&self, env_index: u32) -> Option<usize> {
         let env_index = i32::try_from(env_index).ok()?;
         self.slots
@@ -138,9 +114,6 @@ impl RouteState {
             .position(|slot| slot.env_index == env_index)
     }
 
-    /// Claim the next `count` consecutive episode slots. `bounded` refuses the
-    /// claim (returning `None`, claiming nothing) once any of them would fall
-    /// past `max_episodes`; unbounded always claims.
     pub(crate) fn claim_slots(&mut self, count: usize, bounded: bool) -> Option<Vec<u64>> {
         let first = self.next_slot;
         let last = first + count as u64;
@@ -151,10 +124,6 @@ impl RouteState {
         Some((first..last).collect())
     }
 
-    /// Claim up to `count` consecutive slots: as many as the budget still
-    /// holds (all of them when unbounded), so a lockstep vector whose width
-    /// exceeds the remaining budget starts the scored lanes and leaves the rest
-    /// surplus.
     pub(crate) fn claim_slots_upto(&mut self, count: usize) -> Vec<u64> {
         let first = self.next_slot;
         let remaining = self
@@ -173,8 +142,6 @@ impl RouteState {
         self.surplus.contains(episode_id)
     }
 
-    /// Every lane at `positions` holds a surplus episode: the group has
-    /// nothing scored left to run.
     pub(crate) fn all_surplus_at(&self, positions: &[usize]) -> bool {
         positions.iter().all(|&position| {
             self.slots
@@ -184,8 +151,6 @@ impl RouteState {
         })
     }
 
-    /// The slot's per-step latency means over its current episode, in
-    /// milliseconds; `None` before its first step.
     pub(crate) fn slot_timings_ms(&self, env_index: u32) -> (Option<f64>, Option<f64>) {
         let Some(slot) = self
             .slot_position(env_index)
@@ -200,21 +165,16 @@ impl RouteState {
         (per_step(slot.predict_ns), per_step(slot.step_ns))
     }
 
-    /// Remember which explicit seed each episode in a reset batch received, so
-    /// its completion summary can report it. No-op for an unseeded batch.
     pub(crate) fn note_episode_seeds(&mut self, episode_ids: &[String], seeds: &[i64]) {
         for (episode_id, seed) in episode_ids.iter().zip(seeds) {
             self.seed_by_episode.insert(episode_id.clone(), *seed);
         }
     }
 
-    /// Record one completed episode's summary (completion order) for the
-    /// session report.
     pub(crate) fn record_episode_summary(&mut self, summary: EpisodeSummary) {
         self.episode_summaries.push(summary);
     }
 
-    /// Drain the recorded episode summaries into the returned report.
     pub(crate) fn take_episode_summaries(&mut self) -> Vec<EpisodeSummary> {
         std::mem::take(&mut self.episode_summaries)
     }
@@ -244,8 +204,6 @@ impl RouteState {
         }
     }
 
-    /// The route context for a group: the lane is stamped when the group is
-    /// one lane of a lane endpoint, so events and telemetry slice per lane.
     pub(crate) fn group_context(&self, positions: &[usize], lane_group: bool) -> RuntimeEnvContext {
         RuntimeEnvContext {
             lane: if lane_group {
@@ -270,12 +228,9 @@ impl RouteState {
 
     pub(crate) fn next_request_id(&mut self, phase: &str) -> String {
         self.request_seq += 1;
-        // env_id is globally unique (UUIDv7), so it alone disambiguates request
-        // ids across every adapter; request_seq restarts at 0 per RouteState.
         format!("{}:{}:{:06}", self.env_id, phase, self.request_seq)
     }
 
-    /// The slots at `positions`, in that order.
     pub(crate) fn slots_at(&self, positions: &[usize]) -> Vec<&SlotState> {
         positions
             .iter()
@@ -283,9 +238,6 @@ impl RouteState {
             .collect()
     }
 
-    /// Ordered per-row episode ids for a group — the self-describing batch.
-    /// Row `i` belongs to `positions[i]`. Empty string for a lane with no
-    /// active episode.
     pub(crate) fn episode_ids_at(&self, positions: &[usize]) -> Vec<String> {
         self.slots_at(positions)
             .into_iter()
@@ -330,9 +282,6 @@ impl RouteState {
         }
     }
 
-    /// Start one episode per position (a driver-owned reset). `slots` are the
-    /// claimed route-global slots, aligned to `positions`; each becomes its
-    /// episode's index.
     pub(crate) fn start_episodes_at(
         &mut self,
         positions: &[usize],
@@ -364,9 +313,6 @@ impl RouteState {
             .collect()
     }
 
-    /// Observe the ids the env rolled itself to (NEXT_STEP autoreset): lanes
-    /// whose id changed start a fresh episode at the given slot; the others keep
-    /// their episode. `slots` aligns to `positions` (`None` = not rolling).
     pub(crate) fn observe_episode_ids_at(
         &mut self,
         positions: &[usize],
@@ -388,10 +334,6 @@ impl RouteState {
             .collect()
     }
 
-    /// Advance the group's lanes by one step; `rewards` aligns to `positions`.
-    /// `step` is the env round trip's wall time and `predict` that of the
-    /// predict(s) that landed since the previous step (zero for a step served
-    /// from chunk replay); every lane of the group experienced both.
     pub(crate) fn record_step_at(
         &mut self,
         positions: &[usize],
@@ -420,9 +362,6 @@ impl RouteState {
         self.seed_by_episode.get(episode_id).copied()
     }
 
-    /// End the episode at `env_index` on the model side: its id, once, for the
-    /// ResetAdapter that drops the model's state under it. `None` for an empty
-    /// lane or an episode already ended.
     pub(crate) fn end_episode_at(&mut self, env_index: u32) -> Option<String> {
         let position = self.slot_position(env_index)?;
         let episode = self.slots.get_mut(position)?.episode.as_mut()?;
@@ -433,8 +372,6 @@ impl RouteState {
         Some(episode.episode_id.clone())
     }
 
-    /// End every episode the model has predicted on and not yet been told the
-    /// end of — the route's live episodes at teardown. Each id comes out once.
     pub(crate) fn end_live_episodes(&mut self) -> Vec<String> {
         self.slots
             .iter_mut()
@@ -447,8 +384,6 @@ impl RouteState {
             .collect()
     }
 
-    /// A predict is going out for the lanes at `positions`: the model will hold
-    /// state under their episodes' ids, so their ends must reach it.
     pub(crate) fn mark_predicted(&mut self, positions: &[usize]) {
         for &position in positions {
             if let Some(episode) = self
@@ -461,8 +396,6 @@ impl RouteState {
         }
     }
 
-    /// The model's observation of the lanes at `positions`, carrying
-    /// `contract`, each row tagged with its episode.
     pub(crate) fn predict_request_at(
         &mut self,
         positions: &[usize],
@@ -509,25 +442,19 @@ impl RouteState {
             };
             let episode_id = episode_ids.get(index).cloned().unwrap_or_default();
             let episode_record_id = record_ids.get(index).cloned().unwrap_or_default();
-            // Did this lane's episode id flip? A NEXT_STEP autoreset rolls the id
-            // on a single lane at t+1; only that lane's step counter must reset.
             let previous_id = slot
                 .episode
                 .as_ref()
                 .map(|episode| episode.episode_id.clone())
                 .unwrap_or_default();
             let rolled = !episode_id.is_empty() && episode_id != previous_id;
+            // The outgoing episode's seed is dropped only when its lane rolls (never at completion
+            // emit), so the completion iteration's final predict still reports it.
             if rolled && !previous_id.is_empty() {
-                // The outgoing episode's seed is dropped only when its lane
-                // rolls (never at completion emit), so the completion
-                // iteration's final predict still reports it.
                 self.seed_by_episode.remove(&previous_id);
                 self.trial_by_episode.remove(&previous_id);
                 self.surplus.remove(&previous_id);
             }
-            // A sync that leaves a lane's id alone (the siblings of an
-            // autoreset roll) leaves its episode live on the model too, so its
-            // model-side lifecycle flags carry over; only a new id starts fresh.
             let (predicted, ended) = match slot.episode.as_ref() {
                 Some(previous) if previous.episode_id == episode_id => {
                     (previous.predicted, previous.ended)
@@ -547,8 +474,6 @@ impl RouteState {
                     ended,
                 })
             };
-            // `reset_steps` force-resets every lane of the group (a driver-owned
-            // reset); `rolled` resets only the lane whose id flipped (autoreset).
             if reset_steps || rolled {
                 slot.step = 0;
                 slot.reset = true;
@@ -561,7 +486,6 @@ impl RouteState {
     }
 }
 
-/// Unix time in nanoseconds; saturates at i64::MAX.
 pub(crate) fn now_unix_ns() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

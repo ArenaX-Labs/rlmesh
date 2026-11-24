@@ -31,8 +31,6 @@ pub(crate) fn space_value_to_py_neutral<'py>(
     space_value_to_py(py, value, space, &array_leaf_to_py_neutral)
 }
 
-// Received structural deviations are malformed messages. Range deviations stay
-// available to the serving side's warn/strict/off validation policy.
 pub(super) fn validate_received_value(space: &SpaceSpec, value: &SpaceValue) -> PyResult<()> {
     if let Conformance::Structural(err) = conform(space, value) {
         return Err(crate::types::ProtocolException::new_err(err.to_string()));
@@ -40,11 +38,8 @@ pub(super) fn validate_received_value(space: &SpaceSpec, value: &SpaceValue) -> 
     Ok(())
 }
 
-// Encodes the array-like leaves (Box, MultiBinary, MultiDiscrete); only the leaf
-// behavior differs between the backend-aware and neutral (always-native) paths.
 type LeafEncoder<'py> = dyn Fn(Python<'py>, &SpaceValue, &SpaceSpec) -> PyResult<Bound<'py, PyAny>>;
 
-// Shared scalar/composite dispatch parameterized by the leaf encoder.
 fn space_value_to_py<'py>(
     py: Python<'py>,
     value: &SpaceValue,
@@ -125,8 +120,6 @@ fn array_leaf_to_py_neutral<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     match value {
-        // Hand the native tensor over directly: shares the (aligned) wire
-        // storage instead of copying into a fresh unaligned buffer.
         SpaceValue::Box(value) => wrap_native_tensor(py, value.clone()),
         SpaceValue::MultiBinary(values) => {
             let bytes = values
@@ -150,10 +143,6 @@ pub(crate) fn py_any_to_space_value_with_backend(
     backend: ValueBackend,
 ) -> PyResult<SpaceValue> {
     let encoded = py_any_to_space_value_unchecked(py, value, space, backend)?;
-    // Structural deviations (wrong shape/dtype/arity/domain, NaN, a missing key)
-    // are rejected at encode regardless of policy. Range deviations (Box bounds,
-    // Text charset/length) pass through so the serving side can apply its
-    // validation policy (warn by default); see the env server's enforcement.
     if let Conformance::Structural(err) = conform(space, &encoded) {
         return Err(pyo3::exceptions::PyValueError::new_err(err.to_string()));
     }
@@ -185,8 +174,6 @@ pub(super) fn py_any_to_space_value_unchecked(
             } else if let Ok(number) = normalized.extract::<i64>() {
                 number
             } else {
-                // Reject non-integer floats instead of truncating toward zero,
-                // matching gymnasium's Discrete.contains.
                 let number = normalized.extract::<f64>()?;
                 if !number.is_finite() || number.fract() != 0.0 {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -213,8 +200,6 @@ pub(super) fn py_any_to_space_value_unchecked(
             let dict = normalized.cast::<PyDict>()?;
             let mut values = BTreeMap::new();
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
-                // Preserve missing fields until root conformance can report
-                // the native structural error with the full value path.
                 if let Some(child) = dict.get_item(key)? {
                     values.insert(
                         key.clone(),
@@ -290,8 +275,6 @@ pub(crate) fn encode_array_like_value_with_backend(
     space: &SpaceSpec,
     backend: ValueBackend,
 ) -> PyResult<Vec<u8>> {
-    // A native rlmesh tensor is validated and encoded identically on either
-    // backend; only non-tensor inputs (lists, numpy arrays) take the backend path.
     if let Some(bytes) = encode_native_tensor(value, space)? {
         return Ok(bytes);
     }
@@ -367,20 +350,6 @@ pub(crate) fn decode_i64_sequence_bytes(bytes: &[u8], dtype: DType) -> PyResult<
         .collect())
 }
 
-/// Move a device-resident tensor to host so `numpy.asarray` can read it, or return
-/// `None` when the value is not a recoverable device tensor.
-///
-/// `numpy.asarray` already reads CPU torch tensors (via `__array__`) and jax arrays
-/// directly, but raises on a non-CPU tensor (a CUDA torch obs errors with "can't
-/// convert cuda:0 device type tensor to numpy"). Only a value carrying `.cpu` is
-/// moved host-side, so an *undeclared* GPU env's observation still encodes -- the
-/// obs direction needs no framework declaration.
-///
-/// Deliberately WITHOUT `.detach()`: a `requires_grad` tensor must keep failing so
-/// its real "call numpy() on Tensor that requires grad" error surfaces (an autograd
-/// graph leaking into an observation is a bug, not something to silently paper
-/// over). A value with no `.cpu` (a ragged/object array) returns `None` so its
-/// original, accurate `asarray` error stands instead of a misleading retry error.
 fn to_host_arraylike<'py>(value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyAny>>> {
     if value.hasattr("cpu")? {
         return Ok(Some(value.call_method0("cpu")?));
@@ -396,16 +365,8 @@ fn encode_with_numpy(
     let numpy = py.import("numpy")?;
     let dtype_name = dtype_name(space.dtype as i32);
 
-    // A float supplied for an integer dtype coerces only when every element is
-    // finite, exactly integral, and within the target dtype's range; otherwise
-    // reject rather than silently truncating or overflow-wrapping, which would
-    // corrupt the value. (NumPy only warns on out-of-range integer casts.)
     let source = match numpy.getattr("asarray")?.call1((value,)) {
         Ok(source) => source,
-        // A device tensor (e.g. a CUDA torch obs) raises here; retry after moving it
-        // to host so an undeclared GPU env's observation still encodes. Any other
-        // failure (a requires_grad tensor, a ragged/object array) keeps its
-        // original, accurate error rather than a misleading second-asarray error.
         Err(original) => match to_host_arraylike(value)? {
             Some(host) => numpy.getattr("asarray")?.call1((&host,))?,
             None => return Err(original),
@@ -415,12 +376,10 @@ fn encode_with_numpy(
         .getattr("dtype")?
         .getattr("kind")?
         .extract::<String>()?;
-    // An integer dtype must reject any out-of-range element on encode, mirroring
-    // the native `check_int_in_dtype_range` guard — otherwise the `asarray` cast
-    // below silently overflow-wraps (e.g. 300 -> 44 for uint8) and the numpy
-    // backend disagrees byte-for-byte with the native path. We check both float
-    // sources (which also must be exactly integral) and integer/bool sources.
+    // Reject out-of-range integers: the asarray cast would silently wrap (300 -> 44 for uint8).
     if resolve_dtype(space.dtype).is_integer() && matches!(kind.as_str(), "f" | "i" | "u" | "b") {
+        // A float for an integer dtype coerces only when every element is finite,
+        // exactly integral and in range: never truncate or wrap silently.
         if kind == "f" {
             let rint = numpy.getattr("rint")?.call1((&source,))?;
             let integral = source.call_method1("__eq__", (&rint,))?;
@@ -434,12 +393,6 @@ fn encode_with_numpy(
         }
 
         let info = numpy.getattr("iinfo")?.call1((dtype_name,))?;
-        // Use a strict `< max+1`, with max+1 computed in Python's arbitrary-
-        // precision int (`iinfo.max` is a Python int, not a numpy scalar that
-        // would wrap). iinfo.max such as 2**63-1 is not representable in f64 and
-        // rounds *up* to 2**63, so `<= max` would wrongly accept 2**63 and the
-        // int cast below would then overflow-wrap. max+1 is an exact power-of-two
-        // float, so `< max+1` is an exact boundary.
         let max_exclusive = info.getattr("max")?.call_method1("__add__", (1,))?;
         let in_range = source
             .call_method1("__ge__", (info.getattr("min")?,))?
@@ -454,15 +407,12 @@ fn encode_with_numpy(
         }
     }
 
-    // Reuse the already-materialized `source` so the data is parsed once.
     let array = numpy.getattr("asarray")?.call1((&source, dtype_name))?;
 
     let bytes_obj = array.call_method0("tobytes")?;
     bytes_obj.extract::<Vec<u8>>()
 }
 
-// Validate + encode a native rlmesh tensor; returns None when `value` is not a
-// native tensor so the caller can fall back to a backend-specific encoder.
 fn encode_native_tensor(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult<Option<Vec<u8>>> {
     let Some(tensor) = extract_tensor(value)? else {
         return Ok(None);
@@ -477,9 +427,6 @@ fn encode_native_tensor(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult
         )));
     }
 
-    // The bytes are reinterpreted against the space's element layout, so a
-    // tensor that is neither a single sample nor a whole number of samples
-    // would silently misdecode. Reject those instead of shipping garbage.
     let base_numel = element_count(&shape_to_usize(&space.shape)?);
     let tensor_numel = tensor.inner.numel();
     if base_numel == 0 {
@@ -519,9 +466,6 @@ fn decode_with_numpy<'py>(
 
     let item_count: usize = raw_array.getattr("size")?.extract()?;
     let base_shape: Vec<i64> = space.shape.clone();
-    // Mirror the native backend's element_count: an empty shape is a single
-    // scalar, otherwise the product of the dims (which is 0 for a (0,) space).
-    // Using .max(1) here missized zero-size spaces into a (0, 0) batch.
     let base_numel = if base_shape.is_empty() {
         1
     } else {
@@ -530,8 +474,6 @@ fn decode_with_numpy<'py>(
 
     if item_count == base_numel {
         if base_shape.is_empty() {
-            // Scalar () spaces decode to a Python scalar, matching the native
-            // backend instead of leaving frombuffer's stray (1,) array.
             return raw_array.call_method0("item");
         }
         return raw_array.call_method1("reshape", (base_shape,));
@@ -619,11 +561,6 @@ fn pack_scalar_bytes(value: &Bound<'_, PyAny>, dtype: DType, out: &mut Vec<u8>) 
             out.extend((value.extract::<f64>()? as f32).to_le_bytes());
         }
         DType::Float64 => out.extend(value.extract::<f64>()?.to_le_bytes()),
-        // Single rounding f64 -> f16 via the native codec's portable conversion,
-        // matching numpy. `half::f16::from_f64` cannot be used: on x86 it rounds
-        // through f32 (F16C `f as f32`, and the software fallback truncates the
-        // low 32 mantissa bits), double-rounding borderline values; only aarch64
-        // hardware is correct. `f64_to_f16_bits` rounds directly on every arch.
         DType::Float16 => {
             out.extend(rlmesh_spaces::f64_to_f16_bits(value.extract::<f64>()?).to_le_bytes())
         }
@@ -636,7 +573,6 @@ fn decode_scalars(bytes: &[u8], dtype: DType) -> PyResult<Vec<Scalar>> {
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
-/// The extension treats `Unspecified` specs as float32 throughout.
 fn normalize_dtype(dtype: DType) -> DType {
     match dtype {
         DType::Unspecified => DType::Float32,
@@ -652,7 +588,6 @@ where
 }
 
 fn dtype_size(dtype: DType) -> usize {
-    // Unspecified follows the extension-wide float32 fallback.
     match dtype {
         DType::Unspecified => 4,
         other => rlmesh_spaces::dtype_size(other),
@@ -678,11 +613,6 @@ fn element_count(shape: &[usize]) -> usize {
     }
 }
 
-/// Demote a single-element native tensor to a plain Python scalar.
-///
-/// A chunk corner over a scalar space unstacks its 1-D chunk into rank-0
-/// `Tensor` rows, and the scalar leaves take numbers, not tensors. Returns
-/// `None` for anything that is not a one-element tensor.
 fn scalar_from_native_tensor<'py>(
     value: &Bound<'py, PyAny>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
@@ -715,7 +645,6 @@ fn scalar_to_object(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
 
 #[cfg(test)]
 mod tests {
-
     use super::super::ValueBackend;
     use super::{decode_array_like_value_with_backend, encode_array_like_value_with_backend};
     use crate::spaces::tensor::wrap_native_tensor;
@@ -745,9 +674,6 @@ mod tests {
 
     #[test]
     fn f16_pack_single_rounds_not_double_rounds() {
-        // value-encoding-v1 sentinel (mirrors scalar.rs `value_encoding_v1_float_golden`):
-        // 1.0 + 2^-11 + 2^-25 packs to f16 0x3C01 with single f64->f16 rounding;
-        // the old `from_f32(x as f32)` double-rounded it to 0x3C00.
         Python::attach(|py| {
             let dr = 1.0_f64 + 1.0 / 2048.0 + 1.0 / 33_554_432.0;
             let value = pyo3::types::PyFloat::new(py, dr);
@@ -806,8 +732,6 @@ mod tests {
             .unwrap();
             let value = wrap_native_tensor(py, tensor).unwrap();
 
-            // A native tensor is validated ahead of the backend split, so the
-            // numpy path rejects the dtype mismatch instead of silently coercing.
             let err = encode_array_like_value_with_backend(py, &value, &space, ValueBackend::Auto)
                 .unwrap_err();
             assert!(
@@ -829,7 +753,6 @@ mod tests {
                 .build()
                 .unwrap();
 
-            // Integral floats coerce cleanly to the integer dtype.
             let integral = numpy
                 .getattr("asarray")
                 .unwrap()
@@ -840,7 +763,6 @@ mod tests {
                     .is_ok()
             );
 
-            // A non-integral float is rejected rather than silently truncated.
             let fractional = numpy
                 .getattr("asarray")
                 .unwrap()
@@ -854,8 +776,6 @@ mod tests {
                 "unexpected error: {err}"
             );
 
-            // An integral but out-of-range float is rejected rather than
-            // silently overflow-wrapping to a garbage in-type value.
             let out_of_range = numpy
                 .getattr("asarray")
                 .unwrap()
@@ -883,9 +803,6 @@ mod tests {
                 .build()
                 .unwrap();
 
-            // An int64 array whose element exceeds uint8 must be rejected, not
-            // silently overflow-wrapped (300 -> 44) the way numpy's cast does —
-            // matching the native `check_int_in_dtype_range` encode guard.
             let over = numpy
                 .getattr("asarray")
                 .unwrap()
@@ -898,7 +815,6 @@ mod tests {
                 "unexpected error: {err}"
             );
 
-            // In-range integers still encode.
             let within = numpy
                 .getattr("asarray")
                 .unwrap()
@@ -918,16 +834,11 @@ mod tests {
                 return;
             }
             let numpy = py.import("numpy").unwrap();
-            // Wide float bounds so only the dtype-range check (not the box
-            // bounds) decides; Int64::MAX is not representable in f64.
             let space = BoxSpaceBuilder::scalar(-1e19, 1e19, vec![1])
                 .dtype(rlmesh_spaces::DType::Int64)
                 .build()
                 .unwrap();
 
-            // 2**63 is an exact f64 but one past i64::MAX (2**63 - 1). i64::MAX
-            // rounds *up* to 2**63 in f64, so a `<= max` check would wrongly
-            // accept this and the int cast would then overflow-wrap.
             let over = numpy
                 .getattr("asarray")
                 .unwrap()
@@ -940,7 +851,6 @@ mod tests {
                 "unexpected error: {err}"
             );
 
-            // The largest in-range integral f64 (2**63 - 1024) still encodes.
             let within = numpy
                 .getattr("asarray")
                 .unwrap()
@@ -987,7 +897,6 @@ mod tests {
             let decoded =
                 decode_array_like_value_with_backend(py, &bytes, &space, ValueBackend::Auto)
                     .unwrap();
-            // A scalar () space decodes to a Python float, not a (1,) array.
             assert!(
                 !decoded.hasattr("shape").unwrap(),
                 "expected a scalar, got an array-like: {decoded:?}"
@@ -1231,7 +1140,6 @@ class AutoresetMode:
 
     #[test]
     fn discrete_accepts_a_rank_zero_native_tensor() {
-        // One unstacked row of a 1-D action chunk: rank-0, one element.
         Python::attach(|py| {
             let space = DiscreteBuilder::new(3).build().unwrap();
             let tensor = Tensor::from_slice(&2i64.to_le_bytes(), &[], DType::Int64).unwrap();
@@ -1299,9 +1207,6 @@ class AutoresetMode:
                 .eval(pyo3::ffi::c_str!("{'instruction': 'a b'}"), None, None)
                 .unwrap();
 
-            // A charset mismatch is a range deviation: it is no longer rejected at
-            // encode (the serving side applies the validation policy), but `conform`
-            // still classifies it as a range deviation and reports the nested path.
             let encoded =
                 py_any_to_space_value_with_backend(py, &value, &space, ValueBackend::Native)
                     .unwrap();

@@ -1,11 +1,9 @@
-//! Image axis layout vocabulary.
-
 use serde::{Deserialize, Serialize};
 
 /// Axis layout of an image value.
 ///
-/// **Frozen v1 vocabulary** (same policy as [`crate::spec::RotationEncoding`]):
-/// a new layout is a v2 key bump, not an additive v1 value.
+/// A closed vocabulary, like [`RotationEncoding`](crate::spec::RotationEncoding): a new layout
+/// is a breaking spec change, not an additive value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageLayout {
@@ -39,15 +37,9 @@ impl crate::spec::accept_set::WireVocab for ImageLayout {
 
 /// How a resize reconciles a target whose aspect ratio differs from the source.
 ///
-/// A model may declare a *preference list* of fit modes (an
-/// [`AcceptSet`](crate::spec::AcceptSet)); the resolver picks, per env, the
-/// first one that does not need a disallowed upscale — so the same spec can
-/// crop a large camera and letterbox a small one. When the aspects already
-/// match, every mode is the same uniform scale.
-///
-/// No `Default`: there is no default-construction path (unlike [`ImageLayout`],
-/// whose `Default` backs `#[serde(default)]` on layout fields). The resolver
-/// picks the `Stretch` fallback explicitly, so a derived default would be dead.
+/// A model may declare a preference list ([`AcceptSet`](crate::spec::AcceptSet)); per env, the
+/// resolver picks the first mode that needs no disallowed upscale, falling back to `Stretch`.
+/// When the aspects already match, every mode is the same uniform scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FitMode {
     /// Resize each axis independently to the target (distorts aspect).

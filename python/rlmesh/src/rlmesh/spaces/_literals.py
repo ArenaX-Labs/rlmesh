@@ -1,9 +1,4 @@
-"""Type-checker literals for space construction (editor IntelliSense only).
-
-Runtime validation stays in Rust (``DType``); these just give autocomplete for
-the dtype names. Keep them in sync with the Rust ``DType`` enum in
-``crates/rlmesh-spaces/src/dtype.rs``.
-"""
+"""Type-checker literals for space construction (editor IntelliSense only)."""
 
 from __future__ import annotations
 
@@ -16,17 +11,11 @@ IntDType: TypeAlias = Literal[
 BoolDType: TypeAlias = Literal["bool"]
 DType: TypeAlias = FloatDType | IntDType | BoolDType
 
-# Accepted dtype argument: our literals (so editors autocomplete the names) plus
-# ``object`` so any third-party dtype -- ``np.float32``, ``torch.float32``, a jax
-# dtype -- is allowed without naming a framework. ``_internals.dtype_name``
-# coerces it to a name string and the Rust ``DType`` enum validates it.
+# ``object`` admits any third-party dtype without naming a framework; the Rust DType enum validates the name.
 FloatDTypeLike: TypeAlias = FloatDType | object
 IntDTypeLike: TypeAlias = IntDType | object
-# Discrete accepts only these three integer dtypes (checked natively).
 DiscreteDType: TypeAlias = Literal["int64", "int32", "uint8"]
 DiscreteDTypeLike: TypeAlias = DiscreteDType | object
 
-# Infinite bounds: ``float(...)`` already parses these, so they work as Box
-# bounds with no runtime change -- the literal just adds autocomplete.
 InfBound: TypeAlias = Literal["inf", "-inf"]
 Bound: TypeAlias = float | InfBound

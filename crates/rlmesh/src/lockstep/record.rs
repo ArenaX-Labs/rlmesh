@@ -1,11 +1,4 @@
 //! Lockstep recording, off the critical path.
-//!
-//! The env's process hands each request and reply to a [`Tee`] (two `Bytes`
-//! clones and a channel send); a worker thread splits the slabs per lane
-//! and writes them into the in-process recorder as `Sample` envelopes:
-//! observations on `/{robot}/{path}`, commands on `{path}/_applied`, with
-//! `seq` the step, `tick` the step and `capture_ns` the notional session
-//! time `step × tick_ns`.
 
 use std::sync::mpsc;
 
@@ -15,8 +8,7 @@ use rlmesh_session::wire::{Layout, LockstepReply, PartSpec, PartValues, Sample};
 
 use crate::lockstep::exchange::Request;
 
-/// One exchange to record, or a flush to acknowledge once all before it are.
-#[allow(clippy::large_enum_variant)] // Exchanges are what the channel carries.
+#[allow(clippy::large_enum_variant)]
 enum Teed {
     Exchange(Request, LockstepReply),
     Flush(tokio::sync::oneshot::Sender<()>),
@@ -98,7 +90,6 @@ fn write(
         };
         let stride = match Layout::of(fields) {
             Ok(Layout::Packed { stride, .. }) => Some(stride),
-            // A text slab is v1's framing: recorded whole.
             _ => None,
         };
         for (i, lane) in lanes.iter().enumerate() {

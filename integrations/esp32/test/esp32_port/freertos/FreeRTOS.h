@@ -1,5 +1,3 @@
-/* The few FreeRTOS types and constants zenoh-pico's ESP32 port uses, for its
- * test on Linux (esp32_port.c implements the calls). */
 #ifndef ESP32_PORT_FREERTOS_H_
 #define ESP32_PORT_FREERTOS_H_
 

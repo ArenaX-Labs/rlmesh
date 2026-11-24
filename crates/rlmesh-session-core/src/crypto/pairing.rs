@@ -1,22 +1,18 @@
-//! Machine pairing: a Noise XX handshake between the laptop
-//! (initiator) and rlmeshd (responder), then commit-reveal inside it, as in
-//! Bluetooth numeric comparison:
+//! Machine pairing: a Noise XX handshake between the laptop (initiator) and rlmeshd
+//! (responder), then commit-reveal inside it, as in Bluetooth numeric comparison:
 //!
 //! 1. rlmeshd draws `Nr` and sends `C = BLAKE2s(lp("rlmesh/v2 pair commit") ‖ h ‖ Nr)`.
 //! 2. The laptop draws `Ni` and sends it.
 //! 3. rlmeshd reveals `Nr`; the laptop checks it against `C`.
 //! 4. Both show `SAS = u64_le(BLAKE2s(lp("rlmesh/v2 pair sas") ‖ h ‖ Ni ‖ Nr)[..8]) mod 10^6`.
 //!
-//! XX is `Noise_XX_25519_ChaChaPoly_BLAKE2s` with prologue
-//! `lp("rlmesh/v2 pair") ‖ exchange` and empty payloads, so `h` (the
-//! handshake hash after XX) binds the exchange id. After XX every message
-//! is a `Sealed` (kinds 16–19) under the XX raw split: key 1 laptop →
-//! rlmeshd, key 2 rlmeshd → laptop.
+//! XX is `Noise_XX_25519_ChaChaPoly_BLAKE2s` with prologue `lp("rlmesh/v2 pair") ‖ exchange`
+//! and empty payloads, so `h` (the handshake hash after XX) binds the exchange id. After XX every
+//! message is a `Sealed` (kinds 16–19) under the XX raw split: key 1 laptop → rlmeshd, key 2
+//! rlmeshd → laptop.
 //!
-//! A message that fails its Noise check leaves a side's pending state as it
-//! was: each side keeps its inputs and replays its part of the
-//! handshake from them, so a forged `xx2` or `xx3` can be followed by the
-//! real one.
+//! A message that fails its Noise check leaves a side's pending state as it was, so a forged
+//! `xx2` or `xx3` can be followed by the real one.
 
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
@@ -42,8 +38,7 @@ pub const LAPTOP_KEY_ID: u32 = 1;
 pub const DAEMON_KEY_ID: u32 = 2;
 /// The kinds the laptop sends: `PairNonce` (17) and `PairWait` (19).
 pub const LAPTOP_KINDS: KindSet = KindSet::of_const(&[17, 19]);
-/// The kinds rlmeshd sends: `PairCommit` (16), `PairReveal` (18) and
-/// `PairResult` (19).
+/// The kinds rlmeshd sends: `PairCommit` (16), `PairReveal` (18) and `PairResult` (19).
 pub const DAEMON_KINDS: KindSet = KindSet::of_const(&[16, 18, 19]);
 /// Length of XX msg 1 (`e`).
 pub const XX1_LEN: usize = 32;
@@ -69,8 +64,7 @@ pub enum PairingError {
     /// The revealed `Nr` doesn't match the commitment `C`.
     #[error("the revealed nonce doesn't match the commitment")]
     RevealMismatch,
-    /// A second `PairNonce` with a different `Ni` for the same commitment:
-    /// the exchange aborts.
+    /// A second `PairNonce` with a different `Ni` for the same commitment: the exchange aborts.
     #[error("a different nonce for the same commitment")]
     NonceChanged,
     /// The exchange was aborted earlier (after [`NonceChanged`](Self::NonceChanged)).
@@ -103,19 +97,18 @@ pub fn commitment(h: &[u8; 32], nr: &[u8; 32]) -> [u8; 32] {
     hash_labelled(COMMIT_LABEL, &[h, nr]).unwrap_or_else(|_| unreachable!("a short label"))
 }
 
-/// `SAS = u64_le(first 8 bytes of BLAKE2s(lp("rlmesh/v2 pair sas") ‖ h ‖ Ni ‖ Nr)) mod 10^6`.
+/// `SAS = u64_le(first 8 bytes of BLAKE2s(lp("rlmesh/v2 pair sas") ‖ h ‖ Ni ‖ Nr)) mod
+/// 10^6`.
 pub fn sas(h: &[u8; 32], ni: &[u8; 32], nr: &[u8; 32]) -> Sas {
     let digest =
         hash_labelled(SAS_LABEL, &[h, ni, nr]).unwrap_or_else(|_| unreachable!("a short label"));
     let mut first = [0u8; 8];
     first.copy_from_slice(&digest[..8]);
-    // The remainder is below 10^6, so it fits a u32.
     Sas((u64::from_le_bytes(first) % 1_000_000) as u32)
 }
 
-/// One side of a completed XX handshake: `h`, the other side's static key
-/// and the sealed channel in both directions (each side's own pairing
-/// kinds only, always encrypted).
+/// One side of a completed XX handshake: `h`, the other side's static key and the sealed
+/// channel in both directions (each side's own pairing kinds only, always encrypted).
 pub struct PairLink {
     handshake_hash: [u8; 32],
     remote_static: [u8; 32],
@@ -163,14 +156,13 @@ impl PairLink {
         &self.handshake_hash
     }
 
-    /// The other side's static X25519 key (the host's, at the laptop; the
-    /// laptop's, at rlmeshd).
+    /// The other side's static X25519 key (the host's, at the laptop; the laptop's, at
+    /// rlmeshd).
     pub fn remote_static(&self) -> &[u8; 32] {
         &self.remote_static
     }
 }
 
-/// What a side keeps to replay its part of XX.
 struct Inputs {
     local: StaticKeypair,
     prologue: Vec<u8>,
@@ -205,7 +197,6 @@ impl Inputs {
 
 /// The laptop, after sending XX msg 1.
 pub struct PairInitiator {
-    /// Boxed: the secrets stay put while the state moves.
     inputs: Box<Inputs>,
 }
 
@@ -216,8 +207,8 @@ impl core::fmt::Debug for PairInitiator {
 }
 
 impl PairInitiator {
-    /// Start the exchange `exchange` (16 random bytes the laptop drew): the
-    /// state and XX msg 1 (`xx1`).
+    /// Start the exchange `exchange` (16 random bytes the laptop drew): the state and XX msg 1
+    /// (`xx1`).
     ///
     /// # Errors
     /// [`HandshakeError`].
@@ -254,7 +245,6 @@ impl PairInitiator {
 
 /// rlmeshd, after replying with XX msg 2.
 pub struct PairResponder {
-    /// Boxed: the secrets stay put while the state moves.
     inputs: Box<Inputs>,
     xx1: Vec<u8>,
 }
@@ -266,8 +256,7 @@ impl core::fmt::Debug for PairResponder {
 }
 
 impl PairResponder {
-    /// Read XX msg 1 (`xx1`) of the exchange `exchange`: the state and XX
-    /// msg 2 (`xx2`).
+    /// Read XX msg 1 (`xx1`) of the exchange `exchange`: the state and XX msg 2 (`xx2`).
     ///
     /// # Errors
     /// [`HandshakeError`].
@@ -308,8 +297,7 @@ impl PairResponder {
     }
 }
 
-/// rlmeshd's commit-reveal: it commits to `Nr` before it sees `Ni`. A
-/// changed `Ni` aborts it for good.
+/// rlmeshd's commit-reveal: it commits to `Nr` before it sees `Ni`.
 pub struct DaemonCommit {
     h: [u8; 32],
     nr: [u8; 32],
@@ -362,8 +350,7 @@ impl DaemonCommit {
         Ok(&self.c)
     }
 
-    /// Take the laptop's `Ni` (`PairNonce`): `Nr` to reveal (`PairReveal`)
-    /// and the SAS. The same `Ni` again gives the same answer (a retry).
+    /// Take the laptop's `Ni` (`PairNonce`): `Nr` to reveal (`PairReveal`) and the SAS.
     ///
     /// # Errors
     /// [`PairingError::NonceChanged`] for a different `Ni`, which aborts the
@@ -462,7 +449,6 @@ mod tests {
 
         let (laptop, daemon) = statics();
         let (init, xx1) = PairInitiator::start(&mut TestRng::new(1), &laptop, &EXCHANGE).unwrap();
-        // XX msg 1 is unauthenticated, so another exchange id fails at msg 2.
         let (_, xx2) = PairResponder::start(&mut TestRng::new(2), &daemon, &[0; 16], &xx1).unwrap();
         assert_eq!(init.finish(&xx2).unwrap_err().1, HandshakeError::Rejected);
     }
@@ -520,7 +506,6 @@ mod tests {
         let mut nr = daemon.nr;
         nr[31] ^= 1;
         assert_eq!(laptop.check_reveal(&nr), Err(PairingError::RevealMismatch));
-        // The right Nr under another transcript fails too.
         let other = LaptopCommit::new(&mut TestRng::new(4), &[8u8; 32], &c).unwrap();
         assert_eq!(
             other.check_reveal(&daemon.nr),
@@ -554,7 +539,6 @@ mod tests {
     #[test]
     fn the_link_carries_pairing_kinds_only_one_way_per_key() {
         let (mut l, mut d) = handshake();
-        // The laptop never commits or reveals; rlmeshd never sends a nonce.
         for kind in [Kind::PairCommit, Kind::PairReveal] {
             assert_eq!(
                 l.sender.seal(kind, PAIR, b"x"),
@@ -565,12 +549,8 @@ mod tests {
             d.sender.seal(Kind::PairNonce, PAIR, b"x"),
             Err(SealError::WrongKind(Kind::PairNonce))
         );
-        // A daemon-only kind authenticated under the real laptop key is
-        // refused by the daemon's receiver: `tests/crypto_vectors.rs`, which
-        // has that key from the raw split.
         assert!(l.sender.seal(Kind::CtlRequest, PAIR, b"x").is_err());
         let mut wait = l.sender.seal(Kind::PairWait, PAIR, b"").unwrap();
-        // The laptop can't open its own message: it's under key 1, not 2.
         assert_eq!(
             l.receiver.open(PAIR, &mut wait.clone()),
             Err(OpenError::WrongKey(LAPTOP_KEY_ID))

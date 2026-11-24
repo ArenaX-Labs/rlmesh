@@ -1,4 +1,3 @@
-//! Serialized recorder calls; capture hooks own the facade's shared state.
 #![allow(unsafe_code)]
 pub(crate) mod records;
 use crate::abi::{

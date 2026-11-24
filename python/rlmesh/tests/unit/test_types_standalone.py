@@ -10,7 +10,6 @@ def _types_module_path() -> Path:
 
 
 def test_types_module_imports_without_compiled_extension() -> None:
-    """rlmesh.types imports without the compiled extension."""
     spec = importlib.util.spec_from_file_location(
         "rlmesh_types_standalone_under_test", _types_module_path()
     )

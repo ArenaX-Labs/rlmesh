@@ -1,16 +1,12 @@
 //! The networked edge: an [`EdgeCore`] fed by its participant.
 //!
-//! [`Edge::attach`] covers one commandable part, or every member of its
-//! command group. It subscribes to each member's command key on its traffic
-//! class and splices every chunk on the transport's callback thread, against
-//! the participant's live authority view, and it declares each member's
-//! `_applied` publisher. The control loop calls [`Edge::tick`]: the edge
-//! decides, publishes one applied sample per member, and when it falls
-//! back on its own account it tells the host through the participant
-//! (`EnterSafe`, retried in the background); the heartbeat reports its
-//! queue. Every chunk and tick reads the robot process's local e-stop latch
-//! first ([`Participant::latch_estop`]). A chunk counts only when it opens
-//! under the lease's `k_cmd`, which only its holder has.
+//! [`Edge::attach`] covers one commandable part, or every member of its command group. It splices
+//! every chunk on the transport's callback thread against the participant's live authority view,
+//! and declares each member's `_applied` publisher. The control loop calls [`Edge::tick`]: the edge
+//! decides, publishes one applied sample per member, and when it falls back on its own account
+//! tells the host (`EnterSafe`, retried in the background). Every chunk and tick reads the process's
+//! local e-stop latch first ([`Participant::latch_estop`]). A chunk counts only when it opens under
+//! the lease's `k_cmd`.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -47,13 +43,6 @@ struct Shared {
     sealer: Sealer,
 }
 
-/// Notices when the control loop itself stalled (the process was
-/// descheduled or frozen). The transport was stalled with it, so the chunks
-/// and lease renewals sent meanwhile arrive only after the first tick back:
-/// that tick starts one `hold_max` of listening, in which the ladder holds
-/// instead of latching Safe on what it has not taken in yet. The tick after
-/// the listening always judges, so a loop that keeps stalling, or one slower
-/// than `hold_max`, still goes Safe, at most one `hold_max` and a tick late.
 #[derive(Default)]
 struct Stall {
     last_ns: Option<i64>,
@@ -61,7 +50,6 @@ struct Stall {
 }
 
 impl Stall {
-    /// Whether the tick at `now_ns` listens rather than judges.
     fn listening(&mut self, now_ns: i64, hold_max_ns: i64) -> bool {
         let gap = self.last_ns.map_or(0, |last| now_ns.saturating_sub(last));
         self.last_ns = Some(now_ns);
@@ -82,15 +70,11 @@ impl Stall {
 }
 
 impl Shared {
-    /// The core, with the local latch as of now.
     fn core(&self) -> MutexGuard<'_, EdgeCore> {
-        // A poisoned edge only means a panic elsewhere mid-update; the core
-        // stays consistent between calls, so keep serving it.
         let mut core = self
             .core
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // A latch cleared since the last look still stops and fences.
         let latches = self.latch.latches();
         let code = self.latch.code();
         if self.latches_seen.swap(latches, Ordering::SeqCst) != latches {
@@ -113,8 +97,6 @@ impl Shared {
             }
         };
         let accepted = self.view.with(|view| {
-            // In virtual and lockstep sessions the edge's clock is the
-            // session tick it was last driven at.
             let receive_ns = if view.is_some_and(|v| v.clock_mode != ClockMode::Wall) {
                 self.tick_ns.load(Ordering::Relaxed)
             } else {
@@ -191,8 +173,6 @@ impl Edge {
         let mut subscribers = Vec::with_capacity(parts.len());
         let mut applied = Vec::with_capacity(parts.len());
         for part in &parts {
-            // A plain subscriber: chunks are never served from history, so
-            // a restarted edge cannot act on old ones.
             let key = participant
                 .keys()
                 .commands(participant.id(), part.path.as_str());
@@ -237,7 +217,6 @@ impl Edge {
     pub fn tick(&self) -> EdgeTick {
         let shared = &self.shared;
         let now_ns = shared.clock.now_ns();
-        // Only wall time stalls: a virtual session's ticks are the clock.
         let wall = shared
             .view
             .with(|view| view.is_none_or(|v| v.clock_mode == ClockMode::Wall));
@@ -319,18 +298,14 @@ mod tests {
     fn a_stalled_loop_listens_for_one_hold_max_and_then_judges() {
         let hold_max = 100 * MS;
         let mut stall = Stall::default();
-        // The first tick and on-time ticks judge.
         assert!(!stall.listening(0, hold_max));
         assert!(!stall.listening(MS, hold_max));
         assert!(!stall.listening(40 * MS, hold_max));
-        // Back from a stall: this tick and those within hold_max listen.
         let back = 400 * MS;
         assert!(stall.listening(back, hold_max));
         assert!(stall.listening(back + MS, hold_max));
         assert!(stall.listening(back + 99 * MS, hold_max));
-        // The tick after the listening judges, however late it is itself.
         assert!(!stall.listening(back + 500 * MS, hold_max));
-        // A part that may not hold at all never listens.
         let mut none = Stall::default();
         assert!(!none.listening(0, 0));
         assert!(!none.listening(400 * MS, 0));

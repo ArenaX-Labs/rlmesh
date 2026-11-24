@@ -1,9 +1,6 @@
-//! Validate the C/C++ host runtime declaration for served describe envelopes.
 use crate::abi::status::CapiError;
 use serde_json::{Value, json};
 
-/// Validate the optional host declaration before it can override runtime fields.
-/// Component, package, OS/arch and protocol/edition remain library-owned.
 pub(crate) fn host_runtime(text: &str) -> Result<Value, CapiError> {
     let invalid = |message: String| CapiError::invalid_arg(format!("host_runtime_json: {message}"));
     let value: Value = serde_json::from_str(text).map_err(|err| invalid(err.to_string()))?;

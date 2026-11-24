@@ -8,16 +8,6 @@
 
 #include "RLMeshEnvComponent.generated.h"
 
-/**
- * Serves game state as an RLMesh env while the game plays: from BeginPlay until
- * EndPlay, any RLMesh model can connect to Address and call reset and step.
- *
- * Subclass it in C++ and override ObservationSpace, ActionSpace, ResetEnv and
- * StepEnv. ResetEnv and StepEnv run on the game thread, from this component's
- * tick, so they may read and change the world; a step therefore takes at least
- * one frame. Throw rlmesh::RecoverableEnvironmentException from them to fail one
- * request while the client keeps its session.
- */
 UCLASS(Abstract)
 class RLMESHUNREAL_API URLMeshEnvComponent : public UActorComponent
 {

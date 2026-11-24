@@ -1,21 +1,3 @@
-"""Gymnasium conformance: a served env behaves as the env itself.
-
-Every test runs plain gymnasium (the reference) and the RemoteEnv (or
-RemoteVectorEnv) a Gym user connects to the env served on a v2 session, on
-the same seeds and actions, and compares types, dtypes, shapes and bits.
-
-Accepted differences: ``reward`` is a Python ``float`` (a vector env's
-rewards are ``float64``); a ``Discrete`` observation is the space's NumPy
-integer; tuples in ``info`` arrive as lists; an env's exception arrives as an
-``EnvironmentException`` that is also its builtin class, with the call that
-raised it in ``phase``; ``close()`` detaches, and the
-server's ``shutdown()`` closes the served env.
-
-Refused, at once and by name: Graph, Sequence, OneOf, a shape-``()`` Box, and
-``info`` values that are neither JSON-like nor arrays (a ``TypeError``), or
-ints beyond int64 (a ``ValueError``), each naming its key path.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -43,7 +25,6 @@ EDITION = rlmesh.ServeOptions(workflow_edition="2026.10")
 
 
 def digest(value: Any) -> int:
-    """A stable digest of a (nested) value, dtypes included."""
     h = hashlib.sha256()
 
     def walk(v: Any) -> None:
@@ -65,10 +46,6 @@ def digest(value: Any) -> int:
 
 
 class SpaceEnv(gym.Env):  # type: ignore[misc]
-    """Samples its observations from its own seeded space; the reward is a
-    digest of the action; episodes end, terminated or truncated, at a
-    seed-dependent length."""
-
     metadata: ClassVar[dict[str, Any]] = {
         "render_modes": ["rgb_array"],
         "render_fps": 30,
@@ -128,9 +105,6 @@ class SpaceEnv(gym.Env):  # type: ignore[misc]
 
 
 def make(env_id: str, **kwargs: Any) -> Any:
-    """``gym.make`` with metadata of its own: gymnasium's ``SyncVectorEnv``
-    writes its ``autoreset_mode`` into the env class's shared metadata, which
-    would leak one test's vector mode into the next test's single env."""
     env = gym.make(env_id, **kwargs)
     unwrapped: Any = env.unwrapped
     unwrapped.metadata = {
@@ -141,8 +115,6 @@ def make(env_id: str, **kwargs: Any) -> Any:
 
 @contextmanager
 def served(env: Any) -> Iterator[Any]:
-    """``env`` behind an EnvServer, as the RemoteEnv (or RemoteVectorEnv) a
-    Gym user connects."""
     server = rlmesh.EnvServer(env, ADDRESS, options=EDITION)
     server.start()
     vector = hasattr(env, "num_envs") and env.num_envs > 1
@@ -156,9 +128,6 @@ def served(env: Any) -> Iterator[Any]:
 
 
 def difference(a: Any, b: Any, *, scalars: bool = False, path: str = "") -> str | None:
-    """The first difference in type, dtype, shape or bits (``a`` is the
-    reference); ``scalars`` lets a Python and a NumPy scalar of equal value
-    pass (the documented reward, info and ``Discrete`` differences)."""
     if isinstance(a, dict) or isinstance(b, dict):
         if not (isinstance(a, dict) and isinstance(b, dict)) or set(a) != set(b):
             return f"{path}: keys {sorted(a) if isinstance(a, dict) else a!r} vs {sorted(b) if isinstance(b, dict) else b!r}"
@@ -311,7 +280,6 @@ def test_an_action_space_reaches_the_env_bit_exact(name: str) -> None:
 
 
 def rich_info(t: int) -> dict[str, Any]:
-    """Step ``t``'s info: every JSON-like kind, and keys that need escaping."""
     return {
         "nested": {"a": {"b": t, "c": [1, 2.5, "x"]}, "flag": t % 2 == 0},
         "nan": float("nan"),
@@ -389,7 +357,7 @@ def test_a_client_side_wrapper_behaves_as_on_the_env_itself(wrapper: str) -> Non
         got = rollout(wrap(remote), actions, seeds=(0, 1), steps=40)
     for trace in (want, got):
         for transition in trace:
-            transition[-1].get("episode", {}).pop("t", None)  # wall-clock time
+            transition[-1].get("episode", {}).pop("t", None)
     assert difference(want, got, scalars=True) is None
 
 
@@ -419,7 +387,7 @@ def test_actions_are_cast_to_the_space_dtype_and_refused_when_the_kind_differs()
     box, discrete = SpaceEnv(), SpaceEnv(action_space=spaces.Discrete(3))
     with served(box) as remote:
         remote.reset(seed=0)
-        remote.step(np.array([0.1, 0.2, 0.3]))  # float64
+        remote.step(np.array([0.1, 0.2, 0.3]))
         remote.step([0.5, -0.5, 1.0])
         with pytest.raises(TypeError, match="shape"):
             remote.step(np.zeros(4))
@@ -519,8 +487,6 @@ def test_a_step_both_terminated_and_truncated_arrives_so() -> None:
 
 
 class Strided(gym.ObservationWrapper):  # type: ignore[misc]
-    """Observations as non-contiguous views (a reversed, strided slice)."""
-
     def __init__(self, env: Any) -> None:
         super().__init__(env)
         self.observation_space = spaces.Box(0, 255, (4, 3), np.uint8)
@@ -563,7 +529,7 @@ def test_an_env_served_already_wrapped_steps_as_it_does_unserved(case: str) -> N
         got = rollout(remote, actions, seeds=(0, 1), steps=40)
     for trace in (want, got):
         for transition in trace:
-            transition[-1].get("episode", {}).pop("t", None)  # wall-clock time
+            transition[-1].get("episode", {}).pop("t", None)
     assert difference(want, got, scalars=True) is None
 
 
@@ -640,7 +606,6 @@ VECTORS = {
         [lambda: SpaceEnv(copy.deepcopy(SPACES["dict_nested"]))] * 2
     ),
 }
-# Under DISABLED a done lane must not step again: stay inside the first episodes.
 VECTOR_STEPS = {"sync_disabled": 8}
 
 
@@ -664,7 +629,6 @@ def test_a_vector_env_steps_as_it_does_unserved(case: str) -> None:
         assert remote.action_space == reference.action_space
         got = vector_rollout(remote, actions, steps)
     if case == "vector_entry_point":
-        # CartPole's own vector env returns float32 rewards; the wire's are float64.
         want[1:] = [(obs, r.astype(np.float64), *rest) for obs, r, *rest in want[1:]]
     assert difference(want, got) is None
 
@@ -687,14 +651,12 @@ def test_a_vector_env_s_info_arrays_arrive_as_arrays_with_their_dtypes(
         got = vector_rollout(remote, actions, 40)
     for trace in (want, got):
         for transition in trace:
-            transition[-1].get("episode", {}).pop("t", None)  # wall-clock time
+            transition[-1].get("episode", {}).pop("t", None)
     assert any("episode" in t[-1] for t in want)
     assert difference([t[-1] for t in want], [t[-1] for t in got]) is None
 
 
 class ListInfo(gym.vector.VectorWrapper):  # type: ignore[misc]
-    """A vector env whose info carries a plain list of one entry per lane."""
-
     def reset(self, **kwargs: Any) -> Any:
         obs, info = self.env.reset(**kwargs)
         return obs, {**info, "lanes": ["a", "b", "c"]}
@@ -791,7 +753,7 @@ def median_step(env: str, steps: int) -> float:
     return statistics.median(latencies)
 
 
-PERF = {  # env, steps, median step budget in seconds
+PERF = {
     "cartpole": ("cartpole", 2000, 0.0005),
     "image_224": ("(224, 224, 3)", 500, 0.001),
     "image_1080p": ("(1080, 1920, 3)", 100, 0.02),

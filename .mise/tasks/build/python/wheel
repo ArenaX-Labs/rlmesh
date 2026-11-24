@@ -6,15 +6,12 @@
 #USAGE   choices "local" "macos-arm" "macos-x86" "linux-x86" "linux-arm" "linux-musl-x86" "linux-musl-arm" "windows"
 #USAGE }
 
-# Zig/maturin may print compiler-family warnings for *-linux-musl-gcc; they are
-# informational when the command exits successfully and emits the wheel.
 set -euo pipefail
 
 target="${usage_target:?usage: build:python:wheel <target>}"
 repo_root="$PWD"
 dist="$repo_root/python/rlmesh/dist"
 
-# alias -> rust triple, zig cross-compilation, expected wheel platform-tag glob
 triple="" zig=0 require_darwin=0 plat_glob=""
 case "$target" in
   local) ;;
@@ -33,8 +30,6 @@ if [ "$require_darwin" = 1 ] && [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 
-# Assumes the pyproject version string appears verbatim in wheel filenames
-# (true for PEP 440-normalized versions such as 0.1.0b2).
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' python/rlmesh/pyproject.toml | head -1)
 
 if [ "${usage_skip_existing:-false}" = true ] && [ -n "$plat_glob" ] \
@@ -56,14 +51,9 @@ if [ "$zig" = 1 ]; then
   mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
 fi
 if [ "$target" = windows ]; then
-  # Windows cross-builds from macOS take clang from Homebrew LLVM.
   if [ -d /opt/homebrew/opt/llvm/bin ]; then
     export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
   fi
-  # maturin cross-builds with its embedded cargo-xwin, which runs llvm-lib and
-  # lld-link from PATH. xwin-env.sh puts the pinned toolchain's first, as for
-  # the other Windows cross-builds, so the wheel never archives with whatever
-  # LLVM the host happens to have.
   . scripts/xwin-env.sh
 fi
 

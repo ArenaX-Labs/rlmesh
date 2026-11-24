@@ -30,18 +30,17 @@ from PIL import Image, ImageDraw, ImageFont
 WIDTH, PANEL_H, SCENE_H = 960, 324, 540  # heights divisible by 16 for H.264
 BG, FG, ACCENT, DIM = (18, 18, 24), (235, 235, 235), (120, 200, 255), (150, 150, 160)
 ADDED, REMOVED, CONTEXT = (110, 220, 120), (240, 110, 110), (170, 170, 180)
-CODE_TOP, CODE_LINE = 76, 18  # where policy code starts in the panel, line height
-HOLD = {"tool": 0.6, "result": 3.0, "note": 3.0, "agent": 4.0, "start": 2.0}  # s
-CODE_PAUSE = 2.0  # seconds held at the top and bottom of a policy
-CODE_SCROLL = 6.0  # lines per second (faster when a scroll would exceed ~10 s)
+CODE_TOP, CODE_LINE = 76, 18
+HOLD = {"tool": 0.6, "result": 3.0, "note": 3.0, "agent": 4.0, "start": 2.0}
+CODE_PAUSE = 2.0
+CODE_SCROLL = 6.0
 
 
 def load(path: str) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text().splitlines() if line]
 
 
-# Monospace fonts with the arrows and dashes the agent writes: macOS first,
-# then common Linux ones. Pillow's built-in font has none of them.
+# Pillow's built-in font lacks the arrows and dashes the agent writes.
 FONTS = (
     "Menlo.ttc",
     "DejaVuSansMono.ttf",
@@ -60,7 +59,6 @@ def font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 
 
 def policy_view(prev: str | None, code: str, version: int):
-    """Header and colored lines for a write_policy: full code first, then diffs."""
     new = code.splitlines()
     if prev is None:
         lines = [(f"{i:3d}  {line}", FG) for i, line in enumerate(new, 1)]
@@ -85,18 +83,16 @@ def policy_view(prev: str | None, code: str, version: int):
 
 
 class Panel:
-    """The text panel: task, current action, then narration or policy code."""
-
     def __init__(self, instruction: str):
         self.big, self.small, self.mono = font(22), font(17), font(14)
         self.cols = int((WIDTH - 40) / self.small.getlength("M"))
         self.code_cols = int((WIDTH - 40) / self.mono.getlength("M"))
-        self.rows = (PANEL_H - CODE_TOP - 36) // CODE_LINE  # code rows that fit
+        self.rows = (PANEL_H - CODE_TOP - 36) // CODE_LINE
         self.instruction = instruction
         self.action = "starting"
         self.narration = ""
         self.result = ""
-        self.code: list[tuple[str, tuple]] | None = None  # set during write_policy
+        self.code: list[tuple[str, tuple]] | None = None
         self.scroll = 0
         self._prev_code: str | None = None
         self._version = 0
@@ -112,7 +108,7 @@ class Panel:
             self.action, self.code = text, None
         elif kind == "result":
             self.result = text
-        elif kind == "start":  # a new agent run: its first policy is v1 again
+        elif kind == "start":
             self.narration, self.result = text, ""
             self._prev_code, self._version = None, 0
         else:
@@ -147,7 +143,6 @@ class Panel:
         return np.asarray(img)
 
     def code_frames(self, scene: np.ndarray, fps: int) -> Iterator[np.ndarray]:
-        """Hold the top of the code, scroll through it, hold the end."""
         assert self.code is not None, "code_frames follows a write_policy event"
         extra = max(0, len(self.code) - self.rows)
         speed = max(CODE_SCROLL, extra / 10)
@@ -158,8 +153,6 @@ class Panel:
 
 
 class Scene:
-    """Renders the recorded joint positions from one camera."""
-
     def __init__(self, xml_path: str, camera: str):
         self.model = mujoco.MjModel.from_xml_path(xml_path)
         self.model.vis.global_.offwidth = WIDTH
@@ -191,7 +184,6 @@ def frames(
     eval_stride: int,
     max_eval_episodes: int,
 ) -> Iterator[np.ndarray]:
-    """Video frames from the env trace and agent events, merged by time."""
     timeline = sorted(
         [(s["t"], "state", s) for s in trace] + [(e["t"], "event", e) for e in events],
         key=lambda item: item[0],
@@ -213,7 +205,6 @@ def frames(
                     yield frame
             continue
         if in_eval:
-            # Evaluations are long: show the first few episodes, sped up.
             if item["kind"] == "reset":
                 eval_episode += 1
                 eval_step = 0
@@ -240,8 +231,6 @@ def main() -> None:
     args = parser.parse_args()
 
     scene = Scene(args.xml or str(Path(args.trace).with_suffix(".xml")), args.camera)
-    # Keep the rows recorded in this scene, and the agent events around them, so a
-    # log spanning several runs still renders the one this XML belongs to.
     trace = [s for s in load(args.trace) if len(s["qpos"]) == scene.model.nq]
     if not trace:
         raise SystemExit("no trace rows match this scene XML")

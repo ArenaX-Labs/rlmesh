@@ -134,8 +134,6 @@ public sealed class LifetimeAsyncTests
         }
         finally
         {
-            // This test invoked the release directly and has returned from it;
-            // no native frame exists. The production barrier never assumes it.
             ManagedRoots.AwaitingReturn.TryRemove(pending, out _);
         }
     }
@@ -151,7 +149,6 @@ public sealed class LifetimeAsyncTests
         finally { Callbacks.CleanupHook = null; }
         Assert.Contains(failure, NativeHandle.CleanupFailures);
         Assert.Contains(NativeHandle.CleanupFailures, e => e.Message == "environment root was not released by native free");
-        // The intentionally failed callback leaked its root; reclaim the test fixture.
         ManagedRoots.Free(GCHandle.FromIntPtr(root));
         var rebuilt = Task.Run(() => Env.For(authored));
         using var next = await rebuilt.WaitAsync(Deadline);

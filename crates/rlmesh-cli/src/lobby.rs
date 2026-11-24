@@ -1,37 +1,7 @@
-//! The home daemon's lobby and runs: rlmeshd hosts
-//! the session `_lobby`, where robots wait and clients run scenes, and
-//! hosts each run's session in-process, or has a satellite host it
-//! (a paired machine's rlmeshd waiting here as `rlmeshd.<device>`,
-//! [`crate::satellite`]).
-//!
-//! A run goes through its stages, each failing with its code:
-//! 1. **check** the scene file against `devices.toml` and its pins
-//!    ([`crate::scene::check`]): `INVALID_REQUEST`, `NOT_AUTHORIZED`;
-//! 2. **claim** its robots, all or none: `ROBOT_BUSY`, naming the run;
-//! 3. **host** its session, with the scene's places and member table: here,
-//!    or on the satellite `host =` names (by default the machine of the
-//!    first controller that runs rlmeshd) through a `HostOrder`
-//!    answered by `HostStarted`;
-//! 4. **assign**: a `Join` to each robot once it waits in the lobby,
-//!    `NOT_PRESENT` at `wait`;
-//! 5. **declare**: each robot joins and declares, `NOT_PRESENT` (or the
-//!    refusal its next wait reports) at `wait`;
-//! 6. **bind**: each controller member binds, `NOT_READY` at `wait`;
-//! 7. **arm**: by the daemon (`arm = "auto"`) once all of that is done, or on
-//!    an `ArmScene` (`manual`, `--arm manual`);
-//! 8. **run** until stopped, or a member is lost: the run then waits in
-//!    `REJOINING` for it (a robot gets its join again in the lobby and must
-//!    declare the same map) until the session's rejoin window closes, which
-//!    fails it, and once everyone is back it waits in `ARMING` for an
-//!    explicit arm, whatever the scene's `arm`;
-//! 9. **tear down**: the scene closes (`SCENE_ENDED`, or `SCENE_FAILED` with
-//!    the stage's error; a `StopOrder` on a satellite), robots detach and
-//!    come back to the lobby, and the host stops once they left (or after
-//!    2 s); the run ends once its robots are back (or 2 s later).
-//!
-//! The first two answer `RunScene` itself (a refused scene has no run);
-//! the rest show in the run's state. A robot's claim is released when it is
-//! back in the lobby, or `wait` after the run ended if it never comes back.
+//! The home daemon's lobby and runs: rlmeshd hosts the session `_lobby`, where
+//! robots wait and clients run scenes, and hosts each run's session in-process,
+//! or has a satellite host it (a paired machine's rlmeshd waiting here as
+//! `rlmeshd.<device>`, [`crate::satellite`]).
 
 mod driver;
 
@@ -64,16 +34,12 @@ use crate::lobby::driver::Outcome;
 
 /// The id the home daemon watches and arms its runs as.
 pub const HOME: &str = "rlmeshd";
-/// How long teardown waits for members to detach.
 const STRAGGLERS: Duration = Duration::from_secs(2);
 
-/// What a robot waiting in the lobby is answered with, once a run assigns
-/// it.
 struct Waiter {
     answer: oneshot::Sender<LobbyResult>,
 }
 
-/// A run, as the lobby sees it.
 struct Run {
     /// Its scene's name.
     scene: String,
@@ -81,30 +47,25 @@ struct Run {
     commands: mpsc::UnboundedSender<RunCommand>,
     /// The join sent to each robot, re-sent while the run waits for it.
     joins: Mutex<HashMap<ParticipantId, Join>>,
-    /// Set when a client stops the run, before its scene closes: from then
-    /// on a robot back in the lobby is returned, never sent its join again.
+    /// Set when a client stops the run, before its scene closes: from then on a
+    /// robot back in the lobby is returned, never sent its join again.
     stopping: AtomicBool,
-    /// Hosted on a satellite: the scene and the order it was hosted with,
-    /// whose device records and pins the satellite holds.
+    /// Hosted on a satellite: the scene and the order it was hosted with, whose
+    /// device records and pins the satellite holds.
     away: OnceLock<(Scene, HostOrder)>,
 }
 
-/// What a client asks of a running run.
 enum RunCommand {
-    /// Stop it (a client), or fail it (the device table changed under a
-    /// satellite's run).
+    /// Stop it (a client), or fail it (the device table changed under a satellite's
+    /// run).
     End(Outcome),
     Arm {
         answer: oneshot::Sender<LobbyResult>,
     },
 }
 
-/// What a satellite's host order is answered with: the run host's key and
-/// addresses.
 type Started = Result<([u8; 32], Vec<String>), CtlError>;
 
-/// A satellite daemon in the lobby: its pending wait, the orders it hasn't
-/// taken yet, and the host orders waiting for its `HostStarted`, by run.
 #[derive(Default)]
 struct Satellite {
     waiter: Option<Waiter>,
@@ -119,7 +80,6 @@ struct Rooms {
     satellites: HashMap<String, Satellite>,
     claims: HashMap<ParticipantId, String>,
     // TODO: every run since the daemon started is kept for `SceneStatus`;
-    // drop ended ones after a while if a long-lived daemon runs thousands.
     runs: HashMap<String, Arc<Run>>,
 }
 
@@ -149,10 +109,6 @@ fn over(stage: RunStage) -> bool {
     matches!(stage, RunStage::Ending | RunStage::Ended | RunStage::Failed)
 }
 
-/// Run `run`'s host order for a satellite: the scene file, its
-/// members' device records from `table` (the home machine's `local` key
-/// among them, so `safety` stays with the robots' own machine), and its
-/// robots' pins.
 fn host_order(
     run: &str,
     session: SessionId,
@@ -212,7 +168,6 @@ fn host_order(
     }
 }
 
-/// A fresh run id: `r-` and four letters or digits.
 fn run_id(taken: &HashMap<String, Arc<Run>>) -> String {
     const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
     loop {
@@ -228,9 +183,6 @@ fn run_id(taken: &HashMap<String, Arc<Run>>) -> String {
 }
 
 impl Home {
-    /// The lobby of the daemon whose state is in `dir`: its runs are hosted
-    /// by `server` with `template`'s identity, clock and lease grace, and
-    /// joined at `addresses`.
     fn new(
         dir: PathBuf,
         template: HostConfig,
@@ -249,9 +201,9 @@ impl Home {
         })
     }
 
-    /// Hosts the lobby `_lobby` on `server` (the daemon whose state is in
-    /// `dir`, with `config`'s identity, clock and lease grace), its runs
-    /// joined at `addresses`.
+    /// Hosts the lobby `_lobby` on `server` (the daemon whose state is in `dir`,
+    /// with `config`'s identity, clock and lease grace), its runs joined at
+    /// `addresses`.
     ///
     /// # Errors
     /// What starting its session failed with.
@@ -273,10 +225,8 @@ impl Home {
         Ok(home)
     }
 
-    /// `devices.toml` is now `table`: a run on a satellite whose members'
-    /// device records or pins it changed fails, since
-    /// the satellite holds the ones its order carried. Runs hosted here
-    /// take the table live.
+    /// Fails a run on a satellite whose members' device records or pins changed
+    /// in `table`, since the satellite holds the ones its order carried.
     pub fn devices_changed(&self, table: &Table) {
         let Ok((_, pins)) = table.host() else {
             return;
@@ -324,12 +274,7 @@ impl Home {
         })
     }
 
-    /// A robot's wait: its last failure goes on its run's member, a robot
-    /// back from a finished run frees its claim, one its run still waits
-    /// for gets its join again, and anyone else waits for an assignment.
     fn wait(&self, from: &ParticipantId, device: &str, wait: LobbyWait) -> LobbyAnswer {
-        // Only a device that may embody the name waits under it: its
-        // pinned device, or one that may pin it.
         let may = Table::read(&self.dir).is_ok_and(|table| match table.robots.get(from.as_str()) {
             Some(pin) => pin.device == device,
             None => table.may_pin(from.as_str(), device),
@@ -374,8 +319,6 @@ impl Home {
         LobbyAnswer::Later(waited)
     }
 
-    /// Stages 1 and 2: the scene checked and its robots claimed, all or
-    /// none; then the rest of the run starts.
     fn run_scene(&self, scene_toml: &str, manual_arm: bool) -> LobbyResult {
         let scene = Scene::parse(scene_toml)
             .map_err(|refusal| refused(CtlStatus::InvalidRequest, refusal))?;
@@ -505,13 +448,6 @@ impl Home {
         Ok(LobbyReply::Run(state))
     }
 
-    /// Where run `scene` is hosted: `None` here, or the satellite
-    /// `host =` names, else the machine of its first controller that runs
-    /// rlmeshd, when every robot is pinned (only the home daemon pins at
-    /// first embodiment).
-    ///
-    /// # Errors
-    /// `NOT_PRESENT` when `host =` names a satellite not in the lobby.
     fn placement(&self, scene: &Scene, table: &Table) -> Result<Option<String>, CtlError> {
         match scene.host.as_deref() {
             Some("home") => return Ok(None),
@@ -544,7 +480,6 @@ impl Home {
         Ok(first.flatten().filter(|_| pinned))
     }
 
-    /// Whether device `device`'s satellite waits in the lobby.
     fn attached(&self, device: &str) -> bool {
         let Ok(id) = ParticipantId::new(format!("{SATELLITE_PREFIX}{device}")) else {
             return false;
@@ -557,9 +492,6 @@ impl Home {
         })
     }
 
-    /// A satellite's wait: its next order, now or once there is one. Only
-    /// a paired machine with the `arm` verb waits as a satellite, under its
-    /// own device's name.
     fn satellite_wait(&self, from: &ParticipantId, device: &str) -> LobbyAnswer {
         let may = Table::read(&self.dir).is_ok_and(|table| table.may_host(device));
         if !may || from.as_str() != format!("{SATELLITE_PREFIX}{device}") {
@@ -581,8 +513,6 @@ impl Home {
         LobbyAnswer::Later(waited)
     }
 
-    /// Sends satellite `device` `order`: to its wait, else when it next
-    /// waits.
     fn order(&self, device: &str, order: Assignment) {
         let mut rooms = lock(&self.rooms);
         let satellite = rooms.satellites.entry(device.to_string()).or_default();
@@ -597,7 +527,6 @@ impl Home {
         satellite.orders.push_back(order);
     }
 
-    /// Satellite `device`'s answer to the host order of `started.run`.
     fn host_started(&self, device: &str, started: HostStarted) -> LobbyResult {
         let waiting = lock(&self.rooms)
             .satellites
@@ -614,14 +543,12 @@ impl Home {
         Ok(LobbyReply::Run(run.state.borrow().clone()))
     }
 
-    /// The robot `robot`'s wait, if it is still waiting.
     fn take_waiter(&self, robot: &ParticipantId) -> Option<Waiter> {
         let mut rooms = lock(&self.rooms);
         let waiter = rooms.waiting.remove(robot)?;
         (!waiter.answer.is_closed()).then_some(waiter)
     }
 
-    /// Releases run `id`'s claims on `robots`.
     fn release(&self, id: &str, robots: &[ParticipantId]) {
         let mut rooms = lock(&self.rooms);
         for robot in robots {
@@ -696,8 +623,6 @@ impl LobbyService for Home {
     }
 }
 
-/// Changes member `name` of a run's state (the version rises if it
-/// changed).
 fn member(state: &watch::Sender<RunState>, name: &ParticipantId, f: impl FnOnce(&mut MemberState)) {
     update(state, |s| {
         if let Some(m) = s.members.iter_mut().find(|m| &m.name == name) {
@@ -718,15 +643,14 @@ fn update(state: &watch::Sender<RunState>, f: impl FnOnce(&mut RunState)) {
     });
 }
 
-/// One run's stages 3 to 9.
 struct Driver {
     home: Arc<Home>,
     run: Arc<Run>,
     id: String,
     scene: Scene,
     manual: bool,
-    /// The authority revision the run was last armed at: an older snapshot
-    /// is from before that arm.
+    /// The authority revision the run was last armed at: an older snapshot is from
+    /// before that arm.
     armed: u64,
     inbox: mpsc::UnboundedReceiver<RunCommand>,
     daemon: Option<Participant>,

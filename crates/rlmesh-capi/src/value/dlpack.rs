@@ -1,5 +1,4 @@
-//! DLPack 1.x exchange through the facade, with success-only ownership transfer.
-#![allow(unsafe_code)] // Foreign descriptors and output pointers follow SPC-19.
+#![allow(unsafe_code)]
 
 use super::tensor::{RLMeshTensor, output, tensor_ref};
 use crate::abi::{

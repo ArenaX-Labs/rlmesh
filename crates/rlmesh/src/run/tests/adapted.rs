@@ -1,6 +1,3 @@
-//! Runs through native adapters: execution horizons, spec timing, and the
-//! instruction and kept context they read.
-
 use super::*;
 
 struct AdapterSteps {
@@ -111,7 +108,6 @@ fn text_model() -> Model {
     )
     .unwrap()
 }
-/// A chunked spec'd policy recording the horizon each chunk is asked at.
 struct Paced {
     seen: Arc<Mutex<Vec<u32>>>,
     loaded: Option<u32>,
@@ -122,7 +118,6 @@ impl crate::Policy for Paced {
         self.loaded
     }
     fn predict(&mut self, _observation: Value) -> Result<Value> {
-        // The runtime takes the single-action corner at horizon 1.
         self.seen.lock().unwrap().push(1);
         Ok(Value::List(vec![Value::Float(0.)]))
     }
@@ -207,7 +202,6 @@ fn a_spec_timing_outside_one_to_1024_is_refused() {
     let timed = spec.with_timing(Timing { execution: Some(8) }).unwrap();
     let back = ModelSpec::from_json(&timed.to_json().unwrap()).unwrap();
     assert_eq!(back.timing(), timed.timing());
-    // State and its one-part Concat have the same canonical wire form.
     assert_eq!(back.to_json().unwrap(), timed.to_json().unwrap());
 }
 

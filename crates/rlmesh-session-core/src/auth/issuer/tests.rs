@@ -1,5 +1,3 @@
-//! The key schedule: rotations, read permission, missed acks and grant caps.
-
 use super::*;
 use crate::auth::keyring::Keyring;
 use crate::authority::DeviceAccess;
@@ -11,7 +9,6 @@ fn pid(id: &str) -> ParticipantId {
     ParticipantId::new(id).expect("id")
 }
 
-/// Delivers what is due and acknowledges it, except at `deaf`.
 fn exchange(
     issuer: &mut KeyIssuer,
     rings: &mut BTreeMap<ParticipantId, Keyring>,
@@ -81,7 +78,6 @@ fn a_robots_new_generation_rotates_its_streams_and_retires_the_old_version() {
         .map(|(s, _)| s.key_id)
         .collect();
 
-    // The robot restarts: generation 3 takes over its slot at version 2.
     issuer
         .attach(
             &mut rng,
@@ -112,7 +108,6 @@ fn a_robots_new_generation_rotates_its_streams_and_retires_the_old_version() {
         v1.iter().all(|id| !issuer.keys.contains_key(id)),
         "the host forgot version 1's key"
     );
-    // Recovery hands the new generation its sending key only.
     let recovered: Vec<IssuedKey> = issuer
         .get_keys(&pid("arm"), 3, &Access::default())
         .into_iter()
@@ -186,8 +181,6 @@ fn a_device_losing_read_permission_rotates_the_stream_past_its_readers() {
     let first = sealed(&mut rings, 1);
     assert!(read(&mut rings, "eye", first.clone()) && read(&mut rings, "policy", first));
 
-    // The laptop's entry narrows to another robot: the slot rotates once,
-    // past it, and the robot's next samples are the policy's alone.
     let mut narrowed = DeviceAccess::new(Some(PriorityClass::Model));
     narrowed.parts = vec!["ur10e/**".into()];
     access.set("laptop", narrowed);
@@ -253,8 +246,6 @@ fn a_missed_ack_leaves_the_retire_pending_and_never_detaches() {
         )
         .expect("attach");
     rings.insert(pid("arm"), Keyring::new(Some(pid("arm")), 4));
-    // The board never acknowledges: install waits 500 ms, then the
-    // sender switches; the retire stays open, naming the board.
     exchange(&mut issuer, &mut rings, &["board"], 11);
     assert_eq!(issuer.pending()[0].stage, "install");
     assert_eq!(issuer.pending()[0].waiting, vec![pid("board")]);
@@ -268,7 +259,6 @@ fn a_missed_ack_leaves_the_retire_pending_and_never_detaches() {
     assert_eq!(pending[0].waiting, vec![pid("board")]);
     assert!(rings[&pid("arm")].sends_stream(ChannelId(1)));
     assert!(issuer.members.contains_key(&pid("board")), "still attached");
-    // Once it acknowledges (a retry reaches it), the rotation completes.
     exchange(&mut issuer, &mut rings, &[], later + 10 * RETRY_NS);
     assert!(issuer.pending().is_empty());
 }
@@ -322,7 +312,6 @@ fn grants_are_capped_per_device_and_robot_and_a_higher_class_evicts_the_newest_l
         "the newest model grant"
     );
     assert!(issuer.grant(d.id).is_none());
-    // Nothing installed: they all time out together.
     let decided = issuer.ready_grants(GRANT_WAIT_NS);
     assert_eq!(decided.len(), 4);
     assert!(decided.iter().all(|(_, r)| r.is_err()));
@@ -401,7 +390,6 @@ fn a_detach_fails_the_pending_grants_that_needed_it_and_no_others() {
     let by_a = prepare("a", "arm", 1);
     let on_gripper = prepare("b", "gripper", 2);
     let on_arm = prepare("c", "arm", 3);
-    // A robot's cap counts its own pending grants, not the gripper's.
     let more = [prepare("d", "arm", 4), prepare("e", "arm", 5)];
     assert_eq!(issuer.detach(&pid("stranger")), Vec::<GrantId>::new());
     assert_eq!(issuer.detach(&pid("a")), vec![by_a], "as holder");
@@ -413,7 +401,6 @@ fn a_detach_fails_the_pending_grants_that_needed_it_and_no_others() {
     assert!(issuer.grant(on_gripper).is_some());
 }
 
-/// The lease keys of token `token` in `keys`, as `(key id, send)`.
 fn lease_keys(keys: &[IssuedKey], token: u64) -> Vec<(u32, bool)> {
     let mut out: Vec<(u32, bool)> = keys
         .iter()
@@ -429,7 +416,6 @@ fn a_committed_grant_hands_its_holder_the_keys_until_its_token_ends() {
     let mut rng = TestRng::new(13);
     let mut issuer = KeyIssuer::default();
     let mut rings = BTreeMap::new();
-    // One generation for all, so only identity tells the keys apart.
     for (who, robot) in [("arm", true), ("policy", false), ("viewer", false)] {
         join(&mut issuer, &mut rng, who, 1, robot);
         rings.insert(pid(who), Keyring::new(Some(pid(who)), 1));
@@ -481,8 +467,6 @@ fn a_committed_grant_hands_its_holder_the_keys_until_its_token_ends() {
     assert_eq!(ready, [(id, true)]);
     let committed = issuer.commit_grant(id).expect("pending");
     assert!(issuer.commit_grant(id).is_none(), "committed once");
-    // A k_cmd per transport priority, which the holder sends under, and
-    // the robot's k_obs, which it receives.
     let mut held: Vec<(KeyPurpose, bool, Security)> = committed
         .keys
         .iter()
@@ -501,8 +485,6 @@ fn a_committed_grant_hands_its_holder_the_keys_until_its_token_ends() {
     parts.sort_unstable();
     assert_eq!(parts, [ChannelId(1), ChannelId(3)]);
     assert_ne!(committed.key_ids[0].1, committed.key_ids[1].1);
-    // Recovery: the holder and the robot get the grant's keys, each
-    // sending under its own; a bystander of the same generation gets none.
     let holder = lease_keys(&committed.keys, 7);
     let flipped: Vec<(u32, bool)> = holder.iter().map(|(id, send)| (*id, !send)).collect();
     assert_eq!(
@@ -514,7 +496,6 @@ fn a_committed_grant_hands_its_holder_the_keys_until_its_token_ends() {
         flipped
     );
     assert!(lease_keys(&issuer.get_keys(&pid("viewer"), 1, &access), 7).is_empty());
-    // The robot also holds every other member's k_estop, to receive.
     let estops: Vec<(Option<ParticipantId>, bool)> = issuer
         .get_keys(&pid("arm"), 1, &access)
         .into_iter()
@@ -529,7 +510,6 @@ fn a_committed_grant_hands_its_holder_the_keys_until_its_token_ends() {
             (Some(pid("viewer")), false)
         ]
     );
-    // Its token ends: the committed keys go; a pending grant's stay.
     let pending = issuer
         .prepare_grant(&mut rng, request("viewer", 8, Vec::new()), 5)
         .expect("prepared");

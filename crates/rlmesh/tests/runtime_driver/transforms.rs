@@ -1,6 +1,3 @@
-//! Runtime hook transforms: failing, action, per-lane and instruction
-//! transforms.
-
 use super::*;
 
 #[tokio::test]
@@ -41,8 +38,6 @@ async fn a_failing_transform_fails_only_its_own_route() {
     assert_eq!(hooks.ended.load(Ordering::SeqCst), 1);
 }
 
-/// An env whose episodes only the runtime's step cap ends, recording the
-/// action byte it was stepped with.
 #[derive(Clone, Default)]
 struct ActionLog(Arc<Mutex<Vec<u8>>>);
 
@@ -74,15 +69,10 @@ impl RuntimeEnv for ActionLog {
     }
 }
 
-/// The latency ops a perturbation plugin runs on actions, per episode: each
-/// keeps the model's actions and the ones it sent.
 #[derive(Clone, Copy)]
 enum ActionOp {
-    /// Send the model's action from `n` steps ago (the first, until there is one).
     Delay(usize),
-    /// At these 1-based steps, hold the previously sent action.
     Drop(&'static [i64]),
-    /// From step `at`, hold that step's action for `len` steps.
     Freeze { at: i64, len: i64 },
 }
 
@@ -91,7 +81,6 @@ struct ActionOpHooks {
     op: Option<ActionOp>,
     clean: Mutex<std::collections::HashMap<String, Vec<Vec<Bytes>>>>,
     sent: Mutex<std::collections::HashMap<String, Vec<Bytes>>>,
-    /// `(raw, sent)` first action byte per `action_received`.
     seen: Mutex<Vec<(Option<u8>, u8)>>,
 }
 
@@ -134,8 +123,6 @@ impl RuntimeHooks for ActionOpHooks {
 
 #[tokio::test]
 async fn an_action_transform_expresses_delay_drop_and_freeze() {
-    // One predict and seven replayed frames per episode: the model's actions
-    // are 0, 100..=106 on steps 1..=8.
     let cases: [(&str, Option<ActionOp>, [u8; 8]); 4] = [
         ("none", None, [0, 100, 101, 102, 103, 104, 105, 106]),
         (
@@ -181,7 +168,6 @@ async fn an_action_transform_expresses_delay_drop_and_freeze() {
         for (step, (raw, action)) in seen.into_iter().enumerate() {
             assert_eq!(action, sent[step], "{name}: observers see the sent action");
             match op {
-                // Unchanged payloads carry no raw copy.
                 None => assert_eq!(raw, None, "{name}"),
                 Some(_) => assert_eq!(raw, Some(model_actions[step]), "{name}: raw action"),
             }
@@ -189,14 +175,9 @@ async fn an_action_transform_expresses_delay_drop_and_freeze() {
     }
 }
 
-/// A perturbation hook using the runtime events: bail before any
-/// decode on a route with no engine, decode the group's lanes from the
-/// event's own space, transform each lane under its (episode, lane, step)
-/// identity, and encode the lanes back.
 #[derive(Default)]
 struct PerturbationLikeHooks {
     enabled: std::collections::HashSet<String>,
-    /// `(episode id, lane, step)` per transformed lane.
     lanes: Mutex<Vec<(String, i32, i64)>>,
 }
 
@@ -223,8 +204,6 @@ impl RuntimeHooks for PerturbationLikeHooks {
             .into_iter()
             .enumerate()
             .map(|(row, _)| {
-                // A lane group's event names its lane; a vector group's rows are
-                // its lanes in order.
                 let lane = if rows == 1 {
                     event.env_index
                 } else {
@@ -242,8 +221,6 @@ impl RuntimeHooks for PerturbationLikeHooks {
 
 #[tokio::test]
 async fn transforms_apply_per_lane_inside_a_fused_predict() {
-    // Four lane groups whose resets land while the first predict is still
-    // in flight: they reach the model as one fused predict.
     let lanes = 4;
     let mut spec = lane_spec(lanes, lanes as u64, Vec::new());
     let space = rlmesh::binding::data::space_spec_to_proto(
@@ -301,8 +278,6 @@ async fn transforms_apply_per_lane_inside_a_fused_predict() {
     );
 }
 
-/// A one-lane env whose observation is `{state, task}` with the env's own
-/// instruction in `task`; its episodes end after two steps.
 #[derive(Clone)]
 struct InstructionEnv {
     space: rlmesh_spaces::SpaceSpec,
@@ -354,9 +329,7 @@ impl RuntimeEnv for InstructionEnv {
 
 #[derive(Default)]
 struct InstructionHooks {
-    /// `(episode index, the env's instruction)` per call.
     asked: Mutex<Vec<(i64, String)>>,
-    /// The raw instruction leaf of every observation, when one was rewritten.
     raw: Mutex<Vec<Option<Bytes>>>,
 }
 

@@ -25,14 +25,8 @@ use crate::spaces::{
 use crate::telemetry::{ProfileCollector, init_tracing};
 use crate::types::to_py_err;
 
-/// Process-wide multi-threaded runtime shared by Python model clients AND
-/// served model workers. The Join response pump spawned during handshake lives
-/// here, so it must outlive any single client; a process-wide runtime is
-/// simplest and matches the env client. Workers share it too: a per-`PyModel`
-/// runtime would cost a full worker-thread pool (plus its kqueue/pipe fds) per
-/// constructed model, and Python's cycle collector cannot reclaim a pyclass
-/// (no `__traverse__`), so those runtimes leaked for the process lifetime —
-/// exhausting the default macOS 256-fd limit in model-heavy test suites.
+/// Process-wide runtime shared by model clients and served model workers: the Join response
+/// pump outlives any single client, and a per-`PyModel` runtime would leak a worker pool and fds.
 pub(crate) fn model_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -43,56 +37,24 @@ pub(crate) fn model_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// The model's predict hole, backed by the Python predict callable and its
-/// discovered lifecycle callbacks. The engine ([`AdaptedModelHandler`]) calls
-/// these back from a blocking worker thread; the framework-bridge (numpy/torch)
-/// round-trip lives in the Python `predict_neutral` callable, so this layer only
-/// converts between the adapter [`Value`] model and the neutral Python tree.
 struct PyPredict {
     predict_fn: Py<PyAny>,
-    /// Optional chunk corner (the model's `predict_chunk`): one assembled input ->
-    /// a chunk of actions (leading axis = chunk). Absent for a single-action model;
-    /// its presence is what [`has_chunk`](PredictFn::has_chunk) reports so the
-    /// runtime can pin a execution horizon > 1.
     predict_chunk_fn: Option<Py<PyAny>>,
-    /// Optional batched corner (`predict_batch`): a list of N assembled lane inputs
-    /// -> N actions, in one call (one forward for the vector).
     predict_batch_fn: Option<Py<PyAny>>,
-    /// Optional batched chunk corner (`predict_chunk_batch`): a list of N inputs ->
-    /// N action chunks, in one call.
     predict_chunk_batch_fn: Option<Py<PyAny>>,
-    /// The author's fusion permission (`Model.allow_fusion`, default true): the
-    /// SDK's batched-corner glue (`tree_stack` over the batch axis) fuses
-    /// independent lanes by construction, but the forward body it wraps is the
-    /// author's own — one written against same-route, fixed-size batches (a
-    /// shape-pinned jit trace, per-batch statistics) opts out here.
     allow_fusion: bool,
-    /// The author's declared native chunk K (`Model.native_chunk`), read off the
-    /// loaded policy when the worker was built. `None` = undeclared (elastic).
     native_chunk: Option<u32>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
-    /// Drops an env's per-episode entries (an evict-all `ResetAdapter` or a
-    /// `ReleaseAdapter`), firing no episode-end hook.
     on_route_drop: Option<Py<PyAny>>,
-    /// The episodes a spec-less route already warned a short chunk for.
     short_warned: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// The last exception a host callback raised, kept so the in-process run
-    /// re-raises the user's own exception instead of its stringified copy.
     last_error: LastPyError,
-    /// The model's `reset_options(episode)`, when it defines one.
     reset_options_fn: Option<Py<PyAny>>,
-    /// The models this model calls from its predict (`self.inner.predict`).
     nested: Option<Arc<crate::nested::Nested>>,
-    /// Each route's env contract, for the contexts of its rows.
     envs: RouteEnvs,
-    /// What errors call the model (its class, or the callable it wraps).
     name: Option<String>,
 }
 
-/// Each route's env contract as a Python `EnvContract`, by env id: kept from
-/// the route's resolve (or its first spec-less predict) to its release, so
-/// every row's context names its env's spaces.
 #[derive(Clone, Default)]
 struct RouteEnvs(Arc<std::sync::Mutex<HashMap<String, Py<PyAny>>>>);
 
@@ -113,7 +75,6 @@ impl RouteEnvs {
         self.map().insert(env_id.to_string(), contract);
     }
 
-    /// Keeps `contract` for `env_id` unless one is kept already.
     fn remember(
         &self,
         py: Python<'_>,
@@ -138,10 +99,8 @@ impl RouteEnvs {
 
 pub(crate) type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
 
-/// Each route's result dict or exception, and the interrupt a signal raised.
 type RouteOutcomes = (Vec<Py<PyAny>>, Option<Py<PyAny>>);
 
-/// A facade call's parsed run options, and what a route adds to them.
 struct ParsedRunOptions {
     options: rlmesh::RunOptions<'static>,
     default_horizon: Option<u32>,
@@ -150,18 +109,12 @@ struct ParsedRunOptions {
 }
 
 impl PyPredict {
-    /// A raised `ModelException` becomes a model failure carrying its
-    /// recoverable flag (code `INTERNAL`); any other exception stays internal.
     fn internal(&self, err: PyErr) -> RLMeshError {
         let error = crate::types::model_callback_error(&err);
         *self.last_error.lock().expect("last_error lock poisoned") = Some(err);
         error
     }
 
-    /// The model's contract failure for an `action` (or chunk) that does not
-    /// fit the route's action space: a `ValueError` naming the model and the
-    /// space, sent as `INVALID_REQUEST`, not an internal failure of the
-    /// model's code.
     fn misfit(&self, what: &str, space: &rlmesh_spaces::SpaceSpec, err: &PyErr) -> RLMeshError {
         let detail = crate::types::py_err_text(err);
         let detail = detail
@@ -176,8 +129,6 @@ impl PyPredict {
         ))
     }
 
-    /// The model's `action` as a value of `space`, or its contract failure
-    /// ([`misfit`](Self::misfit)).
     fn encode_action(
         &self,
         py: Python<'_>,
@@ -202,8 +153,6 @@ impl PredictFn for PyPredict {
     fn predict(&self, model_input: Value, episode: Option<&EpisodeInfo>) -> rlmesh::Result<Value> {
         rlmesh::binding::check_model_call()?;
         Python::attach(|py| -> PyResult<Value> {
-            // The assembled input is now a Value tree (a nested dict/list/leaf
-            // matching the model spec's InputNode shape).
             let input = encode_value(py, &model_input)?;
             let context = episode_context_dict(py, episode, &self.envs)?;
             let action = self.predict_fn.call1(py, (input, context))?;
@@ -223,13 +172,8 @@ impl PredictFn for PyPredict {
             return Ok(None);
         };
         Python::attach(|py| -> PyResult<Value> {
-            // The assembled input is a Value tree (dict/list/leaf matching the
-            // model spec's InputNode shape), encoded as one Python argument.
             let input = encode_value(py, &model_input)?;
             let context = episode_context_dict(py, episode, &self.envs)?;
-            // `predict_chunk(observation, horizon)`: the model returns up to
-            // `horizon` actions; its chunk's leading axis is the chunk axis, which
-            // the native engine's `split_chunk` unstacks into per-step frames.
             let chunk = predict_chunk_fn.call1(py, (input, horizon, context))?;
             decode_value(chunk.bind(py))
         })
@@ -291,8 +235,6 @@ impl PredictFn for PyPredict {
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
         rlmesh::binding::check_model_call()?;
-        // A spec-less route hands the raw observation straight to the model,
-        // batched, preserving the pre-relocation path exactly (no adapter).
         let lanes = if observation.observation.is_some() {
             observation
                 .decoded_lanes()
@@ -300,8 +242,6 @@ impl PredictFn for PyPredict {
         } else {
             Vec::new()
         };
-        // The inner result is the model's action failing its contract; the
-        // outer one an exception the model (or this glue) raised.
         Python::attach(|py| -> PyResult<rlmesh::Result<Vec<SpaceValue>>> {
             self.envs.remember(
                 py,
@@ -316,9 +256,6 @@ impl PredictFn for PyPredict {
                 && let (Some(batch_fn), Some(space)) =
                     (self.predict_batch_fn.as_ref(), observation_space)
             {
-                // The batched corner: per-lane inputs the SDK glue stacks into
-                // one forward and splits back, the same contract as an adapted
-                // route (see `call_batched`).
                 let action_space = observation
                     .env_contract
                     .as_ref()
@@ -358,22 +295,15 @@ impl PredictFn for PyPredict {
                     ));
                 }
             };
-            // Real identity only for the single-episode case: a spec-less call
-            // with more than one lane fuses N episodes into one forward pass,
-            // same as the batched corners (see `PredictFn::predict_batch`), so
-            // it carries the empty-identity context — the argument itself is
-            // always delivered, matching every other path.
             let episode = (observation.num_envs == 1)
                 .then(|| observation.route.episodes.first())
                 .flatten();
             let context = episode_context_dict(py, episode, &self.envs)?;
             if episode.is_none() {
-                // Anonymous, yet still on its route's env.
                 let env_id = observation.route.env_id.as_str();
                 context.set_item("env_id", env_id)?;
                 context.set_item("env_contract", self.envs.get(py, env_id))?;
             }
-            // An inner model's predict answers this one episode.
             let contract = observation.env_contract.as_ref();
             let action = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
                 self.predict_fn.call1(py, (obs, context))
@@ -461,7 +391,6 @@ impl PredictFn for PyPredict {
                 )
             })?;
             let obs = space_value_to_py_neutral(py, lane, observation_space)?;
-            // Guaranteed exactly one lane by the num_envs == 1 check above.
             let episode = observation.route.episodes.first();
             let context = episode_context_dict(py, episode, &self.envs)?;
             let chunk = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
@@ -491,7 +420,6 @@ impl PredictFn for PyPredict {
                 )));
             }
             if self.native_chunk.is_none() && frames.len() < horizon {
-                // Python's Session warning, once per episode (MDL-P11).
                 let key = observation
                     .route
                     .episodes
@@ -594,10 +522,8 @@ impl PredictFn for PyPredict {
 
 /// The per-predict sampling seed for an episode's `predict_index`-th re-plan.
 ///
-/// Exported so a model can derive the same seed the SDK stamps on
-/// `context["predict_seed"]` (e.g. for a sampler that takes a generator rather
-/// than a global seed). The mixing law lives in the runtime crate, so local and
-/// served paths cannot drift.
+/// The same seed the SDK stamps on `context["predict_seed"]`, for a sampler that takes a
+/// generator rather than a global seed.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
@@ -613,9 +539,6 @@ pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
 }
 
 /// The paired reset seed of episode `slot` under `base_seed` and `seed_key`.
-///
-/// Private: exported so the cross-language seed fixture checks the runtime's
-/// own derivation from Python.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
@@ -677,18 +600,11 @@ pub fn model_describe(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult
             let mut served = rlmesh::lockstep::ServedModel::new(address, timeout);
             let described = served.describe().await;
             let _ = served.on_close().await;
-            // Each failure as its class: a refused key is final, not a
-            // ConnectionError a caller would retry.
             described.map_err(to_py_err)
         })
     })
 }
 
-/// The leading-axis length of a neutral chunk value: a tensor-like exposes
-/// `shape` (native `Tensor`, numpy array), a Dict chunk carries the axis
-/// inside each leaf (probe the first value), a plain sequence its `len`.
-/// `None` only for shapes this cannot introspect, where the caller falls back
-/// to the pinned horizon.
 fn leading_axis_len(value: &Bound<'_, PyAny>) -> Option<usize> {
     if let Ok(shape) = value.getattr("shape")
         && let Ok(first) = shape.get_item(0)
@@ -708,15 +624,6 @@ fn leading_axis_len(value: &Bound<'_, PyAny>) -> Option<usize> {
     None
 }
 
-/// The raw predict context handed to a corner as its trailing positional
-/// argument: `{"episode_id": str, "episode_seed": int | None}` — one dict for the
-/// single-episode corners (`predict`, `predict_chunk`, and the spec-less corners
-/// at `num_envs == 1`), one dict PER ROW in the list the batched corners get (see
-/// [`call_batched`]). The SDK enriches it into the full `PredictContext`
-/// (`predict_index` / `predict_seed` / `state`) from its own episode store, and
-/// only forwards it to the author's callback when that callback's signature
-/// accepts a trailing context argument, so this is additive — an author who never
-/// asked for it never sees it.
 fn episode_context_dict<'py>(
     py: Python<'py>,
     episode: Option<&EpisodeInfo>,
@@ -730,26 +637,12 @@ fn episode_context_dict<'py>(
             .unwrap_or(""),
     )?;
     dict.set_item("episode_seed", episode.and_then(|episode| episode.seed))?;
-    // The route the row arrived on: the store tags its entry with it, so the
-    // env's teardown drops it (MDL-P4).
     let env_id = episode.map(|episode| episode.env_id.as_str()).unwrap_or("");
     dict.set_item("env_id", env_id)?;
-    // The env's contract, which the SDK turns into the context's spaces.
     dict.set_item("env_contract", envs.get(py, env_id))?;
     Ok(dict)
 }
 
-/// Call a Python batched corner (`predict_batch` / `predict_chunk_batch`) with N
-/// assembled lane inputs and decode its N returned actions/chunks. The Python side
-/// receives a list of N neutral input dicts and returns a sequence of N actions
-/// (one per lane, in order); the model owns how it batches the forward pass. When
-/// `horizon` is `Some(h)` (the chunk-batch corner) it is passed as a second
-/// argument, so the model can size each chunk to the execution horizon.
-///
-/// `episodes` is row-aligned with `inputs` and rides as the trailing argument: a
-/// LIST of the same per-lane context dicts the single-episode corners get. N lanes
-/// fused into one forward may come from independent episodes, so identity is per
-/// row — never one dict for the call.
 fn call_batched(
     fn_obj: &Py<PyAny>,
     inputs: Vec<Value>,
@@ -760,7 +653,6 @@ fn call_batched(
     Python::attach(|py| -> PyResult<Vec<Value>> {
         let list = pyo3::types::PyList::empty(py);
         for model_input in &inputs {
-            // Each lane's assembled input is a Value tree, encoded as one element.
             list.append(encode_value(py, model_input)?)?;
         }
         let contexts = pyo3::types::PyList::empty(py);
@@ -779,10 +671,6 @@ fn call_batched(
     })
 }
 
-/// The per-route resolver the served model exposes via `route_setup`. Runs the
-/// Python `configure_fn` (which resolves the spec into a native plan + neutral
-/// host holes) off the predict lock and hands the engine a [`RouteConfig`];
-/// `None` is a spec-less / `NO_ADAPTER` route.
 struct PyRouteResolver {
     configure_fn: Py<PyAny>,
     envs: RouteEnvs,
@@ -855,7 +743,6 @@ impl RouteResolver for PyRouteResolver {
     }
 }
 
-/// A present, non-`None` Python value as an owned callable handle.
 fn optional_callable(value: Option<Bound<'_, PyAny>>) -> Option<Py<PyAny>> {
     match value {
         Some(value) if !value.is_none() => Some(value.unbind()),
@@ -886,8 +773,7 @@ pub struct PyModel {
     served: Option<(String, Duration)>,
     /// The model's `reset_options(episode)`, when it defines one.
     reset_options_fn: Option<Py<PyAny>>,
-    /// The workers of the models this model calls from its predict, by the
-    /// Python `id` of each.
+    /// The workers of the models this model calls from its predict, by the Python `id` of each.
     inners: std::sync::Mutex<Vec<(u64, Py<PyModel>)>>,
     /// The random baseline (`RANDOM_SAMPLE`) rather than the callbacks.
     random: bool,
@@ -903,9 +789,6 @@ struct Serving {
 }
 
 impl PyModel {
-    /// Build the served engine handler: the predict hole plus, for a spec'd
-    /// model, the route resolver. The engine owns the per-route adapter state and
-    /// frame buffers; this layer only supplies the host (Python) callbacks.
     fn build_handler(&self) -> Box<dyn ModelHandler> {
         if self.random {
             return Box::<rlmesh::binding::model::RandomSampleHandler>::default();
@@ -963,8 +846,6 @@ impl PyModel {
         }
     }
 
-    /// The run options a facade call's `options` dict names, checked as
-    /// Python's keywords are.
     fn run_options(&self, options: &Bound<'_, pyo3::types::PyDict>) -> PyResult<ParsedRunOptions> {
         macro_rules! option {
             ($key:literal, $ty:ty) => {
@@ -1038,8 +919,6 @@ impl PyModel {
         })
     }
 
-    /// A handler for one run or binding; a run that does not hold the model
-    /// (`exclusive` false) gets a gate of its own.
     fn prepared(&self, exclusive: bool) -> rlmesh::binding::model::PreparedModel {
         rlmesh::binding::model::PreparedModel {
             handler: self.build_handler(),
@@ -1058,10 +937,7 @@ impl PyModel {
         }
     }
 
-    /// Serves the model as the participant `name` in the session at
-    /// `address`, declaring `workflow_edition`, until a signal or
-    /// [`stop_serving`](Self::stop_serving).
-    #[allow(clippy::too_many_arguments)] // the serve call's settings, passed through
+    #[allow(clippy::too_many_arguments)]
     fn serve_on_session(
         &self,
         py: Python<'_>,
@@ -1077,7 +953,6 @@ impl PyModel {
         } else {
             format!("{}/{name}", address.trim().trim_end_matches('/'))
         };
-        // The describe envelope `rlmesh.serve` stamped for the handshake.
         let describe = envelope.map(str::to_owned).unwrap_or_else(|| {
             rlmesh::binding::peer_info_override()
                 .and_then(|info| info.extra.get(rlmesh::DESCRIBE_METADATA_KEY).cloned())
@@ -1091,8 +966,6 @@ impl PyModel {
         );
         let serving = Arc::clone(&self.serving);
         let shutdown = rlmesh::binding::lifecycle::ShutdownTrigger::new();
-        // SIGTERM stops the serve gracefully, as an env server's (`docker
-        // stop`); restored when the serve returns. SIGINT stays Python's.
         let _sigterm = rlmesh::binding::foreground_sigterm_scope(shutdown.clone());
         py.detach(|| {
             model_runtime().block_on(async move {
@@ -1121,18 +994,12 @@ impl PyModel {
                 let mut interrupted = None;
                 let result = loop {
                     tokio::select! {
-                        // The SIGINT watcher drains the serve on Ctrl-C too,
-                        // which can finish before the poll sees the signal:
-                        // look once more, so a Ctrl-C always ends in its
-                        // KeyboardInterrupt rather than a normal return.
+                        // The signal watcher can drain the serve before the poll sees the signal: check once more so Ctrl-C still raises KeyboardInterrupt.
                         result = &mut serve => break interrupted
                             .map_or_else(crate::client::check_signals, Err)
                             .and_then(|()| result.map_err(crate::lockstep::gym_err)),
                         _ = poll.tick() => {
                             if let Err(err) = crate::client::check_signals() {
-                                // The first Ctrl-C drains: the predict in
-                                // progress ends, then the model closes. A
-                                // second one ends the process at once.
                                 if interrupted.is_some() {
                                     rlmesh::binding::end_by_interrupt();
                                 }
@@ -1166,7 +1033,7 @@ pub fn resolve_execution_horizon(
 impl PyModel {
     #[new]
     #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None, reset_options_fn=None, name=None))]
-    #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
+    #[allow(clippy::too_many_arguments)]
     fn new(
         predict_fn: Py<PyAny>,
         configure_fn: Option<Py<PyAny>>,
@@ -1271,9 +1138,6 @@ impl PyModel {
         relay: Py<PyAny>,
         options: &Bound<'_, pyo3::types::PyDict>,
     ) -> PyResult<Py<PyAny>> {
-        // A served model answers each run in a session of its own and the
-        // random baseline builds a handler per run, so only an in-process
-        // model is held for the run (and its errors are the run's).
         let exclusive = self.served.is_none() && !self.random;
         let lease = exclusive
             .then(|| rlmesh::binding::model::claim_run(self.run_gate.clone()))
@@ -1352,8 +1216,6 @@ impl PyModel {
         let mut prepared = Vec::with_capacity(routes.len());
         for (target, options) in routes {
             let parsed = self.run_options(&options)?;
-            // An in-process model (the one route) stores its own raise in
-            // its `last_error`, so that is the route's error slot.
             let error = if exclusive {
                 self.last_error.clone()
             } else {
@@ -1382,8 +1244,6 @@ impl PyModel {
         let signal_cancel = cancel.clone();
         let signal =
             crate::facade::signal_poll(interrupted.clone(), move || signal_cancel.cancel());
-        // A route's own KeyboardInterrupt (its env or model raised one) is a
-        // Ctrl-C too: it stops the other routes as a signal would.
         let (slots, route_interrupt) = (errors.clone(), interrupted.clone());
         let poll: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             signal();
@@ -1411,10 +1271,6 @@ impl PyModel {
                 rlmesh::binding::routes::run_routes_prepared(prepared)
             })
         });
-        // Ctrl-C cancels every route: those it cut short hold the interrupt,
-        // so the caller keeps the ones that finished before raising it. It is
-        // returned on its own too: the last route may have finished past its
-        // last cancellation check after the signal was caught.
         let interrupt = interrupted.lock().unwrap_or_else(|e| e.into_inner()).take();
         let outcomes: Vec<Py<PyAny>> = results
             .into_iter()
@@ -1435,8 +1291,6 @@ impl PyModel {
                     .into_any()),
             })
             .collect::<PyResult<_>>()?;
-        // A route's own KeyboardInterrupt the poll missed (raised as the
-        // last route finished) is the run's too.
         let interrupt = interrupt
             .map(|interrupt| interrupt.into_value(py).into_any())
             .or_else(|| {
@@ -1657,8 +1511,6 @@ impl PyModel {
                     .unwrap_or_else(|| to_py_err(error))
             })?;
         let out = crate::facade::result_to_py(py, &result)?;
-        // Compatibility of this private, low-level report: runtime ordinals
-        // were one-based. Public run/hooks use the facade's zero-based records.
         for episode in out
             .get_item("episodes")?
             .expect("report episodes")
@@ -1673,11 +1525,8 @@ impl PyModel {
 
     /// Serves the model as the participant `name` in the session at
     /// `address`, until a signal or [`stop_serving`](Self::stop_serving).
-    ///
-    /// The batch settings are `rlmesh.BatchOptions`' fields; `None` takes
-    /// that field's default.
     #[pyo3(signature = (address, name, options=None, envelope=None, max_batch_size=None, batch_window_ms=None, batch_byte_budget=None, max_in_flight_batches=None, batch_records=None))]
-    #[allow(clippy::too_many_arguments)] // each batch setting is a Python kwarg
+    #[allow(clippy::too_many_arguments)]
     fn serve(
         &self,
         py: Python<'_>,

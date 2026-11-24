@@ -1,11 +1,3 @@
-//! One env camera frame to a model image input.
-//!
-//! The pixel operations (resize kernels, aspect fits, crops, the 180°
-//! rotation, BGR, normalisation) are the shared ones in
-//! [`spec::image`](crate::spec::image), which v2 bindings run too; this
-//! module adds the 8-bit decode of a non-`u8` frame, the JPEG round trip,
-//! layouts and lead axes.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -16,11 +8,11 @@ use crate::spec::role::apply::{Array, cast, err, f32_tensor};
 use crate::spec::role::plan::ImagePlan;
 use crate::wire::part::DType;
 
-/// The host's JPEG codec, for `jpeg_quality`: encode an HWC 8-bit RGB frame
-/// at `quality` and decode it back. The profile is part of the v1 contract
-/// (baseline sequential, 4:2:0 chroma subsampling with box-averaged chroma,
-/// the standard IJG quantization and Huffman tables scaled by `quality`):
-/// what TensorFlow's `encode_jpeg` and Pillow's `save(..., "JPEG")` write.
+/// The host's JPEG codec, for `jpeg_quality`: encode an HWC 8-bit RGB frame at `quality` and
+/// decode it back.
+///
+/// The profile is part of the v1 contract: baseline sequential, 4:2:0 chroma subsampling with
+/// box-averaged chroma, the standard IJG quantization and Huffman tables scaled by `quality`.
 pub trait Codec {
     /// The frame after a JPEG round trip.
     fn jpeg(&self, image: &Image<u8>, quality: u8) -> Result<Image<u8>, ApplyError>;
@@ -44,8 +36,7 @@ impl ImagePlan {
         if self.flip {
             image = image.rotate180();
         }
-        // Before the crop/resize: a training pipeline that stored JPEGs encoded the
-        // camera frame it was handed, then cropped and resized the decoded result.
+        // Before the crop and resize: a pipeline that stored JPEGs encoded the camera frame, then cropped the decoded result.
         if let Some(quality) = self.jpeg_quality {
             if image.channels != 3 {
                 return Err(err(format!(
@@ -55,9 +46,6 @@ impl ImagePlan {
             }
             image = codec.jpeg(&image, quality)?;
         }
-        // A `slice` crop is an integer center cut taken before the resize; a `zoom`
-        // crop is the fractional box the resize itself samples through, so it rides
-        // along into `fit_resize` instead of costing a second resampling pass.
         let mut zoom = None;
         if let Some(crop) = &self.crop {
             if crop.slice {
@@ -71,8 +59,6 @@ impl ImagePlan {
         }
         let size = match (self.size, zoom) {
             (Some(size), _) => Some(size),
-            // A zoom with no declared target resamples the box back to the frame's
-            // own size -- that magnification is the whole point of the crop.
             (None, Some(_)) => Some((image.height as u32, image.width as u32)),
             (None, None) => None,
         };
@@ -114,10 +100,7 @@ impl ImagePlan {
             .map(|d| d as u32)
             .to_vec();
         let mut tensor = match self.normalize {
-            // The camera case: one table lookup per element. The table holds
-            // exactly `low + (v / 255) * (high - low)` in f32, which is what
-            // the generic path below computes before widening to f64 and
-            // narrowing back, so the bytes are identical to it.
+            // One table lookup per element; the table holds `low + (v / 255) * (high - low)` in f32, so the bytes match the generic path.
             Some((low, high)) if self.dtype == DType::F32 => {
                 let table = normalise_table(low, high);
                 let values: Vec<f32> = image.data.iter().map(|v| table[usize::from(*v)]).collect();
@@ -152,10 +135,6 @@ impl ImagePlan {
     }
 }
 
-/// An env frame as an HWC uint8 image. A float frame is mapped from its
-/// declared `range` into `[0, 255]` (a `[0, 1]` image is scaled, a
-/// `[0, 255]` one passes through), assumed `[0, 1]` when unbounded; integer
-/// frames carry raw pixel magnitudes and are only rounded and clamped.
 fn decode_image(
     frame: Array<'_>,
     range: Option<(f64, f64)>,
@@ -212,7 +191,6 @@ fn decode_image(
     })
 }
 
-/// An HWC tensor transposed to CHW (any dtype).
 fn to_chw(tensor: &Tensor) -> Tensor {
     let size = tensor.dtype.size() as usize;
     let (height, width, channels) = (
@@ -244,7 +222,6 @@ mod tests {
     use crate::spec::role::input::StackPad;
     use crate::spec::role::path::NodePath;
 
-    /// No codec: these plans never round-trip a JPEG.
     struct NoJpeg;
 
     impl Codec for NoJpeg {
@@ -294,9 +271,6 @@ mod tests {
 
     #[test]
     fn a_float_frame_decodes_over_its_range_and_unit_when_unbounded() {
-        // A normalized [0, 1] float image scales into 8-bit rather than
-        // flooring to black; a [0, 255] one passes through; an unbounded one
-        // is taken as [0, 1]; u8 is untouched.
         for (range, values, want) in [
             (
                 Some((0.0, 1.0)),
@@ -321,7 +295,6 @@ mod tests {
 
     #[test]
     fn a_frame_maps_through_its_range_layout_and_the_models_dtype() {
-        // A float frame over [2, 4]; a degenerate range reads as [0, 1].
         for (range, values, want) in [
             (Some((2.0, 4.0)), [2.0, 3.0, 4.0], [0_u8, 128, 255]),
             (Some((1.0, 1.0)), [0.0, 0.5, 1.0], [0, 128, 255]),
@@ -331,7 +304,6 @@ mod tests {
             let out = apply(&over, DType::F32, &[1, 3, 1], &f32_bytes(&values));
             assert_eq!(out.data, want, "{range:?}");
         }
-        // CHW in, HWC out: the channel planes interleave pixel by pixel.
         let mut chw = plan(DType::U8, None);
         chw.src_layout = ImageLayout::Chw;
         let out = apply(&chw, DType::U8, &[3, 1, 2], &[1, 2, 10, 20, 100, 200]);
@@ -339,7 +311,6 @@ mod tests {
             (out.shape, out.data),
             (vec![1, 2, 3], vec![1, 10, 100, 2, 20, 200])
         );
-        // Normalised into float64; raw bytes widened to float32.
         let out = apply(
             &plan(DType::F64, Some((1.0, 3.0))),
             DType::U8,

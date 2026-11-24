@@ -1,5 +1,4 @@
-//! Common binding conversions and callback ownership.
-#![allow(unsafe_code)] // C input pointers and callback-owned handles.
+#![allow(unsafe_code)]
 use crate::abi::status::{
     CapiError, callback_message, callback_recoverable, error_of_class, take_callback_class,
 };
@@ -69,7 +68,6 @@ pub(crate) fn callback_error(kind: &str) -> Error {
     };
     crate::abi::status::attach_callback_payload(error)
 }
-/// Take a callback out-handle even on failure; NULL is an absent value.
 pub(crate) unsafe fn take(ptr: *mut RLMeshValue) -> Option<Value> {
     if ptr.is_null() {
         None

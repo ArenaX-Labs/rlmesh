@@ -1,6 +1,3 @@
-// The C# gate program of python/rlmesh/tests/conformance/native_gate.py: the
-// Gymnasium gate's echo env on a v2 session. C#'s v0.2 surface serves envs
-// only (D-45), so every other verb is unsupported.
 using System;
 using RLMesh;
 

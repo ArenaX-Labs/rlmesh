@@ -1,13 +1,7 @@
 //! snow, with the caller's randomness and key types that wipe themselves.
 //!
-//! snow resolves one `'static` RNG per handshake and draws exactly one
-//! 32-byte ephemeral key from it. The ephemeral is drawn from the caller's
-//! [`Rng`] into an [`Ephemeral`] first and served once, by a resolver that
-//! resolves at most one RNG. The DH and cipher are this module's: the
-//! X25519 secrets are `x25519_dalek::StaticSecret`s and the cipher keys
-//! `ChaCha20Poly1305`s, which zeroize on drop (snow 0.10's own don't), and
-//! the DH refuses a non-contributory (all-zero) result, so a low-order
-//! static or ephemeral key fails the handshake. The hash is snow's BLAKE2s.
+//! The one ephemeral key per handshake is drawn from the caller's [`Rng`] and served once. The
+//! DH refuses an all-zero result, so a low-order static or ephemeral key fails the handshake.
 
 use core::cell::Cell;
 
@@ -23,12 +17,9 @@ use super::handshake::HandshakeError;
 use super::{Key, Rng};
 use crate::prelude::*;
 
-/// The longest Noise message.
 pub(crate) const MAX_MESSAGE: usize = 65_535;
 const TAG_LEN: usize = 16;
 
-/// One handshake's ephemeral private key, drawn from the caller's RNG.
-/// Kept (wiped on drop) where a side must be able to rebuild its state.
 pub(crate) struct Ephemeral(Zeroizing<[u8; 32]>);
 
 impl Ephemeral {
@@ -40,7 +31,6 @@ impl Ephemeral {
     }
 }
 
-/// An RNG that serves one 32-byte draw, then fails.
 struct Once {
     bytes: [u8; 32],
     live: bool,
@@ -64,8 +54,6 @@ impl Drop for Once {
     }
 }
 
-/// The resolver: this module's DH and cipher, snow's hash, and an RNG that
-/// resolves once.
 struct Resolver {
     rng: Cell<Option<Box<Once>>>,
 }
@@ -87,7 +75,6 @@ impl CryptoResolver for Resolver {
     }
 }
 
-/// X25519 over a `StaticSecret` (wiped on drop), refusing all-zero results.
 #[derive(Default)]
 struct X25519 {
     secret: Option<StaticSecret>,
@@ -95,9 +82,6 @@ struct X25519 {
 }
 
 impl X25519 {
-    /// Take the private key, wiping `private` in place. (x25519-dalek takes
-    /// the bytes by value: that argument is the one copy left to the
-    /// compiler.)
     fn install(&mut self, private: &mut [u8; 32]) {
         let secret = StaticSecret::from(*private);
         private.zeroize();
@@ -151,8 +135,6 @@ impl Dh for X25519 {
     }
 }
 
-/// ChaCha20-Poly1305 holding its key in the AEAD (wiped on drop, and on
-/// every `set` as the old one drops).
 struct ChaChaPoly(ChaCha20Poly1305);
 
 impl Default for ChaChaPoly {
@@ -205,13 +187,11 @@ impl Cipher for ChaChaPoly {
     }
 }
 
-/// A builder for `pattern` whose one ephemeral key is `ephemeral`.
 pub(crate) fn builder(
     pattern: &str,
     ephemeral: &Ephemeral,
 ) -> Result<snow::Builder<'static>, HandshakeError> {
     let params: NoiseParams = pattern.parse().map_err(|_| HandshakeError::Internal)?;
-    // Filled in place on the heap, so no stack copy is left behind.
     let mut once = Box::new(Once {
         bytes: [0; 32],
         live: true,
@@ -223,7 +203,6 @@ pub(crate) fn builder(
     Ok(snow::Builder::with_resolver(params, resolver))
 }
 
-/// Write the next message with `payload`, `overhead` bytes longer than it.
 pub(crate) fn write(
     hs: &mut snow::HandshakeState,
     payload: &[u8],
@@ -239,7 +218,6 @@ pub(crate) fn write(
     Ok(out)
 }
 
-/// Read the next message and return its payload.
 pub(crate) fn read(hs: &mut snow::HandshakeState, msg: &[u8]) -> Result<Vec<u8>, HandshakeError> {
     if msg.len() > MAX_MESSAGE {
         return Err(HandshakeError::Malformed);
@@ -250,7 +228,6 @@ pub(crate) fn read(hs: &mut snow::HandshakeState, msg: &[u8]) -> Result<Vec<u8>,
     Ok(payload)
 }
 
-/// Read a message whose payload must be empty.
 pub(crate) fn read_empty(hs: &mut snow::HandshakeState, msg: &[u8]) -> Result<(), HandshakeError> {
     if read(hs, msg)?.is_empty() {
         Ok(())
@@ -259,21 +236,18 @@ pub(crate) fn read_empty(hs: &mut snow::HandshakeState, msg: &[u8]) -> Result<()
     }
 }
 
-/// The handshake hash `h`.
 pub(crate) fn hash(hs: &snow::HandshakeState) -> Result<[u8; 32], HandshakeError> {
     hs.get_handshake_hash()
         .try_into()
         .map_err(|_| HandshakeError::Internal)
 }
 
-/// The remote static key, once the handshake has it.
 pub(crate) fn remote_static(hs: &snow::HandshakeState) -> Result<[u8; 32], HandshakeError> {
     hs.get_remote_static()
         .and_then(|key| key.try_into().ok())
         .ok_or(HandshakeError::Internal)
 }
 
-/// The raw split as keys: (initiator → responder, responder → initiator).
 pub(crate) fn split(hs: &mut snow::HandshakeState) -> (Key, Key) {
     let (mut first, mut second) = hs.dangerously_get_raw_split();
     let keys = (Key::from_bytes(first), Key::from_bytes(second));
@@ -292,14 +266,10 @@ fn map(error: snow::Error) -> HandshakeError {
     }
 }
 
-/// A resolver whose static key claims a low-order public key (u = 0), as an
-/// attacker would send: every DH with it is zero, which the attacker can
-/// "compute" without a secret.
 #[cfg(test)]
 pub(crate) mod low_order {
     use super::*;
 
-    /// The private-key marker that selects the low-order static.
     pub(crate) const MARKER: [u8; 32] = [0xee; 32];
 
     #[derive(Default)]
@@ -361,7 +331,6 @@ pub(crate) mod low_order {
         }
     }
 
-    /// A builder whose static key is low-order when set to [`MARKER`].
     pub(crate) fn builder(pattern: &str, ephemeral: [u8; 32]) -> snow::Builder<'static> {
         let once = Box::new(Once {
             bytes: ephemeral,
@@ -408,7 +377,6 @@ mod tests {
         let mut out = [0u8; 32];
         let mut one = [0u8; 32];
         one[0] = 1;
-        // u = 0 and u = 1 are low-order: every scalar gives zero.
         for point in [[0u8; 32], one] {
             assert_eq!(dh.dh(&point, &mut out), Err(snow::Error::Dh));
         }

@@ -1,4 +1,3 @@
-//! Plain View data and facade parsing/validation.
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,

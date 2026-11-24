@@ -1,9 +1,3 @@
-// Runs the conformance vectors (`crates/rlmesh-tether/tests/vectors.json`,
-// schema in `crates/rlmesh-tether/tests/README.md`) against the codec on
-// the host: every encoding byte for byte, every decode result and error.
-//
-//   vectors_test path/to/vectors.json
-
 #include <stdio.h>
 
 #include <string>
@@ -75,7 +69,6 @@ uint64_t num(const json::Value& v) { return v.integer; }
 
 std::string str(uint64_t n) { return std::to_string(static_cast<unsigned long long>(n)); }
 
-// A sink target, through `sinkTo` as an Arduino `Stream` would be.
 struct Collect {
   Buf bytes;
   size_t write(uint8_t b) {
@@ -130,7 +123,6 @@ uint8_t typeOf(const std::string& name) {
   exit(2);
 }
 
-// Dense lengths from a vector's `dense_len`; parts not listed are unknown.
 struct Lens {
   int16_t len[256];
 };
@@ -160,7 +152,6 @@ void boardId(uint8_t* to, const json::Value& v) {
   for (size_t i = 0; i < 8 && i < b.size(); ++i) to[i] = b[i];
 }
 
-// The message a vector describes; `store` holds its variable bytes.
 Msg msgOf(const json::Value& v, Buf& store) {
   Msg m;
   m.type = typeOf(v["type"].string);
@@ -239,7 +230,6 @@ Msg msgOf(const json::Value& v, Buf& store) {
   return m;
 }
 
-// Every field of `m`, for comparing a decoded message with its vector.
 std::string describe(const Msg& m) {
   std::string s = str(m.type);
   auto f = [&](const char* k, uint64_t v) { s += std::string(" ") + k + "=" + str(v); };
@@ -320,8 +310,6 @@ Buf encode(const Bytes* pieces, uint8_t count) {
   return c.bytes;
 }
 
-// Feeds `wire` to a decoder of `rxMax` bytes; each result as the vectors
-// write it, through `frame` for the decoded bytes.
 template <class F>
 std::vector<std::string> run(const Buf& wire, size_t rxMax, F frame) {
   Buf buffer(rxMax);
@@ -401,7 +389,6 @@ void cobsVectors(const json::Value& all) {
     const uint16_t n = static_cast<uint16_t>(decoded.size());
     const Bytes whole = Bytes::ram(decoded.data(), n);
     same(hex(encode(&whole, 1)), want, name);
-    // Read ahead across pieces: every split point, with an empty piece.
     for (uint16_t at = 0; at <= n; ++at) {
       const Bytes pieces[3] = {Bytes::ram(decoded.data(), at), Bytes::ram(nullptr, 0),
                                Bytes::progmem(decoded.data() + at, static_cast<uint16_t>(n - at))};
@@ -431,12 +418,10 @@ void messageVectors(const json::Value& all) {
     const uint8_t seq = static_cast<uint8_t>(num(v["seq"]));
     Buf store;
     const Msg want = msgOf(v["msg"], store);
-    // Encode from the fields.
     Collect c;
     const Error e = write(want, seq, sinkTo(c));
     same(errorName(e), "ok", name + " writes");
     same(hex(c.bytes), v["wire"].string, name + " wire");
-    // Decode from the wire.
     Buf wire = unhex(v["wire"]);
     CobsDecoderBuffer<kMaxDecoded> d;
     unsigned frames = 0;
@@ -502,8 +487,6 @@ int main(int argc, char** argv) {
     fprintf(stderr, "unknown vectors schema\n");
     return 2;
   }
-  // Every section must be present and non-empty, and nothing unknown: a
-  // section renamed on the Rust side must fail here, not drop coverage.
   static const char* const sections[] = {"crc",
                                          "cobs_encode",
                                          "cobs_decode",
@@ -534,8 +517,6 @@ int main(int argc, char** argv) {
   frameVectors(all);
   messageVectors(all);
   rejectionVectors(all);
-  // Dense <-> aligned conversion happens on the bridge, never on the board;
-  // provisioning is a networked board's, in Rust.
   const size_t skipped = all["pack"].items.size();
   const size_t provision = all["provision"].items.size() +
                            all["provision_rejections"].items.size() +

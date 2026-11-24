@@ -33,8 +33,6 @@ def main(
         print(exc, file=sys.stderr)
         return 2
 
-    # Flat eval knobs override whatever the spec carried (gym/hf both read
-    # num_envs/vectorization_mode from the spec).
     num_envs = os.environ.get("RLMESH_NUM_ENVS")
     if num_envs:
         try:
@@ -54,19 +52,10 @@ def main(
 
         raw_env = load_env_from_spec(spec)
         env = cast("EnvLike[Any, Any] | VectorServerEnvLike", raw_env)
-        # A spec-built env (gym/hf/factory) has no class to carry a framework here,
-        # so the obs/action seam is typed from RLMESH_FRAMEWORK / RLMESH_DEVICE
-        # (gym/hf are numpy; a prebuilt EnvFactory image is best served via
-        # `python -m rlmesh.serve --env pkg:Factory`, which reads the factory's
-        # pinned framework directly).
         framework = os.environ.get("RLMESH_FRAMEWORK") or None
         device = os.environ.get("RLMESH_DEVICE") or None
-        # Ambient RLMESH_DEVICE is meaningful only for a device framework
-        # (torch/jax); on a numpy/gym env, forwarding a GPU node's global default
-        # would make EnvServer reject it at startup, so drop it. For a framework
-        # env, gym vectorization concatenates observations with numpy -- discarding
-        # the framework tensors and crashing on GPU tensors -- so it can't be fanned
-        # out that way; serve it scalar.
+        # RLMESH_DEVICE only applies to torch/jax; on a numpy/gym env EnvServer rejects it.
+        # Gym vectorization concatenates with numpy and breaks framework tensors, so serve those scalar.
         if framework not in ("torch", "jax"):
             device = None
         elif int(cast("str | int", spec.get("num_envs", 1) or 1)) > 1:
@@ -75,20 +64,16 @@ def main(
                 "vectorization concatenates observations with numpy, which discards "
                 "the framework tensors. Serve scalar (RLMESH_NUM_ENVS=1)."
             )
-        # The env serves as RLMESH_NAME in the session the container hosts at
-        # RLMESH_ADDRESS. EnvServer auto-detects the vectorized shape, so one
-        # construction path serves scalar and vector envs.
         address = os.environ.get("RLMESH_ADDRESS") or "0.0.0.0:7447"
         name = os.environ.get("RLMESH_NAME") or "env"
         server = EnvServer(
             env, f"{address.rstrip('/')}/{name}", framework=framework, device=device
         )
-        # A container's log: the bound address carries the session's key (a
-        # credential its launcher already holds), so print it without.
+        # The bound address carries the session key; don't print it.
         print(f"RLMesh sandbox serving {redact_address(server.address)}", flush=True)
         server.serve()
         return 0
-    except Exception as exc:  # pragma: no cover - exercised through container runs
+    except Exception as exc:  # pragma: no cover
         print(f"bootstrap failed: {exc}", file=sys.stderr)
         raise
 

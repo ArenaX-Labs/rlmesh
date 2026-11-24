@@ -1,11 +1,9 @@
-//! Derive the internal [`EnvFeatures`] from sparse [`EnvTags`] layered
-//! over a gymnasium space.
+//! Derive the internal [`EnvFeatures`] from sparse [`EnvTags`] layered over a gymnasium
+//! space.
 //!
-//! `join` is the single place env semantics meet env structure. It runs at two
-//! seams with identical rules: at authoring time (when an env publishes
-//! tags, so mistakes fail fast) and worker-side at resolve time (from
-//! the untrusted handshake contract). Every failure names which side
-//! disagreed — the tag or the space.
+//! The same rules run at authoring time (when an env publishes tags) and at resolve time
+//! (from the untrusted handshake contract). Every failure names which side disagreed: the
+//! tag or the space.
 
 use crate::advisory::Advisory;
 use crate::path::NodePath;
@@ -63,8 +61,7 @@ pub enum JoinError {
         labels: usize,
         width: u32,
     },
-    /// The role names a kind prefix this core does not define. See
-    /// [`check_role`](crate::roles::registry::check_role).
+    /// The role names a kind prefix this core does not define.
     #[error("{key:?}: {reason}")]
     InvalidRole { key: String, reason: String },
     /// A whole-leaf tag's labels break the codec rule a `Field` is held to:
@@ -120,10 +117,6 @@ pub enum JoinError {
     },
 }
 
-/// Enforce a registered role's `Fixed` dim law: the author always declares the
-/// width, and a role with a fixed canonical dim (e.g. `eef_pos` is 3-D) must
-/// match it. An ad-hoc (unregistered) role, a `Variable` role, or a `ByEncoding`
-/// role (validated by the encoding check) is left to its declared width.
 fn check_role_dim_law(role: &str, actual: u32, key: &str) -> Result<()> {
     if let Some(def) = crate::roles::registry::role_def(role)
         && let crate::roles::registry::DimLaw::Fixed(expected) = def.dim
@@ -139,8 +132,6 @@ fn check_role_dim_law(role: &str, actual: u32, key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Enforce the closed kind set at the env's authoring seam. Runs at
-/// `adapt.tag` and again at resolve, like every other join check.
 fn check_role_identity(role: &str, key: &str) -> Result<()> {
     crate::roles::registry::check_role(role).map_err(|reason| JoinError::InvalidRole {
         key: key.to_owned(),
@@ -148,9 +139,6 @@ fn check_role_identity(role: &str, key: &str) -> Result<()> {
     })
 }
 
-/// An observation leaf may not carry an `action/` role: a command is what an
-/// actuator carries, and a model reads its own previous command from its
-/// actuator (`source="action"`), never from an env leaf.
 fn check_observation_role(role: &str, key: &str) -> Result<()> {
     if role.starts_with("action/") {
         return Err(JoinError::ActionRoleOnObservation {
@@ -205,9 +193,6 @@ pub fn join(
     })
 }
 
-/// One advisory if `role` is neither registered nor an `x/` escape -- an ad-hoc
-/// role resolves only on exact-string agreement, so nudge the author toward a
-/// blessed role, the `x/` escape, or (for dims no model reads) an opaque actuator.
 fn role_registry_advisory(role: &str) -> Option<Advisory> {
     if crate::roles::registry::is_sanctioned_role(role) {
         return None;
@@ -225,20 +210,9 @@ fn role_registry_advisory(role: &str) -> Option<Advisory> {
     Some(Advisory::info(message))
 }
 
-/// Plausible image channel-axis length (RGBA=4, RGB=3, grayscale=1, ...). A
-/// declared channel axis above this is suspect; the heuristic below only acts on
-/// it when the *opposite* layout's channel axis is plausible — so a legitimately
-/// stacked >4-channel image stays silent.
 const PLAUSIBLE_CHANNELS: u32 = 4;
 
-/// One advisory if `image`'s declared layout looks swapped given its shape, else
-/// `None`. Layout is the one image fact a 3-D Box shape can't disambiguate (it
-/// defaults to `hwc`), so a CHW env that forgets `layout="chw"` silently derives
-/// a wrong channel count. This is a *hint*, never an error: an env may
-/// legitimately carry an unusual channel count.
 fn image_layout_advisory(image: &EnvImage) -> Option<Advisory> {
-    // image_hwc maps the axes so that, under hwc, channels = shape[2] and the
-    // chw channel axis would be shape[0] = height; under chw it is the mirror.
     let (declared, opposite_channels, other) = match image.layout {
         ImageLayout::Hwc => ("hwc", image.height, "chw"),
         ImageLayout::Chw => ("chw", image.width, "hwc"),
@@ -254,11 +228,6 @@ fn image_layout_advisory(image: &EnvImage) -> Option<Advisory> {
         })
 }
 
-/// Walk the observation tree in lockstep with the space, flattening each leaf
-/// into the `Vec<EnvFeature>` the resolver consumes. A `Dict` node descends each
-/// key (the space must be a `Dict` carrying that key); a `Tuple` node descends
-/// each index positionally (the space must be a same-arity `Tuple`); a `Leaf`
-/// joins against the space leaf at the current `source` path.
 fn join_node(
     node: &ObsNode,
     view: &SpaceView,
@@ -267,9 +236,6 @@ fn join_node(
     unknown: &mut Vec<UnknownFeature>,
 ) -> Result<()> {
     match node {
-        // An unrecognized kind produces no feature; it is recorded (not joined
-        // against the space — an old core cannot validate a kind it does not
-        // define) so the resolver can detect whether a model input references it.
         ObsNode::Leaf(ObsLeaf::Unknown { kind, role, .. }) => unknown.push(UnknownFeature {
             source: source.clone(),
             role: role.clone(),
@@ -307,8 +273,6 @@ fn join_node(
                     actual: items.len(),
                 });
             }
-            // Arity is checked above, so `index < children.len()` holds for
-            // every item: index the children directly.
             for (index, item) in items.iter().enumerate() {
                 join_node(
                     item,
@@ -365,8 +329,6 @@ fn join_feature(
                 });
             }
             let width = width_of(leaf);
-            // Validate the *native* (raw) encoding's width against the space:
-            // the first recognized entry is what the env actually produces.
             if let Some(native) = state.encoding.as_ref().and_then(|set| set.first_known())
                 && width != native.dims()
             {
@@ -380,9 +342,6 @@ fn join_feature(
             check_role_dim_law(&state.role, width, &path)?;
             check_role_identity(&state.role, &path)?;
             check_observation_role(&state.role, &path)?;
-            // A `Field` pins its labels to `dim` at the codec; a whole-leaf tag
-            // learns its width only here, and the same-set rule needs them
-            // duplicate-free.
             if let Some(labels) = &state.labels {
                 crate::spec::labels::check_labels(labels, &path).map_err(|reason| {
                     JoinError::InvalidLabels {
@@ -432,12 +391,6 @@ fn join_feature(
     }
 }
 
-/// Split one flat numeric leaf into a [`EnvState`] per role field of a layout.
-///
-/// Fields are laid out in order; offsets accumulate; the field widths must sum
-/// to the leaf width (mirroring the action width law). A role-less field is a
-/// skip — it advances the offset but emits no feature. Each role field's range
-/// is derived from its own slice of the leaf's bounds.
 fn join_split(
     source: &NodePath,
     layout: &SplitLayout,
@@ -517,10 +470,6 @@ fn join_split(
     Ok(features)
 }
 
-/// Reconcile a state's value range: take the space's finite bounds when
-/// uniform, overridden by an explicit tag only where the space is unbounded.
-/// A finite space range that disagrees with an explicit tag is an error.
-/// Shared by state features, state-layout fields, and action components.
 fn reconcile_range(
     space: Option<(f64, f64)>,
     tag: Option<(f64, f64)>,
@@ -529,9 +478,6 @@ fn reconcile_range(
     match (space, tag) {
         (Some(space), Some(tag)) => {
             if ranges_agree(space, tag) {
-                // The explicit tag is the author's stated intent; keep
-                // it exactly (the space's bounds may be the same value at a
-                // narrower precision).
                 Ok(Some(tag))
             } else {
                 Err(JoinError::RangeDisagreement {
@@ -546,9 +492,6 @@ fn reconcile_range(
     }
 }
 
-/// The uniform finite `(low, high)` of a field's `[offset, offset+dim)` slice of
-/// a leaf's bounds, or `None` if unbounded, non-finite, or non-uniform within
-/// the slice. Length-1 bounds are a uniform broadcast over the whole leaf.
 fn slice_uniform_finite_range(leaf: &SpaceView, offset: u32, dim: u32) -> Option<(f64, f64)> {
     let lo = slice_uniform(leaf.low.as_deref()?, offset, dim)?;
     let hi = slice_uniform(leaf.high.as_deref()?, offset, dim)?;
@@ -558,9 +501,6 @@ fn slice_uniform_finite_range(leaf: &SpaceView, offset: u32, dim: u32) -> Option
     Some((lo, hi))
 }
 
-/// The single bound value across a field's slice of one side's bounds, or
-/// `None` if the slice is out of range or non-uniform. A length-1 vec is a
-/// uniform broadcast and applies to every field.
 fn slice_uniform(bounds: &[f64], offset: u32, dim: u32) -> Option<f64> {
     if bounds.len() == 1 {
         return Some(bounds[0]);
@@ -574,13 +514,6 @@ fn slice_uniform(bounds: &[f64], offset: u32, dim: u32) -> Option<f64> {
     Some(first)
 }
 
-/// Whether two `(low, high)` ranges agree up to floating-point rounding.
-///
-/// A space stores its bounds at the dtype's precision, so a float32
-/// gymnasium `Box(_, 0.08, _)` projects to `0.0799999982`; an exact compare
-/// against a tag's `0.08` would reject ranges that are equal in
-/// intent. The tolerance (~8x float32 epsilon, with an absolute floor) still
-/// rejects genuine disagreements.
 fn ranges_agree(a: (f64, f64), b: (f64, f64)) -> bool {
     fn close(x: f64, y: f64) -> bool {
         (x - y).abs() <= 1e-6 * x.abs().max(y.abs()).max(1.0)
@@ -588,20 +521,10 @@ fn ranges_agree(a: (f64, f64), b: (f64, f64)) -> bool {
     close(a.0, b.0) && close(a.1, b.1)
 }
 
-/// The single finite `(low, high)` pair a space declares, or `None` if it is
-/// unbounded, non-finite, or per-element non-uniform. The whole-leaf case is
-/// just the `[0, width)` slice of [`slice_uniform_finite_range`].
 fn uniform_finite_range(leaf: &SpaceView) -> Option<(f64, f64)> {
     slice_uniform_finite_range(leaf, 0, width_of(leaf))
 }
 
-/// Validate the action layout against the action space and derive each
-/// component's value range from the space's finite bounds, the way
-/// [`join_feature`] does for observation state. Without this a model output is
-/// passed through unmapped even when the env's `action_space` declares finite
-/// bounds the model's range should map into (e.g. model `[-1, 1]` into an env
-/// `Box(0, 1)` action). Components are laid out in order; each derives its
-/// range from its own `[offset, offset+dim)` slice of the action bounds.
 fn resolve_action(action: &Action, action_space: &SpaceView) -> Result<Action> {
     if action_space.kind != SpaceViewKind::Box {
         return Err(JoinError::ActionClass {
@@ -624,16 +547,10 @@ fn resolve_action(action: &Action, action_space: &SpaceView) -> Result<Action> {
     let mut offset: u32 = 0;
     for component in &action.components {
         let Some(role) = &component.role else {
-            // Opaque (role-less) actuator: occupies its dims with a constant
-            // fill, matched by nothing. No encoding/range/dim-law (the codec
-            // rejects those on a role-less actuator); it carries through verbatim.
             components.push(component.clone());
             offset += component.dim;
             continue;
         };
-        // An env actuator declares a native format; a (nonsensical) custom
-        // encoding on the env side shadows to its base -- env-side host arms are
-        // never run, so there is nothing to inject, only a base width to check.
         if let Some(encoding) = component.encoding.as_ref().map(|encoding| encoding.base())
             && component.dim != encoding.dims()
         {
@@ -674,7 +591,6 @@ fn width_of(view: &SpaceView) -> u32 {
     u32::try_from(view.numel()).unwrap_or(u32::MAX)
 }
 
-/// Pixel `(height, width, channels)` of a 3-D image shape under its layout.
 fn image_hwc(shape: &[i64], layout: ImageLayout) -> (u32, u32, u32) {
     let dim = |index: usize| {
         shape
@@ -779,20 +695,16 @@ mod tests {
         }
     }
 
-    /// A single-key Dict observation tree carrying one leaf at `key`.
     fn leaf_at(key: &str, leaf: ObsLeaf) -> ObsNode {
         let mut map = BTreeMap::new();
         map.insert(key.to_owned(), ObsNode::Leaf(leaf));
         ObsNode::Dict(map)
     }
 
-    /// An empty Dict observation tree (no tagged leaves).
     fn empty_obs() -> ObsNode {
         ObsNode::Dict(BTreeMap::new())
     }
 
-    /// Join a single observation entry against its leaf, with an empty action.
-    /// The source path of the joined feature is `key`.
     fn join_obs(key: &str, view: SpaceView, leaf: ObsLeaf) -> Result<EnvFeatures> {
         let obs = dict_view(vec![(key, view)]);
         let tags = EnvTags {
@@ -870,8 +782,6 @@ mod tests {
 
     #[test]
     fn action_role_dim_law_rejects_a_fixed_role_with_the_wrong_dim() {
-        // delta_eef_pos is 3-D Cartesian by convention; declaring it 4-D is a
-        // hard error even though the dims still sum to the action width.
         let action = action_layout(vec![component("action/delta_eef_pos", 4, None)]);
         let err = resolve_action(&action, &box_view(vec![4], None, None)).unwrap_err();
         assert!(
@@ -886,7 +796,6 @@ mod tests {
             "{err:?}"
         );
 
-        // An ad-hoc (unregistered) role has no dim law: any width resolves.
         let adhoc = action_layout(vec![component("action/custom_thing", 4, None)]);
         assert!(resolve_action(&adhoc, &box_view(vec![4], None, None)).is_ok());
     }
@@ -943,7 +852,6 @@ mod tests {
             observation: ObsNode::Dict(observation),
             action: action_layout(vec![component("wiggle", 1, None)]),
         };
-        // Still accepted: a kind-less role is advised, never refused.
         let features = join(&tags, &obs, &action_space).expect("join");
         let nudge = features
             .advisories
@@ -957,8 +865,6 @@ mod tests {
 
     #[test]
     fn joins_a_nested_dict_observation() {
-        // The tree shape that replaces dotted keys: robot.eef_pos lives in a
-        // nested Dict, addressed structurally; its source path renders dotted.
         let obs = dict_view(vec![(
             "robot",
             dict_view(vec![(
@@ -1165,8 +1071,6 @@ mod tests {
 
     #[test]
     fn rejects_action_dim_sum_overflow() {
-        // Declared component dims that overflow u32 are a clean error, not a
-        // silent wrap (which would fabricate a false width-match in release).
         let obs = dict_view(vec![]);
         let action = box_view(vec![3], None, None);
         let tags = EnvTags {
@@ -1251,7 +1155,6 @@ mod tests {
         })
     }
 
-    /// The joined advisory messages for a single camera of `shape` declared `layout`.
     fn cam_advisories(shape: Vec<i64>, layout: ImageLayout) -> Vec<String> {
         join_obs("camera", box_view(shape, None, None), image_leaf(layout))
             .expect("joins")
@@ -1263,8 +1166,6 @@ mod tests {
 
     #[test]
     fn mislabeled_hwc_layout_advises_chw() {
-        // [3,224,224] declared hwc derives channels=224 (implausible) while the
-        // chw channel axis (leading 3) is plausible -> hint chw. Join still ok.
         let advisories = cam_advisories(vec![3, 224, 224], ImageLayout::Hwc);
         assert!(
             advisories
@@ -1276,8 +1177,6 @@ mod tests {
 
     #[test]
     fn mislabeled_chw_layout_advises_hwc() {
-        // The mirror: [224,224,3] declared chw derives channels=224 while the
-        // hwc channel axis (trailing 3) is plausible -> hint hwc.
         let advisories = cam_advisories(vec![224, 224, 3], ImageLayout::Chw);
         assert!(
             advisories
@@ -1289,15 +1188,11 @@ mod tests {
 
     #[test]
     fn correctly_labeled_image_has_no_layout_advisory() {
-        // [224,224,3] hwc -> channels=3 is plausible -> silent.
         assert!(cam_advisories(vec![224, 224, 3], ImageLayout::Hwc).is_empty());
     }
 
     #[test]
     fn legit_many_channel_image_stays_silent() {
-        // [224,224,6] hwc (e.g. two stacked RGB): channels=6 is >4 but the
-        // opposite axis (height=224) is not a plausible channel count, so the
-        // layout is not ambiguous -> no false-positive hint.
         assert!(cam_advisories(vec![224, 224, 6], ImageLayout::Hwc).is_empty());
     }
 
@@ -1352,8 +1247,6 @@ mod tests {
             })
         ));
         join_obs("q", box_view(vec![2], None, None), joints(&["a", "b"])).expect("joins");
-        // Same-set alignment needs each label once; a repeat would let a
-        // model's tuple pass as the same set while selecting fewer axes.
         assert!(matches!(
             join_obs("q", box_view(vec![3], None, None), joints(&["a", "a", "b"])),
             Err(JoinError::InvalidLabels { .. })
@@ -1397,10 +1290,6 @@ mod tests {
 
     #[test]
     fn finite_bounds_agree_with_tag_up_to_float32_rounding() {
-        // A float32 gymnasium Box(0, 0.08) projects its high bound to the
-        // nearest float32, 0.0799999982; the tag declares 0.08. These
-        // must agree (rounding, not disagreement), and the exact tag
-        // value is kept.
         let f32_high = f64::from(0.08_f32);
         assert_ne!(f32_high, 0.08);
         let features = join_obs(
@@ -1440,7 +1329,6 @@ mod tests {
         }
     }
 
-    /// A split-leaf at the root (the flat-Box case the old `"."` sentinel keyed).
     fn layout_tags(fields: Vec<Field>) -> EnvTags {
         EnvTags {
             observation: ObsNode::Leaf(ObsLeaf::Split(SplitLayout { fields })),
@@ -1455,7 +1343,7 @@ mod tests {
         let tags = layout_tags(vec![
             field(Some("proprio/eef_pos"), 3, None),
             field(Some("proprio/gripper"), 1, None),
-            field(None, 1, None), // skip
+            field(None, 1, None),
             field(Some("proprio/obj_pos"), 3, None),
         ]);
         let features = join(&tags, &obs, &action).expect("join");
@@ -1473,7 +1361,6 @@ mod tests {
         assert_eq!(states[1].role, "proprio/gripper");
         assert_eq!((states[1].slice_offset, states[1].dim), (Some(3), Some(1)));
         assert_eq!(states[2].role, "proprio/obj_pos");
-        // Offset skips past the role-less field (3 + 1 + 1 = 5).
         assert_eq!((states[2].slice_offset, states[2].dim), (Some(5), Some(3)));
     }
 
@@ -1509,7 +1396,6 @@ mod tests {
 
     #[test]
     fn derives_layout_field_range_from_its_own_bounds_slice() {
-        // Elementwise bounds: only the gripper field (index 3) is [0, 1].
         let low = vec![-1.0, -1.0, -1.0, 0.0, -1.0];
         let high = vec![1.0, 1.0, 1.0, 1.0, 1.0];
         let obs = box_view(vec![5], Some(low), Some(high));
@@ -1567,8 +1453,6 @@ mod tests {
 
     #[test]
     fn an_action_role_on_an_observation_leaf_fails_the_join() {
-        // A command is an actuator's to carry; a model reads its previous
-        // command with `source="action"`, never from an env observation.
         let obs = box_view(vec![6], None, None);
         let action = box_view(vec![0], None, None);
         let mut last = field(Some("action/joint_pos"), 3, None);
@@ -1577,15 +1461,12 @@ mod tests {
             join(&layout_tags(vec![last.clone(), fine.clone()]), &obs, &action),
             Err(JoinError::ActionRoleOnObservation { role, .. }) if role == "action/joint_pos"
         ));
-        // A proprio role in the same slot joins (the action layout carries
-        // `action/` roles as a matter of course, see the tests above).
         last.role = Some("proprio/joint_pos".to_owned());
         join(&layout_tags(vec![last, fine]), &obs, &action).expect("joins");
     }
 
     #[test]
     fn a_role_repeats_across_parts_and_an_unknown_kind_fails_the_join() {
-        // One role per arm is a real layout; the same arm twice is not.
         let obs = box_view(vec![6], None, None);
         let action = box_view(vec![0], None, None);
         let mut left = field(Some("proprio/eef_pos"), 3, None);
@@ -1600,8 +1481,6 @@ mod tests {
             Err(JoinError::DuplicateLayoutRole { role, .. }) if role == "proprio/eef_pos"
         ));
 
-        // The closed kind set holds at the env's authoring seam; a part is
-        // any identifier and draws no advisory.
         let mut odd = field(Some("audio/mic"), 3, None);
         odd.part = Some("franka".to_owned());
         assert!(matches!(
@@ -1669,9 +1548,6 @@ mod tests {
 
     #[test]
     fn derives_action_component_ranges_from_bounded_space() {
-        // A width-4 action Box(0, 1); neither component tags a range. Each
-        // derives (0, 1) from its slice of the space bounds, so a model output
-        // is later mapped into the env's accepted range instead of passed raw.
         let obs = dict_view(vec![]);
         let action = box_view(vec![4], Some(vec![0.0]), Some(vec![1.0]));
         let tags = EnvTags {
@@ -1702,8 +1578,6 @@ mod tests {
 
     #[test]
     fn rejects_action_range_disagreeing_with_bounded_space() {
-        // A gripper tagged (-1, 1) against a Box(0, 1) action is a contradiction
-        // (mirrors the state-side range-disagreement check).
         let obs = dict_view(vec![]);
         let action = box_view(vec![1], Some(vec![0.0]), Some(vec![1.0]));
         let mut gripper = component("action/gripper", 1, None);

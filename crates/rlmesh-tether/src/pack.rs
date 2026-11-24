@@ -24,10 +24,6 @@ pub fn dense_len(lens: &[usize]) -> Option<usize> {
     lens.iter().try_fold(0_usize, |acc, l| acc.checked_add(*l))
 }
 
-/// The offsets and lengths must describe a session layout
-/// (`wire::Layout::Packed`): as many offsets as lengths, each offset
-/// 8-aligned and past the previous field's end, and the last field inside
-/// the stride.
 fn check(offsets: &[usize], lens: &[usize], stride: usize) -> Result<usize, PackError> {
     if offsets.len() != lens.len() {
         return Err(PackError::Layout);
@@ -96,7 +92,6 @@ mod tests {
 
     #[test]
     fn two_f32_fields_pack_to_eight_bytes_and_back() {
-        // `pan: f32`, `tilt: f32`: aligned at 0 and 8, stride 16.
         let (offsets, lens) = ([0, 8], [4, 4]);
         let mut aligned = [0xEE_u8; 16];
         aligned[..4].copy_from_slice(&1.5_f32.to_le_bytes());
@@ -115,7 +110,6 @@ mod tests {
 
     #[test]
     fn mixed_widths_keep_field_order() {
-        // `pos: f32[3]` (12 bytes at 0), `on: bool` (1 at 16), `id: u8[2]` (2 at 24): stride 32.
         let (offsets, lens) = ([0, 16, 24], [12, 1, 2]);
         let dense: [u8; 15] = core::array::from_fn(|i| i as u8 + 1);
         let mut aligned = [0xEE_u8; 32];
@@ -145,7 +139,6 @@ mod tests {
             to_aligned(&[0; 8], &[0], &[4, 4], &mut aligned),
             Err(PackError::Layout)
         );
-        // Overlapping, out of order or unaligned fields aren't a layout.
         for offsets in [[0, 0], [8, 0], [0, 4]] {
             assert_eq!(
                 to_aligned(&[0; 8], &offsets, &[4, 4], &mut aligned),

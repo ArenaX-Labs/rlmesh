@@ -1,38 +1,16 @@
 //! The links a listening transport accepted, watched from below Zenoh.
 //!
-//! A peer that keeps its TCP connection up but stops reading (a frozen or
-//! debugger-stopped process, a board whose task stopped reading while its
-//! TCP stack still acknowledges) never lapses its Zenoh lease: its
-//! keep-alives keep coming. What the host sends it piles up, and Zenoh
-//! 1.10 then waits on that link without a deadline: closing its transport
-//! (because a BLOCK message could not be queued, or because the host shuts
-//! down) queues a `Close` message behind the full queue and blocks the
-//! closing thread until a batch drains, which, for a link nothing reads, is
-//! when the socket fails. Meanwhile every message routed to that peer waits
-//! on the same queue, on the thread of whoever sent it.
+//! A peer that keeps its TCP connection up but stops reading never lapses its Zenoh lease,
+//! and every send to it, and closing its transport, then waits until the socket fails. So
+//! a [`LinkGuard`] scans the process's sockets accepted on the listening ports every
+//! [`SCAN`], and shuts down, with a zero linger, a link that had bytes waiting the whole of
+//! [`LINK_STALL`] while its peer acknowledged neither what waited at first nor
+//! [`STALL_PROGRESS`] bytes. A slow or idle link acknowledges far more than that.
 //!
-//! So the host fails the socket itself. A [`LinkGuard`] scans the process's
-//! sockets accepted on the transport's listening ports every [`SCAN`], and
-//! a link that had bytes waiting the whole of [`LINK_STALL`] while its peer
-//! acknowledged neither what waited at first nor [`STALL_PROGRESS`] bytes is
-//! shut down at the socket, with a zero linger so the kernel resets it rather than keep
-//! offering the peer what it will not read. Zenoh's reads and writes then
-//! fail, which is what ends every wait above. A link that is merely slow
-//! (a Wi-Fi link with hundreds of milliseconds of delay, or a stall of a
-//! second or two) acknowledges far more than that in the window, and an
-//! idle link, whose keep-alives each wait a moment for a delayed
-//! acknowledgement, has each one taken before the next.
-//!
-//! The scan needs the process's descriptors and the kernel's counters for
-//! each: Linux (`/proc/self/fd`, `TCP_INFO`) and macOS (`/dev/fd`,
-//! `TCP_CONNECTION_INFO`). Linux also gets a kernel fast path: listening
-//! sockets carry a `TCP_USER_TIMEOUT` of [`LINK_SILENCE`], which accepted
-//! sockets inherit, so the kernel resets a link that leaves data
-//! unacknowledged that long and, on recent kernels, one whose window stays
-//! closed that long however its probes are answered (it acts on its probe
-//! timer, so often somewhat later). Elsewhere (Windows, other Unixes) the
-//! guard watches and cuts nothing, and only [`Transport::close`]'s deadline
-//! applies.
+//! The scan runs on Linux (`/proc/self/fd`, `TCP_INFO`) and macOS (`/dev/fd`,
+//! `TCP_CONNECTION_INFO`). On Linux listening sockets also carry a `TCP_USER_TIMEOUT` of
+//! `LINK_SILENCE`, inherited by accepted sockets. Elsewhere the guard cuts nothing, and only
+//! [`Transport::close`]'s deadline applies.
 //!
 //! [`Transport::close`]: super::Transport::close
 
@@ -42,25 +20,12 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
 
-/// How often the guard looks at its links.
 pub(crate) const SCAN: Duration = Duration::from_millis(250);
-/// How long a link may have bytes waiting while its peer takes almost none
-/// of them before the guard shuts it down: past a Wi-Fi link's stall of a
-/// second or two.
 pub(crate) const LINK_STALL: Duration = Duration::from_millis(2500);
-/// What a peer must acknowledge within [`LINK_STALL`], while bytes wait for
-/// it, to count as reading, unless less than this waited: then taking all
-/// of that counts. A kernel that keeps a closed window's probes answered
-/// may still let a few bytes trickle in.
 pub(crate) const STALL_PROGRESS: u64 = 1024;
-/// How long a host's link may leave what it sent unacknowledged, or keep
-/// its window closed, before the kernel resets it.
 #[cfg(target_os = "linux")]
 pub(crate) const LINK_SILENCE: Duration = Duration::from_secs(2);
 
-/// Watches the links accepted on a transport's listening ports, from a
-/// thread of its own (never a runtime's, which a stuck Zenoh call may hold),
-/// until dropped.
 #[derive(Debug)]
 pub(crate) struct LinkGuard {
     ports: Vec<u16>,
@@ -68,7 +33,6 @@ pub(crate) struct LinkGuard {
     _stop: mpsc::Sender<()>,
 }
 
-/// Which links [`LinkGuard::cut`] shuts down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cut {
     /// Those with bytes waiting.
@@ -78,10 +42,6 @@ pub(crate) enum Cut {
 }
 
 impl LinkGuard {
-    /// Guards the links accepted on `ports`, or nothing when there are
-    /// none. Where this platform can't see them, it watches nothing and
-    /// cuts nothing. On Linux, `notsent_lowat` bounds what each accepted
-    /// link holds unsent (`TCP_NOTSENT_LOWAT`).
     pub(crate) fn start(mut ports: Vec<u16>, notsent_lowat: Option<u32>) -> Option<Self> {
         ports.retain(|port| *port != 0);
         ports.sort_unstable();
@@ -107,7 +67,6 @@ impl LinkGuard {
         Some(Self { ports, _stop: stop })
     }
 
-    /// Shuts down the links `which` names now: how many.
     pub(crate) fn cut(&self, which: Cut) -> usize {
         let mut cut = 0;
         for link in sys::accepted(&self.ports) {
@@ -119,7 +78,6 @@ impl LinkGuard {
     }
 }
 
-/// One accepted link, as the kernel sees it.
 #[derive(Debug)]
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 struct Link {
@@ -133,8 +91,6 @@ struct Link {
     taken: u64,
 }
 
-/// Since when a link has had bytes waiting, how many waited then, and what
-/// its peer had taken then.
 #[derive(Clone, Copy, Debug)]
 struct Stall {
     since: Instant,
@@ -142,7 +98,6 @@ struct Stall {
     taken: u64,
 }
 
-/// Whether a link stalled: `stall` updated for what the kernel says now.
 fn stalled(stall: &mut Option<Stall>, waiting: u64, taken: u64, now: Instant) -> bool {
     if waiting == 0 {
         *stall = None;
@@ -205,7 +160,6 @@ mod sys {
 
     pub(super) const SUPPORTED: bool = true;
 
-    /// The socket's inode, on Linux; elsewhere its local and peer address.
     #[cfg(target_os = "linux")]
     pub(super) type Key = u64;
     #[cfg(not(target_os = "linux"))]
@@ -216,7 +170,6 @@ mod sys {
     #[cfg(not(target_os = "linux"))]
     const FDS: &str = "/dev/fd";
 
-    /// The process's open descriptors.
     fn descriptors() -> Vec<RawFd> {
         let Ok(dir) = std::fs::read_dir(FDS) else {
             return Vec::new();
@@ -230,7 +183,6 @@ mod sys {
         let mut value: libc::c_int = 0;
         let mut len = size_of::<libc::c_int>() as libc::socklen_t;
         // SAFETY: both pointers are valid for the given length; a
-        // descriptor that is no socket (or no longer open) only fails it.
         let ok =
             unsafe { libc::getsockopt(fd, level, name, (&raw mut value).cast(), &raw mut len) }
                 == 0;
@@ -281,7 +233,6 @@ mod sys {
         address(fd, libc::getpeername)
     }
 
-    /// A TCP socket on one of `ports`: whether it listens.
     fn on_ports(fd: RawFd, ports: &[u16]) -> Option<bool> {
         let kind = int_option(fd, libc::SOL_SOCKET, libc::SO_TYPE)?;
         if kind != libc::SOCK_STREAM {
@@ -310,10 +261,8 @@ mod sys {
         Some((fd, local(fd), peer(fd)))
     }
 
-    /// Bytes waiting, and bytes the peer acknowledged so far.
     #[cfg(target_os = "linux")]
     fn counters(fd: RawFd) -> Option<(u64, u64)> {
-        // `struct tcp_info` up to `tcpi_bytes_acked` (Linux 4.2), at 120.
         const BYTES_ACKED: usize = 120;
         let mut info = [0_u8; 256];
         let mut len = info.len() as libc::socklen_t;
@@ -339,8 +288,6 @@ mod sys {
         Some((u64::try_from(waiting).unwrap_or(0), acked))
     }
 
-    /// Bytes in the send buffer, and bytes first sent so far (what a
-    /// closed window stops; its probes are a byte at a time).
     #[cfg(not(target_os = "linux"))]
     fn counters(fd: RawFd) -> Option<(u64, u64)> {
         // SAFETY: an all-zero `tcp_connection_info` is valid.
@@ -365,7 +312,6 @@ mod sys {
         })
     }
 
-    /// The TCP links accepted on `ports`.
     pub(super) fn accepted(ports: &[u16]) -> Vec<Link> {
         descriptors()
             .into_iter()
@@ -386,9 +332,6 @@ mod sys {
             .collect()
     }
 
-    /// Shuts `link` down and has its close reset it, if its descriptor
-    /// still holds it. Works on a duplicate, so a descriptor closed and
-    /// reused meanwhile is left alone.
     pub(super) fn cut(link: &Link) -> bool {
         // SAFETY: duplicating a descriptor has no effect on the original.
         let dup = unsafe { libc::fcntl(link.fd, libc::F_DUPFD_CLOEXEC, 0) };
@@ -402,7 +345,6 @@ mod sys {
                 l_linger: 0,
             };
             // SAFETY: the value is valid for the given length; both calls
-            // act on the socket `dup` refers to, which is `link`'s.
             unsafe {
                 libc::setsockopt(
                     dup,
@@ -419,7 +361,6 @@ mod sys {
         same
     }
 
-    /// `link`'s key as `dup` would report it if it is the same socket.
     #[cfg(target_os = "linux")]
     fn same_key(link: &Link, _dup: RawFd) -> Key {
         link.key
@@ -430,10 +371,6 @@ mod sys {
         (dup, link.key.1, link.key.2)
     }
 
-    /// Sets [`super::LINK_SILENCE`] as the `TCP_USER_TIMEOUT` of the
-    /// sockets listening on `ports`, and `notsent_lowat` as their
-    /// `TCP_NOTSENT_LOWAT`: the sockets they accept inherit both (Zenoh has
-    /// no option for either).
     #[cfg(target_os = "linux")]
     pub(super) fn bound_silent_links(ports: &[u16], notsent_lowat: Option<u32>) {
         let timeout_ms = super::LINK_SILENCE.as_millis() as libc::c_int;
@@ -531,10 +468,8 @@ mod tests {
         let at = |ms: u64| start + Duration::from_millis(ms);
         let window = u64::try_from(LINK_STALL.as_millis()).expect("ms");
         let mut stall = None;
-        // Nothing waiting: never stalled, however long.
         assert!(!stalled(&mut stall, 0, 0, at(0)));
         assert!(!stalled(&mut stall, 0, 0, at(window * 2)));
-        // Bytes waiting from here, and the peer takes a trickle.
         let from = window * 2;
         assert!(!stalled(&mut stall, 9000, 100, at(from)));
         assert!(!stalled(&mut stall, 9000, 600, at(from + window - 1)));
@@ -544,28 +479,22 @@ mod tests {
             100 + STALL_PROGRESS - 1,
             at(from + window)
         ));
-        // A slow but reading peer: the window starts over each time it
-        // takes enough.
         let mut stall = None;
         let mut taken = 0;
         for ms in (0..window * 5).step_by(250) {
             taken += STALL_PROGRESS / 4;
             assert!(!stalled(&mut stall, 9000, taken, at(ms)), "{ms} ms");
         }
-        // An idle link whose every scan finds the latest keep-alive still
-        // waiting for its (delayed) acknowledgement, the one before taken.
         let mut stall = None;
         let mut taken = 0;
         for ms in (0..window * 5).step_by(250) {
             assert!(!stalled(&mut stall, 3, taken, at(ms)), "{ms} ms");
             taken += 3;
         }
-        // The same few bytes never taken: a dead peer.
         let mut stall = None;
         assert!(!stalled(&mut stall, 3, 0, at(0)));
         assert!(!stalled(&mut stall, 6, 0, at(window - 1)));
         assert!(stalled(&mut stall, 9, 0, at(window)));
-        // Drained once: the window starts over.
         let mut stall = None;
         assert!(!stalled(&mut stall, 10, 0, at(0)));
         assert!(!stalled(&mut stall, 0, 0, at(window - 1)));

@@ -1,10 +1,3 @@
-"""``rlmesh.describe``: the versioned, Rust-standardized metadata envelope.
-
-Covers the pure-Python gatherer (``_gather``, ``_catalog``, ``_variations``) and
-the full envelope produced through the Rust builder (``describe`` /
-``describe_json`` + the classmethods).
-"""
-
 from __future__ import annotations
 
 from typing import Any, ClassVar, cast
@@ -13,11 +6,8 @@ import pytest
 import rlmesh
 from rlmesh._describe import _catalog, _gather, _variations, check_target
 
-# --- pure helpers: variations + catalog --------------------------------------
-
 
 def test_variations_treats_bare_str_axis_as_one_value() -> None:
-    # list("pick-place") would explode into characters; a bare str is one value.
     assert _variations({"task": "pick-place"}) == {"task": ["pick-place"]}
     assert _variations({"task": ["a", "b"]}) == {"task": ["a", "b"]}
 
@@ -26,14 +16,11 @@ def _noop(**_kwargs: object) -> None: ...
 
 
 def test_catalog_variant_nested_shape() -> None:
-    # Display info rides nested in metadata, never flattened onto the entry.
     cat = _catalog([rlmesh.Variant("s/0", {"a": 1}, name="Zero")], None, _noop)
     assert cat == [{"id": "s/0", "params": {"a": 1}, "metadata": {"name": "Zero"}}]
 
 
 def test_catalog_tolerant_plain_dict_entry() -> None:
-    # A plain mapping (no Variant) yields the same nested shape; non id/params keys
-    # collapse into metadata.
     cat = _catalog([{"id": "s/0", "params": {"a": 1}, "name": "Zero"}], None, _noop)
     assert cat == [{"id": "s/0", "params": {"a": 1}, "metadata": {"name": "Zero"}}]
 
@@ -65,12 +52,10 @@ def test_catalog_badges_unbuildable_variant() -> None:
 
     bad = _catalog([rlmesh.Variant("bad", {"task": "zzz"})], spec, make)
     assert "error" in bad[0]
-    # params kept verbatim despite the badge -- catalog never rewrites an entry.
     assert bad[0]["params"] == {"task": "zzz"}
 
 
 def test_variant_defensively_copies_params() -> None:
-    # Reusing one dict across entries in a loop must not alias the whole catalog.
     src = {"task_id": 0}
     variant = rlmesh.Variant("s/0", src)
     src["task_id"] = 99
@@ -78,7 +63,6 @@ def test_variant_defensively_copies_params() -> None:
 
 
 def test_variant_rejects_non_mapping_params() -> None:
-    # dict() would silently accept a list of pairs; params must be a real mapping.
     with pytest.raises(ValueError, match="mapping"):
         rlmesh.Variant("s/0", cast("Any", [("a", 1)]))
 
@@ -93,12 +77,7 @@ def test_variant_eq_and_repr() -> None:
     assert repr(a) == "Variant(id='s/0', params={'a': 1}, metadata={'name': 'Zero'})"
 
 
-# --- gatherer: grouped params / variants -------------------------------------
-
-
 def test_gather_class_with_unsafe_bare_new() -> None:
-    # Subclassing a C type makes object.__new__(cls) raise; the gatherer must still
-    # reflect the load signature (via the partial fallback) instead of crashing.
     class _CModel(int):
         params = None
 
@@ -150,12 +129,7 @@ def test_gather_badges_broken_catalog() -> None:
     assert "boom" in cast("str", pieces["variants"]["catalog_error"])
 
 
-# --- full envelope through the Rust builder -----------------------------------
-
-
 class _ArmEnv:
-    """A local env exposing gymnasium obs/action spaces (for env_spec capture)."""
-
     def __init__(self) -> None:
         import gymnasium as gym
         import numpy as np
@@ -201,11 +175,9 @@ def test_env_envelope_shape() -> None:
     assert env["runtime"]["language"] == "python"
     assert "param_spec" in env["params"] and "signature_tier" in env["params"]
     assert env["variants"]["catalog"][0]["id"] == "task/0"
-    # happy-path spaces captured (not an error badge), and no model-only field.
     assert "error" not in env["env_spec"]
     assert "observation_space" in env["env_spec"]
     assert "model_spec" not in env
-    # no wall-clock stamp unless asked.
     assert "generated_at" not in env
 
 
@@ -213,13 +185,10 @@ def test_env_spec_error_badge_keeps_envelope_total() -> None:
     env = rlmesh.describe(_BrokenFactory)
     assert "cannot build off-GPU" in env["env_spec"]["error"]
     assert env["env_spec"]["error_type"] == "RuntimeError"
-    # the rest of the envelope still ships.
     assert env["kind"] == "env" and "params" in env and "runtime" in env
 
 
 class _HalfBoundedEnv:
-    """CartPole-shaped elementwise bounds plus a one-sided uniform Box."""
-
     def __init__(self) -> None:
         import gymnasium as gym
         import numpy as np
@@ -243,8 +212,6 @@ class _HalfBoundedFactory(rlmesh.EnvFactory):
 
 
 def test_partially_infinite_box_bounds_serialize_as_null() -> None:
-    # A non-finite edge is JSON null ("unbounded on this edge"), not a crash:
-    # json.dumps(allow_nan=False) would reject a literal Infinity.
     env = rlmesh.describe(_HalfBoundedFactory)
     spaces = env["env_spec"]["observation_space"]["details"]["spaces"]
     cart = spaces["cart"]["details"]
@@ -254,14 +221,10 @@ def test_partially_infinite_box_bounds_serialize_as_null() -> None:
     positive = spaces["positive"]["details"]
     assert positive["bounds_kind"] == "uniform"
     assert positive["low"] == 0.0 and positive["high"] is None
-    # and the artifact is still the byte-stable Rust-normalized string.
     assert "Infinity" not in rlmesh.describe_json(_HalfBoundedFactory)
 
 
 def test_space_json_matches_space_dict_for_every_kind() -> None:
-    # The envelope's space JSON is rendered by the Rust function a native (C/C++)
-    # host uses; it must be spec_to_dict exactly, non-finite edges as null.
-    # Compared as sorted JSON text so an int/float drift (1 vs 1.0) fails too.
     import json
 
     import gymnasium as gym
@@ -304,7 +267,6 @@ def test_model_envelope_omits_spaces() -> None:
     model = rlmesh.describe(_TinyModel)
     assert model["kind"] == "model"
     assert "env_spec" not in model and "env_tags" not in model
-    # class-level read of an unset spec is null, not an error.
     assert model["model_spec"] is None
 
 
@@ -315,7 +277,6 @@ class _BatchedModel(rlmesh.Model):
 
 def test_model_envelope_lists_defined_corners() -> None:
     assert rlmesh.describe(_TinyModel)["corners"] == ["predict"]
-    # only the authored corner, not the synthesized ones.
     assert rlmesh.describe(_BatchedModel)["corners"] == ["predict_chunk_batch"]
     assert "corners" not in rlmesh.describe(_CamArmFactory)
 
@@ -331,22 +292,16 @@ class _DeclaringModel(rlmesh.Model):
 
 
 def test_model_envelope_carries_a_declared_native_chunk() -> None:
-    # K is a model property, declared at the class level and readable without
-    # weights -- that is what makes it checkable before anything runs.
     assert rlmesh.describe(_DeclaringModel)["native_chunk"] == 30
-    # Undeclared stays absent (no key), and it never appears on an env.
     assert "native_chunk" not in rlmesh.describe(_TinyModel)
     assert "native_chunk" not in rlmesh.describe(_CamArmFactory)
 
 
 def test_native_chunk_comes_from_the_type_and_must_be_valid() -> None:
-    # An instance K (one load() set from a checkpoint) is invisible: describe
-    # reports what the type declares (COR-P7).
     model = _DeclaringModel()
     model.native_chunk = 7  # pyright: ignore[reportAttributeAccessIssue]
     assert rlmesh.describe(model)["native_chunk"] == 30
 
-    # A declaration construction or resolve would refuse is refused (COR-P9).
     class _NoChunkCorner:
         native_chunk = 4
 
@@ -377,8 +332,6 @@ class _WrappedPolicy:
 
 
 def test_a_wrapping_model_describes_its_policy() -> None:
-    # rlmesh.Model(policy) reports the policy's type-level items, as
-    # describe(policy) does; only the spec is the wrapper's (COR-P3).
     wrapped = rlmesh.describe(
         rlmesh.Model(_WrappedPolicy(), spec=_SpeccedModel._spec())  # pyright: ignore[reportPrivateUsage]
     )
@@ -396,17 +349,14 @@ def test_a_wrapping_model_describes_its_policy() -> None:
 
 
 def test_an_explicit_kind_must_match_the_object() -> None:
-    # COR-P1: the object fixes its kind; a contradicting kind is refused.
     with pytest.raises(ValueError, match="contradicts"):
         rlmesh.describe(_TinyModel, kind="env")
     with pytest.raises(ValueError, match="contradicts"):
         rlmesh.describe(_CamArmFactory, kind="model")
-    # A bare callable still takes the kind it is given.
     assert rlmesh.describe(lambda obs: 0, kind="model")["kind"] == "model"
 
 
 def test_an_empty_served_env_list_is_a_value_error() -> None:
-    # COR-P5: ValueError, not IndexError.
     with pytest.raises(ValueError, match="served_env"):
         rlmesh.describe_json(_CamArmFactory, served_env=[])
 
@@ -432,7 +382,6 @@ def test_describe_json_is_byte_stable() -> None:
     a = rlmesh.describe_json(_CamArmFactory, generated_at=ts)
     b = rlmesh.describe_json(_CamArmFactory, generated_at=ts)
     assert a == b
-    # Rust stamps the wrapper first; nested keys are sorted by the serializer.
     assert a.startswith('{"schema_version":1,"kind":"env",')
     assert f'"generated_at":"{ts}"' in a
 
@@ -445,7 +394,6 @@ def test_describe_json_rejects_bad_timestamp() -> None:
 def test_cli_out_file_is_byte_identical_to_stdout(
     tmp_path: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # --out and stdout must emit the same bytes (both trailing-newline terminated).
     from rlmesh._describe import main
 
     target = f"{__name__}:_CamArmFactory"
@@ -456,9 +404,6 @@ def test_cli_out_file_is_byte_identical_to_stdout(
 
 
 def test_importing_the_describe_module_path_no_longer_shadows_the_function() -> None:
-    # The old rlmesh/describe.py shim rebound the rlmesh.describe FUNCTION to a
-    # module process-wide on import; the shim is gone (the CLI lives at
-    # `python -m rlmesh._describe`), so the function always wins.
     import importlib
 
     with pytest.raises(ModuleNotFoundError):
@@ -467,8 +412,6 @@ def test_importing_the_describe_module_path_no_longer_shadows_the_function() -> 
 
 
 class _SpeccedModel(rlmesh.Model):
-    """A model with a ModelSpec for automated input synthesis."""
-
     @staticmethod
     def _spec() -> Any:
         import rlmesh.adapters as adapt
@@ -497,7 +440,6 @@ def _tags(role: str = "action/joint_pos") -> dict[str, object]:
 
 
 def _valid_describe(kind: str = "model") -> str:
-    """A label the platform accepts: a specced model, or a tagged env."""
     if kind == "model":
         return rlmesh.describe_json(_SpeccedModel)
     import json
@@ -508,22 +450,16 @@ def _valid_describe(kind: str = "model") -> str:
 def test_check_labels_flags_the_push_blockers() -> None:
     from rlmesh._describe import DESCRIBE_LABEL, PACKAGE_LABEL, check_labels
 
-    # No labels at all is a note, not a failure: the platform reads describe
-    # off the rlmesh.serve handshake.
     report = check_labels(None)
     assert report.ok and report.failed == []
     assert any("handshake" in message for message in report.not_checked)
 
-    # Valid describe alone passes.
     report = check_labels({DESCRIBE_LABEL: _valid_describe()})
     assert report.failed == [] and report.warnings == [], report
 
-    # Broken JSON, wrong version, and unknown kind all fail.
     assert check_labels({DESCRIBE_LABEL: "{nope"}).failed
     assert check_labels({DESCRIBE_LABEL: '{"schema_version":2,"kind":"model"}'}).failed
     assert check_labels({DESCRIBE_LABEL: '{"schema_version":1,"kind":"thing"}'}).failed
-    # No class-level spec is a warning (load() may set it; a label will not
-    # carry it); an env without tags runs against spec-less models.
     report = check_labels({DESCRIBE_LABEL: rlmesh.describe_json(_TinyModel)})
     assert report.failed == [], report
     assert any("no class-level spec" in m for m in report.warnings), report
@@ -531,7 +467,6 @@ def test_check_labels_flags_the_push_blockers() -> None:
     assert not any("tags" in message for message in report.failed), report
     assert any("declares no tags" in message for message in report.warnings), report
 
-    # Package label: bad checkpoints fail (the platform would drop them).
     labels = {
         DESCRIBE_LABEL: _valid_describe(),
         PACKAGE_LABEL: '{"schemaVersion":1,"checkpoints":[{"name":"Bad_Name","uri":"hf://x"}]}',
@@ -540,7 +475,6 @@ def test_check_labels_flags_the_push_blockers() -> None:
     labels[PACKAGE_LABEL] = '{"schemaVersion":1,"checkpoints":[{"name":"ok"}]}'
     assert any("no uri" in message for message in check_labels(labels).failed)
 
-    # A checkpoint's entrypoint is checked as the platform reads it.
     labels[PACKAGE_LABEL] = (
         '{"schemaVersion":1,"checkpoints":[{"name":"ok","uri":"hf://x",'
         '"entrypoint":"libero.main:Policy"}]}'
@@ -579,14 +513,11 @@ def test_check_labels_surfaces_badges_and_soft_claims_as_warnings() -> None:
         }
     )
     report = check_labels({DESCRIBE_LABEL: describe, PACKAGE_LABEL: package})
-    # A baked env_spec badge fails admission whatever caused it, GPU or not:
-    # the label was made on the wrong machine.
     assert len(report.failed) == 1 and "env_spec" in report.failed[0], report
     assert "bake the label inside the image" in report.failed[0]
     assert not any("env_spec" in m for m in report.not_checked), report
     assert any("catalog['a']" in message for message in report.warnings)
     assert any("default checkpoints" in message for message in report.warnings)
-    # A tags badge is a warning, as on the platform.
     describe = json.dumps(
         {
             "schema_version": 1,
@@ -618,7 +549,6 @@ def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> No
 
     assert verdict(_tags()) == ([], [])
 
-    # The `x/` escape is a deliberate opt-out; it is never nudged.
     escape = {
         "observation": {"cam": {"type": "state", "role": "x/battery"}},
         "action": {"components": []},
@@ -633,12 +563,8 @@ def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> No
     assert failures == []
     assert any("image/front" in message for message in warnings), warnings
 
-    # Tags that do not resolve at all are a failure, not a nudge.
     failures, _ = verdict({"observation": {"cam": {"type": "nope"}}, "action": 3})
     assert any("does not resolve" in message for message in failures), failures
-
-
-# --- runtime: the edition handshake -------------------------------------------
 
 
 def test_runtime_carries_the_edition_handshake(
@@ -647,17 +573,15 @@ def test_runtime_carries_the_edition_handshake(
     from rlmesh._rlmesh import SESSION_WIRE_REVISION, build_info
 
     monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
-    monkeypatch.chdir(tmp_path)  # no [tool.rlmesh] in reach
+    monkeypatch.chdir(tmp_path)
     info = build_info()
     runtime = rlmesh.describe(_TinyModel)["runtime"]
-    # Same names and values as the wire HandshakeRequest, from the native build.
     assert runtime["protocol_generation"] == info.protocol_generation
     assert runtime["session_wire_revision"] == SESSION_WIRE_REVISION >= 1
     assert runtime["supported_workflow_editions"] == list(
         info.supported_workflow_editions
     )
     assert runtime["supported_workflow_editions"][0] == info.workflow_edition
-    # Undeclared floats to this build's newest edition, as serve declares it.
     assert runtime["preferred_workflow_edition"] == info.workflow_edition
     assert "workflow_edition_error" not in runtime
     assert runtime["workflow_edition_floats"] is True
@@ -675,7 +599,6 @@ def test_runtime_carries_the_edition_handshake(
     runtime = rlmesh.describe(Impossible)["runtime"]
     assert "1999.01" in runtime["workflow_edition_error"]
     assert runtime["preferred_workflow_edition"] == info.workflow_edition
-    # The same envelope stays byte-stable across calls.
     assert rlmesh.describe_json(Declared) == rlmesh.describe_json(Declared)
 
 
@@ -687,13 +610,9 @@ def test_check_says_where_to_pin_an_undeclared_edition(
     nudge = [w for w in check_target(_TinyModel).warnings if "Pin it" in w]
     assert len(nudge) == 1, check_target(_TinyModel)
     assert f'workflow_edition = "{rlmesh.current_workflow_edition()}"' in nudge[0]
-    # Floating deliberately is not reported.
     monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", "")
     assert not [w for w in check_target(_TinyModel).warnings if "Pin it" in w]
     assert "workflow_edition_floats" not in rlmesh.describe(_TinyModel)["runtime"]
-
-
-# --- rlmesh check: the class-level checks ---------------------------------------
 
 
 def _arm_tags(dim: int = 1) -> Any:
@@ -736,7 +655,6 @@ def test_check_target_buckets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) ->
     assert report.ok, report
     assert any("no class-level spec" in m for m in report.warnings), report
 
-    # Saying NO_ADAPTER on purpose is not a missing spec.
     class _Raw(_TinyModel):
         spec = rlmesh.NO_ADAPTER
 
@@ -745,12 +663,10 @@ def test_check_target_buckets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) ->
     assert not any("no class-level spec" in m for m in report.warnings), report
     assert any("NO_ADAPTER" in m for m in report.passed), report
 
-    # The tagless env runs; the platform just cannot adapt a spec'd model to it.
     report = check_target(_UntaggedFactory)
     assert report.ok, report
     assert any("declares no tags" in m for m in report.warnings), report
 
-    # Needs a GPU to build: not checked here, named as such.
     report = check_target(_BrokenFactory)
     assert any(
         "could not build the env on this machine" in m and "Do not bake" in m
@@ -758,18 +674,15 @@ def test_check_target_buckets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) ->
     ), report
     assert not any("env_spec" in m for m in report.failed), report
 
-    # A construction bug is a failure.
     report = check_target(_CrashingFactory)
     assert any("env_spec: RuntimeError" in m for m in report.failed), report
 
-    # An edition this build cannot run fails where it was declared.
     class Impossible(_SpeccedModel):
         workflow_edition = "1999.01"
 
     report = check_target(Impossible)
     assert any("workflow edition" in m for m in report.failed), report
 
-    # A target that does not import fails, never raises.
     report = check_target("no_such_module_xyz:Thing")
     assert report.failed and "no_such_module_xyz" in report.failed[0]
 
@@ -810,7 +723,6 @@ def test_cli_check_and_describe_modes(
     specced = f"{__name__}:_SpeccedModel"
     tiny = f"{__name__}:_TinyModel"
 
-    # --check-entrypoint: exit 1 on a failure, 0 otherwise; --json is the report.
     wrong_width = f"{__name__}:_WrongWidthFactory"
     assert main(["--check-entrypoint", wrong_width, "--json"]) == 1
     report = json.loads(capsys.readouterr().out)
@@ -825,14 +737,12 @@ def test_cli_check_and_describe_modes(
     out = capsys.readouterr().out
     assert out.splitlines()[-1].startswith("ok: ") and "0 failed" in out
 
-    # TARGET [--label]: the envelope, or the docker build --label value.
     assert main([specced]) == 0
     envelope = capsys.readouterr().out
     assert envelope == rlmesh.describe_json(specced) + "\n"
     assert main([specced, "--label"]) == 0
     assert capsys.readouterr().out == f"{DESCRIBE_LABEL}={envelope}"
 
-    # --check-labels FILE: the label check off a JSON object.
     labels = tmp_path / "labels.json"
     labels.write_text(json.dumps({DESCRIBE_LABEL: envelope.strip()}), encoding="utf-8")
     assert main(["--check-labels", str(labels), "--json"]) == 0
@@ -841,14 +751,11 @@ def test_cli_check_and_describe_modes(
     assert main(["--check-labels", str(labels)]) == 0
     assert "not checked: no dev.rlmesh.describe label" in capsys.readouterr().out
 
-    # Exactly one mode.
     with pytest.raises(SystemExit):
         main([specced, "--check-entrypoint", tiny])
 
 
 class _ChattyFactory(rlmesh.EnvFactory):
-    """Prints while being built, the way a simulator import or make() does."""
-
     def make(self, **kwargs: Any) -> Any:
         print("[robosuite] banner on stdout")
         return _ArmEnv()
@@ -863,25 +770,20 @@ def test_cli_keeps_author_stdout_off_the_payload(
 
     target = f"{__name__}:_ChattyFactory"
     expected = rlmesh.describe_json(target)
-    capsys.readouterr()  # the banner that direct call printed
+    capsys.readouterr()
 
     assert main([target, "--label"]) == 0
     out, err = capsys.readouterr()
     assert out == f"{DESCRIBE_LABEL}={expected}\n"
     assert "banner on stdout" in err
 
-    assert main(["--check-entrypoint", target, "--json"]) == 0  # untagged: a warning
+    assert main(["--check-entrypoint", target, "--json"]) == 0
     out, err = capsys.readouterr()
     assert set(json.loads(out)) == {"failed", "warnings", "not_checked", "passed"}
     assert "banner on stdout" in err
 
 
-# --- env_contracts: the contract-branch table ---------------------------------
-
-
 class _BranchArmEnv:
-    """Spaces that move with the branch: the 128 branch halves the camera."""
-
     metadata: ClassVar[dict[str, object]] = {}
 
     def __init__(self, width: int) -> None:
@@ -927,8 +829,6 @@ class _BranchedFactory(rlmesh.EnvFactory):
 
 
 def test_unbranched_envelope_carries_no_env_contracts() -> None:
-    # The no-re-probe guard: a factory with no tag_params emits exactly the
-    # envelope it emitted before the field existed, byte for byte.
     assert "env_contracts" not in rlmesh.describe(_CamArmFactory)
     assert "env_contracts" not in rlmesh.describe_json(_CamArmFactory)
 
@@ -950,7 +850,6 @@ def test_env_contracts_lists_every_branch_default_first() -> None:
 def test_default_branch_is_the_top_level_contract() -> None:
     env = rlmesh.describe(_BranchedFactory)
     default = env["env_contracts"]["branches"][0]
-    # Not a copy that could drift: the same objects the branch-blind view carries.
     assert default["env_tags"] == env["env_tags"]
     assert default["env_spec"] == env["env_spec"]
 
@@ -960,12 +859,10 @@ def test_each_branch_captures_its_own_spaces_and_tags() -> None:
     by_binding = {
         (b["params"]["action_type"], b["params"]["width"]): b for b in branches
     }
-    # The discriminant binds through to make(), so the branch's spaces are real.
     spaces = by_binding[("delta", 128)]["env_spec"]["observation_space"]["details"][
         "spaces"
     ]
     assert spaces["cam"]["shape"] == [128, 128, 3]
-    # ...and the contract switches with action_type.
     assert by_binding[("abs", 256)]["env_tags"]["action"]["components"][0]["role"] == (
         "action/eef_pos"
     )
@@ -1000,14 +897,10 @@ def test_check_labels_surfaces_a_non_default_branch_badge() -> None:
     )
     report = check_labels({DESCRIBE_LABEL: describe})
     assert report.failed == []
-    # Named by its own binding, so the operator knows which branch is blind.
     assert any(
         "env_contracts.branches[{'action_type': 'abs'}].env_spec" in w and "sapien" in w
         for w in report.warnings
     )
-
-
-# --- check joins tags against the spaces, as rlmesh.serve does ---------------
 
 
 class _DiscreteEnv:
@@ -1049,8 +942,6 @@ class _BadBranchFactory(_BranchedFactory):
 
 
 class _UntaggedBranchFactory(_BranchedFactory):
-    """Generic on every branch: authoring allows it, image validation does not."""
-
     tags = None
 
     @classmethod
@@ -1063,7 +954,6 @@ def _failed(target: Any) -> list[str]:
 
     fresh = check_target(target).failed
     baked = check_labels({DESCRIBE_LABEL: rlmesh.describe_json(target)}).failed
-    # The baked label must reach the same verdict off the JSON spaces alone.
     assert bool(fresh) == bool(baked), (fresh, baked)
     return fresh
 
@@ -1095,12 +985,6 @@ def test_check_fails_a_contract_branch_without_tags() -> None:
 
 
 class _BrokenBranchTagsFactory(_BranchedFactory):
-    """``tags_for`` raises on the ``abs`` branches, so the envelope badges them.
-
-    Armed after the class statement: authoring calls ``tags_for`` on every
-    branch at class creation, and describe must meet the failure instead.
-    """
-
     broken = False
 
     @classmethod
@@ -1117,14 +1001,12 @@ def test_check_fails_a_contract_branch_whose_tags_are_a_badge() -> None:
     from rlmesh._describe import check_target
 
     failed = _failed(_BrokenBranchTagsFactory)
-    assert len(failed) == 2, failed  # the two abs branches (widths 256, 128)
+    assert len(failed) == 2, failed
     assert all(
         "'action_type': 'abs'" in m
         and "tags could not be read (abs tags need the calibration file)" in m
         for m in failed
     ), failed
-    # Failed once, not repeated as a best-effort badge warning. (Building the
-    # branch's env also calls tags_for, so its env_spec badge does warn.)
     warnings = check_target(_BrokenBranchTagsFactory).warnings
     assert not any(".env_tags" in w for w in warnings), warnings
 
@@ -1146,8 +1028,6 @@ class _HalfBoundedTaggedFactory(_HalfBoundedFactory):
 
 
 def test_check_joins_partly_infinite_box_bounds() -> None:
-    # The envelope writes the infinite edges of the nested Dict's Boxes as null;
-    # check reads them as -inf/+inf, as rlmesh.serve does, and passes the tags.
     assert _failed(_HalfBoundedTaggedFactory) == []
 
 

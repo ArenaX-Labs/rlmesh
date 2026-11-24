@@ -1,10 +1,3 @@
-//! A catalog-style v1 env for the lockstep tests: every v1 leaf kind and
-//! dtype, v1 tags a LIBERO-style `ModelSpec` resolves against, NEXT_STEP or
-//! DISABLED autoreset, scalar, vector or lane endpoints, and deterministic
-//! dynamics (a pure function of seed, lane, step and the last action), so
-//! two runs fed the same requests answer the same bytes. It implements the
-//! lockstep path's [`Served`] on native values.
-
 #![allow(dead_code, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
@@ -84,8 +77,6 @@ pub fn native(value: &serde_json::Value) -> MetaValue {
     }
 }
 
-/// The LIBERO-style tags of the conformance case `apply_basic_pairing`,
-/// over a catalog env with every other v1 leaf kind beside them.
 pub fn catalog_tags() -> serde_json::Value {
     serde_json::json!({
         "action": {"clip": [-1.0, 1.0], "components": [
@@ -102,7 +93,6 @@ pub fn catalog_tags() -> serde_json::Value {
     })
 }
 
-/// The model side of the same case.
 pub const CATALOG_MODEL_SPEC: &str = r#"{
   "input": {
     "image": {"type": "image", "role": "image/primary", "dtype": "float32", "layout": "chw",
@@ -199,7 +189,6 @@ pub fn catalog_contract(num_envs: u32, autoreset: AutoresetMode) -> EnvContract 
     }
 }
 
-/// A mixing hash (splitmix64).
 pub fn mix(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -217,9 +206,7 @@ fn fnv(bytes: &[u8]) -> u64 {
 struct Lane {
     seed: u64,
     t: u64,
-    /// Steps until the episode ends.
     length: u64,
-    /// Terminate (else truncate) at the end.
     terminates: bool,
     pending_autoreset: bool,
     active: bool,
@@ -241,14 +228,11 @@ impl Lane {
     }
 
     fn value(&self, lane: usize) -> SpaceValue {
-        // Lane-free: an episode's transcript depends on its seed and actions only,
-        // so lane-racing runs compare as multisets of episodes.
         let _ = lane;
         let h = |salt: u64| mix(self.seed ^ (self.t << 20) ^ salt ^ self.last_action);
         let bytes = |n: usize, salt: u64| -> Vec<u8> {
             (0..n).map(|i| (h(salt + i as u64) & 0xff) as u8).collect()
         };
-        // Little-endian integers in {-1, 0, 1} (signed) or {0, 1} (unsigned).
         let ints = |n: usize, width: usize, signed: bool, salt: u64| -> Vec<u8> {
             (0..n)
                 .flat_map(|i| {
@@ -261,7 +245,6 @@ impl Lane {
                 })
                 .collect()
         };
-        // binary16 in {-1, -0.5, 0, 0.5, 1}.
         let halves = |n: usize, salt: u64| -> Vec<u8> {
             const H: [u16; 5] = [0xBC00, 0xB800, 0x0000, 0x3800, 0x3C00];
             (0..n)
@@ -363,10 +346,8 @@ fn meta(kind: Kind) -> ProtoMeta {
     ProtoMeta { kind: Some(kind) }
 }
 
-/// What the env saw and answered, per lane, in order.
 pub type Trace = Arc<Mutex<BTreeMap<usize, Vec<String>>>>;
 
-/// The catalog env.
 pub struct CatalogEnv {
     contract: EnvContract,
     lanes: Mutex<Vec<Lane>>,
@@ -375,7 +356,6 @@ pub struct CatalogEnv {
 }
 
 impl CatalogEnv {
-    /// `num_envs` lanes; a lane endpoint resets and steps lanes one by one.
     pub fn new(num_envs: u32, autoreset: AutoresetMode, lane_endpoint: bool) -> Self {
         Self {
             contract: catalog_contract(num_envs, autoreset),
@@ -385,8 +365,6 @@ impl CatalogEnv {
         }
     }
 
-    /// The same env publishing `tags` as its adapter tags instead, as one
-    /// written by another release would.
     pub fn with_tags(mut self, tags: &serde_json::Value) -> Self {
         self.contract.metadata.get_or_insert_default().insert(
             rlmesh::lockstep::adapters::ENV_METADATA_KEY.to_string(),
@@ -610,7 +588,6 @@ fn failure(error: EnvError) -> rlmesh::EnvironmentError {
     }
 }
 
-/// The lockstep path's view of the same env: each call runs the v1 one.
 #[async_trait]
 impl Served for CatalogEnv {
     fn contract(&self) -> EnvContract {

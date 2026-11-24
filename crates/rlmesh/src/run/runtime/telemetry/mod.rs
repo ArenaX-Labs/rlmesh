@@ -1,11 +1,8 @@
 //! Telemetry — windowed/session aggregation of per-op metrics.
 //!
-//! One ingest path ([`Aggregator::record`]), one shape out ([`Snapshot`]). A
-//! metric is identified by its `&'static str` name in the [`metrics`] catalog;
-//! window and session are retention horizons over the same Vitter reservoirs.
-//! The per-step hot scalar `endpoint_total_ns` is the *wire* contract, not part
-//! of this system — it is recorded here like any other Duration sample
-//! (`metrics::ENDPOINT_TOTAL`).
+//! One ingest path ([`Aggregator::record`]), one shape out ([`Snapshot`]). A metric is identified
+//! by its name in the [`metrics`] catalog; window and session are retention horizons over the
+//! same reservoirs.
 
 mod reservoir;
 mod stats;
@@ -59,10 +56,9 @@ pub mod metrics {
     pub const RPC_TOTAL: Metric = Metric::duration("rpc.total");
     pub const REQUEST_BYTES: Metric = Metric::bytes("request.bytes");
     pub const RESPONSE_BYTES: Metric = Metric::bytes("response.bytes");
-    /// The split of [`ENDPOINT_TOTAL`] a peer reports: wire decode of the
-    /// request, the env/model implementation's own work, wire encode of the
-    /// response. Recorded only for a peer that stamps them, so their absence
-    /// means an older peer, not a zero cost.
+    /// The split of [`ENDPOINT_TOTAL`] a peer reports: wire decode, the
+    /// implementation's own work and wire encode. Recorded only for a peer that
+    /// stamps them, so their absence means a peer that doesn't, not a zero cost.
     pub const ENDPOINT_DECODE: Metric = Metric::duration("endpoint.decode");
     pub const ENDPOINT_USER: Metric = Metric::duration("endpoint.user");
     pub const ENDPOINT_ENCODE: Metric = Metric::duration("endpoint.encode");
@@ -74,16 +70,13 @@ pub mod metrics {
     /// dispatched to its handler (>= 1): slot occupancy, not parallelism — the
     /// handler lock runs them one at a time.
     pub const PREDICT_IN_FLIGHT: Metric = Metric::count("predict.in_flight");
-    /// Adapter work inside the predict handler's own time (obs assembly +
-    /// action apply) — a sub-span of `endpoint.user`, so the model's own
-    /// forward is `endpoint.user` minus this. Recorded only for a handler
-    /// that measures it (the adapter engine); zero for a spec-less route.
+    /// Adapter work inside the predict handler's own time (observation assembly
+    /// and action apply); a sub-span of `endpoint.user`, so the model's own forward
+    /// is `endpoint.user` minus this. Zero for a route without a spec.
     pub const PREDICT_ADAPTER: Metric = Metric::duration("predict.adapter");
     /// Episodes whose frame-stack windows the model endpoint's adapter engine
-    /// held when the predict was stamped, across all its routes — the state
-    /// that grows with concurrent episodes and shrinks on episode-end GC. A
-    /// measured zero is recorded (that is the eviction working); a handler
-    /// that keeps no such accounting records nothing.
+    /// held when the predict was stamped, across all its routes. A measured zero
+    /// is recorded; a handler that keeps no such accounting records nothing.
     pub const HELD_EPISODES: Metric = Metric::count("held.episodes");
     /// Bytes those held frame-stack windows occupy.
     pub const HELD_BYTES: Metric = Metric::bytes("held.bytes");
@@ -92,14 +85,11 @@ pub mod metrics {
     pub const GROUP_SIZE: Metric = Metric::count("group.size");
     /// How much longer a vector env's slowest lane took than its median lane on
     /// this op — the straggler cost the whole batch pays, which the `env.step`
-    /// aggregate only blurs. One dispersion sample per op, never a series per
-    /// lane; recorded only for an env that times its own lanes, including its
-    /// zeros, so the percentiles say how often a straggler appears.
+    /// aggregate blurs. One sample per op, recorded (zeros included) only for an
+    /// env that times its own lanes.
     pub const LANE_SKEW: Metric = Metric::duration("lane.skew");
-    /// Replayed env steps delivered as observation-history rows on a predict
-    /// (a route that negotiated history at resolve): one sample per predict
-    /// that carried any, so the series says how much history each re-plan
-    /// hauls across the wire.
+    /// Replayed env steps delivered as observation-history rows on a predict, for
+    /// a route that negotiated history: one sample per predict that carried any.
     pub const HISTORY_ROWS: Metric = Metric::count("history.rows");
 
     /// The cardinality allowlist — derived from the catalog, not a second table.
@@ -303,7 +293,6 @@ mod tests {
             ));
         }
 
-        // Window snapshot: count + ordered percentiles, durations reported in ms.
         let w = agg.snapshot(Horizon::Window);
         let r = row(&w, "rpc.total");
         assert_eq!(r.count, 4);
@@ -311,7 +300,6 @@ mod tests {
         assert!(r.p50 <= r.p95 && r.p95 <= r.p99);
         assert!((r.p99 - 40.0).abs() < 1e-9);
 
-        // flush clears the window, but session retains.
         agg.flush_window();
         assert!(agg.snapshot(Horizon::Window).rows.is_empty());
         assert_eq!(row(&agg.snapshot(Horizon::Session), "rpc.total").count, 4);

@@ -1,10 +1,3 @@
-"""Declared reset options: the `trial_index` ordinal and its declaration gate.
-
-An env opts into a reserved `reset(options=)` key by naming it in
-`EnvFactory.reset_options`; the stamp rides the env's metadata, and every sender
-(the Rust driver, the local Session) checks the declaration before delivering.
-"""
-
 from __future__ import annotations
 
 from typing import Any, ClassVar, cast
@@ -14,8 +7,6 @@ import rlmesh
 
 
 class _TinyEnv:
-    """A minimal local env that records what its reset was called with."""
-
     metadata: ClassVar[dict[str, Any]] = {"render_modes": []}
 
     def __init__(self) -> None:
@@ -51,8 +42,6 @@ class _TrialFactory(rlmesh.EnvFactory):
 
 
 def test_reset_options_key_matches_the_runtime_constant() -> None:
-    # Pinned against `ENV_RESET_OPTIONS_KEY` in crates/rlmesh/src/run/runtime/spec.rs
-    # (this name is re-exported from it, so the literal is the contract).
     assert rlmesh.ENV_RESET_OPTIONS_KEY == "rlmesh.env.v1.reset_options"
 
 
@@ -61,11 +50,8 @@ def test_make_stamps_the_declaration_without_mutating_the_class() -> None:
     env = _TrialFactory().make()
 
     assert env.metadata[rlmesh.ENV_RESET_OPTIONS_KEY] == ["trial_index"]
-    # Copy-and-assign: the shared class attribute is untouched, so a second env
-    # of the same class does not inherit another factory's stamp.
     assert _TinyEnv.metadata == class_metadata
     assert rlmesh.ENV_RESET_OPTIONS_KEY not in _TinyEnv.metadata
-    # The render modes the env already published survive the merge.
     assert env.metadata["render_modes"] == []
 
 
@@ -101,17 +87,13 @@ def test_trial_index_helper_reads_the_multi_lane_list_by_lane() -> None:
         rlmesh.trial_index(options)
     with pytest.raises(ValueError, match="lane=3"):
         rlmesh.trial_index(options, lane=3)
-    # The single-lane form is lane 0 of a one-lane reset.
     assert rlmesh.trial_index({"trial_index": 9}, lane=0) == 9
     with pytest.raises(ValueError, match="lane=1"):
         rlmesh.trial_index({"trial_index": 9}, lane=1)
-    # Absent stays None whatever the lane.
     assert rlmesh.trial_index({}, lane=2) is None
 
 
 class _NoOptionsEnv:
-    """A served env whose `reset` takes no `options` -- the backstop's subject."""
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -140,8 +122,6 @@ def test_served_env_without_an_options_parameter_still_resets() -> None:
     server.start()
     try:
         handle = RemoteEnv(server.address)
-        # A hand-driven client forwards whatever options it is given; the server
-        # drops them (warning once) rather than raising TypeError mid-run.
         obs, _info = handle.reset(options={"trial_index": 3})
         assert obs is not None
         handle.close()
@@ -150,8 +130,6 @@ def test_served_env_without_an_options_parameter_still_resets() -> None:
 
 
 def test_native_run_delivers_the_ordinal_over_the_wire() -> None:
-    """The full path: RuntimeSessionSpec.trial_index_base -> ResetRequest.options
-    -> the served env's reset -> EpisodeResult.trial."""
     from rlmesh.numpy import Model
 
     env = _TrialFactory().make()
@@ -179,7 +157,6 @@ def test_native_run_delivers_the_ordinal_over_the_wire() -> None:
 
 
 def _run_native(env: _TinyEnv, **kwargs: Any) -> rlmesh.RunResult:
-    """`Model.run` on the native loop, serving `env` on a loopback port."""
     from rlmesh.numpy import Model
 
     try:
@@ -217,9 +194,6 @@ def test_native_run_walks_the_ordinals_from_the_base() -> None:
 
 
 def test_native_run_reports_zero_based_episode_indices() -> None:
-    # The runtime mints 1-based slot ordinals; EpisodeResult.index is 0-based on
-    # every path (Session.run and the hooks included), so `trial` stays
-    # `trial_index_base + index`.
     env = _TrialFactory().make()
     result = _run_native(env, seeds=range(3), trial_index_base=7)
 
@@ -234,5 +208,4 @@ def test_native_run_never_sends_the_key_to_an_undeclared_env() -> None:
     result = _run_native(env, episodes=2)
 
     assert all(reset["options"] is None for reset in env.resets)
-    # Minted and reported either way, so the sweep can be read off the result.
     assert [episode.trial for episode in result.episodes] == [0, 1]

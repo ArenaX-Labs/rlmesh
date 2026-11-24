@@ -1,11 +1,6 @@
-//! Hand-backs: a release that gives the parts to the policy its lease
-//! preempted, and every refusal of one.
-
 use super::*;
 use crate::wire::version::LEASE_HANDBACK;
 
-/// The fixture, armed, with `model` (a model-class controller that resumes
-/// a part handed back to it) bound to every commandable part.
 fn armed() -> Fixture {
     let mut f = Fixture::new();
     let mut command = attach("model", vec![Role::Controller], PriorityClass::Model);
@@ -43,7 +38,6 @@ fn refusal(result: Result<Applied, CtlError>) -> (CtlStatus, String) {
 #[test]
 fn a_release_hands_a_part_back_only_to_the_policy_its_lease_took_it_from() {
     let mut f = armed();
-    // The operator takes a member of the model's command group.
     f.grant("model", "arm", 1).expect("model");
     let tcp = f
         .grant("operator", "arm/tcp", 2)
@@ -71,13 +65,11 @@ fn a_release_hands_a_part_back_only_to_the_policy_its_lease_took_it_from() {
     );
     assert_eq!(end.reason.detail, "handed back to model");
 
-    // A plain release names nobody.
     f.grant("model", "cmd1", 3).expect("model");
     let cmd1 = f.grant("operator", "cmd1", 4).expect("operator preempts");
     f.release("operator", &cmd1, 5).expect("release");
     let end = f.auth.snapshot(Vec::new(), 5).ended.pop().expect("end");
     assert_eq!((end.lease.token, end.to), (cmd1.token, None));
-    // ...and its lease is gone: the caller holds nothing to hand back.
     assert_eq!(
         refusal(hand_back(&mut f, &cmd1, "model")).0,
         CtlStatus::StaleToken
@@ -87,7 +79,6 @@ fn a_release_hands_a_part_back_only_to_the_policy_its_lease_took_it_from() {
 #[test]
 fn a_hand_back_is_refused_with_nothing_parked_an_old_peer_or_the_robot_held() {
     let mut f = armed();
-    // Nobody held cmd2 before the operator: nothing is parked on it.
     let free = f.grant("operator", "cmd2", 1).expect("free part");
     assert_eq!(
         refusal(hand_back(&mut f, &free, "model")),
@@ -98,7 +89,6 @@ fn a_hand_back_is_refused_with_nothing_parked_an_old_peer_or_the_robot_held() {
                 .into()
         )
     );
-    // A policy that does not resume a part handed back would stay parked.
     f.grant("policy", "cmd3", 2).expect("old peer");
     let cmd3 = f.grant("operator", "cmd3", 3).expect("operator preempts");
     assert_eq!(
@@ -110,7 +100,6 @@ fn a_hand_back_is_refused_with_nothing_parked_an_old_peer_or_the_robot_held() {
                 .into()
         )
     );
-    // A robot held (new commands while armed) keeps its hold.
     f.grant("model", "cmd1", 4).expect("model");
     let cmd1 = f.grant("operator", "cmd1", 5).expect("operator preempts");
     f.run(

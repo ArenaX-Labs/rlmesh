@@ -110,8 +110,7 @@ public sealed unsafe class Env : IDisposable
             if (retiring != null)
             {
                 if (CallbackContext.Depth == 0 && !CallbackContext.LibraryThread) Volatile.Read(ref retiring.Cleanup)?.TryRun();
-                // There are no borrowers in Freeing: native env free runs no authored close.
-                // No registry lock is held while waiting for its cleanup worker.
+                // Freeing has no borrowers, and no registry lock is held while waiting for its cleanup worker.
                 while (!retiring.WaitFreed(TimeSpan.FromSeconds(1)))
                     if (CallbackContext.Depth > 0) Thread.Yield();
             }
@@ -143,8 +142,7 @@ public sealed unsafe class Env : IDisposable
     {
         lock (Sync)
         {
-            // Keep a retiring entry until rlmesh_env_free has actually returned;
-            // otherwise another For could create a handle in the free callback.
+            // Keep a retiring entry until rlmesh_env_free returns, or For could create a handle in the free callback.
             root.Entry.RootReleased = true;
         }
     }

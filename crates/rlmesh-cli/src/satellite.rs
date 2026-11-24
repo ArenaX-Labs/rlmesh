@@ -1,21 +1,10 @@
-//! rlmeshd as a satellite: on a machine paired with
-//! another rlmeshd, it waits in that home daemon's lobby as
-//! `rlmeshd.<device>` and takes its orders, one at a time:
-//! - `HostOrder`: host the run's session here, under host keys made here
-//!   for the run (private keys never travel), with the order's member
-//!   table, device records and pins, and answer `HostStarted` with the
-//!   run host's key and this daemon's addresses;
-//! - `StopOrder`: close the run's scene with the order's reason, give its
-//!   members 2 s to leave, and stop its host.
-//!
-//! It serves every host it has a host file for, so it takes orders only
-//! from the daemons it paired with, found at their stored addresses or
-//! over mDNS ([`discovery::locate`]), retried from 1 s to 30 s. A home lost
-//! for 10 s (its liveliness gone, or no authenticated echo for
-//! [`rlmesh_session::lobby::HOME_SILENT`]) has the runs hosted here for it
-//! closed (`SCENE_FAILED`), so no run outlives the daemon that can stop it;
-//! a home back as another lobby instance (it restarted) has them closed at
-//! once. Runs are kept per home: two homes may pick the same run id.
+//! rlmeshd as a satellite: on a machine paired with another rlmeshd, it waits
+//! in that home daemon's lobby as `rlmeshd.<device>` and takes its orders, one
+//! at a time: - `HostOrder`: host the run's session here, under host keys made
+//! here for the run (private keys never travel), with the order's member table,
+//! device records and pins, and answer `HostStarted` with the run host's key
+//! and this daemon's addresses; - `StopOrder`: close the run's scene with the
+//! order's reason, give its members 2 s to leave, and stop its host.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
@@ -39,14 +28,10 @@ use rlmesh_session::{HostConfig, SessionError, SystemMonotonicClock};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-/// How long a home may be gone before the runs hosted for it close.
 const HOME_LOST: Duration = Duration::from_secs(10);
-/// How long a closing run's members get to leave.
 const STRAGGLERS: Duration = Duration::from_secs(2);
-/// How long a satellite waits for its home's lobby to answer an attach.
 const ATTACH: Duration = Duration::from_secs(10);
 
-/// A run hosted here.
 struct Hosted {
     /// The lobby instance of its home that ordered it.
     instance: u64,
@@ -80,9 +65,9 @@ fn verbs(names: &[String]) -> Vec<Verb> {
 }
 
 impl Satellite {
-    /// Serves every home in `hosts` (host files, [`rlmesh_session::pairing`])
-    /// but this daemon's own (`own_id`), hosting their runs on `server`,
-    /// joined at `addresses`, until the returned tasks are aborted.
+    /// Serves every home in `hosts` (host files, [`rlmesh_session::pairing`]) but
+    /// this daemon's own (`own_id`), hosting their runs on `server`, joined at
+    /// `addresses`, until the returned tasks are aborted.
     pub fn start(
         server: Arc<SessionServer>,
         hosts: Option<PathBuf>,
@@ -95,7 +80,6 @@ impl Satellite {
             runs: Mutex::default(),
         });
         // TODO: the host files are read once, at start; a machine paired
-        // while rlmeshd runs serves its new home after a restart.
         let mut paths: Vec<PathBuf> = hosts
             .and_then(|dir| std::fs::read_dir(dir).ok())
             .into_iter()
@@ -111,9 +95,6 @@ impl Satellite {
             .collect()
     }
 
-    /// Serves the home of the host file at `path`: attached to its lobby,
-    /// taking its orders, and reattaching from 1 s to 30 s apart (back to
-    /// 1 s once an order came).
     async fn serve(self: Arc<Self>, path: PathBuf) {
         let mut backoff = Duration::from_secs(1);
         let mut lost: Option<JoinHandle<()>> = None;
@@ -137,8 +118,6 @@ impl Satellite {
             };
             match attached.await {
                 Ok((home, client)) => {
-                    // Back in the same lobby, its runs stay; a restarted
-                    // home has none of them any more.
                     if let Some(lost) = lost.take() {
                         lost.abort();
                     }
@@ -158,7 +137,6 @@ impl Satellite {
                         me.home_lost(&home, None, "home daemon lost").await;
                     }));
                 }
-                // Once until it is reached again.
                 Err(err) if !reported => {
                     reported = true;
                     let _ = writeln!(
@@ -174,8 +152,6 @@ impl Satellite {
         }
     }
 
-    /// Takes the home `home`'s orders until the lobby fails: why, and
-    /// whether any order came.
     async fn take_orders(
         &self,
         home: &str,
@@ -205,8 +181,6 @@ impl Satellite {
         }
     }
 
-    /// Hosts `order`'s run here: the run host's key and this daemon's
-    /// addresses.
     async fn host(
         &self,
         home: &str,
@@ -251,7 +225,6 @@ impl Satellite {
             .collect();
         let tenant = TenantId::new(TENANT)
             .map_err(|err| refused(CtlStatus::InvalidRequest, err.to_string()))?;
-        // Fresh keys: the run host's own, made here.
         let mut config = HostConfig::new(tenant, order.session);
         config.clock = SystemMonotonicClock.shared();
         config.lease_grace = LEASE_GRACE;
@@ -279,8 +252,6 @@ impl Satellite {
         Ok((host_key, self.addresses.clone()))
     }
 
-    /// Closes home `home`'s run `order.run` with its reason, waits up to
-    /// 2 s for its members to leave, and stops its host.
     async fn stop(&self, home: &str, order: StopOrder) {
         let key = (home.to_string(), order.run);
         let Some(mut hosted) = lock(&self.runs).remove(&key) else {
@@ -307,9 +278,6 @@ impl Satellite {
         self.server.stop(hosted.session).await;
     }
 
-    /// Closes every run hosted for home `home` (`SCENE_FAILED`, `why`) but
-    /// those of its lobby instance `keep`: it has been gone for
-    /// [`HOME_LOST`] (`None`), or is back as another instance.
     async fn home_lost(&self, home: &str, keep: Option<u64>, why: &str) {
         let runs: Vec<String> = lock(&self.runs)
             .iter()
@@ -365,7 +333,6 @@ mod tests {
             addresses: Vec::new(),
             runs: Mutex::default(),
         };
-        // Two homes pick the same run id; a third run of the first home.
         let (a, b, a2) = (order("r-7k2m"), order("r-7k2m"), order("r-9p3q"));
         let sessions = (a.session, b.session, a2.session);
         satellite.host("rlm-aaaaaa", 1, a).await.expect("a's");
@@ -378,7 +345,6 @@ mod tests {
             .expect("a's second");
         let hosted = || async { server.sessions().await };
 
-        // A's stop closes a's run only.
         let mut reason = Reason::new(ReasonCode::SceneEnded);
         reason.by = "cli.1a2b3c4d".into();
         let stop = StopOrder {
@@ -389,8 +355,6 @@ mod tests {
         let now = hosted().await;
         assert!(!now.contains(&sessions.0) && now.contains(&sessions.1));
 
-        // A back as the same lobby instance keeps its run; as another (it
-        // restarted), its run closes, and b's stays.
         satellite
             .home_lost("rlm-aaaaaa", Some(1), "home daemon restarted")
             .await;

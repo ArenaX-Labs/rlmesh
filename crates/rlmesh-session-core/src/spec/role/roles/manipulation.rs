@@ -1,14 +1,11 @@
 //! Arm manipulation roles (single-arm and bimanual).
 //!
-//! Bimanual convention: each arm's leaf carries the base role and a `part`
-//! (`left_arm`, `right_arm`; see [`parts`](super::parts)). Single-arm envs
-//! simply never declare a second arm.
+//! In a bimanual env each arm's leaf carries the base role and a `part` (`left_arm`, `right_arm`;
+//! see [`parts`](super::parts)).
 //!
-//! By convention `eef_pos`/`delta_eef_pos` are 3-D Cartesian; gripper
-//! widths vary by embodiment. `eef_wrench` is the six-axis force/torque at
-//! the end effector, force first (`[fx, fy, fz, tx, ty, tz]`), framed: a
-//! wrist-mounted sensor reads it in `tool`, a controller's estimate is usually
-//! in `robot_base`, and the two are different numbers for the same contact.
+//! `eef_wrench` is the six-axis force/torque at the end effector, force first
+//! (`[fx, fy, fz, tx, ty, tz]`), framed: a wrist sensor reads it in `tool`, a controller's
+//! estimate is usually in `robot_base`.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -37,10 +34,8 @@ pub const ACTION_DELTA_ROT: &str = "action/delta_eef_rot";
 /// Gripper command.
 pub const ACTION_GRIPPER: &str = "action/gripper";
 
-/// Absolute end-effector targets, for policies trained on controller goals
-/// rather than per-step deltas (X-VLA, RoboTwin's `ee` action type). The env
-/// runs its Cartesian controller in absolute mode and receives the target
-/// verbatim; the frame is the env's `proprio/eef_*` frame.
+/// Absolute end-effector targets, for policies trained on controller goals rather than per-step
+/// deltas; the frame is the env's `proprio/eef_*` frame.
 pub const ACTION_EEF_POS: &str = "action/eef_pos";
 /// Absolute end-effector rotation target.
 pub const ACTION_EEF_ROT: &str = "action/eef_rot";

@@ -12,6 +12,5 @@ message PeerInfo {
   string os_version = 6;
   string arch = 7;
   map<string, string> framework_versions = 8;
-  // Tags 9-14 are deliberate headroom for future structured peer facts.
   map<string, string> extra = 15;
 }

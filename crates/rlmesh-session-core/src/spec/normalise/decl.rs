@@ -1,6 +1,3 @@
-//! Declaration parsing shared by every part: an order-keeping map, field
-//! and limit declarations, and the keys each kind allows.
-
 use crate::prelude::*;
 
 use core::fmt;
@@ -11,7 +8,6 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 
 use crate::spec::kinds::Kind;
 
-/// A JSON object kept in authored order, refusing duplicate keys.
 pub(crate) struct Ordered<T>(pub(crate) Vec<(String, T)>);
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Ordered<T> {
@@ -41,12 +37,9 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Ordered<T> {
     }
 }
 
-/// `[dtype, shape]`: one field of a custom kind.
 #[derive(Deserialize)]
 pub(crate) struct FieldDecl(pub(crate) String, pub(crate) Vec<u32>);
 
-/// A part's `fields`: a list of optional field names (joints, hand, imu),
-/// or a custom kind's schema `{name: [dtype, shape]}` in payload order.
 pub(crate) enum FieldsDecl {
     /// Core kinds: which optional fields are published.
     Names(Vec<String>),
@@ -82,8 +75,6 @@ impl<'de> Deserialize<'de> for FieldsDecl {
     }
 }
 
-/// A part's `range`: `[low, high]` (a `value` part), or
-/// `{field: [low, high]}` (any other kind).
 pub(super) enum RangeDecl {
     /// The bounds of the part's one field.
     Bounds([f64; 2]),
@@ -123,10 +114,8 @@ pub(super) enum LimitDecl {
     Norm { max_norm: f64 },
 }
 
-/// Keys every streaming kind takes.
 const STREAMING: &[&str] = &["kind", "hz", "send", "priority", "doc", "max_age_ms"];
 
-/// Keys of a commandable part, less the kind-specific ones.
 pub(super) const COMMAND: &[&str] = &[
     "command",
     "control_hz",
@@ -140,7 +129,6 @@ pub(super) const COMMAND: &[&str] = &[
     "group",
 ];
 
-/// The keys `kind` takes (beyond `x_*`).
 pub(super) fn allowed(kind: Kind) -> Vec<&'static str> {
     let mut keys: Vec<&'static str> = match kind {
         Kind::Text | Kind::Reward | Kind::Success => return vec!["kind", "priority", "doc"],

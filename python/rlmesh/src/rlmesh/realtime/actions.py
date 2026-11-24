@@ -6,7 +6,8 @@ so a map can mix them with dicts and the host still checks every rule::
     from rlmesh.realtime import actions
 
     actions.joints("gimbal-left:servos", command="position", hz=50, chunk=4)
-    # {"kind": "joints", "at": "gimbal-left:servos", "command": "position", "hz": 50, "chunk": 4}
+    # {"kind": "joints", "at": "gimbal-left:servos", "command": "position", "hz":
+    # 50, "chunk": 4}
 
 The first argument is the part's address, the entry's ``at``, as for
 :mod:`rlmesh.realtime.inputs`; leave it out to bind any part of the kind.

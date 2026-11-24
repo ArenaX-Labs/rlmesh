@@ -23,8 +23,6 @@ impl fmt::Display for RandomSample {
 }
 
 /// The model argument of [`run`](crate::run) and `bind`:
-/// a borrowed [`Model`], a borrowed [`RemoteModel`](crate::RemoteModel) or
-/// [`RANDOM_SAMPLE`].
 pub struct ModelTarget<'a>(pub(crate) ModelKind<'a>);
 
 pub(crate) enum ModelKind<'a> {
@@ -63,17 +61,9 @@ impl fmt::Debug for ModelTarget<'_> {
     }
 }
 
-/// A factory erased at construction: `EnvFactory` is not dyn-compatible, so
-/// the target keeps only what a run calls.
 pub(crate) trait ErasedFactory {
-    /// Call `prepare()`, then the stamping `make_env()` with no arguments.
     fn make(&mut self) -> Result<MadeEnv>;
 
-    /// What the env this factory makes declares when it is served in this
-    /// process, resolved as serving resolves it: the call's `workflow_edition`,
-    /// `RLMESH_WORKFLOW_EDITION`, then [`EnvFactory::workflow_edition`]. An
-    /// edition this build cannot drive is refused with serving's error;
-    /// `None` declares nothing and the loopback carries the model's.
     fn local_edition(&self, call: Option<&str>) -> Result<Option<String>>;
 }
 
@@ -98,17 +88,14 @@ impl<F: EnvFactory> ErasedFactory for Factory<'_, F> {
 /// a borrowed [`RemoteEnv`] / [`RemoteVectorEnv`], or a borrowed local env,
 /// vector env or factory.
 ///
-/// A single env converts with `From` (`model.run(&mut env, ..)`); a vector
-/// env and a factory name their kind ([`EnvTarget::vector`],
-/// [`EnvTarget::factory`]).
+/// A single env converts with `From` (`model.run(&mut env, ..)`); a vector env and a factory name
+/// their kind ([`EnvTarget::vector`], [`EnvTarget::factory`]).
 pub struct EnvTarget<'a>(pub(crate) EnvKind<'a>);
 
 pub(crate) enum EnvKind<'a> {
     Address(String),
     Adapted(Box<dyn crate::binding::model::EnvAdapter>),
     Server(&'a EnvServer),
-    /// A caller's remote client: a run dials a v1 one's address and refuses
-    /// a session one, which holds its env's lease; a binding refuses both.
     Remote(&'a mut (dyn Lendable + Send + 'a)),
     Env(&'a mut (dyn Env + Send + 'a)),
     Vector(&'a mut (dyn VectorEnv + Send + 'a)),

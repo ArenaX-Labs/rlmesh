@@ -1,4 +1,3 @@
-/* ABI 5 View / Recorder: facade semantics, owned snapshots and capture hooks. */
 #include <assert.h>
 #include <float.h>
 #include <math.h>
@@ -60,7 +59,7 @@ static void view_values(void) {
   hold.hold_seconds = DBL_MAX;
   OK(rlmesh_view_validate(&hold));
   RLMeshView saturated = hold;
-  saturated.hold_seconds = ldexp(1.0, 64); /* also beyond Duration::MAX */
+  saturated.hold_seconds = ldexp(1.0, 64);
   OK(rlmesh_view_equals(&hold, &saturated, &equal));
   assert(equal);
   saturated.hold_seconds = 0.0;
@@ -140,7 +139,7 @@ static void record_snapshots(void) {
   mo.has_width = true;
   mo.width = -2;
   mo.has_fps = true;
-  mo.fps = -1; /* dataclasses impose no extra validation */
+  mo.fps = -1;
   RLMeshMediaRef *media = NULL, *copy = NULL;
   OK(rlmesh_media_ref_new("cam", "video", "m.mp4", "mp4", &mo, &media));
   OK(rlmesh_media_ref_new("cam", "video", "m.mp4", "mp4", &mo, &copy));
@@ -177,7 +176,7 @@ static void record_snapshots(void) {
   int64_t seed = -7;
   RLMeshEpisodeRecord* episode = NULL;
   OK(rlmesh_episode_record_new(2, &seed, 3, 4.5, true, false, &eo, &episode));
-  rlmesh_media_ref_free(media); /* child data was retained */
+  rlmesh_media_ref_free(media);
   media = NULL;
   OK(rlmesh_episode_record_media_get(episode, 0, &media));
   assert(rlmesh_media_ref_equals(media, copy));
@@ -228,7 +227,7 @@ static void record_snapshots(void) {
   rlmesh_bytes_free(bytes);
   assert(rlmesh_workload_record_equals(workload, workload));
   rlmesh_workload_record_free(workload);
-  assert(rlmesh_episode_record_reward(episode) == 4.5); /* independent snapshot */
+  assert(rlmesh_episode_record_reward(episode) == 4.5);
   rlmesh_episode_record_free(episode);
   rlmesh_media_ref_free(media);
   rlmesh_media_ref_free(copy);
@@ -308,8 +307,6 @@ static RLMeshStatus warning_error(void* user, RLMeshWarningCategory category, co
   return RLMESH_ERR_RUNTIME;
 }
 
-/* Every sized input refuses {0}/short prefixes, accepts a zero future tail,
- * and refuses each nonzero unknown byte without returning a partial handle. */
 #define SIZED_INPUT(Type, Init, Handle, call, release)     \
   do {                                                     \
     struct {                                               \
@@ -481,8 +478,6 @@ static void recorder_and_runs(const char* root) {
          !result);
   view.hold = RLMESH_VIEW_HOLD_SECONDS;
   view.hold_seconds = DBL_MAX;
-  /* Conversion succeeds: the facade then rejects local Model.run viewing.
-   * No viewer is opened and the saturated hold is never actually waited on. */
   assert(rlmesh_model_run(model, rlmesh_env_target(env), &ro, &result) == RLMESH_ERR_TYPE &&
          !result);
   const double invalid_holds[] = {INFINITY, NAN, -1.0};
@@ -527,7 +522,7 @@ static void recorder_and_runs(const char* root) {
   OK(rlmesh_recorder_workloads_get(recorder, 1, &snapshot));
   RLMeshEpisodeRecord* episode = NULL;
   OK(rlmesh_workload_record_episodes_get(snapshot, 0, &episode));
-  assert(rlmesh_episode_record_media_len(episode) == 1); /* real AV1 media */
+  assert(rlmesh_episode_record_media_len(episode) == 1);
   RLMeshMediaRef* media = NULL;
   OK(rlmesh_episode_record_media_get(episode, 0, &media));
   int64_t count = 0;
@@ -543,7 +538,6 @@ static void recorder_and_runs(const char* root) {
   ex.recorded_at = "stamp";
   OK(rlmesh_recorder_export(recorder, folder, &ex, &bytes));
   bytes_equal(bytes, folder);
-  /* Exporting to a recognized bundle replaces its owned media and manifest. */
   OK(rlmesh_recorder_export(recorder, folder, &ex, &bytes));
   bytes_equal(bytes, folder);
   char refused[1024];
@@ -573,12 +567,11 @@ static void recorder_and_runs(const char* root) {
   OK(rlmesh_recorder_close(recorder));
   assert(rlmesh_recorder_export(recorder, closed, NULL, &bytes) == RLMESH_ERR_RUNTIME);
   f = fopen(closed, "rb");
-  assert(!f); /* refused before writing */
+  assert(!f);
   rlmesh_recorder_free(recorder);
   assert(rlmesh_workload_record_episodes_len(first) == 1);
   rlmesh_workload_record_free(first);
 
-  /* Capture retains explicit contexts and works after recorder_free. */
   RLMeshRunContextVtable cv = RLMESH_RUN_CONTEXT_VTABLE_INIT;
   cv.contract = contract;
   cv.num_envs = lanes;
@@ -625,7 +618,6 @@ static void recorder_and_runs(const char* root) {
   assert(state.context_frees == 1);
   rlmesh_run_result_free(result);
 
-  /* Missing-frame warnings must not abort even when the handler raises. */
   OK(rlmesh_recorder_new(NULL, &recorder));
   const char* missing = "absent";
   co.binding = NULL;
@@ -641,7 +633,6 @@ static void recorder_and_runs(const char* root) {
   rlmesh_run_result_free(result);
   rlmesh_run_hooks_free(capture);
   rlmesh_recorder_free(recorder);
-  /* With no staged media, closing still permits metric-only export. */
   OK(rlmesh_recorder_new(NULL, &recorder));
   OK(rlmesh_recorder_close(recorder));
   OK(rlmesh_recorder_export(recorder, closed, NULL, &bytes));

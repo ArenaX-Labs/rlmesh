@@ -6,87 +6,54 @@ import "rlmesh/core/v1/env_contract.proto";
 import "rlmesh/spaces/v1/value.proto";
 
 // Runtime-owned adapter execution context.
-//
-// An adapter is the resolved model-side context for one connected env container
-// (single OR vector env), keyed by `env_id`. Predict requests carry an ordered
-// `episode_info` vector (see PredictRequest) when the observation/action payload
-// is batched; the lane/slot positional index is no longer a wire concept.
 message AdapterContext {
   // Correlation label for telemetry and logs; routing uses `env_id`.
   string session_id = 1;
   // The connected env container this adapter serves (UUIDv7, minted by the
-  // runtime on env attach). The single model-facing routing key; replaces the
-  // old route_id + positional lane/slot.
+  // runtime on env attach).
   string env_id = 2;
-  // The producer's correlation id for this request. The model client copies it
-  // onto the envelope `JoinRequest.request_id` (tag 5) — the field the server
-  // demuxes responses on and the authoritative correlation id — and it is echoed
-  // back inside `PredictResponse.context`. It rides here (not only on the
-  // envelope) because the client API takes a `PredictRequest`, so this is the
-  // producer's channel for assigning and reading back the id (e.g. the runtime's
-  // phase/step-labeled ids and its env-mismatch error). Both copies always
-  // carry the same value; tag 5 is authoritative for response routing.
+  // The producer's correlation id for this request.
   string request_id = 3;
 }
 
 message ResolveAdapterRequest {
-  // The env whose adapter is being resolved. env_id is required. Idempotent
-  // upsert: creates the adapter on first call, updates it on later calls. Must
-  // precede the first Predict for that env.
+  // The env whose adapter is being resolved.
   AdapterContext context = 1;
 
-  // Stable env spec for all later Predict calls on this env. The model only
-  // needs the observation/action interface; the runtime owns the orchestration
-  // knobs (num_envs/render_mode/autoreset) and never forwards them here.
+  // Stable env spec for all later Predict calls on this env.
   rlmesh.core.v1.EnvSpec env_spec = 2;
 
   // Highest mutual workflow edition across env, model, and runtime (the
-  // floor, see handshake.proto). Authoritative over the model's own pairwise
-  // handshake result; the model pins to it.
+  // floor, see handshake.proto).
   string selected_workflow_edition = 3;
 
   // Execution horizon h: how many actions of each predicted chunk the runtime
   // executes before re-planning, chosen by the runtime and pinned here (runtime-
-  // local scheduling, exactly like selected_workflow_edition above). The model
-  // returns its NATIVE chunk; when h > 1 AND the model defines a chunk corner
-  // (predict_chunk / predict_chunk_batch), a Predict emits min(K, h) per-step
-  // frames in PredictResponse.actions: actions[0] is THIS step, actions[1..] the
-  // open-loop replay frames the runtime buffers and replays without re-calling the
-  // model. The engine caps the chunk to h (a fixed-size head over-produces and is
-  // truncated; an autoregressive head may read h to decode exactly that many). 0 or
-  // 1 (the default) = no chunking (predict every step), byte/behaviour-identical to
-  // a model with no chunk corner. The runtime bounds it to MAX_EXECUTION_HORIZON
-  // (1024); the model rejects a larger pin at resolve.
+  // local scheduling, exactly like selected_workflow_edition above).
   uint32 execution_horizon = 4;
 
   // The runtime's declaration that it will deliver observation history on
   // Predict: every env step it executed from a replayed chunk WITHOUT
   // predicting arrives as `PredictRequest.history` on the next predict, so a
   // model whose adapter keeps a frame window sees every step, not only the
-  // decision points. A runtime that does not set it gets a resolve error for a
-  // stacked adapter at h > 1 (the model cannot keep a correct window without
-  // the frames). Answered by `ResolveAdapterResponse.history`.
+  // decision points.
   bool delivers_history = 5;
 }
 
 // What a resolved route's adapter keeps a frame window for, answered when the
 // runtime offered history (`delivers_history`) and the adapter stacks frames.
-// Absent = the route needs no history; the runtime then sends none.
 message ObservationHistoryNeeds {
   // The stacked inputs' canonical placement keys (informational today: the
   // runtime sends the whole observation per history row).
   repeated string keys = 1;
   // Reserved for pruned history rows (only the keys' leaves): a runtime may
-  // prune only when the model set this. Always false today.
+  // prune only when the model set this.
   bool prunable = 2;
 }
 
 message ResolveAdapterResponse {
   // The model's NATIVE chunk length K: how many per-step actions one chunk
-  // corner call returns, when the model declares it. Answered per resolve so
-  // the runtime can size replay and reject an execution horizon it cannot
-  // serve (h > K). Unset = undeclared, the elastic contract: the model returns
-  // whatever it returns and the runtime takes the min(len, h) prefix.
+  // corner call returns, when the model declares it.
   optional uint32 native_chunk = 1;
 
   // Set when the runtime offered history and this route's adapter needs it.
@@ -95,9 +62,7 @@ message ResolveAdapterResponse {
 
 // One env step the runtime executed without predicting (a replayed chunk
 // frame), delivered on the next Predict so the model-side frame windows advance
-// on every step. The same batched shape as `PredictRequest.observation` /
-// `episode_info`: row `i` belongs to `episode_info[i]` AT THAT STEP (a lane may
-// have rolled to a new episode since).
+// on every step.
 message ObservationHistoryFrame {
   rlmesh.spaces.v1.SpaceValue observation = 1;
   repeated EpisodeInfo episode_info = 2;
@@ -106,12 +71,7 @@ message ObservationHistoryFrame {
   int64 step = 3;
 }
 
-// Per-row episode identity and seed metadata: the self-describing batch. Row
-// `i` of the batched observation belongs to `episode_info[i]`, decided per
-// tick. The model keys all per-episode state (frame-stack buffers) by
-// `episode_id`, never by position-across-ticks. `seed` is unset when the
-// episode was not started with an explicit seed; present for every explicitly
-// seeded episode, including a genuine seed of 0.
+// Per-row episode identity and seed metadata: the self-describing batch.
 message EpisodeInfo {
   // Minted by the runtime (UUIDv7); never repeats.
   string episode_id = 1;
@@ -120,62 +80,43 @@ message EpisodeInfo {
 
 // Observation sent from the runtime to the model.
 message PredictRequest {
-  // Runtime adapter identity. Responses must mirror this context.
+  // Runtime adapter identity.
   AdapterContext context = 1;
 
-  // Observation data encoded per env observation space. A single SpaceValue
-  // already batched over all rows (the batch axis lives INSIDE the SpaceValue).
+  // Observation data encoded per env observation space.
   rlmesh.spaces.v1.SpaceValue observation = 2;
 
-  // Ordered per-row episode identity and seed metadata. Length == the batch
-  // row count (num_envs). One entry for a single env.
+  // Ordered per-row episode identity and seed metadata.
   repeated EpisodeInfo episode_info = 3;
 
   // The env steps executed since the previous predict on this route WITHOUT a
-  // predict (replayed chunk frames), oldest first. Sent only on a route whose
-  // ResolveAdapter answered `history`; empty at execution_horizon 1 and on the
-  // first predict after a reset. Together with `observation` these are every
-  // step of the episode exactly once, in order.
+  // predict (replayed chunk frames), oldest first.
   repeated ObservationHistoryFrame history = 4;
 
   // The producer's per-group env-step counter at `observation`: one step per
   // env.step of the group, so consecutive observations of one episode carry
   // consecutive values (a history row's `step` is one less than the next
-  // row's, and the last row's is one less than this). Required once a route
-  // negotiated `history`; the model rejects a gap or a repeat instead of
-  // stacking a wrong window.
+  // row's, and the last row's is one less than this).
   optional int64 step = 5;
 }
 
 message PredictResponse {
-  // Adapter identity copied from the request this action answers. Actions
-  // inherit the request's `episode_info` order positionally.
+  // Adapter identity copied from the request this action answers.
   AdapterContext context = 1;
 
   // Ordered action frames for this predict: actions[0] is THIS step, actions[1..]
-  // are open-loop replay frames. Length 1 = no chunking. Each element is a single
-  // SpaceValue already batched over all num_envs lanes/episodes (the lane/batch axis
-  // lives INSIDE each SpaceValue; this repeated axis is TIME/chunk-frame).
+  // are open-loop replay frames.
   repeated rlmesh.spaces.v1.SpaceValue actions = 2;
 }
 
 // One request carrying N independent predict groups (caller-decided
-// grouping). Each group is a complete, already-routed `PredictRequest` the
-// server processes against its OWN env's spec — like a DB GROUP BY: the model
-// keeps every resolved EnvSpec/adapter and demuxes each group by its `env_id`,
-// so no spec ever rides the predict. Purely additive: a peer that never sends
-// this still uses single `predict`, and an old server that does not understand
-// the arm leaves `kind` unset (the client treats that as an unexpected message,
-// never as a silent drop).
+// grouping).
 message GroupedPredictRequest {
   repeated PredictRequest groups = 1;
 }
 
 // Per-group outcome; `results[i]` corresponds to
-// `GroupedPredictRequest.groups[i]` in order. A single bad group reports its own
-// error here and does NOT sink the others (per-group results, not all-or-
-// nothing). A whole-request failure (e.g. malformed envelope) still surfaces as
-// `JoinResponse.error`.
+// `GroupedPredictRequest.groups[i]` in order.
 message GroupedPredictResult {
   oneof outcome {
     PredictResponse response = 1;
@@ -194,12 +135,7 @@ message ReleaseAdapterRequest {
 
 message ReleaseAdapterResponse {}
 
-// Drop per-episode adapter state (frame-stack buffers) for an env. With
-// `episode_ids` non-empty, evict exactly those keys; empty evicts ALL of the
-// env's episode state. The adapter itself stays resolved (use ReleaseAdapter to
-// remove it). Because UUIDv7 ids never repeat, a missed/late ResetAdapter only
-// leaks memory — it can never alias a new episode — so this is GC, not a
-// correctness gate; the runtime fires it without blocking the predict pipeline.
+// Drop per-episode adapter state (frame-stack buffers) for an env.
 message ResetAdapterRequest {
   AdapterContext context = 1;
   repeated string episode_ids = 2;
@@ -208,8 +144,7 @@ message ResetAdapterRequest {
 message ResetAdapterResponse {}
 
 // Request graceful shutdown of the model participant after the runtime reaches
-// a normal terminal condition. Fault paths may still rely on runtime
-// timeouts.
+// a normal terminal condition.
 message CloseParticipantRequest {
   string reason = 1;
 }
@@ -218,10 +153,7 @@ message CloseParticipantResponse {}
 
 // Bands (aligned with EnvErrorCode; UNSPECIFIED and shared concepts share
 // numbers across the two enums): 0 = unspecified; 1-9 client/recoverable;
-// 10-19 fatal/internal. The bands are a labeling convention only: a model
-// handler fault is reported as INTERNAL (10) with an explicit `is_recoverable`
-// flag, so recoverability is NOT derivable from the code. Readers MUST consult
-// the `is_recoverable` field on ModelError.
+// 10-19 fatal/internal. Readers must consult `is_recoverable`, not the band.
 enum ModelErrorCode {
   MODEL_ERROR_CODE_UNSPECIFIED = 0;
   MODEL_ERROR_CODE_INVALID_REQUEST = 2;
@@ -248,19 +180,10 @@ message JoinRequest {
     PredictRequest predict = 2;
     ReleaseAdapterRequest release_adapter = 3;
     CloseParticipantRequest close = 4;
-    // Additive: a batch of independent predict groups across resolved adapters.
-    // Absence is exactly today's behavior (single `predict`). Tag 5 is the
-    // sibling `request_id` scalar, not an oneof arm, so 6 is the first free arm.
     GroupedPredictRequest grouped_predict = 6;
-    // Drop per-episode adapter state, keyed by env_id. Tag 7 is the next free
-    // arm after grouped_predict.
     ResetAdapterRequest reset_adapter = 7;
   }
 
-  // Per-message correlation id, harmonized to tag 5 across all four Join
-  // messages (env + model, request + response). 1-byte tag on the hot path.
-  // A `grouped_predict` carries its OWN envelope id here (never a group's), so
-  // the one-response-per-request_id demux invariant holds.
   string request_id = 5;
 }
 
@@ -270,52 +193,38 @@ message JoinResponse {
     PredictResponse predict = 2;
     ReleaseAdapterResponse release_adapter = 3;
     CloseParticipantResponse close = 4;
-    // Additive: per-group results answering a GroupedPredictRequest. Tags 5/6
-    // are the sibling request_id/endpoint_total_ns scalars; 7 is the first free
-    // oneof arm (error stays at 10).
     GroupedPredictResponse grouped_predict = 7;
-    // Acks a ResetAdapterRequest. Tag 8 is the next free arm.
     ResetAdapterResponse reset_adapter = 8;
     ModelError error = 10;
   }
 
-  // Per-message correlation id, harmonized to tag 5 (was 21).
   string request_id = 5;
 
-  // Hot per-step endpoint-local op duration, in nanoseconds. A bare scalar is
-  // the cheapest forward-compatible wire shape (one varint key + one varint
-  // value, no nested framing, no string), carrying per-step timing without a
-  // nested message. `optional` preserves "no timing available" vs "0 ns".
+  // Hot per-step endpoint-local op duration, in nanoseconds.
   optional uint64 endpoint_total_ns = 6;
 
   // Split of `endpoint_total_ns` (ns): wire decode of the request, the handler's
-  // own work, wire encode of the response. Absent from a peer that does not
-  // measure them.
+  // own work, wire encode of the response.
   optional uint64 decode_ns = 11;
   optional uint64 user_ns = 12;
   optional uint64 encode_ns = 13;
 
   // Wait before this request's handler ran: concurrency permit, per-route
-  // ordering gate, and handler lock. Overlaps `endpoint_total_ns` by the
-  // handler-lock portion.
+  // ordering gate, and handler lock.
   optional uint64 queue_ns = 14;
 
   // Requests holding a concurrency slot on this endpoint when this request
   // was dispatched to its handler (after its per-route gate), including this
-  // one. Slot occupancy, not parallelism: the handler lock runs them one at a
-  // time.
+  // one.
   optional uint32 in_flight = 15;
 
   // Adapter work inside the handler's own time (ns): observation assembly plus
-  // action apply. A sub-span of `user_ns`, not additive with it -- the model's
-  // own forward is `user_ns - adapter_ns`. Absent from a spec-less route or a
-  // handler that does not measure it.
+  // action apply.
   optional uint64 adapter_ns = 16;
 
   // Engine-held per-episode adapter state when this response was stamped:
   // episodes with live frame-stack windows across the endpoint's routes, and
-  // the bytes those windows hold. Absent from a handler that keeps no such
-  // accounting; a measured `0` (nothing held right now) is sent as `0`.
+  // the bytes those windows hold.
   optional uint32 held_episodes = 17;
   optional uint64 held_state_bytes = 18;
 }

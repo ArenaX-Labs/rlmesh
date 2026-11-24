@@ -55,7 +55,6 @@ pub fn make_box<'py>(
             (low, high)
         }
         Some(BoxBounds::TypedUniform(t)) => {
-            // One scalar each, in the space's dtype. Broadcast to the shape.
             let low_scalar = typed_bytes_to_np(py, &np, &t.low, &dtype, &[1])?;
             let high_scalar = typed_bytes_to_np(py, &np, &t.high, &dtype, &[1])?;
             let low = np
@@ -83,11 +82,6 @@ pub fn make_box<'py>(
         .call((low_obj, high_obj), Some(&kwargs))
 }
 
-/// Decode dtype-typed bound bytes into a writable numpy array of `shape`.
-///
-/// The bytes are interpreted as little-endian `dtype` scalars via
-/// `np.frombuffer`; the result is copied (frombuffer yields a read-only view)
-/// and reshaped so gymnasium.Box receives an owned, mutable array.
 fn typed_bytes_to_np<'py>(
     py: Python<'py>,
     np: &Bound<'py, PyAny>,
@@ -122,9 +116,6 @@ pub fn parse_box<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
     })
 }
 
-/// dtype families that carry exact integer/boolean bounds. Their bounds are
-/// emitted as dtype-typed bytes so values beyond 2^53 (notably int64/uint64)
-/// round-trip exactly instead of degrading through `f64`.
 fn is_integral_dtype(dtype: DType) -> bool {
     matches!(
         dtype,
@@ -140,13 +131,6 @@ fn is_integral_dtype(dtype: DType) -> bool {
     )
 }
 
-/// Build Box bounds from a gymnasium space's `low`/`high`.
-///
-/// Per-axis or scalar inputs are broadcast to the full shape with NumPy
-/// semantics (`np.broadcast_to`) and flattened in row-major order, so the
-/// stored bounds are always either uniform or fully elementwise — there is no
-/// ambiguous per-axis form. Integer/boolean dtypes carry their bounds as
-/// dtype-typed bytes (exact); float dtypes keep the `double` forms.
 fn build_box_bounds<'py>(
     py: Python<'py>,
     shape: &[usize],
@@ -156,8 +140,6 @@ fn build_box_bounds<'py>(
 ) -> PyResult<BoxSpec> {
     let np = py.import("numpy")?;
 
-    // Broadcast low/high to the full shape (matching gymnasium/NumPy), then
-    // work with contiguous row-major arrays.
     let low = broadcast_to(&np, low, shape)?;
     let high = broadcast_to(&np, high, shape)?;
 
@@ -165,7 +147,6 @@ fn build_box_bounds<'py>(
         return integral_box_bounds(py, &np, dtype, &low, &high);
     }
 
-    // Float dtypes: keep the historical double-based bounds.
     let lo_vec = flatten_f64(&low)?;
     let hi_vec = flatten_f64(&high)?;
 
@@ -195,7 +176,6 @@ fn build_box_bounds<'py>(
     })
 }
 
-/// Integer/boolean Box bounds, encoded as dtype-typed little-endian bytes.
 fn integral_box_bounds<'py>(
     py: Python<'py>,
     np: &Bound<'py, PyAny>,
@@ -207,8 +187,6 @@ fn integral_box_bounds<'py>(
     let high_bytes = typed_bytes_from_np(py, np, dtype, high)?;
 
     let elem = rlmesh_spaces::dtype_size(dtype);
-    // Detect a uniform bound (every element identical) to store a single
-    // scalar instead of numel copies.
     if let (Some(low_one), Some(high_one)) = (
         uniform_chunk(&low_bytes, elem),
         uniform_chunk(&high_bytes, elem),
@@ -229,11 +207,6 @@ fn integral_box_bounds<'py>(
     })
 }
 
-/// Cast a numpy array to `dtype` and return its little-endian C-order bytes.
-///
-/// `astype` copies into a freshly allocated array (so a broadcast view becomes
-/// real per-element data), `ascontiguousarray` forces C order, and `tobytes`
-/// defaults to C order; the result is `numel * dtype_size(dtype)` bytes.
 fn typed_bytes_from_np<'py>(
     py: Python<'py>,
     np: &Bound<'py, PyAny>,
@@ -246,7 +219,6 @@ fn typed_bytes_from_np<'py>(
     contiguous.call_method0("tobytes")?.extract::<Vec<u8>>()
 }
 
-/// `Some(scalar)` if every f64 in the slice is identical, else `None`.
 fn uniform_value(values: &[f64]) -> Option<f64> {
     let first = *values.first()?;
     values
@@ -255,7 +227,6 @@ fn uniform_value(values: &[f64]) -> Option<f64> {
         .then_some(first)
 }
 
-/// `Some(chunk)` if every `elem`-byte chunk is identical, else `None`.
 fn uniform_chunk(bytes: &[u8], elem: usize) -> Option<Vec<u8>> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(elem) {
         return None;
@@ -267,8 +238,6 @@ fn uniform_chunk(bytes: &[u8], elem: usize) -> Option<Vec<u8>> {
         .then(|| first.to_vec())
 }
 
-/// `np.broadcast_to(np.asarray(obj), shape)` — expands scalar or per-axis
-/// inputs to the full shape exactly as gymnasium/NumPy would.
 fn broadcast_to<'py>(
     np: &Bound<'py, PyAny>,
     obj: &Bound<'py, PyAny>,
@@ -362,7 +331,6 @@ mod tests {
     #[test]
     fn parse_box_int64_high_roundtrips_max_exactly() {
         Python::attach(|py| {
-            // high = 2^63 - 1; an f64 bound would round this up to 2^63.
             let space = gym_box(
                 py,
                 pyo3::ffi::c_str!(
@@ -434,9 +402,6 @@ mod tests {
     #[test]
     fn parse_box_per_axis_input_broadcasts_like_gymnasium() {
         Python::attach(|py| {
-            // gymnasium broadcasts a scalar low across a (2,3) Box; the parsed
-            // elementwise bounds must match that row-major broadcast rather than
-            // collapse to a global min/max or misclassify.
             let space = gym_box(
                 py,
                 pyo3::ffi::c_str!(

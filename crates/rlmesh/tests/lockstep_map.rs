@@ -1,5 +1,3 @@
-//! A Gym env as a robot: paths, kinds, attrs, and bit-exact slabs.
-
 use bytes::Bytes;
 use rlmesh::lockstep::map::{self, GymEnvInfo, GymMap};
 use rlmesh_spaces::{
@@ -50,8 +48,6 @@ fn native(value: &serde_json::Value) -> MetaValue {
     }
 }
 
-/// Every v1 leaf kind and dtype, tagged and untagged, nested in Dict and
-/// Tuple.
 fn catalog_contract(num_envs: u32) -> EnvContract {
     let observation = dict(vec![
         ("Image", boxed(DType::Uint8, &[4, 6, 3])),
@@ -157,11 +153,9 @@ fn info(contract: EnvContract) -> GymEnvInfo {
     }
 }
 
-/// Deterministic bytes, every value representable (bools are 0/1).
 fn leaf_bytes(leaf: &map::Leaf, lanes: usize, salt: u8) -> Bytes {
     match leaf.lane_bytes {
         None => {
-            // v1's text slab: [u64 count][u64 len x count][bodies].
             let bodies: Vec<String> = (0..lanes)
                 .map(|i| format!("lane {i} salt {salt}"))
                 .collect();
@@ -225,7 +219,6 @@ fn a_catalog_env_maps_to_a_robot_and_its_slabs_round_trip_bit_exact() {
                 ("action", "gym/box"),
             ]
         );
-        // The f64 gripper is not a float32 gripper part.
         let gripper = gym.part("gripper").expect("gripper");
         assert_eq!(
             gripper.spec.fields[0].dtype,
@@ -249,8 +242,6 @@ fn a_catalog_env_maps_to_a_robot_and_its_slabs_round_trip_bit_exact() {
         assert_eq!(cam.spec.attrs["gym_key"], "[[\"Image\"]]");
         assert!(gym.part("action").is_some_and(|p| p.spec.command.is_some()));
 
-        // The info round-trips through its attr exactly: spaces with their
-        // Dict order and bounds, metadata and the handshake answers.
         let back = GymEnvInfo::from_attr(&cam.spec.attrs["gym_env"]).expect("gym_env");
         assert_eq!(back, gym.info);
 
@@ -277,7 +268,6 @@ fn a_catalog_env_maps_to_a_robot_and_its_slabs_round_trip_bit_exact() {
                 action
             );
         }
-        // A short slab is refused.
         let leaves: Vec<Bytes> = gym
             .observation
             .leaves
@@ -304,8 +294,6 @@ fn an_untagged_box_env_is_obs_and_action_and_keys_that_escape_alike_keep_apart()
     assert_eq!(paths, ["obs", "action"]);
     assert!(gym.parts().all(|p| p.zero_copy));
 
-    // `Pos` and `pos` escape alike, and an observation key `action` meets
-    // the action root: the later one takes the hash of its original keys.
     let clash = EnvContract {
         observation_space: Some(dict(vec![
             ("Pos", boxed(DType::Float32, &[3])),

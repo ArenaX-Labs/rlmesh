@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = (
     Path(__file__).resolve().parent / "tests" / "fixtures" / "example_env_tags.json"
 )
-#: Example modules and the module-level EnvTags each publishes.
 EXAMPLES = (
     ("examples/python/adapters/serve_and_run.py", "ENV_TAGS"),
     ("examples/python/vla_adapters/envs/libero.py", "TAGS"),

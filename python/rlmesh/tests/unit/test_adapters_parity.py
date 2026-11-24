@@ -1,5 +1,3 @@
-"""Regression cases for the adapter language-parity behavior changes."""
-
 from __future__ import annotations
 
 import json
@@ -59,7 +57,6 @@ def test_vector_tag_checks_lane_spaces_and_keeps_metadata() -> None:
 def test_tag_without_space_validation_wraps_codec_errors_atomically() -> None:
     env = SimpleNamespace(metadata={"custom": 1})
     tags = adapt.EnvTags(adapt.ImageTag(adapt.IMAGE_PRIMARY), _action())
-    # Authored tolerance still stops at the codec's closed layout field.
     object.__setattr__(tags.observation, "layout", "invalid")
     with pytest.raises(adapt.AdapterResolutionError):
         adapt.tag(env, tags, validate=False)

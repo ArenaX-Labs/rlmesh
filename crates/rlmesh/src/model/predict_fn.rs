@@ -1,11 +1,5 @@
 //! The language-agnostic predict/resolve holes the served engine calls back
 //! into.
-//!
-//! The vectorized stateful engine ([`AdaptedModelHandler`](super::engine::AdaptedModelHandler))
-//! owns the per-lane loop, the episode-keyed frame buffers, and the native
-//! adapter application — all pure Rust. The two genuinely host-language steps
-//! cross via these traits, which a binding (PyO3, or any future language)
-//! implements; a pure-Rust model implements them with no host runtime at all.
 
 use super::types::EpisodeInfo;
 use async_trait::async_trait;
@@ -16,44 +10,25 @@ use crate::{Result, model::types::ModelObservation};
 
 /// The model's predict callable plus its discovered lifecycle hooks.
 ///
-/// `predict` is the contract floor: one already-assembled model input → one
-/// raw action. The engine loops it per lane (single-sample) for a spec'd
-/// route and runs `apply_actions` after. A spec-LESS route (no adapter)
-/// bypasses the engine via
-/// [`predict_spec_less`](PredictFn::predict_spec_less), which gets the raw
-/// observation and preserves the pre-relocation batched path exactly.
-///
-/// Methods take `&self`: the model's per-episode state lives in the host
-/// model object, not in this Rust handle, so a shared reference suffices and
-/// the engine can call back from a blocking worker thread.
+/// `predict` is the floor: one assembled model input → one raw action, looped per lane for a
+/// spec'd route. A spec-less route bypasses the engine through
+/// [`predict_spec_less`](PredictFn::predict_spec_less). Methods take `&self`: per-episode
+/// state lives in the host model object, and the engine may call from a blocking worker thread.
 pub trait PredictFn: Send + Sync {
-    /// Spec'd route: one lane's assembled model input → one raw action. The
-    /// engine has already frame-stacked / customs'd / enc-shimmed the input.
-    /// The input is a `Value` tree (a `Map`/`List`/leaf payload), matching the
-    /// model spec's `InputNode` shape — a bare tensor, a dict, or a tuple.
-    ///
-    /// `episode` is this lane's episode identity and explicit reset seed. On
-    /// the fused grouped path (lanes from independent episodes batched into one
-    /// forward) there is no single-episode identity: `episode` is `None`.
+    /// Spec'd route: one lane's assembled model input → one raw action. The engine has
+    /// already frame-stacked / customs'd / enc-shimmed the input, a `Value` tree shaped like
+    /// the spec's `InputNode`. `episode` is this lane's identity and reset seed, `None` on the
+    /// fused grouped path.
     fn predict(&self, model_input: Value, episode: Option<&EpisodeInfo>) -> Result<Value>;
 
-    /// Single-sample CHUNK corner: one assembled model input → a *chunk* of
-    /// raw actions (the leading axis is the chunk axis, unstacked by
-    /// [`split_chunk`](rlmesh_adapters::v1::split_chunk)). `None` (the
-    /// default) means the model has no distinct chunk corner, so the engine
-    /// falls back to [`predict`](Self::predict). A model that authors a
-    /// separate chunk policy returns `Some(chunk)`.
+    /// Single-sample CHUNK corner: one assembled model input → a *chunk* of raw actions
+    /// (the leading axis is the chunk axis, unstacked by
+    /// [`split_chunk`](rlmesh_adapters::v1::split_chunk)). `None` (the default) falls back to
+    /// [`predict`](Self::predict).
     ///
-    /// `execution_horizon` is how many actions the runtime will execute
-    /// before re-planning (pinned at `ResolveAdapter`). The model returns
-    /// its *native* chunk; the engine executes a prefix of it
-    /// (`split_chunk(...).take(h)`) and discards the rest, so a fixed-size
-    /// head ignores the value and is correct either way. An autoregressive
-    /// head may decode exactly `execution_horizon` actions to avoid wasting
-    /// decode on a longer natural chunk.
-    ///
-    /// `episode` follows the same contract as [`predict`](Self::predict):
-    /// real identity per lane, `None` on the fused grouped path.
+    /// `execution_horizon` is how many actions the runtime executes before re-planning; the
+    /// engine takes that prefix of the native chunk and discards the rest, so a fixed-size head
+    /// may ignore it. `episode` is as for [`predict`](Self::predict).
     fn predict_chunk(
         &self,
         _model_input: Value,
@@ -63,24 +38,16 @@ pub trait PredictFn: Send + Sync {
         Ok(None)
     }
 
-    /// Whether this model defines a chunk corner. Queried once at `ResolveAdapter`
-    /// so the engine can warn when the runtime pins a horizon > 1 but the model
-    /// cannot chunk (chunking is then inactive — the runtime re-plans every step).
+    /// Whether this model defines a chunk corner. Without one, a pinned horizon > 1 is
+    /// inactive and the runtime re-plans every step.
     fn has_chunk(&self) -> bool {
         false
     }
 
-    /// Batched corner: N assembled lane inputs → N raw actions (one per lane) in a
-    /// single call, so the model runs one forward pass for the whole vector. The
-    /// engine prefers this over the per-lane `predict` loop when
-    /// [`has_batch`](Self::has_batch) is true. Default unimplemented (only ever
-    /// called when the flag is set).
-    ///
-    /// `episodes` is row-aligned with `inputs`: row `i`'s identity and reset seed.
-    /// A fused grouped batch concatenates lanes from independent episodes, so the
-    /// list is per-row rather than per-call — there is no single episode identity
-    /// here. Defaulted so an out-of-tree impl that only overrides `predict` keeps
-    /// compiling.
+    /// Batched corner: N assembled lane inputs → N raw actions (one per lane) in a single
+    /// call, so the model runs one forward pass for the whole vector. Preferred over the
+    /// per-lane loop when [`has_batch`](Self::has_batch) is true, and only called then.
+    /// `episodes` is row-aligned with `inputs`.
     fn predict_batch(&self, _inputs: Vec<Value>, _episodes: &[EpisodeInfo]) -> Result<Vec<Value>> {
         Err(crate::Error::model("predict_batch is not implemented"))
     }
@@ -90,13 +57,10 @@ pub trait PredictFn: Send + Sync {
         false
     }
 
-    /// Batched chunk corner: N assembled lane inputs → N native action *chunks*
-    /// (leading axis = chunk) in a single call. Preferred for a vectorized chunked
-    /// route when [`has_chunk_batch`](Self::has_chunk_batch) is true.
-    /// `execution_horizon` is the runtime's execution prefix (see
-    /// [`predict_chunk`](Self::predict_chunk)); `episodes` is row-aligned with
-    /// `inputs` (see [`predict_batch`](Self::predict_batch)). Default unimplemented
-    /// (gated by the flag).
+    /// Batched chunk corner: N assembled lane inputs → N native action *chunks* (leading
+    /// axis = chunk) in a single call, when [`has_chunk_batch`](Self::has_chunk_batch) is
+    /// true. `execution_horizon` is as for [`predict_chunk`](Self::predict_chunk); `episodes`
+    /// is row-aligned with `inputs`.
     fn predict_chunk_batch(
         &self,
         _inputs: Vec<Value>,
@@ -113,17 +77,14 @@ pub trait PredictFn: Send + Sync {
         false
     }
 
-    /// Spec-less route (no adapter): the whole observation goes straight to the
-    /// model, batched, returning one action per lane. Preserves the pre-engine
-    /// behavior byte-for-byte (the binding reproduces the original path).
+    /// Spec-less route (no adapter): the whole observation goes straight to the model,
+    /// batched, returning one action per lane.
     fn predict_spec_less(&self, observation: ModelObservation) -> Result<Vec<SpaceValue>>;
 
     /// Spec-less route with a pinned execution horizon: like
     /// [`predict_spec_less`](Self::predict_spec_less), but when the runtime pinned
     /// `execution_horizon > 1` a chunking binding runs its chunk corner on the raw
-    /// observation and returns frame 0 plus the replay frames. The default ignores
-    /// the horizon and stays un-chunked (a non-chunking model re-plans every step,
-    /// exactly as before).
+    /// observation and returns frame 0 plus the replay frames.
     fn predict_spec_less_chunked(
         &self,
         observation: ModelObservation,
@@ -135,35 +96,25 @@ pub trait PredictFn: Send + Sync {
         })
     }
 
-    /// Whether this model permits the fused forward pass: a grouped predict may
-    /// concatenate lanes from *different* routes into ONE batched corner call.
-    /// Default-OFF (a hand-written batched corner is not necessarily
-    /// lane-independent); a binding whose batched corners fuse independent lanes
-    /// by construction turns it on.
+    /// Whether this model permits the fused forward pass: a grouped predict may concatenate
+    /// lanes from *different* routes into ONE batched corner call. Off by default; turn it on
+    /// only when the batched corners are lane-independent.
     fn allow_fusion(&self) -> bool {
         false
     }
 
-    /// The model's NATIVE chunk length K: how many per-step actions ONE chunk
-    /// corner call returns, when the model declares it. `None` (the default) is
-    /// the elastic contract — the model returns whatever it returns and the
-    /// engine takes the `min(len, execution_horizon)` prefix.
-    ///
-    /// Declaring K is a promise the engine holds the model to: the resolve
-    /// doors reject `execution_horizon > K` (the runtime would replay frames the
-    /// model never produced) and a chunk corner that returns anything other than
-    /// exactly K frames fails the predict rather than silently short-replaying.
+    /// The model's NATIVE chunk length K: how many per-step actions ONE chunk corner call
+    /// returns, when the model declares it. `None` (the default) is elastic: the engine takes
+    /// the `min(len, execution_horizon)` prefix. A declared K is enforced: resolve rejects
+    /// `execution_horizon > K`, and a chunk of any other length fails the predict.
     fn native_chunk(&self) -> Option<u32> {
         None
     }
 
-    /// Fires when an episode ends (structurally-discovered model hook), driven by
-    /// the explicit `ResetAdapter` op — once per id it lists, so a model keyed by
-    /// `episode_id` drops exactly the episode that ended. The engine separately
-    /// evicts that episode's frame buffers. There is no episode-*begin* hook:
-    /// per-episode state is lazy-seeded on first predict, so a stateful model
-    /// resets its state here at episode end rather than at a (no-longer-signalled)
-    /// begin.
+    /// Fires when an episode ends (structurally-discovered model hook), driven by the
+    /// explicit `ResetAdapter` op — once per id it lists, so a model keyed by `episode_id`
+    /// drops exactly the episode that ended. There is no episode-begin hook: per-episode state
+    /// is seeded lazily on the first predict, so reset it here.
     fn on_episode_end(&self, _episode_id: &str) -> Result<()> {
         Ok(())
     }
@@ -203,34 +154,23 @@ pub trait PredictFn: Send + Sync {
     }
 }
 
-/// The resolved per-route state the engine caches at `ResolveAdapter`: the
-/// native adapter, the obs/action spaces, and the two host holes. Built by a
-/// [`RouteResolver`] (which has the model spec); held beside an episode-keyed
-/// `FrameBuffers` inside the engine.
+/// The resolved per-route state the engine caches at `ResolveAdapter`: the native
+/// adapter, the obs/action spaces, and the two host holes.
 pub struct RouteConfig {
     pub(crate) adapter: ResolvedAdapter,
     pub(crate) observation_space: SpaceSpec,
     pub(crate) action_space: SpaceSpec,
     pub(crate) customs: Box<dyn CustomTransform + Send + Sync>,
     pub(crate) encodings: Box<dyn EncodingTransform + Send + Sync>,
-    /// Runtime-chosen execution horizon: how many actions of each predicted chunk the
-    /// runtime executes before re-planning, set by the engine from the `ResolveAdapter`
-    /// pin (1 = no chunking). Defaulted to 1 by [`new`](RouteConfig::new); the resolver
-    /// builds the spec-derived config and the engine stamps the horizon on top, since
-    /// it is a runtime decision, not part of the model spec.
     pub(crate) execution_horizon: u32,
-    /// The runtime delivers every replayed step as a history row (negotiated at
-    /// resolve): the engine ingests rows before the request's own observation
-    /// and holds every frame to consecutive steps.
     pub(crate) delivers_history: bool,
 }
 
 impl RouteConfig {
-    /// Assemble a route config from its resolved parts.
-    ///
-    /// `customs` fills custom-input holes (e.g. [`NoCustoms`](rlmesh_adapters::v1::NoCustoms)
-    /// for a declarative route); `encodings` repacks custom rotation encodings
-    /// (e.g. [`NoEncodings`](rlmesh_adapters::v1::NoEncodings) for a route with none).
+    /// Assemble a route config from its resolved parts. `customs` fills custom-input holes
+    /// ([`NoCustoms`](rlmesh_adapters::v1::NoCustoms) for a declarative route); `encodings`
+    /// repacks custom rotation encodings ([`NoEncodings`](rlmesh_adapters::v1::NoEncodings)
+    /// for none).
     pub fn new(
         adapter: ResolvedAdapter,
         observation_space: SpaceSpec,
@@ -244,8 +184,6 @@ impl RouteConfig {
             action_space,
             customs,
             encodings,
-            // Spec-derived default; the engine overwrites it with the route's
-            // runtime-pinned execution_horizon at ResolveAdapter.
             execution_horizon: 1,
             delivers_history: false,
         }
@@ -254,10 +192,8 @@ impl RouteConfig {
 
 /// Resolves a route's [`RouteConfig`] from its env contract at `ResolveAdapter`.
 ///
-/// Returns `None` for a spec-less route (the env sent `NO_ADAPTER`), which the
-/// engine then serves through [`PredictFn::predict_spec_less`]. Runs off the
-/// predict-serialization lock (see [`ModelRouteSetup`](super::handler::ModelRouteSetup)),
-/// so the binding may do blocking host work (resolving a spec) here.
+/// Runs off the predict-serialization lock (see
+/// [`ModelRouteSetup`](super::handler::ModelRouteSetup)), so it may do blocking host work.
 #[async_trait]
 pub trait RouteResolver: Send + Sync {
     /// Resolve `route_key`'s config from its `env_contract`, or `None` for a

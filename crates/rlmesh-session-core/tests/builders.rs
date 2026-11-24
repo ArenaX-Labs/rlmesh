@@ -1,9 +1,3 @@
-//! The policy-map builders against the shared cases in
-//! `fixtures/builders.json`, which the Python builders are checked against
-//! too: each case's builder, called with its arguments through the typed
-//! setters, gives the case's entry, and a policy built from it is the
-//! policy its entry gives as JSON. Every setter is set by some case.
-
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -22,7 +16,6 @@ use serde_json::{Map, Value, json};
 
 const CASES: &str = include_str!("fixtures/builders.json");
 
-/// A closed set, picked by its name in the map.
 trait Named: Copy + 'static {
     fn all() -> &'static [Self];
     fn name(self) -> &'static str;
@@ -144,7 +137,6 @@ fn positional(args: &Map<String, Value>) -> bool {
     args.get("names") == Some(&json!("positional"))
 }
 
-/// Calls the setter for the map key `key` on `b` with `v`.
 macro_rules! set {
     (size, $b:ident, $v:ident, $args:ident) => {
         $b.size(size($v))
@@ -265,7 +257,6 @@ macro_rules! set {
     };
 }
 
-/// The map key a `set!` arm sets.
 macro_rules! key {
     (schema) => {
         "fields"
@@ -278,8 +269,6 @@ macro_rules! key {
     };
 }
 
-/// `$b` with every argument of the case set, recording which keys the
-/// builder has setters for and which the cases set.
 macro_rules! apply {
     ($b:expr, $args:expr, $seen:expr; $($key:ident),* $(,)?) => {{
         let mut b = $b;
@@ -289,7 +278,7 @@ macro_rules! apply {
         $($seen.setters.insert(format!("{builder} {}", key!($key)));)*
         for (key, v) in args {
             if key == "kind" {
-                continue; // the constructor's argument
+                continue;
             }
             $seen.set.insert(format!("{builder} {key}"));
             b = match key.as_str() {
@@ -309,7 +298,6 @@ struct Seen {
     set: BTreeSet<String>,
 }
 
-/// The entry `b` serialises to, and the policy a one-entry builder gives.
 fn input_case(b: impl Serialize + Into<InputEntry>, entry: &Value) -> (Value, Policy) {
     let json = serde_json::to_value(&b).expect("serialise");
     let built = Policy::builder().hz(10).input("x", b).build();
@@ -580,7 +568,6 @@ fn every_shared_case_gives_its_entry_and_its_policy() {
         };
         assert_eq!(&json, entry, "{builder}");
     }
-    // `of` takes every input setter; the cases need only show it passes them on.
     let unset: Vec<_> = seen
         .setters
         .difference(&seen.set)
@@ -630,8 +617,6 @@ fn builders_and_json_mix_in_one_policy() {
     );
 }
 
-/// What the normaliser refuses, it refuses for a built entry in the same
-/// words, naming the entry.
 #[test]
 fn a_built_policy_is_refused_as_its_json_is() {
     let refused = |b: PolicyBuilder, json: &dyn ToString, needle: &str| {
@@ -708,8 +693,6 @@ fn a_built_policy_is_refused_as_its_json_is() {
     );
 }
 
-/// JSON has no NaN or infinity: the builder refuses one before the
-/// normaliser, in its words for an out-of-range value.
 #[test]
 fn a_non_finite_number_is_refused_in_the_normalisers_words() {
     for (b, expected) in [
@@ -762,7 +745,6 @@ fn a_non_finite_number_is_refused_in_the_normalisers_words() {
     ] {
         assert_eq!(b.build(), Err(expected.to_string()));
     }
-    // Out of range but finite, the normaliser words it the same way.
     assert_eq!(
         Policy::builder().hz(0).input("x", inputs::text()).build(),
         Err("policy: hz 0 is not in (0, 10000]".into())

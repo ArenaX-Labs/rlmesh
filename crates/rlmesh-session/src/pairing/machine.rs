@@ -27,14 +27,9 @@ use crate::host::OsRng;
 use crate::transport::Transport;
 use crate::wire::{CtlError, PAIR_KEY, PairInfo};
 
-/// How long a step before the code waits for its answer before sending
-/// it again.
 const STEP_TRY: Duration = Duration::from_secs(2);
-/// How long a `PairWait` waits before it is sent again.
 const WAIT_TRY: Duration = Duration::from_secs(10);
-/// How long the laptop tries to reach rlmeshd's pairing endpoint.
 const REACH: Duration = Duration::from_secs(15);
-/// How long the laptop waits for the owner: the daemon's expiry.
 const APPROVAL: Duration = Duration::from_nanos(pairing::EXPIRY_NS.unsigned_abs());
 
 fn pair_failed(err: PairError) -> SessionError {
@@ -83,7 +78,6 @@ pub async fn pair(
         }
         let wait = if waiting { WAIT_TRY } else { STEP_TRY };
         let Some(reply) = ask(&control, pairing.request(), wait).await? else {
-            // Nothing answered: not up yet, or the query was lost.
             tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         };
@@ -102,7 +96,6 @@ pub async fn pair(
     outcome
 }
 
-/// The first reply to a pairing query, or `None` when none came in `wait`.
 async fn ask(
     control: &zenoh::Session,
     request: &[u8],
@@ -129,7 +122,6 @@ struct Desk {
 }
 
 impl Desk {
-    /// Answers the held queries the core's decisions answered.
     fn deliver(&mut self) {
         for (exchange, reply) in self.pairings.take_results() {
             for query in self.held.remove(&exchange).unwrap_or_default() {
@@ -381,7 +373,6 @@ impl HostFile {
         Credential::new(StaticKeypair::from_private(&mut private), self.host_key)
     }
 
-    /// Whether one of its addresses resolves to `base`.
     fn reaches(&self, base: SocketAddr) -> bool {
         self.addresses.iter().any(|address| {
             address

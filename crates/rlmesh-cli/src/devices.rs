@@ -1,7 +1,6 @@
-//! `devices.toml`, rlmeshd's device table: the devices besides
-//! `local` it admits, what each may do, and the device each robot name is
-//! pinned to; and the `rlmesh devices` commands that edit it. rlmeshd reads
-//! it again within a second of every change, so an edit takes effect live.
+//! `devices.toml`, rlmeshd's device table: the devices besides `local` it
+//! admits, what each may do, and the device each robot name is pinned to; and
+//! the `rlmesh devices` commands that edit it.
 //!
 //! ```toml
 //! [devices.laptop-josh]
@@ -14,10 +13,6 @@
 //! device = "laptop-josh"      # "local": this machine
 //! board_id = "0011223344556677"
 //! ```
-//!
-//! Pairing (`rlmesh pair`, [`crate::pair`]) adds machines and provisioning
-//! (`rlmesh devices provision`, [`crate::provision`]) boards, with their
-//! `kind` and `name`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -35,15 +30,14 @@ use crate::cli::{DevicesArgs, DevicesCommand};
 
 /// The table's file in the state directory.
 pub const DEVICES: &str = "devices.toml";
-/// Held while the table is read, changed and written back.
 const LOCK: &str = "devices.lock";
 
 /// The whole table.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Table {
-    /// Every device id revoked: never given to another device,
-    /// so a later pairing under the same name inherits none of its pins.
+    /// Every device id revoked: never given to another device, so a later pairing
+    /// under the same name inherits none of its pins.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub revoked: BTreeSet<String>,
     /// Device id → its entry.
@@ -74,13 +68,12 @@ pub struct Entry {
     /// `arm`, `disarm`; both from `operator` up when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verbs: Option<Vec<String>>,
-    /// `embodiment`, `controller` (an observer always may attach); by its
-    /// kind when absent: a board embodies, a browser controls, a machine
-    /// does both.
+    /// `embodiment`, `controller` (an observer always may attach); by its kind when
+    /// absent: a board embodies, a browser controls, a machine does both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    /// The day (`YYYY-MM-DD`, UTC) from which it may no longer attach; it
-    /// never expires when absent. Pairing sets one 180 days out.
+    /// The day (`YYYY-MM-DD`, UTC) from which it may no longer attach; it never
+    /// expires when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<String>,
 }
@@ -91,8 +84,8 @@ pub struct Entry {
 pub struct Pin {
     /// The device that embodies it.
     pub device: String,
-    /// A tethered board's id behind that device, 16 hex digits: the host
-    /// refuses a `DeclareParts` from another board.
+    /// A tethered board's id behind that device, 16 hex digits: the host refuses a
+    /// `DeclareParts` from another board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board_id: Option<String>,
 }
@@ -109,7 +102,6 @@ pub fn class(name: &str) -> Result<Option<PriorityClass>> {
     })
 }
 
-/// A board id from its 16 hex digits.
 fn board_id(hex: &str) -> Option<[u8; 8]> {
     if hex.len() != 16 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -138,7 +130,6 @@ fn verb(name: &str) -> Result<Verb> {
     }
 }
 
-/// Days since 1970-01-01 of the civil (proleptic Gregorian) date.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
@@ -149,7 +140,6 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// The civil date of `days` since 1970-01-01.
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -245,8 +235,7 @@ impl Table {
         Ok(table)
     }
 
-    /// What a host takes from it: the devices with their entries, and the
-    /// pins.
+    /// What a host takes from it: the devices with their entries, and the pins.
     pub fn host(&self) -> Result<(Vec<Device>, BTreeMap<ParticipantId, HostPin>)> {
         let today = today();
         let mut devices: Vec<Device> = Vec::new();
@@ -255,7 +244,6 @@ impl Table {
             if id == LOCAL_DEVICE {
                 bail!("{}: local is this machine, with no entry", device());
             }
-            // An expired device is as good as unknown: it may not attach.
             if entry.expired(today).with_context(device)? {
                 continue;
             }
@@ -294,9 +282,9 @@ impl Table {
         Ok((devices, pins))
     }
 
-    /// Whether `device`'s first embodiment of the unpinned `robot` pins it: `local`, a
-    /// board under its own provisioned name, or a
-    /// device with the operator verb.
+    /// Whether `device`'s first embodiment of the unpinned `robot` pins it:
+    /// `local`, a board under its own provisioned name, or a device with the
+    /// operator verb.
     pub fn may_pin(&self, robot: &str, device: &str) -> bool {
         if device == LOCAL_DEVICE {
             return true;
@@ -308,8 +296,8 @@ impl Table {
         })
     }
 
-    /// Whether `device` may be a satellite: a
-    /// paired machine (not a board or a browser) with the `arm` verb.
+    /// Whether `device` may be a satellite: a paired machine (not a board or a
+    /// browser) with the `arm` verb.
     #[cfg(feature = "fleet")]
     pub fn may_host(&self, device: &str) -> bool {
         self.devices.get(device).is_some_and(|entry| {
@@ -319,9 +307,8 @@ impl Table {
     }
 
     /// A device id for a new device called `name`: its characters outside
-    /// `[A-Za-z0-9._-]` replaced by `-` (`fallback` for none), and `-2`,
-    /// `-3`… after it while that is taken, or was revoked, or a pin names
-    /// it.
+    /// `[A-Za-z0-9._-]` replaced by `-` (`fallback` for none), and `-2`, `-3`…
+    /// after it while that is taken, or was revoked, or a pin names it.
     pub fn free_id(&self, name: &str, fallback: &str) -> String {
         let base: String = name
             .chars()
@@ -352,8 +339,8 @@ impl Table {
         id
     }
 
-    /// Revokes device `id`: its entry goes, its id is never given out
-    /// again, and its pins stay, so its robots' names can't be taken.
+    /// Revokes device `id`: its entry goes, its id is never given out again, and
+    /// its pins stay, so its robots' names can't be taken.
     ///
     /// # Errors
     /// A device not in the table.
@@ -365,14 +352,13 @@ impl Table {
         Ok(())
     }
 
-    /// The table as `devices.toml` holds it.
     fn text(&self) -> Result<String> {
         Ok(toml::to_string(self)?)
     }
 }
 
-/// Changes the table in `dir` with `change`, under its lock, and writes it
-/// back whole (0600) unless `change` fails.
+/// Changes the table in `dir` with `change`, under its lock, and writes it back
+/// whole (0600) unless `change` fails.
 pub fn edit<R>(dir: &Path, change: impl FnOnce(&mut Table) -> Result<R>) -> Result<R> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
@@ -534,8 +520,6 @@ mod tests {
         )
         .expect("devices.toml");
         edit(dir.path(), |table| table.revoke("laptop")).expect("revoked");
-        // Read back as a restarted daemon would: another machine asking
-        // for the name gets another id, and the pin names no device.
         let table = Table::read(dir.path()).expect("read");
         let id = table.free_id("laptop", "machine");
         assert_ne!(id, "laptop");
@@ -544,7 +528,6 @@ mod tests {
         assert_eq!(pins.len(), 1);
         let pin = table.robots.get("eye-1").map(|p| p.device.as_str());
         assert_eq!(pin, Some("laptop"));
-        // Nor does an id a pin names but no entry has (an older table).
         let mut older = table.clone();
         older.revoked.clear();
         assert_ne!(older.free_id("laptop", "machine"), "laptop");

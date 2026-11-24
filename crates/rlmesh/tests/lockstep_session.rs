@@ -1,7 +1,3 @@
-//! A lockstep env in a session: one lease grant, then per-step checks of
-//! the epoch, the lease token and the e-stop: the direct link in one
-//! process, the lockstep session otherwise.
-
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -15,7 +11,6 @@ use rlmesh_session::wire::{LeaseToken, PriorityClass, Role};
 use rlmesh_session::{Participant, SessionAddress};
 use rlmesh_spaces::{AutoresetMode, DType, SpaceValue, Tensor};
 
-/// `lanes` actions of the catalog's `float32 [7]`, every byte `seq`.
 fn actions(seq: u8, lanes: usize) -> Vec<SpaceValue> {
     (0..lanes)
         .map(|_| SpaceValue::Box(Tensor::from_vec(vec![seq; 28], vec![7], DType::Float32).unwrap()))
@@ -23,7 +18,6 @@ fn actions(seq: u8, lanes: usize) -> Vec<SpaceValue> {
 }
 
 async fn operator(address: &str) -> Participant {
-    // The robot's participant address, less the robot: its session's.
     let (session, _) = address.rsplit_once('/').unwrap();
     let session: SessionAddress = session.parse().unwrap();
     session
@@ -55,8 +49,6 @@ async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_an
     let direct = rlmesh::lockstep::connect(&address, ConnectOptions::default())
         .await
         .unwrap();
-    // A second driver over the lockstep session (it takes the lease over
-    // only when the first releases it: the same priority class is busy).
     let networked = rlmesh::lockstep::connect(
         &address,
         ConnectOptions {
@@ -73,8 +65,6 @@ async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_an
     assert_eq!(reply.rewards.len(), 1);
     assert_eq!(direct.info().contract.id, "Catalog-v0");
 
-    // Another epoch is refused locally, without the host: one the env has
-    // left behind as stale, one it has not reached as ahead of its view.
     let (epoch, token) = direct.authority();
     direct.set_authority(rlmesh_session::wire::Epoch(epoch.0 - 1), token);
     refused(direct.step(&[], &actions(2, 1), None).await, "stale");
@@ -83,11 +73,8 @@ async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_an
     direct.set_authority(epoch, token);
     direct.step(&[], &actions(3, 1), None).await.unwrap();
 
-    // E-stop: refused between steps.
     let op = operator(&address).await;
     op.estop("test").await.unwrap();
-    // The latch reaches the env through the host's next state: step until
-    // it has, however long a loaded machine takes to deliver it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     while direct.step(&[], &actions(2, 1), None).await.is_ok() {
         assert!(
@@ -124,7 +111,6 @@ async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused()
     let reply = env.step(&[], &actions(1, 2), None).await.unwrap();
     assert_eq!(reply.rewards.len(), 2);
     assert_eq!(reply.terminated.len(), 2);
-    // The reply carries what the env measured, as v1's endpoint phases.
     let timing = env.last_timing().expect("a step is timed");
     assert!(
         timing.total_ns.is_some() && timing.user_ns.is_some(),
@@ -132,11 +118,9 @@ async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused()
     );
     assert!(timing.total_ns >= timing.user_ns, "{timing:?}");
 
-    // Keep the epoch, forge the token: the env refuses it from its own view.
     let (epoch, _) = env.authority();
     env.set_authority(epoch, LeaseToken(0xdead));
     refused(env.step(&[], &actions(1, 2), None).await, "lease token");
-    // A malformed action (one lane's worth) is refused as malformed.
     refused(env.step(&[], &actions(1, 1), None).await, "lanes");
     cancel.cancel();
     served.await.unwrap().unwrap();

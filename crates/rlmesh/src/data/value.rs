@@ -1,9 +1,4 @@
 //! Conversions between native space values and their wire encodings.
-//!
-//! Submodules split the codec by concern: `interaction` adapts
-//! reset/step/render requests and results, `payload` wraps values in
-//! transport messages and `batch` handles batched payloads. The leaf codec
-//! itself lives in [`rlmesh_spaces::leaves`].
 
 mod batch;
 mod interaction;

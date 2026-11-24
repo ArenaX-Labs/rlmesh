@@ -7,12 +7,10 @@ public class RLMeshUnreal : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		// rlmesh.hpp reports every failure as a C++ exception.
 		bEnableExceptions = true;
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine" });
 
-		// An unpacked RLMesh release package: include/, lib/ and, on Windows, bin/.
 		string RLMeshDir = Path.Combine(PluginDirectory, "Source", "ThirdParty", "rlmesh");
 		string IncludeDir = Path.Combine(RLMeshDir, "include");
 		string LibDir = Path.Combine(RLMeshDir, "lib");
@@ -25,7 +23,6 @@ public class RLMeshUnreal : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			// Link the import library; the DLL is staged beside the game binary.
 			PublicAdditionalLibraries.Add(Path.Combine(LibDir, "rlmesh_capi.lib"));
 			RuntimeDependencies.Add("$(BinaryOutputDir)/rlmesh_capi.dll",
 				Path.Combine(RLMeshDir, "bin", "rlmesh_capi.dll"));

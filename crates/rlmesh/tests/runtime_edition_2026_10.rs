@@ -1,21 +1,3 @@
-//! Golden behavior fingerprint for workflow edition 2026.10.
-//!
-//! Each scenario drives the runtime through one paragraph of
-//! `docs/editions/2026.10.md` with the shared fake harness and serializes what
-//! the edition promises an observer -- the episode ledger, the hook-event order
-//! under each episode id, the model lifecycle, the seeds a reset threads, the
-//! refusals -- into a deterministic JSON record compared byte for byte against a
-//! committed fixture. Every record here is unchanged from 2026.06, whose
-//! contract 2026.10 keeps for these scenarios, except scenario 9's seeds: a
-//! `base_seed` derivation no longer mixes the session id. 2026.10 seals at v0.2.0; from
-//! then, if a test here fails you are BREAKING THE BEHAVIOR CONTRACT of an
-//! edition in the field, and the fix is to seal a NEW edition, never to update
-//! the fixture. Nothing time-dependent
-//! (wall-clock durations, telemetry latencies, lane interleavings a sleep
-//! decides) is recorded, and runtime-minted UUIDv7 episode ids appear as
-//! first-seen placeholders, so the record is a pure function of the edition's
-//! semantics.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -32,9 +14,6 @@ mod common;
 
 use common::*;
 
-/// Characters of a refusal message pinned by the fingerprint: enough to name
-/// the rule, short enough to stop before the build-stamped edition list that
-/// spells the current cohort.
 const REFUSAL_PREFIX_CHARS: usize = 100;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -43,9 +22,6 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(format!("{name}.json"))
 }
 
-/// Compare one scenario's record with its committed fixture. `RLMESH_UPDATE_FIXTURES=1`
-/// rewrites the fixtures instead of asserting; it exists to seal an edition once,
-/// not to absorb a behavior change.
 fn assert_frozen(name: &str, record: &Value) {
     let got = format!(
         "{}\n",
@@ -69,8 +45,6 @@ fn assert_frozen(name: &str, record: &Value) {
     );
 }
 
-/// Stable stand-ins for the runtime-minted UUIDv7 episode ids, numbered in the
-/// order the record first mentions them.
 #[derive(Default)]
 struct Ids(Vec<String>);
 
@@ -90,7 +64,6 @@ impl Ids {
         ids.iter().map(|id| self.label(id)).collect()
     }
 
-    /// First-seen position of a label, for ordering a set of ids.
     fn rank(&self, label: &str) -> usize {
         label
             .trim_start_matches("ep-")
@@ -99,7 +72,6 @@ impl Ids {
     }
 }
 
-/// The episode ledger a finished run reports, minus `duration_ms` (wall clock).
 fn report_record(report: &RuntimeReport) -> Value {
     let episodes: Vec<Value> = report
         .episodes
@@ -125,7 +97,6 @@ fn report_record(report: &RuntimeReport) -> Value {
     })
 }
 
-/// Every per-episode hook event in arrival order, by the ids it named.
 fn hook_events(hooks: &RecordingHooks, ids: &mut Ids) -> Value {
     let events = hooks
         .events
@@ -139,14 +110,6 @@ fn hook_events(hooks: &RecordingHooks, ids: &mut Ids) -> Value {
     Value::Array(rows)
 }
 
-/// Every model call in arrival order: the predict/evict lifecycle per episode.
-/// A predict names its lanes in lane order, but one ResetAdapter evicts a *set*
-/// of ended ids whose order inside the request is decided by when each episode
-/// ended relative to an in-flight predict -- a race, not an edition promise --
-/// so evicted ids are recorded in first-seen order. That sort relies on
-/// `hook_events` running first in every scenario record, so each id is already
-/// ranked by the order the hooks named it: a scenario whose first mention of an
-/// id were an evict batch would rank ids by the very race this hides.
 fn model_lifecycle(model: &TestModel, ids: &mut Ids) -> Value {
     let calls = model
         .lifecycle
@@ -166,7 +129,6 @@ fn model_lifecycle(model: &TestModel, ids: &mut Ids) -> Value {
     Value::Array(rows)
 }
 
-/// Each predict's history rows and its own observation, as `(step, first byte)`.
 fn ledger(model: &TestModel) -> Value {
     let entries = model.ledger.lock().expect("ledger poisoned").clone();
     let rows: Vec<Value> = entries
@@ -191,7 +153,6 @@ fn meta_text(value: &rlmesh_proto::spaces::v1::MetaValue) -> Value {
     }
 }
 
-/// One `MetaMap` as sorted `[key, value]` pairs (`null` when absent).
 fn meta_record(meta: &Option<MetaMap>) -> Value {
     let Some(meta) = meta else {
         return Value::Null;
@@ -214,7 +175,6 @@ fn meta_records(metas: &[Option<MetaMap>]) -> Value {
     Value::Array(metas.iter().map(meta_record).collect())
 }
 
-/// The reset options an env received, recorded in the fixtures' wire shape.
 fn option_records(options: &[Option<rlmesh_spaces::MetaMap>]) -> Value {
     let wire: Vec<Option<MetaMap>> = options
         .iter()
@@ -227,7 +187,6 @@ fn option_records(options: &[Option<rlmesh_spaces::MetaMap>]) -> Value {
     meta_records(&wire)
 }
 
-/// Every observation the runtime emitted, by the episodes it was attributed to.
 fn observations(hooks: &RecordingHooks, ids: &mut Ids) -> Value {
     let emitted = hooks
         .emitted_observations
@@ -240,8 +199,6 @@ fn observations(hooks: &RecordingHooks, ids: &mut Ids) -> Value {
             json!({
                 "episodes": ids.labels(&observation.episode_ids),
                 "observation": observation.observation,
-                // No transform runs between env and model: what the env
-                // answered is what the model receives.
                 "raw_observation": observation.observation,
                 "infos": meta_record(&observation.infos),
             })
@@ -250,8 +207,6 @@ fn observations(hooks: &RecordingHooks, ids: &mut Ids) -> Value {
     Value::Array(rows)
 }
 
-/// The refusal a spec the runtime must not drive produces, truncated to its
-/// build-independent prefix.
 async fn refusal_prefix(spec: RuntimeSessionSpec) -> Value {
     let error = new_driver(
         spec,
@@ -275,11 +230,6 @@ async fn refusal_prefix(spec: RuntimeSessionSpec) -> Value {
     )
 }
 
-/// The same refusal for an edition name that never reaches a typed spec:
-/// `workflow_edition` is an [`rlmesh_proto::Edition`], so a name outside the
-/// retained list is refused one step earlier, at the shared parse boundary every
-/// string-carrying caller goes through. The text is the one `validate` uses, in
-/// the same error, so the contract an operator sees is unchanged.
 fn unparsed_edition_refusal_prefix(edition: &str) -> Value {
     let message = rlmesh_proto::parse_retained_edition(edition)
         .expect_err("the runtime refuses an edition outside the retained list");
@@ -292,29 +242,13 @@ fn unparsed_edition_refusal_prefix(edition: &str) -> Value {
     )
 }
 
-/// Every [`EditionDefaults`] field the driver reads, mapped to the scenario that
-/// pins its value. The destructuring is exhaustive on purpose: a new field does
-/// not compile until it is named here alongside the fixture that observes it.
 #[test]
 fn every_edition_defaults_field_is_pinned_by_a_scenario() {
     let EditionDefaults {
-        // 05-default-truncation-bound: an episode with no explicit cap truncates
-        // at this bound under driver-owned resets.
         default_max_episode_steps,
-        // 09-episode-id-and-trial-authority delivers it; 03 proves NEXT_STEP
-        // mints no ordinal at all.
         trial_index_option_key,
-        // 01-disabled-single-env-episode (driver-owned) vs 02-next-step-roll-timing
-        // (env-owned) split on exactly this set.
         driver_owned_reset_modes,
-        // 01-disabled-single-env-episode reports through `is_success`; the
-        // `success` spelling and its numeric coercion ride the vector lanes of
-        // 02 and 03. Which keys count, and in what priority, is the promise —
-        // pinned as the whole list here.
         success_info_keys,
-        // A served env's promise, not the driver's: the wire adapters
-        // (`rlmesh::env::wire`) report under it at the session's pinned edition.
-        // No driver scenario observes it, so its value is pinned here.
         conformance_warning_info_key,
     } = *rlmesh_proto::defaults(Edition::E2026_10);
 
@@ -328,15 +262,8 @@ fn every_edition_defaults_field_is_pinned_by_a_scenario() {
     assert_eq!(conformance_warning_info_key, "rlmesh.conformance.warning");
 }
 
-// ---------------------------------------------------------------------------
-// 1. A DISABLED single-env episode: reset -> predict -> step -> terminate.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn scenario_01_disabled_single_env_episode() {
-    // The env stamps Gymnasium's `is_success` on the terminal step, so the
-    // ledger's derived `success` is pinned true here; the `success` spelling and
-    // its numeric coercion to false ride the vector lanes of scenarios 2 and 3.
     let env = TestEnv {
         final_info: Some(meta_map("is_success", meta_value::Kind::Bool(true))),
         ..Default::default()
@@ -371,14 +298,8 @@ async fn scenario_01_disabled_single_env_episode() {
     assert_frozen("01-disabled-single-env-episode", &record);
 }
 
-// ---------------------------------------------------------------------------
-// 2. NEXT_STEP roll timing: the terminal step keeps the old id, the roll step
-//    at t+1 belongs to the runtime-minted new one.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn scenario_02_next_step_roll_timing() {
-    // Four lanes of different lengths: no driver reset after the cold start.
     let wide_env = VectorTestEnv::new(vec![2, 3, 2, 4]);
     let wide_model = TestModel::default();
     let wide_hooks = Arc::new(RecordingHooks::default());
@@ -392,8 +313,6 @@ async fn scenario_02_next_step_roll_timing() {
     .await
     .expect("the vector route completes");
 
-    // Two lanes that both end at step 1: the step-2 response is the new
-    // episodes' reset observation, and its infos belong to them.
     let roll_env = VectorTestEnv::new(vec![1, 1]);
     let roll_hooks = Arc::new(RecordingHooks::default());
     new_driver(
@@ -406,8 +325,6 @@ async fn scenario_02_next_step_roll_timing() {
     .await
     .expect("the rolling route completes");
 
-    // Lanes of 1 and 3 steps under a budget of 4: an ended id is observed and
-    // stepped once more (the autoreset step), then completed last.
     let budget_hooks = Arc::new(RecordingHooks::default());
     let budget_model = TestModel::default();
     let budget = new_driver(
@@ -443,10 +360,6 @@ async fn scenario_02_next_step_roll_timing() {
     assert_frozen("02-next-step-roll-timing", &record);
 }
 
-// ---------------------------------------------------------------------------
-// 3. NEXT_STEP mints no trial ordinal: the env owns its resets.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn scenario_03_next_step_mints_no_trial_ordinal() {
     let mut runs = Vec::new();
@@ -470,10 +383,6 @@ async fn scenario_03_next_step_mints_no_trial_ordinal() {
     }
     assert_frozen("03-next-step-mints-no-trial-ordinal", &json!(runs));
 }
-
-// ---------------------------------------------------------------------------
-// 4. A runtime truncation completes its episode once.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn scenario_04_runtime_truncation_ledger() {
@@ -503,21 +412,13 @@ async fn scenario_04_runtime_truncation_ledger() {
     assert_frozen("04-runtime-truncation-ledger", &record);
 }
 
-// ---------------------------------------------------------------------------
-// 5. The built-in per-episode step bound when the spec sets none.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn scenario_05_default_truncation_bound() {
-    // An env that never terminates, no explicit cap, driver-owned resets: the
-    // edition's built-in bound is the only thing that can end the episode.
     let env = EndlessEnv::default();
     let report = new_driver(
         one_episode_spec(),
         env.clone(),
         TestModel {
-            // Chunks of 100 keep the bound's cost in predicts down; the env
-            // still steps every step, which is what the bound counts.
             replay_frames: 99,
             ..Default::default()
         },
@@ -534,11 +435,6 @@ async fn scenario_05_default_truncation_bound() {
     });
     assert_frozen("05-default-truncation-bound", &record);
 }
-
-// ---------------------------------------------------------------------------
-// 6. Chunk replay: buffered frames replay without a predict, a stale chunk is
-//    discarded at an episode boundary, and a chunked vector route warns once.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn scenario_06_chunk_replay() {
@@ -561,10 +457,6 @@ async fn scenario_06_chunk_replay() {
     .await
     .expect("the chunked route completes");
 
-    // Two 3-step episodes, chunk size 3, lead 1: the prefetch fired at the
-    // first episode's tail is stale and must not leak across the boundary.
-    // Only boundary-independent facts are recorded -- how many speculative
-    // predicts a prefetch lands is a race, what each episode re-plans from is not.
     let stale_model = TestModel {
         replay_frames: 2,
         predict_delay: Some(Duration::from_millis(20)),
@@ -614,11 +506,6 @@ async fn scenario_06_chunk_replay() {
     assert_frozen("06-chunk-replay", &record);
 }
 
-// ---------------------------------------------------------------------------
-// 7. Observation history: every env step reaches a history route exactly once,
-//    in order; a route without history carries no rows and no step.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn scenario_07_observation_history() {
     let mut leads = Vec::new();
@@ -651,11 +538,6 @@ async fn scenario_07_observation_history() {
         }));
     }
 
-    // Two 3-step episodes with a prefetch across each reset: the reset
-    // observation is promoted to the re-armed request's own, never delivered
-    // twice. The per-episode step sequence is a race-free consequence; how far
-    // into the episode the last predict fires is not, so only the invariant
-    // (each step at most once, contiguous from the episode's first) is pinned.
     let across_model = TestModel {
         replay_frames: 2,
         wants_history: true,
@@ -686,7 +568,6 @@ async fn scenario_07_observation_history() {
         steps == (first..first + steps.len() as i64).collect::<Vec<_>>()
     });
 
-    // The same chunking without history: no rows, and no step stamped.
     let bare_model = TestModel {
         replay_frames: 3,
         ..Default::default()
@@ -721,15 +602,8 @@ async fn scenario_07_observation_history() {
     assert_frozen("07-observation-history", &record);
 }
 
-// ---------------------------------------------------------------------------
-// 8. Lane (`subset_step`) accounting: the budgeted slots are scored whatever
-//    the lane timing, and surplus lanes idle.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn scenario_08_lane_accounting() {
-    // Lane timing decides WHICH lane claims a slot, never which slots are
-    // scored or what seed each carries, so the record is sorted by slot.
     let env = LaneTestEnv::new(vec![
         (2, Duration::from_millis(20)),
         (5, Duration::from_millis(40)),
@@ -768,7 +642,6 @@ async fn scenario_08_lane_accounting() {
         .collect();
     reset_seeds.sort_unstable();
 
-    // Four lanes, two slots: two lanes never reset at all.
     let idle_env = LaneTestEnv::new(vec![(1, Duration::ZERO); 4]);
     let idle_hooks = Arc::new(RecordingHooks::default());
     let idle = new_driver(
@@ -804,11 +677,6 @@ async fn scenario_08_lane_accounting() {
     assert_frozen("08-lane-accounting", &record);
 }
 
-// ---------------------------------------------------------------------------
-// 9. The runtime is the episode-id and trial-ordinal authority, and its reset
-//    seeds are a pure function of the spec.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn scenario_09_episode_id_and_trial_authority() {
     let model = TestModel::default();
@@ -838,8 +706,6 @@ async fn scenario_09_episode_id_and_trial_authority() {
         })
         .collect();
 
-    // The same spec run twice threads the same seeds: the derivation mixes only
-    // base_seed, the seed key and the episode's slot (its trial ordinal).
     let seeded = RuntimeSessionSpec {
         base_seed: Some(1234),
         max_episodes: Some(2),
@@ -871,8 +737,6 @@ async fn scenario_09_episode_id_and_trial_authority() {
         }));
     }
 
-    // Trial ordinals: minted per driver-owned reset, delivered only to an env
-    // that declared the key, reported either way.
     let declared_env = TestEnv::default();
     let mut declared_spec = trial_spec(3, &["trial_index"]);
     declared_spec.trial_index_base = Some(100);
@@ -920,10 +784,6 @@ async fn scenario_09_episode_id_and_trial_authority() {
     });
     assert_frozen("09-episode-id-and-trial-authority", &record);
 }
-
-// ---------------------------------------------------------------------------
-// 10. The refusal set: what a 2026.10 runtime declines to drive at all.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn scenario_10_refusal_set() {

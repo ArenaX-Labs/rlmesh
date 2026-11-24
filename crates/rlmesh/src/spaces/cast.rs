@@ -1,8 +1,4 @@
 //! The borrowed downcasts behind `Space::as_box` / `as_discrete` / `as_dict`.
-//!
-//! The one place in `rlmesh::spaces` that needs `unsafe`: each typed space is
-//! a `#[repr(transparent)]` newtype over `Space`, so a `&Space` already known
-//! to be of that kind is a valid `&T`. Callers check the kind first.
 #![allow(unsafe_code)]
 
 use super::{Box, Dict, Discrete, Space};

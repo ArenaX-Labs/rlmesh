@@ -1,15 +1,4 @@
-"""Validate, split, and present a declared parameter surface.
-
-Written once and reused for both bases because it needs only
-``inspect.signature(target)``: an :class:`~rlmesh.EnvFactory`'s ``make`` and a
-model's ``load`` are the same kind of target. Three entry points:
-
-* :func:`resolve` -- validate incoming kwargs and apply the boundary table,
-  producing the dict the constructor is called with. Runs in the container,
-  before construction, so a bad binding fails before GPU cost.
-* :func:`describe` -- the schema a dashboard reads to present/sweep.
-* :func:`to_metadata` -- the resolved binding recorded into the contract.
-"""
+"""Validate, split, and present a declared parameter surface."""
 
 from __future__ import annotations
 
@@ -21,15 +10,11 @@ from typing import cast
 
 from ._spec import Param, ParamSpec, Vector
 
-#: Metadata key the resolved binding publishes under (namespaced like the
-#: adapter tags ``rlmesh.adapters.v1.env_tags``). Python-only: there is no Rust
-#: ``params`` consumer.
+#: Metadata key the resolved binding publishes under.
 PARAM_METADATA_KEY = "rlmesh.params.v1.binding"
 
-# JSON value types a binding/default may carry verbatim.
 _JSON_SCALAR = (str, int, float, bool, type(None))
 
-# Tolerance on the L2 norm for a ``Vector(unit=True)`` value.
 _UNIT_TOL = 1e-3
 
 
@@ -76,19 +61,6 @@ def resolve(
     * ``spec is None`` -> kwargs unchanged (blind passthrough; full back-compat).
     * rest empty -> ``{**declared, **derived}``.
 
-    Only *supplied* keys come back: a parameter left out is absent from the
-    result, so ``make``'s own signature applies its default; one with no
-    signature default is required, declared or not
-    (:class:`MissingParamError`). The returned dict
-    is therefore never a complete binding -- read a resolved discriminant off the
-    env's published ``rlmesh.adapters.v1.env_branch``, which is bound from the
-    signature with defaults applied.
-    * rest non-empty, ``extra="forbid"`` -> :class:`UnknownParamError`.
-    * rest non-empty, ``extra="passthrough"`` and ``target`` has ``**kwargs`` ->
-      forward rest verbatim.
-    * rest non-empty, ``extra="passthrough"`` and ``target`` has no ``**kwargs``
-      -> :class:`UnknownParamError` (nowhere to forward).
-
     Returns the dict the constructor is called with.
     """
     if spec is None:
@@ -97,11 +69,7 @@ def resolve(
     accepts_kwargs, sig_params = _signature_facts(target)
     declared = {p.name: p for p in spec.params}
 
-    # Junk-drawer-drift guard: a declared Param the target cannot receive can
-    # never do the validation it promised. Merely declared (no value supplied)
-    # warns -- the author's mistake, not the operator's; a *supplied* value for
-    # it hard-errors below instead of crashing the constructor with a bare
-    # TypeError.
+    # A declared Param the target cannot receive can never validate; a supplied value for it hard-errors below.
     for name in declared:
         if name not in sig_params and not accepts_kwargs and name not in kwargs:
             warnings.warn(
@@ -132,9 +100,7 @@ def resolve(
     for name in declared:
         if name in out:
             continue
-        # Not supplied: the default lives in the target's signature, never on the
-        # Param. A signature default => the constructor applies it (we pass
-        # nothing); no signature default => the param is genuinely required.
+        # The default lives in the target's signature, never on the Param.
         sig = sig_params.get(name)
         if sig is None or sig.default is inspect.Parameter.empty:
             raise MissingParamError(name)
@@ -208,17 +174,9 @@ def to_metadata(
     }
 
 
-# --- internals ---------------------------------------------------------------
-
-
 def _signature_facts(
     target: Callable[..., object],
 ) -> tuple[bool, dict[str, inspect.Parameter]]:
-    """Return ``(accepts_**kwargs, {keyword_name: Parameter})`` for ``target``.
-
-    Un-introspectable targets (some C builtins) report ``(True, {})`` -- accept
-    anything, know no names -- matching the graceful fallback the gym loader uses.
-    """
     try:
         signature = inspect.signature(target)
     except (TypeError, ValueError):
@@ -240,7 +198,6 @@ _TYPE_NAMES: dict[type, str] = {int: "int", float: "float", str: "str", bool: "b
 
 
 def _type_name(declared: type | str | Vector) -> str:
-    """Normalize a ``Param.type`` to its canonical string name."""
     if isinstance(declared, Vector):
         return f"vec{declared.dim}"
     if isinstance(declared, str):
@@ -249,13 +206,7 @@ def _type_name(declared: type | str | Vector) -> str:
 
 
 def _coerce(param: Param, value: object) -> object:
-    """Validate and lightly coerce ``value`` against ``param``.
-
-    Choice entries are normalized through the same coercion as the value before
-    the membership test, so a ``Vector`` choice authored as a ``list`` matches
-    the tuple the value canonicalizes to (a malformed choice entry raises like
-    a malformed value -- an authoring error surfaced loudly).
-    """
+    """Validate and lightly coerce ``value`` against ``param``."""
     if isinstance(param.type, Vector):
         vector = param.type
         coerced = _coerce_vector(param.name, vector, value)
@@ -273,11 +224,7 @@ def _coerce(param: Param, value: object) -> object:
 
 
 def _coerce_vector(name: str, spec: Vector, value: object) -> tuple[float, ...]:
-    """Validate a fixed-length float vector; canonicalize list/tuple -> tuple.
-
-    The binding path matters: a vector bound via JSON (env var, recorded
-    metadata) arrives as a ``list``, so accept both and always return a tuple.
-    """
+    """Validate a fixed-length float vector; canonicalize list/tuple -> tuple."""
     if not isinstance(value, (list, tuple)):
         raise ParamError(
             f"{name}: expected a {spec.dim}-vector, got {_typename(value)}"
@@ -306,7 +253,6 @@ def _coerce_vector(name: str, spec: Vector, value: object) -> tuple[float, ...]:
 
 
 def _coerce_scalar(name: str, kind: str, value: object) -> object:
-    """Type-check + coerce one scalar; ``enum``/unknown kinds pass through."""
     if kind == "bool":
         if not isinstance(value, bool):
             raise ParamError(f"{name}: expected bool, got {_typename(value)}")
@@ -324,7 +270,6 @@ def _coerce_scalar(name: str, kind: str, value: object) -> object:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ParamError(f"{name}: expected float, got {_typename(value)}")
         result = float(value)
-        # A construction param is never legitimately NaN/inf; reject them outright.
         if not math.isfinite(result):
             raise ParamError(f"{name}: expected a finite float, got {result!r}")
         return result
@@ -332,18 +277,11 @@ def _coerce_scalar(name: str, kind: str, value: object) -> object:
         if not isinstance(value, str):
             raise ParamError(f"{name}: expected str, got {_typename(value)}")
         return value
-    # "enum" (domain is the choices set) or an opaque custom type: no coercion.
     return value
 
 
 def _in_choices(value: object, choices: tuple[object, ...]) -> bool:
-    """Membership test that does not conflate ``bool`` with ``int``.
-
-    ``True == 1`` and ``False == 0`` in Python, so a plain ``in`` check lets a bool
-    slip through an int-valued choices set (and an int through a bool set). Require
-    the bool-ness of the value and the matched choice to agree -- the same int/bool
-    guard the int coercion branch applies, extended to the enum/custom path.
-    """
+    """Membership test that does not conflate ``bool`` with ``int``."""
     for choice in choices:
         if value == choice and isinstance(value, bool) == isinstance(choice, bool):
             return True
@@ -351,13 +289,7 @@ def _in_choices(value: object, choices: tuple[object, ...]) -> bool:
 
 
 def _check_derived(name: str, annotation: object, value: object) -> object:
-    """Best-effort type-check a signature-derived arg against its annotation.
-
-    Only the four scalar annotations are checked; anything else (unannotated, or a
-    complex/structured annotation) passes through verbatim. Handles a stringized
-    annotation too (``from __future__ import annotations`` makes ``x: int`` read
-    back as the string ``"int"``), which this codebase uses throughout.
-    """
+    """Best-effort type-check a signature-derived arg against its annotation."""
     if isinstance(annotation, type):
         kind = _TYPE_NAMES.get(annotation)
     elif isinstance(annotation, str) and annotation in _TYPE_NAMES.values():
@@ -385,8 +317,6 @@ def _param_to_dict(
     param: Param,
     sig_params: Mapping[str, inspect.Parameter] | None = None,
 ) -> dict[str, object]:
-    # The signature is the single source of the default: a param with a signature
-    # default is optional and presents it; one without is required.
     sig = sig_params.get(param.name) if sig_params is not None else None
     has_default = sig is not None and sig.default is not inspect.Parameter.empty
     out: dict[str, object] = {
@@ -410,11 +340,7 @@ def _param_to_dict(
 
 
 def _annotation_name(annotation: object, default: object) -> str:
-    """Name a signature param's type: annotation first, else inferred from default.
-
-    ``inspect.Parameter.empty`` is itself a class, so the "no annotation" case
-    must be tested by identity before the ``isinstance(_, type)`` branch.
-    """
+    """Name a signature param's type: annotation first, else inferred from default."""
     if annotation is not inspect.Parameter.empty:
         if isinstance(annotation, type):
             return _TYPE_NAMES.get(annotation, getattr(annotation, "__name__", "str"))
@@ -429,17 +355,9 @@ def _param_default(param: inspect.Parameter) -> object:
 
 
 def _json_safe(value: object) -> object:
-    """Keep JSON scalars verbatim; render anything else as its ``repr``.
-
-    A describe/metadata payload is serialized to JSON; a forwarded default may be
-    a live object (a robosuite config), so fall back to a string rather than
-    crash the schema.
-    """
     if isinstance(value, _JSON_SCALAR):
         return value
-    # Preserve JSON-shaped structures so a structured binding (a dict from
-    # RLMESH_MAKE_KWARGS) reads back as itself, not as a mangled repr string; a
-    # live non-JSON object still falls through to repr below.
+    # Preserve JSON-shaped structures so a structured binding reads back as itself.
     if isinstance(value, Mapping):
         items = cast("Mapping[object, object]", value)
         return {str(k): _json_safe(v) for k, v in items.items()}

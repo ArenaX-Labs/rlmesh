@@ -65,7 +65,7 @@ def ensure_available() -> None:
     """Raise if JAX is not installed or is older than the supported floor."""
     try:
         jax = importlib.import_module("jax")
-    except ImportError as exc:  # pragma: no cover - import guard
+    except ImportError as exc:  # pragma: no cover
         raise ImportError("rlmesh.jax requires jax. Install rlmesh[jax].") from exc
     if _version_tuple(cast(str, jax.__version__)) < _MINIMUM_JAX:
         raise ImportError(
@@ -151,11 +151,7 @@ def _encode_leaf(value: object) -> object:
 def _stack_leaf(values: list[object]) -> object:
     import jax.numpy as jnp
 
-    # Array/numeric leaves stack to [N, ...]; text leaves stay a per-lane list. A
-    # ragged leaf cannot fuse -- raise rather than silently returning a list for this
-    # leaf while siblings stack, which hands the model a structurally inconsistent
-    # batch ({stacked leaves} + {one list leaf}). A None leaf is rejected
-    # explicitly, matching the numpy and torch bridges.
+    # A ragged leaf cannot fuse and a None leaf is rejected, matching the numpy and torch bridges.
     if any(v is None for v in values):
         raise ValueError(
             f"cannot fuse a None observation leaf across {len(values)} lanes; a "
@@ -196,13 +192,7 @@ def _unstack_leaf(value: object, n: int) -> list[object]:
 
 
 def _as_jax_device(device: object) -> object:
-    """Resolve a device string to a ``jax.Device`` (``device_put`` rejects strings).
-
-    The CLI/docstring tell users to pass a torch-style string like ``"cpu"`` or
-    ``"cuda:0"``; ``jax.device_put`` only accepts a ``jax.Device``/Sharding/None, so
-    map ``"platform[:index]"`` to ``jax.devices(platform)[index]`` (``"cuda"`` is
-    jax's ``"gpu"``). A ``jax.Device`` / ``None`` passes through untouched.
-    """
+    """Resolve a device string to a ``jax.Device`` (``device_put`` rejects strings)."""
     if not isinstance(device, str):
         return device
     import jax
@@ -223,8 +213,6 @@ def _to_device_leaf(value: object, device: object) -> object:
 def _to_host_leaf(value: object) -> object:
     import jax
 
-    # A reward/terminated/truncated leaf: pull a device array back to host as a
-    # Python scalar/list; a plain Python scalar passes through.
     if isinstance(value, jax.Array):
         return cast(Any, jax).device_get(value).tolist()
     return value

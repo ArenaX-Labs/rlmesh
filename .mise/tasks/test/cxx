@@ -3,51 +3,29 @@
 #MISE dir="{{ config_root }}"
 #MISE wait_for=["setup:python"]
 
-# The C/C++ analogue of the Python build+typecheck+test gates: the cdylib + the
-# hand-authored header + the wrapper are otherwise compiled by nothing. zig builds
-# the library; the consumer surface is validated with whatever $CC/$CXX point at —
-# clang/gcc in CI, zig's bundled clang as the zero-setup local default.
 set -euo pipefail
 
 repo_root="$PWD"
 inc="$repo_root/crates/rlmesh-capi/include"
 target="target/debug"
 
-# Compiler is overridable so CI can run this same task under real clang/gcc (and,
-# later, MSVC); $CC/$CXX may carry args ("zig cc"), so they are left unquoted below.
-# The local default also checks the C header under GCC, as most C consumers
-# build it, when GCC is available.
 c_compilers=("${CC:-zig cc}")
 if [ -z "${CC:-}" ] && command -v gcc >/dev/null; then c_compilers+=(gcc); fi
 CC="${c_compilers[0]}"
-# An explicit CXX selects one compiler (as in CI). The local default exercises
-# both Clang (zig's bundled compiler) and GCC when it is available.
 compilers=("${CXX:-zig c++}")
 if [ -z "${CXX:-}" ] && command -v g++ >/dev/null; then compilers+=(g++); fi
 CXX="${compilers[0]}"
 echo "==> CC='$CC'  CXX='$CXX'"
 
 warn=(-Wall -Wextra -Werror)
-# zig-only quirks: its cc wrapper injects an unused -c, and its bundled libc++
-# headers emit -Wnullability-completeness noise on <variant> etc. Suppress those
-# only for zig, so real clang/gcc keep full -Werror coverage of the consumer surface.
 cc_quiet=()
 cxx_quiet=()
 case "$CC" in *zig*) cc_quiet=(-Wno-unused-command-line-argument) ;; esac
 case "$CXX" in *zig*) cxx_quiet=(-Wno-unused-command-line-argument -Wno-nullability-completeness) ;; esac
 
-# zig 0.16's `cc -fsyntax-only` is broken (errors "FileNotFound"), so the header
-# typecheck compiles to a throwaway object in this scratch dir instead.
-# Keep compiler scratch off the shared /tmp filesystem, including subprocesses.
 export TMPDIR="${TMPDIR:-$repo_root/target/cxx-tmp}"
 mkdir -p "$TMPDIR"
 tmp="$(mktemp -d)"
-# The scratch holds the binaries under test, so it goes only once nothing runs
-# from it. With an EXIT trap alone, bash runs it the moment SIGTERM arrives,
-# even mid-command: when a sibling task of `test` fails, mise stops this one,
-# and a pytest that survives the signal goes on to fail on binaries deleted
-# under it, burying the real failure. Trapping the signals defers the exit
-# until the running command returns; background compiles are stopped first.
 cleanup() {
   local running
   running="$(jobs -p)"
@@ -64,9 +42,6 @@ for signal in INT TERM HUP; do
   trap "exit $((128 + $(kill -l "$signal")))" "$signal"
 done
 
-# The C++ translation units take seconds and up to a GiB each to compile, so
-# they compile in parallel (`bg`, up to 8 at a time) and `joined` waits for
-# them, failing if any did; their binaries then run one at a time.
 cores="$(getconf _NPROCESSORS_ONLN)"
 max_jobs=$((cores < 8 ? cores : 8))
 pids=()
@@ -84,11 +59,8 @@ joined() {
   pids=()
 }
 
-# 1. Build the cdylib (the consumer links it) + the end-to-end harness.
 cargo build -p rlmesh-capi --lib --bin e2e_harness --bin e2e_env_harness
 
-# 2. Typecheck the public surface in BOTH languages (the basedpyright analogue):
-#    a compile catches C-vs-C++ / extern "C" divergence in the header.
 echo "==> header compiles as C11; C++ standards are checked below"
 printf '#include <rlmesh.h>\n' |
   $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" -c -x c - -o "$tmp/header_c.o"
@@ -132,8 +104,6 @@ if printf '#define DLPACK_DLPACK_H_\n#include <rlmesh.h>\n' |
   exit 1
 fi
 grep -qE 'RLMesh requires DLPack 1.0 or newer' "$tmp/old_dlpack.log"
-# Compile-only layout assertions cover both 32-bit double-alignment conventions.
-# Other compilers still check their native layout when c_adapters runs below.
 case "$CC" in *zig*)
   echo "==> C adapter layouts compile for 32-bit x86 and ARM"
   $CC -target x86-linux-musl -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
@@ -150,9 +120,7 @@ case "$CC" in *zig*)
   done
 ;; esac
 
-# Compile and run C gates once; the C++ consumers below share the same library.
 link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
-# The shared behavioural fixtures use the same toolchain, ABI library and warnings.
 mkdir -p "$tmp/parity"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   tests/parity/c_runner.c "${link[@]}" -o "$tmp/parity/c"
@@ -189,8 +157,6 @@ echo "==> factory start lifetime/failures, host envelopes and model signal optio
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_serving.c "${link[@]}" -o "$tmp/c_serving"
 "$tmp/c_serving"
-# Reuse the caller's prepared client and protocol cohort. Syncing here can
-# replace an isolated non-editable client with the checkout's editable build.
 uv run --no-sync python crates/rlmesh-capi/examples/c_serving.py "$tmp/c_serving"
 echo "==> C ABI typed adapters, transforms, ownership and model integration"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
@@ -236,11 +202,9 @@ for compiler in "${compilers[@]}"; do
     flags=(-std=c++$standard "${warn[@]}" -pedantic-errors "${compiler_quiet[@]}" -I "$inc")
     printf '#include <rlmesh.hpp>\n' >"$tmp/header.cpp"
     bg $compiler "${flags[@]}" -c "$tmp/header.cpp" -o "$tmp/header_cxx.o"
-    # Parse and instantiate authoring templates under hostile host macros.
     bg $compiler "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
       -c crates/rlmesh-capi/examples/cpp_hostile.cpp -o "$tmp/cpp_hostile.o"
     lifetime_flags=()
-    # Ask the compiler what it is: a name pattern like *g++* also matches clang++.
     macros=$($compiler -dM -E -x c++ /dev/null 2>/dev/null)
     [[ $macros == *__clang__* ]] || lifetime_flags=(-Wdangling-reference)
     bg $compiler "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion "${lifetime_flags[@]}" \
@@ -253,7 +217,6 @@ for compiler in "${compilers[@]}"; do
       bg $compiler "${flags[@]}" "crates/rlmesh-capi/examples/$example.cpp" "${link[@]}" -o "$tmp/$example"
     done
     bg $compiler "${flags[@]}" tests/parity/cpp_runner.cpp "${link[@]}" -o "$tmp/parity/cpp"
-    # Exception payloads must be destroyed by the shared library that created them.
     payload() {
       $compiler "${flags[@]}" -fPIC -shared crates/rlmesh-capi/examples/cpp_payload_plugin.cpp \
         "${link[@]}" -o "$tmp/libcpp_payload_plugin.so"
@@ -261,7 +224,6 @@ for compiler in "${compilers[@]}"; do
         "$tmp/libcpp_payload_plugin.so" "${link[@]}" -o "$tmp/cpp_payload"
     }
     bg payload
-    # The Unreal plugin's game-thread env, which needs no Unreal headers.
     bg $compiler "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
       -I integrations/unreal/RLMesh/Source/RLMeshUnreal/Public \
       integrations/unreal/RLMesh/Tests/game_thread_env_test.cpp "${link[@]}" -o "$tmp/unreal_game_thread_env"
@@ -285,7 +247,6 @@ for compiler in "${compilers[@]}"; do
     if [ "$standard" = 20 ]; then
       "$tmp/cpp_designated"
     fi
-    # Exceptions remain required under both standards.
     if printf '#include <rlmesh.hpp>\n' |
       $compiler -std=c++$standard -fno-exceptions -I "$inc" -c -x c++ - \
         -o "$tmp/noexceptions.o" >"$tmp/noexceptions.log" 2>&1; then
@@ -301,9 +262,6 @@ for compiler in "${compilers[@]}"; do
   done
   python crates/rlmesh-capi/examples/cpp_shape.py "$inc/rlmesh.hpp" \
     "$tmp/shape17.ii" "$tmp/shape20.ii"
-  # The token comparison above is the one-shape check. No LTO -Wodr here: older
-  # libstdc++ (GCC 13) defines std::optional and std::variant differently per
-  # standard, so it reports every wrapper type that holds one.
   echo "==> C++17 and C++20 translation units share wrapper types ($compiler)"
   bg $compiler -std=c++17 "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
     -c crates/rlmesh-capi/examples/cpp_mixed17.cpp -o "$tmp/cpp_mixed17.o"

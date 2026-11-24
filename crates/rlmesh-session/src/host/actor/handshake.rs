@@ -13,12 +13,9 @@ use crate::authority::Identity;
 use crate::host::peer::{Peer, Peers};
 use crate::host::{HostActor, OsRng};
 
-/// How long a handshake's keys wait for their `Attach` before the next
-/// handshake drops them.
 const CANDIDATE_TTL: Duration = Duration::from_secs(10);
 
 impl HostActor {
-    /// Answers msg 1 of a handshake: msg 2 and a candidate, or a refusal.
     pub(super) async fn on_handshake(&mut self, query: Query) {
         let now = self.now();
         let answer = query
@@ -73,9 +70,6 @@ impl HostActor {
         Self::reply(query, codec::encode_handshake_reply(&reply));
     }
 
-    /// `peer`'s `Attach` was accepted: it is the generation in effect, and
-    /// every older one of its participant is dropped. It gets the stream
-    /// keys it reads, and a robot's streams rotate to it.
     pub(super) fn take_effect(&mut self, peer: &Arc<Peer>) {
         let Identity { device, generation } = &peer.identity;
         self.auth

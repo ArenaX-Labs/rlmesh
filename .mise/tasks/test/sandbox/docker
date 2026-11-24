@@ -7,9 +7,6 @@
 #USAGE flag "--starts <n>" help="Starts of each sandbox, one after another (default 10)"
 #USAGE flag "--runs <n>" help="Evaluations of the model image against the env image (default 3)"
 
-# The tests are python/rlmesh/tests/docker (pytest marker `docker`). Every
-# container and image they create carries the label rlmesh.test.run=<run>,
-# and only those are removed afterwards: the Docker host may be shared.
 set -euo pipefail
 
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
@@ -21,15 +18,9 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   exit 0
 fi
 
-# Both sides of each session are release-cohort builds of this tree: a dev
-# build stamps its workflow edition with a tree state its build script does
-# not always refresh, and talks only to the identical stamp (docs/local-dev.md).
 export RLMESH_RELEASE_BUILD=1
 mise run dev:heavy -- mise run build:python:develop
 
-# The images install the manylinux wheel build:python:docker makes, which
-# skips when one for this version exists: rebuild it unless it was made from
-# this tree state.
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' python/rlmesh/pyproject.toml | head -1)
 tree=$({
   git rev-parse HEAD

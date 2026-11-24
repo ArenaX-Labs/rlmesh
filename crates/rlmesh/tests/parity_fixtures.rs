@@ -1,8 +1,3 @@
-//! The shared TOML scenarios, projected losslessly by tests/parity/support.py.
-//!
-//! They run on the C API's build, with `lockstep` (`mise run
-//! parity:fixtures`): its runs dial sessions, not v1 endpoints.
-// Fixture setup and synchronization panic on unexpected state.
 #![allow(clippy::unwrap_used)]
 use std::path::PathBuf;
 use std::process::Command;
@@ -85,7 +80,6 @@ impl Env for ScriptedEnv {
             cancel.cancel();
             self.held = true;
         }
-        // A cancelled episode never ends, so the run's cancel lands in it.
         Ok((
             Value::Int(self.steps),
             1.0,
@@ -610,7 +604,6 @@ fn drop_serve(variant: &str) -> Json {
                 .unwrap_err(),
             )
         };
-        // Closing happens detached; use a bounded condition variable rather than sleeps.
         if variant != "factory_idle" {
             wait_closed(&counts, 1);
         }
@@ -700,7 +693,6 @@ fn drop_run() -> Json {
         drop(running);
     });
     release.send(()).unwrap();
-    // The next run waits behind the callback in flight.
     let ends = count(&counts.ends);
     assert_eq!(
         count(&counts.env_starts),
@@ -741,7 +733,6 @@ fn warning(variant: &str) -> Json {
         }
     }
     let result = if variant == "workflow" {
-        // An authored policy that declares no edition runs quietly (COR-7).
         struct Authored;
         impl Policy for Authored {
             fn predict(&mut self, _: Value) -> Result<Value> {
@@ -829,7 +820,6 @@ fn model_callback(timeout: bool) -> Json {
             .connect_timeout(Duration::from_secs(10)),
     )
     .unwrap();
-    // A policy callback binds the served model to a served env and steps it.
     let callback = Model::new(
         move |_: Value| {
             let mut binding = bind(&remote, &server, BindOptions::default())?;
@@ -854,8 +844,6 @@ fn model_callback(timeout: bool) -> Json {
     }
 }
 
-/// A model served as the participant `policy` of a session this process
-/// hosts, until stopped.
 struct Serving {
     address: String,
     cancel: ext::CancelToken,
@@ -900,7 +888,6 @@ impl Serving {
     }
 }
 
-/// A served model, reached by its participant address, driving a local env.
 fn served_model(env: &mut ScriptedEnv, model: &Model) -> Json {
     let serving = Serving::start(model);
     let served = RemoteModel::new(
@@ -988,16 +975,12 @@ fn serve_drop_nonblocking() -> Json {
     json!({"nonblocking": nonblocking, "env_closes": count(&counts.closes)})
 }
 
-/// Replace a run-specific address part (a port, a socket path) in the text.
 fn masked(mut record: Json, value: &str, mask: &str) -> Json {
     let text = record["text"].as_str().unwrap().replace(value, mask);
     record["text"] = json!(text);
     record
 }
 
-/// A run refuses an https:// env endpoint (v1) before any dial.
-/// An env served at a bare `:0` (short for `:0/env`), run at its bare
-/// `host:port#key`.
 fn bare_env(env: ScriptedEnv, model: &Model) -> Json {
     let server = EnvServer::new(
         env,

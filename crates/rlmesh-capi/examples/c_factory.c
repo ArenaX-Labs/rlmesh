@@ -1,4 +1,3 @@
-/* ABI 5 EnvFactory + TagParam + Variant against the shared facade. */
 #define _POSIX_C_SOURCE 200809L
 #include <pthread.h>
 #include <rlmesh.h>
@@ -92,7 +91,6 @@ static RLMeshStatus enumerate(void* ud, RLMeshVariantSink* sink) {
   if (status != RLMESH_OK) rlmesh_variant_free(v);
   return status;
 }
-/* Steps one episode of a binding. */
 static void step_bound(RLMeshBinding* binding) {
   RLMeshValue *obs = NULL, *info = NULL;
   CHECK(rlmesh_binding_reset(binding, NULL, NULL, &obs, &info) == RLMESH_OK);
@@ -104,8 +102,6 @@ static void step_bound(RLMeshBinding* binding) {
   rlmesh_value_free(obs);
   rlmesh_value_free(info);
 }
-/* A local run or binding refuses a factory declaring an edition this build
- * cannot drive, with serving's error, before the factory makes anything. */
 static void expect_retired_refusal(RLMeshStatus status) {
   CHECK(status == RLMESH_ERR_INVALID_ARGUMENT);
   CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_VALUE_ERROR);
@@ -115,7 +111,6 @@ static void expect_retired_refusal(RLMeshStatus status) {
                           "this build implements") == message);
 }
 static void refuse_retired_edition(State* state) {
-  /* Only a set RLMESH_WORKFLOW_EDITION outranks the factory's declaration. */
   if (getenv("RLMESH_WORKFLOW_EDITION")) return;
   RLMeshEnvFactoryAttributes attrs = RLMESH_ENV_FACTORY_ATTRIBUTES_INIT;
   attrs.workflow_edition = "2026.06";
@@ -266,8 +261,8 @@ int main(void) {
   CHECK(rlmesh_ext_cancel_token_clone(cancel, NULL) == RLMESH_ERR_INVALID_ARGUMENT);
   CHECK(rlmesh_ext_cancel_token_clone(cancel, &alias) == RLMESH_OK);
   CHECK(rlmesh_ext_cancel_token_cancel(alias) == RLMESH_OK);
-  CHECK(rlmesh_ext_cancel_token_cancel(alias) == RLMESH_OK); /* coalesces */
-  rlmesh_ext_cancel_token_free(alias); /* original token still owns the pending fire */
+  CHECK(rlmesh_ext_cancel_token_cancel(alias) == RLMESH_OK);
+  rlmesh_ext_cancel_token_free(alias);
   RLMeshEnvFactoryServeOptions fso = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
   fso.cancel = cancel;
   CHECK(rlmesh_env_factory_serve(state.factory, ":0/env", &fso) == RLMESH_ERR_CANCELLED);
@@ -280,7 +275,7 @@ int main(void) {
   CHECK(atomic_load(&state.makes) >= 2);
   CHECK(rlmesh_env_factory_prepare(state.factory) == RLMESH_ERR_RUNTIME);
   CHECK(rlmesh_ext_cancel_token_clone(cancel, &alias) == RLMESH_OK);
-  CHECK(rlmesh_ext_cancel_token_cancel(alias) == RLMESH_OK); /* re-armed shared token */
+  CHECK(rlmesh_ext_cancel_token_cancel(alias) == RLMESH_OK);
   rlmesh_ext_cancel_token_free(alias);
   CHECK(pthread_join(thread, NULL) == 0);
   CHECK(work.result == RLMESH_ERR_CANCELLED);

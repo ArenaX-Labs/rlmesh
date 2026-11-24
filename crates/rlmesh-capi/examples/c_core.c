@@ -1,6 +1,3 @@
-/* Core C API: build info, the current workflow edition, the describe and reset
- * constants, and the warning handler. Exits nonzero on the first failed
- * check. */
 #include <rlmesh.h>
 #include <stdio.h>
 #include <string.h>
@@ -120,7 +117,6 @@ int main(void) {
   CHECK(repr.len > 10 && memcmp(repr.data, "BuildInfo(", 10) == 0);
   rlmesh_bytes_free(repr);
 
-  /* A struct_size below the minimum is refused, a larger one with a nonzero tail too. */
   RLMeshBuildInfo small = RLMESH_BUILD_INFO_INIT;
   small.struct_size = RLMESH_BUILD_INFO_MIN_SIZE - 1;
   CHECK(rlmesh_build_info(&small) == RLMESH_ERR_INVALID_ARGUMENT);

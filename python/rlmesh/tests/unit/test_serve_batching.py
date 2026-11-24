@@ -1,10 +1,3 @@
-"""``python -m rlmesh.serve`` sets a served model's batching from flags or env vars.
-
-A container is configured through its environment alone, so every
-``BatchOptions`` field has a flag and an ``RLMESH_*`` variable: the flag wins,
-unset takes the default, and a bad value stops startup naming the variable.
-"""
-
 from __future__ import annotations
 
 from typing import Any

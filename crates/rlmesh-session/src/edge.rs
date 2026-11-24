@@ -3,29 +3,22 @@
 //! per control tick, safely, whatever the network does.
 //!
 //! - [`queue`]: the timed action queue, splicing new chunks at their
-//!   `replace_from` (validated before anything is removed), with
-//!   [`Delivery::Once`] for delta commands.
-//! - [`command`]: command validation and limits: finite values, valid
-//!   rotations, clamping, norm bounds and the binary snap.
+//!   `replace_from`, with [`Delivery::Once`] for delta commands.
+//! - [`command`]: command validation and limits.
 //! - [`fallback`]: the per-tick mode ladder of one command group (Idle,
-//!   Driving, Hold, Safe, Estop) on edge-local deadlines, with
-//!   dispatch gated to the leased member and the handover rule.
-//! - [`core`]: [`EdgeCore`], the sans-IO edge of one group: chunk fencing
-//!   (epoch, lease token, source, binding, seq, the clock rules and the
-//!   transit check), validation, the queues, the ladder, the applied stream
-//!   and the applied-action log with source attribution.
+//!   Driving, Hold, Safe, Estop) on edge-local deadlines.
+//! - [`core`]: [`EdgeCore`], the sans-IO edge of one group: chunk fencing,
+//!   validation, the queues, the ladder and the applied stream.
 //! - [`runtime`]: [`Edge`], an [`EdgeCore`] attached to a
-//!   [`crate::Participant`]: chunks arrive from the transport,
-//!   applied samples go out on `{path}/_applied`, falls are reported to the
-//!   host (`EnterSafe`), heartbeats carry the queue report.
-//! - [`robot`]: [`Robot`], the embodiment runtime bindings wrap: a robot map
-//!   declared, a publisher per part and an edge per command group, ticked
-//!   by the robot's own control loop ([`Robot::due`]).
+//!   [`crate::Participant`].
+//! - [`robot`]: [`Robot`], a robot map declared with a publisher per part and an
+//!   edge per command group, ticked by the robot's own control loop
+//!   ([`Robot::due`]).
 //!
-//! The fallback never waits for the host: it works with the host gone. A
-//! full process stall, though, cannot be bounded from inside the process:
-//! pair the edge with an external or device watchdog. The `blend` and
-//! `rtc_prefix` merge policies are Later and refused at declaration.
+//! The fallback never waits for the host: it works with the host gone. A full
+//! process stall cannot be bounded from inside the process, so pair the edge
+//! with an external or device watchdog. The `blend` and `rtc_prefix` merge
+//! policies are refused at declaration.
 
 pub use rlmesh_session_core::edge::{command, core, fallback, queue};
 pub mod error;

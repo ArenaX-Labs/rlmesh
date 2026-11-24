@@ -11,7 +11,6 @@ from .generate_defaults import MANIFEST, generate, options_defaults
 
 
 def test_manifest_options_defaults_match_python():
-    """Mapped options defaults record live Python defaults, including constants."""
     manifest = tomllib.loads(MANIFEST.read_text())
     for symbol, entry in manifest.items():
         if "parameters" not in entry:
@@ -46,7 +45,6 @@ def test_manifest_options_defaults_match_python():
 
 
 def example(default="None"):
-    """Minimal E-1 input, kept in the unit test rather than a bootstrap manifest."""
     return {
         "rlmesh:run": {
             "rust": {"params": {"hooks": "rlmesh::RunOptions#hooks"}},
@@ -113,7 +111,6 @@ def test_generator_deduplicates_and_rejects_conflicts():
 
 
 def test_generator_rejects_unsupported_defaults():
-    """A new unsupported default cannot silently disappear from the Rust test."""
     with pytest.raises((ValueError, SyntaxError)):
         generate(example("object()"))
     with pytest.raises(ValueError, match="no Rust options defaults"):

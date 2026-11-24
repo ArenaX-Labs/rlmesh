@@ -1,6 +1,3 @@
-//! The remote client's calls: async contexts, timeouts, cancellation and
-//! construction errors.
-
 use super::*;
 
 #[test]
@@ -39,7 +36,6 @@ fn async_twins_run_on_any_executor() {
         assert_eq!(remote.render_async(None).await.unwrap(), None);
         remote.close_async().await.unwrap();
     });
-    // A sync call inside a runtime names its twin instead of blocking.
     let inside = address.clone();
     let err =
         client(async { tokio::spawn(async move { dial(&inside) }).await.unwrap() }).unwrap_err();
@@ -52,7 +48,6 @@ fn async_twins_run_on_any_executor() {
 fn a_request_past_its_timeout_is_a_timeout_error() {
     let counters = Arc::new(Counters::default());
     let mut env = Counter::new(&counters);
-    // The reset has the same timeout to meet, on however loaded a host.
     env.slow = Some(Duration::from_secs(1));
     let server = EnvServer::new(env, quick()).unwrap();
     server.start().unwrap();
@@ -184,15 +179,10 @@ fn immediate_remote_completion_observes_handle_cancellation() {
     server.shutdown().unwrap();
 }
 
-/// A connect timeout bounds the join too: one that runs out against a port
-/// that accepts and never answers (a container whose host never comes up)
-/// fails within the caller's bound, and not as a refused key.
 #[test]
 fn a_connect_timeout_reports_why_the_join_ran_out() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let base = listener.local_addr().unwrap().port();
-    // Its backlog accepts and nothing answers, as a forwarded port whose
-    // host never does.
     let (_, key) = rlmesh_session::address::launch_identity().unwrap();
     let timeout = Duration::from_secs(2);
     let started = std::time::Instant::now();
@@ -209,7 +199,6 @@ fn a_connect_timeout_reports_why_the_join_ran_out() {
     drop(listener);
 }
 
-/// A free loopback port (bound and released).
 fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.local_addr().unwrap().port()
@@ -259,9 +248,6 @@ fn a_bare_port_is_refused_naming_the_host_form() {
     }
 }
 
-/// A TCP server on loopback that speaks something other than the session
-/// protocol: `reply` at once (`first`), or once it has read what the
-/// client sent.
 fn foreign_server(reply: &'static [u8], first: bool) -> u16 {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -282,13 +268,10 @@ fn foreign_server(reply: &'static [u8], first: bool) -> u16 {
     port
 }
 
-/// An HTTP/2 server's first frame: an empty SETTINGS on stream 0.
 const H2_SETTINGS: &[u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
 
 #[test]
 fn a_01_grpc_server_is_named_not_timed_out() {
-    // An HTTP/2 server sends its SETTINGS at once (a 0.1 gRPC server), or
-    // answers once spoken to; another protocol answers something else.
     for (reply, first, http2) in [
         (H2_SETTINGS, true, true),
         (H2_SETTINGS, false, true),
@@ -313,7 +296,6 @@ fn a_01_grpc_server_is_named_not_timed_out() {
             "{text}"
         );
         assert_eq!(text.contains("HTTP/2"), http2, "{text}");
-        // Final at once, not after the connect timeout.
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "{:?}",

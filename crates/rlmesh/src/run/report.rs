@@ -2,12 +2,10 @@
 //! per-suite and overall success with Wilson 95% intervals, episode length
 //! and wall time, and the run telemetry merged across workloads.
 //!
-//! Success is the share of counted episodes (`includedInMetrics`) whose env
-//! reported a success; an episode without the signal counts as a failure and
-//! is reported as `unknown`. Telemetry rows merge per `(op, component, metric)`:
-//! counts add, and `avg` and each percentile are count-weighted means. A bundle
-//! carries each run's session rows with nearest-rank percentiles over the whole
-//! run, so no warm-up window is discarded.
+//! Success is the share of counted episodes (`includedInMetrics`) whose env reported a
+//! success; an episode without the signal counts as a failure and is reported as `unknown`.
+//! Telemetry rows merge per `(op, component, metric)`: counts add, and `avg` and each
+//! percentile are count-weighted means.
 
 use std::path::{Path, PathBuf};
 
@@ -18,7 +16,6 @@ use crate::{EpisodeResult, Error, Result, RunResult, TelemetryRow};
 /// such as `libero_spatial`).
 pub const SUITE_CONFIG_KEY: &str = "suite";
 
-/// Two-sided 95% normal quantile.
 const Z95: f64 = 1.959_963_984_540_054;
 
 /// One workload read from a bundle.
@@ -38,10 +35,7 @@ pub struct BundleWorkload {
     pub telemetry: Vec<TelemetryRow>,
 }
 
-/// Every workload the bundles at `paths` hold, in order. A path is a bundle
-/// (a folder holding `result.json`, or a zip), or a folder of bundles, read
-/// in name order; `eval run`'s staging folders (`.<id>.partial`, a workload
-/// still being written) in it are skipped.
+/// Every workload the bundles at `paths` hold, in order. A path is a bundle (a folder holding `result.json`, or a zip) or a folder of bundles.
 pub fn read_bundles<P: AsRef<Path>>(
     paths: impl IntoIterator<Item = P>,
 ) -> Result<Vec<BundleWorkload>> {
@@ -155,12 +149,12 @@ fn read_bundle(bundle: &Path) -> Result<Vec<BundleWorkload>> {
         .collect()
 }
 
-/// The workloads as one [`RunResult`]: their counted episodes in order,
-/// indexed afresh from 0, and their telemetry merged. An episode left out of
-/// the metrics (`includedInMetrics: false`) is dropped, so the result's
-/// aggregates read as the report's (a bundle's own `numEpisodes` and
-/// `totalSteps` still count it, as `eval run --resume` does). Workloads of
-/// several models are refused: their outcomes are not one model's result.
+/// The workloads as one [`RunResult`]: their counted episodes in order, indexed afresh from 0,
+/// and their telemetry merged. Episodes left out of the metrics (`includedInMetrics: false`)
+/// are dropped.
+///
+/// # Errors
+/// The invalid-argument class when the workloads are of more than one model.
 pub fn merge(workloads: &[BundleWorkload]) -> Result<RunResult> {
     let models = distinct(workloads.iter().map(|w| w.model.as_str()));
     if models.len() > 1 {
@@ -477,7 +471,6 @@ impl EvalReport {
     }
 }
 
-/// Text columns left-aligned up to `left`, the rest right-aligned.
 fn align<const N: usize>(header: &[&str; N], rows: &[[String; N]], left: usize) -> String {
     let widths: Vec<usize> = (0..N)
         .map(|i| {
@@ -542,7 +535,6 @@ mod tests {
 
     #[test]
     fn wilson95_matches_reference_intervals() {
-        // Newcombe (1998), method 3; also statsmodels `proportion_confint(method="wilson")`.
         for (successes, trials, expected) in [
             (0, 10, Some((0.0, 0.277533))),
             (5, 10, Some((0.236593, 0.763407))),
@@ -616,7 +608,6 @@ mod tests {
                 .export_(dir.path().join(name), Default::default())
                 .unwrap()
         };
-        // A folder holding a two-workload bundle and a zip of one workload.
         let mut two = Recorder::new(Default::default()).unwrap();
         add(
             &mut two,
@@ -641,7 +632,6 @@ mod tests {
             "t1",
             &run(&[None, Some(true)], (0, 99.0)),
         );
-        // An errored episode excluded from metrics.
         let excluded = RecorderAddOptions {
             task: Some("t1".into()),
             included_in_metrics: false,
@@ -650,7 +640,6 @@ mod tests {
         one.add(&run(&[None], (0, 0.0)), "a", "env", excluded)
             .unwrap();
         export(one, "2-one.zip");
-        // A workload `eval run` is still staging is not a bundle yet.
         let mut staged = Recorder::new(Default::default()).unwrap();
         add(
             &mut staged,
@@ -677,7 +666,6 @@ mod tests {
             ]
         );
         assert_eq!(loaded.success_rate(), Some(0.6));
-        // Counts add; avg and percentiles are count-weighted; empty rows drop.
         let row = &loaded.telemetry[..];
         assert_eq!(row.len(), 1);
         assert_eq!((row[0].count, row[0].avg, row[0].p95), (4, 25.0, 50.0));
@@ -724,7 +712,6 @@ mod tests {
         assert_eq!(model.overall.ci95(), wilson95(3, 5));
         assert_eq!(model.overall.success_rate(), loaded.success_rate());
 
-        // A second model is reported beside the first, and refused by load.
         let mut other = Recorder::new(Default::default()).unwrap();
         add(&mut other, "b", None, "t1", &run(&[Some(false)], (1, 1.0)));
         export(other, "3-other");

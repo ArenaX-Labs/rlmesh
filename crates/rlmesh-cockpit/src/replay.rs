@@ -3,15 +3,6 @@
 //! authority snapshots go through the same [`Model`] as a live feed, with
 //! session time standing in for the cockpit's clock (a sample's receipt is
 //! its log time, its capture its publish time).
-//!
-//! Playing forward ingests the messages up to the new time, keeping a copy
-//! of the model every [`CHECKPOINT_EVERY`] of session time. Seeking back
-//! restores the newest copy before the target and plays forward from it,
-//! so a scrubbed frame shows exactly what playing straight through would
-//! have shown, cumulative counters included.
-//!
-//! [`History`] keeps a live session's recent inputs, so the cockpit can
-//! pause and scrub them the same way.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -30,15 +21,10 @@ pub const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
 /// A recorded session, positioned at one instant.
 pub struct Replay {
-    /// `(session time, input)`, in order.
     inputs: Vec<(i64, Input)>,
     model: Model,
-    /// The next input to ingest.
     next: usize,
-    /// `(next, model)` before the input at `next`, every
-    /// [`CHECKPOINT_EVERY`], in order. The first is the empty model.
     // TODO: one full model copy per 10 s; thin them out (or drop decoded
-    // thumbnails) if hour-long camera recordings use too much memory.
     checkpoints: Vec<(usize, Model)>,
     at_ns: i64,
     /// Advancing on [`Replay::tick`].
@@ -176,11 +162,8 @@ fn input(m: RecordedMessage) -> (i64, Input) {
 
 /// A live session's newest inputs, `(cockpit clock, input)`: the last
 /// `window` of them, fewer when their samples' payloads pass `max_bytes`.
-/// The host republishes its snapshot a few times a second, so a window
-/// always holds one.
 pub struct History {
     inputs: VecDeque<(i64, Input)>,
-    /// Payload bytes of the samples in `inputs`.
     bytes: usize,
     window_ns: i64,
     max_bytes: usize,

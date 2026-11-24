@@ -72,7 +72,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
     }
 
     /// Declares the workflow edition the model was authored against (`None`:
-    /// this build's current).
     pub fn declaring(mut self, workflow_edition: Option<&str>) -> Self {
         self.editions = crate::editions::offer(workflow_edition);
         self
@@ -80,7 +79,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
 
     /// Answers one request, with what answering it measured. An accepted
     /// request runs to its end, holding its flight, even when this is
-    /// dropped: its forward may run on where a cancel can't reach it.
     pub async fn answer(self: &Arc<Self>, request: ModelRequest) -> (ModelReply, EndpointTiming) {
         // Taken before the check, so a close either sees it or refuses it.
         let (flight, in_flight) = self.flights.take();
@@ -133,7 +131,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 .options(route, episode, trial_index)
                 .await
                 .map(ModelReply::Options),
-            // The serving loop answers invitations.
             ModelRequest::Join { .. } | ModelRequest::Leave { .. } => Err(Error::invalid_argument(
                 "an invitation reaches a model through its session",
             )),
@@ -189,7 +186,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             native_chunk: needs.native_chunk,
             history: needs.history.map(|h| (h.keys, h.prunable)),
             reset_options: self.reset_options.is_some(),
-            // Only to a driver that reads them.
             advisories: if request.reads_advisories {
                 needs
                     .advisories
@@ -202,7 +198,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         })
     }
 
-    /// The options the model adds to the reset that starts `episode`.
     async fn options(
         &self,
         route: String,
@@ -232,7 +227,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             .ok_or_else(|| Error::model(format!("route {name:?} was not resolved")))
     }
 
-    /// One group as the handler's observation, with its route.
     async fn observation(
         &self,
         group: ModelGroup,
@@ -296,7 +290,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         let mut handler = self.handler.lock().await;
         timing.queue_ns = ns(waited.elapsed());
         let called = Instant::now();
-        // A batch of unresolved routes alone has nothing to predict.
         let mut frames = if batch.is_empty() {
             Vec::new()
         } else {
@@ -309,9 +302,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             timing.held_episodes = Some(u32::try_from(held.episodes).unwrap_or(u32::MAX));
             timing.held_state_bytes = Some(held.bytes);
         }
-        // A model served elsewhere (this one proxies it) reports its own
-        // phases: its user time replaces the call's wall time, which holds
-        // the hop, and its decode, encode and queue add to this side's.
         let backend = handler.take_endpoint_timing().map(|(_, phases)| phases);
         drop(handler);
         if let Some(backend) = &backend {
@@ -342,7 +332,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         outcomes
     }
 
-    /// Records batches under the model's `name`, reached at `address`.
     pub(super) fn serving_as(&self, name: &str, address: String) {
         if let Some(batching) = &self.batching {
             let _ = batching.serving.set((name.to_string(), address));
@@ -363,7 +352,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         let mut handler = self.handler.lock().await;
         timing.queue_ns = ns(waited.elapsed());
         let reset = handler.reset_adapter(route, episode_ids).await;
-        // The route's cleanup and the model's own hook, less the lock wait.
         let queued = timing.queue_ns.unwrap_or(0);
         timing.user_ns = ns(called.elapsed()).map(|total| total.saturating_sub(queued));
         reset
@@ -379,13 +367,10 @@ impl<H: ModelHandler + 'static> ModelService<H> {
     }
 }
 
-/// A phase measured here plus the backend's share of it; zero as `None`.
 fn sum_ns(here: Option<u64>, backend: u64) -> Option<u64> {
     Some(here.unwrap_or(0).saturating_add(backend)).filter(|ns| *ns != 0)
 }
 
-/// A group's frames as leaf slabs: frame 0, then the replay frames, each
-/// `rows` actions checked against the action space.
 fn encode_frames(
     frames: PredictFrames,
     rows: usize,

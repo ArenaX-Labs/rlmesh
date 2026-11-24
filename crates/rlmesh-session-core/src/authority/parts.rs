@@ -1,5 +1,4 @@
-//! The part table: declaring a robot's parts, host-assigned channel ids
-//! and command groups.
+//! The part table: declaring a robot's parts, host-assigned channel ids and command groups.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 
@@ -19,9 +18,6 @@ impl Authority {
         Ok(ChannelId(self.last_channel))
     }
 
-    /// The robot map of `from`, normalised and diffed against its current
-    /// parts: unchanged parts keep their ids, changed or new ones get fresh
-    /// ids, and missing ones are removed. All or nothing.
     pub(super) fn declare_parts(
         &mut self,
         from: &ParticipantId,
@@ -108,7 +104,6 @@ impl Authority {
                 }
             })
             .collect::<Result<_, _>>()?;
-        // Validated: mutate.
         let mut added = Vec::with_capacity(fresh.len());
         for mut spec in fresh {
             spec.channel = self.next_channel()?;
@@ -149,9 +144,6 @@ impl Authority {
                 self.parts.insert(spec.channel, spec);
             }
         }
-        // New commands in an armed session wait to be re-armed by name,
-        // unless robots re-arm on their own; with none left there is
-        // nothing to hold.
         if !self.commands_any(from) {
             self.held.remove(from);
         } else if armed && commands {
@@ -165,7 +157,6 @@ impl Authority {
         Ok(())
     }
 
-    /// Retires parts (their ids are never reused) and ends their leases.
     pub(super) fn remove_parts(
         &mut self,
         owner: &ParticipantId,
@@ -215,14 +206,12 @@ impl Authority {
         self.parts.get(&channel).filter(|p| p.command.is_some())
     }
 
-    /// The `(robot, group)` of a commandable part.
     pub(super) fn group_of(&self, channel: ChannelId) -> Option<(&ParticipantId, &str)> {
         let part = self.parts.get(&channel)?;
         let group = part.command.as_ref()?.group.as_deref()?;
         Some((&part.owner, group))
     }
 
-    /// The other members of `channel`'s command group.
     pub(super) fn group_peers(&self, channel: ChannelId) -> Vec<ChannelId> {
         let Some(group) = self.group_of(channel) else {
             return Vec::new();

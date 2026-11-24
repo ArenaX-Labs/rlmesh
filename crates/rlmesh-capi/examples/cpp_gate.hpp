@@ -1,5 +1,3 @@
-// The echo env of python/rlmesh/tests/conformance/native_gate.py, for the
-// C++ gate program and the Unreal game thread's.
 #pragma once
 #include <cmath>
 #include <cstdio>
@@ -21,7 +19,6 @@ inline Space typed_box(Bound low, Bound high, std::vector<int64_t> shape, DType 
   return Box(low, high, shape, BoxOptions{}.with_dtype(dtype));
 }
 
-// The gate's SPACES, by name.
 inline Space gate_space(const std::string& row) {
   const double inf = INFINITY;
   if (row == "box_f32_bounded") return f32_box(-1.0, 2.0, {3});
@@ -59,7 +56,6 @@ inline Space gate_space(const std::string& row) {
   return f32_box(-1, 1, {3});
 }
 
-// The gate's rich_info(t).
 inline InfoDict rich_info(int64_t t) {
   const std::byte raw[] = {std::byte{0x00}, std::byte{0xff}};
   return {{"nested", Metadata{{"a", Metadata{{"b", t}, {"c", Value::list({1, 2.5, "x"})}}},

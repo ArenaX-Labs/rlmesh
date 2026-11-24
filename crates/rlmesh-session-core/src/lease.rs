@@ -1,32 +1,23 @@
-//! The holder's side of a lease, sans-IO: every participant that
-//! commands a part tracks its lease here. The browser binding holds one
-//! [`LeaseClient`] per part; the native controller and the lockstep driver
-//! hold their parts together as a [`LeaseGroup`] (one all-or-none request,
-//! one client per part).
+//! The holder's side of a lease, sans-IO: every participant that commands a
+//! part tracks its lease here.
 //!
-//! The host is the only authority: this client never grants, renews or
-//! extends anything on its own. It turns the host's answers into a local
-//! view the holder can act on:
+//! A holder of one part keeps a [`LeaseClient`]; a holder of several keeps a [`LeaseGroup`]
+//! (one all-or-none request, one client per part). The host is the only authority: this
+//! client never grants, renews or extends anything on its own.
 //!
-//! - **Request.** [`LeaseClient::request`] builds the `GrantLease` verb; the
-//!   host's [`CtlReply`] grants it ([`LeaseClient::on_reply`]) or refuses
+//! - **Request.** [`LeaseClient::request`] builds the `GrantLease` verb; the host's
+//!   [`CtlReply`] grants or refuses it ([`LeaseClient::on_reply`]).
+//! - **Deadline.** The lease is usable until a local lower bound of the host's expiry: the
+//!   request's send time plus the ttl, and the host's `expires_ns` converted as
+//!   `expires − θ − ε`, so an offset error can only shorten it.
+//! - **Renewal.** A newer snapshot carrying the same token moves the deadline forward. Once
+//!   the deadline passes the lease is expired for good; only a new request commands again.
+//! - **Loss.** A newer snapshot with another token on the part, none, or a new epoch revokes
 //!   it.
-//! - **Deadline.** The lease is usable until a *local* deadline that is a
-//!   lower bound of the host's expiry in the holder's clock: the request's
-//!   send time plus the ttl (the grant came after the request left), and the
-//!   host's `expires_ns` converted conservatively, `expires − θ − ε`, so an
-//!   offset error can only shorten it (the edge's rule).
-//! - **Renewal.** A newer authority snapshot carrying the same token moves
-//!   the deadline forward. Once the deadline passes the lease is expired for
-//!   good: a late snapshot never resurrects it, and only a new request (a new
-//!   token) commands again.
-//! - **Loss.** A newer snapshot with another token on the part (preempted),
-//!   none (lapsed, released by the host, SAFE) or a new epoch revokes it.
-//! - **Fencing.** Every chunk is stamped with the lease's token, binding and
-//!   epoch and a seq increasing per token; the edge fences the rest.
+//! - **Fencing.** Every chunk is stamped with the lease's token, binding and epoch and a seq
+//!   increasing per token.
 //!
-//! Times are nanoseconds: `now_ns` in the holder's clock, `expires_ns` in
-//! session time.
+//! Times are nanoseconds: `now_ns` in the holder's clock, `expires_ns` in session time.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -123,9 +114,9 @@ enum State {
     Idle,
     Requested {
         sent_ns: i64,
-        /// The lease asked for again (it expired here, or is renewed), which
-        /// the host may still hold for this client: a higher class taking it
-        /// before the answer is a preemption.
+        /// The lease asked for again (it expired here, or is renewed), which the host
+        /// may still hold for this client: a higher class taking it before the answer
+        /// is a preemption.
         previous: Option<(Lease, Epoch)>,
     },
     Held(Held),
@@ -155,7 +146,6 @@ pub struct LeaseClient {
     seen: Option<(u64, i64)>,
 }
 
-/// `expires` (session time) as a lower bound in the holder's clock.
 fn local_bound(expires_ns: i64, clock: Option<&OffsetEstimate>) -> Option<i64> {
     let clock = clock?;
     let error = i64::try_from(clock.error_ns).unwrap_or(i64::MAX);
@@ -212,10 +202,10 @@ impl LeaseClient {
         }
     }
 
-    /// The lease of a higher priority class that took this one away, while
-    /// that is why it is revoked: an end the host gives as `PREEMPTED`, or
-    /// (from a host that gives none) another holder of a higher class on
-    /// the part in the same epoch.
+    /// The lease of a higher priority class that took this one away, while that is
+    /// why it is revoked: an end the host gives as `PREEMPTED`, or (from a host
+    /// that gives none) another holder of a higher class on the part in the same
+    /// epoch.
     pub fn preempted_by(&self) -> Option<&Lease> {
         match &self.state {
             State::Revoked { by, .. } => by.as_ref(),
@@ -255,9 +245,8 @@ impl LeaseClient {
         }
     }
 
-    /// Starts a request: the `GrantLease` verb for this part under
-    /// `binding`, sent at `now_ns`. Any lease held before is dropped
-    /// locally (release it first to tell the host).
+    /// Starts a request: the `GrantLease` verb for this part under `binding`, sent
+    /// at `now_ns`.
     pub fn request(&mut self, binding: Fingerprint, ttl_ns: Option<u64>, now_ns: i64) -> Command {
         let previous = match &self.state {
             State::Held(held) => Some((held.lease.clone(), held.epoch)),
@@ -318,8 +307,6 @@ impl LeaseClient {
         matches!(self.state, State::Held(_))
     }
 
-    /// Records `snapshot`'s order; false when it is not newer than one
-    /// already taken.
     fn observe(&mut self, snapshot: &AuthoritySnapshot) -> bool {
         let order = (snapshot.revision, snapshot.host_ns);
         if self.seen.is_some_and(|seen| order <= seen) {
@@ -329,8 +316,6 @@ impl LeaseClient {
         true
     }
 
-    /// The revoked state when `snapshot` shows `previous`, the lease a
-    /// pending request asks for again, taken by a higher class.
     fn preempted(
         &self,
         snapshot: &AuthoritySnapshot,
@@ -345,9 +330,6 @@ impl LeaseClient {
         })
     }
 
-    /// Why `snapshot` shows this holder's `lease` (of `epoch`) gone, and
-    /// the lease that preempted it, if one did; `None` while it is still
-    /// current.
     fn loss(
         &self,
         snapshot: &AuthoritySnapshot,
@@ -361,7 +343,6 @@ impl LeaseClient {
         if held && snapshot.epoch == epoch {
             return None;
         }
-        // The host says why; older hosts leave it to inference.
         if let Some(end) = snapshot
             .ended
             .iter()
@@ -395,10 +376,9 @@ impl LeaseClient {
         })
     }
 
-    /// An authority snapshot (an update, or a reply's state). Older ones
-    /// than the newest taken are ignored. Renews or revokes a held lease,
-    /// and revokes one that expired locally once the host shows it gone
-    /// (it is never renewed).
+    /// An authority snapshot (an update, or a reply's state). Snapshots older than the
+    /// newest taken are ignored. Renews or revokes a held lease, and revokes one that
+    /// expired locally once the host shows it gone.
     pub fn on_snapshot(
         &mut self,
         snapshot: &AuthoritySnapshot,
@@ -444,10 +424,9 @@ impl LeaseClient {
         Some(LeaseChange::Revoked(reason))
     }
 
-    /// Stamps one chunk of `count` actions (packed at the command stride)
-    /// with the lease's token, binding and epoch, the next seq and `source`
-    /// (this holder), or refuses when the lease is not held at `now_ns`.
-    /// Chunk times are session time; `publish_ns` is the holder's clock.
+    /// Stamps one chunk of `count` actions (packed at the command stride) with the
+    /// lease's token, binding and epoch, the next seq and `source` (this holder),
+    /// or refuses when the lease is not held at `now_ns`.
     #[allow(clippy::too_many_arguments)]
     pub fn chunk(
         &mut self,
@@ -516,9 +495,8 @@ impl LeaseClient {
         })
     }
 
-    /// Drops the lease locally without telling the host (the connection
-    /// that held it is gone, so its token must never be used again).
-    /// Returns the token it held.
+    /// Drops the lease locally without telling the host (the connection that held
+    /// it is gone, so its token must never be used again).
     pub fn forget(&mut self) -> LeaseToken {
         let token = self.token();
         self.state = State::Idle;
@@ -527,9 +505,8 @@ impl LeaseClient {
 }
 
 /// A binding's leases, as a controller holds them: a `GrantLease` for every
-/// part ([`Self::request`]) or for one robot's ([`Self::request_some`]),
-/// then one [`LeaseClient`] per part for its deadline, renewal, loss and
-/// release.
+/// part ([`Self::request`]) or for one robot's ([`Self::request_some`]), then
+/// one [`LeaseClient`] per part for its deadline, renewal, loss and release.
 #[derive(Clone, Debug)]
 pub struct LeaseGroup {
     clients: Vec<LeaseClient>,
@@ -565,9 +542,8 @@ impl LeaseGroup {
         }
     }
 
-    /// Starts a request for `channels` only (one robot's parts): their
-    /// `GrantLease` verb, sent at `now_ns`. The other parts keep what they
-    /// hold.
+    /// Starts a request for `channels` only (one robot's parts): their `GrantLease`
+    /// verb, sent at `now_ns`.
     pub fn request_some(
         &mut self,
         channels: &[ChannelId],
@@ -629,7 +605,6 @@ impl LeaseGroup {
         clock: Option<&OffsetEstimate>,
         now_ns: i64,
     ) -> bool {
-        // Every client sees the reply: no short circuit.
         let mut all = true;
         for client in &mut self.clients {
             all &= client.on_reply(reply, clock, now_ns);
@@ -802,7 +777,6 @@ mod tests {
         assert!(client.on_reply(&reply, clock, MS));
     }
 
-    /// Host time = local + 100 ms, within ± 1 ms.
     fn clock() -> OffsetEstimate {
         OffsetEstimate {
             offset_ns: 100 * MS,
@@ -816,11 +790,9 @@ mod tests {
     fn the_deadline_is_a_conservative_lower_bound_of_the_host_expiry() {
         let mut client = LeaseClient::new(me(), ChannelId(3), 50 * MS);
         granted(&mut client, None);
-        // Without a clock mapping: the request's send time plus the ttl.
         assert_eq!(client.deadline_ns(), Some(250 * MS));
         let mut mapped = LeaseClient::new(me(), ChannelId(3), 50 * MS);
         granted(&mut mapped, Some(&clock()));
-        // expires − θ − ε = 1000 − 100 − 1 ms.
         assert_eq!(mapped.deadline_ns(), Some(899 * MS));
         assert_eq!(mapped.state(800 * MS), LeaseState::Held);
         assert_eq!(mapped.state(860 * MS), LeaseState::Expiring);
@@ -837,11 +809,9 @@ mod tests {
             Some(LeaseChange::Renewed)
         );
         assert_eq!(client.deadline_ns(), Some(1_099 * MS));
-        // An older snapshot (an earlier expiry) is ignored.
         let stale = snapshot(6, 0, Mode::Active, vec![lease("web-1", 9, 1_000 * MS)]);
         assert_eq!(client.on_snapshot(&stale, Some(&clock()), 600 * MS), None);
         assert_eq!(client.deadline_ns(), Some(1_099 * MS));
-        // Past the deadline: expired, and a late renewal does not bring it back.
         assert_eq!(client.state(1_100 * MS), LeaseState::Expired);
         let late = snapshot(7, 2, Mode::Active, vec![lease("web-1", 9, 5_000 * MS)]);
         assert_eq!(client.on_snapshot(&late, Some(&clock()), 1_101 * MS), None);
@@ -858,7 +828,6 @@ mod tests {
             ),
             Err(LeaseError::Expired)
         );
-        // Releasing still names the token: the host may hold it a little longer.
         assert_eq!(
             client.release(),
             Some(Command::ReleaseLease {
@@ -874,7 +843,6 @@ mod tests {
         let mut client = LeaseClient::new(me(), ChannelId(3), 0);
         granted(&mut client, None);
         assert_eq!(client.state(300 * MS), LeaseState::Expired);
-        // Still the host's (it times out a little later): stays expired.
         let still = snapshot(6, 1, Mode::Active, vec![lease("web-1", 9, 1_000 * MS)]);
         assert_eq!(client.on_snapshot(&still, None, 301 * MS), None);
         assert_eq!(client.state(301 * MS), LeaseState::Expired);
@@ -914,7 +882,6 @@ mod tests {
             Some(LeaseChange::Revoked("lapsed: the session is SAFE".into()))
         );
 
-        // A host that says why is taken at its word.
         let mut told = LeaseClient::new(me(), ChannelId(3), 0);
         granted(&mut told, None);
         let mut ended = snapshot(6, 1, Mode::Safe, Vec::new());
@@ -1010,7 +977,6 @@ mod tests {
         };
         assert!(group.on_reply(&reply, None, MS));
         assert!(group.holds_all(2 * MS));
-        // One part preempted: the group no longer holds all of them.
         let safety = Lease {
             priority: PriorityClass::Safety,
             ..lease("supervisor", 10, 2_000 * MS)
@@ -1047,7 +1013,6 @@ mod tests {
         }
     }
 
-    /// What `snapshot` does to a lease on part 3 held under token 9.
     fn change(snapshot: &AuthoritySnapshot) -> Option<LeaseChange> {
         let mut client = LeaseClient::new(me(), ChannelId(3), 0);
         granted(&mut client, None);
@@ -1113,8 +1078,6 @@ mod tests {
         );
     }
 
-    /// The preempting lease, after `snapshot` revoked the lease on part 3
-    /// held under token 9 (an operator's).
     fn preempted_by(snapshot: &AuthoritySnapshot) -> Option<Lease> {
         let mut client = LeaseClient::new(me(), ChannelId(3), 0);
         granted(&mut client, None);
@@ -1141,23 +1104,18 @@ mod tests {
             by,
             to: None,
         };
-        // The host's own account.
         let mut taken = snapshot(6, 1, Mode::Active, vec![supervisor.clone()]);
         taken
             .ended
             .push(end(ReasonCode::Preempted, Some(supervisor.clone())));
         assert_eq!(preempted_by(&taken), Some(supervisor.clone()));
-        // Lapsed, then taken by someone else: not a preemption.
         let mut lapsed = snapshot(6, 1, Mode::Active, vec![supervisor.clone()]);
         lapsed.ended.push(end(ReasonCode::HeartbeatLapse, None));
         assert_eq!(preempted_by(&lapsed), None);
-        // No account: a higher class on the part took it, the same class
-        // only followed it.
         let inferred = snapshot(6, 1, Mode::Active, vec![supervisor.clone()]);
         assert_eq!(preempted_by(&inferred), Some(supervisor));
         let same_class = snapshot(6, 1, Mode::Active, vec![lease("web-2", 10, 1_000 * MS)]);
         assert_eq!(preempted_by(&same_class), None);
-        // A new request forgets it.
         let mut client = LeaseClient::new(me(), ChannelId(3), 0);
         granted(&mut client, None);
         client.on_snapshot(&taken, None, 10 * MS);
@@ -1166,10 +1124,6 @@ mod tests {
         assert!(client.preempted_by().is_none());
     }
 
-    /// A lease that expired here (a stale view) and is asked for again is
-    /// still this client's at the host until the view says otherwise: a
-    /// higher class taking it meanwhile is a preemption, whether the
-    /// snapshot or the refused request's reply shows it first.
     #[test]
     fn a_preemption_during_a_re_request_after_a_local_expiry_is_one() {
         let supervisor = Lease {
@@ -1204,7 +1158,6 @@ mod tests {
             client.request(Fingerprint::from(7), None, 300 * MS);
             client
         };
-        // The snapshot first.
         let mut client = expired_and_asked_again();
         assert!(matches!(
             client.on_snapshot(&taken, None, 310 * MS),
@@ -1217,11 +1170,9 @@ mod tests {
             Some(&supervisor),
             "the reply keeps it"
         );
-        // The refusal first.
         let mut client = expired_and_asked_again();
         assert!(!client.on_reply(&refused, None, 310 * MS));
         assert_eq!(client.preempted_by(), Some(&supervisor));
-        // A plain re-request the host renews stays a request.
         let mut client = expired_and_asked_again();
         let still = snapshot(6, 1, Mode::Active, vec![lease("web-1", 9, 2_000 * MS)]);
         assert_eq!(client.on_snapshot(&still, None, 310 * MS), None);

@@ -1,25 +1,8 @@
 //! Fixed-capacity sample reservoir (Vitter's Algorithm R) backing each metric
 //! series, bounding memory while keeping the subsample representative.
 
-/// Default reservoir capacity for session-lifetime samples.
-///
-/// Sessions can run unbounded (`max_episodes: None`), so the cumulative sample
-/// series must not grow without limit. A reservoir keeps a fixed-size,
-/// statistically representative subsample so that summary percentiles stay
-/// accurate while memory stays constant.
 pub(super) const DEFAULT_RESERVOIR_CAPACITY: usize = 8192;
 
-/// Fixed-capacity reservoir of samples (Vitter's Algorithm R).
-///
-/// Up to `capacity` samples are retained verbatim; beyond that, each new sample
-/// replaces a uniformly-random existing slot with probability `capacity / seen`,
-/// yielding a uniform random subsample of the full stream. This bounds memory
-/// to `capacity` while keeping percentile/average estimates representative of
-/// the whole stream.
-///
-/// Randomness comes from a small deterministic xorshift generator so the crate
-/// needs no `rand` dependency; the bias-free guarantee only requires the
-/// replacement decisions be uniform, not cryptographically secure.
 #[derive(Debug, Clone)]
 pub(super) struct Reservoir<T> {
     samples: Vec<T>,
@@ -28,7 +11,6 @@ pub(super) struct Reservoir<T> {
     rng_state: u64,
 }
 
-/// Reservoir specialized to floating-point metric samples.
 pub(super) type ValueReservoir = Reservoir<f64>;
 
 impl<T: Copy> Reservoir<T> {
@@ -38,8 +20,6 @@ impl<T: Copy> Reservoir<T> {
             samples: Vec::new(),
             capacity: capacity.max(1),
             seen: 0,
-            // Fixed non-zero seed: reproducible across runs, distinct from 0
-            // (xorshift degenerates on a zero state).
             rng_state: 0x9E37_79B9_7F4A_7C15,
         }
     }
@@ -50,7 +30,6 @@ impl<T: Copy> Reservoir<T> {
             self.samples.push(sample);
             return;
         }
-        // Replace a random slot with probability capacity / seen.
         let slot = (self.next_u64() % self.seen) as usize;
         if slot < self.capacity {
             self.samples[slot] = sample;
@@ -61,21 +40,16 @@ impl<T: Copy> Reservoir<T> {
         &self.samples
     }
 
-    /// Drop retained samples and reset the seen count, keeping the backing
-    /// capacity and the running rng state — for window reuse without realloc.
     pub(super) fn clear(&mut self) {
         self.samples.clear();
         self.seen = 0;
     }
 
-    /// Total number of samples observed, including those evicted from the
-    /// reservoir. Use this for reporting counts, not `samples().len()`.
     pub(super) fn seen(&self) -> u64 {
         self.seen
     }
 
     fn next_u64(&mut self) -> u64 {
-        // xorshift64*
         let mut x = self.rng_state;
         x ^= x >> 12;
         x ^= x << 25;

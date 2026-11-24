@@ -1,5 +1,3 @@
-"""Where a workflow edition is declared, and which declaration wins."""
-
 from __future__ import annotations
 
 import textwrap
@@ -20,15 +18,10 @@ from rlmesh._rlmesh import ServeOptions
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-#: A well-formed `YYYY.MM` no build implements, so it parses but never resolves.
 UNKNOWN_EDITION = "2099.01"
 
-#: The bare base this build runs at -- the stateVersion value every build of the
-#: edition accepts, whether it offers the sealed name or only a cohort of it.
 EDITION = current_workflow_edition()
 
-#: The exact spelling this build offers: the sealed base on a release, the
-#: cohort (`2026.10-dev.<sha>`) on a prerelease or source build.
 COHORT = rlmesh.build_info().workflow_edition
 
 
@@ -36,13 +29,6 @@ COHORT = rlmesh.build_info().workflow_edition
 def _isolated_resolution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> Iterator[None]:
-    """Resolve against nothing: no env var, no project manifest.
-
-    The suite-wide conftest sets ``RLMESH_WORKFLOW_EDITION`` to the empty string
-    (the documented quiet switch), and the repo's own ``pyproject.toml`` is an
-    ancestor of the working directory -- both would mask what these tests are
-    asserting.
-    """
     monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_editions, "_pyproject_cache", {})
@@ -50,7 +36,6 @@ def _isolated_resolution(
 
 
 def _two_step_env() -> Any:
-    """A minimal Box-spaced env, enough for EnvServer to publish a contract."""
     gym = pytest.importorskip("gymnasium")
     np = pytest.importorskip("numpy")
 
@@ -73,7 +58,6 @@ def _two_step_env() -> Any:
 
 
 def write_pyproject(directory: Path, edition: str) -> None:
-    """Put a ``[tool.rlmesh] workflow_edition`` manifest in ``directory``."""
     _ = (directory / "pyproject.toml").write_text(
         textwrap.dedent(f"""\
             [tool.rlmesh]
@@ -84,9 +68,6 @@ def write_pyproject(directory: Path, edition: str) -> None:
 
 
 def test_current_workflow_edition_is_the_bare_base_on_every_build() -> None:
-    # The documented paste-into-a-declaration value is the contract's name, not
-    # this build's spelling of it: the same on a release and on a dev build, and
-    # accepted by both.
     edition = current_workflow_edition()
     assert rlmesh.current_workflow_edition() == edition
     assert "-" not in edition
@@ -95,8 +76,6 @@ def test_current_workflow_edition_is_the_bare_base_on_every_build() -> None:
 
 
 class TestPrecedence:
-    """Each rung of the A.5 table, and that the rung above it wins."""
-
     def test_undeclared_resolves_to_nothing(self) -> None:
         assert resolve_workflow_edition() is None
         assert _editions.resolve_declaration() == (None, True)
@@ -131,8 +110,6 @@ class TestPrecedence:
         assert resolve_workflow_edition(declared=UNKNOWN_EDITION) == EDITION
 
     def test_env_var_beats_serve_options(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The operator's process-wide override outranks what the program passed:
-        # a deployment can pin an endpoint it did not author.
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, EDITION)
         assert resolve_workflow_edition(option=UNKNOWN_EDITION) == EDITION
 
@@ -148,14 +125,10 @@ class TestPrecedence:
 
 
 class TestRefusal:
-    """A value this build cannot run is refused where it is typed."""
-
     @pytest.mark.parametrize("surface", ["call", "option", "declared"])
     def test_unknown_edition_is_refused_at_construction(self, surface: str) -> None:
         with pytest.raises(ValueError, match=UNKNOWN_EDITION) as refusal:
             _ = resolve_workflow_edition(**{surface: UNKNOWN_EDITION})  # pyright: ignore[reportArgumentType]
-        # The message names both halves of the mismatch: what was asked for and
-        # what this build actually implements.
         assert current_workflow_edition() in str(refusal.value)
 
     def test_unknown_edition_is_refused_by_serve_options(self) -> None:
@@ -163,18 +136,10 @@ class TestRefusal:
             _ = ServeOptions(workflow_edition=UNKNOWN_EDITION)
 
     def test_the_base_and_this_builds_cohort_are_both_accepted(self) -> None:
-        # The bare base is a base-level ceiling that admits every cohort of
-        # itself, so it is declarable on every build; the build's own cohort
-        # spelling pins to that exact moving build and is accepted too.
         assert resolve_workflow_edition(call=EDITION) == EDITION
         assert resolve_workflow_edition(call=COHORT) == COHORT
 
     def test_a_cohort_below_everything_this_build_offers_is_refused(self) -> None:
-        # A stale prerelease cohort of this base admits nothing a newer build
-        # offers, so declaring it would refuse every session; it is refused
-        # where it is typed, naming the base to declare instead. A build that
-        # offers the bare base (a sealed release, or a prerelease cut from the
-        # sealed tree) accepts it, since any cohort of the base admits the base.
         stale = f"{EDITION}-0.0.0"
         with pytest.raises(ValueError) as unknown:
             _ = resolve_workflow_edition(call=UNKNOWN_EDITION)
@@ -189,7 +154,6 @@ class TestRefusal:
 
 
 def _module_in(directory: Path, name: str, source: str) -> Any:
-    """Import ``source`` as module ``name`` from a file in ``directory``."""
     import importlib.util
     import sys
 
@@ -204,8 +168,6 @@ def _module_in(directory: Path, name: str, source: str) -> Any:
 
 
 class TestQuietResolution:
-    """Running and serving an undeclared participant say nothing."""
-
     def test_a_subclass_run_floats_quietly(
         self, recwarn: pytest.WarningsRecorder
     ) -> None:
@@ -224,7 +186,6 @@ class TestQuietResolution:
         assert [w for w in recwarn if "workflow edition" in str(w.message)] == []
 
     def test_a_wrapped_policy_reads_its_policy_types_declaration(self) -> None:
-        # Model(policy) reads the policy type's declaration (COR-P6).
         class Declared:
             workflow_edition = EDITION
 
@@ -247,14 +208,11 @@ class TestQuietResolution:
     def test_the_empty_env_var_short_circuits_every_lower_rung(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # "Deliberately undeclared" has to mean undeclared: a project or class
-        # declaration below the variable must not float back up through it.
         write_pyproject(tmp_path, EDITION)
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, "")
         assert resolve_workflow_edition() is None
         assert resolve_workflow_edition(option=EDITION) is None
         assert resolve_workflow_edition(declared=EDITION) is None
-        # Only the call keyword outranks it.
         assert resolve_workflow_edition(call=EDITION) == EDITION
 
     def test_the_nudge_names_the_value_to_pin(self) -> None:
@@ -265,8 +223,6 @@ class TestQuietResolution:
 
 
 class TestProjectOfTheClass:
-    """The project rung follows the authored class, not the working directory."""
-
     def test_the_class_project_wins_over_the_working_directory(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -303,8 +259,6 @@ class TestProjectOfTheClass:
                 pass
             """,
         )
-        # No pyproject.toml above tmp_path's file (pytest's tmp dirs are
-        # outside any project), so the working directory decides.
         if module.__file__ and any(
             (parent / "pyproject.toml").is_file()
             for parent in Path(module.__file__).resolve().parents
@@ -324,8 +278,6 @@ class TestProjectOfTheClass:
 
 
 class TestPyprojectScan:
-    """The project rung is read once per working directory, not per server."""
-
     def test_the_scan_is_memoized_per_cwd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -341,7 +293,6 @@ class TestPyprojectScan:
         assert resolve_workflow_edition() == EDITION
         assert resolve_workflow_edition() == EDITION
         assert scans == [tmp_path]
-        # A different working directory is a different answer.
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         monkeypatch.chdir(elsewhere)
@@ -363,8 +314,6 @@ class TestPyprojectScan:
 
 
 class TestServeOptionsDeclaring:
-    """The declaration reaches the serve options a served peer hands the server."""
-
     def test_empty_environment_clears_an_existing_option_pin(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -401,8 +350,6 @@ class TestServeOptionsDeclaring:
     def test_an_already_resolved_call_declaration_is_adopted_verbatim(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The loopback env server `run()` stands up is part of that one call, so
-        # it takes the run's decision rather than re-resolving to another rung.
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
         options = serve_options_declaring(call=EDITION)
         assert options is not None
@@ -411,8 +358,6 @@ class TestServeOptionsDeclaring:
     def test_model_serve_adopts_its_options_edition_over_the_env_var(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # ServeOptions.workflow_edition is Model.serve's own value, as EnvServer
-        # takes it: ahead of RLMESH_WORKFLOW_EDITION (COR-P2).
         served: list[ServeOptions | None] = []
 
         class Worker:
@@ -440,5 +385,4 @@ class TestServeOptionsDeclaring:
         assert served[0].workflow_edition == EDITION
 
     def test_declaring_nothing_without_options_stays_none(self) -> None:
-        # Byte-identical to a build without the field: no declaration goes out.
         assert serve_options_declaring() is None

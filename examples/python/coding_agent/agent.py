@@ -25,7 +25,7 @@ DEFAULT_ADDRESS = "127.0.0.1:5555"
 WORKDIR = Path(__file__).parent / "workdir"
 POLICY = WORKDIR / "policy.py"
 SKILLS = WORKDIR / "skills"
-EVAL_SEEDS = range(100, 150)  # evaluation layouts the agent never explores on
+EVAL_SEEDS = range(100, 150)
 
 PROMPT = """You control a robot through an RLMesh environment.
 
@@ -53,7 +53,6 @@ then summarize what you learned about the robot in a few sentences."""
 
 
 def summarize(value):
-    """JSON-friendly view of an obs/info value; large arrays become their shape."""
     if isinstance(value, dict):
         return {key: summarize(v) for key, v in value.items()}
     if isinstance(value, str | bool | int | float) or value is None:
@@ -65,15 +64,12 @@ def summarize(value):
 
 
 def tool_label(name: str, args: dict) -> str:
-    """One readable line per tool call; write_policy shows the code itself."""
     if name == "write_policy":
         return "write_policy:\n" + args.get("code", "")
     return f"{name}({', '.join(f'{k}={v}' for k, v in args.items())})"
 
 
 class Session:
-    """The env connection the agent explores with, plus the run's event log."""
-
     def __init__(self, address: str, skill: str, log_path: str | None):
         self.address = address
         self.skill = skill
@@ -81,7 +77,6 @@ class Session:
         self._log = open(log_path, "a") if log_path else None
 
     def log(self, kind: str, text: str) -> None:
-        """Print an agent event and, with --log, append it for make_video.py."""
         print(f"[{kind}] {text}")
         if self._log is not None:
             row = {"t": time.time(), "kind": kind, "text": text}
@@ -193,9 +188,7 @@ def run(session: Session, model: str, max_iterations: int, goal: str | None) -> 
         model=model,
         max_tokens=16000,
         output_config={"effort": "high"},
-        # "updates" returns the model's short progress notes between tool calls.
         thinking={"type": "adaptive", "display": "updates"},
-        # On a policy decline, the API re-runs the turn on a fallback model.
         betas=[
             "server-side-fallback-2026-07-01",
             "thinking-display-updates-2026-08-18",

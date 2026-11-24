@@ -1,6 +1,6 @@
 //! The key an embedded host's address carries (`…/{session}#{secret}.{host}`): what a
-//! script, a sandbox or a board parses out of
-//! the address it was given, to attach as device `local`.
+//! script, a sandbox or a board parses out of the address it was given, to attach as device
+//! `local`.
 
 use core::fmt;
 use core::str::FromStr;
@@ -10,9 +10,8 @@ use zeroize::Zeroizing;
 use super::{Credential, HostIdentity};
 use crate::prelude::*;
 
-/// The key an embedded host's address carries (`#{secret}.{host}`): its
-/// local secret, from which a holder derives the `local` device's key, and
-/// its static public key. A secret: never logged.
+/// The key an embedded host's address carries (`#{secret}.{host}`): its local secret, from
+/// which a holder derives the `local` device's key, and its static public key.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AddressKey {
     secret: Zeroizing<[u8; 32]>,
@@ -25,7 +24,6 @@ impl fmt::Debug for AddressKey {
     }
 }
 
-/// RFC 4648 base32, lowercase, unpadded: 52 characters for 32 bytes.
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 
 /// `bytes` as unpadded lowercase base32 (52 characters).
@@ -46,8 +44,7 @@ pub fn base32(bytes: &[u8; 32]) -> String {
     out
 }
 
-/// The 32 bytes of unpadded base32 `text` (either case), if it is exactly
-/// that.
+/// The 32 bytes of unpadded base32 `text` (either case), if it is exactly that.
 pub fn unbase32(text: &str) -> Option<[u8; 32]> {
     if text.len() != 52 {
         return None;
@@ -64,7 +61,6 @@ pub fn unbase32(text: &str) -> Option<[u8; 32]> {
             at += 1;
         }
     }
-    // The 4 padding bits of the last character are zero.
     (at == 32 && acc & ((1 << bits) - 1) == 0).then_some(out)
 }
 
@@ -96,10 +92,9 @@ impl AddressKey {
 /// The `kdf` label of an embedded host's link password.
 pub const LINK_LABEL: &[u8] = b"rlmesh/v2 link";
 
-/// The Zenoh `usrpwd` password of an embedded host's links:
-/// `kdf(local secret, "rlmesh/v2 link")`, base32. Only holders of the
-/// address's key (and the host) have it, so no one else links to the
-/// router of a loopback or launched host.
+/// The Zenoh `usrpwd` password of an embedded host's links: `kdf(local secret, "rlmesh/v2
+/// link")`, base32. Only holders of the address's key (and the host) have it, so no one
+/// else links to the router of a loopback or launched host.
 pub fn link_password(secret: &[u8; 32]) -> Zeroizing<String> {
     let key = Zeroizing::new(
         crate::crypto::lp::kdf(secret, LINK_LABEL, &[])
@@ -111,7 +106,6 @@ pub fn link_password(secret: &[u8; 32]) -> Zeroizing<String> {
 impl FromStr for AddressKey {
     type Err = AddressKeyError;
 
-    /// `{secret}.{host key}`, as an address carries it after `#`.
     fn from_str(text: &str) -> Result<Self, AddressKeyError> {
         let (secret, host) = text.trim().split_once('.').ok_or(AddressKeyError)?;
         Ok(Self {
@@ -162,7 +156,6 @@ mod tests {
     fn base32_refuses_a_last_character_with_padding_bits_set() {
         let text = base32(&[0; 32]);
         assert_eq!(unbase32(&text), Some([0; 32]));
-        // The last character holds one data bit and four zero bits.
         let padded = format!("{}b", &text[..51]);
         assert_eq!(unbase32(&padded), None);
     }

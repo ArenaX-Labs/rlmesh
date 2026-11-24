@@ -1,6 +1,3 @@
-//! Rotation re-encodings on `f32` values, through the shared codec
-//! ([`rotation`]).
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -8,9 +5,6 @@ use crate::spec::apply::ApplyError;
 use crate::spec::role::apply::err;
 use crate::spec::rotation::{self, Matrix, Rotation};
 
-/// A source must be a rotation of its declared width: a sink encoding carries
-/// a direction, not a rotation, so nothing decodes out of it (the direction
-/// law; the binder refuses the pairing first, this is the apply-side guard).
 fn check_source(value: &[f32], source: Rotation) -> Result<(), ApplyError> {
     if !source.is_source() {
         return Err(err(format!(
@@ -60,7 +54,6 @@ mod tests {
         assert_eq!(same, vec![0.0, 0.0, -1.0]);
         let err = convert_rotation_with(&[0.0, 0.0, -1.0], GravityXyz, QuatXyzw, None).unwrap_err();
         assert!(err.to_string().contains("is a sink"), "{err}");
-        // A roll of π about x: columns (1, 0, 0), (0, -1, 0).
         let roll = [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]];
         let err = convert_rotation_with(&[0.0, 0.0, -1.0], GravityXyz, GravityXyz, Some(&roll))
             .unwrap_err();
@@ -70,7 +63,6 @@ mod tests {
     #[test]
     fn post_rotation_survives_a_no_op_conversion() {
         use Rotation::{QuatXyzw, Rot6d};
-        // A quarter turn about z: columns (0, -1, 0), (1, 0, 0).
         let post = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
         let identity = [0.0_f32, 0.0, 0.0, 1.0];
         let rotated = convert_rotation_with(&identity, QuatXyzw, Rot6d, Some(&post)).expect("post");

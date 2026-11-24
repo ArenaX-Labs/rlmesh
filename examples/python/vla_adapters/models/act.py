@@ -26,7 +26,6 @@ import rlmesh.adapters as adapt
 CHUNK = 8
 
 SPEC = adapt.ModelSpec(
-    # This study deliberately permits the projections described in README.md.
     allow=("select_state", "drop_action"),
     input={
         "observation.images.image": adapt.Image(
@@ -39,7 +38,6 @@ SPEC = adapt.ModelSpec(
         ),
         "instruction": adapt.Text(adapt.INSTRUCTION),
     },
-    # The layout of ONE action; the chunk dimension is adapter business.
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
         adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
@@ -87,7 +85,6 @@ class ChunkEnsembleAdapter(adapt.AdapterBase[Any]):
         return self._inner.transform_action(ensembled)
 
     def reset(self) -> None:
-        """Forget pending chunks (call between episodes)."""
         self._chunks.clear()
 
     def describe(self) -> str:
@@ -102,18 +99,12 @@ def make_adapter(
     observation_space: gym.spaces.Space[Any],
     action_space: gym.spaces.Space[Any],
 ) -> ChunkEnsembleAdapter:
-    """Build this model's adapter for an env: resolve, then add state."""
     return ChunkEnsembleAdapter(
         adapt.resolve(tags, observation_space, action_space, SPEC)
     )
 
 
 def load_predict_fn() -> Callable[[Mapping[str, Any]], Any]:
-    """Return the checkpoint's raw predict callable (stubbed; see smolvla.py).
-
-    A real ACT policy returns its full action chunk here -- the adapter
-    consumes the chunk, so no per-step slicing leaks into model code.
-    """
     import numpy as np
 
     def predict(payload: Mapping[str, Any]) -> Any:

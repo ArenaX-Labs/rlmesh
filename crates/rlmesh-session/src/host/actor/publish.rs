@@ -12,33 +12,20 @@ use zenoh::query::Query;
 use crate::host::{HostActor, lock};
 use crate::transport::{CONTROL_PRIORITY, RESENT_CONGESTION};
 
-/// The largest message a board's transport takes in: zenoh-pico reassembles
-/// a fragmented message in a buffer of 4096 bytes (`Z_FRAG_MAX_SIZE`, as
-/// boards are built) and drops a larger one without a word.
 const BOARD_MESSAGE: usize = 4096;
-/// What the Zenoh reply around a payload can take of that: its key
-/// expression, ids and extensions.
 const REPLY_ENVELOPE: usize = 512;
 
 impl HostActor {
-    /// Answers a `host/state` query with the signed state. A board asks it
-    /// only for the host instance in its header, and its transport drops a
-    /// state larger than [`BOARD_MESSAGE`] unseen, so it would never join.
-    /// Such a state is followed by its header alone (signed, with an empty
-    /// body). Every other reader keeps the state: one that takes the first
-    /// reply gets it first, one that keeps the latest per key (Zenoh's
-    /// default) keeps the state's timestamp over none, and a header alone
-    /// fails to decode as a state.
     pub(super) async fn on_state_query(&mut self, query: Query) {
         let snapshot = self.snapshot();
         let Some(signed) = self.sign_state(&snapshot) else {
             return Self::discard(query);
         };
+        // A board drops a state larger than BOARD_MESSAGE unseen and would never join, so a larger
+        // state is followed by its header alone.
         if signed.len() + REPLY_ENVELOPE <= BOARD_MESSAGE {
             return Self::reply(query, signed);
         }
-        // Worth a warning only where a board reads states: a session of
-        // processes alone reads the state and never misses the header.
         if has_board(&snapshot.roster)
             && let Some(held_back) =
                 self.quiet
@@ -79,8 +66,6 @@ impl HostActor {
         });
     }
 
-    /// Answers a robot's recovery query on `host/view/{robot}` with its
-    /// current view, if it asked for views.
     pub(super) async fn on_view_query(&mut self, query: Query) {
         let Some(robot) = self.keys.view_of(query.key_expr().as_str()) else {
             Self::discard(query);
@@ -97,8 +82,6 @@ impl HostActor {
         }
     }
 
-    /// `robot`'s view of `snapshot` as it asked for it ([`view_of`]), with
-    /// its datagram routes while it is on the path.
     pub(super) fn view_for(
         &self,
         snapshot: &AuthoritySnapshot,
@@ -110,7 +93,6 @@ impl HostActor {
         view
     }
 
-    /// A robot's view as a `Signed` broadcast (kind 22).
     fn sign_view(&mut self, view: &DeviceView) -> Option<Vec<u8>> {
         self.signer
             .sign(
@@ -122,16 +104,6 @@ impl HostActor {
             .ok()
     }
 
-    /// The views of every robot that asked for one whose content changed
-    /// since the last published (a renewal moves a lease's expiry, a
-    /// heartbeat its robot's clock mapping, so one dropped for a congested
-    /// link is soon replaced), sealed for a robot that asked for that
-    /// ([`Self::send_views`] signs the rest). A change that only refines the last
-    /// one sent ([`refines`]) waits until that one is a quarter of the lease
-    /// grace old: a board decodes every view on its control loop, and a
-    /// renewal or a clock estimate lands on nearly every publish. Anything
-    /// else (a lease granted or ended, a mode, a member, a plan) goes at
-    /// once.
     fn views_due(&mut self, snapshot: &AuthoritySnapshot) -> Vec<(DeviceView, Option<Vec<u8>>)> {
         self.views.retain(|robot, _| asks_for_view(snapshot, robot));
         let refine = self.refine_ns();
@@ -162,10 +134,6 @@ impl HostActor {
         due
     }
 
-    /// A robot's view sealed under its own `k_down` (kind 20), for a robot
-    /// that asked ([`VIEW_DEVICE_SEALED`]): only it and the host hold the
-    /// key, so it opens the view at a symmetric cipher's cost instead of
-    /// checking a signature. `None` before its generation is in effect.
     fn seal_view(&self, view: &DeviceView) -> Option<Vec<u8>> {
         let peer = self
             .peers
@@ -182,7 +150,6 @@ impl HostActor {
             .ok()
     }
 
-    /// The snapshot as a `Signed` broadcast.
     fn sign_state(&mut self, snapshot: &AuthoritySnapshot) -> Option<Vec<u8>> {
         self.signer
             .sign(
@@ -194,10 +161,6 @@ impl HostActor {
             .ok()
     }
 
-    /// Replies ride the query's priority and congestion control (Zenoh 1.x
-    /// ignores per-reply QoS), so the caller's choice decides both legs. A
-    /// reply to a link that stopped reading can wait there for seconds,
-    /// which is why it is sent off the host task.
     pub(super) fn reply(query: Query, payload: Vec<u8>) {
         tokio::task::spawn_blocking(move || {
             if let Err(err) = query
@@ -210,8 +173,6 @@ impl HostActor {
         });
     }
 
-    /// Leaves a query unanswered: dropping one sends its final message,
-    /// under the same congestion control as a reply.
     pub(super) fn discard(query: Query) {
         tokio::task::spawn_blocking(move || drop(query));
     }
@@ -247,17 +208,10 @@ impl HostActor {
         self.authority.snapshot(clocks, now)
     }
 
-    /// How long a refinement of a robot's view waits after the last one
-    /// sent: a quarter of the lease grace, the cadence renewals go out at.
     fn refine_ns(&self) -> i64 {
         i64::try_from(self.config.lease_grace.as_nanos() / 4).unwrap_or(i64::MAX)
     }
 
-    /// Heartbeats renew leases without a structural change; while any lease
-    /// is held, republish often enough that an edge's local expiry never
-    /// runs ahead of the host's renewals: the state every quarter grace,
-    /// and the view of a robot with a leased part once its last is that
-    /// old.
     pub(super) async fn publish_renewals(&mut self, every_tick: bool) {
         if self.authority.lease_count() == 0 {
             return;
@@ -291,11 +245,6 @@ impl HostActor {
         self.send_views(views).await;
     }
 
-    /// Publishes each view: sealed to a robot that asked for that, and
-    /// otherwise signed on its `host/view/{robot}`, which only that robot
-    /// subscribes to. A robot that takes sealed views drops signed ones
-    /// unread, so it gets the signed view only when the sealed one could
-    /// not be sent (its generation not in effect yet, or a failed put).
     async fn send_views(&mut self, views: Vec<(DeviceView, Option<Vec<u8>>)>) {
         for (view, sealed) in views {
             let robot = view.robot.clone();
@@ -326,7 +275,6 @@ impl HostActor {
                 .express(true)
                 .await;
             if let Err(err) = sent {
-                // Sent again with the next publish.
                 self.views.remove(&robot);
                 warn!(%robot, %err, "device view publish failed");
             }
@@ -334,11 +282,6 @@ impl HostActor {
     }
 }
 
-/// Whether `next` differs from `last` only by refinements: each lease's
-/// expiry, moved by its holder's renewals, the clock mappings of the same
-/// participants re-estimated, and when it was taken. Its revision too: the
-/// session's, which anyone's change bumps, and which a robot only orders
-/// views by.
 fn refines(last: &DeviceView, next: &DeviceView) -> bool {
     let leases = last.leases.len() == next.leases.len()
         && last.leases.iter().zip(&next.leases).all(|(a, b)| {
@@ -365,9 +308,6 @@ fn refines(last: &DeviceView, next: &DeviceView) -> bool {
             }
 }
 
-/// `robot`'s view of `snapshot`, as it asked for it: without its parts,
-/// unless `parts`, when it takes them only from the answer to its
-/// declaration ([`VIEW_DEVICE_LEAN`]).
 pub(super) fn view_of(
     snapshot: &AuthoritySnapshot,
     robot: &ParticipantId,
@@ -383,9 +323,6 @@ pub(super) fn view_of(
     view
 }
 
-/// Whether `robot` also asked for its view sealed under its `k_down`
-/// ([`VIEW_DEVICE_SEALED`]), from a host that lists sealed views among its
-/// features.
 pub(super) fn asks_for_sealed_view(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> bool {
     snapshot.supports.iter().any(|f| f == VIEW_DEVICE_SEALED)
         && asks_for_view(snapshot, robot)
@@ -394,15 +331,12 @@ pub(super) fn asks_for_sealed_view(snapshot: &AuthoritySnapshot, robot: &Partici
             .is_some_and(|p| p.supports.iter().any(|f| f == VIEW_DEVICE_SEALED))
 }
 
-/// Whether a board is in `roster`: a robot that reads its device view.
 fn has_board(roster: &[crate::wire::ParticipantInfo]) -> bool {
     roster
         .iter()
         .any(|p| p.has_role(Role::Embodiment) && p.supports.iter().any(|f| f == VIEW_DEVICE))
 }
 
-/// Whether `robot` is an embodiment in `snapshot`'s roster that asked for its
-/// device view (`Attach.supports`).
 pub(super) fn asks_for_view(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> bool {
     snapshot.participant(robot).is_some_and(|p| {
         p.has_role(Role::Embodiment) && p.supports.iter().any(|f| f == VIEW_DEVICE)

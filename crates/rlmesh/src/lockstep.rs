@@ -1,27 +1,20 @@
 //! Lockstep and virtual clock modes of a real-time RLMesh session
-//! (protocol v2), and the Gymnasium
-//! compatibility path: existing Gym envs and v1 model servers run unchanged
-//! on v2, at v1 throughput.
+//! (protocol v2), and the Gymnasium compatibility path: existing Gym envs and
+//! v1 model servers run unchanged on v2.
 //!
-//! - `exchange`: the exchange (one `LockstepStep`, one `LockstepReply`),
-//!   the env-side `Gate` (epoch, lease token and e-stop
-//!   checked locally per step) and the links: a direct call in one process,
-//!   a Zenoh query on `l/{robot}` otherwise.
-//! - `map`: a Gym env as a robot: spaces and v1 tags to a robot
-//!   map, leaf slabs to part slabs and back, bit-exact.
-//! - `served`: a served env behind the lockstep exchange (`GymEnv` over
-//!   a `Served` env, on native values).
-//! - `client`: the driver of a lockstep Gym env (`LockstepClient`), on
-//!   native values.
-//! - `session`: attach, declare, arm and one lease grant; addresses
-//!   (participant addresses).
-//! - `model`: a model served on a session (`m/{model}`) and the
-//!   driver's link to it.
-//! - `view`: the Gym view over a v2-native robot.
-//! - `virtual_mode`: the virtual clock's run loop.
-//! - `record`: the lockstep tee into the recorder.
-//! - [`adapters`]: the v1 adapter engine (resolver and `join` lowering),
-//!   which a v1 `ModelSpec` resolves through on this path, unchanged.
+//! - `exchange`: one `LockstepStep`, one `LockstepReply`; the env-side
+//!   `Gate` (epoch, lease token and e-stop checked locally per step) and the
+//!   links: a direct call in one process, a Zenoh query on `l/{robot}`
+//!   otherwise.
+//! - `map`: a Gym env as a robot, leaf slabs to part slabs and back,
+//!   bit-exact.
+//! - `served`, `client`: a served env behind the exchange, and its driver.
+//! - `session`: attach, declare, arm and one lease grant.
+//! - `model`: a model served on a session (`m/{model}`) and the driver's
+//!   link to it.
+//! - `view`, `virtual_mode`, `record`: the Gym view over a v2-native
+//!   robot, the virtual clock's run loop, and the tee into the recorder.
+//! - [`adapters`]: the v1 adapter engine a v1 `ModelSpec` resolves through.
 
 #![warn(missing_docs)]
 
@@ -42,7 +35,6 @@ pub mod virtual_mode;
 
 /// The v1 adapter engine the compatibility path resolves `ModelSpec`s
 /// with: the `rlmesh-adapters` resolver and its `join` lowering,
-/// reused as they are while the catalog is ported to path trees.
 pub mod adapters {
     pub use rlmesh_adapters::v1::{
         AdapterResolutionError, ENV_METADATA_KEY, EnvTags, JoinError, ModelSpec, ResolvedAdapter,

@@ -1,80 +1,32 @@
-//! Error type of the Docker sandbox.
-//!
-//! The crate uses [`anyhow`] internally for ergonomic context propagation but
-//! exposes this typed [`SandboxError`] enum on its public API so consumers can
-//! discriminate failure classes (e.g. "docker unavailable" vs "unpinned HF
-//! source" vs "invalid options") without matching on `Display` text.
-
 use thiserror::Error;
 
 /// Errors returned by the Docker sandbox.
-///
-/// This enum is `#[non_exhaustive]`: new variants may be added in future
-/// releases, so downstream `match` expressions must include a wildcard arm.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum SandboxError {
-    /// An environment source reference could not be parsed.
     #[error("invalid sandbox source: {message}")]
-    InvalidSource {
-        /// Human-readable description of the parse failure.
-        message: String,
-    },
+    InvalidSource { message: String },
 
-    /// A sandbox option (base image, packages, imports, num_envs,
-    /// vectorization mode, rlmesh package spec, ...) was invalid.
     #[error("invalid sandbox option: {message}")]
-    InvalidOption {
-        /// Human-readable description of the invalid option.
-        message: String,
-    },
+    InvalidOption { message: String },
 
-    /// An `hf://` source was rejected by the trust/pinning policy (remote code
-    /// not trusted, or revision not pinned to a full git SHA).
     #[error("hugging face source policy violation: {message}")]
-    HuggingFacePolicy {
-        /// Human-readable description of the policy violation.
-        message: String,
-    },
+    HuggingFacePolicy { message: String },
 
-    /// Resolving an `hf://` revision (via `git ls-remote`) or materializing the
-    /// source tree failed.
     #[error("failed to resolve hugging face source: {message}")]
-    SourceResolution {
-        /// Human-readable description of the resolution failure.
-        message: String,
-    },
+    SourceResolution { message: String },
 
-    /// Selecting or reading a local RLMesh wheel failed.
     #[error("rlmesh wheel resolution failed: {message}")]
-    Wheel {
-        /// Human-readable description of the wheel resolution failure.
-        message: String,
-    },
+    Wheel { message: String },
 
-    /// Building the sandbox image failed (e.g. `docker build` returned an
-    /// error, or the build context could not be assembled).
     #[error("sandbox image build failed: {message}")]
-    ImageBuild {
-        /// Human-readable description of the build failure.
-        message: String,
-    },
+    ImageBuild { message: String },
 
-    /// Starting the container or waiting for it to become ready failed.
     #[error("sandbox container failed to start: {message}")]
-    ContainerStartup {
-        /// Human-readable description of the startup failure, including any
-        /// captured container state and logs.
-        message: String,
-    },
+    ContainerStartup { message: String },
 
-    /// Invoking the `docker` CLI failed (e.g. docker is not installed or the
-    /// daemon is unavailable), or a docker subcommand returned an error.
     #[error("docker command failed: {message}")]
-    Docker {
-        /// Human-readable description of the docker failure.
-        message: String,
-    },
+    Docker { message: String },
 }
 
 impl SandboxError {
@@ -114,11 +66,8 @@ impl SandboxError {
         }
     }
 
-    /// Classify an internal docker-backend error. If the failure was an
-    /// inability to spawn the `docker` CLI (e.g. it is not installed or the
-    /// daemon socket is unreachable), it is reported as [`SandboxError::Docker`]
-    /// regardless of which operation triggered it; otherwise the supplied
-    /// operation-specific variant is used.
+    /// Classify an internal docker-backend error: a failure to spawn the `docker` CLI is always
+    /// [`SandboxError::Docker`]; otherwise the supplied operation-specific variant is used.
     pub(crate) fn from_docker_op(
         err: anyhow::Error,
         operation: impl FnOnce(String) -> Self,

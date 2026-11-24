@@ -3,12 +3,10 @@
 //! receive rules themselves (epochs, gaps, layout, freshness) are
 //! `rlmesh_session_core::stream`'s.
 
-/// Bucket width.
 const BUCKET_NS: i64 = 5_000;
 /// Buckets: 5 µs each up to 50 ms; beyond is the overflow bucket.
 const BUCKETS: usize = 10_000;
 
-/// A fixed-resolution histogram of non-negative durations.
 #[derive(Clone, Debug)]
 pub struct Histogram {
     counts: Vec<u32>,
@@ -29,7 +27,6 @@ impl Default for Histogram {
 }
 
 impl Histogram {
-    /// Records one duration (negative ones count as zero).
     pub fn record(&mut self, ns: i64) {
         let ns = ns.max(0);
         self.total += 1;
@@ -40,7 +37,6 @@ impl Histogram {
         }
     }
 
-    /// Samples recorded.
     pub fn count(&self) -> u64 {
         self.total
     }
@@ -63,7 +59,6 @@ impl Histogram {
         self.max_ns as f64 / 1e6
     }
 
-    /// The share above `threshold_ns`, in percent (bucket resolution).
     pub fn above_pct(&self, threshold_ns: i64) -> f64 {
         if self.total == 0 {
             return 0.0;
@@ -79,25 +74,20 @@ impl Histogram {
         100.0 * above as f64 / self.total as f64
     }
 
-    /// The largest duration, ms.
     pub fn max_ms(&self) -> f64 {
         self.max_ns as f64 / 1e6
     }
 }
 
-/// One stream's delivery stats since the last reset.
 #[derive(Clone, Debug, Default)]
 pub struct Delivery {
-    /// Publish → receipt (both in the subscriber's clock).
     pub latency: Histogram,
-    /// Capture → receipt.
     pub age: Histogram,
     first_ns: Option<i64>,
     last_ns: i64,
 }
 
 impl Delivery {
-    /// Records one sample received at `receive_ns`.
     pub fn record(&mut self, receive_ns: i64, latency_ns: i64, age_ns: i64) {
         self.first_ns.get_or_insert(receive_ns);
         self.last_ns = receive_ns;
@@ -105,7 +95,6 @@ impl Delivery {
         self.age.record(age_ns);
     }
 
-    /// Samples per second over the span received.
     pub fn rate_hz(&self) -> f64 {
         let n = self.latency.count();
         match self.first_ns {
@@ -125,7 +114,6 @@ mod tests {
     fn quantiles_late_share_and_rate() {
         let mut d = Delivery::default();
         for i in 0..1000 {
-            // 1 kHz; 0.2 ms latency, every 100th sample 3 ms late.
             let latency = if i % 100 == 0 { 3_000_000 } else { 200_000 };
             d.record(i * 1_000_000, latency, latency + 50_000);
         }

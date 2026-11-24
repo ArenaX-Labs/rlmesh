@@ -1,5 +1,3 @@
-//! Binding an input entry, or blanking an absent optional one.
-
 use super::steps::field_range;
 use super::table::{InputRow, Status};
 use super::{Binder, Slot, joint_count};
@@ -16,11 +14,9 @@ use crate::spec::policy::{Allow, ImageFormat, ImageLayout, Input, Names, Source}
 use crate::spec::rotation::Rotation;
 use crate::spec::units::Quantity;
 
-/// How far `history_hz` may sit from the source rate.
 const HISTORY_HZ_TOLERANCE: f64 = 0.01;
 
 impl<'a> Binder<'a> {
-    /// Step 6 for one input.
     pub(super) fn input(
         &mut self,
         slot: &Slot<'a>,
@@ -66,7 +62,6 @@ impl<'a> Binder<'a> {
         if kind.is_image() {
             delivered = self.image(slot, input, part, kind, &source_fields[0], &path, &mut plan)?;
         } else {
-            // Fields, in the model's order.
             let wanted: Vec<String> = match (&input.fields, &slot.entry.schema) {
                 (_, Some(schema)) => schema.iter().map(|f| f.name.clone()).collect(),
                 (Some(fields), None) => fields.clone(),
@@ -93,7 +88,6 @@ impl<'a> Binder<'a> {
                 }
             }
             if let Some(schema) = &slot.entry.schema {
-                // `fields` is already in the schema's order, by name.
                 let matches = schema.len() == source_fields.len()
                     && schema
                         .iter()
@@ -115,7 +109,6 @@ impl<'a> Binder<'a> {
             if source_fields.len() > 1 {
                 plan.steps.push(Step::Fields(wanted.clone()));
             }
-            // Names.
             let mut count = None;
             if kind.is_joint_set() {
                 let n = joint_count(&source_fields);
@@ -125,7 +118,6 @@ impl<'a> Binder<'a> {
                 }
                 plan.steps.push(Step::Names(order));
             }
-            // Units.
             for (field, _) in &slot.entry.units {
                 if !fields.iter().any(|f| &f.name == field) {
                     self.incompatible(
@@ -169,7 +161,6 @@ impl<'a> Binder<'a> {
                     Err(()) => return None,
                 }
             }
-            // Rotation.
             let rotation_fields: Vec<usize> = fields
                 .iter()
                 .enumerate()
@@ -202,7 +193,6 @@ impl<'a> Binder<'a> {
                     }
                 }
             }
-            // Tactile and custom shapes.
             if let Some(shape) = &input.shape
                 && fields.iter().any(|f| &f.shape != shape)
             {
@@ -217,7 +207,6 @@ impl<'a> Binder<'a> {
                 );
                 return None;
             }
-            // dtype (from the schema, for custom kinds).
             let targets: Vec<Option<DType>> = match &slot.entry.schema {
                 Some(schema) => schema.iter().map(|s| Some(s.dtype)).collect(),
                 None => vec![input.dtype; fields.len()],
@@ -236,7 +225,6 @@ impl<'a> Binder<'a> {
                     Err(()) => return None,
                 }
             }
-            // A declared range maps through rescale.
             if let Some(to) = slot.entry.range {
                 let from = fields
                     .iter()
@@ -315,7 +303,6 @@ impl<'a> Binder<'a> {
             };
         }
         if kind.is_image() {
-            // Per-channel affines are the common image normalisation.
             elements = delivered
                 .first()
                 .and_then(|d| match input.layout {
@@ -336,7 +323,6 @@ impl<'a> Binder<'a> {
             Ok(None) => {}
             Err(()) => return None,
         }
-        // History.
         let source_hz = contract::source_hz(part, applied);
         if input.history > 1 {
             if let Some(trained) = input.history_hz
@@ -394,13 +380,9 @@ impl<'a> Binder<'a> {
         })
     }
 
-    /// An absent optional input bound to a constant, when its target is
-    /// fully declared.
     pub(super) fn blank(&mut self, slot: &Slot<'_>, input: &Input) -> Option<InputRow> {
         let kind = slot.entry.kind;
         let undeclared = |what: &str| format!("{}: cannot blank it without {what}.", slot.name());
-        // A black frame through the declared preprocessing: range, then the
-        // affine (per channel when it has one value per channel).
         let mut fill = vec![match (kind, slot.entry.range) {
             (Kind::Camera, Some((low, _))) => low,
             _ => 0.0,
@@ -478,7 +460,6 @@ impl<'a> Binder<'a> {
                         .collect(),
                 )
             }
-            // A custom kind's schema gives every field's dtype and shape.
             Kind::Custom if input.shape.is_none() && input.dtype.is_none() => {
                 let Some(schema) = &slot.entry.schema else {
                     self.incompatible(slot, undeclared("a fields schema"), Vec::new());

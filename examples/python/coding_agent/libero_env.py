@@ -18,18 +18,15 @@ from pathlib import Path
 import numpy as np
 import rlmesh
 
-# Nothing here renders, so skip OpenGL entirely (macOS 27 no longer ships it).
-# Must be set before anything imports mujoco.
+# Nothing renders, so skip OpenGL; must be set before anything imports mujoco.
 os.environ.setdefault("MUJOCO_GL", "disable")
 
 DEFAULT_ADDRESS = "127.0.0.1:5555"
-SETTLE_STEPS = 10  # objects drop into place after a reset
+SETTLE_STEPS = 10
 NOOP = [0.0] * 6 + [-1.0]
 
 
 class Trace:
-    """Records the scene for make_video.py: XML once, joint positions per step."""
-
     def __init__(self, path: str, env):
         self._env = env  # robosuite rebuilds env.sim on reset, so read it each time
         Path(path).with_suffix(".xml").write_text(env.sim.model.get_xml())
@@ -75,7 +72,6 @@ class LiberoEnv:
 
     @staticmethod
     def _state(raw: dict) -> dict:
-        """The flat numeric state; anything above 1-D (images) is dropped."""
         return {
             k: np.asarray(v, dtype=np.float32).reshape(-1)
             for k, v in raw.items()

@@ -1,5 +1,3 @@
-"""The sandbox Docker gate's images, built once, and its timing report."""
-
 from __future__ import annotations
 
 import json
@@ -27,7 +25,6 @@ if TYPE_CHECKING:
 
 @pytest.fixture(scope="session")
 def gate_images() -> Iterator[GateImages]:
-    """The gate's images; this run's containers and images go at the end."""
     if missing := docker_missing():
         if os.environ.get("RLMESH_DOCKER_GATE_REQUIRED") == "1":
             pytest.fail(f"sandbox Docker gate required, but {missing}")

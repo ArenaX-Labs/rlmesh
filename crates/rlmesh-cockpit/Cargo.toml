@@ -12,8 +12,6 @@ readme = "README.md"
 license = { workspace = true }
 categories = { workspace = true }
 keywords = { workspace = true }
-# Published as an internal crate: `rlmesh cockpit` (rlmesh-cli's `cockpit`
-# feature) links it.
 publish = true
 
 [[bin]]
@@ -21,8 +19,6 @@ name = "rlmesh-cockpit"
 path = "src/main.rs"
 
 [package.metadata.cargo-machete]
-# A dev-dependency for its `png` feature only: the render tests save
-# egui_kittest's frames as PNG.
 ignored = ["image"]
 
 [dependencies]
@@ -43,7 +39,6 @@ egui_kittest = { workspace = true, features = ["wgpu"] }
 image = { workspace = true, features = ["png"] }
 
 [features]
-# Unreleased: episode collection into a dataset from the live bar.
 collect = []
 
 [lints]

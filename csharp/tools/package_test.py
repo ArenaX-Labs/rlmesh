@@ -15,8 +15,6 @@ import package
 from harness import drive, test_env
 from test import CSHARP, ROOT, run
 
-# D-40's distribution contract, independently spelled out so a packaging-path
-# or CPU-filter change cannot update its own expected result.
 EXPECTED_PLUGINS = {
     "linux-x64": ("x86_64/linux/librlmesh_capi.so", "Linux", "Linux64", "x86_64"),
     "win-x64": ("x86_64/windows/rlmesh_capi.dll", "Windows", "Win64", "x86_64"),
@@ -115,7 +113,6 @@ class DistributionTests(unittest.TestCase):
             root = pathlib.Path(tmp)
             original = package.ROOT, package.OUT, package.PROJECT
             try:
-                # Model a workspace version bump without touching the checkout.
                 bumped = "99.0.1-rc.2"
                 (root / "Cargo.toml").write_text(
                     f'[workspace.package]\nversion = "{bumped}"\n'
@@ -135,8 +132,6 @@ class DistributionTests(unittest.TestCase):
                 native = root / "target/csharp-native/release"
                 native.mkdir(parents=True)
                 header = ROOT / "crates/rlmesh-capi/include/rlmesh.h"
-                # Match a version bump's C header too. Keep the ABI fixture small;
-                # the real-library/package serving smoke below covers behavior.
                 (native / "rlmesh.h").write_text(
                     header.read_text().replace(
                         f'#define RLMESH_VERSION "{package.version()}"',

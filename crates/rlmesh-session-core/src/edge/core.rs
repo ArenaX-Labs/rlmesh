@@ -1,51 +1,39 @@
-//! The edge of one command group, sans-IO: chunk intake, the action queues,
-//! the fallback ladder and the applied stream.
+//! The edge of one command group, sans-IO: chunk intake, the action queues, the fallback
+//! ladder and the applied stream.
 //!
-//! A group is the robot's commandable parts that drive the same actuators
-//! (`command.group`); an ungrouped part is a group of one.
-//! [`EdgeCore::accept`] validates each chunk on arrival against the edge's
-//! last-known authority view and its own clock, and splices it into its
-//! part's queue; the embodiment's control loop calls [`EdgeCore::tick`] once
-//! per control period. Neither waits on the network: the edge keeps acting on
-//! its last-known lease until that lease expires by its own clock, then
-//! falls back.
+//! A group is the robot's commandable parts that drive the same actuators (`command.group`);
+//! an ungrouped part is a group of one. [`EdgeCore::accept`] validates each chunk on arrival
+//! against the edge's last-known authority view and its own clock and splices it into its
+//! part's queue; the control loop calls [`EdgeCore::tick`] once per control period. Neither
+//! waits on the network: the edge acts on its last-known lease until that lease expires by its
+//! own clock, then falls back.
 //!
 //! # Intake
 //!
-//! A chunk is rejected whole when: it is for another part; the robot
-//! process latched a local e-stop ([`EdgeCore::set_local_estop`]) or the
-//! session is in ESTOP; the epoch is wrong; the token is not the part's current lease's;
-//! its source is not the lease holder; its binding is not the lease's;
-//! the lease expired by the edge clock; it is past `valid_until`; it fails
-//! the transit check; its seq is not above the last accepted for its token;
-//! its payload does not match `count` × the command stride; or any value is
-//! invalid ([`crate::edge::command`]). Valid actions are clamped to the
-//! part's limits before they are queued, so the clamped value is what the
-//! edge dispatches and what `_applied` shows.
+//! A chunk is rejected whole when it is for another part; a local e-stop is latched
+//! ([`EdgeCore::set_local_estop`]) or the session is in ESTOP; its epoch, token, source or
+//! binding is not the current lease's; the lease expired by the edge clock; it is past
+//! `valid_until` or fails the transit check; its seq is not above the last accepted for its
+//! token; its payload is not `count` × the command stride; or any value is invalid
+//! ([`crate::edge::command`]). Valid actions are clamped to the part's limits before they are
+//! queued, so the clamped value is what is dispatched and what `_applied` shows.
 //!
 //! # Clock safety
 //!
-//! Chunk times are session time. With the edge's clock mapping
-//! `session = local + θ` within `± ε`:
+//! Chunk times are session time. With the clock mapping `session = local + θ` within `± ε`:
 //!
 //! - slot positions (`t0`, `replace_from`) convert as `t − θ`;
-//! - **deadlines** (`valid_until`, the lease expiry) convert conservatively,
-//!   `t − θ − ε`, so an offset error can only shorten them;
-//! - a chunk may be up to `ε_ctrl + ε_edge` older than it reads, so its
-//!   life ends at `min(valid_until − θ, receipt + max_action_age) − ε_ctrl −
-//!   ε_edge`;
-//! - the transit check: `receipt_session − publish_session + ε_ctrl +
-//!   ε_edge` (the controller's `publish_ns` through its own mapping) above
-//!   `max_action_age` rejects the chunk;
-//! - with no mapping, chunks are refused and the lease cannot be timed,
-//!   unless [`EdgeConfig::require_clock_mapping`] is off (every participant
-//!   on one clock);
-//! - either `ε` above the part's `max_clock_error` (a group's smallest)
-//!   refuses the chunk, and [`EdgeCore::clock_refused`] says by how much.
+//! - deadlines (`valid_until`, the lease expiry) convert as `t − θ − ε`, so an offset error
+//!   can only shorten them;
+//! - a chunk's life ends at `min(valid_until − θ, receipt + max_action_age) − ε_ctrl − ε_edge`,
+//!   and a transit `receipt_session − publish_session + ε_ctrl + ε_edge` above
+//!   `max_action_age` rejects it;
+//! - with no mapping chunks are refused, unless [`EdgeConfig::require_clock_mapping`] is off;
+//! - either `ε` above the part's `max_clock_error` (a group's smallest) refuses the chunk, and
+//!   [`EdgeCore::clock_refused`] says by how much.
 //!
-//! In virtual and lockstep sessions every time is session time and no
-//! mapping is needed: the host times leases, and the edge's clock is the
-//! tick time it is driven at.
+//! In virtual and lockstep sessions every time is session time: the host times leases, and
+//! the edge's clock is the tick time it is driven at.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -71,11 +59,9 @@ use crate::edge::queue::{
 /// How an edge runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeConfig {
-    /// Refuse chunks until this participant (and the chunk's source) has a
-    /// clock mapping. Turn off only when every participant shares one clock
-    /// (one machine, or PTP with `SystemMonotonicClock`): without a mapping,
-    /// times are read as edge time and a delayed snapshot can extend the
-    /// lease.
+    /// Refuse chunks until this participant (and the chunk's source) has a clock mapping.
+    /// Turn off only when every participant shares one clock: without a mapping, times are
+    /// read as edge time and a delayed snapshot can extend the lease.
     pub require_clock_mapping: bool,
 }
 
@@ -100,8 +86,7 @@ pub enum Rejection {
     StaleEpoch,
     /// The part has no lease.
     NoLease,
-    /// Fenced: not the current lease's token (a preempted or rebound
-    /// holder).
+    /// Fenced: not the current lease's token (a preempted or rebound holder).
     StaleToken,
     /// Its source is not the holder of the lease its token names.
     WrongSource,
@@ -123,8 +108,8 @@ pub enum Rejection {
     NoClockMapping,
     /// A clock's error bound exceeds the part's `max_clock_error`.
     ClockUncertain,
-    /// Not sealed under a command key this robot holds for the chunk's
-    /// part, token and source: not the lease holder's.
+    /// Not sealed under a command key this robot holds for the chunk's part, token and source:
+    /// not the lease holder's.
     Unauthenticated,
 }
 
@@ -174,8 +159,7 @@ pub struct EdgeStats {
     pub accepted: u64,
     /// Chunks refused, by reason (non-zero only).
     pub rejected: Vec<(Rejection, u64)>,
-    /// What splicing and draining did to individual actions, over every
-    /// member.
+    /// What splicing and draining did to individual actions, over every member.
     pub queue: QueueStats,
     /// Entries, ticks and time per edge mode.
     pub modes: Vec<(EdgeMode, ModeStats)>,
@@ -232,9 +216,8 @@ pub struct AppliedSample {
     pub value: Bytes,
 }
 
-/// The lease moved between members of the group: the robot switches its
-/// vendor control mode, neutralises the old member's target, then calls
-/// [`EdgeCore::handover_done`]. Until then the group dispatches nothing.
+/// The lease moved between members of the group: the robot switches its vendor control
+/// mode, neutralises the old member's target, then calls [`EdgeCore::handover_done`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupHandover {
     /// The group.
@@ -256,8 +239,8 @@ pub struct EdgeTick {
     pub action: Option<QueuedAction>,
     /// The declared safe behaviour to run, if it must run.
     pub safe_behavior: Option<Arc<str>>,
-    /// Set on the tick the edge went safe on its own account, with the
-    /// epoch it happened in: the host must be told.
+    /// Set on the tick the edge went safe on its own account, with the epoch it happened in:
+    /// the host must be told.
     pub report: Option<(Epoch, SafeCause)>,
     /// Set on the tick a handover between members starts.
     pub handover: Option<GroupHandover>,
@@ -269,41 +252,27 @@ fn duration_i64(d: Duration) -> i64 {
     i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)
 }
 
-/// The edge's clock relation to the session, from the authority view.
 #[derive(Clone, Copy, Debug)]
 struct ClockView {
-    /// session = local + offset.
     offset_ns: i64,
     error_ns: i64,
     mapped: bool,
-    /// Virtual or lockstep: local time is session time, leases are timed by
-    /// the host.
     ticked: bool,
 }
 
-/// One commandable part of the group.
 #[derive(Debug)]
 struct Member {
     part: PartSpec,
     applied: ChannelId,
     check: CommandCheck,
-    /// The control period, for chunks that carry `dt_ns = 0` under a
-    /// binding that declared no action grid for the part.
     period_ns: i64,
     max_action_age_ns: i64,
-    /// (epoch, token, seq) of the newest accepted chunk.
     last: Option<(Epoch, LeaseToken, u64)>,
-    /// How its chunks arrived.
     timing: ChunkTiming,
-    /// When the newest accepted chunk arrived (edge clock).
     last_at: Option<i64>,
 }
 
 impl Member {
-    /// It accepted chunk `id` (epoch, token, seq), received at `receive_ns`
-    /// and `late_ns` past its first slot: counted, and its newest. A skip in
-    /// the seqs under one token is a loss, and only there is the time since
-    /// the last one a gap.
     fn took(&mut self, id: (Epoch, LeaseToken, u64), receive_ns: i64, late_ns: i64) {
         let timing = &mut self.timing;
         timing.accepted += 1;
@@ -332,39 +301,29 @@ pub struct EdgeCore {
     members: Vec<Member>,
     queues: Vec<ActionQueue>,
     config: EdgeConfig,
-    /// The smallest `max_clock_error` of the members.
     max_clock_error_ns: u64,
-    /// Set while the newest clock judgement refused a chunk.
     clock_refused: Option<ClockRefusal>,
     safe_behavior: Arc<str>,
     fallback: Fallback,
     accepted: u64,
     rejected: [u64; Rejection::ALL.len()],
     safe_reports: u64,
-    /// A fall not reported yet, waiting to see whether its holder is alive.
     unjudged: Option<Unjudged>,
     clamped: u64,
     handovers: u64,
 }
 
-/// A dry queue or a lapsed lease is what a dead holder looks like from here,
-/// and the edge sees it before the host does. The group is safe either way;
-/// only the report waits. A renewal from after the fall means the holder is
-/// alive, so the fall is the robot's to report; the lease going away means
-/// the host judged the holder lost, and only its parts stop.
 #[derive(Clone, Copy, Debug)]
 struct Unjudged {
     epoch: Epoch,
     cause: SafeCause,
     token: LeaseToken,
-    /// An expiry at or past this came from a heartbeat after the fall.
     renewed_by_ns: i64,
 }
 
 impl EdgeCore {
-    /// The edge for `parts`: commandable parts of `me`, either one part or
-    /// every member of one command group (which share `safe` and
-    /// `hold_max`).
+    /// The edge for `parts`: commandable parts of `me`, either one part or every member of one
+    /// command group (which share `safe` and `hold_max`).
     pub fn new(
         parts: Vec<PartSpec>,
         me: ParticipantId,
@@ -462,14 +421,13 @@ impl EdgeCore {
         self.queues.iter().map(ActionQueue::len).sum()
     }
 
-    /// Counts a chunk refused before [`Self::accept`] (one that did not
-    /// decode).
+    /// Counts a chunk refused before [`Self::accept`] (one that did not decode).
     pub fn count_rejection(&mut self, reason: Rejection) {
         self.rejected[reason.index()] += 1;
     }
 
-    /// Counts a chunk for member `channel` refused before [`Self::accept`]
-    /// (one that did not open or decode): it reached the edge all the same.
+    /// Counts a chunk for member `channel` refused before [`Self::accept`] (one that did not
+    /// open or decode): it reached the edge all the same.
     pub fn count_unread(&mut self, channel: ChannelId, reason: Rejection) {
         self.count_rejection(reason);
         if let Some(member) = self.members.iter_mut().find(|m| m.part.channel == channel) {
@@ -477,14 +435,14 @@ impl EdgeCore {
         }
     }
 
-    /// How each member's chunks arrived, without building [`Self::stats`]:
-    /// a board reports these on every heartbeat.
+    /// How each member's chunks arrived, without building [`Self::stats`]: a board reports
+    /// these on every heartbeat.
     pub fn timing(&self) -> impl Iterator<Item = &ChunkTiming> {
         self.members.iter().map(|m| &m.timing)
     }
 
-    /// Chunks refused for `reason`, without building [`Self::stats`]: a
-    /// board reports these on every heartbeat.
+    /// Chunks refused for `reason`, without building [`Self::stats`]: a board reports these on
+    /// every heartbeat.
     pub fn rejected(&self, reason: Rejection) -> u64 {
         self.rejected[reason.index()]
     }
@@ -499,10 +457,9 @@ impl EdgeCore {
         self.fallback.handover_done();
     }
 
-    /// Latches (`Some`, with its code) or clears the robot process's local
-    /// e-stop: while latched every chunk is refused
-    /// ([`Rejection::Estop`]) and every tick purges the queues and runs
-    /// Estop, with or without a host.
+    /// Latches (`Some`, with its code) or clears the robot process's local e-stop: while
+    /// latched every chunk is refused ([`Rejection::Estop`]) and every tick purges the queues
+    /// and runs Estop, with or without a host.
     pub fn set_local_estop(&mut self, latch: Option<ReasonCode>) {
         self.fallback.set_latch(latch);
     }
@@ -532,10 +489,6 @@ impl EdgeCore {
         }
     }
 
-    /// The lease on the group's active member, in the edge clock: the
-    /// host's expiry converted conservatively. Unmapped, it is untimeable
-    /// unless the mapping is not required, in which case the remaining ttl
-    /// at snapshot time counts from when the edge observed the snapshot.
     fn lease_view<V: AuthorityView + ?Sized>(
         &self,
         view: &V,
@@ -569,10 +522,8 @@ impl EdgeCore {
         })
     }
 
-    /// Validates `chunk`, received at `receive_ns` (edge clock), against the
-    /// view (observed at `observed_local_ns`) and splices it. A valid chunk
-    /// the heap has no room for now is dropped whole, its actions counted in
-    /// [`SpliceOutcome::no_memory`].
+    /// Validates `chunk`, received at `receive_ns` (edge clock), against the view (observed at
+    /// `observed_local_ns`) and splices it.
     pub fn accept<V: AuthorityView + ?Sized>(
         &mut self,
         chunk: ActionChunk,
@@ -589,7 +540,6 @@ impl EdgeCore {
         }
         let result = self.validate_and_splice(chunk, receive_ns, view, observed_local_ns);
         match result {
-            // Dropped for want of memory: neither accepted nor refused.
             Ok(outcome) if outcome.no_memory > 0 => {}
             Ok(_) => self.accepted += 1,
             Err(reason) => self.rejected[reason.index()] += 1,
@@ -616,7 +566,6 @@ impl EdgeCore {
         if view.mode() == Mode::Estop {
             return Err(Rejection::Estop);
         }
-        // A closing scene's run is over: no lease in it drives again.
         if view.closing().is_some() {
             return Err(Rejection::NoLease);
         }
@@ -655,7 +604,6 @@ impl EdgeCore {
         }
         let member = &self.members[index];
         if !edge.ticked {
-            // Unmapped clocks (allowed only when not required) are one clock.
             let (edge_offset, source_offset) = if edge.mapped && source.mapped {
                 (edge.offset_ns, source.offset_ns)
             } else {
@@ -690,8 +638,6 @@ impl EdgeCore {
         if valid_until_ns <= receive_ns {
             return Err(Rejection::Expired);
         }
-        // dt = 0 takes the action grid the lease's binding declared,
-        // else the part's control period.
         let dt_ns = match i64::try_from(chunk.dt_ns) {
             Ok(0) => view
                 .grid(chunk.channel)
@@ -707,8 +653,6 @@ impl EdgeCore {
             return Err(Rejection::StaleSeq);
         }
         let stride = member.check.stride();
-        // Each action a slice of the payload, in room that may fail: a
-        // chunk the heap has no room for changes nothing.
         let mut actions = Vec::new();
         if actions.try_reserve_exact(count).is_err() {
             return Ok(SpliceOutcome {
@@ -746,8 +690,7 @@ impl EdgeCore {
         ))
     }
 
-    /// Whether the runtime is catching up after its own stall
-    /// ([`Fallback::set_listening`]).
+    /// Whether the runtime is catching up after its own stall ([`Fallback::set_listening`]).
     pub fn set_listening(&mut self, listening: bool) {
         self.fallback.set_listening(listening);
     }
@@ -757,8 +700,8 @@ impl EdgeCore {
         self.fallback.hold_max_ns()
     }
 
-    /// One control tick at edge time `now_ns`: what to dispatch, hold, or
-    /// the safe behaviour to run, and one applied sample per member.
+    /// One control tick at edge time `now_ns`: what to dispatch, hold, or the safe behaviour to
+    /// run, and one applied sample per member.
     pub fn tick<V: AuthorityView + ?Sized>(
         &mut self,
         now_ns: i64,
@@ -835,7 +778,6 @@ impl EdgeCore {
         }
     }
 
-    /// What to tell the host this tick about the group's fall, if anything.
     fn judge_fall<V: AuthorityView + ?Sized>(
         &mut self,
         now_ns: i64,

@@ -57,7 +57,6 @@ impl KeyIssuer {
             if pending.len() < ROBOT_PENDING {
                 continue;
             }
-            // The newest pending grant of the lowest class below this one.
             let victim = pending
                 .iter()
                 .filter(|(_, g)| g.request.class < request.class)
@@ -107,8 +106,6 @@ impl KeyIssuer {
                 self.leases.insert(key.key_id, lease.clone());
                 self.keys.insert(key.key_id, key);
             }
-            // A lockstep reply carries every part the robot publishes: only
-            // a holder that may read them all gets one.
             if !request.reads_all.contains(robot) {
                 continue;
             }
@@ -137,8 +134,8 @@ impl KeyIssuer {
         Ok(Prepared { id, evicted: evict })
     }
 
-    /// The pending grants that can be decided: `Ok` once every robot
-    /// installed its keys, `Err` when that took over [`GRANT_WAIT_NS`].
+    /// The pending grants that can be decided: `Ok` once every robot installed its keys, `Err`
+    /// when that took over [`GRANT_WAIT_NS`].
     pub fn ready_grants(&self, now_ns: i64) -> Vec<(GrantId, Result<(), CtlError>)> {
         self.grants
             .iter()
@@ -172,8 +169,8 @@ impl KeyIssuer {
         self.grants.get(&id).map(|g| &g.request)
     }
 
-    /// Commits grant `id`: the holder's keys (it sends under each `k_cmd`
-    /// and receives the `k_obs`) and each part's `k_cmd` id.
+    /// Commits grant `id`: the holder's keys (it sends under each `k_cmd` and receives the
+    /// `k_obs`) and each part's `k_cmd` id.
     pub fn commit_grant(&mut self, id: GrantId) -> Option<Committed> {
         let grant = self.grants.remove(&id)?;
         let mut committed = Committed {
@@ -214,8 +211,8 @@ impl KeyIssuer {
         self.forget(&grant.keys);
     }
 
-    /// Drops the committed lease keys whose token `live` says ended (their
-    /// holders discard them from authority state).
+    /// Drops the committed lease keys whose token `live` says ended (their holders discard them
+    /// from authority state).
     pub fn end_tokens(&mut self, live: impl Fn(LeaseToken) -> bool) {
         let ended: Vec<u32> = self
             .leases

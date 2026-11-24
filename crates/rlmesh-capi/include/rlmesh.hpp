@@ -1,4 +1,4 @@
-// RLMesh C++17 API. Header-only projection of C ABI 5.
+// RLMesh C++17 API. Header-only projection of the C ABI.
 // RLMesh uses the same nouns and constructs in every language, following each
 // language's conventions.
 // Copies of shared handles refer to the same library object. Call close() to

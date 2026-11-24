@@ -1,62 +1,37 @@
-# ──────────────────────────────────────────────
-# Fenced features
-# ──────────────────────────────────────────────
-# Unreleased work stays behind off-by-default features that CI still lints
-# and tests (lint:rust, test:rust); no release turns them on. `fleet`: the
-# lobby, scene runs, satellites and mDNS; `board`: the
-# tether's board link; `collect`: the cockpit's episode collection.
 [vars]
 fenced_test = "rlmesh-tether/board,rlmesh-cockpit/collect,rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet"
 fenced_lint = "rlmesh-tether/board,rlmesh-cockpit/collect,rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet,rlmesh-python/fleet,rlmesh-node/fleet"
 
-# ──────────────────────────────────────────────
-# Tools
-# ──────────────────────────────────────────────
 [tools]
 rust = { version = "1.99", components = "rustfmt,clippy" }
 
-# Python: 3.11 is the dev interpreter (abi3 floor); 3.10 is added for release
-# wheels by `setup:python:release`.
 python = "3.11"
 uv = "0.12"
 maturin = "1.15"
 
-# Cross-compiles release wheels (maturin --zig) and builds the C/C++ binding smokes.
 zig = "0.17"
-# Cross-compiles the Windows (MSVC) C/C++ package and Node addon from Linux;
-# needs clang on PATH (scripts/xwin-env.sh brings the archiver and linker).
 "github:rust-cross/cargo-xwin" = "0.23"
-# Cross-compiles the Linux Node addons against a glibc floor (release:js:native).
 "github:rust-cross/cargo-zigbuild" = "0.24"
 
-# Markdown/TOML/YAML/JSON formatting. node only exists to run oxfmt (npm backend).
 node = "24"
 oxfmt = "0.71"
 
-# Rust lint and dependency checks
 typos = "1.50"
 cargo-deny = "0.20"
 "github:bnjbvr/cargo-machete" = "0.9"
 
-# Protobuf. protoc is required by crates/rlmesh-proto/build.rs.
 protoc = "36"
 buf = "1.73"
 
-# C/C++ bindings (rlmesh-capi): clang-format formats, cmake drives the packaging smoke.
 clang-format = "23"
 cmake = "4.4"
 
-# Hooks
 prek = "0.5"
 
-# Publish tokens (CARGO_REGISTRY_TOKEN, PYPI_TOKEN) from the keychain via fnox.toml.
 fnox = "1.36"
 
-# `mise watch <task>` (e.g. `mise watch test:rust`) reruns a task on file change.
 watchexec = "2.7"
 
-# Build speed: sccache caches compiled crates (RUSTC_WRAPPER below), and nextest
-# runs the Rust tests (process per test, per-test timeouts, filtersets).
 sccache = "0.18"
 "github:nextest-rs/nextest" = { version = "0.9", version_prefix = "cargo-nextest-" }
 
@@ -66,22 +41,11 @@ task.run_auto_install = false
 
 [env]
 UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
-# One uv cache per user, shared by every worktree: uv hardlinks from it, so a
-# fresh worktree's sync is near-instant and settling a worktree keeps it.
 UV_CACHE_DIR = "{{ env.XDG_CACHE_HOME | default(value=env.HOME ~ '/.cache') }}/uv"
 CARGO_HTTP_MULTIPLEXING = "false"
-# Every rustc call (cargo, clippy, maturin) goes through sccache. Locally it
-# caches on disk, shared by all worktrees; Depot runners preset
-# SCCACHE_WEBDAV_* so CI caches in Depot Cache. RLMESH_SCCACHE=0 turns it off:
-# release.yml sets it so published artifacts never come from a shared cache.
 RUSTC_WRAPPER = "{% if env.RLMESH_SCCACHE | default(value='1') != '0' %}sccache{% endif %}"
-# With RLMESH_BUILDER=depot (set per machine), point sccache at Depot Cache
-# using the `depot login` credentials, so local builds share CI's cache.
 _.source = "scripts/dev/depot-cache-env.sh"
 
-# ──────────────────────────────────────────────
-# Setup
-# ──────────────────────────────────────────────
 [tasks."setup"]
 description = "Install tools, Python dev dependencies, and git hooks"
 depends = ["setup:python", "setup:hooks"]
@@ -102,9 +66,6 @@ run = "prek install --hook-type pre-commit --hook-type post-merge --hook-type po
 description = "Install Rust targets used for release wheel builds"
 run = "rustup target add aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-msvc"
 
-# ──────────────────────────────────────────────
-# Format (mutating)
-# ──────────────────────────────────────────────
 [tasks."fmt"]
 description = "Format all source files"
 depends = ["fmt:rust", "fmt:python", "fmt:proto", "fmt:config", "fmt:cxx"]
@@ -125,9 +86,6 @@ run = "buf format -w"
 description = "Format Markdown, TOML, YAML, and JSON files with oxfmt"
 run = "git ls-files -z --cached --others --exclude-standard -- '*.md' '*.toml' '*.yml' '*.yaml' '*.json' '*.jsonc' | xargs -0 oxfmt --write"
 
-# ──────────────────────────────────────────────
-# Format checks (non-mutating)
-# ──────────────────────────────────────────────
 [tasks."fmt:check"]
 description = "Check formatting without modifying files"
 depends = [
@@ -162,9 +120,6 @@ run = "buf format -d --exit-code"
 description = "Check Markdown, TOML, YAML, and JSON formatting with oxfmt"
 run = "git ls-files -z --cached --others --exclude-standard -- '*.md' '*.toml' '*.yml' '*.yaml' '*.json' '*.jsonc' | xargs -0 oxfmt --check"
 
-# ──────────────────────────────────────────────
-# Fix (mutating)
-# ──────────────────────────────────────────────
 [tasks."fix"]
 description = "Apply safe auto-fixes and format all source files"
 depends = ["fix:rust", "fix:python", "fmt"]
@@ -178,9 +133,6 @@ run = "cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 description = "Apply safe Python lint fixes"
 run = ["python scripts/dev/python_synced.py", "uv run --no-sync ruff check --fix"]
 
-# ──────────────────────────────────────────────
-# Lint (non-mutating)
-# ──────────────────────────────────────────────
 [tasks."lint"]
 description = "Lint source files without modifying them"
 depends = ["lint:rust", "lint:python", "lint:proto", "lint:spelling", "lint:deps"]
@@ -207,9 +159,6 @@ run = "typos"
 
 [tasks."lint:deps"]
 description = "Check Rust dependency licenses, bans, sources, and unused dependencies"
-# Deterministic checks only. lint:deps:audit (RustSec advisories) is invocable
-# on demand and runs in nightly CI, but stays out of the check gate so a new
-# advisory can't red main/PRs with zero code change.
 run = ["mise run lint:deps:deny", "mise run lint:deps:unused"]
 
 [tasks."lint:deps:audit"]
@@ -236,9 +185,6 @@ run = [
   "echo '==> Python direct dependencies'; uv tree --outdated --depth 1 --all-groups | grep 'latest:' || echo 'all up to date'",
 ]
 
-# ──────────────────────────────────────────────
-# Typecheck (non-mutating)
-# ──────────────────────────────────────────────
 [tasks."typecheck"]
 description = "Typecheck all supported language bindings"
 depends = ["typecheck:python"]
@@ -247,19 +193,11 @@ depends = ["typecheck:python"]
 description = "Typecheck Python code"
 run = "uv run basedpyright"
 
-# ──────────────────────────────────────────────
-# Docs (non-mutating)
-# ──────────────────────────────────────────────
 [tasks."docs:rust:check"]
 description = "Build Rust library docs with warnings denied"
 env = { RUSTDOCFLAGS = "-D warnings" }
 run = "cargo doc --workspace --no-deps --lib"
 
-# ──────────────────────────────────────────────
-# Native Python stubs
-# ──────────────────────────────────────────────
-# The stub_gen bin declares `stub-gen` via required-features, so this task must
-# pass it explicitly.
 [tasks."stubs:generate"]
 description = "Generate native Python stubs"
 run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-gen --bin stub_gen"
@@ -268,9 +206,6 @@ run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-g
 description = "Check generated native Python stubs without modifying files"
 run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-gen --bin stub_gen -- --check"
 
-# ──────────────────────────────────────────────
-# Compatibility policy (non-mutating)
-# ──────────────────────────────────────────────
 [tasks."policy:check"]
 description = "Check rlmesh.toml, artifact versions, and compatibility constants"
 run = [
@@ -291,9 +226,6 @@ run = "python scripts/protocol_baseline.py verify"
 description = "Check live protos for wire-breaking changes against the immutable release tag"
 run = "python scripts/protocol_baseline.py breaking"
 
-# ──────────────────────────────────────────────
-# Check (non-mutating)
-# ──────────────────────────────────────────────
 [tasks."check"]
 description = "Run non-mutating verification checks"
 depends = [
@@ -308,17 +240,10 @@ depends = [
   "parity:check",
 ]
 
-# ──────────────────────────────────────────────
-# Test
-# ──────────────────────────────────────────────
-# test:python syncs the dev environment first (setup:python), which rebuilds
-# the in-tree extension after a commit; the other two wait for it, so every
-# Python process of the run loads one build, stamped like the C library.
 [tasks."test"]
 description = "Run Rust tests, Python unit/integration tests, and the C/C++ binding smoke + e2e"
 depends = ["test:rust", "test:python", "test:cxx"]
 
-# The single test entrypoint CI runs after `check`; run it locally for CI parity.
 [tasks."test:ci"]
 depends = ["parity:fixtures"]
 description = "Everything CI tests: test + API surface + perf budgets + examples + system harness + installed-wheel system profile against a freshly built local wheel"
@@ -333,14 +258,11 @@ run = [
   "mise run test:system",
 ]
 
-# Sibling of the test:cxx file task; test/cxx is itself a file, so this is a referenced script.
 [tasks."test:cxx:pkg"]
 description = "Build the C/C++ package, then build the C++ smoke against the INSTALLED package (pkg-config + find_package) and run it end-to-end vs a live env"
 dir = "{{ config_root }}"
 file = "scripts/test-cxx-pkg.sh"
 
-# The extension's tests embed Python, which does not discover the venv on its
-# own on every platform (macOS), so its site-packages is put on PYTHONPATH.
 [tasks."test:rust"]
 description = "Run Rust workspace tests and doctests"
 wait_for = ["setup:python"]
@@ -351,15 +273,10 @@ export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("pure
   cargo test --workspace --doc
 '''
 
-# Rust tests that need tens of seconds of wall clock are `#[ignore]`d with a
-# reason naming this task, so the default runs leave them out; test:ci runs
-# them.
 [tasks."test:rust:slow"]
 description = "Run the Rust tests ignored as slow (tens of seconds of wall clock each)"
 run = "cargo nextest run -p rlmesh-session --test slow_peer --run-ignored only"
 
-# The fast local loop: Rust tests for changed crates and their dependents,
-# plus Python tests when they can be affected. Not a gate; see the script.
 [tasks."test:affected"]
 description = "Run tests for crates changed since origin/main (and their dependents); pass --base REF or --dry-run"
 run = 'mise run dev:heavy -- python scripts/dev/affected.py {{arg(name="args", var=true, required=false)}}'
@@ -393,14 +310,6 @@ run = "uv run pytest python/rlmesh/tests/api_surface -q"
 description = "Run the headless example programs end to end"
 run = "uv run pytest python/rlmesh/tests/examples -q"
 
-# ──────────────────────────────────────────────
-# Browser binding: javascript/rlmesh and its wasm core, javascript/rlmesh/wasm
-# ──────────────────────────────────────────────
-# Not in check, typecheck or test: those run in the `fast` CI job, which would
-# then install the wasm toolchain and node_modules on every PR. The `browser`
-# CI job runs these gates when their inputs change; `mise run test:js` is the
-# local one-shot. File tasks: setup:js, build:js, check:sans-io, test:js:wasm,
-# test:js:e2e.
 [tasks."test:js"]
 description = "Build the wasm and the JS package, then run every browser gate: wasm tests under Node, the .wasm import/size check, strict tsc, JS unit tests"
 depends = ["build:js"]
@@ -411,9 +320,6 @@ run = [
   "mise run test:js:unit",
 ]
 
-# The real v2 codec (authority snapshots with parts, bindings, contracts and
-# demands) measures ~96 KiB gzip; the budget keeps headroom and catches a
-# dependency that drags in a runtime.
 [tasks."check:js:wasm"]
 description = "Check the built .wasm imports only wasm-bindgen glue (no env/WASI) and stays under 112 KiB gzip"
 run = "node scripts/check-wasm.mjs javascript/rlmesh/pkg/rlmesh_bg.wasm --max-gzip 114688"
@@ -430,8 +336,6 @@ depends = ["setup:js"]
 dir = "{{ config_root }}/javascript/rlmesh"
 run = "node test/run.mjs"
 
-# Node and Electron binding: javascript/rlmesh/native (napi-rs), wrapped by
-# javascript/rlmesh/src/native.ts. Needs no wasm toolchain.
 [tasks."build:js:native"]
 description = "Build the Node/Electron native addon (javascript/rlmesh/native, profile node) into javascript/rlmesh/dist/rlmesh.{platform}-{arch}.node"
 run = '''
@@ -503,16 +407,10 @@ run = "uv run rlmesh-system run --profile perf --kind artifact --baseline target
 description = "Remove installed-artifact system venvs, logs, and reports"
 run = "uv run rlmesh-system clean"
 
-# The cockpit (protocol v2): one live session's channels, rates, timeline and
-# arm/e-stop. ADDRESS is what `rlmesh.realtime.Host.address` prints; `--replay FILE`
-# opens a recording instead.
 [tasks."cockpit"]
 description = "Open the cockpit on a running v2 session or a recording: mise run cockpit -- ADDRESS | --replay FILE"
 run = 'cargo run --release -p rlmesh-cockpit -- {{arg(name="args", var=true)}}'
 
-# ──────────────────────────────────────────────
-# Build
-# ──────────────────────────────────────────────
 [tasks."build"]
 description = "Build local Rust workspace and current-platform Python wheels"
 run = ["mise run build:rust", "mise run build:python"]
@@ -532,17 +430,6 @@ run = [
   "mise run build:python:wheel local",
   "python scripts/check_python_wheels.py python/rlmesh/dist --allow-local-platform-tags",
 ]
-
-# ──────────────────────────────────────────────
-# Release wheels
-# ──────────────────────────────────────────────
-# Full release matrix contains 14 wheels total, built by CI on tag push
-# (.github/workflows/release.yml): macOS wheels on a macOS runner, Linux/Windows
-# on a Linux runner.
-#   Python:  cp310-cp310 and cp311-abi3 for each platform
-#   macOS:   arm64, x86_64
-#   Linux:   glibc (x86_64, aarch64), musl (x86_64, aarch64)
-#   Windows: x86_64
 
 [tasks."release:python:wheels"]
 description = "Build release Python wheels supported by the current host"
@@ -603,10 +490,6 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set m
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
 env = { RLMESH_RELEASE_BUILD = "1" }
-# Packaged together, so the facade resolves rlmesh-session from this tree
-# and the CLI its optional cockpit. Skipped: the bindings' crates
-# (rlmesh-wasm, rlmesh-node, rlmesh-python: a wasm package, an addon and a
-# maturin wheel).
 run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wasm --exclude rlmesh-node --exclude rlmesh-python'
 
 [tasks."release:artifacts:licenses"]
@@ -626,9 +509,6 @@ run = [
   "mise run test:sandbox:docker --require",
 ]
 
-# ──────────────────────────────────────────────
-# Versioning + release driver
-# ──────────────────────────────────────────────
 [tasks.bump]
 description = "Bump the version across every manifest (X.Y.Z or X.Y.Z-{alpha,beta,rc}.N)"
 run = 'python scripts/bump_version.py {{arg(name="version")}}'
@@ -641,15 +521,11 @@ run = "python scripts/changelog_draft.py"
 description = "Release driver: bump, gate, tag (pass args after --, e.g. -- 0.2.0 --dry-run)"
 run = 'python scripts/release.py {{arg(name="version", var=true)}}'
 
-# Per-target wheel builds live in the parametrized file task
-# .mise/tasks/build/python/wheel (task: build:python:wheel <target>).
-
 [tasks."parity:check"]
 description = "Check the reviewed Stable Python to Rust/C/C++ parity manifest"
 run = [
   "uv run pytest tools/rlmesh_api_surface/tests -q",
   "uv run python -m rlmesh_api_surface.parity",
-  # Manifest defaults against live Python; needs no built fixtures, unlike the rest of tests/parity.
   "uv run pytest tests/parity/test_defaults_generator.py -q",
 ]
 

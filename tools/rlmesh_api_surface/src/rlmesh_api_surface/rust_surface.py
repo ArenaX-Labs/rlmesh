@@ -28,7 +28,6 @@ from rlmesh_api_surface.api_surface import (
 # it fails here with a clear message instead of producing a wrong reference.
 RUSTDOC_FORMAT_VERSION = 61
 
-# Item kinds that are documented as pages, by their rustdoc JSON key.
 _EXPORT_KINDS = {
     "struct": "struct",
     "enum": "enum",
@@ -52,7 +51,6 @@ class RustSurfaceConfig:
     source_repo: str
     source_commit: str | None
     document_hidden: bool = False
-    #: The facade's cargo features to document: the surface its users build.
     features: tuple[str, ...] = ()
 
 
@@ -62,7 +60,6 @@ def collect_rust_api_surface(
     config: RustSurfaceConfig,
     json_dir: Path | None = None,
 ) -> list[ApiModule]:
-    """Document the facade crate (building rustdoc JSON unless `json_dir` holds it)."""
     loader = _CrateLoader(
         repo_root,
         json_dir,
@@ -170,7 +167,6 @@ class _CrateLoader:
 
 
 def _cargo_workspace(repo_root: Path) -> tuple[set[str], Path]:
-    """The workspace's package names and its target dir (where rustdoc writes `doc/`)."""
     metadata = json.loads(
         subprocess.run(
             ["cargo", "metadata", "--format-version", "1", "--no-deps"],
@@ -367,7 +363,6 @@ class _FacadeWalker:
         inner = item["inner"][kind]
         members: list[ApiMember] = []
         if kind in ("struct", "union"):
-            # Only named fields are listed; a tuple struct's fields read as its signature.
             if kind == "union":
                 fields = inner.get("fields", [])
             elif isinstance(inner["kind"], dict) and "plain" in inner["kind"]:
@@ -518,7 +513,6 @@ def _canonical_path(paths: list[str]) -> str:
     `rlmesh::spaces::SpaceSpec` beats the module-wide `rlmesh::spaces::types::SpaceSpec`.
     First seen wins a tie.
     """
-    # The prelude is a convenience alias, never an item's canonical home.
     paths = [
         path for path in paths if not path.startswith("rlmesh::prelude::")
     ] or paths
@@ -538,14 +532,11 @@ def _kind(item: dict[str, Any]) -> str:
     return next(iter(item["inner"]))
 
 
-# ---- documentation ---------------------------------------------------------
-
 _LINK = re.compile(r"\[([^\[\]]+)\](\(([^()]*)\)|\[([^\[\]]*)\])?")
 _FENCE = re.compile(r"^(\s*)```(.*)$")
 
 
 def _rust_docs(item: dict[str, Any], crate: _Crate) -> str:
-    """Item docs as plain Markdown: intra-doc links unwrapped, doctests tidied."""
     docs = item.get("docs") or ""
     links: dict[str, Any] = item.get("links") or {}
     return _tidy_doctests(_unwrap_intra_doc_links(docs, links)).strip()
@@ -616,9 +607,6 @@ def _first_sentence(docs: str) -> str:
     paragraph = docs.split("\n\n", 1)[0].replace("\n", " ").strip()
     match = re.match(r"(.+?[.!?])(\s|$)", paragraph)
     return match.group(1) if match else paragraph
-
-
-# ---- signatures ------------------------------------------------------------
 
 
 def _item_signature(item: dict[str, Any], name: str, crate: _Crate) -> str:
@@ -728,7 +716,6 @@ def _generics(generics: dict[str, Any] | None) -> tuple[str, str]:
     for predicate in generics.get("where_predicates", []):
         if "bound_predicate" in predicate:
             bound = predicate["bound_predicate"]
-            # `for<'a> &'a T: Trait` carries its binder on the predicate itself.
             hrtb = _hrtb(bound.get("generic_params", []))
             predicates.append(f"{hrtb}{_ty(bound['type'])}: {_bounds(bound['bounds'])}")
         elif "lifetime_predicate" in predicate:
@@ -767,8 +754,6 @@ def _hrtb(params: list[dict[str, Any]]) -> str:
 
 
 def _path(path: dict[str, Any]) -> str:
-    # A path written relative to its defining crate (`crate::dtype::DType`,
-    # `super::Metric`) means nothing at the facade, so it renders as its name.
     name = path["path"]
     if name.split("::", 1)[0] in ("crate", "super", "self"):
         name = name.rsplit("::", 1)[-1]

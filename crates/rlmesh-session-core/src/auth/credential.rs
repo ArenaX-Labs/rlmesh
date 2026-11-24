@@ -1,5 +1,4 @@
-//! A participant's credential and the IK handshake it runs: what it
-//! attaches with.
+//! A participant's credential and the IK handshake it runs: what it attaches with.
 
 use super::local_keypair;
 use crate::crypto::StaticKeypair;
@@ -10,8 +9,8 @@ use crate::wire::codec;
 use crate::wire::version::WIRE_REVISION;
 use crate::wire::{HandshakeAccept, HandshakeRequest, ParticipantId};
 
-/// What a participant attaches with: its device's static key and the
-/// host's static public key.
+/// What a participant attaches with: its device's static key and the host's static public
+/// key.
 #[derive(Clone)]
 pub struct Credential {
     device: StaticKeypair,
@@ -27,8 +26,6 @@ impl core::fmt::Debug for Credential {
     }
 }
 
-/// Two credentials are one when they hold the same device key for the
-/// same host.
 impl PartialEq for Credential {
     fn eq(&self, other: &Self) -> bool {
         self.device.public() == other.device.public() && self.host_static == other.host_static
@@ -46,14 +43,14 @@ impl Credential {
         }
     }
 
-    /// The `local` device of an embedded host, from its address: the local
-    /// secret and the host's static public key.
+    /// The `local` device of an embedded host, from its address: the local secret and the
+    /// host's static public key.
     pub fn local(secret: &[u8; 32], host_static: [u8; 32]) -> Self {
         Self::new(local_keypair(secret), host_static)
     }
 
-    /// The same device's key against another host's static key: a robot's
-    /// IK with a satellite's run host, whose key its `Join` names.
+    /// The same device's key against another host's static key: a robot's IK with a satellite's
+    /// run host, whose key its `Join` names.
     pub fn with_host(&self, host_static: [u8; 32]) -> Self {
         Self::new(self.device.clone(), host_static)
     }
@@ -68,10 +65,9 @@ impl Credential {
         &self.host_static
     }
 
-    /// Starts a handshake as `participant` with the host instance
-    /// `host_instance` (read from the public `host/state`; a wrong value
-    /// only makes the handshake fail): the state and msg 1, which carries
-    /// this build's [`WIRE_REVISION`].
+    /// Starts a handshake as `participant` with the host instance `host_instance` (read from
+    /// the public `host/state`; a wrong value only makes the handshake fail): the state and msg
+    /// 1, which carries this build's [`WIRE_REVISION`].
     ///
     /// # Errors
     /// [`HandshakeError`].

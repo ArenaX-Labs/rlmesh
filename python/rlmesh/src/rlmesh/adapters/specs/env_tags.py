@@ -2,18 +2,14 @@
 
 An environment tags its observation entries and action layout with
 *semantic roles* and the few facts the spaces cannot express (image axis
-layout, rotation encoding, an explicit value range). Everything else --
-keys, widths, dtypes, bounds -- is read from the gymnasium observation and
-action spaces at resolve time by the native ``join`` step. This is the
-asymmetry with the model side: models fully specify their payload
-(:class:`~rlmesh.adapters.ModelSpec`), environments only tag.
+layout, rotation encoding, an explicit value range). Keys, widths, dtypes and
+bounds are read from the gymnasium spaces at resolve time. Models fully specify
+their payload (:class:`~rlmesh.adapters.ModelSpec`); environments only tag.
 
-``observation`` is a recursive tree whose container type *is* the runtime
-container type: a Python ``dict`` maps a ``Dict`` space, a Python ``tuple``
-maps a ``Tuple`` space, and a bare leaf (an :class:`ImageTag`, :class:`StateTag`,
-:class:`TextTag`, or :class:`Split`) tags a single space leaf. There are no
-dotted keys and no magic root sentinel: nesting is real Python ``dict``
-nesting, and a single-leaf observation is a bare leaf.
+``observation`` is a recursive tree whose container type is the runtime
+container type: a ``dict`` maps a ``Dict`` space, a ``tuple`` maps a ``Tuple``
+space, and a bare leaf (an :class:`ImageTag`, :class:`StateTag`,
+:class:`TextTag`, or :class:`Split`) tags a single space leaf.
 """
 
 from __future__ import annotations
@@ -49,9 +45,7 @@ class ImageTag:
         upside_down: Whether the image is rendered rotated 180 degrees
             (a true rotation, not a vertical flip) relative to the canonical
             upright orientation. Declared on both ends; the adapter flips only
-            when the env and the model disagree. (If a second orientation is
-            ever needed, this should become a constrained string like ``dtype``,
-            not a wider ``bool``.)
+            when the env and the model disagree.
         part: The body part this camera sits on, when the role repeats across
             a body (``"head"``, ``"left_arm"``, ...). An identity key the
             resolver matches on, never a value it checks. Keyword-only and
@@ -176,10 +170,7 @@ class Field:
     part: str | None = field(default=None, kw_only=True)
     labels: Sequence[str] | None = field(default=None, kw_only=True)
     polarity: Polarity | None = field(default=None, kw_only=True)
-    # The `dim = 0` default only satisfies dataclass field ordering (the optional
-    # `role` precedes it); 0 is never a valid width, so it is rejected at
-    # construction below (matching the Rust Field codec's `dim >= 1` guard).
-    # The role-less-skip rule (a skip carries no encoding/range) stays Rust-side.
+    # dim = 0 only satisfies dataclass field ordering; it is rejected below (dim >= 1).
 
     def __post_init__(self) -> None:
         if self.dim < 1:
@@ -211,11 +202,7 @@ class Split:
 
     Construction rejects a ``(role, part, provenance)`` declared by more than
     one field (a role may repeat across parts or provenances, never within one
-    key). The
-    authoritative Rust codec enforces the same rule at the wire door;
-    duplicating it here is deliberate (the fail-fast-at-construction exception,
-    like ``Field``'s ``dim >= 1`` check), so the author's own mistake surfaces
-    at the authoring line instead of at serialize/resolve.
+    key).
 
     Attributes:
         fields: State fields in vector order.
@@ -236,13 +223,8 @@ class Split:
         object.__setattr__(self, "fields", tuple(fields))
 
 
-# An observation leaf: tags a single space leaf.
 ObsLeaf: TypeAlias = ImageTag | StateTag | TextTag | Split
 
-# A recursive observation tree: a leaf, a Dict (mapping of str to subtree), or a
-# Tuple (positional sequence of subtrees). The container type *is* the runtime
-# container type. ``Mapping``/``Sequence`` here are the authored forms; a bare
-# leaf is the single-leaf case.
 ObsNode: TypeAlias = "ObsLeaf | Mapping[str, ObsNode] | tuple[ObsNode, ...]"
 
 
@@ -253,7 +235,6 @@ def _field_to_dict(field: Field) -> dict[str, Any]:
         "encoding": field.encoding,
         "range": list(field.range) if field.range else None,
     }
-    # Additive: emitted only when set, so pre-`frame` tags stay byte-identical.
     if field.frame is not None:
         out["frame"] = field.frame
     if field.provenance is not None:
@@ -268,7 +249,6 @@ def _field_to_dict(field: Field) -> dict[str, Any]:
 
 
 def _field_from_dict(item: Mapping[str, Any]) -> Field:
-    # Canonical (Rust-validated) data: `dim` is present and >= 1.
     return Field(
         role=item.get("role"),
         dim=int(item["dim"]),
@@ -334,9 +314,6 @@ def obs_node_to_dict(node: ObsNode) -> Any:
     return encode_node(node, _leaf_to_dict, _is_obs_leaf, "observation")
 
 
-# The leaf-vocabulary `type` discriminants that mark a JSON object as a leaf
-# rather than a Dict node (mirrors the Rust ``OBS_LEAF_TYPES``); the env side
-# adds ``split`` to the shared common vocabulary.
 _OBS_LEAF_TYPES = COMMON_LEAF_TYPES | {"split"}
 
 
@@ -400,8 +377,6 @@ class ObservationRoles:
     texts: tuple[str, ...] = ()
 
 
-# A leaf's identity: ``(role, part, provenance)``; an image or text carries no
-# provenance.
 _RolePart: TypeAlias = tuple[str, str | None, str | None]
 
 
@@ -413,11 +388,9 @@ def _walk_observation_roles(
 ) -> None:
     """Collect declared ``(role, part, provenance)`` keys from an observation tag tree, in declaration order.
 
-    Handles the three node shapes of ``ObsNode``: a Dict node (mapping), a Tuple
-    node, and a bare leaf. A role-less (skip) :class:`Field` produces nothing;
-    a leaf without a part or provenance carries ``None``. Any other node (e.g. a ``list``
-    container) raises the same ``TypeError`` the wire encoder raises for that
-    tree, so the walker cannot silently accept a tree ``to_dict`` rejects.
+    A role-less (skip) :class:`Field` produces nothing; a leaf without a part or
+    provenance carries ``None``. Any other node (e.g. a ``list``) raises the
+    same ``TypeError`` the wire encoder does.
     """
     if isinstance(node, Mapping):
         for child in cast("Mapping[str, Any]", node).values():
@@ -462,14 +435,9 @@ class EnvTags:
     def __post_init__(self) -> None:
         """Fail fast on a duplicate observation ``(role, part, provenance)`` at construction.
 
-        Every consumer's resolve indexes env features by role, part and
-        provenance per kind and rejects a duplicate, so tags that declare one
-        can never resolve; catch it here (width-independently -- a vector env
-        skips space-width checks but a duplicate is invalid regardless),
-        extending the same fail-fast-at-construction pattern as ``Split``'s
-        duplicate-field check. A role may repeat across parts (one
-        ``proprio/eef_pos`` per arm) or provenances (a sim's truth beside its
-        estimate), never within one key.
+        Resolve rejects a duplicate, so such tags can never resolve. A role may
+        repeat across parts (one ``proprio/eef_pos`` per arm) or provenances
+        (a sim's truth beside its estimate), never within one key.
         """
         images: list[_RolePart] = []
         states: list[_RolePart] = []
@@ -491,11 +459,9 @@ class EnvTags:
     def __hash__(self) -> int:
         """Hash consistently with the generated order-insensitive ``__eq__``.
 
-        ``observation`` can be a Dict node (an unhashable Python ``dict``), so
-        the dataclass-default field hash would fail even though the tags are
-        frozen and compare by value -- and ``__eq__`` compares Dict nodes
-        without regard to key order, so the hash must not depend on it either.
-        Hash a key-order-canonical rendering (see :func:`hashable_node`).
+        Hashes a key-order-canonical rendering (see :func:`hashable_node`),
+        since a Dict node is an unhashable ``dict`` and ``__eq__`` ignores key
+        order.
         """
         return hash((hashable_node(self.observation), self.action))
 
@@ -533,9 +499,7 @@ class EnvTags:
 
     def to_json(self) -> str:
         """Return these tags serialized as a JSON string."""
-        # allow_nan=False: refuse to emit the non-RFC-8259 `Infinity`/`NaN`
-        # tokens the Rust serde codec rejects (a directly-constructed dataclass
-        # bypasses the from_dict finiteness guards).
+        # allow_nan=False: the Rust serde codec rejects Infinity/NaN tokens.
         from ..._rlmesh import adapters_spec_normalize
 
         return adapters_spec_normalize(
@@ -572,11 +536,7 @@ class EnvTags:
     def from_metadata(cls, metadata: Mapping[str, Any]) -> EnvTags | None:
         """Extract tags from env contract metadata, or None when absent.
 
-        Reads the single v1 metadata key (``rlmesh.adapters.v1.env_tags``). When
-        a future v2 format lands it ships a new key and reader, restoring a
-        newest-format-first dual read so a newer build still reads an older
-        peer's v1 tags; that dispatch moves into the Rust codec (the single
-        source of truth) once the PyO3 normalize door lands.
+        Reads the v1 metadata key (``rlmesh.adapters.v1.env_tags``).
         """
         payload = metadata.get(ENV_METADATA_KEY)
         if payload is None:

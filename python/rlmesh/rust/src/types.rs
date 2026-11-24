@@ -1,5 +1,3 @@
-//! Python exception types, error conversions, and payload-size accounting.
-
 use pyo3::create_exception;
 use pyo3::exceptions::{
     PyConnectionError, PyKeyboardInterrupt, PyOSError, PyRuntimeError, PyTimeoutError, PyTypeError,
@@ -12,7 +10,6 @@ use rlmesh::{
 };
 use rlmesh_spaces::SpaceValue;
 
-// Custom exception types for RLMesh-specific errors
 create_exception!(
     _rlmesh,
     RLMeshException,
@@ -50,9 +47,6 @@ create_exception!(
      one request as recoverable."
 );
 
-/// `ModelException(message, *, is_recoverable=False)`: the authoring
-/// constructor. Exception types made by `create_exception!` take positional
-/// arguments only, so the keyword is added as a Python `__init__`.
 const MODEL_EXCEPTION_INIT: &std::ffi::CStr = cr#"
 def __init__(self, message, *, is_recoverable=False):
     RLMeshException.__init__(self, message)
@@ -62,10 +56,6 @@ __init__.__qualname__ = "ModelException.__init__"
 ModelException.__init__ = __init__
 "#;
 
-/// `str(exc)` of an environment or model exception is `[CODE] message`
-/// (R-22, COR-P8): an authored `EnvironmentException("bad")` reads
-/// `[INTERNAL] bad`, as Rust, C and C++ spell the same error. `message` is
-/// what `BaseException.__str__` returns (the constructor's argument).
 const CODED_EXCEPTION_STR: &std::ffi::CStr = cr#"
 def __str__(self):
     return f"[{self.code}] {BaseException.__str__(self)}"
@@ -91,7 +81,7 @@ pub(crate) fn raw_exception_text(value: &Bound<'_, PyAny>) -> String {
     raw.unwrap_or_default()
 }
 
-/// The wire message of an author's exception (COR-27): an environment or
+/// The wire message of an author's exception: an environment or
 /// model exception's raw message, `str(exc)` for any other; no phase or type
 /// name, since the receiver adds `[CODE] ` once.
 pub(crate) fn py_err_text(err: &PyErr) -> String {
@@ -99,9 +89,6 @@ pub(crate) fn py_err_text(err: &PyErr) -> String {
 }
 
 /// Convert rlmesh facade Error to Python exception.
-///
-/// Note: We can't implement `From<Error> for PyErr` due to orphan rules,
-/// so we use this helper function instead.
 pub fn to_py_err(err: Error) -> PyErr {
     match err {
         Error::Attached(attached) => Python::attach(|py| {
@@ -121,16 +108,10 @@ pub fn to_py_err(err: Error) -> PyErr {
         Error::Connection(message) => PyConnectionError::new_err(message),
         error @ Error::Timeout(_) => PyTimeoutError::new_err(error.to_string()),
         error @ Error::Cancelled => PyKeyboardInterrupt::new_err(error.to_string()),
-        // rlmesh::Error is #[non_exhaustive].
         other => RLMeshException::new_err(other.to_string()),
     }
 }
 
-/// `typed(base, name)`: the subclass of `base` (an Environment exception)
-/// and the builtin exception class `name` a client raises for an env that
-/// raised `name`, made once per pair. Its `str()` is the env's own message,
-/// as the builtin's is. `None` for a name that is no builtin exception class, or one
-/// whose layout cannot share a subclass with `base`.
 const TYPED_EXCEPTION: &std::ffi::CStr = cr#"
 import builtins
 
@@ -156,7 +137,6 @@ def typed(base, name):
 
 static TYPED: pyo3::sync::PyOnceLock<Py<PyAny>> = pyo3::sync::PyOnceLock::new();
 
-/// An instance of the typed exception for `class`, if one can be made.
 fn typed_exception<'py>(
     py: Python<'py>,
     base: Bound<'py, pyo3::types::PyType>,
@@ -174,9 +154,6 @@ fn typed_exception<'py>(
     if cls.is_none() {
         return None;
     }
-    // The env server leads a raised exception's message with the call that
-    // failed (`reset failed: boom`, ENV-35); the typed exception keeps the
-    // env's own message, and the call in `phase` and a note.
     let (phase, message) = match message.split_once(" failed: ") {
         Some((phase, rest)) if !phase.contains(' ') => (Some(phase), rest),
         _ => (None, message),
@@ -191,12 +168,7 @@ fn typed_exception<'py>(
     Some(exception)
 }
 
-/// Convert environment error to Python exception, carrying its `code` and
-/// `is_recoverable` as attributes. Every code raises the Environment family,
-/// including `TIMEOUT`, `INVALID_ACTION` and `CANCELLED`; one the env raised
-/// as a builtin class (`ValueError`) raises that class too.
 fn env_error_to_py(err: EnvironmentError) -> PyErr {
-    // The raw message: `str(exc)` adds the code (`[CODE] message`).
     let msg = err.message.clone();
     let typed = err.class.as_deref().and_then(|class| {
         Python::attach(|py| {
@@ -219,8 +191,6 @@ fn env_error_to_py(err: EnvironmentError) -> PyErr {
     py_err
 }
 
-/// Convert a model error to `ModelException`, carrying its `code` and
-/// `is_recoverable` as attributes.
 fn model_error_to_py(err: ModelError) -> PyErr {
     let py_err = ModelException::new_err(err.message.clone());
     annotate(&py_err, err.code.as_str(), err.is_recoverable);
@@ -230,14 +200,12 @@ fn model_error_to_py(err: ModelError) -> PyErr {
 fn annotate(py_err: &PyErr, code: &str, is_recoverable: bool) {
     Python::attach(|py| {
         let value = py_err.value(py);
-        // A failure only loses the annotation, never the error itself.
+        // A failure only loses the annotation, never the error.
         let _ = value.setattr("code", code);
         let _ = value.setattr("is_recoverable", is_recoverable);
     });
 }
 
-/// `ValueError`, or `rlmesh.adapters.AdapterResolutionError` (a `ValueError`)
-/// for an adapter-resolution failure.
 fn invalid_argument_to_py(err: InvalidArgumentError) -> PyErr {
     if err.adapter_resolution.is_some() {
         let adapter_error = Python::attach(|py| {
@@ -254,10 +222,8 @@ fn invalid_argument_to_py(err: InvalidArgumentError) -> PyErr {
     PyValueError::new_err(err.message)
 }
 
-/// The facade error a Python exception raised while resolving a route
-/// becomes: an `AdapterResolutionError` stays one, so the driver (local, or
-/// across the wire) raises the typed class; anything else is an internal
-/// failure with the exception's `Type: text`.
+/// The facade error a Python exception raised while resolving a route becomes: an
+/// `AdapterResolutionError` stays one; anything else is an internal failure.
 pub(crate) fn resolve_callback_error(err: &PyErr) -> Error {
     Python::attach(|py| {
         let value = err.value(py);
@@ -273,16 +239,9 @@ pub(crate) fn resolve_callback_error(err: &PyErr) -> Error {
     })
 }
 
-/// The traceback frames a served model's failure carries at most: the ones
-/// nearest the raise, where the model's own code failed.
 const SERVED_TRACEBACK_FRAMES: usize = 8;
-/// The most traceback text a served model's failure carries, in bytes.
 const SERVED_TRACEBACK_BYTES: usize = 4096;
 
-/// The formatted frames of `tb` from the model's own code on: the leading
-/// frames inside the `rlmesh` package (the glue that called the model) are
-/// left out, the ones under the model's code (a library it called, rlmesh's
-/// included) kept.
 fn model_frames(py: Python<'_>, tb: &Bound<'_, pyo3::types::PyTraceback>) -> PyResult<Vec<String>> {
     let traceback = py.import("traceback")?;
     let package = py
@@ -310,11 +269,6 @@ fn model_frames(py: Python<'_>, tb: &Bound<'_, pyo3::types::PyTraceback>) -> PyR
     traceback.call_method1("format_list", (kept,))?.extract()
 }
 
-/// What a model's callback raised outside the RLMesh error tree, as the
-/// driver reads it once the model is served elsewhere: `Type: message`
-/// (just `Type` for an `assert`, whose message is empty), then the last
-/// frames of its traceback, so the cause survives the model's process.
-/// Secrets in it read `…` ([`rlmesh_session::address::redact_text`]).
 fn foreign_exception_text(err: &PyErr) -> String {
     Python::attach(|py| {
         let value = err.value(py);
@@ -348,12 +302,9 @@ fn foreign_exception_text(err: &PyErr) -> String {
     })
 }
 
-/// The facade error a Python exception raised by a model callback becomes:
-/// a `ModelException` keeps its recoverable flag as a model failure with code
-/// `INTERNAL`; anything else is an internal failure naming the exception's
-/// type, with its message and its traceback's tail
-/// ([`foreign_exception_text`]). In process, the exception itself is
-/// raised; this text is what a model served elsewhere sends.
+/// The facade error a Python exception raised by a model callback becomes: a `ModelException`
+/// keeps its recoverable flag as a model failure with code `INTERNAL`; anything else is an
+/// internal failure with the exception type, message and traceback tail ([`foreign_exception_text`]).
 pub(crate) fn model_callback_error(err: &PyErr) -> Error {
     Python::attach(|py| {
         let value = err.value(py);
@@ -379,8 +330,6 @@ pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     m.add("RLMeshException", py.get_type::<RLMeshException>())?;
     m.add("ProtocolException", py.get_type::<ProtocolException>())?;
-    // Class-level defaults for an exception an env author raises; one the
-    // client raises carries the server's values on the instance.
     let environment = py.get_type::<EnvironmentException>();
     environment.setattr("code", ErrorCode::Internal.as_str())?;
     environment.setattr("is_recoverable", false)?;
@@ -427,11 +376,9 @@ mod tests {
         })
     }
 
-    /// (class name, str(exc), code, is_recoverable) of the raised exception.
     fn raised(err: Error) -> (String, String, Option<String>, Option<bool>) {
         let py_err = to_py_err(err);
         Python::attach(|py| {
-            // The class attributes and `__str__` the module installs.
             let module = PyModule::new(py, "_rlmesh_test").unwrap();
             register_exceptions(&module).unwrap();
             let value = py_err.value(py);
@@ -477,7 +424,6 @@ mod tests {
         assert_eq!(recoverable, Some(true));
         Python::attach(|py| {
             let value = to_py_err(Error::model("x")).into_value(py);
-            // The raw message is the argument; `str()` adds the code (COR-P8).
             let args = value.bind(py).getattr("args").unwrap();
             assert_eq!(args.get_item(0).unwrap().extract::<String>().unwrap(), "x");
             assert!(value.bind(py).is_instance_of::<RLMeshException>());

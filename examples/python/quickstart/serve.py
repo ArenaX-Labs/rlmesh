@@ -19,8 +19,6 @@ def main() -> None:
     import rlmesh
 
     class CounterEnv:
-        """Tiny single-agent environment used by the quickstart."""
-
         observation_space = rlmesh.spaces.Discrete(5)
         action_space = rlmesh.spaces.Discrete(2)
 

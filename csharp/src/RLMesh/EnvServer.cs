@@ -40,8 +40,7 @@ public sealed unsafe partial class EnvServer : IDisposable
         {
             record = NativeGate.Call(() =>
             {
-                // Encode before acquiring; an invalid option must still release
-                // the library-owned env through the constructor's outer catch.
+                // Encode before acquiring so an invalid option still releases the env via the outer catch.
                 byte[] address = Utf8.Encode(options?.Address ?? ":0/env", true);
                 byte[] host = Utf8.Encode(options?.Ext?.HostRuntimeJson ?? HostRuntime(), true);
                 borrow = env.Record.Acquire(env);
@@ -60,7 +59,6 @@ public sealed unsafe partial class EnvServer : IDisposable
                 }
                 var created = new NativeHandle((IntPtr)output, HandleKind.EnvServer, () =>
                 {
-                    // The borrow and wrapper remain rooted through native free.
                     System.Threading.Interlocked.CompareExchange(ref env.Record.HostedBy, null, record);
                     borrow.Dispose();
                     if (owns) env.Dispose();
@@ -72,8 +70,7 @@ public sealed unsafe partial class EnvServer : IDisposable
         }
         catch
         {
-            // Once the record owns the borrow, release the server first. This
-            // also covers OwnerToken allocation failure after native creation.
+            // Once the record owns the borrow, release the server first; this also covers OwnerToken allocation failure.
             if (record != null) record.CloseOwner(0, true);
             else
             {
@@ -85,8 +82,7 @@ public sealed unsafe partial class EnvServer : IDisposable
     }
     internal static string HostRuntime()
     {
-        // FrameworkDescription is available on both targets and distinguishes Mono
-        // without reflecting over the author's types or probing Type.GetType.
+        // FrameworkDescription is available on both targets and distinguishes Mono without reflection.
         string runtime = RuntimeInformation.FrameworkDescription.StartsWith("Mono", StringComparison.OrdinalIgnoreCase) ? "mono" : "dotnet";
         return "{\"language\":\"csharp\",\"framework_versions\":{\"" + runtime + "\":\"" + System.Environment.Version + "\"}}";
     }
@@ -96,7 +92,6 @@ public sealed unsafe partial class EnvServer : IDisposable
         RLMeshBytes bytes = default; Status.Check(Native.rlmesh_env_server_address(call.Server, &bytes));
         return Utf8.OwnedText(bytes);
     });
-    // What logs show: the address without its key, which Address hands over.
     public override string ToString() => NativeGate.Call(() =>
     {
         using var call = Record.Acquire(this);
@@ -120,8 +115,7 @@ public sealed unsafe partial class EnvServer : IDisposable
         bool acquired = false, deferred = false;
         try
         {
-            // A blocking Wait holds a counted reference, so free cannot signal
-            // shutdown until Wait returns. Protect that signal with its own lease.
+            // A blocking Wait holds a counted reference, so protect the shutdown signal with its own lease.
             call = Record.Acquire(this); acquired = true;
             if (CallbackContext.Depth > 0 || CallbackContext.LibraryThread)
             {

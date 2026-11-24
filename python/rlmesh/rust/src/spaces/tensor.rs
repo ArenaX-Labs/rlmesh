@@ -1,6 +1,3 @@
-// The Python buffer protocol (`__getbuffer__`/`__releasebuffer__`) is a raw FFI
-// contract over `Py_buffer`, so this module needs `unsafe`. It is the only place
-// in the crate that does; the workspace otherwise denies `unsafe_code`.
 #![allow(unsafe_code)]
 
 use pyo3::prelude::*;
@@ -13,18 +10,12 @@ use std::ptr;
 
 use super::utils::{dtype_name, parse_dtype_strict};
 
-/// Heap state kept alive for the duration of an exported buffer view,
-/// referenced from `Py_buffer.internal` and freed in `__releasebuffer__`.
 struct ViewState {
     shape: Vec<isize>,
     strides: Vec<isize>,
     format: Option<CString>,
 }
 
-/// Python `struct`-module format code for a dtype.
-///
-/// 64-bit integers use `"q"`/`"Q"`: the `"l"`/`"L"` codes are platform
-/// `long`, which is 32-bit on LLP64 targets such as Windows.
 fn buffer_format(dtype: DType) -> Option<&'static str> {
     match dtype {
         DType::Bool => Some("?"),
@@ -34,6 +25,7 @@ fn buffer_format(dtype: DType) -> Option<&'static str> {
         DType::Uint16 => Some("H"),
         DType::Int32 => Some("i"),
         DType::Uint32 => Some("I"),
+        // 64-bit integers use q/Q: l/L are the platform `long`, 32-bit on LLP64 targets such as Windows.
         DType::Int64 => Some("q"),
         DType::Uint64 => Some("Q"),
         DType::Float16 => Some("e"),
@@ -56,8 +48,6 @@ pub struct PyTensor {
 }
 
 impl PyTensor {
-    /// Copies `data` into fresh 64-byte-aligned storage so DLPack consumers
-    /// with alignment requirements (modern XLA) can share it zero-copy.
     fn from_parts(data: &[u8], shape: Vec<usize>, dtype: String) -> PyResult<Self> {
         let dtype_id = parse_dtype_strict(&dtype)?;
         let dims: Vec<i64> = shape.iter().map(|&dim| dim as i64).collect();
@@ -97,8 +87,6 @@ impl PyTensor {
         shape: Vec<usize>,
         dtype: String,
     ) -> PyResult<Self> {
-        // Borrow bytes objects directly so construction costs exactly one
-        // (aligned) copy; other buffer-likes go through tobytes() first.
         if let Ok(bytes) = buffer.cast::<pyo3::types::PyBytes>() {
             return Self::from_parts(bytes.as_bytes(), shape, dtype);
         }
@@ -182,10 +170,9 @@ impl PyTensor {
 
     /// Export the tensor as a DLPack capsule.
     ///
-    /// With `max_version` of `(1, 0)` or newer the capsule is a DLPack 1.0
-    /// `DLManagedTensorVersioned` flagged read-only; otherwise it is a
-    /// legacy `DLManagedTensor`. `copy=True` exports a fresh writable
-    /// buffer. Only `stream=None` and CPU `dl_device` are accepted.
+    /// With `max_version` of `(1, 0)` or newer the capsule is a read-only DLPack 1.0
+    /// `DLManagedTensorVersioned`; otherwise a legacy `DLManagedTensor`. `copy=True` exports a
+    /// fresh writable buffer. Only `stream=None` and a CPU `dl_device` are accepted.
     #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
     #[gen_stub(override_return_type(type_repr = "object", imports = ()))]
     fn __dlpack__<'py>(
@@ -236,12 +223,9 @@ impl PyTensor {
         PyBytes::new(py, &self.inner.to_contiguous_bytes())
     }
 
-    /// Expose the tensor to NumPy through the read-only buffer protocol so
-    /// `numpy.asarray(tensor)` is zero-copy and gym-style callers never need
-    /// an explicit conversion. Routes through a `memoryview` (not `self`
-    /// directly) to avoid recursing back into `__array__`. `dtype`/`copy`
-    /// follow the NumPy array protocol: a differing dtype or `copy=True`
-    /// yields a fresh array; `copy=False` raises if a copy would be required.
+    /// Expose the tensor to NumPy through the read-only buffer protocol, zero-copy. `dtype`/`copy`
+    /// follow the NumPy array protocol: a differing dtype or `copy=True` yields a fresh array;
+    /// `copy=False` raises if a copy would be required.
     #[gen_stub(skip)]
     #[pyo3(signature = (dtype=None, copy=None))]
     fn __array__<'py>(
@@ -257,8 +241,7 @@ impl PyTensor {
             kwargs.set_item("dtype", dtype)?;
         }
         match copy {
-            // The `copy` keyword reaches `__array__` only from NumPy >= 2.0,
-            // where `numpy.array(copy=False)` is the strict "never copy" form.
+            // `copy` reaches `__array__` only from NumPy >= 2.0, where copy=False means never copy.
             Some(copy) => {
                 kwargs.set_item("copy", copy)?;
                 numpy.call_method("array", (view,), Some(&kwargs))
@@ -340,8 +323,8 @@ impl PyTensor {
                 .format
                 .as_ref()
                 .map_or(ptr::null_mut(), |format| format.as_ptr() as *mut _);
-            // Without PyBUF_ND the protocol requires shape = NULL, and the
-            // consumer treats the buffer as a 1-D byte stream.
+            // Without PyBUF_ND the protocol requires shape = NULL, and the consumer treats the buffer as
+            // a 1-D byte stream.
             if (flags & pyo3::ffi::PyBUF_ND) == pyo3::ffi::PyBUF_ND {
                 (*view).ndim = ndim as c_int;
                 (*view).shape = state.shape.as_ptr() as *mut isize;

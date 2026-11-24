@@ -1,5 +1,5 @@
-//! The host's side: its identity, and per host instance the device table,
-//! the handshakes it answers and which generation is in effect.
+//! The host's side: its identity, and per host instance the device table, the handshakes it
+//! answers and which generation is in effect.
 
 use super::credential::Credential;
 use super::{HOST_ID_LABEL, KeyIssuer, LOCAL_DEVICE, address, local_keypair};
@@ -16,8 +16,8 @@ use crate::wire::{codec, version};
 use alloc::collections::BTreeMap;
 use zeroize::{Zeroize, Zeroizing};
 
-/// A host's long-lived keys: its static X25519 key, its Ed25519 signing
-/// key and, for an embedded host, the local secret its address carries.
+/// A host's long-lived keys: its static X25519 key, its Ed25519 signing key and, for an
+/// embedded host, the local secret its address carries.
 pub struct HostIdentity {
     pub(super) noise: StaticKeypair,
     sign: Zeroizing<[u8; 32]>,
@@ -53,10 +53,9 @@ impl HostIdentity {
         })
     }
 
-    /// The identity of these secrets (its static X25519 private key, its
-    /// Ed25519 seed and its local secret), which are wiped in place: what a
-    /// launcher hands the host it starts in a container (the
-    /// workload spec).
+    /// The identity of these secrets (its static X25519 private key, its Ed25519 seed and its
+    /// local secret), which are wiped in place: what a launcher hands the host it starts in a
+    /// container (the workload spec).
     pub fn from_secrets(noise: &mut [u8; 32], sign: &mut [u8; 32], local: &mut [u8; 32]) -> Self {
         let noise = StaticKeypair::from_private(noise);
         let sign_bytes = Zeroizing::new(*sign);
@@ -77,10 +76,8 @@ impl HostIdentity {
         self.noise.public()
     }
 
-    /// The host id: `rlm-` and 6 hex digits of
-    /// `BLAKE2s(lp("rlmesh/v2 host id") ‖ static key ‖ signing key)`. A
-    /// name for files and messages only: whoever pairs or is provisioned
-    /// keeps the static key itself.
+    /// The host id: `rlm-` and 6 hex digits of `BLAKE2s(lp("rlmesh/v2 host id") ‖ static key ‖
+    /// signing key)`.
     pub fn host_id(&self) -> String {
         let digest = hash_labelled(HOST_ID_LABEL, &[self.noise.public(), &self.sign_public])
             .unwrap_or_else(|_| unreachable!("a short label"));
@@ -92,16 +89,14 @@ impl HostIdentity {
         &self.local
     }
 
-    /// Copies its static X25519 private key and its Ed25519 seed into
-    /// `noise` and `sign`, for storage (rlmeshd's `host.key`); wiping them
-    /// is the caller's job.
+    /// Copies its static X25519 private key and its Ed25519 seed into `noise` and `sign`, for
+    /// storage (rlmeshd's `host.key`); wiping them is the caller's job.
     pub fn write_secrets(&self, noise: &mut [u8; 32], sign: &mut [u8; 32]) {
         self.noise.write_private(noise);
         sign.copy_from_slice(&self.sign[..]);
     }
 
-    /// The password of this host's gated links
-    /// ([`address::link_password`]).
+    /// The password of this host's gated links ([`address::link_password`]).
     pub fn link_password(&self) -> Zeroizing<String> {
         address::link_password(&self.local)
     }
@@ -122,9 +117,8 @@ impl HostIdentity {
     }
 }
 
-/// A device the host accepts handshakes from besides `local`: its id, its
-/// static public key and its entry. An embedded host takes
-/// them from its config; rlmeshd will read them from `devices.toml`.
+/// A device the host accepts handshakes from besides `local`: its id, its static public key
+/// and its entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     /// Its id (never `local`).
@@ -135,8 +129,8 @@ pub struct Device {
     pub access: crate::authority::DeviceAccess,
 }
 
-/// A handshake the host answered: keys for one participant generation,
-/// in effect once the host accepts its sealed `Attach`.
+/// A handshake the host answered: keys for one participant generation, in effect once the
+/// host accepts its sealed `Attach`.
 #[derive(Debug)]
 pub struct Candidate {
     /// The participant id it attaches as.
@@ -158,9 +152,8 @@ pub struct Candidate {
 pub struct Pin {
     /// The device that embodies it, checked at every handshake.
     pub device: String,
-    /// The tethered board behind that device, checked at every
-    /// `DeclareParts`; `None` leaves the board unchecked (a native board, or
-    /// a tethered one pinned by its device alone).
+    /// The tethered board behind that device, checked at every `DeclareParts`; `None` leaves
+    /// the board unchecked (a native board, or a tethered one pinned by its device alone).
     pub board_id: Option<[u8; 8]>,
 }
 
@@ -171,32 +164,21 @@ pub struct HostAuth {
     session: String,
     host_instance: u64,
     sign_public: [u8; 32],
-    /// Device static public key → device id.
     devices: BTreeMap<[u8; 32], String>,
-    /// Participant id → the device it is bound to, for this host instance.
     names: BTreeMap<ParticipantId, String>,
-    /// Robot name → its pin (rlmeshd's): the device, checked at
-    /// every handshake, and the board, at every declare.
     pins: BTreeMap<ParticipantId, Pin>,
-    /// Participant id → the generation in effect.
     current: BTreeMap<ParticipantId, u32>,
     last_generation: u32,
-    /// Every key besides the handshake's, and the one key-id counter.
     issuer: KeyIssuer,
-    /// The datagram path each handshake offers, if any.
     datagram: Option<DatagramOffer>,
 }
 
-/// A handshake that went wrong for a reason the initiator should hear (an
-/// unauthenticated hint).
 fn refused(status: CtlStatus, message: impl core::fmt::Display) -> CtlError {
     CtlError::new(status, message)
 }
 
 impl HostAuth {
-    /// Handshakes for one instance of `identity`'s host, serving `session`
-    /// of `tenant`. The device table holds `local`, every holder of the
-    /// host's address, and whatever [`Self::enroll`] adds.
+    /// Handshakes for one instance of `identity`'s host, serving `session` of `tenant`.
     pub fn new(identity: &HostIdentity, tenant: &str, session: &str, host_instance: u64) -> Self {
         let mut table = BTreeMap::new();
         table.insert(identity.local_public(), LOCAL_DEVICE.to_string());
@@ -215,8 +197,8 @@ impl HostAuth {
         }
     }
 
-    /// Offers `datagram` in every handshake from now on (`None`: offers
-    /// nothing, and participants keep every part on the session).
+    /// Offers `datagram` in every handshake from now on (`None`: offers nothing, and
+    /// participants keep every part on the session).
     pub fn offer_datagram(&mut self, datagram: Option<DatagramOffer>) {
         self.datagram = datagram;
     }
@@ -231,14 +213,13 @@ impl HostAuth {
         self.devices.insert(public, device.into());
     }
 
-    /// Refuses `device`'s handshakes from now on (it was revoked). The
-    /// names it is bound to stay bound, so they can't be taken.
+    /// Refuses `device`'s handshakes from now on (it was revoked).
     pub fn unenroll(&mut self, device: &str) {
         self.devices.retain(|_, id| id != device);
     }
 
-    /// Pins robot name `robot` (`None`: unpins it, and the name binds to
-    /// its next embodiment's device again): the pin it had.
+    /// Pins robot name `robot` (`None`: unpins it, and the name binds to its next embodiment's
+    /// device again): the pin it had.
     pub fn pin(&mut self, robot: &ParticipantId, pin: Option<Pin>) -> Option<Pin> {
         match pin {
             Some(pin) => {
@@ -252,9 +233,8 @@ impl HostAuth {
         }
     }
 
-    /// Whether `robot`, embodied by `device`, may declare its parts from
-    /// the board `board_id`: its pin names no board, or
-    /// this one.
+    /// Whether `robot`, embodied by `device`, may declare its parts from the board `board_id`:
+    /// its pin names no board, or this one.
     ///
     /// # Errors
     /// `NOT_AUTHORIZED` for another board, or none.
@@ -286,12 +266,10 @@ impl HostAuth {
         self.host_instance
     }
 
-    /// Answers msg 1 with the device's cap from `access`: msg 2 and the
-    /// candidate, or the refusal to send back
-    /// (`INCOMPATIBLE` for a participant on another wire revision,
-    /// `UNAUTHENTICATED` for an unknown device or a message that fails to
-    /// authenticate, `NOT_AUTHORIZED` for a participant id bound to another
-    /// device).
+    /// Answers msg 1 with the device's cap from `access`: msg 2 and the candidate, or the
+    /// refusal to send back (`INCOMPATIBLE` for a participant on another wire revision,
+    /// `UNAUTHENTICATED` for an unknown device or a message that fails to authenticate,
+    /// `NOT_AUTHORIZED` for a participant id bound to another device).
     ///
     /// # Errors
     /// The refusal.
@@ -389,9 +367,8 @@ impl HostAuth {
         self.current.get(participant).copied()
     }
 
-    /// Whether generation `generation` of `participant` (on `device`) may
-    /// take effect: it is above the one in effect, and the name is free or
-    /// bound to its device. Checked before its `Attach` is applied.
+    /// Whether generation `generation` of `participant` (on `device`) may take effect: it is
+    /// above the one in effect, and the name is free or bound to its device.
     ///
     /// # Errors
     /// `UNAUTHENTICATED` for a superseded candidate, `NOT_AUTHORIZED` for a
@@ -411,9 +388,8 @@ impl HostAuth {
         self.check_name(participant, device)
     }
 
-    /// Generation `generation`'s accepted `Attach` made it the one in
-    /// effect, and bound the name to `device` for this host instance. Every
-    /// older generation of the participant is superseded from now on.
+    /// Generation `generation`'s accepted `Attach` made it the one in effect, and bound the
+    /// name to `device` for this host instance.
     pub fn take_effect(&mut self, participant: &ParticipantId, device: &str, generation: u32) {
         self.current.insert(participant.clone(), generation);
         self.names

@@ -21,10 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cargo:rerun-if-changed={}",
         root.join(RETAINED_EDITIONS_FILE).display()
     );
-    // `.git` is a file, not a directory, in a worktree checkout, so `.git/HEAD`
-    // does not exist there and watching it would rerun this script on every
-    // build. Ask git where HEAD actually lives and watch only a real path, and
-    // only when this is the rlmesh checkout (see `workflow_cohort`).
+    // `.git` is a file in a worktree, so `.git/HEAD` does not exist there: ask git where HEAD lives and watch only a real path.
     if repo_root.join("rlmesh.toml").exists()
         && let Some(head) = git_output(repo_root, &["rev-parse", "--git-path", "HEAD"])
     {
@@ -74,7 +71,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-env=RLMESH_BUILD_SOURCE={}", cohort.source);
 
     let spec = root.join("proto");
-    // prost-build emits no rerun-if-changed for its inputs; watch the tree.
     println!("cargo:rerun-if-changed={}", spec.display());
     tonic_prost_build::configure()
         .build_client(false)
@@ -83,23 +79,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "rlmesh.model.v1.JoinRequest.kind",
             "#[allow(clippy::large_enum_variant)]",
         )
-        // The SpaceValue leaves carry tensor bytes; generate each leaf as a
-        // refcounted `bytes::Bytes` so the codec can share the tensor's storage
-        // (zero-copy) instead of copying element bytes into the message.
         .bytes(".rlmesh.spaces.v1.SpaceValue.leaves")
         .compile_protos(
             &[
-                // Core
                 spec.join("rlmesh/core/v1/env_contract.proto"),
                 spec.join("rlmesh/core/v1/handshake.proto"),
-                // Env
                 spec.join("rlmesh/env/v1/interaction.proto"),
-                // Spaces
                 spec.join("rlmesh/spaces/v1/meta.proto"),
                 spec.join("rlmesh/spaces/v1/spaces.proto"),
                 spec.join("rlmesh/spaces/v1/types.proto"),
                 spec.join("rlmesh/spaces/v1/value.proto"),
-                // Model
                 spec.join("rlmesh/model/v1/interaction.proto"),
             ],
             &[spec],
@@ -114,8 +103,6 @@ struct WorkflowCohort {
     dev_token: Option<String>,
 }
 
-/// The manifest's `base_edition`, else the base of the packaged current edition
-/// (a published crate ships no `rlmesh.toml`).
 fn workflow_edition_base(repo_root: &Path, packaged_current: &str) -> String {
     if let Ok(base) = std::env::var("RLMESH_WORKFLOW_EDITION_BASE")
         && !base.trim().is_empty()
@@ -130,10 +117,6 @@ fn workflow_edition_base(repo_root: &Path, packaged_current: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The crate's `supported_editions.txt`: the official current edition on the
-/// first line, then every other retained edition (sealed ones under their bare
-/// `YYYY.MM` names), one per line. Every build reads it; a repo build also
-/// requires it to be `rlmesh.toml`'s `[workflow]` list in that order.
 fn retained_workflow_editions(root: &Path, repo_root: &Path) -> Result<Vec<String>, String> {
     let retained_path = root.join(RETAINED_EDITIONS_FILE);
     let retained: Vec<String> = std::fs::read_to_string(&retained_path)
@@ -168,10 +151,6 @@ fn retained_workflow_editions(root: &Path, repo_root: &Path) -> Result<Vec<Strin
     Ok(retained)
 }
 
-/// Workflow editions this build offers, `current_edition` first, then the
-/// retained editions. The official current edition (the file's first line) is
-/// dropped from the tail: this build's cohort already leads the list, and a dev
-/// or recohorted build must not claim the official release cohort.
 fn supported_workflow_editions(retained: Vec<String>, current_edition: &str) -> Vec<String> {
     let mut editions = vec![current_edition.to_string()];
     editions.extend(
@@ -201,10 +180,6 @@ fn workflow_cohort(repo_root: &Path, version: &str) -> WorkflowCohort {
         };
     }
 
-    // A published crate ships build.rs but not the repo's rlmesh.toml. Without
-    // this guard, git discovery walks up from the registry/vendor directory into
-    // whatever repo happens to contain the consumer's build tree and stamps a dev
-    // cohort from *their* commit, which no released peer can negotiate with.
     if !repo_root.join("rlmesh.toml").exists() {
         return WorkflowCohort {
             name: release_cohort_name(version),

@@ -14,7 +14,6 @@ import type { ConnectOptions } from './types.js';
 
 export * from './index.js';
 
-/** Compile the wasm once on the main thread; every class Worker instantiates the same Module. */
 async function compile(url: URL): Promise<WebAssembly.Module> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
@@ -47,10 +46,7 @@ export function browserPlatform(opts: ConnectOptions = {}): Platform {
 
 const TOKEN_KEY = 'rlmesh.token';
 
-/**
- * The token of the gateway serving this page: `#t=…` in the page URL, which never reaches a server, is
- * moved to `sessionStorage` (and out of the URL and its history entry); else the one kept there.
- */
+/** The gateway token: `#t=…` from the page URL (moved to `sessionStorage`), else the one kept there. */
 function pageToken(): string | undefined {
   const t = new URLSearchParams(location.hash.slice(1)).get('t');
   if (t) {
@@ -61,9 +57,9 @@ function pageToken(): string | undefined {
 }
 
 /**
- * Join a session through its gateway. `url` is the gateway's base `ws://`/`wss://` URL; it defaults to
- * the page's own origin, with the token from the page URL's fragment (`#t=…`) unless `opts.token` is
- * given. Resolves once the declarations and a first clock estimate have arrived.
+ * Join a session through its gateway. `url` defaults to the page's own origin, with the token from the
+ * URL fragment (`#t=…`) unless `opts.token` is given. Resolves once the declarations and a first
+ * clock estimate have arrived.
  */
 export function connect(url?: string, opts: ConnectOptions = {}): Promise<Session> {
   const base = url ?? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;

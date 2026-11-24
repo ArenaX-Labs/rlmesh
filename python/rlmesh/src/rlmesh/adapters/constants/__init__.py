@@ -1,12 +1,9 @@
 """Shared adapter constants: semantic roles, body parts and metadata keys.
 
-Metadata keys are versioned like protobuf packages: within ``v1`` the JSON spec
-format evolves additively only (new optional fields with defaults), and a
-breaking format change ships under a new ``v2`` key. Publishers may carry
-multiple versions in one metadata mapping during a migration; readers dispatch
-on the key alone, without parsing payloads. Both the keys and the role
-vocabulary are defined once in the ``rlmesh-adapters`` crate and re-exported here
-through the native bindings.
+Metadata keys are versioned: within ``v1`` the JSON spec format evolves
+additively only, and a breaking change ships under a new key. Readers dispatch
+on the key alone. Keys and roles are defined in the ``rlmesh-adapters`` crate
+and re-exported through the native bindings.
 """
 
 from ..._rlmesh import (

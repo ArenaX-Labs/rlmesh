@@ -1,24 +1,4 @@
-"""The Gymnasium face of the NumPy remote clients.
-
-With gymnasium installed, :class:`rlmesh.numpy.RemoteEnv` is a
-``gymnasium.Env`` and :class:`rlmesh.numpy.RemoteVectorEnv` a
-``gymnasium.vector.VectorEnv``, over realtime sessions. This
-module rebuilds the env's own spaces from its contract and converts values
-at the boundary, so code written against Gymnasium cannot tell the
-difference:
-
-- observations: a ``Discrete`` leaf is its space's NumPy integer, a
-  ``MultiBinary`` leaf ``int8``, as Gymnasium's own spaces sample them;
-- a vector env's ``info``: each per-lane list (length ``num_envs``) is an
-  array again, as ``gymnasium.vector`` builds it (the wire's info values
-  have no array type, so NumPy picks the dtype);
-- actions: a plain array, list or scalar is cast to the space's dtype when
-  the cast keeps the kind (``float64`` for a ``float32`` Box, ``np.int32``
-  for a ``Discrete``), and refused with the leaf named when it does not
-  (a float for an integer space) or when its shape does not fit.
-
-Not part of the public API.
-"""
+"""The Gymnasium face of the NumPy remote clients."""
 
 from __future__ import annotations
 
@@ -31,7 +11,7 @@ from ..specs import SpaceSpec
 
 try:
     import gymnasium as gym
-except ImportError:  # pragma: no cover - optional
+except ImportError:  # pragma: no cover
     gym = None
 
 if TYPE_CHECKING:
@@ -45,7 +25,7 @@ if TYPE_CHECKING:
 elif gym is not None:
     GymEnv = gym.Env
     GymVectorEnv = gym.vector.VectorEnv
-else:  # pragma: no cover - without gymnasium the clients are plain classes
+else:  # pragma: no cover
     GymEnv = GymVectorEnv = object
 
 __all__ = [

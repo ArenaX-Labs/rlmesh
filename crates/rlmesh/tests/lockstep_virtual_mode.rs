@@ -1,7 +1,3 @@
-//! The virtual clock's run loop on a session host in virtual mode:
-//! a seeded latency model gives the same schedule twice, and a stalled
-//! barrier ends the episode `interrupted: TIMEOUT`.
-
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
@@ -43,14 +39,10 @@ impl World {
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);
         config.health_log = None;
-        // The schedule is under test, not lapses: a loaded host can starve a
-        // holder's heartbeats past the default grace, ending its lease (and
-        // its key) mid-run.
         config.lease_grace = Duration::from_secs(5);
         config.presence_grace = Duration::from_secs(5);
         config.virtual_clock = Some(VirtualConfig {
             tick_ns: TICK_NS,
-            // d is the controller's (the seeded model below).
             latency_ticks: 0,
             barrier_timeout_ns: u64::try_from(barrier_timeout.as_nanos()).unwrap(),
         });
@@ -79,7 +71,6 @@ impl World {
     }
 }
 
-/// (tick, d, t0, the step its chunk is listed on).
 type Schedule = Vec<(u64, u64, i64, u64)>;
 
 async fn run(seed: u64, ticks: u64) -> Schedule {
@@ -98,7 +89,6 @@ async fn run(seed: u64, ticks: u64) -> Schedule {
         .wait_for("armed", WAIT, |s| s.epoch >= armed.epoch)
         .await
         .unwrap();
-    // 500 Hz on 1 ms ticks: due every second tick.
     policy
         .declare_binding(Fingerprint::from(seed), "{}", vec![arm], 500.0)
         .await
@@ -131,8 +121,6 @@ async fn run(seed: u64, ticks: u64) -> Schedule {
             let mut sent = None;
             let (k, due) = controller
                 .decide(&policy, &mut policy_ticks, WAIT, |decision| {
-                    // The faulted inputs are the seeded verdicts on the
-                    // watermarked samples.
                     let expected: Vec<_> = decision
                         .state
                         .watermarks
@@ -256,11 +244,9 @@ async fn a_stalled_barrier_ends_the_episode_interrupted_timeout() {
         .declare_binding(Fingerprint::from(1), "{}", vec![arm], 500.0)
         .await
         .unwrap();
-    // ACTIVE: a timeout then takes the session to SAFE.
     let _lease = policy.grant_lease(arm, None).await.unwrap();
     let mut robot_ticks = robot.virtual_ticks().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    // The policy is due at tick 0 and never decides.
     let err = robot_tick(
         &robot,
         &mut robot_ticks,

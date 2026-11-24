@@ -1,19 +1,7 @@
-//! Lane sessions: one driver per lane over a shared, lane-capable env.
-
 use super::*;
-
-// ---------------------------------------------------------------------------
-// Lane sessions: one driver per lane over a shared, lane-capable env.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn an_abandoned_predict_at_route_end_sends_no_evict() {
-    // One lane, a two-frame chunk with lead 1, so the episode's last step runs
-    // from replay while the prefetch is in flight: that prefetch is gated for
-    // good, and the ended episode's eviction is held behind it. Cancelling
-    // leaves the driver draining a predict that never lands, and the endpoint
-    // that just missed the close deadline must get no evict -- the RPC carries
-    // no deadline of its own, so sending it would hang shutdown forever.
     let (_open, gate) = oneshot::channel();
     let model = TestModel {
         replay_frames: 1,
@@ -65,13 +53,6 @@ async fn an_abandoned_predict_at_route_end_sends_no_evict() {
 
 #[tokio::test]
 async fn lane_sessions_score_exactly_the_budgeted_slots_whatever_the_lane_timing() {
-    // Three lanes: a 2-step lane, a slow 5-step lane, and a 1-step sprinter.
-    // Budget 7 episodes with 10 explicit seeds. The sprinter takes most slots
-    // and lane order is timing-dependent, but the scored set is slots 0..7 with
-    // seeds 100..107, every slot exactly once, indexed by slot.
-    // The sprinter's whole episode is one in-memory round trip; the other
-    // lanes' steps take tens of milliseconds, so the slot assignment is not a
-    // coin flip under a loaded runner.
     let env = LaneTestEnv::new(vec![
         (2, Duration::from_millis(20)),
         (5, Duration::from_millis(40)),
@@ -89,8 +70,6 @@ async fn lane_sessions_score_exactly_the_budgeted_slots_whatever_the_lane_timing
     .unwrap();
 
     assert_eq!(report.total_episodes, 7);
-    // The report lists episodes in completion order; by slot they are exactly
-    // 1..=7 with seeds 100..107.
     let mut by_slot = report.episodes.clone();
     by_slot.sort_by_key(|e| e.episode_index);
     let indices: Vec<i64> = by_slot.iter().map(|e| e.episode_index).collect();
@@ -108,8 +87,6 @@ async fn lane_sessions_score_exactly_the_budgeted_slots_whatever_the_lane_timing
         [0, 1, 2].into_iter().collect(),
         "every lane ran"
     );
-    // Lanes 0 and 1 hold slots 0 and 1 for at least 40ms; the sprinter takes
-    // every other slot: 2..7, five episodes.
     let sprinter = report.episodes.iter().filter(|e| e.env_index == 2).count();
     assert_eq!(sprinter, 5, "the fastest lane takes the remaining slots");
     assert!(
@@ -117,8 +94,6 @@ async fn lane_sessions_score_exactly_the_budgeted_slots_whatever_the_lane_timing
         "the fastest lane takes the most slots, got {sprinter}"
     );
 
-    // The env saw exactly the seven seeded lane resets and one close; the
-    // release handle released once after every lane finished.
     let state = env.inner.lock().expect("lane env state lock poisoned");
     let mut seen: Vec<i64> = state.resets.iter().filter_map(|(_, s)| *s).collect();
     seen.sort_unstable();
@@ -129,8 +104,6 @@ async fn lane_sessions_score_exactly_the_budgeted_slots_whatever_the_lane_timing
 
 #[tokio::test]
 async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
-    // Four lanes, two episodes: two lanes run one episode each and the other
-    // two never reset (their first slot claim is already past the budget).
     let env = LaneTestEnv::new(vec![(1, Duration::ZERO); 4]);
     let hooks = Arc::new(RecordingHooks::default());
     let report = new_driver(
@@ -143,8 +116,6 @@ async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
     .await
     .unwrap();
     assert_eq!(report.total_episodes, 2);
-    // Driver-owned lane resets complete each episode at its terminal step, as
-    // the last event under its id.
     let completed = hooks.completed_ids();
     assert_eq!(completed.len(), 2);
     for id in &completed {
@@ -163,10 +134,6 @@ async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
     );
 }
 
-/// A lane-capable env under NEXT_STEP autoreset: every op names exactly one
-/// lane, each lane ends its episode on a fixed cadence and rolls itself on the
-/// following step. No driver reset ever runs after the cold start, so the
-/// route's episode budget is the only thing that can end the run.
 #[derive(Clone)]
 struct NextStepLaneEnv {
     inner: Arc<Mutex<NextStepLaneState>>,
@@ -214,8 +181,6 @@ impl RuntimeEnv for NextStepLaneEnv {
         let lane = request.env_indices[0] as usize;
         let mut state = self.inner.lock().expect("lane env lock poisoned");
         if state.pending_autoreset[lane] {
-            // t+1: the env rolls this lane itself and returns the new episode's
-            // reset observation.
             state.pending_autoreset[lane] = false;
             state.step[lane] = 0;
             return Ok(RuntimeEnvStep {
@@ -249,9 +214,6 @@ impl RuntimeEnv for NextStepLaneEnv {
 
 #[tokio::test]
 async fn a_next_step_lane_session_stops_at_the_episode_budget() {
-    // A lane group's budget is normally the slot counter, claimed at reset -- but
-    // under NEXT_STEP the env owns the rolls and no reset ever runs, so nothing
-    // checked `max_episodes` and the run never terminated.
     let num_envs = 2;
     let budget = 4;
     let env = NextStepLaneEnv::new(num_envs, 2);
@@ -293,10 +255,6 @@ async fn a_next_step_lane_session_stops_at_the_episode_budget() {
 
 #[tokio::test]
 async fn an_evict_never_waits_behind_a_parked_lane_predict() {
-    // Lane episodes end while another lane's predict is in flight. A model
-    // serializes evict behind predict on its one lock, and a predict
-    // parked in the driver's pending set is not polled while the driver awaits
-    // the evict: flushing evictions then would wait out the predict timeout.
     let env = LaneTestEnv::new(vec![
         (2, Duration::from_millis(5)),
         (3, Duration::from_millis(15)),

@@ -37,12 +37,8 @@ fn health_of(code: u8) -> Health {
     }
 }
 
-/// How often a participant missing keys asks for them again.
 const GET_KEYS_PERIOD: Duration = Duration::from_millis(250);
 
-/// Acknowledges every key delivery and, when a message came under a key
-/// this participant doesn't hold, asks for every key of its generation
-/// (`GetKeys`, at most every [`GET_KEYS_PERIOD`]): the reply installs them.
 pub(super) async fn work_keys(
     shared: Arc<Shared>,
     mut work: mpsc::UnboundedReceiver<KeyWork>,
@@ -87,9 +83,6 @@ pub(super) async fn work_keys(
     }
 }
 
-/// Resends request `id` until it is answered, and hands the answer to its
-/// [`Pending`] handle. Stops when this generation ends, or when another
-/// attempt's reply answered it and no handle waits.
 async fn retry_unanswered(
     shared: Arc<Shared>,
     id: u64,
@@ -178,9 +171,6 @@ pub(super) async fn heartbeat_loop(
     }
 }
 
-/// Installs the host's demands on this embodiment's publishers and
-/// acknowledges each revision once installed, on every new view and
-/// every newly declared publisher.
 pub(super) async fn install_demands(shared: Arc<Shared>, cancel: CancellationToken) {
     let mut view = shared.view.subscribe();
     loop {
@@ -238,9 +228,6 @@ async fn sync_demands(shared: &Shared) {
             Ok(CtlReply { result: Ok(()), .. }) => {
                 debug!(participant = %shared.id, %channel, revision, "demand installed");
             }
-            // The reader that wanted it left, or wants it otherwise now,
-            // while this ack was on its way: the next view brings what to
-            // install, if anything. Normal whenever a reader comes and goes.
             Ok(CtlReply {
                 result: Err(err),
                 state,
@@ -268,8 +255,6 @@ async fn sync_demands(shared: &Shared) {
     }
 }
 
-/// Publishes this participant's observer report: its publishers'
-/// counters and a bound controller's run counters.
 pub(super) async fn report_streams(shared: Arc<Shared>, cancel: CancellationToken) {
     let inputs = ReportInputs {
         transport: shared.transport.clone(),

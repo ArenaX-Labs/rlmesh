@@ -1,5 +1,3 @@
-//! Fencing: preempted and rebound tokens, sequence numbers and lapsed leases.
-
 use super::*;
 
 #[test]
@@ -13,9 +11,6 @@ fn a_preempted_controllers_queued_and_inflight_chunks_are_fenced() {
 
     let human = f.grant("operator", 2 * MS);
     f.publish(2 * MS);
-    // The model's in-flight chunk is fenced; its queued actions go at the
-    // next tick, and the edge waits (braking) until the operator
-    // delivers.
     assert_eq!(
         f.accept(f.chunk("policy", &model, 2, 2 * MS, 50), 2 * MS),
         Err(Rejection::StaleToken)
@@ -23,8 +18,6 @@ fn a_preempted_controllers_queued_and_inflight_chunks_are_fenced() {
     let tick = f.tick(3 * MS);
     assert_eq!(tick.mode, EdgeMode::Hold);
     assert!(tick.action.is_none() && tick.safe_behavior.is_some());
-    // A chunk claiming the operator's token but sent by someone else, or
-    // under another binding.
     assert_eq!(
         f.accept(f.chunk("policy", &human, 1, 4 * MS, 50), 4 * MS),
         Err(Rejection::WrongSource)
@@ -75,8 +68,6 @@ fn a_rebinding_fences_the_old_tokens_chunks() {
         Err(Rejection::StaleToken),
         "an in-flight chunk of the old binding"
     );
-    // The queue of the old token is purged on the next tick, and the new
-    // token's chunks drive.
     let tick = f.tick(MS);
     assert_eq!(tick.mode, EdgeMode::Hold, "nothing of the new token yet");
     f.accept(f.chunk("policy", &rebound, 1, 2 * MS, 20), 2 * MS)
@@ -111,7 +102,6 @@ fn seq_is_per_token_and_void_or_invalid_chunks_are_rejected() {
             ok
         );
     }
-    // A new holder's token starts its own seq.
     let human = f.grant("operator", MS);
     f.publish(MS);
     f.accept(f.chunk("operator", &human, 1, MS, 3), MS)
@@ -119,8 +109,6 @@ fn seq_is_per_token_and_void_or_invalid_chunks_are_rejected() {
     let stats = f.edge.stats();
     assert_eq!(stats.accepted, 2);
     assert_eq!(stats.rejected(Rejection::StaleSeq), 2);
-    // A closing scene's view fences every lease, before the host ends
-    // them.
     if let Some(view) = f.snapshot.as_mut() {
         view.scene = Some(Box::new(crate::wire::SceneInfo {
             run: "r-7k2m".into(),
@@ -140,7 +128,6 @@ fn seq_is_per_token_and_void_or_invalid_chunks_are_rejected() {
 fn the_lease_lapses_by_the_edge_clock_alone_and_the_edge_reports_safe() {
     let mut f = Fixture::new();
     let lease = f.grant("policy", 0);
-    // One snapshot, then the host goes quiet: no renewal ever arrives.
     f.publish(0);
     f.accept(f.chunk("policy", &lease, 1, 0, 140), 0)
         .expect("accept");
@@ -152,7 +139,6 @@ fn the_lease_lapses_by_the_edge_clock_alone_and_the_edge_reports_safe() {
     let mut late = f.chunk("policy", &lease, 2, GRACE + 2 * MS, 10);
     late.publish_ns = GRACE + 2 * MS;
     assert_eq!(f.accept(late, GRACE + 2 * MS), Err(Rejection::LeaseExpired));
-    // The host comes back with the holder alive: the fall was the edge's.
     let epoch = f.auth.epoch();
     f.auth.heartbeat(&pid("policy"), epoch, 2 * GRACE);
     f.publish(2 * GRACE);
@@ -168,8 +154,6 @@ fn each_member_counts_its_chunks_losses_lateness_and_longest_gap() {
     let model = f.grant("policy", 0);
     f.publish(0);
     let cmd = f.ch("cmd");
-    // Seq 1 on its slot, 2 lost, 3 three ms late, 4 refused (a copy of 3),
-    // then 6 with 5 lost, 45 ms late and 40 ms after 3.
     for (seq, t0, at, ok) in [
         (1, 0, 0, true),
         (3, 2 * MS, 5 * MS, true),
@@ -181,7 +165,6 @@ fn each_member_counts_its_chunks_losses_lateness_and_longest_gap() {
             ok
         );
     }
-    // A chunk that never opened reached the edge all the same.
     f.edge.count_unread(cmd, Rejection::Unauthenticated);
     let stats = f.edge.stats();
     let timing = *stats.timing(cmd).expect("cmd's timing");
@@ -190,7 +173,6 @@ fn each_member_counts_its_chunks_losses_lateness_and_longest_gap() {
     assert_eq!(timing.late_max_us, 45_000);
     assert_eq!(timing.gap_max_us, 40_000);
     assert_eq!(f.edge.timing().count(), 1);
-    // A new token is a new run: no loss, no gap across it.
     let human = f.grant("operator", 100 * MS);
     f.publish(100 * MS);
     f.accept(f.chunk("operator", &human, 9, 100 * MS, 3), 170 * MS)

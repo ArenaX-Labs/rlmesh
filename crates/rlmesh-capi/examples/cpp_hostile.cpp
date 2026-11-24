@@ -1,4 +1,3 @@
-// Compile with hostile host macros still active, warnings as errors, and no RTTI.
 #define check(expr) ((expr) ? 1 : 0)
 #define verify(expr) check(expr)
 #define ensure(expr) check(expr)
@@ -26,7 +25,6 @@ using HostBool = Bool;
 using HostStatus = Status;
 IN OUT void host_annotations();
 
-// Instantiate policy corners with the macros in force as well as parsing them.
 #include "cpp_surface.cpp"
 
 namespace {

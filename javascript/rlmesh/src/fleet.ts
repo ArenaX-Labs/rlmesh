@@ -1,20 +1,15 @@
-// The lobby and scene runs: unreleased, fenced behind the addon's `fleet` feature, as Python's
-// `rlmesh.realtime._fleet` is. Only an addon built with it has them; a release addon does not, and
-// the package exports none of this. build.mjs bundles it as dist/fleet.js (the package plus these)
-// for the native tests, and the npm package leaves that file out.
+// The lobby and scene runs: unreleased, fenced behind the addon's `fleet` feature and left out of the npm package.
 
 import { readFile } from 'node:fs/promises';
 import { call, native, robots, wait, type Addon, type NativeRobot, type Robot } from './native.js';
 
 export * from './node.js';
 
-/** A refusal in a run's state. */
 export interface Refusal {
   status: string;
   message: string;
 }
 
-/** A scene run's state: its stage, each member's, and why it failed. */
 export interface RunState {
   run: string;
   version: number;
@@ -33,13 +28,11 @@ interface NativeScene {
   close(timeoutS: number): Promise<void>;
 }
 
-/** What only an addon built with `fleet` has. */
 interface FleetAddon {
   robotFromLobby(home: string | null, name: string, robotJson: string, timeoutS: number | null): Promise<NativeRobot>;
   runScene(home: string | null, sceneToml: string, manualArm: boolean, timeoutS: number): Promise<NativeScene>;
 }
 
-/** A lobby or scene call of the addon, which only a `fleet` build has (unreleased). */
 function fleet<K extends keyof FleetAddon>(name: K): FleetAddon[K] {
   const addon = native() as Addon & Partial<FleetAddon>;
   const f = addon[name];
@@ -72,7 +65,6 @@ export function leaving(robot: Robot): string | null {
   return call(() => (robots.native(robot) as NativeRobot & { readonly leaving?: string | null }).leaving) ?? null;
 }
 
-/** A native run state, its absent errors `null`. */
 function runState(s: RunState): RunState {
   return { ...s, members: s.members.map((m) => ({ ...m, error: m.error ?? null })), error: s.error ?? null };
 }
@@ -84,17 +76,14 @@ function runState(s: RunState): RunState {
 export class Scene implements AsyncDisposable {
   constructor(private native: NativeScene) {}
 
-  /** The run's id (`r-7k2m`), as `rlmesh scene stop` takes it. */
   get run(): string {
     return this.native.run;
   }
 
-  /** Where the run's members join, once its host is up. */
   address(): Promise<string | null> {
     return wait(async () => (await this.native.address()) ?? null);
   }
 
-  /** The run's state now. */
   status(): Promise<RunState> {
     return wait(async () => runState(await this.native.status()));
   }
@@ -104,17 +93,14 @@ export class Scene implements AsyncDisposable {
     return wait(async () => runState(await this.native.waitUntil(stage, opts.timeout ?? 30)));
   }
 
-  /** Arm a run that waits for it (`arm: 'manual'`, or after a lost member rejoined). */
   arm(): Promise<RunState> {
     return wait(async () => runState(await this.native.arm()));
   }
 
-  /** Stop the run and wait for it to end; this process's policies' runs return. */
   stop(opts: { timeout?: number } = {}): Promise<RunState> {
     return wait(async () => runState(await this.native.stop(opts.timeout ?? 10)));
   }
 
-  /** Stop the run unless it ended, and leave the lobby. */
   close(): Promise<void> {
     return wait(() => this.native.close(10));
   }

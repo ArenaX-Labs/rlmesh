@@ -34,7 +34,6 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Changes here can alter any crate's build or tests.
 WORKSPACE_INPUTS = {
     "Cargo.toml",
     "Cargo.lock",
@@ -58,9 +57,6 @@ CSHARP_CI_INPUTS = {
     ".mise/tasks/release/cxx/package",
     ".github/workflows/ci.yml",
 }
-# CI's Windows check (check:windows: the wheel's and the Node addon's crates)
-# also runs when its own task, its cross toolchain, its workflow step or the
-# wheel's maturin features change.
 WINDOWS_PACKAGES = {EXTENSION_PACKAGE, "rlmesh-node"}
 WINDOWS_CI_INPUTS = {
     ".mise/tasks/check/windows",
@@ -72,10 +68,10 @@ WINDOWS_CI_INPUTS = {
 
 @dataclass(frozen=True)
 class Plan:
-    rust: list[str] | None  # None means the whole workspace
+    rust: list[str] | None
     python: bool
     csharp: bool = False
-    windows: bool = False  # CI only: type-check the Windows wheel and addon
+    windows: bool = False
 
     def describe(self) -> str:
         rust = "all" if self.rust is None else (" ".join(self.rust) or "none")
@@ -91,10 +87,8 @@ class Plan:
 
 @dataclass(frozen=True)
 class Workspace:
-    dirs: dict[str, PurePosixPath]  # package -> manifest dir, relative to root
-    dependents: dict[str, set[str]]  # package -> workspace packages using it
-    # package -> the spec cargo takes for it: a bare name is ambiguous when the
-    # lockfile also holds a released version of the same crate.
+    dirs: dict[str, PurePosixPath]
+    dependents: dict[str, set[str]]
     specs: dict[str, str] = field(default_factory=dict)
 
 
@@ -166,7 +160,6 @@ def plan(
         if name is not None:
             selected.add(name)
 
-    # Close over reverse dependencies: a change reaches every crate using it.
     queue = list(selected)
     while queue:
         for dependent in workspace.dependents.get(queue.pop(), ()):
@@ -241,8 +234,6 @@ def csharp_dependency_snapshot(project_text: str, lock_text: str) -> object:
         for package in packages:
             if package["name"] != name:
                 continue
-            # A name can have several marker-specific locked versions. Keep all
-            # of them conservatively, but ignore unused extras and dev groups.
             record = {
                 field: value
                 for field, value in package.items()
@@ -278,7 +269,6 @@ def csharp_group_changed(base: str) -> bool:
             *current
         )
     except (tomllib.TOMLDecodeError, KeyError, TypeError):
-        # Malformed inputs need verification rather than a falsely empty plan.
         return True
 
 
@@ -313,9 +303,6 @@ def main() -> None:
     if args.dry_run:
         return
 
-    # Same as test:rust: tests that embed Python need the venv's site-packages,
-    # synced (a new worktree's is empty). This task holds the heavy lock, so it
-    # syncs rather than stops.
     embeds = selection.rust is None or EXTENSION_PACKAGE in selection.rust
     if (embeds or selection.python) and run(
         [sys.executable, str(ROOT / "scripts/dev/python_synced.py"), "--sync"]
@@ -333,11 +320,9 @@ def main() -> None:
         ]
         status |= run(["cargo", "nextest", "run", "--all-targets", *packages], env)
     if selection.python:
-        # The editable install loads the in-tree .so; rebuild it if Rust moved.
         status |= run(["scripts/rebuild_ext_if_stale.sh"])
         status |= run(["mise", "run", "test:python"])
     if selection.csharp:
-        # test:affected already owns the heavy lock; call the suite directly.
         status |= run(["python", "csharp/tools/run.py", "test"], env)
     sys.exit(1 if status else 0)
 

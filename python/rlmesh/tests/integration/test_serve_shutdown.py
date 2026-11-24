@@ -1,12 +1,3 @@
-"""How ``python -m rlmesh.serve`` ends on a signal, with a driver in a call.
-
-Whoever launched a served env or model ends it with SIGTERM: the process
-drains the call in progress, closes, and exits 0; the driver hears that the
-server went away rather than waiting out its timeout. A second SIGTERM (a
-call that will not return) ends the process at once, by the signal; so does
-a second Ctrl-C, after the first one's drain.
-"""
-
 from __future__ import annotations
 
 import os
@@ -100,8 +91,6 @@ DRIVER = textwrap.dedent(
 
 @final
 class Served:
-    """A served env or model, and a driver in a call to it."""
-
     def __init__(self, tmp: Path, kind: str, slow: float) -> None:
         from rlmesh import launch
         from rlmesh._rlmesh import sandbox_session_port
@@ -166,7 +155,6 @@ class Served:
             time.sleep(0.05)
 
     def stop(self, signum: int, times: int = 1) -> tuple[int, float]:
-        """Signal the server ``times`` times; its exit status and how long it took."""
         started = time.monotonic()
         for _ in range(times):
             self.server.send_signal(signum)

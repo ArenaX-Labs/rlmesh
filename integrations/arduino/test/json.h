@@ -1,6 +1,3 @@
-// A small JSON reader for the conformance vectors: objects, arrays,
-// strings, non-negative integers, booleans and null. Host only.
-
 #ifndef RLMESH_TETHER_TEST_JSON_H_
 #define RLMESH_TETHER_TEST_JSON_H_
 
@@ -22,7 +19,6 @@ struct Value {
   std::vector<Value> items;
   std::vector<std::pair<std::string, Value>> members;
 
-  // The member `key`, or null.
   const Value& operator[](const char* key) const {
     static const Value null;
     for (const auto& m : members) {
@@ -92,7 +88,6 @@ class Parser {
             out += '\t';
             break;
           case 'u':
-            // Only labels use escapes; keep a placeholder.
             i_ += 4;
             out += '?';
             break;
@@ -120,7 +115,6 @@ class Parser {
         std::string key = str();
         expect(':');
         Value item = value();
-        // A repeated key keeps its last value, as serde_json does.
         bool replaced = false;
         for (auto& m : v.members) {
           if (m.first == key) {
@@ -162,4 +156,4 @@ class Parser {
 
 }  // namespace json
 
-#endif  // RLMESH_TETHER_TEST_JSON_H_
+#endif

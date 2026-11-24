@@ -1,5 +1,5 @@
-//! The lease table: tokens, all-or-none grants with preemption and
-//! command groups, releases and the ring of lease endings.
+//! The lease table: tokens, all-or-none grants with preemption and command groups, releases
+//! and the ring of lease endings.
 
 use alloc::collections::BTreeSet;
 
@@ -12,12 +12,8 @@ use crate::wire::{
     Reason, ReasonCode, Role,
 };
 
-/// What a lease took from a lower class: the holder whose lease (on
-/// `channel`, the part itself or a member of its command group) it
-/// preempted.
 #[derive(Clone, Debug)]
 pub(super) struct Taken {
-    /// The preempting lease's token.
     pub(super) token: LeaseToken,
     pub(super) holder: ParticipantId,
     pub(super) channel: ChannelId,
@@ -32,14 +28,13 @@ impl Authority {
         LeaseToken(self.last_token)
     }
 
-    /// Reserves the next lease token, for a verb whose keys go out before
-    /// it is applied ([`Self::apply_minting`]).
+    /// Reserves the next lease token, for a verb whose keys go out before it is applied
+    /// ([`Self::apply_minting`]).
     pub fn reserve_token(&mut self) -> LeaseToken {
         self.last_token += 1;
         LeaseToken(self.last_token)
     }
 
-    /// Validates the whole request, then grants: all or none.
     pub(super) fn grant(
         &mut self,
         from: &ParticipantId,
@@ -108,8 +103,6 @@ impl Authority {
                     held_refusal(&part.owner, why, self.scene_run()),
                 ));
             }
-            // Before pre-emption and busy checks: a device pre-empts only
-            // with a class it is authorized for on that part.
             self.config
                 .access
                 .check_lease(device, &part.owner, part.path.as_str(), priority)?;
@@ -139,7 +132,8 @@ impl Authority {
                 ),
             ));
         }
-        // Install before authority.
+        // Install before authority: a lease waits until every stream of the binding has acknowledged a plan
+        // that includes its contract.
         for c in &record.contracts {
             let needed = self.needed.get(&(from.clone(), c.channel)).copied();
             let installed = self
@@ -178,7 +172,6 @@ impl Authority {
                 )));
             }
         }
-        // Who the grant takes over: (preempted part, the requested part).
         let mut preempted: Vec<(ChannelId, ChannelId)> = Vec::new();
         for channel in &grant.channels {
             match self.leases.get(channel) {
@@ -229,7 +222,6 @@ impl Authority {
             }
         }
 
-        // Validated: mutate.
         self.forget_taken();
         let ttl_ns = grant
             .ttl_ns
@@ -252,7 +244,6 @@ impl Authority {
             if let Some(lease) = self.leases.get_mut(channel)
                 && &lease.holder == from
             {
-                // A renewal under the same token (and binding).
                 lease.ttl_ns = ttl_ns;
                 lease.expires_ns = expires_ns;
                 granted.push(lease.clone());
@@ -392,10 +383,6 @@ impl Authority {
         Ok(())
     }
 
-    /// Whether the leases on `channels`, under `token` (the caller's, already
-    /// checked), may be handed back to `to`: each took its part from `to`,
-    /// which still binds what it lost and resumes a part handed back to it,
-    /// and no robot of theirs is held (a hand-back never clears a hold).
     fn check_hand_back(
         &self,
         channels: &[ChannelId],
@@ -470,14 +457,12 @@ impl Authority {
         Ok(())
     }
 
-    /// Drops what the leases no longer held under the same token took.
     fn forget_taken(&mut self) {
         let leases = &self.leases;
         self.taken
             .retain(|channel, t| leases.get(channel).is_some_and(|l| l.token == t.token));
     }
 
-    /// A lease's rebinding re-issued it under `token`: it keeps what it took.
     pub(super) fn retoken_taken(&mut self, channel: ChannelId, from: LeaseToken, to: LeaseToken) {
         if let Some(taken) = self.taken.get_mut(&channel)
             && taken.token == from
@@ -486,12 +471,10 @@ impl Authority {
         }
     }
 
-    /// Keeps a lease ending in the snapshot's ring.
     pub(super) fn record_end(&mut self, lease: &Lease, reason: Reason, by: Option<&Lease>) {
         self.record_end_to(lease, reason, by, None);
     }
 
-    /// Keeps a lease ending, handed back `to` a participant when it was.
     fn record_end_to(
         &mut self,
         lease: &Lease,
@@ -510,8 +493,6 @@ impl Authority {
         });
     }
 
-    /// A lease ended (not by a preemption or a rebinding, which have
-    /// events of their own).
     pub(super) fn end(&mut self, lease: Lease, reason: Reason, events: &mut Vec<AuthorityEvent>) {
         self.record_end(&lease, reason.clone(), None);
         let part = self.part_name(lease.channel);
@@ -535,8 +516,6 @@ impl Authority {
         }
     }
 
-    /// `holder` went away: the leases on `channels` end with `why`, and
-    /// their edges park the parts as after a release. Says whether any did.
     pub(super) fn release_holder(
         &mut self,
         holder: &ParticipantId,
@@ -564,7 +543,6 @@ impl Authority {
         released
     }
 
-    /// The parts `holder` holds a lease on.
     pub(super) fn held_by(&self, holder: &ParticipantId) -> Vec<ChannelId> {
         self.leases
             .values()
@@ -573,7 +551,6 @@ impl Authority {
             .collect()
     }
 
-    /// Ends every lease with `code`, carrying who and why from `cause`.
     pub(super) fn revoke_all(
         &mut self,
         code: ReasonCode,

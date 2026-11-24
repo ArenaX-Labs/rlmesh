@@ -93,12 +93,9 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
             binding=params,
             render_size=model_render_size(model, connect_timeout_seconds),
         )
-        # Attach this client to the started container, waiting for it to become
-        # ready; stops the container on any failure so it is never leaked.
         self._attach(connect_timeout_seconds)
 
     def _detach(self) -> None:
-        # Skip the lifecycle mixin's close() override; detach via the remote base.
         super(SandboxLifecycle, self).close()
 
 
@@ -165,5 +162,4 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
         self._attach(connect_timeout_seconds)
 
     def _detach(self) -> None:
-        # Skip the lifecycle mixin's close() override; detach via the remote base.
         super(SandboxLifecycle, self).close()

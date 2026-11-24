@@ -14,8 +14,6 @@ pub fn make_multibinary<'py>(
         ));
     }
 
-    // Dimensions live in `SpaceSpec.shape`: a rank-1 shape maps to a scalar
-    // `MultiBinary(n)`, higher ranks to `MultiBinary([d0, d1, ...])`.
     let n_value = if space.shape.len() == 1 {
         space.shape[0].into_pyobject(py)?.unbind().into_any()
     } else {

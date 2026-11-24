@@ -13,10 +13,9 @@ use crate::{Error, Result};
 
 /// Named child spaces.
 ///
-/// Read it as a mapping in the spec's declaration order (a Dict built here
-/// sorts its keys; a remote spec keeps its own order). Each child is a space
-/// of its own with its own sampler, shared by every handle of this Dict:
-/// seeding or sampling the Dict leaves them alone.
+/// Read it as a mapping in the spec's declaration order (a Dict built here sorts its keys; a
+/// remote spec keeps its own order). Each child has its own sampler, shared by every handle of
+/// this Dict: seeding or sampling the Dict leaves them alone.
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct Dict(Space);
@@ -25,7 +24,6 @@ space_newtype!(Dict, Dict);
 
 impl Dict {
     /// `Dict(spaces)`: each child's spec is copied into a fresh child space.
-    /// A duplicate or empty key is the ValueError class.
     pub fn new<K: Into<String>, S: Into<SpaceSpec>>(
         spaces: impl IntoIterator<Item = (K, S)>,
     ) -> Result<Dict> {
@@ -88,7 +86,6 @@ impl Dict {
     }
 }
 
-/// `d[key]`; panics when the key is absent (use [`Dict::get`]).
 impl Index<&str> for Dict {
     type Output = Space;
 
@@ -113,7 +110,6 @@ pub struct DictSpaces {
 }
 
 impl DictSpaces {
-    /// The child spaces of a Dict spec (empty for another kind).
     pub(super) fn of(spec: &WireSpec) -> DictSpaces {
         match &spec.spec {
             Some(WireKind::Dict(dict)) => DictSpaces {

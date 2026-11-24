@@ -70,7 +70,6 @@ pub fn seconds(d: Duration) -> String {
     num(d.as_secs_f64())
 }
 
-/// Rows as aligned columns, two spaces apart, trailing space trimmed.
 fn columns(rows: &[Vec<String>], indent: &str) -> Vec<String> {
     let n = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..n)
@@ -113,7 +112,6 @@ fn header(
     text
 }
 
-/// The block for entries whose model and robot names share nothing.
 fn names_block(
     clash: &NamesClash,
     entries: &[&Problem],
@@ -240,7 +238,6 @@ impl Binding {
             self.fingerprint,
             num(self.replan_hz)
         );
-        // A view's parts are qualified by their robot (`eye-l:gaze`).
         let part = |p: &PartSpec, path: String| {
             if self.places.is_empty() {
                 path

@@ -12,7 +12,6 @@
 
 size_t rlmesh_zenoh_size(void) { return sizeof(rlmesh_zenoh_t); }
 
-/* Counted by zenoh-pico's ports, as patched (patch_zenoh_pico.py). */
 void zp_rlmesh_tasks(uint32_t* started, uint32_t* ended);
 
 uint32_t rlmesh_zenoh_tasks(void) {
@@ -42,21 +41,16 @@ typedef struct rlmesh_zenoh_event {
   uint8_t kind;
   uint8_t sub;
   uint32_t query_id;
-  /* An EV_DATAGRAM that carries a chunk: its route, and its statistics
-   * sequence. */
   bool chunk;
   uint16_t route;
   uint32_t seq;
-  /* An EV_CHECKED's verified message, and when its view arrived. */
   rlmesh_device_checked_t* checked;
   uint64_t arrived_us;
-  /* data holds the key (a sample's), then the payload. */
   size_t key_len;
   size_t len;
   uint8_t data[];
 } event_t;
 
-/* A signed view waiting for the signature task: the key, then the payload. */
 typedef struct rlmesh_zenoh_view {
   uint64_t arrived_us;
   size_t key_len;
@@ -64,16 +58,13 @@ typedef struct rlmesh_zenoh_view {
   uint8_t data[];
 } view_t;
 
-/* A query's closure context: freed by its dropper. */
 typedef struct {
   rlmesh_zenoh_t* z;
   uint32_t id;
 } query_t;
 
-/* The usual Wi-Fi beacon interval, 100 TU, in microseconds. */
 #define RLMESH_ZENOH_BEACON_US 102400u
 
-/* Adds a time to `p`. */
 static void phase_add(rlmesh_zenoh_phase_t* p, uint64_t at_us) {
   float angle = (float)(at_us % RLMESH_ZENOH_BEACON_US) * (6.2831853f / RLMESH_ZENOH_BEACON_US);
   p->c += cosf(angle);
@@ -81,7 +72,6 @@ static void phase_add(rlmesh_zenoh_phase_t* p, uint64_t at_us) {
   p->n++;
 }
 
-/* How closely `p`'s times line up (0 to 1), and starts it anew. */
 static float phase_take(rlmesh_zenoh_phase_t* p, uint32_t* n) {
   *n = p->n;
   float lock = p->n > 0 ? sqrtf(p->c * p->c + p->s * p->s) / (float)p->n : 0.0f;
@@ -103,15 +93,10 @@ static void count_failed(rlmesh_zenoh_t* z) {
   z_mutex_unlock(z_loan_mut(z->lock));
 }
 
-/* Whether only the newest sample of subscription `sub` matters: a part's
- * commands (a newer chunk replaces what an older one still had queued), the
- * sealed view, the host's tick and the heartbeat echo (rlmesh-device's
- * SUB_TICK and SUB_ECHO). Key deliveries and e-stop signals all count. */
 static bool latest_wins(uint8_t sub) {
   return sub == 1 || sub == 2 || sub >= RLMESH_DEVICE_SUB_COMMANDS;
 }
 
-/* Unlinks and returns the queued sample of `sub`, if any (under `lock`). */
 static event_t* unlink_sample(rlmesh_zenoh_t* z, uint8_t sub) {
   for (event_t *prev = NULL, *e = z->head; e != NULL; prev = e, e = e->next) {
     if (e->kind != EV_SAMPLE || e->sub != sub) continue;
@@ -127,11 +112,6 @@ static event_t* unlink_sample(rlmesh_zenoh_t* z, uint8_t sub) {
   return NULL;
 }
 
-/* Queues a copy of `key` (a sample's, or NULL) and `payload`, from
- * zenoh-pico's read task. Samples arrive unverified, so they queue only up to
- * RLMESH_ZENOH_QUEUE_BYTES, and a subscription whose newest sample is all that
- * matters keeps only that: a link that stalls, then delivers what it held at
- * once, queues one chunk per part, not a second's worth. */
 static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id,
                  const z_loaned_keyexpr_t* key, const z_loaned_bytes_t* payload) {
   z_owned_slice_t slice;
@@ -151,6 +131,7 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
     key_len = z_string_len(z_loan(key_text));
   }
   size_t size = sizeof(event_t) + key_len + len;
+  /* Samples arrive unverified, so they queue only up to RLMESH_ZENOH_QUEUE_BYTES. */
   bool room = kind != EV_SAMPLE || size <= RLMESH_ZENOH_QUEUE_BYTES;
   event_t* e = room ? (event_t*)malloc(size) : NULL;
   if (e != NULL) {
@@ -201,8 +182,6 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
   free(superseded);
 }
 
-/* Unlinks and returns the queued chunk datagram of `route`, if any (under
- * `lock`). */
 static event_t* unlink_chunk(rlmesh_zenoh_t* z, uint16_t route) {
   for (event_t *prev = NULL, *e = z->head; e != NULL; prev = e, e = e->next) {
     if (e->kind != EV_DATAGRAM || !e->chunk || e->route != route) continue;
@@ -218,12 +197,6 @@ static event_t* unlink_chunk(rlmesh_zenoh_t* z, uint16_t route) {
   return NULL;
 }
 
-/* Queues a datagram for the robot, from the datagram task, within the
- * samples' bound. A chunk replaces one of its route still waiting, as a
- * part's commands do on the session: when the loop is held up (a sketch
- * printing its status, say), the robot takes the newest plan, not each one
- * that arrived meanwhile, late. A chunk older than the one waiting (the
- * network reordered them) goes instead. */
 static void push_datagram(rlmesh_zenoh_t* z, const uint8_t* data, size_t len) {
   size_t size = sizeof(event_t) + len;
   z_mutex_lock(z_loan_mut(z->lock));
@@ -241,7 +214,6 @@ static void push_datagram(rlmesh_zenoh_t* z, const uint8_t* data, size_t len) {
   z_mutex_lock(z_loan_mut(z->lock));
   event_t* superseded = e != NULL && e->chunk ? unlink_chunk(z, e->route) : NULL;
   if (superseded != NULL && (int32_t)(e->seq - superseded->seq) < 0) {
-    /* The one waiting is the newer: it stays. */
     event_t* older = e;
     e = superseded;
     superseded = older;
@@ -277,10 +249,8 @@ static void push_datagram(rlmesh_zenoh_t* z, const uint8_t* data, size_t len) {
   free(superseded);
 }
 
-/* Queues a verified message for the robot, from the signature task. */
 static void push_checked(rlmesh_zenoh_t* z, uint8_t sub, rlmesh_device_checked_t* checked,
                          uint64_t arrived_us, size_t len) {
-  /* Counted against the samples' bound as its bytes, which it holds. */
   size_t size = sizeof(event_t) + len;
   z_mutex_lock(z_loan_mut(z->lock));
   bool room = z->queued + size <= RLMESH_ZENOH_QUEUE_BYTES;
@@ -308,8 +278,6 @@ static void push_checked(rlmesh_zenoh_t* z, uint8_t sub, rlmesh_device_checked_t
   z_mutex_unlock(z_loan_mut(z->lock));
 }
 
-/* Hands the signature task a copy of a signed view, in place of any it hasn't
- * started on: only the newest counts. */
 static void offer_view(rlmesh_zenoh_t* z, const z_loaned_sample_t* sample) {
   z_owned_slice_t slice;
   if (z_bytes_to_slice(z_sample_payload(sample), &slice) != Z_OK) return;
@@ -341,10 +309,8 @@ static void offer_view(rlmesh_zenoh_t* z, const z_loaned_sample_t* sample) {
 
 static void on_sample(z_loaned_sample_t* sample, void* ctx) {
   rlmesh_zenoh_sub_t* s = (rlmesh_zenoh_sub_t*)ctx;
-  /* One in flight as its subscription was dropped. */
   if (s->dropped) return;
   if (s->sub == RLMESH_DEVICE_SUB_VIEW) {
-    /* Once the robot takes sealed views, a signed one is dropped unchecked. */
     z_mutex_lock(z_loan_mut(s->z->lock));
     bool skip = s->z->skip_signed;
     if (skip) s->z->views.skipped++;
@@ -355,8 +321,6 @@ static void on_sample(z_loaned_sample_t* sample, void* ctx) {
   push(s->z, EV_SAMPLE, s->sub, 0, z_sample_keyexpr(sample), z_sample_payload(sample));
 }
 
-/* Checks each signed view, so the robot's task never spends a control period
- * on one. Only this task touches the checker in use. */
 static void* verify_task(void* arg) {
   rlmesh_zenoh_t* z = (rlmesh_zenoh_t*)arg;
   rlmesh_device_checker_t* checker = NULL;
@@ -374,8 +338,6 @@ static void* verify_task(void* arg) {
     view_t* v = z->view;
     z->view = NULL;
     z_mutex_unlock(z_loan_mut(z->lock));
-    /* Before the robot's first link there is nothing to check against, and
-     * the robot would drop the view anyway. */
     rlmesh_device_checked_t* checked =
         checker == NULL ? NULL
                         : rlmesh_device_checker_check(checker, (const char*)v->data, v->key_len,
@@ -384,7 +346,6 @@ static void* verify_task(void* arg) {
     size_t len = v->key_len + v->len;
     free(v);
     if (checked != NULL) push_checked(z, RLMESH_DEVICE_SUB_VIEW, checked, arrived_us, len);
-    /* The idle task's turn, however fast views come. */
     z_sleep_ms(1);
     z_mutex_lock(z_loan_mut(z->lock));
     if (checked == NULL) z->views.refused++;
@@ -430,8 +391,6 @@ static void on_query_done(void* ctx) {
 static void undeclare(rlmesh_zenoh_t* z);
 static void close_sessions(rlmesh_zenoh_t* z);
 
-/* One of the robot's actions for the network task, copied: its fields, the
- * host the robot meant, and its key (NUL-terminated), then its payload. */
 typedef struct rlmesh_zenoh_op {
   struct rlmesh_zenoh_op* next;
   uint8_t kind;
@@ -447,12 +406,6 @@ typedef struct rlmesh_zenoh_op {
   uint8_t data[];
 } op_t;
 
-/* The session for class `c`, opened to `host` on `port` (every class dials
- * the host's one port, on a connection of its own) the first time it's
- * needed; NULL when it can't be. The open sessions all reach one
- * host: opening one to another closes them, and drops what was declared on
- * them (the robot's Reset for the move follows). On the network task, as is
- * every call below that uses a session. */
 static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c, const char* host,
                                          uint16_t port) {
   if (c >= RLMESH_DEVICE_CLASSES) return NULL;
@@ -505,7 +458,6 @@ static int subscribe(rlmesh_zenoh_t* z, const op_t* a) {
   return 0;
 }
 
-/* Drops subscription `sub`: its slot is free for the next. */
 static int unsubscribe(rlmesh_zenoh_t* z, const op_t* a) {
   for (uint8_t i = 0; i < z->sub_count; ++i) {
     if (z->sub_ctx[i].dropped || z->sub_ctx[i].sub != a->sub) continue;
@@ -536,7 +488,6 @@ static int query(rlmesh_zenoh_t* z, const op_t* a) {
   query_t* q = NULL;
   if (s == NULL || z_view_keyexpr_from_str(&ke, (const char*)a->data) != Z_OK ||
       (q = (query_t*)malloc(sizeof(query_t))) == NULL) {
-    /* The robot waits on every query it asked for: it's over. */
     push(z, EV_DONE, 0, a->query_id, NULL, NULL);
     return -1;
   }
@@ -559,13 +510,9 @@ static int query(rlmesh_zenoh_t* z, const op_t* a) {
   }
   z_owned_closure_reply_t callback;
   z_closure(&callback, on_reply, on_query_done, q);
-  /* On failure the closure is dropped, which frees q and reports the query
-   * done: the robot retries. */
   return z_get(s, z_loan(ke), "", z_move(callback), &opts) == Z_OK ? 0 : -1;
 }
 
-/* Queues a publication for the network task: sending it takes the socket and
- * the radio's path, which a control loop can't wait for. */
 static int publish(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   if (a->class_ >= RLMESH_DEVICE_CLASSES) return -1;
   rlmesh_txq_item_t* t = rlmesh_txq_item(a->class_, a->key, a->payload, a->payload_len);
@@ -573,12 +520,9 @@ static int publish(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   z_mutex_lock(z_loan_mut(z->lock));
   bool queued = rlmesh_txq_push(&z->txq, t);
   z_mutex_unlock(z_loan_mut(z->lock));
-  /* rlmesh_zenoh_poll wakes the send task once it has queued them all. */
   return queued ? 0 : -1;
 }
 
-/* Sends one publication on its session (open): express when it goes alone,
- * batched with the others otherwise. */
 static int send_one(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* t, bool express) {
   z_view_keyexpr_t ke;
   z_owned_bytes_t payload;
@@ -590,23 +534,16 @@ static int send_one(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* t, bool express)
   z_put_options_default(&opts);
   opts.priority = Z_PRIORITY_REAL_TIME;
   opts.is_express = express;
-  /* This task is free to wait for the session's send path, which the read
-   * task's keep-alives and the loop's queries share: the default drops a
-   * publication (a heartbeat, say) whenever that path is busy. */
   opts.congestion_control = Z_CONGESTION_CONTROL_BLOCK;
   return z_put(z_loan(z->sessions[t->class_]), z_loan(ke), z_move(payload), &opts) == Z_OK ? 0 : -1;
 }
 
-/* Sends what waited, in order within each class. Several waiting on one
- * session go out as one batch, one write instead of a segment each: on a
- * slow link that is what lets the queue drain. */
 static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list, const char* host, uint16_t port,
                      rlmesh_zenoh_phase_t* sent) {
   for (uint8_t c = 0; c < RLMESH_DEVICE_CLASSES; ++c) {
     size_t n = 0;
     for (rlmesh_txq_item_t* t = list; t != NULL; t = t->next) n += t->class_ == c;
     if (n == 0) continue;
-    /* Its session opens on its first publication. */
     const z_loaned_session_t* s = session(z, c, host, port);
     if (s == NULL) {
       for (size_t i = 0; i < n; ++i) count_failed(z);
@@ -625,9 +562,6 @@ static void send_all(rlmesh_zenoh_t* z, rlmesh_txq_item_t* list, const char* hos
   }
 }
 
-/* Sends the datagrams that waited, without waiting on the socket: one it
- * can't take now is dropped. Refusals in a row tell the robot the path
- * failed. */
 static void send_datagrams(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* list,
                            rlmesh_zenoh_phase_t* phases) {
   uint32_t sent = 0, unsent = 0;
@@ -666,8 +600,6 @@ static void send_datagrams(rlmesh_zenoh_t* z, const rlmesh_txq_item_t* list,
 static bool reset(rlmesh_zenoh_t* z, const char* host, uint16_t port);
 static void reconnect(rlmesh_zenoh_t* z);
 
-/* Carries out the robot's actions in order, freeing them: whether one closed
- * the sessions (publications taken before it are then stale). */
 static bool run_ops(rlmesh_zenoh_t* z, op_t* ops) {
   bool closed = false;
   while (ops != NULL) {
@@ -703,9 +635,6 @@ static bool run_ops(rlmesh_zenoh_t* z, op_t* ops) {
   return closed;
 }
 
-/* The network task: every zenoh-pico call, in the order the robot asked. It
- * holds `lock` only to take what waits; a call that waits on the socket waits
- * here, never on the loop. */
 static void* tx_task(void* arg) {
   rlmesh_zenoh_t* z = (rlmesh_zenoh_t*)arg;
   z_mutex_lock(z_loan_mut(z->lock));
@@ -714,7 +643,6 @@ static void* tx_task(void* arg) {
       z_condvar_wait(z_loan_mut(z->tx_wake), z_loan_mut(z->lock));
     }
     if (z->stopping) break;
-    /* Everything waiting, at once. */
     rlmesh_zenoh_phase_t sent = {0.0f, 0.0f, 0};
     op_t* ops = z->ops;
     z->ops = z->ops_tail = NULL;
@@ -724,7 +652,6 @@ static void* tx_task(void* arg) {
     uint16_t port = z->target_port;
     z_mutex_unlock(z_loan_mut(z->lock));
     if (run_ops(z, ops)) {
-      /* Sealed for the links just closed: no use on new ones. */
       for (rlmesh_txq_item_t* t = list; t != NULL; t = t->next) {
         if (t->class_ != RLMESH_ZENOH_DATAGRAM_CLASS) count_failed(z);
       }
@@ -749,8 +676,6 @@ static void* tx_task(void* arg) {
 
 __attribute__((noipa)) size_t rlmesh_zenoh_tx_stack(void) { return RLMESH_ZENOH_TX_STACK; }
 
-/* The datagram socket to host:port, connected (so only the host's datagrams
- * arrive) and reading with a timeout, or -1. */
 static int dgram_open(const char* host, uint16_t port) {
   char service[8];
   snprintf(service, sizeof service, "%u", (unsigned)port);
@@ -775,7 +700,6 @@ static int dgram_open(const char* host, uint16_t port) {
   return fd;
 }
 
-/* Swaps the datagram socket the send task uses, and closes the old one. */
 static void dgram_swap(rlmesh_zenoh_t* z, int fd) {
   z_mutex_lock(z_loan_mut(z->dgram_lock));
   int old = z->dgram_fd;
@@ -785,14 +709,8 @@ static void dgram_swap(rlmesh_zenoh_t* z, int fd) {
   if (old >= 0) close(old);
 }
 
-/* The datagram socket's task: opens and closes it as the loop asks, and reads
- * it in between. Only this task opens, closes or reads it. It ends with the
- * path: once the socket is closed and no open is asked for, it returns, and
- * its stack goes back to the heap when the next open (or the transport's
- * close) joins it. */
 static void* rx_task(void* arg) {
   rlmesh_zenoh_t* z = (rlmesh_zenoh_t*)arg;
-  /* The request the socket serves (0: none). */
   uint32_t serving = 0;
   z_mutex_lock(z_loan_mut(z->lock));
   for (;;) {
@@ -832,7 +750,6 @@ static void* rx_task(void* arg) {
 #endif
       push_datagram(z, z->dgram_buf, (size_t)n);
     } else if (n < 0 && fd >= 0 && errno == ECONNREFUSED) {
-      /* Nothing listens on the host's port. */
       z_mutex_lock(z_loan_mut(z->lock));
       z->dgram_failed = true;
       if (z->wake != NULL) z->wake(z->wake_arg);
@@ -848,8 +765,6 @@ static void* rx_task(void* arg) {
 
 __attribute__((noipa)) size_t rlmesh_zenoh_rx_stack(void) { return RLMESH_ZENOH_RX_STACK; }
 
-/* Joins the datagram task if it ended with the path (from the loop): its
- * stack and buffer go back to the heap. Whether none runs now. */
 static bool join_rx(rlmesh_zenoh_t* z) {
   if (!z->rx_started) return true;
   z_mutex_lock(z_loan_mut(z->lock));
@@ -864,8 +779,6 @@ static bool join_rx(rlmesh_zenoh_t* z) {
   return true;
 }
 
-/* Starts the datagram task and its buffer when the robot opens the socket
- * (from the loop) and none runs: 0, or -1 without memory for them. */
 static int start_rx(rlmesh_zenoh_t* z) {
   if (!join_rx(z)) return 0;
 #if defined(ZENOH_ARDUINO_ESP32)
@@ -886,10 +799,6 @@ static int start_rx(rlmesh_zenoh_t* z) {
   return 0;
 }
 
-/* Asks the datagram task to open the socket to the robot's host on `port`
- * (anew), or with `port` 0 to close it; what waits to be sent goes. The open
- * is asked for before a task that ended is replaced: a task still running
- * takes it instead of ending. */
 static void dgram_request(rlmesh_zenoh_t* z, uint16_t port) {
   uint16_t ignored = 0;
   const char* host = port != 0 ? rlmesh_device_robot_host(z->robot, &ignored) : NULL;
@@ -906,7 +815,6 @@ static void dgram_request(rlmesh_zenoh_t* z, uint16_t port) {
   bool wanted = z->dgram_want != 0;
   z_mutex_unlock(z_loan_mut(z->lock));
   if (wanted && start_rx(z) != 0) {
-    /* No task to open it: the robot is told the socket failed. */
     z_mutex_lock(z_loan_mut(z->lock));
     z->dgram_want = 0;
     z->dgram_failed = true;
@@ -914,7 +822,6 @@ static void dgram_request(rlmesh_zenoh_t* z, uint16_t port) {
   }
 }
 
-/* Queues a datagram for the send task, in place of any on its lane. */
 static int datagram(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   rlmesh_txq_item_t* t =
       rlmesh_txq_item(RLMESH_ZENOH_DATAGRAM_CLASS, a->key, a->payload, a->payload_len);
@@ -925,16 +832,12 @@ static int datagram(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   return queued ? 0 : -1;
 }
 
-/* Drops what the send task hasn't sent. */
 static void drop_unsent(rlmesh_zenoh_t* z) {
   z_mutex_lock(z_loan_mut(z->lock));
   rlmesh_txq_clear(&z->txq);
   z_mutex_unlock(z_loan_mut(z->lock));
 }
 
-/* Closes every class's session. Pending queries are dropped with them:
- * their droppers queue. A publication in flight finishes first, and what
- * waits for the send task would go to the wrong session. */
 static void close_sessions(rlmesh_zenoh_t* z) {
   drop_unsent(z);
   for (uint8_t c = 0; c < RLMESH_DEVICE_CLASSES; ++c) {
@@ -943,7 +846,6 @@ static void close_sessions(rlmesh_zenoh_t* z) {
   }
 }
 
-/* Drops every subscription and token. */
 static void undeclare(rlmesh_zenoh_t* z) {
   for (uint8_t i = 0; i < z->sub_count; ++i) z_drop(z_move(z->subs[i]));
   for (uint8_t i = 0; i < z->token_count; ++i) z_drop(z_move(z->tokens[i]));
@@ -951,9 +853,6 @@ static void undeclare(rlmesh_zenoh_t* z) {
   z->token_count = 0;
 }
 
-/* Drops every subscription and token: the robot moved to another session.
- * The sessions stay for the same host, and close for another (a run on a
- * satellite, another home address): whether they closed. */
 static bool reset(rlmesh_zenoh_t* z, const char* host, uint16_t port) {
   undeclare(z);
   memset(z->unreachable, 0, sizeof z->unreachable);
@@ -962,16 +861,12 @@ static bool reset(rlmesh_zenoh_t* z, const char* host, uint16_t port) {
   return true;
 }
 
-/* Drops everything: replies stopped, and a session whose peer is gone never
- * comes back on its own. The robot's next actions open new ones. */
 static void reconnect(rlmesh_zenoh_t* z) {
   undeclare(z);
   close_sessions(z);
   memset(z->unreachable, 0, sizeof z->unreachable);
 }
 
-/* Stops the tasks started so far (`tasks` of verify and send, in that order,
- * and the datagram task if it started). */
 static void stop_tasks(rlmesh_zenoh_t* z, int tasks) {
   z_mutex_lock(z_loan_mut(z->lock));
   z->stopping = true;
@@ -1032,8 +927,6 @@ int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
   return 0;
 }
 
-/* Queues one of the robot's session actions for the network task, copied
- * with the host it is meant for: 0, or -1 without memory for it. */
 static int enqueue(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   size_t key_len = strlen(a->key) + 1;
   size_t len = a->has_payload ? a->payload_len : 0;
@@ -1143,8 +1036,6 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
   z->dgram_failed = false;
   z_mutex_unlock(z_loan_mut(z->lock));
   if (dgram_failed) rlmesh_device_robot_datagram_failed(z->robot, z->now_us());
-  /* A datagram task that ended with the path is gone at once, not at the
-   * next path's open. */
   join_rx(z);
   rlmesh_device_action_t a;
   int rc;
@@ -1163,13 +1054,10 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
     }
     if (a.kind == RLMESH_DEVICE_RESET || a.kind == RLMESH_DEVICE_RECONNECT) dgram_request(z, 0);
     if (enqueue(z, &a) != 0) {
-      /* The robot waits on every query it asked for: it's over. */
       if (a.kind == RLMESH_DEVICE_QUERY) push(z, EV_DONE, 0, a.query_id, NULL, NULL);
       count_failed(z);
     }
   }
-  /* One wake for everything this poll queued: a tick's samples leave in one
-   * write. The host they go to is the robot's now. */
   uint16_t port = 0;
   const char* host = rlmesh_device_robot_host(z->robot, &port);
   z_mutex_lock(z_loan_mut(z->lock));
@@ -1183,7 +1071,6 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
 }
 
 void rlmesh_zenoh_close(rlmesh_zenoh_t* z) {
-  /* The network task first: then nothing else calls into zenoh-pico. */
   stop_tasks(z, 2);
   undeclare(z);
   close_sessions(z);

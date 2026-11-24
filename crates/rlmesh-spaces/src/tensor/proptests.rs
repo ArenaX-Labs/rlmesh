@@ -16,7 +16,6 @@ fn shape() -> impl Strategy<Value = Vec<i64>> {
     prop::collection::vec(0i64..=6, 0..=4)
 }
 
-/// A dtype, a shape, and exactly the right number of element bytes.
 fn tensor_parts() -> impl Strategy<Value = (DType, Vec<i64>, Vec<u8>)> {
     (concrete_dtype(), shape()).prop_flat_map(|(dtype, shape)| {
         let numel: usize = shape.iter().map(|&dim| dim as usize).product();
@@ -27,8 +26,6 @@ fn tensor_parts() -> impl Strategy<Value = (DType, Vec<i64>, Vec<u8>)> {
 }
 
 proptest! {
-    /// Flattening via reshape is a zero-copy view with identical bytes, and
-    /// -1 inference agrees with the explicit shape.
     #[test]
     fn prop_reshape_preserves_bytes((dtype, shape, data) in tensor_parts()) {
         let tensor = Tensor::from_vec(data.clone(), shape, dtype).expect("valid parts");
@@ -47,8 +44,6 @@ proptest! {
         }
     }
 
-    /// stack followed by unstack returns tensors equal to the inputs, as
-    /// zero-copy views of the stacked storage.
     #[test]
     fn prop_stack_unstack_roundtrip(
         (dtype, shape, data) in tensor_parts(),
@@ -68,13 +63,10 @@ proptest! {
         }
     }
 
-    /// A strided prefix view gathers exactly the elements a naive
-    /// index-arithmetic reference selects.
     #[test]
     fn prop_strided_view_matches_reference(
         dtype in concrete_dtype(),
         dims in prop::collection::vec(1i64..=5, 1..=3),
-        // Fractions used to pick a non-empty prefix of each dimension.
         keep in prop::collection::vec(1u32..=100, 3),
     ) {
         let numel: usize = dims.iter().map(|&dim| dim as usize).product();
@@ -98,7 +90,6 @@ proptest! {
         )
         .expect("valid view");
 
-        // Naive reference gather over the multi-index space.
         let mut expected = Vec::new();
         let mut index = vec![0i64; view_shape.len()];
         let count: usize = view_shape.iter().map(|&dim| dim as usize).product();

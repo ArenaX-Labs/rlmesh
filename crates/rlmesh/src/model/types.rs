@@ -5,9 +5,8 @@ use bytes::Bytes;
 use crate::binding::spaces;
 use crate::{Error, Result};
 
-/// One row's episode identity: the runtime-minted id (UUIDv7, never repeats)
-/// and the explicit seed the episode was reset with, if any. Mirrors the wire's
-/// `EpisodeInfo` row, so identity and seed cannot fall out of alignment.
+/// One row's episode identity: the runtime-minted id (UUIDv7, never repeats) and the
+/// explicit seed the episode was reset with, if any.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EpisodeInfo {
     /// Minted by the runtime (UUIDv7); never repeats.
@@ -23,16 +22,10 @@ pub struct EpisodeInfo {
 /// The per-predict sampling seed: a reproducible mix of the episode's reset
 /// seed and the re-plan ordinal within that episode.
 ///
-/// A stochastic policy seeded once per episode cannot be reproduced under
-/// interleaving — another episode's forward advances the same global
-/// generators between two of ours. Deriving a fresh seed per predict from
-/// `(episode_seed, predict_index)` makes each forward reproducible on its
-/// own, independent of what ran between. The SDK stamps the result on the
-/// predict context as `predict_seed`; a model can also derive it with this
-/// function.
-///
-/// FNV-1a over the seed and the ordinal, masked to 32 bits — the narrow
-/// range every framework's seeding API accepts.
+/// Each forward is reproducible on its own, whatever other episodes ran
+/// between. The SDK stamps the result on the predict context as
+/// `predict_seed`. FNV-1a over the seed and the ordinal, masked to 32 bits so
+/// every framework's seeding API accepts it.
 pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -54,11 +47,8 @@ pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
 
 /// Routing metadata attached to a [`ModelObservation`].
 ///
-/// Identifies the env (adapter) the request belongs to and the ordered per-row
-/// episode identity — the self-describing batch. Row `i` of the batched
-/// observation belongs to `episodes[i]`. There is no positional lane/slot
-/// concept; the model keys all per-episode state by `episode_id`, never by
-/// position.
+/// Row `i` of the batched observation belongs to `episodes[i]`; there is no
+/// positional lane, so a model keys per-episode state by `episode_id`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelRouteContext {
     /// Identifier of the session this request belongs to (correlation only).
@@ -91,15 +81,9 @@ impl ModelRouteContext {
 }
 
 /// An observation delivered to [`ModelHandler::predict`](crate::binding::model::ModelHandler::predict).
-///
-/// Carries the encoded observation payload plus the routing context and the
-/// env contract / batch size needed to decode it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelObservation {
-    /// Raw per-leaf observation wire bytes, if present. `None` is the only
-    /// "absent value" signal — decode via
-    /// [`decoded`](ModelObservation::decoded)/[`decoded_lanes`](ModelObservation::decoded_lanes),
-    /// never read these bytes directly.
+    /// Raw per-leaf observation wire bytes, if present.
     pub observation: Option<Vec<Bytes>>,
     /// Routing/episode metadata for this request.
     pub route: ModelRouteContext,
@@ -108,10 +92,9 @@ pub struct ModelObservation {
     /// The env contract (spaces/metadata) for decoding the observation. Shared
     /// (`Arc`) so the per-predict hot path clones a refcount, not the contract.
     pub env_contract: Option<Arc<spaces::EnvContract>>,
-    /// The env steps executed since the previous predict without one (replayed
-    /// chunk frames), oldest first. Non-empty only on a route that negotiated
-    /// history; the engine advances its frame windows through them before
-    /// this request's own observation.
+    /// The env steps executed since the previous predict without one (replayed chunk
+    /// frames), oldest first. Non-empty only on a route that negotiated history;
+    /// the frame windows advance through them before this request's observation.
     pub history: Vec<HistoryFrame>,
     /// The producer's per-group env-step counter at `observation`; required
     /// once history is negotiated (a gap or repeat is a rejected request).
@@ -141,10 +124,9 @@ impl ModelObservation {
         self.route.episode_ids()
     }
 
-    /// Validate the request carries everything a decode needs (observation, env
-    /// contract, observation space) WITHOUT paying the batch decode. Lets a
-    /// malformed request fail fast even on a pure chunk-replay step that skips the
-    /// actual decode below, instead of silently replaying buffered actions.
+    /// Validate the request carries everything a decode needs (observation, env contract,
+    /// observation space) WITHOUT paying the batch decode, so a malformed request
+    /// fails fast even on a chunk-replay step that skips the decode.
     pub fn ensure_decodable(&self) -> Result<()> {
         if self.observation.is_none() {
             return Err(Error::model(
@@ -164,9 +146,8 @@ impl ModelObservation {
     /// Decode the observation into one typed [`SpaceValue`](spaces::SpaceValue) per lane (length
     /// `== num_envs`), using the route's pinned observation space.
     ///
-    /// Errors if the observation is absent — an absent value yields no lanes, so
-    /// returning it as an empty `Vec` would silently violate the `== num_envs`
-    /// contract. Guard with `observation.is_some()` for optional observations.
+    /// Errors if the observation is absent; check `observation.is_some()` first for
+    /// an optional observation.
     pub fn decoded_lanes(&self) -> Result<Vec<spaces::SpaceValue>> {
         let leaves = self.observation.as_ref().ok_or_else(|| {
             Error::model("observation absent; cannot decode lanes (check is_some() first)")
@@ -211,13 +192,6 @@ impl ModelObservation {
     }
 }
 
-/// Structurally validate each per-lane action against the route's action space
-/// before the codec encodes it. The spec-directed codec would otherwise silently
-/// drop or reinterpret a mismatched typed action (extra Dict keys are skipped by
-/// the spec-key walk; a wrong-dtype Box leaf is emitted as raw bytes and read
-/// back at the spec dtype), and that value/spec mismatch never reaches the env's
-/// own validation. Range deviations (Box bounds) pass through — those are the
-/// env's validation policy to decide.
 pub(crate) fn check_actions_conform(
     action_space: &spaces::SpaceSpec,
     actions: &[spaces::SpaceValue],
@@ -248,7 +222,6 @@ mod tests {
         SpaceValue::Box(Tensor::from_vec(vec![v], vec![1], DType::Uint8).unwrap())
     }
 
-    /// A `ModelObservation` carrying `values` encoded against `obs_space()`.
     fn observation(values: &[SpaceValue]) -> ModelObservation {
         let space = obs_space();
         let wire = crate::data::encode_batched_partial_values(values, &space).unwrap();
@@ -273,13 +246,9 @@ mod tests {
 
     #[test]
     fn predict_seed_law() {
-        // Pure function of (episode_seed, predict_index): same inputs, same seed.
         assert_eq!(predict_seed(7, 3), predict_seed(7, 3));
-        // Both ingredients move the result -- a per-episode seed alone would give
-        // every re-plan of an episode the same noise.
         assert_ne!(predict_seed(7, 0), predict_seed(7, 1));
         assert_ne!(predict_seed(7, 0), predict_seed(8, 0));
-        // Always a non-negative u32: the range every framework's seeding API takes.
         for (seed, index) in [(0, 0), (-1, 0), (i64::MIN, u64::MAX), (i64::MAX, 1)] {
             let derived = predict_seed(seed, index);
             assert!((0..=i64::from(u32::MAX)).contains(&derived), "{derived}");
@@ -294,14 +263,10 @@ mod tests {
 
     #[test]
     fn ensure_decodable_catches_malformed_requests_without_decoding() {
-        // Happy path: present observation + contract + space validates.
         assert!(observation(&[box_u8(3)]).ensure_decodable().is_ok());
-        // Absent observation errors up front.
         let mut no_obs = observation(&[box_u8(3)]);
         no_obs.observation = None;
         assert!(no_obs.ensure_decodable().is_err());
-        // Missing env contract errors up front -- the gap that used to be deferred
-        // on a step where every lane is mid-chunk-replay and skips the decode.
         let mut no_contract = observation(&[box_u8(3)]);
         no_contract.env_contract = None;
         assert!(no_contract.ensure_decodable().is_err());
@@ -309,16 +274,12 @@ mod tests {
 
     #[test]
     fn decoded_requires_exactly_one_lane() {
-        // Single lane decodes to the value; multi-lane errors rather than
-        // silently taking lane 0.
         assert_eq!(observation(&[box_u8(7)]).decoded().unwrap(), box_u8(7));
         assert!(observation(&[box_u8(1), box_u8(2)]).decoded().is_err());
     }
 
     #[test]
     fn absent_observation_errors_not_empty_vec() {
-        // An absent observation must error, never return an empty Vec that would
-        // silently satisfy a `== num_envs` check for num_envs == 0 callers.
         let mut obs = observation(&[box_u8(3)]);
         obs.observation = None;
         assert!(obs.decoded_lanes().is_err());
@@ -328,13 +289,10 @@ mod tests {
     fn check_actions_conform_rejects_structural_mismatch() {
         let space = obs_space();
 
-        // Matching kind/shape/dtype passes (one lane and many).
         assert!(check_actions_conform(&space, &[box_u8(0)]).is_ok());
         assert!(check_actions_conform(&space, &[box_u8(0), box_u8(1)]).is_ok());
 
-        // A Discrete value for a Box space is a structural mismatch.
         assert!(check_actions_conform(&space, &[SpaceValue::Discrete(0)]).is_err());
-        // A wrong-shape Box would otherwise mis-encode -> rejected.
         let wide = SpaceValue::Box(Tensor::from_vec(vec![0u8, 1], vec![2], DType::Uint8).unwrap());
         assert!(check_actions_conform(&space, &[wide]).is_err());
     }

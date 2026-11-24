@@ -7,8 +7,6 @@ on:
 
 permissions: {}
 
-# The audit compiles nothing, so it skips the compile cache mise.toml wires in
-# (RUSTC_WRAPPER=sccache), which this job does not install.
 env:
   RLMESH_SCCACHE: "0"
 
@@ -37,9 +35,8 @@ jobs:
         with:
           version: 2026.10.2
           install: true
-          # rust + cargo-deny run `cargo deny check advisories`; python is
-          # only here because mise.toml's UV_PYTHON env renders
-          # `tools.python.path`, which fails when the tool is absent.
+          # python is only here because mise.toml's UV_PYTHON env renders `tools.python.path`,
+          # which fails when the tool is absent.
           install_args: --locked rust cargo-deny python
           cache_key: >-
             {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{hashFiles('mise.lock')}}

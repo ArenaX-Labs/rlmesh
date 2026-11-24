@@ -1,5 +1,3 @@
-//! PyEnvServer - Python-facing RLMesh environment server.
-
 use std::sync::{Arc, Mutex as StdMutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -25,7 +23,6 @@ enum BoundListener {
 
 type ServeResult = Result<(), String>;
 
-/// Default shutdown cap for embedded Python servers.
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 struct ServerResources {
@@ -33,10 +30,7 @@ struct ServerResources {
     runtime: tokio::runtime::Runtime,
     listener: BoundListener,
     options: ServeOptions,
-    /// Call the env's `close()` when the server stops (the default). Off for a
-    /// server standing in front of an env its caller owns and closes.
     close_env_on_shutdown: bool,
-    /// Announce the env once it answers (`None` for a run's own server).
     announce: Option<rlmesh::binding::Announce>,
 }
 
@@ -143,8 +137,6 @@ fn construct_server(
     let id = NEXT_SERVER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     py_env.set_server_id(id);
 
-    // The served contract is one lane's contract at the served width (lane 0's
-    // spaces; the wire handshake stamps the same num_envs).
     let mut env_contract = py_env.env_contract().clone();
     env_contract.num_envs = u32::try_from(py_env.num_envs()).unwrap_or(u32::MAX);
 
@@ -155,15 +147,13 @@ fn construct_server(
         ))
     })?;
 
-    // A lone host:port is short for host:port/env.
     let address = rlmesh::ext::ConnectAddress::env(address.unwrap_or(":0/env"))
         .map_err(to_py_err)?
         .as_str();
     let address = address.as_str();
     rlmesh::lockstep::check(env_contract.clone())
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    // Without the GIL: the host it joins may be a Python thread's of this
-    // process (a model serving beside a run's env) still starting.
+    // Without the GIL: the host it joins may be a Python thread of this process still starting.
     let binding =
         Python::attach(|py| py.detach(|| runtime.block_on(rlmesh::lockstep::bind(address))))
             .map_err(|e| match e {
@@ -306,9 +296,7 @@ impl PyEnvServer {
     /// Shutdown the server.
     fn shutdown(&self, py: Python<'_>) -> PyResult<()> {
         self.shutdown.trigger("local shutdown");
-        // From inside one of this server's own env callbacks, only trigger the
-        // drain: joining here would wait on this very callback (ENV-P2). The
-        // owner's wait() or shutdown() then observes the stop.
+        // Never join from an env callback: shutdown would wait for that same callback.
         if super::py_environment::in_server_callback(self.id) {
             let mut state = self.state.lock().expect("server state mutex poisoned");
             if matches!(*state, ServerState::RunningForeground) {
@@ -345,9 +333,6 @@ impl PyEnvServer {
 }
 
 async fn shutdown_signal() -> &'static str {
-    // SIGTERM is the native scoped installation (`run_server`), restored when
-    // the foreground serve returns (ENV-P8); SIGINT stays Python's, plus this
-    // watcher for a serve off the main thread.
     tokio::signal::ctrl_c()
         .await
         .expect("install Ctrl+C handler");
@@ -363,20 +348,11 @@ pub(crate) fn spawn_signal_shutdown(shutdown: ShutdownTrigger) {
 }
 
 impl Drop for PyEnvServer {
-    // pyo3::ffi::Py_IsInitialized is a read-only probe of the interpreter state;
-    // the workspace otherwise denies `unsafe_code`.
     #[allow(unsafe_code)]
     fn drop(&mut self) {
         self.shutdown.trigger("drop");
 
-        // During Py_FinalizeEx, Py_IsInitialized() is already 0 and the cleanup
-        // below would take pyo3's AttachError::NotInitialized path, re-running
-        // Py_InitializeEx from inside a destructor and aborting the process
-        // (Py_IsFinalizing is not exported under abi3-py311). The process is
-        // exiting, so the env's close() hook cannot legally run anyway; the
-        // listener and runtime are reclaimed by the remaining field drops.
-        // EnvServer's finalizer (rlmesh._server) is what shuts a live server
-        // down early enough for close() to still run.
+        // After interpreter finalization, attaching to Python below would be unsound.
         if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
             return;
         }
@@ -456,11 +432,8 @@ fn wait_background_server(
             None => Duration::from_millis(10),
         };
         std::thread::sleep(nap);
-        // No Python bytecode runs while wait() holds the GIL released, so poll
-        // for a pending signal each iteration (as the client's blocking calls
-        // do) or Ctrl-C is discarded and wait() can never be interrupted. The
-        // state stays RunningBackground, so the caller's shutdown() still
-        // drains and closes the env.
+        // Poll for a pending signal each iteration: no bytecode runs while the GIL is released,
+        // so Ctrl-C would otherwise be lost.
         crate::client::check_signals()?;
     }
 }
@@ -502,17 +475,6 @@ fn take_resources(
     }
 }
 
-/// Serve on the calling thread (`foreground`, the blocking `serve()`), or as
-/// the body of a background thread (`start()`).
-///
-/// In the foreground the calling thread is the one that built the env, so the
-/// env keeps it: its Python calls (lane 0's, for lanes) are queued back here
-/// while the session server runs on a helper thread. Simulators that only work
-/// from the thread that created them (typically the Python main thread) then
-/// need no wrapper. Between calls the thread polls Python's signal handlers,
-/// so a Ctrl-C deferred by `EnvServer.serve()` still requests shutdown while
-/// the env is idle. Tokio's signal handlers are installed in the foreground
-/// only; a background server is stopped by its owner.
 fn run_server(
     resources: ServerResources,
     address: String,
@@ -533,9 +495,6 @@ fn run_server(
         env.dispatch_foreground(tx);
         rx
     });
-    // A background vector env runs every call on one dedicated plain thread
-    // for the server's life, as a lane does (ENV-P7), never on the blocking
-    // pool; the thread ends once the server drops the env.
     if !foreground {
         let (tx, rx) = std::sync::mpsc::channel();
         if env.dispatch_vector(tx) {
@@ -592,10 +551,6 @@ fn run_server(
         .name("rlmesh-env-server".to_string())
         .spawn(serve)
         .map_err(|e| format!("failed to spawn server thread: {e}"))?;
-    // Returns once the server has dropped the env (its job queue closes). A
-    // handler that raises (Python's default KeyboardInterrupt) is a shutdown
-    // request too; the deferring handler EnvServer.serve() installs asks for
-    // one itself.
     run_foreground(jobs, || {
         if crate::client::check_signals().is_err() {
             signal_shutdown.trigger("sigint");
@@ -717,8 +672,6 @@ fn join_background_server(handle: JoinHandle<ServeResult>) -> PyResult<()> {
     }
 }
 
-/// A failed serve or close: `RLMeshException("serve failed: <message>")`,
-/// from `serve()`, `wait()` and `shutdown()` alike (ENV-P1).
 fn serve_failed(message: String) -> PyErr {
     crate::types::RLMeshException::new_err(format!("serve failed: {message}"))
 }

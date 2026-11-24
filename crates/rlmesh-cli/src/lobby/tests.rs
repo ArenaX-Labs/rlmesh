@@ -36,15 +36,11 @@ fn scene(wait: &str) -> String {
     )
 }
 
-/// A home daemon in `dir` on a loopback port: its lobby's address.
 async fn home(dir: &std::path::Path) -> (Arc<SessionServer>, SessionAddress) {
     let (server, lobby, _) = home_gated(dir, true).await;
     (server, lobby)
 }
 
-/// [`home`], its links gated by its key's password or (`gated` false)
-/// by none, as rlmeshd's: paired machines link to it too. Its devices
-/// are `devices.toml`'s.
 async fn home_gated(
     dir: &std::path::Path,
     gated: bool,
@@ -83,8 +79,6 @@ async fn home_gated(
     (server, lobby, home)
 }
 
-/// A robot process: waits in the lobby, joins its run, stays until the
-/// run closes, then comes back to the lobby.
 async fn robot(lobby: SessionAddress) {
     let mut me = Lobby::new(ParticipantId::new("arm").expect("id"));
     let (_, address) = wait_for_join(&lobby, &mut me, "arm", Some(WAIT * 3))
@@ -141,7 +135,6 @@ async fn a_lobby_robot_is_assigned_armed_once_its_policy_bound_claimed_and_retur
     let state = client.run_scene(&scene("20s"), false).await.expect("run");
     assert_eq!(state.stage, RunStage::Hosting);
 
-    // Declared, but its controller hasn't bound: no arm yet.
     let state = until(&client, state, |s| s.stage == RunStage::Binding).await;
     assert_eq!(stage(&state, "arm"), MemberStage::Declared);
     let address = run_address(&lobby, &state)
@@ -187,7 +180,6 @@ async fn a_lobby_robot_is_assigned_armed_once_its_policy_bound_claimed_and_retur
     assert_eq!(state.error, None);
     drop(pilot);
     robot.await.expect("robot");
-    // Its claim went with its return: the robot may run again.
     let again = client.run_scene(&scene("1s"), false).await.expect("free");
     assert_eq!(again.stage, RunStage::Hosting);
     server.shutdown().await;
@@ -198,8 +190,6 @@ async fn a_robot_back_in_the_lobby_as_its_run_ends_is_returned_and_free_for_the_
     const RUNS: usize = 8;
     let dir = tempfile::tempdir().expect("dir");
     let (server, lobby, service) = home_gated(dir.path(), true).await;
-    // A robot that is back in the lobby within milliseconds of seeing
-    // its run close, as a board is.
     let robot = tokio::spawn({
         let lobby = lobby.clone();
         async move {
@@ -225,7 +215,6 @@ async fn a_robot_back_in_the_lobby_as_its_run_ends_is_returned_and_free_for_the_
         }
     });
     let client = LobbyClient::connect(&lobby, WAIT).await.expect("client");
-    // The robot alone: its run stops as soon as it left.
     let alone = scene("20s").replace(
         "\n[members.pilot]\nrole = \"controller\"\ndevice = \"local\"\n",
         "",
@@ -239,8 +228,6 @@ async fn a_robot_back_in_the_lobby_as_its_run_ends_is_returned_and_free_for_the_
     }
     robot.await.expect("robot");
 
-    // Back in the lobby once its run is stopping, before it is ending:
-    // returned at once, not sent into the closing run.
     let arm = ParticipantId::new("arm").expect("id");
     let wait = || match service.handle(&arm, "local", Command::LobbyWait(LobbyWait::default())) {
         LobbyAnswer::Later(waited) => waited,
@@ -254,7 +241,6 @@ async fn a_robot_back_in_the_lobby_as_its_run_ends_is_returned_and_free_for_the_
         "{assigned:?}"
     );
     let stopped = std::time::Instant::now();
-    // As a stop does before the run hears of it.
     let run = service.run(&state.run).expect("run");
     run.stopping.store(true, Ordering::SeqCst);
     let back = wait();
@@ -290,8 +276,6 @@ async fn a_robot_process_carries_its_uncleared_estop_into_its_next_run() {
     let state = client.run_scene(&alone, false).await.expect("run");
     let (robot, _) = from_lobby().await.expect("joined");
     let state = until(&client, state, |s| s.stage == RunStage::Running).await;
-    // Its button, then the run ends: the documented loop drops the
-    // robot and waits again, never clearing.
     robot.estop("button");
     client.stop(&state.run).await.expect("stop");
     robot
@@ -333,7 +317,6 @@ async fn a_run_fails_at_its_stage_with_its_code() {
         matches!(&refused, SessionError::Rejected(e) if e.status == CtlStatus::InvalidRequest),
         "{refused}"
     );
-    // No robot waits: it fails at assignment once `wait` passes.
     let state = client.run_scene(&scene("1s"), false).await.expect("run");
     let state = until(&client, state, |s| s.stage == RunStage::Failed).await;
     let error = state.error.expect("why");
@@ -343,7 +326,6 @@ async fn a_run_fails_at_its_stage_with_its_code() {
         "{}",
         error.message
     );
-    // A robot that declared, and a controller that never bound.
     let robot = tokio::spawn(robot(lobby.clone()));
     let state = client.run_scene(&scene("3s"), false).await.expect("run");
     let state = until(&client, state, |s| s.stage == RunStage::Failed).await;
@@ -372,8 +354,6 @@ impl Predictor for Hold {
     }
 }
 
-/// Robot `arm` from the lobby, declaring `map` and publishing its
-/// joints; a refused join is reported in its next wait.
 async fn joined(lobby: &SessionAddress, me: &mut Lobby, map: &str) -> Option<Arc<Robot>> {
     let (join, address) = wait_for_join(lobby, me, "arm", Some(WAIT * 3))
         .await
@@ -398,7 +378,6 @@ async fn joined(lobby: &SessionAddress, me: &mut Lobby, map: &str) -> Option<Arc
     Some(robot)
 }
 
-/// Stops `robot`'s heartbeats and drops it: the host loses it.
 fn lose(robot: Arc<Robot>) {
     robot.participant().set_heartbeats_enabled(false);
     drop(robot);
@@ -446,8 +425,6 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
         .await
         .expect("bound"),
     );
-    // Lost while ARMED, before its policy leased: the session goes SAFE
-    // all the same, and is never ACTIVE again until the explicit arm.
     let state = until(&client, state, |s| s.stage == RunStage::Running).await;
     lose(robot);
     let state = client
@@ -475,7 +452,6 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
         let pilot = pilot.clone();
         move || pilot.run(&mut Hold, RunConfig::default())
     });
-    // Attached under its name but not declared: still rejoining.
     let (_, back) = wait_for_join(&lobby, &mut me, "arm", Some(WAIT * 3))
         .await
         .expect("its join again");
@@ -492,7 +468,6 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
         !running.is_finished(),
         "ROBOT_LOST in a scene is not the end"
     );
-    // Re-flashed with another map: refused, and the run waits on.
     assert!(joined(&lobby, &mut me, ARM_CHANGED).await.is_none());
     let robot = joined(&lobby, &mut me, ARM).await.expect("the same map");
     let state = until(&client, state, |s| s.stage == RunStage::Arming).await;
@@ -502,7 +477,6 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
         .find(|m| m.name.as_str() == "arm")
         .and_then(|m| m.error.clone());
     assert_eq!(refusal.map(|e| e.status), Some(CtlStatus::Incompatible));
-    // `arm = "auto"`, and still it waits for an explicit arm.
     tokio::time::sleep(Duration::from_millis(300)).await;
     let state = client
         .status(&state.run, 0, Some(WAIT))
@@ -517,9 +491,6 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
     let state = client.arm(&state.run).await.expect("arm");
     assert_eq!(state.stage, RunStage::Running);
     holding(&pilot).await;
-    // Reset and back at once, likely before its loss was seen: a new
-    // generation whose rejoin window the run may never see. SAFE all the
-    // same, and armed again on request.
     lose(robot);
     let restarted = joined(&lobby, &mut me, ARM).await.expect("restarted");
     let state = until(&client, state, |s| s.stage == RunStage::Arming).await;
@@ -530,11 +501,8 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
     assert_eq!(state.stage, RunStage::Running);
     holding(&pilot).await;
     let robot = restarted;
-    // Armed again by a routine script: nothing happens.
     let state = client.arm(&state.run).await.expect("a no-op");
     assert_eq!(state.stage, RunStage::Running);
-    // Re-arming goes to the run's own host: a robot not held is left as it
-    // is, and only a robot in the run can be named.
     let id = |name| ParticipantId::new(name).expect("id");
     client
         .rearm(&state.run, &id("arm"))
@@ -547,7 +515,6 @@ async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() 
     assert!(err.to_string().contains("ghost"), "{err}");
 
     client.stop(&state.run).await.expect("stop");
-    // This process stopped the run: the policy's run returns.
     running.join().expect("thread").expect("returned");
     let state = until(&client, state, |s| s.stage == RunStage::Ended).await;
     assert_eq!(state.error, None);
@@ -602,7 +569,6 @@ async fn a_lost_robot_that_misses_the_rejoin_window_fails_the_run() {
     server.shutdown().await;
 }
 
-/// A `devices.toml` entry for device `id` with `key`.
 fn device(id: &str, key: &StaticKeypair, kind: &str, max: &str) -> String {
     format!(
         "[devices.{id}]\npublic_key = \"{}\"\nkind = \"{kind}\"\nname = \"{id}\"\n\
@@ -611,14 +577,10 @@ fn device(id: &str, key: &StaticKeypair, kind: &str, max: &str) -> String {
     )
 }
 
-/// `scene("20s")` hosted on `host`.
 fn hosted_on(host: &str) -> String {
     scene("20s").replace("wait = ", &format!("host = \"{host}\"\nwait = "))
 }
 
-/// rlmeshd on another machine paired with the home daemon in `home` as
-/// device `device` (`key`): its server on its own loopback port, its
-/// host file in `hosts`, and its satellite's tasks.
 async fn satellite(
     home: &std::path::Path,
     lobby: &SessionAddress,
@@ -667,8 +629,6 @@ async fn satellite(
     (server, base, tasks)
 }
 
-/// `client` runs `text`, retried while its satellite isn't in the lobby
-/// yet.
 async fn run_when_attached(client: &LobbyClient, text: &str) -> RunState {
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
@@ -704,8 +664,6 @@ async fn a_scene_hosted_on_a_satellite_runs_there_until_a_members_device_changes
         satellite(dir.path(), &lobby, "gpu-desktop", &gpu, hosts.path()).await;
     let client = LobbyClient::connect(&lobby, WAIT).await.expect("client");
 
-    // The arm, a robot process on arm-pc: its join takes it to the
-    // satellite, where it attaches with its own device key.
     let home_key = *lobby.credential().expect("credential").host_static();
     let robot_lobby = SessionAddress {
         key: None,
@@ -764,8 +722,6 @@ async fn a_scene_hosted_on_a_satellite_runs_there_until_a_members_device_changes
     .expect("bound on the satellite");
     let state = until(&client, state, |s| s.stage == RunStage::Running).await;
 
-    // arm-pc narrowed at home: the satellite holds its old record, so
-    // the run fails, and its StopOrder stops the satellite's host.
     std::fs::write(
         dir.path().join(crate::devices::DEVICES),
         device("gpu-desktop", &gpu, "machine", "operator")
@@ -812,7 +768,6 @@ async fn only_a_paired_machine_waits_as_a_satellite_and_hosts_a_run() {
         credential: Some(Credential::new(key.clone(), home_key)),
         ..lobby.clone()
     };
-    // A board, and a machine under another's name: refused at the wait.
     for (key, name) in [(&eye, "eye-l"), (&gpu, "laptop-josh")] {
         let refused = SatelliteClient::connect(&as_device(key), name, WAIT)
             .await
@@ -825,9 +780,6 @@ async fn only_a_paired_machine_waits_as_a_satellite_and_hosts_a_run() {
             "{name}: {refused}"
         );
     }
-    // A robot waits only from a device that may embody it: a pinned
-    // name from its pin, an unpinned one from a device that may pin it
-    // (not a guest without `arm`, nor a board under another name).
     for (key, robot) in [(&eye, "arm"), (&guest, "skull"), (&eye, "skull")] {
         let mut me = Lobby::new(ParticipantId::new(robot).expect("id"));
         let refused = wait_for_join(&as_device(key), &mut me, robot, Some(WAIT))
@@ -838,9 +790,6 @@ async fn only_a_paired_machine_waits_as_a_satellite_and_hosts_a_run() {
             "{robot}: {refused}"
         );
     }
-    // A satellite whose home's authenticated echoes stop, its liveliness
-    // still up (an unsigned token anyone on the link can keep), counts
-    // the home gone.
     let silenced = SatelliteClient::connect(&as_device(&gpu), "gpu-desktop", WAIT)
         .await
         .expect("a satellite");
@@ -853,8 +802,6 @@ async fn only_a_paired_machine_waits_as_a_satellite_and_hosts_a_run() {
     .expect("bounded");
     assert!(matches!(gone, Err(SessionError::Closed)), "{gone:?}");
     assert!(*silenced.participant().host_present().borrow());
-    // Hosted on the board: refused at check; on a machine not in the
-    // lobby: not present.
     let client = LobbyClient::connect(&lobby, WAIT).await.expect("client");
     for (host, status) in [
         ("eye-l", CtlStatus::NotAuthorized),

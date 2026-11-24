@@ -1,12 +1,5 @@
 //! The model probe: handshake and describe, resolution against a stand-in env,
 //! action conformance, batched rows, determinism, seeding and statefulness.
-//!
-//! A model is bound with the
-//! 0.2 binder to a [`StandIn`] env whose observations the probe scripts, so
-//! every check compares the model's answers to inputs it chose. The 0.1-wire
-//! legs (`chunk_horizon`, `native_chunk_contract`, `grouped`,
-//! `batched_seeded_repro`) have no 0.2 counterpart: the binder owns chunking,
-//! and a served model's batcher groups concurrent sessions on its own side.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -40,20 +33,11 @@ pub(super) const MODEL_CHECK_NAMES: &[&str] = &[
 ];
 pub(super) const OBS_SEED_A: u64 = 0x5EED_000A;
 const OBS_SEED_B: u64 = 0x5EED_000B;
-/// Every probe episode is seeded, as an evaluation's episodes are: a model
-/// that seeds itself from the episode seed must exercise that path here.
 const EPISODE_SEED: i64 = 0x5EED_0E00;
-/// Unseeded episodes on one input; their spread is the determinism floor.
 const DETERMINISM_TRIALS: usize = 4;
-/// Episodes all on the same seed and observation: a model that seeds itself
-/// answers all of them identically however much it samples.
 const REPRO_TRIALS: usize = 4;
 const REPRO_EPISODE_SEED: i64 = 0x5EED_0E11;
-/// Two further seeds for the sensitivity leg of `seeded_repro`: a sampling
-/// model must answer them differently, or its seed never reaches the sampler.
 const SENSITIVITY_SEEDS: [i64; 2] = [0x5EED_0E22, 0x5EED_0E33];
-/// Concurrent sessions `shape_batch` joins the served model from, so its
-/// batcher hands them to one forward.
 const BATCH_ROWS: usize = 2;
 const STATE_TOLERANCE: f64 = 8.0;
 const STATE_ATOL: f64 = 1e-6;
@@ -121,8 +105,6 @@ pub fn probe_model(address: &str, options: &ModelProbeOptions) -> ProbeReport {
     probe.report(env, peer)
 }
 
-/// The handshake: the model's describe over its session, then the stand-in
-/// its inputs are synthesized into. On failure the report's peer.
 pub(super) fn connect(
     probe: &mut Probe,
     address: &str,
@@ -154,11 +136,6 @@ pub(super) fn connect(
         .and_then(|envelope| envelope.get("model_spec"))
         .cloned()
         .unwrap_or(Json::Null);
-    // A model that described itself but publishes no ModelSpec takes its
-    // inputs from whichever env it is paired with, so there is nothing to
-    // synthesize a stand-in from: with a reference env it is checked against
-    // that env's live spaces; without one the handshake is all the probe can
-    // verify. A missing describe still fails at synthesis below.
     let adapter_less = model_spec.is_null() && describe.is_some();
     let synthesized = match (&options.reference_env, adapter_less) {
         (Some(reference), true) => {
@@ -228,9 +205,6 @@ pub(super) fn connect(
         )
         .metric("connectMs", connect_ms),
     );
-    // The report names the env the model was checked against, so a reader
-    // can tell a reference env's numbers from a synthesized one's. The report
-    // is written to a file and printed: the reference's key stays out.
     let env = ProbeEnv {
         repo: String::new(),
         env_id: match &options.reference_env {
@@ -242,8 +216,6 @@ pub(super) fn connect(
     Ok((synthesized, env, peer))
 }
 
-/// The spaces an adapter-less model is checked against: its reference env's
-/// live contract, in place of a stand-in synthesized from a ModelSpec.
 fn reference_env(address: &str, timeout: Duration) -> Result<SynthesizedEnv, String> {
     let mut binding = super::bind_env(address, timeout).map_err(|error| error.to_string())?;
     let contract = binding.contract().clone();
@@ -280,8 +252,6 @@ fn run_checks(probe: &mut Probe, model: &RemoteModel, synthesized: &SynthesizedE
             return;
         }
     };
-    // Re-plan every step, so each step is one predict on the input the
-    // script served.
     let bound = crate::bind(
         model,
         &server,
@@ -303,8 +273,6 @@ fn run_checks(probe: &mut Probe, model: &RemoteModel, synthesized: &SynthesizedE
             return;
         }
     };
-    // Inputs with no declared role were left out of the stand-in env, so
-    // the resolve that succeeds here covered less than the model asks for.
     let unsupported = if synthesized.unsupported.is_empty() {
         String::new()
     } else {
@@ -355,9 +323,6 @@ struct ModelChecks<'p, 'b> {
 }
 
 impl ModelChecks<'_, '_> {
-    /// One episode reset with `seed`, served the observations `script` names
-    /// (the reset's first, then one per step), stepped once per input: the
-    /// model's action for each, as one-frame, one-lane predicts.
     fn episode(&mut self, seed: Option<i64>, script: &[u64]) -> Result<Vec<Frames>, String> {
         self.script
             .lock()
@@ -391,8 +356,6 @@ impl ModelChecks<'_, '_> {
             .collect())
     }
 
-    /// The first action of `trials` episodes on input A, each reset with the
-    /// seed `seeds` yields.
     fn first_actions(
         &mut self,
         seeds: impl IntoIterator<Item = Option<i64>>,
@@ -413,9 +376,6 @@ impl ModelChecks<'_, '_> {
         ok
     }
 
-    /// `BATCH_ROWS` sessions predicting at once, which the served model's
-    /// batcher may hand to one forward: each answer must still fit the
-    /// action space.
     fn check_shape_batch(&mut self, model: &RemoteModel, synthesized: &SynthesizedEnv) {
         let scripts: Vec<Arc<Mutex<Script>>> = (0..BATCH_ROWS)
             .map(|_| {
@@ -495,10 +455,6 @@ impl ModelChecks<'_, '_> {
         self.probe.record(check);
     }
 
-    /// Unseeded episodes on one input: a model that samples answers them
-    /// differently, and how far apart is the floor every later spread is
-    /// read against. (The 0.1 probe repeated one seeded lane instead; a model
-    /// that seeds itself read as deterministic there.)
     fn check_determinism(&mut self) -> Option<f64> {
         let name = "determinism_floor";
         let range = action_range(&self.action);
@@ -558,9 +514,6 @@ impl ModelChecks<'_, '_> {
         floor
     }
 
-    /// One observation, once per fresh episode, every episode carrying the
-    /// same seed: a sampling model that seeds from the episode seed answers
-    /// identically, one that ignores the seed does not.
     fn check_seeded_repro(&mut self, floor: Option<f64>) {
         let name = "seeded_repro";
         let range = action_range(&self.action);
@@ -625,10 +578,6 @@ impl ModelChecks<'_, '_> {
         self.probe.record(check);
     }
 
-    /// The other half of the seeding gate: two episodes on *different* seeds,
-    /// same observation. Only a model that samples (a floor above zero) can
-    /// show that the seed reaches its sampler; a deterministic one answering
-    /// two seeds alike says nothing either way.
     fn measure_seed_sensitivity(&mut self, floor: Option<f64>, check: ProbeCheck) -> ProbeCheck {
         let trials = match self.first_actions(SENSITIVITY_SEEDS.map(Some)) {
             Ok(trials) => trials,
@@ -653,8 +602,6 @@ impl ModelChecks<'_, '_> {
             .metric("seedSensitivityMeasured", 1.0)
             .metric("seedSpreadMaxAbsDiff", spread.max);
         match floor {
-            // A sampling model whose two seeds land on the same answer is
-            // dropping the seed: the same-seed Pass above measured nothing.
             Some(measured_floor) if measured_floor > 0.0 && spread.max == 0.0 => {
                 self.probe.observed.seed_sensitive = Some(false);
                 check.status = CheckStatus::Warn;
@@ -676,11 +623,6 @@ impl ModelChecks<'_, '_> {
         }
     }
 
-    /// Input A, then B, then A again in one seeded episode: a stateless model
-    /// answers the two As alike (within the floor). A drift that A,A,A at the
-    /// same predict index reproduces is the per-predict seed, not state; one
-    /// that a fresh episode clears is per-episode state, which a binding
-    /// evicts at the episode end; one that survives it fails.
     fn check_stateless(&mut self, floor: Option<f64>) {
         let name = "stateless";
         let Some(floor) = floor else {
@@ -714,8 +656,6 @@ impl ModelChecks<'_, '_> {
                 "A,B,A replay returned incomparable action shapes",
             )
             .tag("nondeterministic_shape"),
-            // A tolerance as wide as the action range can never be exceeded,
-            // so the pass would say nothing about state.
             Drift::Within(delta) if range.is_some_and(|range| tolerance >= range) => {
                 let check = ProbeCheck::new(
                     name,
@@ -744,10 +684,6 @@ impl ModelChecks<'_, '_> {
                 .metric("tolerance", tolerance);
                 range_metrics(check, delta)
             }
-            // The replay is the episode's third predict and `first` its first,
-            // so a model that seeds its sampler per predict drifts with no
-            // state at all. A,A,A asks the same third predict without B: if it
-            // matches the replay, B left nothing behind.
             Drift::Beyond(delta)
                 if self
                     .episode(Some(EPISODE_SEED), &[OBS_SEED_A; 3])

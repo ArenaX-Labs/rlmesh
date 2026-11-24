@@ -1,4 +1,3 @@
-// Compile every portable options setter and keep C++20 aggregate syntax available.
 #include <rlmesh.hpp>
 
 void options_setters() {

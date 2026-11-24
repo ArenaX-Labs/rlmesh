@@ -98,13 +98,11 @@ pub fn number(x: f64) -> String {
     if x < 0.0 {
         return format!("-{}", number(-x));
     }
-    // Rust's `{:e}` writes the shortest round-trip digits: `d.ddde±x`.
     let sci = format!("{x:e}");
     let (mantissa, exponent) = sci.split_once('e').unwrap_or((&sci, "0"));
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
     let exponent: i32 = exponent.parse().unwrap_or(0);
     let k = digits.len() as i32;
-    // x = 0.digits × 10^n.
     let n = exponent + 1;
     if k <= n && n <= 21 {
         format!("{digits}{}", "0".repeat((n - k) as usize))
@@ -156,8 +154,6 @@ mod tests {
     #[test]
     fn members_sort_by_utf16_and_strings_escape_minimally() {
         let value = json!({"b": [3, {"z": null, "a": true}], "a": "é\n\"\u{1}", "\u{fb33}": 1, "\u{1d11e}": 2});
-        // U+1D11E is a surrogate pair (D834 DD1E): by UTF-16 code units it
-        // sorts before U+FB33, though its code point is higher.
         assert_eq!(
             to_string(&value),
             "{\"a\":\"é\\n\\\"\\u0001\",\"b\":[3,{\"a\":true,\"z\":null}],\"\u{1d11e}\":2,\"\u{fb33}\":1}"

@@ -1,5 +1,3 @@
-//! The mode: arming, fallbacks and the e-stop latch.
-
 use super::*;
 
 #[test]
@@ -36,8 +34,6 @@ fn an_embodiments_fallback_stops_its_robot_alone_until_rearmed_and_estop_records
             }
         );
     };
-    // Between episodes: the robot is held, the session's mode stays,
-    // and its next drive needs a re-arm by name.
     f.run("robot", safe(ReasonCode::DeviceWatchdog), 1)
         .expect("from DISARMED");
     assert_eq!(f.auth.mode(), Mode::Disarmed);
@@ -59,7 +55,6 @@ fn an_embodiments_fallback_stops_its_robot_alone_until_rearmed_and_estop_records
         Fixture::status(f.run("policy", safe(ReasonCode::QueueDry), 3)),
         CtlStatus::Forbidden
     );
-    // From ACTIVE: only this robot's leases end; the session goes on.
     let epoch = f.auth.epoch();
     f.run("robot", safe(ReasonCode::QueueDry), 4)
         .expect("from ACTIVE");
@@ -81,12 +76,10 @@ fn an_embodiments_fallback_stops_its_robot_alone_until_rearmed_and_estop_records
         CtlStatus::NotReady,
         "an arm is not a re-arm"
     );
-    // A re-arm frees the robot alone, in its epoch.
     f.run("operator", rearm("robot"), 6)
         .expect("re-arm the robot");
     assert_eq!(f.auth.epoch(), epoch);
     f.grant("policy", "cmd1", 6).expect("leased again");
-    // ESTOP stays ESTOP and records the cause; recording is no new stop.
     let estop = Command::Estop {
         reason: "button".into(),
         code: ReasonCode::Unspecified,
@@ -110,8 +103,6 @@ fn rearm(robot: &str) -> Command {
     Command::Rearm { robot: pid(robot) }
 }
 
-/// A fixture with a second robot, `other`, whose `wheel` every controller
-/// may lease; `robot` and `other` are both held by their own faults.
 fn two_held_robots() -> Fixture {
     let mut f = Fixture::new();
     f.run(
@@ -150,7 +141,6 @@ fn a_rearm_clears_only_the_named_robot() {
             if robot == &pid("other") && by == &pid("operator")
     )));
     f.grant("policy", "wheel", 3).expect("leased");
-    // Not held any more: a no-op that changes nothing.
     let revision = f.auth.revision();
     let again = f.run("operator", rearm("other"), 4).expect("a no-op");
     assert!(again.events.is_empty());
@@ -368,7 +358,6 @@ fn a_robot_lost_or_restarted_while_armed_is_held_and_one_while_disarmed_is_not()
     f.auth.participant_lost(&pid("robot"), 7);
     let held = f.auth.held(&pid("robot")).map(|r| r.code);
     assert_eq!(held, Some(ReasonCode::RobotLost));
-    // Gone, it can't be acknowledged yet.
     assert_eq!(
         Fixture::status(f.run("operator", rearm("robot"), 8)),
         CtlStatus::NotReady
@@ -425,7 +414,6 @@ fn only_the_robot_that_latched_an_estop_or_local_clears_it() {
     as_board(&mut f, "eye-1", Command::Clear, 5).expect("the robot that latched it");
     assert!(!f.auth.estop_latched());
 
-    // A local robot process clears any latch.
     let estop = Command::Estop {
         reason: "button".into(),
         code: ReasonCode::EstopLocal,
@@ -487,7 +475,6 @@ fn estop_latches_and_needs_clear_disarm_arm() {
     );
     f.run("robot", Command::Clear, 4).expect("local clear");
     assert_eq!(f.auth.mode_reason().code, ReasonCode::EstopCleared);
-    // A local latch reported while cleared latches again, as the edge's.
     let local = Command::Estop {
         reason: "button".into(),
         code: ReasonCode::EstopLocal,
@@ -530,7 +517,6 @@ fn a_participant_that_only_publishes_is_never_held() {
     f.grant("policy", "cmd1", 1).expect("driving");
     as_tracker(&mut f, 1, attach_tracker(), 1);
     as_tracker(&mut f, 1, declare(target), 1);
-    // Restarted, lost, back with a fallback: nothing to re-arm, ever.
     as_tracker(&mut f, 2, attach_tracker(), 2);
     assert!(f.auth.held(&pid("tracker")).is_none(), "restarted");
     as_tracker(&mut f, 2, declare(target), 2);
@@ -576,13 +562,11 @@ fn a_hold_ends_when_the_robot_commands_nothing_or_leaves() {
             3,
         )
         .expect("back");
-    // Back as a sensor alone: nothing commandable left to hold.
     let sensor = r#"{"ft": {"kind": "x/ft", "hz": 1000, "fields": {"wrench": ["float32", [6]]}}}"#;
     f.auth
         .apply_from(as_robot(declare(sensor)), &back, 3)
         .expect("declare");
     assert!(f.auth.held(&pid("robot")).is_none(), "re-declared");
-    // Commandable again while armed: held again, until it leaves.
     f.auth
         .apply_from(as_robot(declare(&robot_map(""))), &back, 4)
         .expect("declare");
@@ -592,8 +576,6 @@ fn a_hold_ends_when_the_robot_commands_nothing_or_leaves() {
     assert!(f.auth.snapshot(Vec::new(), 5).held.is_empty());
 }
 
-/// An e-stop's reason is verified only when its sender is the participant
-/// it names: a member's own stop, not a signal an edge relays for another.
 #[test]
 fn an_estop_is_verified_only_from_the_member_it_names() {
     let cases = [

@@ -1,11 +1,5 @@
 //! What an edge runtime needs from its participant: the authority view, the
 //! edge report, the local e-stop latch and the ordered stop queue.
-//!
-//! A robot process tells the host about its own stops through **one ordered
-//! queue**: `EnterSafe`, a local `Estop` and its `Clear` are
-//! sent in the order they happened, each retried until the host answers, so
-//! a host that comes back after a partition sees `Estop` before `Clear` and
-//! ends in ESTOP (unlatched), which still needs disarm and arm.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -189,9 +183,6 @@ impl ManualView {
     }
 }
 
-/// A robot process's local e-stop latch: an atomic flag, and how many
-/// times it was latched, so an edge that missed a latch cleared before its
-/// next look still stops (and fences) for it.
 #[derive(Debug, Default)]
 pub(crate) struct LocalLatch {
     latched: AtomicBool,
@@ -202,8 +193,6 @@ pub(crate) struct LocalLatch {
 }
 
 impl LocalLatch {
-    /// Latches it for `reason`: which latch this is. The reason, then the
-    /// count, then the flag, so whoever sees the flag also sees both.
     pub(super) fn latch(&self, reason: Reason) -> u64 {
         let mut last = lock(&self.reason);
         *last = reason;
@@ -212,36 +201,29 @@ impl LocalLatch {
         seq
     }
 
-    /// Clears it: how many latches came before, and why the last one
-    /// latched.
     fn clear(&self) -> (u64, Reason) {
         let last = lock(&self.reason);
         self.latched.store(false, Ordering::SeqCst);
         (self.latches.load(Ordering::SeqCst), last.clone())
     }
 
-    /// Whether it is latched now.
     pub(crate) fn is_latched(&self) -> bool {
         self.latched.load(Ordering::SeqCst)
     }
 
-    /// How many times it was latched.
     pub(crate) fn latches(&self) -> u64 {
         self.latches.load(Ordering::SeqCst)
     }
 
-    /// The code of the last latch.
     pub(crate) fn code(&self) -> ReasonCode {
         lock(&self.reason).code
     }
 
-    /// Why it is latched, while it is.
     pub(super) fn reason(&self) -> Option<Reason> {
         self.is_latched().then(|| lock(&self.reason).clone())
     }
 }
 
-/// What a robot process tells the host about its own stops, in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Report {
     /// It fell back on its own account in `epoch`: the session goes SAFE.
@@ -266,7 +248,6 @@ pub(super) enum Report {
 }
 
 impl Report {
-    /// The report of latch `seq`, for `reason`.
     pub(super) fn estop(reason: &Reason, seq: u64) -> Self {
         let origin = (reason.code == ReasonCode::EstopSignal)
             .then(|| ParticipantId::new(&reason.by).ok())
@@ -281,10 +262,6 @@ impl Report {
     }
 }
 
-/// Keeps a robot process's stop reports in order whatever order
-/// its threads queued them in: a `Clear` goes out only after an `Estop` for
-/// every latch before it, and an `Estop` a clear already covered goes
-/// nowhere.
 #[derive(Debug, Default)]
 struct StopOrder {
     /// The latches an `Estop` went out for.
@@ -292,7 +269,6 @@ struct StopOrder {
 }
 
 impl StopOrder {
-    /// What `report` sends, in order.
     fn plan(&mut self, report: Report) -> Vec<Report> {
         match report {
             Report::Estop { seq, .. } if seq <= self.estops => Vec::new(),
@@ -312,8 +288,6 @@ impl StopOrder {
                     at_ns,
                 }]
             }
-            // The latch's own report hasn't gone out: the clear sends it,
-            // with its reason.
             Report::Clear { after, reason } if after > self.estops => {
                 self.estops = after;
                 vec![
@@ -326,7 +300,6 @@ impl StopOrder {
     }
 }
 
-/// What the reporter does with one attempt's outcome.
 #[derive(Debug, PartialEq, Eq)]
 enum Attempt {
     /// The host answered (or refused it, authenticated): next report.
@@ -338,11 +311,6 @@ enum Attempt {
 }
 
 impl Attempt {
-    /// Judges `result`. A sealed refusal is the host's own and ends a
-    /// report as an answer does (`EXPIRED` sends it anew). An unsealed one
-    /// ([`SessionError::Unverified`]) is only a hint (anyone can answer
-    /// `ctl`, and a superseded key gets one too): it never ends a report
-    /// while this generation lasts (`ended`).
     fn of(result: &Result<(), SessionError>, ended: bool) -> Self {
         match result {
             Err(SessionError::Rejected(err)) if err.status == CtlStatus::Expired => Self::Anew,
@@ -364,7 +332,6 @@ pub struct SafeReporter {
 impl SafeReporter {
     /// Queues an `EnterSafe` for a fault in `epoch`; never blocks.
     pub fn report(&self, epoch: Epoch, code: ReasonCode, reason: impl Into<String>) {
-        // The reporter task is gone only after the participant closed.
         let _ = self.tx.send(Report::Safe {
             epoch,
             code,
@@ -382,19 +349,16 @@ impl Participant {
     /// Tells the host that this embodiment fell back on its own account
     /// (an edge's queue ran dry past `hold_max`, a lease lapsed by its
     /// clock, a device watchdog fired in `epoch`), so the session goes SAFE.
-    /// Never blocks: a background task sends `EnterSafe`, retrying every
-    /// 100 ms, until the host is SAFE or ESTOP at an epoch at or after
-    /// `epoch`.
+    /// Never blocks: a background task sends `EnterSafe`, retrying every 100 ms,
+    /// until the host is SAFE or ESTOP at an epoch at or after `epoch`.
     pub fn report_safe(&self, epoch: Epoch, code: ReasonCode, reason: impl Into<String>) {
         self.safe_reporter().report(epoch, code, reason);
     }
 
-    /// Latches this robot process's local e-stop: an atomic
-    /// store, safe from any thread (a hardware button's handler too), that
-    /// needs no network. Every edge of this process refuses chunks and runs
-    /// Estop from its next tick; a background task reports
-    /// `Estop{ESTOP_LOCAL}` to the host, retrying, in order with the other
-    /// reports.
+    /// Latches this robot process's local e-stop: an atomic store, safe from
+    /// any thread, that needs no network. Every edge of this process refuses
+    /// chunks and runs Estop from its next tick. A background task reports
+    /// `Estop{ESTOP_LOCAL}` to the host, retrying, in order with the other reports.
     pub fn latch_estop(&self, reason: impl Into<String>) {
         self.shared.latch(Reason {
             code: ReasonCode::EstopLocal,
@@ -414,7 +378,6 @@ impl Participant {
     /// Clears the local e-stop latch: the only way to, since no wire path
     /// clears it. `Clear` is queued behind any unsent `Estop`, so the host
     /// ends in ESTOP, unlatched, and leaving it still needs disarm and arm.
-    /// It also clears a host latch this process did not set.
     pub fn clear_estop(&self) {
         let (after, reason) = self.shared.estop.clear();
         let _ = self.shared.reports.send(Report::Clear { after, reason });
@@ -425,7 +388,6 @@ impl Participant {
         self.shared.estop.is_latched()
     }
 
-    /// The latch, for this process's edges.
     pub(crate) fn estop_latch(&self) -> Arc<LocalLatch> {
         self.shared.estop.clone()
     }
@@ -438,14 +400,8 @@ impl Participant {
     }
 }
 
-/// How often an unanswered stop report is resent.
 pub(super) const SAFE_RETRY: Duration = Duration::from_millis(100);
 
-/// Sends this robot process's stops to the host one at a time, in order,
-/// each until the host answers (or refuses it). An `EnterSafe` also stops
-/// once the view shows the host SAFE or ESTOP at an epoch at or after the
-/// fault's (a re-armed host goes SAFE again: the fault may be a device's).
-/// The edges have stopped already; this only tells the host.
 pub(super) async fn report_stops(
     shared: Arc<Shared>,
     mut reports: mpsc::UnboundedReceiver<Report>,
@@ -468,11 +424,7 @@ pub(super) async fn report_stops(
     }
 }
 
-/// Sends one stop report until it is done ([`Attempt`]); `false` once the
-/// participant closed.
 async fn send_stop(shared: &Shared, report: &Report, cancel: &CancellationToken) -> bool {
-    // One request id per report: a retry is answered from the host's reply
-    // cache, never applied twice.
     let mut request_id = None;
     loop {
         let command = match &report {
@@ -530,7 +482,6 @@ mod tests {
 
     #[test]
     fn stop_reports_keep_estop_before_clear_and_retry_through_spoofed_refusals() {
-        // The latch is a member's signal.
         let latch = Reason {
             code: ReasonCode::EstopSignal,
             by: "eye".into(),
@@ -542,9 +493,6 @@ mod tests {
             after,
             reason: latch.clone(),
         };
-        // A latch whose report was queued after the clear that followed
-        // it: the clear sends its Estop first, with the latch's own
-        // reason, and the late one nothing.
         let mut order = StopOrder::default();
         let sent: Vec<Report> = [clear(1), estop(1), estop(2), clear(2)]
             .into_iter()
@@ -569,10 +517,6 @@ mod tests {
             .collect();
         assert_eq!(kinds, ["estop", "clear", "estop", "clear"]);
 
-        // A plain UNAUTHENTICATED (a MITM's, while the host's reply is
-        // suppressed) keeps the Estop queued; the restored link's answer
-        // ends it, and only then does the Clear go. The host's own sealed
-        // UNAUTHENTICATED is an answer.
         let spoofed = Err(SessionError::Unverified(CtlError::new(
             CtlStatus::Unauthenticated,
             "spoofed",
@@ -583,7 +527,6 @@ mod tests {
             Attempt::Retry
         );
         assert_eq!(Attempt::of(&Ok(()), false), Attempt::Done);
-        // An authenticated refusal, an expired id, a generation that ended.
         let refused = |status| Err(SessionError::Rejected(CtlError::new(status, "")));
         for status in [CtlStatus::InvalidTransition, CtlStatus::Unauthenticated] {
             assert_eq!(Attempt::of(&refused(status), false), Attempt::Done);

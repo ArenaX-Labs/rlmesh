@@ -1,10 +1,4 @@
-//! Route edition reconciliation (the session floor) for the layer that binds a
-//! route. It takes the env and model offers learned at their handshakes, adds this
-//! runtime build's own supported window, and returns the floor all three speak.
-//!
-//! Lives here — not in the `RemoteModel` facade — so the production runtime, which
-//! drives the env and model clients directly, computes and sets the same pin
-//! instead of leaving the workflow edition unset.
+//! Route edition reconciliation (the session floor) for the layer that binds a route.
 
 use rlmesh_proto::{RuntimeCap, SessionFloor, SessionOffer, negotiate_session_floor};
 
@@ -27,7 +21,6 @@ pub fn env_floor(
             ))
         })?;
     match floor.runtime_cap {
-        // A CAN-set limit: the runtime genuinely cannot do what its peers can.
         Some(RuntimeCap::Capability) => tracing::warn!(
             selected_workflow_edition = %floor.selected_workflow_edition,
             desired_workflow_edition = %floor.desired_workflow_edition,
@@ -36,7 +29,6 @@ pub fn env_floor(
             floor.desired_workflow_edition,
             floor.selected_workflow_edition,
         ),
-        // An explicit declaration: sticky editions working as intended, not a defect.
         Some(RuntimeCap::Declaration) => tracing::info!(
             selected_workflow_edition = %floor.selected_workflow_edition,
             desired_workflow_edition = %floor.desired_workflow_edition,
@@ -58,8 +50,6 @@ mod tests {
 
     #[test]
     fn a_floor_refused_by_a_dev_cohort_names_the_rebuild_remedy() {
-        // Two dev artifacts built from different tree states: neither shares an
-        // edition with the other, nor with this runtime.
         let env = SessionOffer::new(&["2026.06-dev.aaaaaaaaaaaa"]);
         let model = SessionOffer::new(&["2026.06-dev.bbbbbbbbbbbb.dirty.0123456789abcdef"]);
         let message = env_floor(&env, &model, None)

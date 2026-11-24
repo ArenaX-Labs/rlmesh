@@ -1,6 +1,3 @@
-//! The keys a launcher starts a session host under in another process, and
-//! the keyed address it dials it by (`rlmesh.launch`).
-
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
@@ -80,7 +77,6 @@ pub fn launched_address(
         rlmesh_session::address::launched_address(identity, session).map_err(invalid)?;
     address.participant = participant.map(str::to_string);
     let invite = address.invite();
-    // Parsed back so a bad participant name is refused here, not at dial.
     match participant {
         Some(_) => rlmesh_session::address::Address::participant(&invite),
         None => rlmesh_session::address::Address::session(&invite),

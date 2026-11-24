@@ -1,9 +1,5 @@
 //! The environment probe: handshake, describe and contract validation,
 //! reproducibility, step conformance and latency, and the preview clip.
-//!
-//! The env is reached through a
-//! binding with the random baseline as its model, and every step carries the
-//! probe's own action, so the binding is only the 0.2 transport.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -32,7 +28,6 @@ pub(super) const ENV_CHECK_NAMES: &[&str] = &[
     "preview",
 ];
 const ENV_RESET_SEED: i64 = 7;
-/// Seeded steps replayed twice from the same reset to test env reproducibility.
 const ENV_REPLAY_STEPS: usize = 10;
 const ENV_REPLAY_SEED: u64 = 0x5EED_00E0;
 const ENV_LATENCY_WARMUP: usize = 3;
@@ -43,7 +38,6 @@ const ENV_LATENCY_STEPS: usize = 20;
 pub struct EnvProbeOptions {
     /// The image's describe envelope (its `dev.rlmesh.describe` label), which
     /// `env_spec_matches_describe` and `env_contract` hold the live env to.
-    /// `None` skips both.
     pub describe: Option<Json>,
     /// Write the preview clip and still here; `None` captures none.
     pub output_dir: Option<PathBuf>,
@@ -66,8 +60,6 @@ impl Default for EnvProbeOptions {
     }
 }
 
-/// The env's served id, else `name`, else its describe target: a served id
-/// is only the default when the env sets none.
 fn env_name(served: &str, options: &EnvProbeOptions) -> String {
     if served != crate::env::sync_wire::UNKNOWN_ENV_ID {
         return served.to_owned();
@@ -166,7 +158,6 @@ impl EnvChecks<'_, '_> {
         }
     }
 
-    /// A metadata entry of the live contract as JSON; null when absent.
     fn metadata_json(&self, key: &str) -> Json {
         self.metadata
             .as_ref()
@@ -175,9 +166,6 @@ impl EnvChecks<'_, '_> {
             .unwrap_or(Json::Null)
     }
 
-    /// The reset options a run sends an env that declares `trial_index`
-    /// among its reset options: trial 0 every time, so the seeded replays
-    /// stay comparable.
     fn reset_options(&self) -> Option<crate::InfoDict> {
         let declared = self.metadata_json(crate::ENV_RESET_OPTIONS_KEY);
         let wants = |value: &Json| value.as_str() == Some(crate::binding::TRIAL_INDEX_OPTION);
@@ -203,8 +191,6 @@ impl EnvChecks<'_, '_> {
         })
     }
 
-    /// One step under `action`: the observation, reward and whether the
-    /// episode ended.
     fn step(&mut self, action: SpaceValue) -> Result<(SpaceValue, f64, bool, Duration), String> {
         let action = space_codec::value_from_space(&self.action, action)
             .map_err(|error| format!("encode action: {error}"))?;
@@ -273,9 +259,6 @@ impl EnvChecks<'_, '_> {
         self.probe.record(check);
     }
 
-    /// The contract branch this image actually serves, blocking: `join`
-    /// reconciles widths, dim laws and ranges but never role *names*, so a
-    /// same-width contract swap passes every other check silently.
     fn check_contract(&mut self) {
         let Some(envelope) = self.describe else {
             self.probe.record(ProbeCheck::skipped(
@@ -292,10 +275,6 @@ impl EnvChecks<'_, '_> {
             .record(env_contract_check(&contracts, &served_branch, &served_tags));
     }
 
-    /// Resets with a fixed seed and replays the same seeded actions twice,
-    /// then compares the two trajectories leaf by leaf. State leaves (and
-    /// rewards / done flags) must match exactly; image leaves get a small
-    /// renderer-jitter tolerance and are ranked as a separate, lesser flag.
     fn check_repro(&mut self, tagged: &[TaggedImage]) {
         let name = "env_repro";
         let mut runs = Vec::with_capacity(2);
@@ -405,8 +384,6 @@ impl EnvChecks<'_, '_> {
         self.probe.record(check);
     }
 
-    /// One reset plus up to `ENV_REPLAY_STEPS` seeded steps, stopping at the
-    /// first episode end so both runs see the same schedule.
     fn replay(&mut self) -> Result<Replay, String> {
         let reset_started = Instant::now();
         let first = self.reset()?;
@@ -450,12 +427,9 @@ impl EnvChecks<'_, '_> {
         self.probe.record(check);
     }
 
-    /// Times `ENV_LATENCY_STEPS` random-action steps; with a preview capture
-    /// attached, keeps stepping (untimed) until it has its frames.
     fn check_step_latency(&mut self, mut preview: Option<&mut PreviewCapture>) {
         let name = "env_step_latency";
         match self.reset() {
-            // The reset frame leads the preview: the undisturbed scene is the still.
             Ok(observation) => {
                 if let Some(capture) = preview.as_deref_mut() {
                     capture.capture(&observation, &self.observation);
@@ -485,8 +459,6 @@ impl EnvChecks<'_, '_> {
             if step >= timed_steps.end && preview.as_ref().is_none_or(|capture| capture.done()) {
                 break;
             }
-            // A fresh draw per step: the preview rides this loop, and a scene
-            // that never moves is not worth looking at.
             let action = match bounded_action(&self.action, ENV_STEP_SEED + step) {
                 Ok(action) => action,
                 Err(error) => {

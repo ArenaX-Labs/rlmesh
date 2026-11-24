@@ -19,19 +19,6 @@ use crate::model::predict_fn::{PredictFn, RouteConfig};
 use crate::model::types::{EpisodeInfo, ModelObservation};
 use crate::{Error, Result};
 
-/// The spec'd per-lane loop (CPU + the model's predict callback), run on a
-/// blocking worker thread. Holds the per-route entry lock across input
-/// assembly (the frame buffers mutate in place there) and again, after the
-/// model call, across the per-frame apply (the action window records there),
-/// never across the call itself; the horizon it dispatches with is the
-/// runtime-chosen execution horizon pinned on `ResolveAdapter`, not the model
-/// spec.
-///
-/// Emits each lane's action chunk as [`PredictFrames`]: frame 0 per lane plus the
-/// future-step frames the runtime driver replays. With execution horizon 1 every
-/// lane yields a single frame and `replay` is empty — the unchanged single-action
-/// path. The engine no longer replays internally; it returns the executed prefix of
-/// the model's native chunk and re-plans on every call (the runtime decides when).
 pub(super) fn predict_route(
     entry: &Arc<Mutex<RouteEntry>>,
     predict: &Arc<dyn PredictFn>,
@@ -62,19 +49,11 @@ pub(super) fn predict_route(
     )
 }
 
-/// One grouped predict group's serving lane, classified once (on the async
-/// side) from the routes map: a spec-less route carries the horizon pinned for
-/// it (there is no [`RouteEntry`] to stamp it on); a spec'd route carries its
-/// entry.
 pub(super) enum GroupLane {
     SpecLess { horizon: u32 },
     Routed { entry: Arc<Mutex<RouteEntry>> },
 }
 
-/// Whether a grouped request's spec'd groups may assemble and finish on the
-/// rayon pool: every routed group names a distinct route (so no two threads
-/// contend one entry lock in undefined order) and no route's plan runs a
-/// Python custom transform (which would take the GIL from the pool).
 fn assembles_in_parallel(lanes: &[GroupLane]) -> bool {
     let mut seen: HashSet<*const Mutex<RouteEntry>> = HashSet::new();
     let mut routed = 0usize;
@@ -99,11 +78,6 @@ fn assembles_in_parallel(lanes: &[GroupLane]) -> bool {
     routed > 1
 }
 
-/// Runs a parallel adapter section and charges `adapter_ns` its wall time.
-/// The per-lane kernels still stamp their own spans, into `scratch`, which is
-/// dropped: on the rayon pool those spans overlap, and summing them reported
-/// thread time (about 2.5x the wall at 32 lanes) as the endpoint's `adapter`
-/// phase, which is meant to be the time the request spent in adapter work.
 fn charge_wall<T>(adapter_ns: &AtomicU64, section: impl FnOnce(&AtomicU64) -> T) -> T {
     let scratch = AtomicU64::new(0);
     let started = Instant::now();
@@ -112,27 +86,6 @@ fn charge_wall<T>(adapter_ns: &AtomicU64, section: impl FnOnce(&AtomicU64) -> T)
     out
 }
 
-/// The fused grouped predict (the batched forward across routes), run on a
-/// blocking worker thread.
-///
-/// A spec-less group has no adapter or chunk semantics of its own and serves
-/// inline through the preserved raw path, matching `predict_chunked`. Each
-/// spec'd group assembles its inputs under a short-lived per-route entry lock
-/// (the frame-stack buffers mutate there); the lock drops before any model
-/// call, so a route repeated within one request re-locks sequentially instead
-/// of self-deadlocking, and a panic can poison at most the route being
-/// assembled. Prepared groups are bucketed by their pinned execution horizon
-/// (in practice one runner pins one value, so this is a single bucket). A
-/// bucket fuses into ONE batched corner call — lanes concatenated in group
-/// order, split back by lane count, finished per group with replay frames
-/// intact — only when [`bucket_fuses`] proves that corner is the one a direct
-/// predict would pick; otherwise the bucket serves per group through the same
-/// dispatch as a direct predict. Lanes from different routes are independent
-/// by the batched-corner contract, so a fused cross-route batch is
-/// semantically identical to a vectorized route's lanes. Per-group errors stay
-/// per-group; a fused corner failure is cloned to every group in its bucket
-/// (variant and recoverability preserved) and annotated with that group's own
-/// assembled-input signature.
 pub(super) fn predict_grouped_fused(
     lanes: Vec<GroupLane>,
     observations: Vec<ModelObservation>,
@@ -149,13 +102,6 @@ pub(super) fn predict_grouped_fused(
         num_envs: usize,
     }
 
-    // A spec'd group's assembly is host work under its own route entry lock,
-    // independent of every other group's, so the groups assemble in parallel
-    // (indexed, so results keep request order) — unless two groups name the
-    // same route (their buffer mutations would then interleave in no defined
-    // order; the runtime never groups one route twice) or a plan runs Python
-    // (a custom transform takes the GIL, which serialises the pool anyway).
-    // A spec-less group calls the model itself and stays on this thread.
     enum Staged {
         SpecLess {
             observation: ModelObservation,
@@ -273,8 +219,6 @@ pub(super) fn predict_grouped_fused(
                 flat_episodes.extend(group.episodes);
             }
             let total = flat.len();
-            // Each group's episodes were assembled alongside its own inputs, so a
-            // disagreement here is an engine bug, not a bad request.
             let fused_result = if flat_episodes.len() == total {
                 dispatch_corners(
                     predict,
@@ -292,9 +236,6 @@ pub(super) fn predict_grouped_fused(
             };
             match fused_result {
                 Ok(all_frames) => {
-                    // Split the fused chunk per group in order, then apply each
-                    // group's action frames under its own entry lock — in
-                    // parallel under the same conditions as assembly.
                     let mut frames = all_frames.into_iter();
                     let split: Vec<(FusedGroup, Vec<Vec<Value>>)> = fused
                         .into_iter()
@@ -336,9 +277,6 @@ pub(super) fn predict_grouped_fused(
                 }
             }
         } else {
-            // Each non-fused group is exactly one route, so its row-aligned
-            // episode identity travels with it — the same dispatch a direct
-            // predict of that route would run.
             for group in groups {
                 results[group.index] = Some(
                     dispatch_route_corners(

@@ -1,5 +1,3 @@
-//! Samples, batches and chunks.
-
 use super::*;
 
 fn applied_sample() -> Sample {
@@ -36,7 +34,6 @@ fn samples_are_plain_protobuf_with_the_payload_neither_copied_on_send_nor_on_rec
         "the payload is a segment of its own"
     );
     let buf = Bytes::from(encoded.to_vec());
-    // Any protobuf implementation reads it.
     let plain = pb::Sample::decode(&buf[..]).expect("plain protobuf");
     assert_eq!((plain.seq, plain.tick, plain.payload.len()), (41, 7, 24));
     assert_eq!(plain.applied.map(|a| a.chunk_seq), Some(9));
@@ -46,7 +43,6 @@ fn samples_are_plain_protobuf_with_the_payload_neither_copied_on_send_nor_on_rec
         buf.as_ptr_range().contains(&decoded.payload.as_ptr()),
         "the payload slices the received buffer"
     );
-    // An applied tick with nothing dispatched has no payload.
     let absent = Sample {
         payload: Bytes::new(),
         applied: Some(Applied::absent(EdgeMode::Safe)),
@@ -200,7 +196,6 @@ fn batches_and_chunks_take_exactly_their_caps() {
     let mut over = pb::SampleBatch::decode(&buf[..]).expect("plain");
     over.samples.push(over.samples[0]);
     assert!(decode_batch(Bytes::from(over.encode_to_vec())).is_err());
-    // 1024 actions, 4 MiB of them; one more byte is over.
     let full = ActionChunk {
         count: 1024,
         actions: Bytes::from(vec![0_u8; 4 << 20]),

@@ -1,8 +1,3 @@
-//! Spaces this release accepts, checked by the released rlmesh-spaces
-//! 0.1.0 validator: what a runner bridging a 0.2 env to a 0.1 model meets
-//! when it hands the 0.1 side the env's contract. Each case says whether the
-//! released reader takes it; a 0.2-only form is a documented break.
-
 use rlmesh_spaces as current;
 use rlmesh_spaces_0_1 as released;
 
@@ -29,8 +24,6 @@ fn text(min_length: i64) -> (current::SpaceSpec, released::SpaceSpec) {
     )
 }
 
-/// Gymnasium's `Text(min_length=0)` (an empty string allowed) is valid in
-/// 0.2 and refused by the 0.1 validator, as the compatibility doc says.
 #[test]
 fn an_empty_text_minimum_is_0_2_only() {
     let (ours, theirs) = text(0);

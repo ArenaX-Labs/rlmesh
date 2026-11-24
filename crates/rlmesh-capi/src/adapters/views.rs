@@ -1,4 +1,3 @@
-//! Immutable lent C trees. All allocations remain at fixed addresses.
 #![allow(unsafe_code)]
 use super::*;
 pub(crate) fn view_rotation(arena: &mut Arena, f: &a::Rotation) -> RLMeshRotation {

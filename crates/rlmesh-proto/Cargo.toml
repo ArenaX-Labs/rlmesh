@@ -12,16 +12,12 @@ readme = "README.md"
 license = { workspace = true }
 categories = { workspace = true }
 keywords = { workspace = true }
-# Published as an internal dependency of `rlmesh` and `rlmesh-cli`.
 publish = { workspace = true }
 
 [package.metadata.cargo-machete]
 ignored = ["prost", "tonic-prost-build"]
 
-# The build script invokes `protoc` to generate internal data types. The docs.rs
-# build image ships `protoc` (via the crates-build-env `protobuf-compiler`
-# package), so no extra escape hatch is needed; this block documents the docs.rs
-# build expectations and renders all targets.
+# docs.rs build images ship `protoc`, which the build script needs.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

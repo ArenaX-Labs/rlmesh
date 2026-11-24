@@ -1,11 +1,10 @@
-//! Run a binding's plans on host values: the observation and action
-//! [`Value`] trees, Gym spaces, the JPEG codec and the host-language holes.
+//! Run a binding's plans on host values: the observation and action [`Value`] trees, Gym
+//! spaces, the JPEG codec and the host-language holes.
 //!
-//! The binder ([`rlmesh_session_core::spec::role`]) decides and converts;
-//! this module reads each plan's sources out of the raw observation,
-//! hands them over, and places what comes back into the payload tree.
-//! Custom inputs are host-language holes: provide a [`CustomTransform`] to
-//! fill them, or use [`NoCustoms`] when the specs are fully declarative.
+//! The binder ([`rlmesh_session_core::spec::role`]) decides and converts; this module reads each
+//! plan's sources out of the raw observation and places what comes back into the payload tree.
+//! Custom inputs are host-language holes: provide a [`CustomTransform`] to fill them, or use
+//! [`NoCustoms`] when the specs are fully declarative.
 
 mod jpeg;
 pub(crate) mod lookup;
@@ -24,10 +23,9 @@ pub use value::Value;
 
 use crate::plans::Binding as ResolvedAdapter;
 
-/// The resample algorithms an `Image` input may name. Un-suffixed names have
-/// cv2/torch semantics, `_aa` names PIL's; bare `bicubic`/`lanczos3` are
-/// deliberately absent, so a spec naming one fails resolution rather than
-/// silently getting the other library's kernel.
+/// The resample algorithms an `Image` input may name. Un-suffixed names have cv2/torch
+/// semantics, `_aa` names PIL's; bare `bicubic` and `lanczos3` are absent so a spec naming one
+/// fails resolution rather than getting the other library's kernel.
 pub const RESAMPLES: [&str; 5] = [
     "bilinear",
     "bilinear_aa",
@@ -38,9 +36,6 @@ pub const RESAMPLES: [&str; 5] = [
 
 /// Host-language hook materializing custom-input transforms.
 pub trait CustomTransform {
-    /// Produce the payload value for one custom input, or `Ok(None)` to
-    /// omit the key (the host fills it outside the engine, e.g. a binding
-    /// running the user's callable on the raw host-language observation).
     fn apply(
         &self,
         model_key: &str,
@@ -82,8 +77,8 @@ impl CustomTransform for SkipCustoms {
 
 /// Convert a raw env observation into the model input payload `Value` tree.
 ///
-/// The stateless half: a frame-stacked input yields its single frame and an
-/// action-source part its `fill`. The per-episode windows live behind
+/// The stateless half: a frame-stacked input yields its single frame and an action-source part
+/// its `fill`. The per-episode windows live behind
 /// [`assemble_obs`](crate::stateful::assemble_obs).
 pub fn transform_obs(
     adapter: &ResolvedAdapter,
@@ -103,17 +98,14 @@ pub fn transform_action(
     Ok(value::tensor_from_f32(vec![env.len() as i64], &env))
 }
 
-/// A binder apply failure as the host's.
 pub(crate) fn from_core(error: rlmesh_session_core::spec::apply::ApplyError) -> ApplyError {
     ApplyError::new(error.0)
 }
 
-/// A host failure as the binder's (a host read inside a plan).
 pub(crate) fn to_core(error: ApplyError) -> rlmesh_session_core::spec::apply::ApplyError {
     rlmesh_session_core::spec::apply::ApplyError(error.message)
 }
 
-/// A binder array as a host tensor.
 pub(crate) fn from_array(array: Array) -> Result<Tensor, ApplyError> {
     let dtype = DType::try_from(array.dtype.code() as i32).map_err(ApplyError::new)?;
     let shape = array.shape.iter().map(|&d| i64::from(d)).collect();

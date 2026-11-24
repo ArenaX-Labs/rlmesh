@@ -1,4 +1,3 @@
-// Borrowing and mutable/const conversions use the same public view at both standards.
 #include <cassert>
 #include <rlmesh.hpp>
 

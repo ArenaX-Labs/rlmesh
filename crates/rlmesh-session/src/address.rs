@@ -5,29 +5,25 @@
 //! session address      [rlmesh://][host/][session]
 //! ```
 //!
-//! A host is recognisable on its own: it has a port (`lab:7447`, `:7447`),
-//! a dot (`robot-lab.local`, `10.0.0.5`), brackets (`[fe80::1]:7447`), or is
-//! `localhost`; otherwise the first segment is a session. No session is the
-//! default session; a host without a port is on [`DEFAULT_PORT`].
-//!
-//! Where a session is reached follows the hosting rule ([`place`]): no host
-//! joins the local host on the well-known port ([`well_known_port`],
-//! `RLMESH_PORT` overriding 7447), or hosts the session in
-//! this process when nothing listens there; an explicit port on this machine
-//! hosts in-process on it (`:0` on an OS-assigned port); any other host is
-//! joined. A session is named (`bench-3`, [`DEFAULT_SESSION`]) or a UUID; a
-//! name identifies its [`SessionId::named`]. The tenant is fixed
+//! A host is recognisable on its own: it has a port (`lab:7447`, `:7447`), a dot
+//! (`robot-lab.local`, `10.0.0.5`), brackets (`[fe80::1]:7447`), or is `localhost`;
+//! otherwise the first segment is a session. No session is the default session
+//! ([`DEFAULT_SESSION`]); a host without a port is on [`DEFAULT_PORT`]. A session is named
+//! or a UUID, and a name identifies its [`SessionId::named`]. The tenant is fixed
 //! ([`TENANT`]) and never part of an address.
 //!
-//! **The key.** A session hosted in a process (an embedded host) draws its
-//! own keys, and the address it hands out carries the credential, as a
-//! Jupyter URL carries its token: `127.0.0.1:7447/bench-3#{local
-//! secret}.{host key}` (each 32 bytes, base32: [`AddressKey`]), and a
-//! participant address appends `/{participant}` after it. Holding the
-//! address is the invite: its holder attaches as device
-//! `local`. A process joining a host on this machine without the key uses
-//! rlmeshd's ([`LOCAL_KEY`] in [`daemon_dir`], 0600), so this user's
-//! scripts meet by name at the daemon.
+//! Where a session is reached follows [`place`]: no host joins the local host on the
+//! well-known port ([`well_known_port`], `RLMESH_PORT` overriding 7447), or hosts the
+//! session in this process when nothing listens there; an explicit port on this machine
+//! hosts in-process on it (`:0` on an OS-assigned port); any other host is joined.
+//!
+//! **The key.** A session hosted in a process draws its own keys, and the address it
+//! hands out carries the credential: `127.0.0.1:7447/bench-3#{local secret}.{host key}`
+//! (each 32 bytes, base32: [`AddressKey`]), with `/{participant}` appended for a
+//! participant address. Holding the address is the invite: its holder attaches as device
+//! `local`. A process joining a host on this machine without the key uses rlmeshd's
+//! ([`LOCAL_KEY`] in [`daemon_dir`], 0600), so one user's scripts meet by name at the
+//! daemon.
 
 mod credentials;
 mod host_keys;
@@ -162,7 +158,6 @@ pub fn launched_address(identity: &str, session: &str) -> Result<Address, Sessio
     Ok(address)
 }
 
-/// The host keys [`HOST_IDENTITY_VAR`] passes this process, if any.
 fn launched_identity() -> Result<Option<HostIdentity>, SessionError> {
     let Ok(text) = std::env::var(HOST_IDENTITY_VAR) else {
         return Ok(None);
@@ -170,8 +165,6 @@ fn launched_identity() -> Result<Option<HostIdentity>, SessionError> {
     host_identity(&Zeroizing::new(text)).map(Some)
 }
 
-/// The host keys of identity text (`{static}.{sign}.{local}`), which the
-/// error never repeats.
 fn host_identity(text: &str) -> Result<HostIdentity, SessionError> {
     let bad = || {
         SessionError::Config(format!(
@@ -211,9 +204,6 @@ pub struct Address {
 }
 
 /// Where the hosting rule puts a session.
-///
-/// A host serves any number of named sessions: it starts one for its first
-/// participant ([`SessionServer`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Placement {
     /// No host given: join the local host on [`well_known_port`], else host the
@@ -244,13 +234,10 @@ pub fn redact(text: &str) -> String {
 }
 
 /// Free text (a container's log lines, a traceback) with every secret this
-/// crate makes left out, wherever it appears: an address key, a host
-/// identity ([`HOST_IDENTITY_VAR`]'s text) and a link password are made of
-/// runs of 52 or more base32 characters, so each such run, or a dotted
-/// group of them, reads `…` (`127.0.0.1:7447#…/env`, as [`redact`] shows an
-/// address). What an error that quotes text a process printed shows.
+/// crate makes left out: runs of 52 or more base32 characters, or a dotted
+/// group of them (address keys, [`HOST_IDENTITY_VAR`]'s text, link passwords),
+/// read `…`, as [`redact`] shows an address.
 pub fn redact_text(text: &str) -> String {
-    /// The shortest secret: 32 bytes of base32.
     const SECRET_LEN: usize = 52;
     let secret = |run: &str| {
         run.len() >= SECRET_LEN
@@ -282,7 +269,6 @@ pub fn redact_text(text: &str) -> String {
     out
 }
 
-/// Whether a segment names a host rather than a session.
 fn is_host(segment: &str) -> bool {
     segment == "localhost"
         || segment.starts_with('[')
@@ -325,16 +311,13 @@ fn host_name(text: &str, segment: &str) -> Result<HostName, SessionError> {
     }
 }
 
-/// The upgrade error of an old `lockstep://` address, with its new form.
 fn lockstep_upgrade(text: &str, rest: &str) -> SessionError {
     let segments: Vec<&str> = rest.split('/').collect();
     let new = match segments.as_slice() {
-        // {ip}:{port}/{tenant}/{session}/{robot}: the tenant leaves.
         [base, _tenant, session, robot] => format!("{base}/{session}/{robot}"),
         [base, robot] => format!("{base}/{robot}"),
         _ => "[host/][session/]participant".to_string(),
     };
-    // The suggestion is built from the rejected address: its key stays out too.
     let (text, new) = (redact(text), redact(&new));
     SessionError::Config(format!(
         "address {text:?}: lockstep:// addresses are gone (a robot's clock is declared, not \
@@ -397,13 +380,11 @@ impl Address {
                     "names no participant ([host/][session/]participant)",
                 ));
             }
-            // {ip}:{port}/{tenant}/{session}/{robot}, the old form.
             (true, [_tenant, session, name]) if host.is_some() => {
                 return Err(tenant_upgrade(text, format!("{prefix}{session}/{name}")));
             }
             (false, []) => (None, None),
             (false, [session]) => (Some(*session), None),
-            // {ip}:{port}/{tenant}/{session}, the old form.
             (false, [_tenant, session]) if host.is_some() => {
                 return Err(tenant_upgrade(text, format!("{prefix}{session}")));
             }
@@ -418,7 +399,6 @@ impl Address {
             ParticipantId::new(session)
                 .map_err(|_| invalid(text, "a session is a name of [A-Za-z0-9._-] or a UUID"))?;
         }
-        // `_lobby` and the like are the daemon's own.
         if session.is_some_and(|s| s.starts_with('_')) {
             return Err(invalid(text, "session names starting with _ are reserved"));
         }
@@ -485,8 +465,6 @@ pub fn session_id(name: &str) -> SessionId {
 }
 
 impl Address {
-    /// Its text, the key in full (`full`) or left out. The key follows the
-    /// session (or the host, for the default session).
     fn text(&self, full: bool) -> String {
         let mut segments = Vec::new();
         if let Some(host) = &self.host {
@@ -527,9 +505,6 @@ impl fmt::Debug for Address {
     }
 }
 
-/// `text` without its key, and the key: it runs from `#` to the next `/`
-/// (base32 has none), so a participant name appended to a keyed session
-/// address still parses.
 fn split_key(text: &str) -> (String, Option<&str>) {
     match text.split_once('#') {
         Some((before, rest)) => {
@@ -566,15 +541,12 @@ pub fn is_v2_address(text: &str) -> bool {
 /// short for `host:port/env` wherever an env is served or dialled.
 pub const DEFAULT_ENV: &str = "env";
 
-/// `text` as a participant address of a role whose participant is `name`
-/// by default ([`DEFAULT_ENV`] for an env): a host with a port and nothing
-/// after it (`127.0.0.1:5555`, `:5555`, `[::1]:5555`, keyed or with the
-/// `rlmesh://` scheme) is short for that host's participant `name`
-/// (`127.0.0.1:5555/env`). Anything else comes back as given, to be parsed
-/// (or refused) as it is.
-///
-/// Only participant addresses read this way: in a session address
-/// (`Address::session`), `host:port` is that host's default session.
+/// `text` as a participant address of a role whose participant is `name` by
+/// default ([`DEFAULT_ENV`] for an env): a host with a port and nothing after
+/// it (`127.0.0.1:5555`, `:5555`, `[::1]:5555`, keyed or with the `rlmesh://`
+/// scheme) is short for that host's participant `name`; anything else comes
+/// back as given, to be parsed. Only participant addresses read this way: in a
+/// session address, `host:port` is that host's default session.
 pub fn defaulting_participant(text: &str, name: &str) -> String {
     let trimmed = text.trim();
     let body = trimmed.strip_prefix(SCHEME).unwrap_or(trimmed);
@@ -611,12 +583,9 @@ pub struct SessionAddress {
     /// What its participants attach with, ahead of the key and any found
     /// by `base`: a paired machine's device key against the host its host
     /// file names, or against a satellite's run host.
-    /// Never in its text.
     pub credential: Option<Credential>,
 }
 
-/// How long one try at a loopback link gets while a host in this process
-/// may still be starting ([`SessionAddress::link`]).
 const LOCAL_HOST_TRY: Duration = Duration::from_millis(500);
 
 impl SessionAddress {
@@ -670,7 +639,6 @@ impl SessionAddress {
         format!("{}/{participant}", self.invite())
     }
 
-    /// Its text, the key in full (`full`) or left out.
     fn text(&self, full: bool) -> String {
         let host = HostName {
             name: self.base.ip().to_string(),
@@ -691,9 +659,6 @@ impl SessionAddress {
 }
 
 fn resolve(text: &str, host: &str, port: u16) -> Result<SocketAddr, SessionError> {
-    // A name that does not resolve (yet: a container's peer before it starts)
-    // is the lookup failing, not the address: an I/O error, which a retry may
-    // get past, where a malformed address is a configuration error.
     let unresolved = |kind, why: String| {
         SessionError::Io(std::io::Error::new(
             kind,
@@ -715,8 +680,6 @@ fn joinable(base: SocketAddr) -> SocketAddr {
     }
 }
 
-/// A session address resolved for joining, without hosting: the local host
-/// on [`well_known_port`] when it names none.
 impl FromStr for SessionAddress {
     type Err = SessionError;
 
@@ -779,9 +742,6 @@ impl SessionAddress {
         .await
     }
 
-    /// Whether the key it joins with would come from a host on this machine
-    /// (it carries none, and no host in this process, nor one on file, has
-    /// brought one).
     fn awaits_host_key(&self) -> bool {
         self.credential.is_none()
             && self.key.is_none()
@@ -789,11 +749,6 @@ impl SessionAddress {
             && self.filed().is_none()
     }
 
-    /// The host this process runs that it names, ridden: by its key when it
-    /// carries one (an address spelled as another network reaches the host,
-    /// such as a container's published port, still names it, and a host
-    /// here at that address under another key does not), else by its
-    /// address.
     fn hosted_here(&self) -> Option<Transport> {
         match &self.key {
             Some(key) => local_host_keyed(key),
@@ -823,8 +778,6 @@ impl SessionAddress {
         }
     }
 
-    /// The key file of this user's host at its address, when the join takes
-    /// its key from one (it carries none, and this process has none).
     fn filed(&self) -> Option<std::path::PathBuf> {
         if self.credential.is_some() || self.key.is_some() || hosted_key(self.base).is_some() {
             return None;
@@ -840,8 +793,6 @@ impl SessionAddress {
         filed_key(self.base).ok().flatten().map(|filed| filed.path)
     }
 
-    /// `err`, a refusal of the key on file for its host, said so: the file's
-    /// host is gone and another took its address.
     fn refused_filed(&self, err: SessionError) -> SessionError {
         match (err, self.filed()) {
             (SessionError::Rejected(refusal), Some(path))
@@ -873,27 +824,12 @@ impl SessionAddress {
         host_timeout: Duration,
         finish: impl FnOnce(&mut ParticipantConfig),
     ) -> Result<Participant, SessionError> {
-        // A participant joins a host another process runs as a Zenoh
-        // client: its one link is to the host, which routes for it. Joined
-        // as peers, they were introduced to each other by the host's gossip,
-        // so every participant that joined it, of any session, dialed every
-        // other one (and a participant behind a sandbox's published ports
-        // advertises addresses the other side cannot reach). Zenoh 1.10's
-        // peer routing then lost declarations and replies, and runs of many
-        // routes slowed and hung. The price: two participants that both join
-        // one host reach each other through it rather than directly.
         let deadline = crate::clock::deadline_after(host_timeout);
-        // A host on this machine not up yet brings its key when it is (one
-        // this process runs, or rlmeshd's). rlmeshd's key is on disk whether
-        // or not rlmeshd is the host at this address, so holding it alone
-        // doesn't end the wait: a host listening does.
         let probe_after = tokio::time::Instant::now() + hosting::PROBE_AFTER;
         let mut probed = false;
         while self.base.ip().is_loopback() && tokio::time::Instant::now() < deadline {
             let waiting = match self.credential() {
                 Ok(_) => self.awaits_host_key() && !listening(self.base).await,
-                // No key yet, though something listens: a 0.1 server never
-                // brings one, so ask it once rather than wait it out.
                 Err(err @ SessionError::Rejected(_))
                     if !probed && tokio::time::Instant::now() >= probe_after =>
                 {
@@ -903,7 +839,6 @@ impl SessionAddress {
                     }
                     true
                 }
-                // No key yet; a key file refused is final.
                 Err(SessionError::Rejected(_)) => true,
                 Err(err) => return Err(err),
             };
@@ -912,9 +847,6 @@ impl SessionAddress {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        // Without a key there is nothing to link with: say so before
-        // dialing. Taken again once linked, when a host this process runs
-        // may have brought its own.
         if let Err(err) = self.credential() {
             return Err(or_not_session(self.base, err).await);
         }
@@ -923,7 +855,6 @@ impl SessionAddress {
             .map_err(|err| self.refused_filed(err))
     }
 
-    /// The rest of [`Self::join_with`]: links by `deadline` and attaches.
     async fn attach_by(
         &self,
         deadline: tokio::time::Instant,
@@ -960,10 +891,9 @@ impl SessionAddress {
 impl SessionAddress {
     /// A link to the host by `deadline`, as a Zenoh client (riding its
     /// transport when this process runs it): through the password gate of a
-    /// loopback or launched host, on any network, with the address's key,
-    /// and without one to a host that gates no link (rlmeshd, an `insecure`
-    /// host), which the handshake alone admits. `waited` names the wait in a
-    /// timeout.
+    /// loopback or launched host with the address's key, and without one to a
+    /// host that gates no link (rlmeshd, an `insecure` host), which the
+    /// handshake alone admits. `waited` names the wait in a timeout error.
     pub async fn link(
         &self,
         deadline: tokio::time::Instant,
@@ -973,8 +903,6 @@ impl SessionAddress {
             if let Some(transport) = self.hosted_here() {
                 return Ok(transport);
             }
-            // A host this process is still starting listens before it is
-            // known here, and gates its links: try briefly, then look again.
             let starting = self.base.ip().is_loopback() && self.awaits_host_key();
             let until = if starting {
                 deadline.min(tokio::time::Instant::now() + LOCAL_HOST_TRY)
@@ -982,10 +910,6 @@ impl SessionAddress {
                 deadline
             };
             match open_client(self.base, self.link_auth(), until).await {
-                // Not yet, or refused by a host this process is still
-                // registering: look again. A refusal at the deadline is
-                // final ([`hosting::refused_link`]); running out of time
-                // isn't, a slow or starting host may answer the next try.
                 Err(
                     SessionError::Zenoh(_) | SessionError::Rejected(_) | SessionError::Timeout(..),
                 ) if until < deadline => {}

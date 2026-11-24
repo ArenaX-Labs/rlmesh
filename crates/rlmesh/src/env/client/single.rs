@@ -8,10 +8,9 @@ use crate::{EnvContract, Error, InfoDict, Metadata, Result, Value};
 
 /// A client for one remote env.
 ///
-/// Construction dials and handshakes; the env's exclusive session slot is
-/// taken by the first `reset`, `step` or `render`. Calls block (each has an
-/// `_async` twin); `&mut self` serializes them. Dropping an unclosed client
-/// closes it with `close`'s bound.
+/// Construction dials and handshakes; the env's exclusive session slot is taken by the first
+/// `reset`, `step` or `render`. Calls block (each has an `_async` twin); `&mut self` serializes
+/// them. Dropping an unclosed client closes it with `close`'s bound.
 pub struct RemoteEnv {
     core: Option<Box<EnvClientCore>>,
     shared: Shared,
@@ -46,8 +45,6 @@ impl RemoteEnv {
 
     /// Dial and handshake. Invalid options are the ValueError class, a dial
     /// failure the ConnectionError class, a refused handshake the
-    /// ProtocolException class; an endpoint with more than one env is
-    /// refused.
     pub fn new(options: RemoteEnvOptions) -> Result<RemoteEnv> {
         refuse_in_async_context("RemoteEnv::new")?;
         block_on_library(Self::new_in(options))

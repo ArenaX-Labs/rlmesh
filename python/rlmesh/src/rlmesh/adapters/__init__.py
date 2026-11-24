@@ -23,10 +23,9 @@ preprocessing/postprocessing for any pair by matching semantic roles::
 
     model = rlmesh.numpy.Model(adapter.wrap_predict(predict_fn))
 
-The asymmetry is deliberate: an environment only *tags* (roles plus the
-few facts spaces cannot carry -- image layout, rotation encoding, an
-explicit range); keys, widths, dtypes and bounds are read from the
-gymnasium spaces by the native ``join`` step. A model *fully specifies* its
+An environment only *tags* (roles plus the few facts spaces cannot carry:
+image layout, rotation encoding, an explicit range); keys, widths, dtypes and
+bounds are read from the gymnasium spaces. A model *fully specifies* its
 payload.
 
 Tags travel through contract metadata so an adapter can be resolved
@@ -44,10 +43,8 @@ express (e.g. control-space conversion requiring a kinematic model),
 subclass :class:`AdapterBase` to provide a fully custom adapter that is
 interchangeable with resolved ones.
 
-Resolution and plan application run in the native ``rlmesh-adapters`` core
--- the same implementation behind every language binding, pinned by the
-conformance vectors shipped with that crate. This package keeps the
-host-language half: spec construction and serialization, entrypoint trust
+Resolution and plan application run in the native ``rlmesh-adapters`` core;
+this package holds spec construction and serialization, entrypoint trust
 gating, custom callables, and the custom-adapter base class.
 
 Direct adapter calls use the NumPy backend (install ``rlmesh[numpy]``).

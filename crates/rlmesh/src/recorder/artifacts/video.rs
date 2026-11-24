@@ -15,12 +15,8 @@ use super::{is_image_space, os, warn};
 use crate::Result;
 use crate::recorder::video::{Encoding, ThreadedVideoWriter};
 
-/// The scene-facing camera; an env that tags nothing falls back to its first
-/// image leaf.
 const MAIN_CAMERA_ROLE: &str = roles::core::IMAGE_PRIMARY;
 
-/// `name` is the video file stem: the bare role (`primary` for
-/// `image/primary`) for a tagged camera, the sanitized leaf name otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Camera {
     pub(super) name: String,
@@ -35,10 +31,6 @@ pub(super) struct Frame {
     rgb: Vec<u8>,
 }
 
-/// The primary camera's position in the wire leaf order. Leaf slabs are
-/// lane-contiguous fixed-stride, so a lane's frame is a direct slice of the
-/// raw leaves, byte-identical to the decoded tensor's contiguous bytes (the
-/// first-frame hash depends on that), with no decode.
 #[derive(Debug, Clone)]
 pub(super) struct PrimaryLeaf {
     leaf_index: usize,
@@ -47,8 +39,6 @@ pub(super) struct PrimaryLeaf {
 }
 
 impl PrimaryLeaf {
-    /// One lane's frame, or `None` when the payload does not match the
-    /// resolved layout.
     pub(super) fn frame<'a>(
         &self,
         leaves: &'a [bytes::Bytes],
@@ -69,19 +59,14 @@ struct Writer {
     frames: u64,
 }
 
-/// One episode's encoders and the stride counter of its frames.
 #[derive(Default)]
 pub(super) struct EpisodeVideo {
     frames: u64,
     active: BTreeMap<(String, RecordStream), Writer>,
-    /// Perturbed streams byte-identical to their raw stream so far: served
-    /// by the raw file instead of a second encode.
     aliased: BTreeMap<(String, RecordStream), (String, RecordStream)>,
-    /// Streams dropped for the rest of the episode after a frame changed shape.
     skipped: HashSet<(String, RecordStream)>,
 }
 
-/// The cameras each stream records, resolved once per session.
 #[derive(Default)]
 pub(super) struct Video {
     pub(super) fps: u32,
@@ -92,9 +77,6 @@ pub(super) struct Video {
 }
 
 impl Video {
-    /// Resolve the spec's camera selectors against the env's tags (or every
-    /// image leaf when it publishes none), and the primary camera the
-    /// episode invariants watch whether or not it is recorded.
     pub(super) fn resolve(
         spec: &VideoRecordSpec,
         encoding: Encoding,
@@ -169,9 +151,6 @@ impl Video {
         !self.cameras.is_empty()
     }
 
-    /// Feed one lane's `(raw, perturbed)` observation into the episode's
-    /// encoders. `aliasable` says the perturbed stream is the raw one (no
-    /// transform replaced it).
     pub(super) fn observe(
         &self,
         episode: &mut EpisodeVideo,
@@ -286,13 +265,9 @@ impl Video {
         Ok(())
     }
 
-    /// Close every encoder; a failed encode is warned about and its partial
-    /// file removed, so the result lists only files that exist. Paths are
-    /// relative to `root`.
     pub(super) fn finish(&self, episode: EpisodeVideo, root: &Path) -> Vec<EpisodeRecording> {
         let mut recordings = Vec::new();
         for ((camera, stream), mut writer) in episode.active {
-            // The encoded dimensions: AV1 crops odd ones, H.264 pads them.
             let stats = match writer.writer.finish() {
                 Ok(stats) => stats,
                 Err(err) => {
@@ -341,8 +316,6 @@ fn bare_role(role: &str) -> &str {
     role.rsplit('/').next().unwrap_or(role)
 }
 
-/// Each stream's cameras (deduplicated by source leaf) and the selectors
-/// that matched nothing.
 fn resolve_streams(
     spec: &VideoRecordSpec,
     tagged: &[Camera],
@@ -374,10 +347,6 @@ fn resolve_streams(
     (streams, unmatched)
 }
 
-/// `all` selects every tagged camera; any other selector names a tagged
-/// camera by bare or full role (`primary`, `image/primary`), else an image
-/// leaf by name or dotted path. An env without tags resolves `all` and any
-/// selector naming no leaf to every image leaf.
 fn select_cameras(selector: &str, tagged: &[Camera], leaves: &[Camera]) -> Vec<Camera> {
     if selector == "all" {
         return if tagged.is_empty() {
@@ -415,8 +384,6 @@ fn select_cameras(selector: &str, tagged: &[Camera], leaves: &[Camera]) -> Vec<C
     by_leaf
 }
 
-/// The leaf at `path` (Dict keys / Tuple indices) in the wire's pre-order:
-/// the total leaf count and, when found, the leaf's index and spec.
 fn locate_leaf<'s>(
     space: &'s SpaceSpec,
     path: &[String],
@@ -458,8 +425,6 @@ fn locate_leaf<'s>(
     (count, found)
 }
 
-/// `None` when the camera's leaf is not a fixed-stride Box; the invariants
-/// then see no frames.
 fn primary_leaf(space: &SpaceSpec, path: &[String]) -> Option<PrimaryLeaf> {
     let (leaf_count, found) = locate_leaf(space, path);
     let (leaf_index, leaf) = found?;
@@ -527,9 +492,8 @@ fn value_and_space_at_path<'a>(
     value_and_space_at_path(values.get(head)?, spec.spaces.get(index)?, tail)
 }
 
-// An upside-down camera is a 180° rotation, not a vertical mirror: this must
-// match the model-input path (rlmesh-adapters flip_180), or recordings show
-// a mirrored scene relative to what the model consumed.
+// An upside-down camera is a 180 degree rotation, not a vertical mirror: this must match the
+// model-input path (rlmesh-adapters flip_180), or recordings show a mirrored scene.
 fn rotate_180(frame: &mut Frame) {
     const CHANNELS: usize = 3;
     let pixels = frame.width * frame.height;
@@ -565,7 +529,6 @@ fn normalize_rgb(shape: &[i64], data: Cow<'_, [u8]>) -> Option<Frame> {
             width,
             data.iter().flat_map(|&v| [v, v, v]).collect(),
         ),
-        // Already packed RGB: reuse the buffer whole.
         [height, width, 3] if data.len() == height * width * 3 => {
             (height, width, data.into_owned())
         }

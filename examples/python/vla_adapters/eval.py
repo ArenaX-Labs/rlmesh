@@ -95,7 +95,6 @@ def dry_run(
     env_entry: EnvEntry,
     predict_fn: Callable[[Mapping[str, Any]], Any],
 ) -> None:
-    """Push one synthetic observation through obs -> model -> action."""
     obs = env_entry.sample_obs()
     payload = adapter.transform_obs(obs)
     print("model payload:")
@@ -123,8 +122,7 @@ def run_remote(address: str, model_name: str, env_name: str, episodes: int) -> N
         and model_entry.make_adapter is None
     )
     if is_plain:
-        # A RemoteEnv holds the env's lease. Inspect its contract, then close
-        # it before run(address) acquires that lease for the model.
+        # A RemoteEnv holds the env's lease: close it before run(address) acquires it for the model.
         with RemoteEnv(address) as env:
             print(
                 adapt.resolve_from_contract(

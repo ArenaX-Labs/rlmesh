@@ -2,17 +2,13 @@
 //! itself over mDNS as `_rlmesh._tcp.local` ([`advertise`]), with only its
 //! host id (TXT `id`) and its port: a machine or board that knows the
 //! host's id and static key from pairing or provisioning finds its current
-//! address there, and a wrong or forged answer only costs a failed IK
-//! handshake.
+//! address there, and a wrong or forged answer only costs a failed handshake.
 //!
-//! A paired machine reads its host file ([`crate::pairing::HostFile`]) the
-//! way a board reads its NVS ([`locate`]): each stored address with a
-//! [`CONNECT`] timeout, then an mDNS query keeping the instances whose `id`
-//! is the host's. Each address that accepts a connection is tried with the
-//! caller's handshake, and only one the host authenticated at replaces the
-//! stored ones: a forged answer, or an old address now some other service,
-//! costs one failed handshake and is never kept. Every address is the
-//! host's one port, which every traffic class dials.
+//! A paired machine reads its host file ([`crate::pairing::HostFile`]) with
+//! [`locate`]: each stored address with a [`CONNECT`] timeout, then an mDNS
+//! query keeping the instances whose `id` is the host's. Only an address the
+//! host authenticated at replaces the stored ones, so a forged answer, or an
+//! old address now some other service, is never kept.
 
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -83,14 +79,11 @@ pub fn advertise(host_id: &str, base: SocketAddr) -> Result<Advertisement, Sessi
     Ok(Advertisement { daemon })
 }
 
-/// The base addresses one mDNS answer gives for `host_id`: none unless its
-/// TXT `id` is that id.
 fn answer(host_id: &str, id: Option<&str>, ips: &[IpAddr], port: u16) -> Vec<String> {
     if id != Some(host_id) {
         return Vec::new();
     }
     let mut ips = ips.to_vec();
-    // IPv4 first, then IPv6; the same order every time.
     ips.sort_by_key(|ip| (ip.is_ipv6(), *ip));
     ips.into_iter()
         .map(|ip| SocketAddr::new(ip, port).to_string())
@@ -127,8 +120,6 @@ pub async fn browse(host_id: &str, wait: Duration) -> Result<Vec<String>, Sessio
     .map_err(|err| SessionError::Config(format!("mDNS: {err}")))?
 }
 
-/// Every one of `addresses` (`host:port`) that accepts a connection within
-/// [`CONNECT`], resolved, in order.
 async fn reachable(addresses: &[String]) -> Vec<SocketAddr> {
     let addresses = addresses.to_vec();
     tokio::task::spawn_blocking(move || {
@@ -153,9 +144,9 @@ pub fn host_file(dir: &Path, host_id: &str) -> PathBuf {
 
 /// Finds the host of the host file at `path` and attaches there with
 /// `attach` (an authenticated handshake): at each stored address that
-/// accepts a connection, then at each one mDNS answers for its id. The
-/// mDNS answers replace the stored addresses in the file only once the
-/// host authenticated at one of them. The file, and what `attach` gave.
+/// accepts a connection, then at each one mDNS answers for its id. The mDNS
+/// answers replace the stored addresses in the file only once the host
+/// authenticated at one of them. Returns the file and what `attach` gave.
 ///
 /// # Errors
 /// What the last attach failed with, or [`SessionError::Timeout`] when no
@@ -229,7 +220,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stale_stored_address_falls_back_to_the_advertisement_by_id() {
-        // A host listening on loopback, advertised there under a fresh id.
         let host = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("listen");
         let base = host.local_addr().expect("addr");
         let host_id = format!("rlm-{:06x}", rand::random::<u32>() & 0xff_ffff);
@@ -242,9 +232,6 @@ mod tests {
             "resolvable by its id"
         );
 
-        // The file remembers an address nothing listens on any more, and
-        // the advertised one is a service that fails the handshake: no
-        // host, and the file is kept as it was.
         let stale = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("listen");
         let gone = stale.local_addr().expect("addr").to_string();
         drop(stale);
@@ -265,8 +252,6 @@ mod tests {
         assert!(locate(&path, refused).await.is_err());
         assert_eq!(HostFile::read(&path).expect("read").addresses, [gone]);
 
-        // A stored address some other service took (it accepts, then
-        // fails the handshake) comes before the real host's advertisement.
         let other = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("listen");
         let taken = other.local_addr().expect("addr");
         let path = HostFile::new(&paired, &taken.to_string())

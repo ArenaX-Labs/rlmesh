@@ -12,11 +12,10 @@ pub fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {
     SpaceValue { leaves }
 }
 
-/// Serialize per-leaf wire bytes into one self-delimiting blob (an encoded
-/// wire [`SpaceValue`]): the blessed way to persist a hook payload as a
-/// single artifact. Plain concatenation loses the leaf boundaries — a
-/// multi-leaf value can no longer be split, and a variable-length leaf
-/// (`Text`) makes the fused bytes ambiguous. Inverse of [`leaves_from_blob`].
+/// Serialize per-leaf wire bytes into one self-delimiting blob (an encoded wire [`SpaceValue`]).
+///
+/// Use it to persist a hook payload as one artifact: plain concatenation loses the leaf
+/// boundaries. Inverse of [`leaves_from_blob`].
 pub fn leaves_to_blob(leaves: &[Bytes]) -> Vec<u8> {
     leaves_value(leaves.to_vec()).encode_to_vec()
 }
@@ -76,9 +75,6 @@ pub fn optional_bytes_to_binary(
 mod tests {
     use super::*;
 
-    /// Boundaries survive the blob round-trip even when a variable-length
-    /// leaf makes plain concatenation ambiguous, and an empty leaf stays
-    /// distinguishable from an absent one.
     #[test]
     fn leaves_blob_round_trips_boundaries() {
         let leaves = vec![

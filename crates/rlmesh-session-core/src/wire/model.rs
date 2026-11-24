@@ -6,14 +6,11 @@
 //! driver ◀──ModelReply::Predicted{outcomes}──────── model
 //! ```
 //!
-//! A driver first invites the model into its own session
-//! (`ModelRequest::Join`), so predicts travel there.
-//!
-//! A route is one env as the model sees it: its contract, resolved once.
-//! A predict carries any number of routes' rows (groups), so one caller's
-//! envs share one forward pass when the model fuses them; each group gets
-//! its own outcome. Values are leaf slabs (`rlmesh-spaces`' leaf codec:
-//! one buffer per leaf of the route's space, rows row-major).
+//! A driver first invites the model into its own session (`ModelRequest::Join`), so
+//! predicts travel there. A route is one env as the model sees it: its contract, resolved
+//! once. A predict carries any number of routes' rows (groups), so one caller's envs can
+//! share one forward pass; each group gets its own outcome. Values are leaf slabs (one
+//! buffer per leaf of the route's space, rows row-major).
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -54,9 +51,9 @@ pub struct ModelResolve {
 pub struct ModelResolved {
     /// The model's native chunk length, when declared.
     pub native_chunk: Option<u32>,
-    /// The keys of the frame windows the route keeps, when it keeps any
-    /// (the driver then sends every replayed step as history), and whether
-    /// rows may be pruned to them.
+    /// The keys of the frame windows the route keeps, when it keeps any (the driver
+    /// then sends every replayed step as history), and whether rows may be pruned
+    /// to them.
     pub history: Option<(Vec<String>, bool)>,
     /// Whether the model adds options to the resets that start its
     /// episodes (the driver then asks before each).
@@ -174,7 +171,6 @@ impl core::fmt::Debug for ModelRequest {
                 .field("episode", episode)
                 .field("trial_index", trial_index)
                 .finish(),
-            // The invitation carries the session's key, a credential.
             Self::Join { session } => f
                 .debug_struct("Join")
                 .field("session", &keyless(session))
@@ -187,7 +183,6 @@ impl core::fmt::Debug for ModelRequest {
     }
 }
 
-/// `address` with its key (`#…`) left out.
 fn keyless(address: &str) -> String {
     match address.split_once('#') {
         Some((before, rest)) => {

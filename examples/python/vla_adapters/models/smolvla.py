@@ -13,7 +13,6 @@ from typing import Any
 import rlmesh.adapters as adapt
 
 SPEC = adapt.ModelSpec(
-    # This study deliberately permits the projections described in README.md.
     allow=("rebind_camera", "drop_action"),
     input={
         "observation.images.image": adapt.Image(

@@ -50,8 +50,7 @@ internal static class LifetimeEngine
         {
             if (State == LifetimeState.Completed) return true;
             refusal = null;
-            // Failed native teardown attempts remain diagnostic until a caller
-            // retries Shutdown; do not spin up failing threads in a hot loop.
+            // Failed teardown attempts stay diagnostic until Shutdown is retried; do not spin failing threads in a hot loop.
             foreach (var record in FailedTeardowns.Keys)
                 if (FailedTeardowns.TryRemove(record, out _)) Seen.TryRemove(record, out _);
             if (coordinator == null || !coordinator.IsAlive && !quiescent)
@@ -149,9 +148,7 @@ internal static class LifetimeEngine
                 foreach (var thread in threads)
                     if (!thread.Join(0))
                     {
-                        // Collection is only needed to discover unreachable
-                        // owners while strong records remain. An unrelated
-                        // finalizer is not a native callback-bearing root.
+                        // Collection only discovers unreachable owners while strong records remain.
                         if (thread != collector || !NativeHandle.StrongTable.IsEmpty) joined = false;
                     }
                     else Teardowns.TryRemove(thread, out _);
@@ -239,7 +236,7 @@ internal static class LifetimeEngine
             if (!Shutdown(TimeSpan.FromSeconds(5)))
                 Console.Error.WriteLine("RLMesh process exit did not complete shutdown: " + string.Join("; ", Pending()));
         }
-        catch { /* Exit diagnostics cannot repair or prevent process exit. */ }
+        catch { }
     }
     private static void DomainUnload(object? sender, EventArgs args) => Diagnose();
 #if NET10_0_OR_GREATER

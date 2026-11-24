@@ -1,5 +1,5 @@
-//! Resolving each source to the one image it holds, with the attestations
-//! its index carries along.
+//! Resolving each source to the one image it holds, with the attestations its
+//! index carries along.
 
 use std::collections::BTreeSet;
 
@@ -54,16 +54,15 @@ impl Reference {
 pub(crate) struct Child {
     /// The reference as given on the command line.
     pub source: String,
-    /// `repository@digest` of what the source names (its index when it has
-    /// one, so attestations come along).
+    /// `repository@digest` of what the source names (its index when it has one, so
+    /// attestations come along).
     pub pinned: String,
     /// The digest of the image manifest itself.
     pub image_digest: String,
     /// The image manifest's media type (OCI, or Docker schema2).
     pub media_type: String,
-    /// `os/architecture[/variant]`: the index descriptor's platform when the
-    /// source is an index (checked to agree with the config), else the
-    /// config's.
+    /// `os/architecture[/variant]`: the index descriptor's platform when the source
+    /// is an index (checked to agree with the config), else the config's.
     pub platform: String,
     pub config: ImageConfig,
     /// The attestation manifests the source's index carries along.
@@ -88,8 +87,6 @@ impl Child {
         variant::selectable(parts.next().unwrap_or(""), parts.next().unwrap_or(""))
     }
 
-    /// Whether every descriptor this child brings into the version, its image
-    /// and each attestation, is a Docker (schema2) manifest.
     fn docker_media_only(&self) -> bool {
         std::iter::once(self.media_type.as_str())
             .chain(self.attestations.iter().map(|a| a.media_type.as_str()))
@@ -119,7 +116,6 @@ pub(super) fn resolve_source(tools: &impl Imagetools, source: &str) -> Result<Ch
     })
 }
 
-/// The image a source holds, picked out of its index when it has one.
 struct Selected {
     digest: String,
     media_type: String,
@@ -128,7 +124,6 @@ struct Selected {
     attestations: Vec<Attestation>,
 }
 
-/// The source's manifest (an index or a bare image manifest) and its digest.
 fn read_manifest(tools: &impl Imagetools, source: &str) -> Result<(Value, String)> {
     let manifest: Value = serde_json::from_str(&tools.manifest(source)?)
         .with_context(|| format!("parsing the manifest of {source}"))?;
@@ -140,8 +135,6 @@ fn read_manifest(tools: &impl Imagetools, source: &str) -> Result<(Value, String
     Ok((manifest, digest))
 }
 
-/// A bare manifest is its own image; an index must hold exactly one linux
-/// image, besides the attestations it carries along.
 fn select_image(source: &str, manifest: &Value, digest: String) -> Result<Selected> {
     let Some(entries) = manifest.get("manifests").and_then(Value::as_array) else {
         return Ok(Selected {
@@ -161,15 +154,12 @@ fn select_image(source: &str, manifest: &Value, digest: String) -> Result<Select
     })
 }
 
-/// An image entry of a source's index.
 struct IndexImage {
     digest: String,
     media_type: String,
     platform: String,
 }
 
-/// Sort an index's entries into images and attestations: every entry needs a
-/// digest, and every image a linux platform.
 fn split_index(source: &str, entries: &[Value]) -> Result<(Vec<IndexImage>, Vec<Attestation>)> {
     let mut images = Vec::new();
     let mut attestations = Vec::new();
@@ -209,7 +199,6 @@ fn split_index(source: &str, entries: &[Value]) -> Result<(Vec<IndexImage>, Vec<
     Ok((images, attestations))
 }
 
-/// Each source is one variant, so its index holds exactly one image.
 fn one_image(source: &str, mut images: Vec<IndexImage>) -> Result<IndexImage> {
     match images.len() {
         1 => Ok(images.swap_remove(0)),
@@ -226,7 +215,6 @@ fn one_image(source: &str, mut images: Vec<IndexImage>) -> Result<IndexImage> {
     }
 }
 
-/// The selected image's config, which must parse.
 fn read_config(
     tools: &impl Imagetools,
     source: &str,
@@ -240,9 +228,6 @@ fn read_config(
     .with_context(|| format!("reading the image config of {source}"))
 }
 
-/// The index descriptor and image config must name the same platform: eligibility (and the
-/// default row) is decided from it. Returns the descriptor's platform, else
-/// the config's.
 fn checked_platform(
     source: &str,
     declared: Option<String>,
@@ -275,7 +260,6 @@ fn checked_platform(
     Ok(declared)
 }
 
-/// Only linux images are eligible for deployment.
 fn require_linux(source: &str, config: &ImageConfig, platform: &str) -> Result<()> {
     if config.os != "linux" {
         bail!(
@@ -287,8 +271,6 @@ fn require_linux(source: &str, config: &ImageConfig, platform: &str) -> Result<(
     Ok(())
 }
 
-/// The `dev.rlmesh.package` annotation on the source's own index; a bare
-/// manifest has none.
 fn index_annotation(manifest: &Value) -> Option<String> {
     manifest
         .get("manifests")
@@ -306,7 +288,6 @@ fn media_type(value: &Value) -> String {
         .to_owned()
 }
 
-/// A platform for a message: `platform-less` when there is none.
 fn platform_or_less(platform: &str) -> &str {
     if platform.is_empty() {
         "platform-less"
@@ -414,7 +395,6 @@ mod tests {
         let mut registry = FakeRegistry::default();
         for (reference, image) in [("r/x:a", 'a'), ("r/x:b", 'b')] {
             registry.add(reference, None, image, keyed(&reference[4..]));
-            // A classic `docker push`: a Docker schema2 manifest.
             registry.insert(
                 reference,
                 &json!({"mediaType": "application/vnd.docker.distribution.manifest.v2+json",
@@ -436,12 +416,9 @@ mod tests {
         }
         assert!(registry.created.borrow().is_empty(), "nothing is created");
 
-        // Without an annotation, a Docker manifest list is a whole version.
         let (result, out) = run(&registry, &args("r/x:v1", &["r/x:a", "r/x:b"]));
         assert_eq!(result.unwrap(), 0, "{out}");
 
-        // A Docker manifest list whose image and attestation are both schema2
-        // carries nothing OCI either.
         const SCHEMA2: &str = "application/vnd.docker.distribution.manifest.v2+json";
         registry.add("r/x:s", Some('s'), 'e', keyed("s"));
         let mut list = buildkit_index(&digest('e'), ("linux", "amd64"));
@@ -463,7 +440,6 @@ mod tests {
             2,
             "nothing more is created"
         );
-        // With an OCI attestation, docker assembles an OCI index.
         list["manifests"][1]["mediaType"] =
             Value::from("application/vnd.oci.image.manifest.v1+json");
         registry.insert("r/x:s", &list);
@@ -474,7 +450,6 @@ mod tests {
         assert!(pushed["annotations"][PACKAGE_LABEL].is_string(), "{pushed}");
         publish.sources = vec!["r/x:a".to_owned(), "r/x:b".to_owned()];
 
-        // One OCI child and docker assembles an OCI index, annotation kept.
         registry.add("r/x:c", None, 'c', keyed("c"));
         publish.target = "r/x:v2".to_owned();
         publish.sources.push("r/x:c".to_owned());
@@ -494,7 +469,6 @@ mod tests {
     #[test]
     fn the_index_platform_must_match_the_image_config() {
         let mut registry = FakeRegistry::default();
-        // The index says arm64, the image config amd64.
         registry.add("r/x:a", Some('i'), 'a', keyed("a"));
         let mut index = buildkit_index(&digest('a'), ("linux", "arm64"));
         index["digest"] = Value::from(digest('i'));
@@ -507,7 +481,6 @@ mod tests {
             ),
             "{error}"
         );
-        // An amd64 descriptor over an arm64 config cannot become the default row.
         let mut arm: Value = serde_json::from_str(&keyed("b")).unwrap();
         arm["architecture"] = Value::from("arm64");
         registry.add("r/x:b", Some('j'), 'b', arm.to_string());
@@ -521,7 +494,6 @@ mod tests {
             "{error}"
         );
         assert!(!out.contains('*'), "no default row: {out}");
-        // A platform variant in the descriptor is fine when os/arch agree.
         index["manifests"][0]["platform"]["variant"] = Value::from("v8");
         registry.insert("r/x:a", &index);
         let mut arm: Value = serde_json::from_str(&keyed("a")).unwrap();
@@ -540,7 +512,6 @@ mod tests {
         registry.add("r/x:a", Some('i'), 'c', keyed("a"));
         let mut index = buildkit_index(&digest('c'), ("linux", "amd64"));
         index["digest"] = Value::from(digest('i'));
-        // An attestation of an image that is not in the version, and one of nothing.
         index["manifests"][1]["annotations"][REFERENCE_DIGEST] = Value::from(digest('z'));
         index["manifests"].as_array_mut().unwrap().push(json!({
             "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": digest('n'),
@@ -565,7 +536,6 @@ mod tests {
         }
         assert!(registry.created.borrow().is_empty());
 
-        // An attestation of another source's image still describes a child.
         let mut index = buildkit_index(&digest('c'), ("linux", "amd64"));
         index["digest"] = Value::from(digest('i'));
         registry.insert("r/x:a", &index);

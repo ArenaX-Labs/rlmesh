@@ -1,4 +1,4 @@
-"""Prepare verification using an existing D-40 core UPM artifact, never build it."""
+"""Prepare verification using an existing core UPM artifact, never build it."""
 
 import argparse
 import json
@@ -15,7 +15,7 @@ PROJECT = PACKAGE / "Tests~/Project"
 
 
 def install_core(source: Path, destination: Path) -> None:
-    """Accept a D-40 UPM directory or the standard package/ UPM tarball."""
+    """Accept a UPM directory or the standard package/ UPM tarball."""
     scratch = Path.home() / ".cache/rlmesh-unity"
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=scratch) as temporary:
@@ -59,7 +59,6 @@ def main() -> None:
     if sample.exists():
         shutil.rmtree(sample)
     shutil.copytree(PACKAGE / "Samples~/ReachTarget", sample)
-    # Give the sample its own assembly; the smoke bootstrap references it.
     (sample / "ReachTarget.asmdef").write_text(
         json.dumps(
             {

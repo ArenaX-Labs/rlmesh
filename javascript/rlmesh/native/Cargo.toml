@@ -15,7 +15,6 @@ keywords = { workspace = true }
 publish = false
 
 [package.metadata.cargo-machete]
-# Used by build.rs only.
 ignored = ["napi-build"]
 
 [lib]

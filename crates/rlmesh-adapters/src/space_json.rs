@@ -1,12 +1,3 @@
-//! The `SpaceSpec` JSON form a describe envelope embeds under
-//! `env_spec.observation_space` / `env_spec.action_space`.
-//!
-//! `{"kind", "shape", "dtype", "details": {...}}`, the same structure the Python
-//! `SpaceSpec._to_dict()` returns. The envelope is strict JSON, so a non-finite bound
-//! renders as
-//! `null` (serde_json's own rendering of a non-finite `f64`): unbounded on that
-//! edge, exactly as the Python gatherer maps it.
-
 use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
 use rlmesh_spaces::{
@@ -42,8 +33,7 @@ pub fn space_kind_name(space: &SpaceSpec) -> &'static str {
     }
 }
 
-/// The dtype's display name; an unspecified dtype surfaces as `float32` (the
-/// legacy display fallback the Python binding shares).
+/// The dtype's display name; an unspecified dtype surfaces as `float32`.
 pub fn space_dtype_name(dtype: DType) -> &'static str {
     match dtype {
         DType::Unspecified => "float32",
@@ -65,8 +55,8 @@ pub fn space_spec_to_json(space: &SpaceSpec) -> Result<Value, SpaceJsonError> {
 /// The inverse of [`space_spec_to_json`], exact for every valid spec it
 /// renders: integer bounds keep their dtype's bytes, float bounds their bits,
 /// and a `null` bound is that edge's infinity. A composite's dtype is
-/// unspecified. A JSON object keeps no key order, so a Dict takes its order
-/// from `details.keys` when present (else the object's).
+/// unspecified. A Dict takes its key order from `details.keys` when present,
+/// else from the object.
 pub fn space_spec_from_json(value: &Value) -> Result<SpaceSpec, SpaceJsonError> {
     let field = |name: &str| value.get(name).ok_or_else(|| json_error(name));
     let kind = field("kind")?.as_str().ok_or_else(|| json_error("kind"))?;
@@ -148,7 +138,6 @@ fn json_error(field: &str) -> SpaceJsonError {
     SpaceJsonError::Json(format!("no valid {field}"))
 }
 
-/// A flat or nested integer list, flattened row-major.
 fn flat_ints(value: &Value, out: &mut Vec<i64>) -> Option<()> {
     match value {
         Value::Array(items) => items.iter().try_for_each(|item| flat_ints(item, out)),
@@ -218,8 +207,6 @@ fn box_bounds(details: &Value, dtype: DType) -> Result<Option<BoxBounds>, SpaceJ
     }))
 }
 
-/// One bound as a scalar: an integer stays exact (a `Uint64` above
-/// `i64::MAX` wraps, as its scalars do), `null` is `unbounded`.
 fn scalar(value: &Value, unbounded: f64) -> Option<Scalar> {
     match value {
         Value::Null => Some(Scalar::Float(unbounded)),
@@ -241,8 +228,6 @@ fn details(space: &SpaceSpec) -> Result<Value, SpaceJsonError> {
             details.insert("n".into(), spec.n.into());
             details.insert("start".into(), spec.start.into());
         }
-        // The marker carries no fields: a rank-1 shape surfaces as a scalar
-        // `size`, higher ranks as `dims` (Gymnasium's scalar-vs-vector form).
         SpaceKind::MultiBinary(_) => {
             if space.shape.len() == 1 {
                 details.insert("size".into(), space.shape[0].into());
@@ -250,10 +235,6 @@ fn details(space: &SpaceSpec) -> Result<Value, SpaceJsonError> {
                 details.insert("dims".into(), space.shape.clone().into());
             }
         }
-        // `nvec` is stored flat; a rank-2 shape reshapes back to the nested
-        // matrix form, lower ranks stay flat.
-        // A nonzero `start`, in the same form, only when set, so a zero-based
-        // space reads as before.
         SpaceKind::MultiDiscrete(spec) => {
             let shaped = |flat: &[i64]| {
                 if space.shape.len() == 2 {
@@ -314,8 +295,6 @@ fn box_details(
             Some(floats(&bounds.low)),
             Some(floats(&bounds.high)),
         ),
-        // Typed byte bounds decode in the space's dtype, so integer values stay
-        // exact (no f64 round-trip).
         Some(BoxBounds::TypedUniform(bounds)) => (
             "typed_uniform",
             Some(typed(&bounds.low, dtype)?),
@@ -351,8 +330,7 @@ fn typed(bytes: &[u8], dtype: DType) -> Result<Value, SpaceJsonError> {
             .into_iter()
             .map(|scalar| match scalar {
                 Scalar::Bool(value) => Value::from(value),
-                // `Uint64` decodes into a wrapped i64; reinterpret so values
-                // above i64::MAX stay the correct positive integer.
+                // `Uint64` decodes into a wrapped i64; reinterpret so values above i64::MAX stay positive.
                 Scalar::Int(_) if dtype == DType::Uint64 => Value::from(scalar.as_u64()),
                 Scalar::Int(value) => Value::from(value),
                 Scalar::Float(value) => Value::from(value),
@@ -401,7 +379,6 @@ mod tests {
             render(&uniform),
             r#"{"details":{"bounds_kind":"uniform","high":1.0,"low":-1.0},"dtype":"float32","kind":"box","shape":[3]}"#
         );
-        // A half-bounded Box: the infinite edges are null, as the envelope wants.
         let half = boxed(
             &[2],
             DType::Float64,
@@ -554,7 +531,6 @@ mod tests {
             let json = space_spec_to_json(&spec).unwrap();
             assert_eq!(space_spec_from_json(&json).unwrap(), spec, "{json}");
         }
-        // A Dict reads its order from `details.keys`.
         let discrete = space(
             &[],
             DType::Int64,

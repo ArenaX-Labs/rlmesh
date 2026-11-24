@@ -1,6 +1,3 @@
-//! The codec's round trips against the byte goldens, by message family,
-//! and the goldens and snapshot they share.
-
 mod control;
 mod lockstep;
 mod model;
@@ -51,11 +48,6 @@ use crate::wire::part::tests::{arm, camera, pid};
 
 use crate::wire::version::{PROTOCOL_MINOR, WIRE_REVISION};
 
-/// Byte-level goldens of the v2 wire: every message a round-trip test
-/// encodes, in order, as hex in `tests/vectors/wire/{test}.txt`. A
-/// change to one is a wire change: regenerate with
-/// `RLMESH_REGENERATE_WIRE_VECTORS=1 cargo test -p rlmesh-session-core
-/// --lib wire::codec` only when the change is deliberate.
 struct Goldens {
     test: &'static str,
     lines: Vec<String>,

@@ -90,8 +90,6 @@ impl PolicyDecl {
 
 impl Corners {
     pub(crate) const fn from_bits(bits: u32) -> Corners {
-        // Only the four corner bits are meaningful; others are refused by
-        // `PolicyDecl::validate`.
         let mut corners = Corners::NONE;
         if bits & 1 != 0 {
             corners = corners.union(Corners::PREDICT);
@@ -109,8 +107,6 @@ impl Corners {
     }
 }
 
-/// A native chunk declaration: one with no chunk corner is the TypeError
-/// class (checked first), one below 1 the ValueError class.
 pub(crate) fn check_native_chunk(native_chunk: Option<u32>, corners: Corners) -> Result<()> {
     let Some(native) = native_chunk else {
         return Ok(());
@@ -130,9 +126,8 @@ pub(crate) fn check_native_chunk(native_chunk: Option<u32>, corners: Corners) ->
     Ok(())
 }
 
-/// A policy behind the library's erased seam: the [`Policy`] members with
-/// the context passed only to the corners that declared it. A binding with
-/// runtime declarations implements it directly.
+/// A policy behind the library's erased seam: the [`Policy`] members with the context
+/// passed only to the corners that declared it.
 pub trait DynPolicy: Send {
     /// [`Policy::load`].
     fn load(&mut self, config: &Kwargs) -> Result<()>;
@@ -186,8 +181,6 @@ pub trait DynPolicy: Send {
     fn close(&mut self) -> Result<()>;
 }
 
-/// A [`Policy`] on the erased seam: the `_with_context` twin for a corner in
-/// `P::CONTEXT`, the plain method otherwise.
 pub(super) struct Erased<P>(pub(super) P);
 
 impl<P: Policy> DynPolicy for Erased<P> {
