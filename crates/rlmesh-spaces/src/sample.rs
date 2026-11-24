@@ -89,29 +89,43 @@ fn sample_box<R: rand::Rng + ?Sized>(
     rng: &mut R,
 ) -> Result<Tensor, SpaceError> {
     let numel = numel(&space.shape);
-    let scalars = if is_integer_dtype(space.dtype) {
+    // The sampler treats `Unspecified` specs as float32, matching the codecs.
+    let dtype = normalize_dtype(space.dtype);
+    // Elements are drawn in order and encoded a block at a time, so a camera
+    // image costs its own bytes and not a bound and a scalar per element.
+    let mut bytes = Vec::new();
+    let mut block = Vec::with_capacity(numel.min(SAMPLE_BLOCK));
+    let mut flush = |block: &mut Vec<Scalar>| -> Result<(), SpaceError> {
+        let encoded = encode_scalars(block, dtype)
+            .map_err(|err| SpaceError::invalid("$", err.to_string()))?;
+        bytes.extend(encoded);
+        block.clear();
+        Ok(())
+    };
+    if is_integer_dtype(space.dtype) {
         // Integer elements sample in the dtype's exact domain: typed bounds
         // decode to integers, never through `f64`, so `uint64` bounds above
         // 2^63 and `int64` bounds beyond 2^53 are honoured exactly.
         let (low, high) = integer_box_bounds(spec, numel.max(1), space.dtype);
-        low.iter()
-            .zip(high.iter())
-            .take(numel)
-            .map(|(low, high)| sample_integer_box_scalar(rng, *low, *high, space.dtype))
-            .collect::<Result<Vec<_>, _>>()?
+        for index in 0..numel {
+            let scalar =
+                sample_integer_box_scalar(rng, low.at(index), high.at(index), space.dtype)?;
+            block.push(scalar);
+            if block.len() == SAMPLE_BLOCK {
+                flush(&mut block)?;
+            }
+        }
     } else {
         let (low, high) = box_bounds(spec, numel.max(1), space.dtype);
-        low.iter()
-            .zip(high.iter())
-            .take(numel)
-            .map(|(low, high)| sample_box_scalar(rng, *low, *high, space.dtype))
-            .collect::<Result<Vec<_>, _>>()?
-    };
-
-    // The sampler treats `Unspecified` specs as float32, matching the codecs.
-    let dtype = normalize_dtype(space.dtype);
-    let bytes =
-        encode_scalars(&scalars, dtype).map_err(|err| SpaceError::invalid("$", err.to_string()))?;
+        for index in 0..numel {
+            let scalar = sample_box_scalar(rng, low.at(index), high.at(index), space.dtype)?;
+            block.push(scalar);
+            if block.len() == SAMPLE_BLOCK {
+                flush(&mut block)?;
+            }
+        }
+    }
+    flush(&mut block)?;
     // `from_slice` (not `from_vec`) so the buffer lands in 64-byte-aligned
     // storage: the value codec hands a Box tensor over zero-copy, and the
     // DLPack/numpy consumers downstream rely on that alignment.
@@ -119,10 +133,31 @@ fn sample_box<R: rand::Rng + ?Sized>(
         .map_err(|err| SpaceError::invalid("$", err.to_string()))
 }
 
+/// Elements sampled between encodes.
+const SAMPLE_BLOCK: usize = 4096;
+
+/// One side of a Box for every element: a single value shared by all of
+/// them, or one value each.
+#[derive(Debug, Clone, PartialEq)]
+enum Edges<T> {
+    All(T),
+    Each(Vec<T>),
+}
+
+impl<T: Copy> Edges<T> {
+    /// The edge of element `index`; `Each` holds one per element.
+    fn at(&self, index: usize) -> T {
+        match self {
+            Edges::All(edge) => *edge,
+            Edges::Each(edges) => edges[index],
+        }
+    }
+}
+
 /// Per-element `f64` bounds for the non-integer (float and bool) dtypes.
-fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>) {
+fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Edges<f64>, Edges<f64>) {
     match &spec.bounds {
-        Some(BoxBounds::Uniform(bounds)) => (vec![bounds.low; numel], vec![bounds.high; numel]),
+        Some(BoxBounds::Uniform(bounds)) => (Edges::All(bounds.low), Edges::All(bounds.high)),
         Some(BoxBounds::Elementwise(bounds)) => (
             elementwise_or_default(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             elementwise_or_default(bounds.high.as_slice(), numel, f64::INFINITY),
@@ -131,14 +166,14 @@ fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>
         Some(BoxBounds::TypedUniform(bounds)) => {
             let low = decode_typed_one(&bounds.low, dtype).unwrap_or(f64::NEG_INFINITY);
             let high = decode_typed_one(&bounds.high, dtype).unwrap_or(f64::INFINITY);
-            (vec![low; numel], vec![high; numel])
+            (Edges::All(low), Edges::All(high))
         }
         Some(BoxBounds::TypedElementwise(bounds)) => (
             decode_typed_many(&bounds.low, dtype, numel, f64::NEG_INFINITY),
             decode_typed_many(&bounds.high, dtype, numel, f64::INFINITY),
         ),
         Some(BoxBounds::Unbounded(_)) | None => {
-            (vec![f64::NEG_INFINITY; numel], vec![f64::INFINITY; numel])
+            (Edges::All(f64::NEG_INFINITY), Edges::All(f64::INFINITY))
         }
     }
 }
@@ -149,12 +184,12 @@ fn decode_typed_one(bytes: &[u8], dtype: DType) -> Option<f64> {
         .and_then(|scalars| scalars.first().copied().map(|s| s.to_f64(dtype)))
 }
 
-fn decode_typed_many(bytes: &[u8], dtype: DType, numel: usize, default: f64) -> Vec<f64> {
+fn decode_typed_many(bytes: &[u8], dtype: DType, numel: usize, default: f64) -> Edges<f64> {
     match decode_scalars(bytes, dtype) {
         Ok(scalars) if scalars.len() == numel => {
-            scalars.into_iter().map(|s| s.to_f64(dtype)).collect()
+            Edges::Each(scalars.into_iter().map(|s| s.to_f64(dtype)).collect())
         }
-        _ => vec![default; numel],
+        _ => Edges::All(default),
     }
 }
 
@@ -164,18 +199,22 @@ type IntEdge = Option<i128>;
 
 /// Per-element integer edges for an integer dtype. Float bounds round inward
 /// (`ceil(low)`, `floor(high)`, as Gymnasium); typed bounds decode exactly.
-fn integer_box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<IntEdge>, Vec<IntEdge>) {
+fn integer_box_bounds(
+    spec: &BoxSpec,
+    numel: usize,
+    dtype: DType,
+) -> (Edges<IntEdge>, Edges<IntEdge>) {
     fn float_low(low: f64) -> IntEdge {
         low.is_finite().then(|| low.ceil() as i128)
     }
     fn float_high(high: f64) -> IntEdge {
         high.is_finite().then(|| high.floor() as i128)
     }
-    fn float_edges(values: &[f64], numel: usize, edge: fn(f64) -> IntEdge) -> Vec<IntEdge> {
+    fn float_edges(values: &[f64], numel: usize, edge: fn(f64) -> IntEdge) -> Edges<IntEdge> {
         if values.len() == numel {
-            values.iter().map(|value| edge(*value)).collect()
+            Edges::Each(values.iter().map(|value| edge(*value)).collect())
         } else {
-            vec![None; numel]
+            Edges::All(None)
         }
     }
     let typed_one = |bytes: &[u8]| -> IntEdge {
@@ -183,32 +222,34 @@ fn integer_box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<IntEdg
             .ok()
             .and_then(|scalars| scalars.first().map(|s| scalar_to_int_edge(*s, dtype)))
     };
-    let typed_many = |bytes: &[u8]| -> Vec<IntEdge> {
+    let typed_many = |bytes: &[u8]| -> Edges<IntEdge> {
         match decode_scalars(bytes, dtype) {
-            Ok(scalars) if scalars.len() == numel => scalars
-                .into_iter()
-                .map(|s| Some(scalar_to_int_edge(s, dtype)))
-                .collect(),
-            _ => vec![None; numel],
+            Ok(scalars) if scalars.len() == numel => Edges::Each(
+                scalars
+                    .into_iter()
+                    .map(|s| Some(scalar_to_int_edge(s, dtype)))
+                    .collect(),
+            ),
+            _ => Edges::All(None),
         }
     };
     match &spec.bounds {
         Some(BoxBounds::Uniform(bounds)) => (
-            vec![float_low(bounds.low); numel],
-            vec![float_high(bounds.high); numel],
+            Edges::All(float_low(bounds.low)),
+            Edges::All(float_high(bounds.high)),
         ),
         Some(BoxBounds::Elementwise(bounds)) => (
             float_edges(bounds.low.as_slice(), numel, float_low),
             float_edges(bounds.high.as_slice(), numel, float_high),
         ),
         Some(BoxBounds::TypedUniform(bounds)) => (
-            vec![typed_one(&bounds.low); numel],
-            vec![typed_one(&bounds.high); numel],
+            Edges::All(typed_one(&bounds.low)),
+            Edges::All(typed_one(&bounds.high)),
         ),
         Some(BoxBounds::TypedElementwise(bounds)) => {
             (typed_many(&bounds.low), typed_many(&bounds.high))
         }
-        Some(BoxBounds::Unbounded(_)) | None => (vec![None; numel], vec![None; numel]),
+        Some(BoxBounds::Unbounded(_)) | None => (Edges::All(None), Edges::All(None)),
     }
 }
 
@@ -223,11 +264,11 @@ fn scalar_to_int_edge(scalar: Scalar, dtype: DType) -> i128 {
 
 /// Validated elementwise bounds always carry one value per element; anything
 /// else falls back to the unbounded default for sampling purposes.
-fn elementwise_or_default(values: &[f64], len: usize, default: f64) -> Vec<f64> {
+fn elementwise_or_default(values: &[f64], len: usize, default: f64) -> Edges<f64> {
     if values.len() == len {
-        values.to_vec()
+        Edges::Each(values.to_vec())
     } else {
-        vec![default; len]
+        Edges::All(default)
     }
 }
 
@@ -640,15 +681,15 @@ mod tests {
     fn uint64_max_bound_decodes_to_positive_for_sampling() {
         let spec = typed_uniform_spec(0, -1, DType::Uint64);
         let (low, high) = integer_box_bounds(&spec, 1, DType::Uint64);
-        assert_eq!(low, vec![Some(0)]);
+        assert_eq!(low.at(0), Some(0));
         assert_eq!(
-            high,
-            vec![Some(i128::from(u64::MAX))],
+            high.at(0),
+            Some(i128::from(u64::MAX)),
             "u64::MAX must decode positive and exact"
         );
 
         let mut rng = ChaCha12Rng::seed_from_u64(7);
-        let sampled = sample_integer_box_scalar(&mut rng, low[0], high[0], DType::Uint64);
+        let sampled = sample_integer_box_scalar(&mut rng, low.at(0), high.at(0), DType::Uint64);
         assert!(
             sampled.is_ok(),
             "sampling a [0, u64::MAX] Uint64 box must not error: {sampled:?}"
