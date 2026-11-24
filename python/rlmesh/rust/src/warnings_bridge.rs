@@ -28,9 +28,17 @@ fn warn(warning: &Warning) -> rlmesh::Result<()> {
         let message = CString::new(warning.message.replace('\0', " "))
             .unwrap_or_else(|_| CString::from(c"rlmesh warning"));
         let mut stacklevel = 1;
-        if let Ok(mut frame) = py
-            .import("sys")
-            .and_then(|sys| sys.call_method1("_getframe", (0,)))
+        // A runtime thread that delivers the warning has run no Python and has
+        // no frame. CPython 3.9 and 3.10 crash in `sys._getframe` there once
+        // any audit hook is installed, so ask the C API before calling it.
+        // SAFETY: the interpreter is attached; the borrowed result is only
+        // compared with null.
+        #[allow(unsafe_code)]
+        let has_frame = unsafe { !pyo3::ffi::PyEval_GetFrame().is_null() };
+        if has_frame
+            && let Ok(mut frame) = py
+                .import("sys")
+                .and_then(|sys| sys.call_method1("_getframe", (0,)))
         {
             loop {
                 let module = frame
